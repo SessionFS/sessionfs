@@ -86,3 +86,19 @@ class SyncPushResponse(BaseModel):
     etag: str
     blob_size_bytes: int
     synced_at: datetime
+
+
+class MessagesResponse(BaseModel):
+    messages: list[dict]
+    total: int
+    page: int
+    page_size: int
+    has_more: bool
+
+
+class WorkspaceResponse(BaseModel):
+    workspace: dict
+
+
+class ToolsResponse(BaseModel):
+    tools: dict

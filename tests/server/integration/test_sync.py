@@ -230,3 +230,47 @@ async def test_sync_push_update_refreshes_metadata(
     assert detail["source_tool_version"] == "2.0.0"
     assert detail["model_id"] == "claude-sonnet-4-6"
     assert detail["message_count"] == 20
+
+
+@pytest.mark.asyncio
+async def test_get_session_messages(
+    client: AsyncClient, auth_headers: dict, sample_sfs_tar: bytes
+):
+    """Get paginated messages from a pushed session."""
+    await client.put(
+        "/api/v1/sessions/ses_messages1234abcd/sync",
+        headers=auth_headers,
+        files={"file": ("session.tar.gz", io.BytesIO(sample_sfs_tar), "application/gzip")},
+    )
+
+    resp = await client.get(
+        "/api/v1/sessions/ses_messages1234abcd/messages",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "messages" in data
+    assert data["total"] >= 1
+    assert data["page"] == 1
+    assert isinstance(data["messages"], list)
+
+
+@pytest.mark.asyncio
+async def test_get_session_messages_pagination(
+    client: AsyncClient, auth_headers: dict, sample_sfs_tar: bytes
+):
+    """Messages endpoint respects pagination params."""
+    await client.put(
+        "/api/v1/sessions/ses_msgpage1234abcde/sync",
+        headers=auth_headers,
+        files={"file": ("session.tar.gz", io.BytesIO(sample_sfs_tar), "application/gzip")},
+    )
+
+    resp = await client.get(
+        "/api/v1/sessions/ses_msgpage1234abcde/messages?page=1&page_size=1",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["messages"]) <= 1
+    assert data["page_size"] == 1

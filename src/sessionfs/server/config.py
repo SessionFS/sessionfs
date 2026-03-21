@@ -25,3 +25,4 @@ class ServerConfig(BaseSettings):
     cors_origins: list[str] = []
     log_level: str = "INFO"
     rate_limit_per_minute: int = 100
+    dashboard_dir: str = "./static"

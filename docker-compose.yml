@@ -18,8 +18,11 @@ services:
       SFS_DATABASE_URL: postgresql+asyncpg://sessionfs:sessionfs@db:5432/sessionfs
       SFS_BLOB_STORE_TYPE: local
       SFS_BLOB_STORE_LOCAL_PATH: /data/blobs
+      SFS_DASHBOARD_DIR: /app/static
+      SFS_CORS_ORIGINS: '["http://localhost:5173"]'
     volumes:
       - blobdata:/data/blobs
+      - ./dashboard/dist:/app/static:ro
     depends_on:
       - db
 

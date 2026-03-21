@@ -68,4 +68,28 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     app.include_router(auth.router)
     app.include_router(sessions.router)
 
+    # Serve dashboard static files if the dist directory exists.
+    # The dashboard is a React SPA — all non-API routes serve index.html.
+    static_dir = Path(config.dashboard_dir)
+    if static_dir.is_dir() and (static_dir / "index.html").exists():
+        from starlette.responses import FileResponse
+        from fastapi.staticfiles import StaticFiles
+
+        # Serve /assets/* directly (JS, CSS, images)
+        assets_dir = static_dir / "assets"
+        if assets_dir.is_dir():
+            app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="dashboard-assets")
+
+        # SPA fallback: all other non-API paths serve index.html
+        @app.get("/{path:path}", include_in_schema=False)
+        async def spa_fallback(path: str):
+            # Don't intercept API or health routes
+            if path.startswith("api/") or path == "health":
+                from fastapi import HTTPException
+                raise HTTPException(status_code=404)
+            file = static_dir / path
+            if file.is_file():
+                return FileResponse(str(file))
+            return FileResponse(str(static_dir / "index.html"))
+
     return app

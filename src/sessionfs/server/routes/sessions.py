@@ -7,7 +7,9 @@ import io
 import json
 import re
 import tarfile
+import threading
 import uuid
+from collections import OrderedDict
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile
@@ -19,12 +21,15 @@ from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import Session, User
 from sessionfs.server.schemas.sessions import (
+    MessagesResponse,
     SessionDetail,
     SessionListResponse,
     SessionMetadataUpdate,
     SessionSummary,
     SessionUploadResponse,
     SyncPushResponse,
+    WorkspaceResponse,
+    ToolsResponse,
 )
 from sessionfs.server.storage.base import BlobStore
 
@@ -217,6 +222,78 @@ def _extract_manifest_metadata(data: bytes) -> dict:
         _logger.warning("Failed to extract manifest metadata: %s", exc)
 
     return defaults
+
+
+# --- Archive content cache ---
+
+_CACHE_MAX_SIZE = 50
+_archive_cache: OrderedDict[tuple[str, str], dict[str, object]] = OrderedDict()
+_cache_lock = threading.Lock()
+
+
+def _get_cached_archive_content(session_id: str, etag: str, data: bytes) -> dict[str, object]:
+    """Get parsed archive contents, using an LRU cache keyed by (session_id, etag).
+
+    Returns a dict with keys: "messages" (list[dict]), "workspace" (dict|None),
+    "tools" (dict|None).
+    """
+    cache_key = (session_id, etag)
+
+    with _cache_lock:
+        if cache_key in _archive_cache:
+            _archive_cache.move_to_end(cache_key)
+            return _archive_cache[cache_key]
+
+    # Parse outside the lock
+    content = _extract_archive_content(data)
+
+    with _cache_lock:
+        _archive_cache[cache_key] = content
+        _archive_cache.move_to_end(cache_key)
+        while len(_archive_cache) > _CACHE_MAX_SIZE:
+            _archive_cache.popitem(last=False)
+
+    return content
+
+
+def _extract_archive_content(data: bytes) -> dict[str, object]:
+    """Extract messages, workspace, and tools from a .sfs tar.gz archive."""
+    messages: list[dict] = []
+    workspace: dict | None = None
+    tools: dict | None = None
+
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+            for member in tar.getmembers():
+                name = member.name
+                # Strip any leading directory component
+                basename = name.rsplit("/", 1)[-1] if "/" in name else name
+
+                if basename == "messages.jsonl":
+                    f = tar.extractfile(member)
+                    if f is not None:
+                        for line in f:
+                            line = line.strip()
+                            if line:
+                                messages.append(json.loads(line))
+                elif basename == "workspace.json":
+                    f = tar.extractfile(member)
+                    if f is not None:
+                        workspace = json.loads(f.read())
+                elif basename == "tools.json":
+                    f = tar.extractfile(member)
+                    if f is not None:
+                        tools = json.loads(f.read())
+    except Exception as exc:
+        _logger.warning("Failed to extract archive content: %s", exc)
+
+    return {"messages": messages, "workspace": workspace, "tools": tools}
+
+
+def clear_archive_cache() -> None:
+    """Clear the archive content cache. Exposed for testing."""
+    with _cache_lock:
+        _archive_cache.clear()
 
 
 # --- Routes ---
@@ -561,6 +638,88 @@ async def sync_pull(
         media_type="application/gzip",
         headers={"ETag": f'"{session.etag}"'},
     )
+
+
+@router.get("/{session_id}/messages", response_model=MessagesResponse)
+async def get_session_messages(
+    session_id: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=100),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    request: Request = None,
+):
+    """Get paginated messages from a session archive."""
+    _validate_session_id(session_id)
+    session = await _get_user_session(db, user.id, session_id)
+    blob_store = _get_blob_store(request)
+    data = await blob_store.get(session.blob_key)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Session blob not found")
+
+    content = _get_cached_archive_content(session_id, session.etag, data)
+    messages = content["messages"]
+
+    total = len(messages)
+    start = (page - 1) * page_size
+    end = start + page_size
+    page_messages = messages[start:end]
+
+    return {
+        "messages": page_messages,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "has_more": end < total,
+    }
+
+
+@router.get("/{session_id}/workspace", response_model=WorkspaceResponse)
+async def get_session_workspace(
+    session_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    request: Request = None,
+):
+    """Get workspace metadata from a session archive."""
+    _validate_session_id(session_id)
+    session = await _get_user_session(db, user.id, session_id)
+    blob_store = _get_blob_store(request)
+    data = await blob_store.get(session.blob_key)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Session blob not found")
+
+    content = _get_cached_archive_content(session_id, session.etag, data)
+    workspace = content["workspace"]
+
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="No workspace.json in session archive")
+
+    return {"workspace": workspace}
+
+
+@router.get("/{session_id}/tools", response_model=ToolsResponse)
+async def get_session_tools(
+    session_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    request: Request = None,
+):
+    """Get tools metadata from a session archive."""
+    _validate_session_id(session_id)
+    session = await _get_user_session(db, user.id, session_id)
+    blob_store = _get_blob_store(request)
+    data = await blob_store.get(session.blob_key)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Session blob not found")
+
+    content = _get_cached_archive_content(session_id, session.etag, data)
+    tools = content["tools"]
+
+    if tools is None:
+        raise HTTPException(status_code=404, detail="No tools.json in session archive")
+
+    return {"tools": tools}
 
 
 async def _get_user_session(db: AsyncSession, user_id: str, session_id: str) -> Session:

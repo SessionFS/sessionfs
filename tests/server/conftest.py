@@ -146,10 +146,61 @@ def sample_sfs_tar() -> bytes:
         info.size = len(manifest)
         tar.addfile(info, io.BytesIO(manifest))
 
-        messages = b'{"role": "user", "content": [{"type": "text", "text": "hello"}]}\n'
+        msg1 = json.dumps({
+            "msg_id": "msg_001", "role": "user",
+            "content": [{"type": "text", "text": "hello"}],
+            "timestamp": "2026-03-20T14:31:00Z",
+        })
+        msg2 = json.dumps({
+            "msg_id": "msg_002", "role": "assistant",
+            "content": [
+                {"type": "thinking", "text": "Let me analyze..."},
+                {"type": "text", "text": "Hi there!"},
+                {"type": "tool_use", "tool_name": "bash", "tool_use_id": "tu_001",
+                 "input": {"command": "ls"}},
+            ],
+            "timestamp": "2026-03-20T14:31:15Z",
+            "parent_msg_id": "msg_001",
+            "model_used": "claude-opus-4-6",
+        })
+        msg3 = json.dumps({
+            "msg_id": "msg_003", "role": "tool",
+            "content": [{"type": "tool_result", "tool_use_id": "tu_001",
+                         "content": "file1.py\nfile2.py"}],
+            "timestamp": "2026-03-20T14:31:16Z",
+            "parent_msg_id": "msg_002",
+        })
+        messages = (msg1 + "\n" + msg2 + "\n" + msg3 + "\n").encode()
         info = tarfile.TarInfo(name="messages.jsonl")
         info.size = len(messages)
         tar.addfile(info, io.BytesIO(messages))
+
+        workspace = json.dumps({
+            "root_path": "/home/user/project",
+            "git": {
+                "remote_url": "https://github.com/example/repo",
+                "branch": "main",
+                "commit_sha": "abc123",
+            },
+            "files": [
+                {"path": "src/main.py", "role": "edited"},
+            ],
+        }).encode()
+        info = tarfile.TarInfo(name="workspace.json")
+        info.size = len(workspace)
+        tar.addfile(info, io.BytesIO(workspace))
+
+        tools = json.dumps({
+            "tools": [
+                {"name": "bash", "type": "built-in"},
+                {"name": "read", "type": "built-in"},
+            ],
+            "working_directory": "/home/user/project",
+            "default_shell": "/bin/bash",
+        }).encode()
+        info = tarfile.TarInfo(name="tools.json")
+        info.size = len(tools)
+        tar.addfile(info, io.BytesIO(tools))
 
     return buf.getvalue()
 
