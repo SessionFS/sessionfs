@@ -115,7 +115,8 @@ def fork(
             source_dir = session_dir
 
         # Create new session
-        new_id = str(uuid_mod.uuid4())
+        from sessionfs.session_id import generate_session_id
+        new_id = generate_session_id()
         new_dir = store.allocate_session_dir(new_id)
 
         # Copy messages
