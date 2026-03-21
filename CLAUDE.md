@@ -29,6 +29,12 @@ Project-specific agent personas are in `.agents/`. Load the relevant agent for y
 
 A `.sfs` session is a directory containing: `manifest.json`, `messages.jsonl`, `workspace.json`, `tools.json`. All file paths within are relative to workspace root. Sessions are append-only — conflict resolution appends both sides rather than merging.
 
+## Git Branch Policy
+
+- **Default push target: `v0.1.0-release` (private).** All commits and pushes go here unless explicitly told otherwise. This branch contains internal files (.agents/, src/spikes/, docs/security/, DOGFOOD.md).
+- **Public releases: `v0.1.0-public` only.** When the user says "go public" or requests a public release, cherry-pick or merge the relevant changes into the public branch. Strip all internal files before pushing — the .gitignore on that branch already excludes them.
+- **Never push internal files to the public branch.** Agent personas, research spikes, threat models, dogfood logs, and business strategy must stay on the release branch only.
+
 ## Key Decisions (Do Not Violate)
 
 - NO WebSockets, NO Redis, NO real-time sync. HTTP + ETags only.
@@ -40,6 +46,6 @@ A `.sfs` session is a directory containing: `manifest.json`, `messages.jsonl`, `
 
 ## Current Phase
 
-**Phase 0: Validation & Foundation**
+**Phase 1: Complete — Daemon + CLI + Server MVP**
 
-Priority is the feasibility spikes — proving we can read AND write session data from Claude Code and Codex native storage. No build system, tests, or source code exist yet. See `.agents/README.md` for the Phase 0 assignment matrix with priorities.
+327 tests passing. Dog-fooding complete. Ready for v0.1.0 public release.
