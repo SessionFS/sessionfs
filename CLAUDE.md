@@ -31,8 +31,8 @@ A `.sfs` session is a directory containing: `manifest.json`, `messages.jsonl`, `
 
 ## Git Branch Policy
 
-- **Default push target: `v0.1.0-release` (private).** All commits and pushes go here unless explicitly told otherwise. This branch contains internal files (.agents/, src/spikes/, docs/security/, DOGFOOD.md).
-- **Public releases: `v0.1.0-public` only.** When the user says "go public" or requests a public release, cherry-pick or merge the relevant changes into the public branch. Strip all internal files before pushing — the .gitignore on that branch already excludes them.
+- **Default push target: `develop` (private).** All commits and pushes go here unless explicitly told otherwise. This branch contains internal files (.agents/, src/spikes/, docs/security/, DOGFOOD.md).
+- **Public releases: `main` only.** When the user says "go public" or requests a public release, cherry-pick or merge the relevant changes into the public branch. Strip all internal files before pushing — the .gitignore on that branch already excludes them.
 - **Never push internal files to the public branch.** Agent personas, research spikes, threat models, dogfood logs, and business strategy must stay on the release branch only.
 
 ## Key Decisions (Do Not Violate)
