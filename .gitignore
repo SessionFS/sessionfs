@@ -29,3 +29,9 @@ Thumbs.db
 
 # SessionFS local data (never commit user sessions)
 .sessionfs/
+
+# Internal — not for public repo
+.agents/
+src/spikes/
+docs/security/
+DOGFOOD.md
