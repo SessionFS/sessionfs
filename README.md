@@ -63,10 +63,15 @@ See the full [CLI Reference](docs/cli-reference.md) for options and examples.
 ## Cloud Sync (Optional)
 
 ```bash
-# Enable sync
-sfs config set sync.enabled true
-sfs config set sync.api_url https://api.sessionfs.dev
-sfs config set sync.api_key YOUR_API_KEY
+# Create an account
+sfs auth signup --url https://api.sessionfs.dev
+
+# Push a session
+sfs push <session_id>
+
+# Pull on another machine
+sfs pull <session_id>
+sfs resume <session_id>
 ```
 
 See the [Sync Guide](docs/sync-guide.md) for setup, conflict handling, and self-hosted options.
@@ -91,18 +96,19 @@ All file paths are relative to workspace root. Sessions are append-only.
 
 ## Status
 
-**Phase 1 — Foundation.** The daemon captures Claude Code sessions. Codex and Cursor watchers are planned. Cloud sync and team handoff are in development.
+**v0.1.0 — Public Beta.** 327 tests passing. Full pipeline working end-to-end.
 
-Working now:
-- Claude Code session capture and conversion
-- Session browsing, inspection, and export
-- Resume and fork operations
-- Self-hosted API server with auth and storage
+What works today:
+- Claude Code session capture (daemon watches automatically)
+- Browse, inspect, export, resume, fork, checkpoint
+- Cloud sync with push/pull and ETag conflict detection
+- Self-hosted API server with auth, PostgreSQL, and S3/local storage
+- 12 security controls including secret detection, path traversal protection, and audit logging
 
-Coming next:
+On the roadmap:
 - Codex and Cursor watchers
-- Team handoff workflows
-- Web dashboard
+- Team handoff workflows with notifications
+- Web dashboard for session management
 
 ## Contributing
 
