@@ -31,6 +31,7 @@ A `.sfs` session is a directory containing: `manifest.json`, `messages.jsonl`, `
 
 ## Commit Rules
 
+- **All commits must use author `sessionfsbot <bot@sessionfs.dev>`.** Use `--author="sessionfsbot <bot@sessionfs.dev>"` on every git commit.
 - **NEVER include "Co-Authored-By" lines referencing Claude, Anthropic, or any AI assistant.**
 - **NEVER mention Claude Code, Claude, AI, LLM, or any AI tooling in commit messages.**
 - Commit messages should read as if written by a human developer. Focus on what changed and why.
