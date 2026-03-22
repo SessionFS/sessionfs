@@ -23,8 +23,12 @@ from sessionfs.cli.sfs_to_cc import reverse_convert_session
 def resume(
     session_id: str = typer.Argument(help="Session ID or prefix."),
     project: str | None = typer.Option(None, help="Target project path (overrides workspace)."),
+    tool: str = typer.Option(
+        "claude-code", "--in",
+        help="Target tool: claude-code, codex, gemini, cursor",
+    ),
 ) -> None:
-    """Resume a session in Claude Code."""
+    """Resume a session in an AI tool."""
     store = open_store()
     try:
         full_id = resolve_session_id(store, session_id)
@@ -40,26 +44,97 @@ def resume(
                 workspace = json.loads(workspace_path.read_text())
                 target_path = workspace.get("root_path")
 
-        if not target_path:
+        if tool == "codex":
+            _resume_in_codex(session_dir, manifest, target_path, full_id)
+        elif tool == "gemini":
+            _resume_in_gemini(session_dir, manifest, target_path, full_id)
+        elif tool == "cursor":
             err_console.print(
-                "[red]No project path found. Use --project to specify one.[/red]"
+                "[yellow]Cursor does not support session injection (capture-only).[/yellow]\n"
+                "Resume in a CLI tool instead:\n"
+                f"  sfs resume {session_id} --in claude-code\n"
+                f"  sfs resume {session_id} --in codex\n"
+                f"  sfs resume {session_id} --in gemini"
             )
             raise SystemExit(1)
-
-        result = reverse_convert_session(
-            session_dir,
-            manifest=manifest,
-            target_project_path=target_path,
-        )
-
-        console.print(f"[green]Session resumed successfully.[/green]")
-        console.print(f"  CC Session ID: {result['cc_session_id']}")
-        console.print(f"  JSONL: {result['jsonl_path']}")
-        console.print(f"  Messages: {result['message_count']}")
-        console.print()
-        console.print(f"Open Claude Code in [bold]{target_path}[/bold] to continue.")
+        else:
+            _resume_in_claude_code(session_dir, manifest, target_path)
     finally:
         store.close()
+
+
+def _resume_in_claude_code(
+    session_dir: Path, manifest: dict, target_path: str | None,
+) -> None:
+    if not target_path:
+        err_console.print("[red]No project path found. Use --project to specify one.[/red]")
+        raise SystemExit(1)
+
+    result = reverse_convert_session(
+        session_dir,
+        manifest=manifest,
+        target_project_path=target_path,
+    )
+    console.print("[green]Session resumed in Claude Code.[/green]")
+    console.print(f"  CC Session ID: {result['cc_session_id']}")
+    console.print(f"  JSONL: {result['jsonl_path']}")
+    console.print(f"  Messages: {result['message_count']}")
+    console.print()
+    console.print(f"Open Claude Code in [bold]{target_path}[/bold] to continue.")
+
+
+def _resume_in_codex(
+    session_dir: Path, manifest: dict, target_path: str | None, sfs_id: str,
+) -> None:
+    from sessionfs.converters.sfs_to_codex import convert_sfs_to_codex
+    from sessionfs.converters.codex_injector import inject_session
+
+    cwd = target_path or "/tmp"
+
+    # Convert .sfs → Codex JSONL
+    result = convert_sfs_to_codex(session_dir, cwd=cwd)
+
+    # Inject into Codex storage
+    title = manifest.get("title") or sfs_id
+    model = (manifest.get("model") or {}).get("model_id", "gpt-4.1")
+    inject_result = inject_session(
+        codex_jsonl=Path(result["jsonl_path"]),
+        codex_session_id=result["codex_session_id"],
+        cwd=cwd,
+        title=title,
+        model=model,
+    )
+
+    console.print("[green]Session resumed in Codex CLI.[/green]")
+    console.print(f"  Codex Session ID: {result['codex_session_id'][:12]}...")
+    console.print(f"  Rollout: {inject_result['rollout_path']}")
+    console.print(f"  Messages: {result['message_count']}")
+    console.print(f"  Index updated: {inject_result['index_updated']}")
+    console.print()
+    console.print(f"Run [bold]codex --thread {result['codex_session_id'][:12]}[/bold] to continue.")
+
+
+def _resume_in_gemini(
+    session_dir: Path, manifest: dict, target_path: str | None, sfs_id: str,
+) -> None:
+    from sessionfs.converters.sfs_to_gemini import convert_sfs_to_gemini
+    from sessionfs.converters.gemini_injector import inject_session
+
+    project = target_path or "/tmp"
+    result = convert_sfs_to_gemini(session_dir, project_path=project)
+
+    inject_result = inject_session(
+        gemini_json=Path(result["json_path"]),
+        gemini_session_id=result["gemini_session_id"],
+        project_path=project,
+    )
+
+    console.print("[green]Session resumed in Gemini CLI.[/green]")
+    console.print(f"  Session: {result['gemini_session_id'][:8]}...")
+    console.print(f"  File: {inject_result['session_path']}")
+    console.print(f"  Messages: {result['message_count']}")
+    console.print()
+    console.print(f"Open Gemini CLI in [bold]{project}[/bold] to continue.")
 
 
 def checkpoint(

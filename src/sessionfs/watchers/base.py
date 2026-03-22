@@ -1,6 +1,6 @@
 """Base watcher protocol and shared types.
 
-Every tool-specific watcher (Claude Code, Codex, Cursor) implements
+Every tool-specific watcher (Claude Code, Codex, Gemini CLI, Cursor) implements
 the Watcher protocol. The daemon delegates to watchers without knowing
 the specifics of each tool's storage format.
 """

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-SessionFS — Dropbox for AI agent sessions. Captures, syncs, and hands off conversations across tools and teammates.
+SessionFS — Portable session layer for AI coding tools.
 
 ## Agent Team
 
@@ -20,7 +20,7 @@ Project-specific agent personas are in `.agents/`. Load the relevant agent for y
 
 ## Architecture
 
-- **Daemon (sfsd):** Background process using fsevents/inotify (not polling) to watch native AI tool session storage (Claude Code, Codex, Cursor) and capture sessions into canonical `.sfs` format
+- **Daemon (sfsd):** Background process using fsevents/inotify (not polling) to watch native AI tool session storage (Claude Code, Codex, Gemini CLI, Cursor) and capture sessions into canonical `.sfs` format
 - **CLI (sfs):** Command-line tool for browsing, pulling, resuming, forking, and handing off sessions
 - **API Server:** FastAPI + PostgreSQL + S3/GCS for cloud session storage and team features
 - **Web Dashboard:** React management interface (NOT a chat UI — users interact with their native AI tools)
@@ -53,6 +53,6 @@ A `.sfs` session is a directory containing: `manifest.json`, `messages.jsonl`, `
 
 ## Current Phase
 
-**Phase 1: Complete — Daemon + CLI + Server MVP**
+**Phase 1: Complete — Daemon + CLI + Server MVP + Cross-Tool Support**
 
-327 tests passing. Dog-fooding complete. Ready for v0.1.0 public release.
+429 tests passing. Four-tool capture (Claude Code, Codex, Gemini CLI, Cursor). Cross-tool resume between Claude Code, Codex, and Gemini. Web dashboard live. Ready for v0.1.0 public release.

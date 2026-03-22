@@ -1,266 +1,46 @@
 """Smart session title extraction, sanitization, and display formatting.
 
-Used by both the daemon (at capture time) and the CLI (at display time)
-to produce clean, readable, secret-free titles from session content.
+Used by the CLI (at display time) to produce clean, readable titles.
+Core title logic lives in sessionfs.utils.title_utils (shared with server).
+This module re-exports the core functions and adds CLI-specific display helpers.
 """
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
-from sessionfs.security.secrets import SECRET_PATTERNS, ALLOWLIST
-
-# ---------------------------------------------------------------------------
-# Prefixes that indicate non-user-content (agent personas, system msgs, XML)
-# ---------------------------------------------------------------------------
-
-_JUNK_PREFIXES = (
-    "#",           # Markdown headings (agent persona preambles)
-    "<",           # XML/HTML tags, tool markup
-    "[",           # System messages like [Request interrupt...]
-    "(",           # Agent persona load instructions: (Load full persona from .agents/...)
-    "---",         # YAML frontmatter / horizontal rules
-    "```",         # Code fences
-    "<!--",        # HTML comments
-    "IMPORTANT:",  # System instructions
-    "Note:",       # System notes
-    "WARNING:",    # System warnings
-    "Set ",        # CLI mode toggles: "Set Fast mode to ON"
+# Re-export core title functions from shared module
+from sessionfs.utils.title_utils import (
+    extract_smart_title,
+    is_usable_title,
+    sanitize_secrets as sanitize_title_secrets,
+    _truncate_at_word,
+    _iter_usable_lines,
+    _extract_text,
 )
 
-_JUNK_PATTERNS = re.compile(
-    r"^(?:"
-    r"<[a-z_-]+|"                  # XML-like tags: <command-..., <system-...
-    r"\[(?:Request|System|Tool)|"  # Bracketed system messages
-    r"---\s*$|"                    # Horizontal rules
-    r"#+\s+Agent:|"               # Agent persona headings
-    r"Co-Authored-By:|"           # Git commit trailers
-    r"(?:CLAUDE|README)\.md|"      # File references as first line
-    r"Implement the following plan:|"  # Generic plan execution prompts
-    r"(?:Load|Using) (?:full |both )?personas?\b"  # Agent persona instructions
-    r")",
-    re.IGNORECASE,
-)
+# Aliases for backward compatibility with existing callers
+_is_usable_title = is_usable_title
 
-
-# ---------------------------------------------------------------------------
-# Title extraction
-# ---------------------------------------------------------------------------
 
 def extract_title(
     manifest: dict[str, Any] | None = None,
     messages: list[dict[str, Any]] | None = None,
     max_length: int = 80,
 ) -> str:
-    """Extract a clean session title using the priority chain.
-
-    Priority:
-    1. manifest["title"] if it looks like good content (not junk)
-    2. First user message that starts with natural language
-    3. Truncated at sentence/word boundary, sanitized for secrets
-
-    Args:
-        manifest: Session manifest dict (may contain "title" field).
-        messages: List of message dicts from messages.jsonl.
-        max_length: Maximum title length.
-
-    Returns:
-        Clean title string, or "Untitled session" fallback.
-    """
-    # Priority 1: manifest title, if it's good
-    if manifest:
-        existing = manifest.get("title")
-        if existing and _is_usable_title(existing):
-            return _finalize_title(existing, max_length)
-
-    # Priority 2: first user message with natural language
-    if messages:
-        for msg in messages:
-            if msg.get("role") != "user":
-                continue
-            if msg.get("is_sidechain"):
-                continue
-
-            text = _extract_text_from_message(msg)
-            if not text:
-                continue
-
-            # Try each line, skipping fenced/frontmatter blocks
-            for line in _iter_usable_lines(text):
-                if _is_usable_title(line):
-                    return _finalize_title(line, max_length)
-
-    # Fallback
+    """Extract a clean session title. Delegates to shared title_utils."""
+    raw_title = manifest.get("title") if manifest else None
     msg_count = 0
     if manifest:
         stats = manifest.get("stats", {})
         msg_count = stats.get("message_count", 0)
-    if msg_count > 0:
-        return f"Untitled session ({msg_count} messages)"
-    return "Untitled session"
 
-
-def _iter_usable_lines(text: str):
-    """Yield lines from text, skipping fenced blocks and frontmatter."""
-    in_fence = False
-    in_frontmatter = False
-    frontmatter_seen = False
-
-    for i, line in enumerate(text.split("\n")):
-        stripped = line.strip()
-
-        # Track YAML frontmatter (--- at start of text)
-        if stripped == "---":
-            if i == 0 and not frontmatter_seen:
-                in_frontmatter = True
-                frontmatter_seen = True
-                continue
-            elif in_frontmatter:
-                in_frontmatter = False
-                continue
-
-        if in_frontmatter:
-            continue
-
-        # Track code fences
-        if stripped.startswith("```"):
-            in_fence = not in_fence
-            continue
-
-        if in_fence:
-            continue
-
-        if stripped:
-            yield stripped
-
-
-def _extract_text_from_message(msg: dict[str, Any]) -> str:
-    """Extract plain text from a message's content blocks."""
-    content = msg.get("content", [])
-    if isinstance(content, str):
-        return content
-
-    parts = []
-    for block in content:
-        if isinstance(block, str):
-            parts.append(block)
-        elif isinstance(block, dict):
-            if block.get("type") == "text":
-                parts.append(block.get("text", ""))
-    return "\n".join(parts)
-
-
-def _is_usable_title(text: str) -> bool:
-    """Check if text looks like natural language suitable for a title."""
-    text = text.strip()
-    if not text:
-        return False
-    if len(text) < 3:
-        return False
-
-    # Reject if starts with junk prefix
-    for prefix in _JUNK_PREFIXES:
-        if text.startswith(prefix):
-            return False
-
-    # Reject if matches junk pattern
-    if _JUNK_PATTERNS.match(text):
-        return False
-
-    return True
-
-
-def _finalize_title(text: str, max_length: int) -> str:
-    """Truncate, sanitize, and return the final title."""
-    # Strip leading/trailing whitespace and common prefixes
-    text = text.strip()
-
-    # Extract first sentence if shorter than max_length
-    text = _extract_first_sentence(text, max_length)
-
-    # Truncate at word boundary
-    text = _truncate_at_word(text, max_length)
-
-    # Sanitize secrets
-    text = sanitize_title_secrets(text)
-
-    return text
-
-
-def _extract_first_sentence(text: str, max_length: int) -> str:
-    """Extract the first sentence, if it fits within max_length."""
-    # Look for sentence-ending punctuation
-    for i, ch in enumerate(text):
-        if ch in ".!?" and i < max_length - 1:
-            candidate = text[: i + 1].strip()
-            if len(candidate) >= 10:  # Avoid splitting on abbreviations
-                return candidate
-    return text
-
-
-def _truncate_at_word(text: str, max_length: int) -> str:
-    """Truncate text at a word boundary, appending ellipsis if needed."""
-    if len(text) <= max_length:
-        return text
-
-    # Find the last space before max_length
-    truncated = text[:max_length]
-    last_space = truncated.rfind(" ")
-    if last_space > max_length // 2:
-        truncated = truncated[:last_space]
-    else:
-        truncated = truncated[:max_length]
-
-    return truncated.rstrip() + "\u2026"
-
-
-# ---------------------------------------------------------------------------
-# Secret sanitization for titles
-# ---------------------------------------------------------------------------
-
-# Additional patterns for title sanitization that are broader than M10
-# (M10 targets code-like assignments; titles may have natural language)
-_TITLE_SECRET_PATTERNS: list[re.Pattern[str]] = [
-    # "password is X", "password: X", "pwd = X" with quoted values
-    re.compile(
-        r"(?:password|passwd|pwd|secret|token|api.?key)\s+(?:is|was|=|:)\s*"
-        r'["\'](?P<secret>[^"\']{4,})["\']',
-        re.IGNORECASE,
-    ),
-    # Bare credentials in URL-like patterns: user:pass@host
-    re.compile(
-        r"://[^:]+:(?P<secret>[^@\s]{4,})@",
-    ),
-]
-
-
-def sanitize_title_secrets(title: str) -> str:
-    """Remove any detected secrets from a title string.
-
-    Uses the M10 secret scanner patterns plus title-specific patterns.
-    Runs only against the short title text (fast). Replaces matched
-    secrets with [redacted].
-    """
-    if _is_title_allowlisted(title):
-        return title
-
-    # M10 patterns
-    for pattern_name, pattern in SECRET_PATTERNS.items():
-        if pattern.search(title):
-            title = pattern.sub("[redacted]", title)
-
-    # Title-specific broader patterns
-    for pattern in _TITLE_SECRET_PATTERNS:
-        if pattern.search(title):
-            title = pattern.sub("[redacted]", title)
-
-    return title
-
-
-def _is_title_allowlisted(text: str) -> bool:
-    """Check if text matches any allowlist pattern."""
-    return any(p.search(text) for p in ALLOWLIST)
+    return extract_smart_title(
+        messages=messages,
+        raw_title=raw_title,
+        message_count=msg_count,
+        max_length=max_length,
+    )
 
 
 # ---------------------------------------------------------------------------

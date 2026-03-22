@@ -89,7 +89,7 @@ $ sfs show a1b2 --cost
 
 ## `sfs resume`
 
-Resume a captured session in Claude Code.
+Resume a captured session in any supported AI tool.
 
 ```
 sfs resume SESSION_ID [OPTIONS]
@@ -102,8 +102,9 @@ sfs resume SESSION_ID [OPTIONS]
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `--project` | path | — | Target project path (overrides workspace) |
+| `--in` | string | `claude-code` | Target tool: `claude-code`, `codex`, `gemini`, or `cursor` |
 
-Writes the session back to Claude Code's native JSONL format so it appears in Claude Code's session list.
+Converts the session to the target tool's native format and injects it into that tool's session storage. Cursor is capture-only — use `--in` with another tool to resume Cursor sessions.
 
 **Example:**
 

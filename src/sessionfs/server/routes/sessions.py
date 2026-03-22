@@ -174,8 +174,12 @@ def _extract_manifest_metadata(data: bytes) -> dict:
     """Extract metadata from a .sfs tar.gz archive's manifest.json.
 
     Returns a dict with fields suitable for populating a Session row.
+    Applies smart title extraction (skips agent personas, system messages,
+    redacts secrets) using the shared title_utils module.
     Returns empty defaults if manifest is missing or unparseable.
     """
+    from sessionfs.utils.title_utils import extract_smart_title
+
     defaults = {
         "title": None,
         "source_tool": "unknown",
@@ -192,32 +196,51 @@ def _extract_manifest_metadata(data: bytes) -> dict:
         "tags": "[]",
     }
     try:
+        manifest = None
+        messages: list[dict] = []
+
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
-            # Look for manifest.json at any path depth
             for member in tar.getmembers():
                 if member.name == "manifest.json" or member.name.endswith("/manifest.json"):
                     f = tar.extractfile(member)
-                    if f is None:
-                        continue
-                    manifest = json.loads(f.read())
-                    source = manifest.get("source", {})
-                    model = manifest.get("model") or {}
-                    stats = manifest.get("stats") or {}
+                    if f:
+                        manifest = json.loads(f.read())
+                elif member.name == "messages.jsonl" or member.name.endswith("/messages.jsonl"):
+                    f = tar.extractfile(member)
+                    if f:
+                        for line in f:
+                            line = line.strip()
+                            if line:
+                                messages.append(json.loads(line))
 
-                    defaults["title"] = manifest.get("title")
-                    defaults["source_tool"] = source.get("tool", "unknown")
-                    defaults["source_tool_version"] = source.get("tool_version")
-                    defaults["original_session_id"] = source.get("original_session_id")
-                    defaults["model_provider"] = model.get("provider")
-                    defaults["model_id"] = model.get("model_id")
-                    defaults["message_count"] = stats.get("message_count", 0)
-                    defaults["turn_count"] = stats.get("turn_count", 0)
-                    defaults["tool_use_count"] = stats.get("tool_use_count", 0)
-                    defaults["total_input_tokens"] = stats.get("total_input_tokens", 0)
-                    defaults["total_output_tokens"] = stats.get("total_output_tokens", 0)
-                    defaults["duration_ms"] = stats.get("duration_ms")
-                    defaults["tags"] = json.dumps(manifest.get("tags", []))
-                    break
+        if manifest is None:
+            return defaults
+
+        source = manifest.get("source", {})
+        model = manifest.get("model") or {}
+        stats = manifest.get("stats") or {}
+
+        raw_title = manifest.get("title")
+        msg_count = stats.get("message_count", 0)
+
+        defaults["title"] = extract_smart_title(
+            messages=messages or None,
+            raw_title=raw_title,
+            message_count=msg_count,
+        )
+        defaults["source_tool"] = source.get("tool", "unknown")
+        defaults["source_tool_version"] = source.get("tool_version")
+        defaults["original_session_id"] = source.get("original_session_id")
+        defaults["model_provider"] = model.get("provider")
+        defaults["model_id"] = model.get("model_id")
+        defaults["message_count"] = msg_count
+        defaults["turn_count"] = stats.get("turn_count", 0)
+        defaults["tool_use_count"] = stats.get("tool_use_count", 0)
+        defaults["total_input_tokens"] = stats.get("total_input_tokens", 0)
+        defaults["total_output_tokens"] = stats.get("total_output_tokens", 0)
+        defaults["duration_ms"] = stats.get("duration_ms")
+        defaults["tags"] = json.dumps(manifest.get("tags", []))
+
     except Exception as exc:
         _logger.warning("Failed to extract manifest metadata: %s", exc)
 
@@ -720,6 +743,68 @@ async def get_session_tools(
         raise HTTPException(status_code=404, detail="No tools.json in session archive")
 
     return {"tools": tools}
+
+
+@router.post("/admin/reindex")
+async def reindex_sessions(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    request: Request = None,
+):
+    """Re-extract metadata from stored archives for all user sessions.
+
+    Useful after deploying metadata extraction improvements to backfill
+    sessions that were pushed before the extraction code existed.
+    """
+    blob_store = _get_blob_store(request)
+    result_query = await db.execute(
+        select(Session).where(
+            Session.user_id == user.id,
+            Session.is_deleted == False,  # noqa: E712
+        )
+    )
+    sessions = result_query.scalars().all()
+
+    reindexed = 0
+    updated = 0
+    errors = 0
+
+    for session in sessions:
+        reindexed += 1
+        try:
+            data = await blob_store.get(session.blob_key)
+            if data is None:
+                errors += 1
+                continue
+
+            meta = _extract_manifest_metadata(data)
+
+            session.title = meta["title"]
+            session.tags = meta["tags"]
+            session.source_tool = meta["source_tool"]
+            session.source_tool_version = meta["source_tool_version"]
+            session.original_session_id = meta["original_session_id"]
+            session.model_provider = meta["model_provider"]
+            session.model_id = meta["model_id"]
+            session.message_count = meta["message_count"]
+            session.turn_count = meta["turn_count"]
+            session.tool_use_count = meta["tool_use_count"]
+            session.total_input_tokens = meta["total_input_tokens"]
+            session.total_output_tokens = meta["total_output_tokens"]
+            session.duration_ms = meta["duration_ms"]
+            updated += 1
+
+        except Exception as exc:
+            _logger.warning("Failed to reindex session %s: %s", session.id, exc)
+            errors += 1
+
+    await db.commit()
+
+    return {
+        "reindexed": reindexed,
+        "updated": updated,
+        "errors": errors,
+    }
 
 
 async def _get_user_session(db: AsyncSession, user_id: str, session_id: str) -> Session:

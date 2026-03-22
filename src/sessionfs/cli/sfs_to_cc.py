@@ -31,7 +31,7 @@ _KNOWN_BLOCK_TYPES = frozenset({"text", "thinking", "tool_use", "tool_result", "
 def encode_project_path(project_path: str) -> str:
     """Encode an absolute project path to CC's directory name format.
 
-    CC replaces '/' with '-': /Users/ola/project → -Users-ola-project
+    CC replaces '/' with '-': /path/to/project → -path-to-project
     """
     return project_path.replace("/", "-")
 

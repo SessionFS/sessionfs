@@ -274,3 +274,38 @@ async def test_get_session_messages_pagination(
     data = resp.json()
     assert len(data["messages"]) <= 1
     assert data["page_size"] == 1
+
+
+@pytest.mark.asyncio
+async def test_admin_reindex(
+    client: AsyncClient, auth_headers: dict, sample_sfs_tar: bytes
+):
+    """Reindex endpoint re-extracts metadata from stored archives."""
+    # Push a session
+    await client.put(
+        "/api/v1/sessions/ses_reindex1234abcde/sync",
+        headers=auth_headers,
+        files={"file": ("session.tar.gz", io.BytesIO(sample_sfs_tar), "application/gzip")},
+    )
+
+    # Verify it has metadata already (from push)
+    detail = (await client.get(
+        "/api/v1/sessions/ses_reindex1234abcde", headers=auth_headers
+    )).json()
+    assert detail["source_tool"] == "claude-code"
+
+    # Reindex
+    resp = await client.post("/api/v1/sessions/admin/reindex", headers=auth_headers)
+    assert resp.status_code == 200
+    result = resp.json()
+    assert result["reindexed"] >= 1
+    assert result["updated"] >= 1
+    assert result["errors"] == 0
+
+    # Verify metadata is still correct after reindex
+    detail = (await client.get(
+        "/api/v1/sessions/ses_reindex1234abcde", headers=auth_headers
+    )).json()
+    assert detail["source_tool"] == "claude-code"
+    assert detail["message_count"] == 5
+    assert detail["model_id"] == "claude-opus-4-6"

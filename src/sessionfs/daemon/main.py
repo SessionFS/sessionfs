@@ -235,6 +235,33 @@ class Daemon:
             )
             self.watchers.append(watcher)
 
+        if self.config.codex.enabled:
+            from sessionfs.watchers.codex import CodexWatcher
+            codex_watcher = CodexWatcher(
+                config=self.config.codex,
+                store=self.store,
+                scan_interval=self.config.scan_interval_s,
+            )
+            self.watchers.append(codex_watcher)
+
+        if self.config.gemini.enabled:
+            from sessionfs.watchers.gemini import GeminiWatcher
+            gemini_watcher = GeminiWatcher(
+                config=self.config.gemini,
+                store=self.store,
+                scan_interval=self.config.scan_interval_s,
+            )
+            self.watchers.append(gemini_watcher)
+
+        if self.config.cursor.enabled:
+            from sessionfs.watchers.cursor import CursorWatcher
+            cursor_watcher = CursorWatcher(
+                config=self.config.cursor,
+                store=self.store,
+                scan_interval=self.config.scan_interval_s,
+            )
+            self.watchers.append(cursor_watcher)
+
     def _check_permissions(self) -> None:
         """M8: Check store directory permissions on startup."""
         warnings = self.store.check_permissions()

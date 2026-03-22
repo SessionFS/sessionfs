@@ -1,0 +1,287 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sessionfs.dev/schemas/manifest.schema.json",
+  "title": "SFS Manifest",
+  "description": "Session identity, provenance, configuration, and sync state for a .sfs session directory.",
+  "type": "object",
+  "required": ["sfs_version", "session_id", "created_at", "source"],
+  "additionalProperties": false,
+  "properties": {
+    "sfs_version": {
+      "type": "string",
+      "const": "0.1.0",
+      "description": "SFS format version. Used for migration detection."
+    },
+    "session_id": {
+      "type": "string",
+      "description": "Globally unique session identifier. UUID v4 or v7.",
+      "examples": ["550e8400-e29b-41d4-a716-446655440000"]
+    },
+    "title": {
+      "type": ["string", "null"],
+      "description": "Human-readable session title. Typically derived from the first user message.",
+      "default": null,
+      "examples": ["Fix authentication bug in login flow"]
+    },
+    "tags": {
+      "type": "array",
+      "description": "User-assigned tags for organization and search.",
+      "items": { "type": "string" },
+      "default": [],
+      "examples": [["bugfix", "auth", "sprint-12"]]
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when the session was first created.",
+      "examples": ["2026-03-20T09:12:00.019Z"]
+    },
+    "updated_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of the last modification.",
+      "default": null
+    },
+    "source": {
+      "$ref": "#/$defs/source_info",
+      "description": "Provenance: which tool created this session and how it was captured."
+    },
+    "model": {
+      "$ref": "#/$defs/model_info",
+      "description": "Primary model used in this session."
+    },
+    "ownership": {
+      "$ref": "#/$defs/ownership_info",
+      "description": "Session ownership and access control."
+    },
+    "stats": {
+      "$ref": "#/$defs/session_stats",
+      "description": "Aggregate statistics for quick display without parsing messages.jsonl."
+    },
+    "sync": {
+      "$ref": "#/$defs/sync_state",
+      "description": "Cloud sync state. Only present when cloud sync is enabled."
+    },
+    "parent_session_id": {
+      "type": ["string", "null"],
+      "description": "ID of the parent session if this session was forked or resumed from another.",
+      "default": null
+    },
+    "checkpoint_count": {
+      "type": "integer",
+      "description": "Number of named checkpoints in the checkpoints/ directory.",
+      "default": 0,
+      "minimum": 0
+    },
+    "sub_agents": {
+      "type": "array",
+      "description": "Sub-agent sessions embedded in this session.",
+      "items": {
+        "$ref": "#/$defs/sub_agent_ref"
+      },
+      "default": []
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Extensible key-value pairs for source-specific data.",
+      "additionalProperties": true,
+      "default": {}
+    }
+  },
+  "$defs": {
+    "source_info": {
+      "type": "object",
+      "required": ["tool"],
+      "additionalProperties": false,
+      "properties": {
+        "tool": {
+          "type": "string",
+          "description": "The AI coding tool that originated this session.",
+          "examples": ["claude-code", "codex", "cursor", "aider"]
+        },
+        "tool_version": {
+          "type": ["string", "null"],
+          "description": "Version of the source tool.",
+          "examples": ["2.1.59", "0.116.0"],
+          "default": null
+        },
+        "sfs_converter_version": {
+          "type": ["string", "null"],
+          "description": "Version of the SessionFS converter that produced this .sfs file.",
+          "default": null
+        },
+        "original_session_id": {
+          "type": ["string", "null"],
+          "description": "The session ID in the source tool's native format (may differ from session_id).",
+          "default": null
+        },
+        "original_path": {
+          "type": ["string", "null"],
+          "description": "Filesystem path to the original session file (for debugging/audit).",
+          "default": null
+        },
+        "interface": {
+          "type": ["string", "null"],
+          "description": "How the session was initiated: 'cli', 'vscode', 'web', 'api', 'exec'.",
+          "examples": ["cli", "vscode", "exec"],
+          "default": null
+        }
+      }
+    },
+    "model_info": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "default": null,
+      "properties": {
+        "provider": {
+          "type": "string",
+          "description": "Model provider.",
+          "examples": ["anthropic", "openai"]
+        },
+        "model_id": {
+          "type": "string",
+          "description": "Model identifier.",
+          "examples": ["claude-opus-4-6", "o4-mini", "gpt-4.1"]
+        },
+        "reasoning_effort": {
+          "type": ["string", "null"],
+          "description": "Reasoning effort level if applicable.",
+          "enum": ["low", "medium", "high", null],
+          "default": null
+        }
+      }
+    },
+    "ownership_info": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "default": null,
+      "properties": {
+        "owner": {
+          "type": ["string", "null"],
+          "description": "Username or email of the session owner.",
+          "default": null
+        },
+        "team": {
+          "type": ["string", "null"],
+          "description": "Team identifier for team-owned sessions.",
+          "default": null
+        },
+        "collaborators": {
+          "type": "array",
+          "description": "Users with access to this session.",
+          "items": {
+            "type": "object",
+            "required": ["user", "access"],
+            "properties": {
+              "user": { "type": "string" },
+              "access": {
+                "type": "string",
+                "enum": ["read", "write", "admin"]
+              }
+            }
+          },
+          "default": []
+        }
+      }
+    },
+    "session_stats": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "default": null,
+      "properties": {
+        "message_count": {
+          "type": "integer",
+          "description": "Total number of messages.",
+          "minimum": 0,
+          "default": 0
+        },
+        "turn_count": {
+          "type": "integer",
+          "description": "Number of conversational turns (user prompt + assistant response pairs).",
+          "minimum": 0,
+          "default": 0
+        },
+        "tool_use_count": {
+          "type": "integer",
+          "description": "Number of tool invocations.",
+          "minimum": 0,
+          "default": 0
+        },
+        "total_input_tokens": {
+          "type": "integer",
+          "description": "Cumulative input tokens across all messages.",
+          "minimum": 0,
+          "default": 0
+        },
+        "total_output_tokens": {
+          "type": "integer",
+          "description": "Cumulative output tokens across all messages.",
+          "minimum": 0,
+          "default": 0
+        },
+        "estimated_cost_usd": {
+          "type": ["number", "null"],
+          "description": "Estimated API cost in USD. Null if unknown.",
+          "minimum": 0,
+          "default": null
+        },
+        "duration_ms": {
+          "type": ["integer", "null"],
+          "description": "Total session duration in milliseconds (first message to last).",
+          "minimum": 0,
+          "default": null
+        }
+      }
+    },
+    "sync_state": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "default": null,
+      "properties": {
+        "last_sync_at": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "ISO 8601 timestamp of the last successful sync.",
+          "default": null
+        },
+        "etag": {
+          "type": ["string", "null"],
+          "description": "ETag from the server for optimistic concurrency.",
+          "default": null
+        },
+        "dirty": {
+          "type": "boolean",
+          "description": "True if local changes have not been synced.",
+          "default": true
+        },
+        "remote_url": {
+          "type": ["string", "null"],
+          "description": "URL of the remote session on the SessionFS server.",
+          "default": null
+        }
+      }
+    },
+    "sub_agent_ref": {
+      "type": "object",
+      "required": ["agent_id"],
+      "additionalProperties": false,
+      "properties": {
+        "agent_id": {
+          "type": "string",
+          "description": "Identifier for the sub-agent."
+        },
+        "model": {
+          "type": ["string", "null"],
+          "description": "Model used by this sub-agent.",
+          "default": null
+        },
+        "message_count": {
+          "type": "integer",
+          "description": "Number of messages from this sub-agent.",
+          "default": 0,
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

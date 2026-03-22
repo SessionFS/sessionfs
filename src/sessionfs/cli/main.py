@@ -18,7 +18,7 @@ import typer
 
 app = typer.Typer(
     name="sfs",
-    help="SessionFS — Dropbox for AI agent sessions.",
+    help="SessionFS — Portable AI coding sessions.",
     no_args_is_help=True,
 )
 
@@ -26,10 +26,12 @@ app = typer.Typer(
 from sessionfs.cli.cmd_daemon import daemon_app
 from sessionfs.cli.cmd_config import config_app
 from sessionfs.cli.cmd_cloud import auth_app
+from sessionfs.cli.cmd_admin import admin_app
 
 app.add_typer(daemon_app, name="daemon")
 app.add_typer(config_app, name="config")
 app.add_typer(auth_app, name="auth")
+app.add_typer(admin_app, name="admin")
 
 # Register top-level commands
 from sessionfs.cli.cmd_sessions import list_sessions, show_session

@@ -1,7 +1,7 @@
 # Quickstart: Capture Your First Session
 
 **Time:** ~3 minutes
-**Prerequisites:** Python 3.10+, Claude Code installed
+**Prerequisites:** Python 3.10+, at least one supported AI coding tool (Claude Code, Codex, Gemini CLI, or Cursor)
 
 ## Step 1: Install SessionFS (30 seconds)
 
@@ -20,7 +20,7 @@ Expected output:
 ```
 Usage: sfs [OPTIONS] COMMAND [ARGS]...
 
-  SessionFS — Dropbox for AI agent sessions.
+  SessionFS — Portable AI coding sessions.
 
 Options:
   --help  Show this message and exit.
@@ -183,7 +183,7 @@ Imported 47 new session(s).
 
 - **Enable cloud sync:** See the [Sync Guide](sync-guide.md)
 
-- **Hand off to a teammate:** See the [Handoff Guide](handoff-guide.md) (coming soon)
+- **Hand off to a teammate:** Push a session with `sfs push`, have your teammate `sfs pull` it
 
 ## Troubleshooting
 

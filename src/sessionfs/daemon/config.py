@@ -34,6 +34,35 @@ class CodexWatcherConfig(BaseModel):
     home_dir: Path = Field(default_factory=lambda: Path.home() / ".codex")
 
 
+class GeminiWatcherConfig(BaseModel):
+    """Gemini CLI watcher configuration."""
+
+    enabled: bool = False
+    home_dir: Path = Field(default_factory=lambda: Path.home() / ".gemini")
+
+
+def _default_cursor_global_db() -> Path:
+    import platform
+    if platform.system() == "Darwin":
+        return Path.home() / "Library" / "Application Support" / "Cursor" / "User" / "globalStorage" / "state.vscdb"
+    return Path.home() / ".config" / "Cursor" / "User" / "globalStorage" / "state.vscdb"
+
+
+def _default_cursor_workspace_storage() -> Path:
+    import platform
+    if platform.system() == "Darwin":
+        return Path.home() / "Library" / "Application Support" / "Cursor" / "User" / "workspaceStorage"
+    return Path.home() / ".config" / "Cursor" / "User" / "workspaceStorage"
+
+
+class CursorWatcherConfig(BaseModel):
+    """Cursor IDE watcher configuration."""
+
+    enabled: bool = False
+    global_db_path: Path = Field(default_factory=_default_cursor_global_db)
+    workspace_storage_path: Path = Field(default_factory=_default_cursor_workspace_storage)
+
+
 class SyncConfig(BaseModel):
     """Cloud sync configuration."""
 
@@ -52,6 +81,8 @@ class DaemonConfig(BaseModel):
     scan_interval_s: float = 5.0
     claude_code: ClaudeCodeWatcherConfig = Field(default_factory=ClaudeCodeWatcherConfig)
     codex: CodexWatcherConfig = Field(default_factory=CodexWatcherConfig)
+    gemini: GeminiWatcherConfig = Field(default_factory=GeminiWatcherConfig)
+    cursor: CursorWatcherConfig = Field(default_factory=CursorWatcherConfig)
     sync: SyncConfig = Field(default_factory=SyncConfig)
 
 
@@ -84,6 +115,10 @@ enabled = true
 [codex]
 enabled = false
 # home_dir = "~/.codex"
+
+[gemini]
+enabled = false
+# home_dir = "~/.gemini"
 
 [sync]
 enabled = false                          # Must be explicitly enabled

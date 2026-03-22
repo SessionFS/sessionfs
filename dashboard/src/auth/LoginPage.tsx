@@ -9,7 +9,7 @@ export default function LoginPage() {
   const [mode, setMode] = useState<'login' | 'signup'>('login');
   const [baseUrl, setBaseUrl] = useState(
     window.location.hostname === 'localhost'
-      ? `${window.location.protocol}//${window.location.host}`
+      ? 'http://localhost:8000'
       : 'https://api.sessionfs.dev',
   );
   const [apiKey, setApiKey] = useState('');

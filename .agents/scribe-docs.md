@@ -28,7 +28,7 @@ Documentation needs (phased):
 - **Phase 3:** Self-hosting guide. Watcher development guide (how to build a watcher for a new tool). VS Code extension docs.
 
 Key messaging:
-- SessionFS is "Dropbox for AI agent sessions"
+- SessionFS is a "portable session layer for AI coding tools — captures sessions from native tools and makes them resumable across tools and teammates"
 - It's invisible — install the daemon, use your tools normally, sessions are captured automatically
 - The value moment is the first successful handoff to a teammate
 - Free for individuals. Teams pay for handoff, sharing, and audit features.

@@ -1,0 +1,3 @@
+{"msg_id":"msg-001","parent_msg_id":null,"role":"user","content":[{"type":"text","text":"Say hello world"}],"timestamp":"2026-03-20T10:00:00.000Z"}
+{"msg_id":"msg-002","parent_msg_id":"msg-001","role":"assistant","content":[{"type":"thinking","text":"The user wants me to say hello world. Simple request.","signature":null},{"type":"text","text":"Hello, world!"}],"timestamp":"2026-03-20T10:00:02.000Z","model":"claude-sonnet-4-6","provider":"anthropic","stop_reason":"end_turn","usage":{"input_tokens":100,"output_tokens":30,"cache_read_tokens":0,"cache_write_tokens":50,"reasoning_tokens":20}}
+{"msg_id":"msg-003","parent_msg_id":"msg-002","role":"user","content":[{"type":"text","text":"Thanks!"}],"timestamp":"2026-03-20T10:00:05.000Z"}

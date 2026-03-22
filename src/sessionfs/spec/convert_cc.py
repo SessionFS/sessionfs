@@ -38,6 +38,23 @@ CONVERTER_VERSION = "0.1.0"
 _DEFAULT_HOME = Path.home() / ".claude"
 
 
+def _smart_title(raw_title: str | None, sfs_messages: list[dict[str, Any]]) -> str | None:
+    """Apply smart title extraction during conversion.
+
+    Returns a clean title or None if no usable title found.
+    """
+    from sessionfs.utils.title_utils import extract_smart_title
+
+    result = extract_smart_title(
+        messages=sfs_messages or None,
+        raw_title=raw_title[:100] if raw_title else None,
+        message_count=len(sfs_messages),
+    )
+    if result.startswith("Untitled session"):
+        return None  # Let the server/CLI handle the fallback
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Content block conversion
 # ---------------------------------------------------------------------------
@@ -432,7 +449,7 @@ def convert_session(
     manifest: dict[str, Any] = {
         "sfs_version": SFS_VERSION,
         "session_id": sid,
-        "title": cc_session.first_prompt[:100] if cc_session.first_prompt else None,
+        "title": _smart_title(cc_session.first_prompt, sfs_messages),
         "tags": [],
         "created_at": created_at,
         "updated_at": updated_at,
