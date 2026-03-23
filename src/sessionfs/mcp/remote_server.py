@@ -26,6 +26,8 @@ from mcp.server import Server
 from mcp.server.streamable_http import StreamableHTTPServerTransport
 from mcp.types import TextContent, Tool
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.routing import Mount, Route
@@ -553,6 +555,15 @@ async def lifespan(app):
 
 app = Starlette(
     lifespan=lifespan,
+    middleware=[
+        Middleware(
+            CORSMiddleware,
+            allow_origins=["https://claude.ai", "https://claude.com"],
+            allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+            allow_headers=["*"],
+            expose_headers=["Mcp-Session-Id"],
+        ),
+    ],
     routes=[
         Route("/health", handle_health),
         Route("/.well-known/oauth-authorization-server", handle_oauth_metadata),
