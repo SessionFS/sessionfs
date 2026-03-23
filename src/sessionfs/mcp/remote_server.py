@@ -12,18 +12,22 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
+import secrets
+import time
 from contextlib import asynccontextmanager
 from typing import Any
+from urllib.parse import urlencode
 
 from mcp.server import Server
 from mcp.server.sse import SseServerTransport
 from mcp.types import TextContent, Tool
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.routing import Mount, Route
 
 from sessionfs.mcp.cloud_client import CloudAPIClient
@@ -306,6 +310,155 @@ async def handle_health(request: Request):
     return JSONResponse({"status": "healthy", "service": "sessionfs-mcp"})
 
 
+# ---------------------------------------------------------------------------
+# OAuth 2.0 Authorization Code Flow with PKCE
+# ---------------------------------------------------------------------------
+# Claude.ai sends users here to authorize. The user enters their SessionFS
+# API key, we validate it, then redirect back with an auth code. Claude.ai
+# exchanges the code for an access token (which is just the API key).
+
+# In-memory store: auth_code -> {api_key, code_challenge, redirect_uri, expires}
+_auth_codes: dict[str, dict[str, Any]] = {}
+
+_AUTHORIZE_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Authorize SessionFS</title>
+<style>
+  body {{ background: #0d1117; color: #e6edf3; font-family: system-ui, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }}
+  .card {{ background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 32px; max-width: 400px; width: 100%; }}
+  h1 {{ font-size: 20px; margin: 0 0 8px; }}
+  p {{ color: #8b949e; font-size: 14px; margin: 0 0 24px; }}
+  label {{ display: block; font-size: 13px; color: #8b949e; margin-bottom: 6px; }}
+  input {{ width: 100%; padding: 10px 12px; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; color: #e6edf3; font-size: 14px; font-family: monospace; box-sizing: border-box; }}
+  input:focus {{ outline: none; border-color: #58a6ff; }}
+  button {{ width: 100%; padding: 10px; background: #238636; color: white; border: none; border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer; margin-top: 16px; }}
+  button:hover {{ background: #2ea043; }}
+  .error {{ color: #f85149; font-size: 13px; margin-top: 8px; display: none; }}
+  .hint {{ color: #8b949e; font-size: 12px; margin-top: 12px; }}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Connect SessionFS</h1>
+  <p>Enter your API key to let Claude search your past coding sessions.</p>
+  <form method="POST" action="/authorize">
+    <input type="hidden" name="redirect_uri" value="{redirect_uri}">
+    <input type="hidden" name="state" value="{state}">
+    <input type="hidden" name="code_challenge" value="{code_challenge}">
+    <input type="hidden" name="code_challenge_method" value="{code_challenge_method}">
+    <label for="api_key">SessionFS API Key</label>
+    <input type="password" id="api_key" name="api_key" placeholder="sk_sfs_..." required>
+    {error_html}
+    <button type="submit">Authorize</button>
+    <p class="hint">Find your key: <code>sfs config show</code></p>
+  </form>
+</div>
+</body>
+</html>"""
+
+
+async def handle_authorize_get(request: Request):
+    """GET /authorize — show the API key form."""
+    return HTMLResponse(_AUTHORIZE_HTML.format(
+        redirect_uri=request.query_params.get("redirect_uri", ""),
+        state=request.query_params.get("state", ""),
+        code_challenge=request.query_params.get("code_challenge", ""),
+        code_challenge_method=request.query_params.get("code_challenge_method", ""),
+        error_html="",
+    ))
+
+
+async def handle_authorize_post(request: Request):
+    """POST /authorize — validate key and redirect with auth code."""
+    form = await request.form()
+    api_key = str(form.get("api_key", ""))
+    redirect_uri = str(form.get("redirect_uri", ""))
+    state = str(form.get("state", ""))
+    code_challenge = str(form.get("code_challenge", ""))
+    code_challenge_method = str(form.get("code_challenge_method", ""))
+
+    cloud = _get_cloud()
+    if not await cloud.validate_key(api_key):
+        return HTMLResponse(_AUTHORIZE_HTML.format(
+            redirect_uri=redirect_uri,
+            state=state,
+            code_challenge=code_challenge,
+            code_challenge_method=code_challenge_method,
+            error_html='<p class="error" style="display:block">Invalid API key. Check with: sfs config show</p>',
+        ), status_code=400)
+
+    # Generate auth code
+    code = secrets.token_urlsafe(32)
+    _auth_codes[code] = {
+        "api_key": api_key,
+        "code_challenge": code_challenge,
+        "code_challenge_method": code_challenge_method,
+        "redirect_uri": redirect_uri,
+        "expires": time.time() + 300,  # 5 min
+    }
+
+    # Redirect back to Claude.ai
+    params = {"code": code, "state": state}
+    return RedirectResponse(f"{redirect_uri}?{urlencode(params)}", status_code=302)
+
+
+async def handle_token(request: Request):
+    """POST /token — exchange auth code for access token."""
+    # Clean expired codes
+    now = time.time()
+    expired = [k for k, v in _auth_codes.items() if v["expires"] < now]
+    for k in expired:
+        del _auth_codes[k]
+
+    body = await request.form()
+    grant_type = str(body.get("grant_type", ""))
+    code = str(body.get("code", ""))
+    code_verifier = str(body.get("code_verifier", ""))
+
+    if grant_type != "authorization_code":
+        return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
+
+    stored = _auth_codes.pop(code, None)
+    if not stored:
+        return JSONResponse({"error": "invalid_grant", "error_description": "Invalid or expired code"}, status_code=400)
+
+    # Verify PKCE challenge
+    if stored["code_challenge_method"] == "S256":
+        expected = hashlib.sha256(code_verifier.encode()).digest()
+        import base64
+        expected_b64 = base64.urlsafe_b64encode(expected).rstrip(b"=").decode()
+        if expected_b64 != stored["code_challenge"]:
+            return JSONResponse({"error": "invalid_grant", "error_description": "PKCE verification failed"}, status_code=400)
+
+    # Return the API key as the access token
+    return JSONResponse({
+        "access_token": stored["api_key"],
+        "token_type": "Bearer",
+        "expires_in": 86400 * 365,  # effectively no expiry
+    })
+
+
+# ---------------------------------------------------------------------------
+# OAuth metadata (well-known)
+# ---------------------------------------------------------------------------
+
+async def handle_oauth_metadata(request: Request):
+    """GET /.well-known/oauth-authorization-server"""
+    base = str(request.base_url).rstrip("/")
+    return JSONResponse({
+        "issuer": base,
+        "authorization_endpoint": f"{base}/authorize",
+        "token_endpoint": f"{base}/token",
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code"],
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": ["none"],
+    })
+
+
 @asynccontextmanager
 async def lifespan(app):
     global _cloud
@@ -320,6 +473,10 @@ app = Starlette(
     lifespan=lifespan,
     routes=[
         Route("/health", handle_health),
+        Route("/.well-known/oauth-authorization-server", handle_oauth_metadata),
+        Route("/authorize", handle_authorize_get, methods=["GET"]),
+        Route("/authorize", handle_authorize_post, methods=["POST"]),
+        Route("/token", handle_token, methods=["POST"]),
         Route("/sse", handle_sse),
         Mount("/messages/", routes=[Route("/", handle_messages, methods=["POST"])]),
     ],
