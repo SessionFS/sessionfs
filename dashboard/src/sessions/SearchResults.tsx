@@ -37,7 +37,8 @@ export default function SearchResults() {
     page,
   });
 
-  const isPaywalled = error && 'status' in (error as Record<string, unknown>) && (error as { status: number }).status === 403;
+  const errObj = error as unknown as Record<string, unknown> | null;
+  const isPaywalled = errObj && typeof errObj === 'object' && 'status' in errObj && errObj.status === 403;
 
   function handleResultClick(r: SearchResult) {
     navigate(`/sessions/${r.session_id}`);
