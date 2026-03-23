@@ -12,18 +12,24 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
+import secrets
+import time
 from contextlib import asynccontextmanager
 from typing import Any
+from urllib.parse import urlencode
 
 from mcp.server import Server
-from mcp.server.sse import SseServerTransport
+from mcp.server.streamable_http import StreamableHTTPServerTransport
 from mcp.types import TextContent, Tool
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.routing import Mount, Route
 
 from sessionfs.mcp.cloud_client import CloudAPIClient
@@ -272,11 +278,22 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 # HTTP/SSE App
 # ---------------------------------------------------------------------------
 
-sse_transport = SseServerTransport("/messages/")
+import asyncio as _asyncio
+
+# Persistent MCP sessions: session_id -> transport
+_mcp_sessions: dict[str, StreamableHTTPServerTransport] = {}
+# Track background tasks to prevent GC
+_session_tasks: dict[str, _asyncio.Task] = {}
 
 
-async def handle_sse(request: Request):
-    """SSE endpoint — client connects here for MCP communication."""
+async def _run_mcp_session(transport: StreamableHTTPServerTransport) -> None:
+    """Background task that keeps the MCP server running for a session."""
+    async with transport.connect() as (read_stream, write_stream):
+        await mcp.run(read_stream, write_stream, mcp.create_initialization_options())
+
+
+async def handle_mcp(request: Request):
+    """Handle MCP requests — persistent sessions across requests."""
     global _current_api_key
 
     # Authenticate
@@ -292,18 +309,244 @@ async def handle_sse(request: Request):
 
     _current_api_key = api_key
 
-    async with sse_transport.connect_sse(request.scope, request.receive, request._send) as streams:
-        await mcp.run(streams[0], streams[1], mcp.create_initialization_options())
+    # Check for existing session
+    session_id = request.headers.get("mcp-session-id")
 
+    if session_id and session_id in _mcp_sessions:
+        transport = _mcp_sessions[session_id]
+        await transport.handle_request(request.scope, request.receive, request._send)
+        return
 
-async def handle_messages(request: Request):
-    """POST endpoint for MCP messages over SSE."""
-    await sse_transport.handle_post_message(request.scope, request.receive, request._send)
+    # New session — create persistent transport
+    transport = StreamableHTTPServerTransport(
+        mcp_session_id=None,
+        is_json_response_enabled=True,
+    )
+
+    # Start MCP server as a background task (persists across requests)
+    task = _asyncio.create_task(_run_mcp_session(transport))
+
+    # Handle the initialize request
+    await transport.handle_request(request.scope, request.receive, request._send)
+
+    # Store session for subsequent requests
+    if transport.mcp_session_id:
+        _mcp_sessions[transport.mcp_session_id] = transport
+        _session_tasks[transport.mcp_session_id] = task
 
 
 async def handle_health(request: Request):
     """Health check."""
     return JSONResponse({"status": "healthy", "service": "sessionfs-mcp"})
+
+
+# ---------------------------------------------------------------------------
+# OAuth 2.0 Authorization Code Flow with PKCE
+# ---------------------------------------------------------------------------
+# Claude.ai sends users here to authorize. The user enters their SessionFS
+# API key, we validate it, then redirect back with an auth code. Claude.ai
+# exchanges the code for an access token (which is just the API key).
+
+# In-memory store: auth_code -> {api_key, code_challenge, redirect_uri, expires}
+_auth_codes: dict[str, dict[str, Any]] = {}
+
+_AUTHORIZE_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Authorize SessionFS</title>
+<style>
+  body {{ background: #0d1117; color: #e6edf3; font-family: system-ui, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }}
+  .card {{ background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 32px; max-width: 400px; width: 100%; }}
+  h1 {{ font-size: 20px; margin: 0 0 8px; }}
+  p {{ color: #8b949e; font-size: 14px; margin: 0 0 24px; }}
+  label {{ display: block; font-size: 13px; color: #8b949e; margin-bottom: 6px; }}
+  input {{ width: 100%; padding: 10px 12px; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; color: #e6edf3; font-size: 14px; font-family: monospace; box-sizing: border-box; }}
+  input:focus {{ outline: none; border-color: #58a6ff; }}
+  button {{ width: 100%; padding: 10px; background: #238636; color: white; border: none; border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer; margin-top: 16px; }}
+  button:hover {{ background: #2ea043; }}
+  .error {{ color: #f85149; font-size: 13px; margin-top: 8px; display: none; }}
+  .hint {{ color: #8b949e; font-size: 12px; margin-top: 12px; }}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Connect SessionFS</h1>
+  <p>Enter your API key to let Claude search your past coding sessions.</p>
+  <form method="POST" action="/authorize">
+    <input type="hidden" name="redirect_uri" value="{redirect_uri}">
+    <input type="hidden" name="state" value="{state}">
+    <input type="hidden" name="code_challenge" value="{code_challenge}">
+    <input type="hidden" name="code_challenge_method" value="{code_challenge_method}">
+    <label for="api_key">SessionFS API Key</label>
+    <input type="password" id="api_key" name="api_key" placeholder="sk_sfs_..." required>
+    {error_html}
+    <button type="submit">Authorize</button>
+    <p class="hint">Find your key: <code>sfs config show</code></p>
+  </form>
+</div>
+</body>
+</html>"""
+
+
+async def handle_authorize_get(request: Request):
+    """GET /authorize — show the API key form."""
+    return HTMLResponse(_AUTHORIZE_HTML.format(
+        redirect_uri=request.query_params.get("redirect_uri", ""),
+        state=request.query_params.get("state", ""),
+        code_challenge=request.query_params.get("code_challenge", ""),
+        code_challenge_method=request.query_params.get("code_challenge_method", ""),
+        error_html="",
+    ))
+
+
+async def handle_authorize_post(request: Request):
+    """POST /authorize — validate key and redirect with auth code."""
+    form = await request.form()
+    api_key = str(form.get("api_key", ""))
+    redirect_uri = str(form.get("redirect_uri", ""))
+    state = str(form.get("state", ""))
+    code_challenge = str(form.get("code_challenge", ""))
+    code_challenge_method = str(form.get("code_challenge_method", ""))
+
+    cloud = _get_cloud()
+    if not await cloud.validate_key(api_key):
+        return HTMLResponse(_AUTHORIZE_HTML.format(
+            redirect_uri=redirect_uri,
+            state=state,
+            code_challenge=code_challenge,
+            code_challenge_method=code_challenge_method,
+            error_html='<p class="error" style="display:block">Invalid API key. Check with: sfs config show</p>',
+        ), status_code=400)
+
+    # Generate auth code
+    code = secrets.token_urlsafe(32)
+    _auth_codes[code] = {
+        "api_key": api_key,
+        "code_challenge": code_challenge,
+        "code_challenge_method": code_challenge_method,
+        "redirect_uri": redirect_uri,
+        "expires": time.time() + 300,  # 5 min
+    }
+
+    # Redirect back to Claude.ai
+    params = {"code": code, "state": state}
+    return RedirectResponse(f"{redirect_uri}?{urlencode(params)}", status_code=302)
+
+
+async def handle_token(request: Request):
+    """POST /token — exchange auth code for access token."""
+    # Clean expired codes
+    now = time.time()
+    expired = [k for k, v in _auth_codes.items() if v["expires"] < now]
+    for k in expired:
+        del _auth_codes[k]
+
+    body = await request.form()
+    grant_type = str(body.get("grant_type", ""))
+    code = str(body.get("code", ""))
+    code_verifier = str(body.get("code_verifier", ""))
+
+    if grant_type != "authorization_code":
+        return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
+
+    stored = _auth_codes.pop(code, None)
+    if not stored:
+        return JSONResponse({"error": "invalid_grant", "error_description": "Invalid or expired code"}, status_code=400)
+
+    # Verify PKCE challenge
+    if stored["code_challenge_method"] == "S256":
+        expected = hashlib.sha256(code_verifier.encode()).digest()
+        import base64
+        expected_b64 = base64.urlsafe_b64encode(expected).rstrip(b"=").decode()
+        if expected_b64 != stored["code_challenge"]:
+            return JSONResponse({"error": "invalid_grant", "error_description": "PKCE verification failed"}, status_code=400)
+
+    # Return the API key as the access token
+    return JSONResponse({
+        "access_token": stored["api_key"],
+        "token_type": "Bearer",
+        "expires_in": 86400 * 365,  # effectively no expiry
+    })
+
+
+# ---------------------------------------------------------------------------
+# OAuth metadata (well-known)
+# ---------------------------------------------------------------------------
+
+def _get_base_url(request: Request) -> str:
+    """Get the public base URL, respecting X-Forwarded-Proto from Cloud Run."""
+    proto = request.headers.get("x-forwarded-proto", "https")
+    host = request.headers.get("host", request.base_url.hostname or "mcp.sessionfs.dev")
+    return f"{proto}://{host}"
+
+
+async def handle_oauth_metadata(request: Request):
+    """GET /.well-known/oauth-authorization-server"""
+    base = _get_base_url(request)
+    return JSONResponse({
+        "issuer": base,
+        "authorization_endpoint": f"{base}/authorize",
+        "token_endpoint": f"{base}/token",
+        "registration_endpoint": f"{base}/register",
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code"],
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": ["none"],
+    })
+
+
+async def handle_protected_resource_metadata(request: Request):
+    """GET /.well-known/oauth-protected-resource (RFC 9728)"""
+    base = _get_base_url(request)
+    return JSONResponse({
+        "resource": base,
+        "authorization_servers": [base],
+        "scopes_supported": [],
+        "bearer_methods_supported": ["header"],
+    })
+
+
+# ---------------------------------------------------------------------------
+# Dynamic Client Registration (RFC 7591)
+# ---------------------------------------------------------------------------
+# Claude.ai registers as a public client. We accept any registration and
+# return a client_id. Since we authenticate via the user's API key (not
+# client credentials), the client_id is just for protocol compliance.
+
+_registered_clients: dict[str, dict[str, Any]] = {}
+
+
+async def handle_register(request: Request):
+    """POST /register — Dynamic Client Registration."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    client_id = secrets.token_urlsafe(16)
+    redirect_uris = body.get("redirect_uris", [])
+
+    _registered_clients[client_id] = {
+        "client_id": client_id,
+        "redirect_uris": redirect_uris,
+        "token_endpoint_auth_method": "none",
+        "grant_types": ["authorization_code"],
+        "response_types": ["code"],
+        "client_name": body.get("client_name", "MCP Client"),
+    }
+
+    return JSONResponse(
+        {
+            "client_id": client_id,
+            "redirect_uris": redirect_uris,
+            "token_endpoint_auth_method": "none",
+            "grant_types": ["authorization_code"],
+            "response_types": ["code"],
+        },
+        status_code=201,
+    )
 
 
 @asynccontextmanager
@@ -318,9 +561,25 @@ async def lifespan(app):
 
 app = Starlette(
     lifespan=lifespan,
+    middleware=[
+        Middleware(
+            CORSMiddleware,
+            allow_origins=["https://claude.ai", "https://claude.com"],
+            allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+            allow_headers=["*"],
+            expose_headers=["Mcp-Session-Id"],
+        ),
+    ],
     routes=[
         Route("/health", handle_health),
-        Route("/sse", handle_sse),
-        Mount("/messages/", routes=[Route("/", handle_messages, methods=["POST"])]),
+        Route("/.well-known/oauth-authorization-server", handle_oauth_metadata),
+        Route("/.well-known/oauth-protected-resource", handle_protected_resource_metadata),
+        Route("/register", handle_register, methods=["POST"]),
+        Route("/authorize", handle_authorize_get, methods=["GET"]),
+        Route("/authorize", handle_authorize_post, methods=["POST"]),
+        Route("/token", handle_token, methods=["POST"]),
+        Route("/sse", handle_mcp, methods=["GET", "POST"]),
+        Route("/mcp", handle_mcp, methods=["GET", "POST"]),
+        Route("/", handle_mcp, methods=["GET", "POST", "DELETE"]),
     ],
 )
