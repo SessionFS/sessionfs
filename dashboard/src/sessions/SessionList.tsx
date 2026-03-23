@@ -5,7 +5,7 @@ import { abbreviateModel, abbreviateTool } from '../utils/models';
 import { formatTokens } from '../utils/tokens';
 import RelativeDate from '../components/RelativeDate';
 
-const TOOLS = ['all', 'claude-code', 'codex', 'cursor'] as const;
+const TOOLS = ['all', 'claude-code', 'codex', 'gemini', 'copilot', 'cursor', 'amp', 'cline', 'roo-code'] as const;
 const DATE_RANGES = [
   { label: 'All time', value: '' },
   { label: 'Last 24h', value: '24h' },
@@ -18,7 +18,6 @@ type SortKey = 'date' | 'messages' | 'tokens' | 'title';
 export default function SessionList() {
   const navigate = useNavigate();
   const [page, setPage] = useState(1);
-  const [search, setSearch] = useState('');
   const [toolFilter, setToolFilter] = useState('all');
   const [dateRange, setDateRange] = useState('');
   const [sortBy, setSortBy] = useState<SortKey>('date');
@@ -32,16 +31,6 @@ export default function SessionList() {
   const sessions = useMemo(() => {
     if (!data?.sessions) return [];
     let list = data.sessions;
-
-    // Client-side search
-    if (search) {
-      const q = search.toLowerCase();
-      list = list.filter(
-        (s) =>
-          (s.title || '').toLowerCase().includes(q) ||
-          s.id.toLowerCase().includes(q),
-      );
-    }
 
     // Date range filter
     if (dateRange) {
@@ -64,7 +53,7 @@ export default function SessionList() {
     // 'date' is default from server (already sorted)
 
     return sorted;
-  }, [data, search, dateRange, sortBy]);
+  }, [data, dateRange, sortBy]);
 
   const PAGE_SIZE = 20;
   const paged = sessions.slice(0, PAGE_SIZE * page);
@@ -82,13 +71,6 @@ export default function SessionList() {
     <div className="max-w-7xl mx-auto px-4 py-4">
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-3 mb-4">
-        <input
-          type="text"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search sessions..."
-          className="flex-1 min-w-48 px-3 py-1.5 bg-bg-secondary border border-border rounded text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent"
-        />
         <select
           value={toolFilter}
           onChange={(e) => { setToolFilter(e.target.value); setPage(1); }}
