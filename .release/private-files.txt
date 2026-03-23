@@ -26,5 +26,8 @@ Claude-portablePortable chat agent sessions with network persistence.md
 .claude/commands/
 .claude/settings.local.json
 
+# Claude Code config (signals AI tooling, duplicates README)
+CLAUDE.md
+
 # Release config itself (meta)
 .release/

@@ -60,10 +60,7 @@ while IFS= read -r line; do
 done < .release/private-files.txt
 ```
 
-Then sanitize CLAUDE.md for public (per `.release/claude-md-public.txt`):
-- Remove these sections entirely: `## Agent Team`, `## Commit Rules`, `## Git Branch Policy`
-- From `## Key Decisions`: remove the "monetization wedge" line and the "Terraform" line
-- Keep: `## Project`, `## Architecture`, `## Key Decisions` (cleaned), `## Current Phase`
+CLAUDE.md is in the private files list — it gets removed entirely. No sanitization needed.
 
 Commit:
 ```bash
@@ -98,6 +95,6 @@ Print: version, test count, changelog summary, tag, PyPI status, deploy status.
 
 The definitive list of private files is at `.release/private-files.txt`. If a new private file category is added to the project, update that file — not this skill.
 
-## CLAUDE.md Sanitization
+## CLAUDE.md
 
-The sections to strip are listed in `.release/claude-md-public.txt`. Update that file if new internal sections are added to CLAUDE.md.
+CLAUDE.md is private — lives on develop only. It's in the private files manifest and gets removed during merge to main. The README serves as the public project overview.
