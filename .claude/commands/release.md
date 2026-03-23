@@ -62,8 +62,12 @@ cd dashboard && npm run build && npx vercel --yes --prod
 ```
 
 ### 8. Commit on develop
+
+Note: files in `.gitignore` (landing/, .claude/, .release/, etc.) need `git add -f` to track on develop.
+
 ```bash
 git add -A
+git add -f landing/ .claude/commands/ .release/  # force-add gitignored private files
 git commit --author="sessionfsbot <bot@sessionfs.dev>" -m "Release vX.Y.Z"
 git push origin develop
 ```
@@ -87,6 +91,14 @@ while IFS= read -r line; do
   git rm -rf "$line" 2>/dev/null
 done < .release/private-files.txt
 ```
+
+**VERIFY nothing leaked** (zero tolerance):
+```bash
+git ls-tree -r HEAD --name-only | while read f; do
+  grep -qF "$f" .release/private-files.txt 2>/dev/null && echo "LEAK: $f"
+done
+```
+If any leaks found, STOP and scrub with `git-filter-repo`.
 
 Commit:
 ```bash
