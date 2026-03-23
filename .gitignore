@@ -35,8 +35,11 @@ Thumbs.db
 .claude/commands/
 .claude/settings.local.json
 .release/
+CLAUDE.md
 src/spikes/
 docs/security/
 docs/positioning.md
 docs/pricing.md
+landing/
+packaging/
 DOGFOOD.md

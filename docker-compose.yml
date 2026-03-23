@@ -2,9 +2,9 @@ services:
   db:
     image: postgres:16
     environment:
-      POSTGRES_USER: sessionfs
-      POSTGRES_PASSWORD: sessionfs
-      POSTGRES_DB: sessionfs
+      POSTGRES_USER: ${POSTGRES_USER:-sessionfs}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-sessionfs}
     ports:
       - "5432:5432"
     volumes:
@@ -15,11 +15,11 @@ services:
     ports:
       - "8000:8000"
     environment:
-      SFS_DATABASE_URL: postgresql+asyncpg://sessionfs:sessionfs@db:5432/sessionfs
+      SFS_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-sessionfs}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-sessionfs}
       SFS_BLOB_STORE_TYPE: local
       SFS_BLOB_STORE_LOCAL_PATH: /data/blobs
       SFS_DASHBOARD_DIR: /app/static
-      SFS_CORS_ORIGINS: '["http://localhost:5173"]'
+      SFS_CORS_ORIGINS: '["http://localhost:5173","http://localhost:8000"]'
     volumes:
       - blobdata:/data/blobs
       - ./dashboard/dist:/app/static:ro

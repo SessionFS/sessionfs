@@ -1,7 +1,0 @@
-{
-  "shell": {
-    "default_shell": "bash",
-    "working_directory": "/home/dev/projects/myapp"
-  },
-  "tools_used": ["Agent", "Grep", "Edit"]
-}

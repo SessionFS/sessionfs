@@ -22,6 +22,12 @@ DOGFOOD.md
 # Exported chat transcripts
 Claude-portablePortable chat agent sessions with network persistence.md
 
+# Landing page source (deployed to Vercel, exposes marketing strategy)
+landing/
+
+# Homebrew formula (incomplete, hardcoded version)
+packaging/
+
 # Claude Code internal commands (not useful to public contributors)
 .claude/commands/
 .claude/settings.local.json

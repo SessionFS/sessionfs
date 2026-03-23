@@ -1,9 +1,0 @@
-{
-  "shell": {
-    "default_shell": "bash",
-    "working_directory": "/home/dev/projects/myapp",
-    "sandbox_policy": "unrestricted",
-    "approval_policy": "on-request"
-  },
-  "tools_used": ["Read", "Write", "Edit"]
-}
