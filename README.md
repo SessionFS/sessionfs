@@ -13,7 +13,11 @@ Start a session in Claude Code, resume it in Codex. Push a session to the cloud,
 | Claude Code | Yes | Yes |
 | Codex CLI | Yes | Yes |
 | Gemini CLI | Yes | Yes |
+| Copilot CLI | Yes | Yes |
 | Cursor IDE | Yes | Capture-only |
+| Amp | Yes | Capture-only |
+| Cline | Yes | Capture-only |
+| Roo Code | Yes | Capture-only |
 
 ## Quick Install
 
@@ -29,8 +33,7 @@ Requires Python 3.10+. Installs two commands: `sfs` (CLI) and `sfsd` (daemon).
 # Start the daemon — it watches your tools automatically
 sfs daemon start
 
-# Use Claude Code, Codex, Gemini, or Cursor normally
-# Sessions are captured in the background
+# Use any supported tool normally — sessions are captured in the background
 
 # List captured sessions across all tools
 sfs list
@@ -52,7 +55,11 @@ Each tool has its own watcher:
 - **Claude Code** — watches `~/.claude/projects/` JSONL files
 - **Codex CLI** — watches `~/.codex/sessions/` rollout files, reads SQLite index
 - **Gemini CLI** — watches `~/.gemini/tmp/*/chats/` JSON sessions
-- **Cursor IDE** — reads `state.vscdb` SQLite database (capture-only, no write-back)
+- **Copilot CLI** — watches `~/.copilot/session-state/` event files
+- **Cursor IDE** — reads `state.vscdb` SQLite database (capture-only)
+- **Amp** — watches `~/.local/share/amp/threads/` JSON threads (capture-only)
+- **Cline** — watches VS Code globalStorage task directories (capture-only)
+- **Roo Code** — watches VS Code globalStorage task directories (capture-only)
 
 Sessions are indexed locally for fast browsing via the CLI. Cloud sync is opt-in; the daemon defaults to local-only.
 
@@ -71,6 +78,9 @@ Sessions are indexed locally for fast browsing via the CLI. Cloud sync is opt-in
 | `sfs pull <id>` | Pull a session from the cloud |
 | `sfs daemon start\|stop\|status\|logs` | Manage the background daemon |
 | `sfs config show\|set` | Manage configuration |
+| `sfs search "query"` | Full-text search across all sessions |
+| `sfs mcp serve` | Start MCP server for AI tool integration |
+| `sfs mcp install --for TOOL` | Auto-configure MCP for Claude Code, Cursor, or Copilot |
 | `sfs admin reindex` | Re-extract metadata for all cloud sessions |
 
 See the full [CLI Reference](docs/cli-reference.md) for options and examples.
@@ -130,21 +140,24 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
-**v0.1.0 — Public Beta.** 429 tests passing.
+**v0.2.0 — Public Beta.** 564 tests passing.
 
 What works today:
-- Four-tool session capture (Claude Code, Codex, Gemini, Cursor)
-- Cross-tool resume between Claude Code, Codex, and Gemini
+- Eight-tool session capture (Claude Code, Codex, Gemini, Cursor, Copilot CLI, Amp, Cline, Roo Code)
+- Cross-tool resume between Claude Code, Codex, Gemini, and Copilot CLI
+- Full-text search across all sessions (CLI + dashboard + API)
+- MCP server — AI tools can search your past sessions for context
 - Browse, inspect, export, fork, and checkpoint sessions
-- Cloud sync with push/pull and ETag conflict detection
-- Self-hosted API server with auth, PostgreSQL, and S3/local storage
-- Web dashboard for session management
+- Cloud sync with push/pull, email verification, and ETag conflict detection
+- Self-hosted API server with auth, PostgreSQL, S3/GCS storage
+- Web dashboard with session management and search
 - 12 security controls including secret detection, path traversal protection, and audit logging
 
 On the roadmap:
 - Team handoff workflows with notifications
+- Session similarity and duplicate detection
+- Cost analytics dashboard
 - VS Code extension
-- Additional tool watchers
 
 ## Contributing
 
