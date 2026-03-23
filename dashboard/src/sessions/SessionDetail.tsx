@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useSession } from '../hooks/useSession';
 import { abbreviateModel } from '../utils/models';
@@ -6,11 +7,13 @@ import { estimateCost } from '../utils/cost';
 import CopyButton from '../components/CopyButton';
 import RelativeDate from '../components/RelativeDate';
 import ConversationView from './ConversationView';
+import HandoffModal from '../handoffs/HandoffModal';
 
 export default function SessionDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { data: session, isLoading, error } = useSession(id!);
+  const [showHandoff, setShowHandoff] = useState(false);
 
   if (isLoading) {
     return <div className="p-8 text-text-muted">Loading session...</div>;
@@ -99,6 +102,12 @@ export default function SessionDetail() {
 
           <Section title="Actions">
             <div className="flex flex-col gap-2">
+              <button
+                onClick={() => setShowHandoff(true)}
+                className="w-full px-3 py-1.5 text-xs bg-accent text-white rounded hover:bg-accent/90 transition-colors"
+              >
+                Hand Off
+              </button>
               <div className="flex items-center gap-2">
                 <code className="text-xs text-text-muted bg-bg-primary px-2 py-1 rounded flex-1 truncate">
                   sfs resume {session.id}
@@ -120,6 +129,10 @@ export default function SessionDetail() {
       <div className="flex-1 overflow-y-auto">
         <ConversationView sessionId={session.id} />
       </div>
+
+      {showHandoff && (
+        <HandoffModal sessionId={session.id} onClose={() => setShowHandoff(false)} />
+      )}
     </div>
   );
 }

@@ -7,6 +7,8 @@ import SessionList from './sessions/SessionList';
 import SessionDetail from './sessions/SessionDetail';
 import SearchResults from './sessions/SearchResults';
 import SettingsPage from './sessions/SettingsPage';
+import HandoffList from './handoffs/HandoffList';
+import HandoffDetail from './handoffs/HandoffDetail';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -40,6 +42,8 @@ export default function App() {
               <Route path="/" element={<SessionList />} />
               <Route path="/search" element={<SearchResults />} />
               <Route path="/sessions/:id" element={<SessionDetail />} />
+              <Route path="/handoffs" element={<HandoffList />} />
+              <Route path="/handoffs/:id" element={<HandoffDetail />} />
               <Route path="/settings" element={<SettingsPage />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />

@@ -25,7 +25,7 @@ app = typer.Typer(
 # Register sub-command groups
 from sessionfs.cli.cmd_daemon import daemon_app
 from sessionfs.cli.cmd_config import config_app
-from sessionfs.cli.cmd_cloud import auth_app
+from sessionfs.cli.cmd_cloud import auth_app, handoffs_app
 from sessionfs.cli.cmd_admin import admin_app
 from sessionfs.cli.cmd_mcp import mcp_app
 
@@ -34,12 +34,13 @@ app.add_typer(config_app, name="config")
 app.add_typer(auth_app, name="auth")
 app.add_typer(admin_app, name="admin")
 app.add_typer(mcp_app, name="mcp")
+app.add_typer(handoffs_app, name="handoffs")
 
 # Register top-level commands
 from sessionfs.cli.cmd_sessions import list_sessions, show_session
 from sessionfs.cli.cmd_ops import resume, checkpoint, fork
 from sessionfs.cli.cmd_io import import_sessions, export_session
-from sessionfs.cli.cmd_cloud import push, pull, list_remote, sync_all, handoff
+from sessionfs.cli.cmd_cloud import push, pull, pull_handoff, list_remote, sync_all, handoff
 from sessionfs.cli.cmd_search import search
 
 app.command("list")(list_sessions)
@@ -54,6 +55,7 @@ app.command("pull")(pull)
 app.command("list-remote")(list_remote)
 app.command("sync")(sync_all)
 app.command("handoff")(handoff)
+app.command("pull-handoff")(pull_handoff)
 app.command("search")(search)
 
 

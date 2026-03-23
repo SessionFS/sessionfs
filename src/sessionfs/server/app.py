@@ -12,7 +12,7 @@ from sessionfs import __version__
 from sessionfs.server.config import ServerConfig
 from sessionfs.server.db.engine import close_engine, init_engine
 from sessionfs.server.errors import register_exception_handlers
-from sessionfs.server.routes import auth, health, sessions
+from sessionfs.server.routes import auth, handoffs, health, sessions
 from sessionfs.server.storage.local import LocalBlobStore
 
 
@@ -79,6 +79,7 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(sessions.router)
+    app.include_router(handoffs.router)
 
     # Serve dashboard static files if the dist directory exists.
     # The dashboard is a React SPA — all non-API routes serve index.html.
