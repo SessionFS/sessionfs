@@ -171,11 +171,13 @@ Tech leads and engineering managers pay because they get visibility into their t
 - Checkpoint, fork ✓
 - Self-hosted API server (PostgreSQL, object storage, session APIs) ✓
 
-### Shipped (v0.1.0)
+### Shipped (v0.2.0)
 
-- **Web dashboard (personal)** — browser-based session management at localhost:8000.
-- **Four-tool capture** — Claude Code, Codex, Gemini CLI, and Cursor watchers all shipping.
-- **Cross-tool resume** — resume sessions across Claude Code, Codex, and Gemini CLI.
+- **Web dashboard** — browser-based session management with full-text search at app.sessionfs.dev.
+- **Eight-tool capture** — Claude Code, Codex, Gemini CLI, Cursor, Copilot CLI, Amp, Cline, Roo Code.
+- **Cross-tool resume** — resume sessions across Claude Code, Codex, Gemini CLI, and Copilot CLI.
+- **MCP server** — AI tools can search your past sessions for context.
+- **Full-text search** — local (free) and cloud (Pro).
 
 ### Needs to be built for Pro
 
