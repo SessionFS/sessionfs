@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Index, Integer, String, Text, ForeignKey, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Index, Integer, String, Text, ForeignKey, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -65,11 +65,11 @@ class Session(Base):
     message_count: Mapped[int] = mapped_column(Integer, default=0)
     turn_count: Mapped[int] = mapped_column(Integer, default=0)
     tool_use_count: Mapped[int] = mapped_column(Integer, default=0)
-    total_input_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    total_output_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_input_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    total_output_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    duration_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     blob_key: Mapped[str] = mapped_column(String(500), nullable=False)
-    blob_size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    blob_size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     etag: Mapped[str] = mapped_column(String(64), nullable=False)
     parent_session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
