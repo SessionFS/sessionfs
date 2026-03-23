@@ -5,6 +5,7 @@ import LoginPage from './auth/LoginPage';
 import Layout from './components/Layout';
 import SessionList from './sessions/SessionList';
 import SessionDetail from './sessions/SessionDetail';
+import SearchResults from './sessions/SearchResults';
 import SettingsPage from './sessions/SettingsPage';
 
 const queryClient = new QueryClient({
@@ -37,6 +38,7 @@ export default function App() {
               }
             >
               <Route path="/" element={<SessionList />} />
+              <Route path="/search" element={<SearchResults />} />
               <Route path="/sessions/:id" element={<SessionDetail />} />
               <Route path="/settings" element={<SettingsPage />} />
             </Route>

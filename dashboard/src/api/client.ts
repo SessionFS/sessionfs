@@ -97,6 +97,23 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         `/api/v1/sessions/${id}/messages?page=${page}&page_size=${pageSize}`,
       ),
 
+    search: (params: URLSearchParams) =>
+      request<{
+        results: {
+          session_id: string;
+          title: string | null;
+          source_tool: string;
+          model_id: string | null;
+          message_count: number;
+          updated_at: string;
+          matches: { snippet: string }[];
+        }[];
+        total: number;
+        page: number;
+        page_size: number;
+        query: string;
+      }>(`/api/v1/sessions/search?${params}`),
+
     downloadSession: async (id: string): Promise<Blob> => {
       const resp = await fetch(`${baseUrl}/api/v1/sessions/${id}/download`, {
         headers: { Authorization: `Bearer ${apiKey}` },

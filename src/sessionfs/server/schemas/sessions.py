@@ -114,3 +114,25 @@ class ShareLinkResponse(BaseModel):
     url: str
     expires_at: datetime
     has_password: bool
+
+
+class SearchMatch(BaseModel):
+    snippet: str
+
+
+class SearchResult(BaseModel):
+    session_id: str
+    title: str | None
+    source_tool: str
+    model_id: str | None
+    message_count: int
+    updated_at: datetime
+    matches: list[SearchMatch]
+
+
+class SearchResponse(BaseModel):
+    results: list[SearchResult]
+    total: int
+    page: int
+    page_size: int
+    query: str

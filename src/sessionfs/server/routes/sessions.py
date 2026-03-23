@@ -25,6 +25,9 @@ from sessionfs.server.db.models import Session, ShareLink, User
 from sessionfs.server.schemas.sessions import (
     CreateShareLinkRequest,
     MessagesResponse,
+    SearchMatch,
+    SearchResponse,
+    SearchResult,
     SessionDetail,
     SessionListResponse,
     SessionMetadataUpdate,
@@ -253,6 +256,79 @@ def _extract_manifest_metadata(data: bytes) -> dict:
     return defaults
 
 
+_MAX_MESSAGES_TEXT_BYTES = 100 * 1024  # 100KB limit
+
+
+def _extract_messages_text(data: bytes) -> str:
+    """Extract all text content from messages.jsonl in a tar.gz archive.
+
+    Concatenates user/assistant text, tool names, and error output.
+    Result is limited to 100KB for storage efficiency.
+    """
+    parts: list[str] = []
+    total_len = 0
+
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+            for member in tar.getmembers():
+                basename = member.name.rsplit("/", 1)[-1] if "/" in member.name else member.name
+                if basename != "messages.jsonl":
+                    continue
+                f = tar.extractfile(member)
+                if f is None:
+                    continue
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        msg = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    text = _extract_msg_text(msg)
+                    if text:
+                        parts.append(text)
+                        total_len += len(text)
+                        if total_len >= _MAX_MESSAGES_TEXT_BYTES:
+                            break
+                break  # Only process first messages.jsonl found
+    except Exception as exc:
+        _logger.warning("Failed to extract messages text: %s", exc)
+
+    result = "\n".join(parts)
+    return result[:_MAX_MESSAGES_TEXT_BYTES]
+
+
+def _extract_msg_text(msg: dict) -> str:
+    """Extract plain text from a single message for indexing."""
+    content = msg.get("content", [])
+    if isinstance(content, str):
+        return content
+
+    parts = []
+    for block in content:
+        if isinstance(block, str):
+            parts.append(block)
+        elif isinstance(block, dict):
+            btype = block.get("type", "")
+            if btype == "text":
+                parts.append(block.get("text", ""))
+            elif btype == "tool_use":
+                name = block.get("name", block.get("tool_name", ""))
+                inp = block.get("input", {})
+                if isinstance(inp, dict):
+                    cmd = inp.get("command", "")
+                    if cmd:
+                        parts.append(f"[{name}] {cmd}")
+                    else:
+                        parts.append(f"[{name}]")
+            elif btype == "tool_result":
+                result = block.get("content", "")
+                if isinstance(result, str):
+                    parts.append(result[:500])
+    return "\n".join(parts)
+
+
 # --- Archive content cache ---
 
 _CACHE_MAX_SIZE = 50
@@ -363,6 +439,7 @@ async def upload_session(
 
     # Extract metadata from manifest to fill in any gaps
     meta = _extract_manifest_metadata(data)
+    messages_text = _extract_messages_text(data)
 
     now = datetime.now(timezone.utc)
     session = Session(
@@ -381,6 +458,7 @@ async def upload_session(
         total_input_tokens=meta["total_input_tokens"],
         total_output_tokens=meta["total_output_tokens"],
         duration_ms=meta["duration_ms"],
+        messages_text=messages_text,
         blob_key=key,
         blob_size_bytes=len(data),
         etag=etag,
@@ -440,6 +518,132 @@ async def list_sessions(
         page=page,
         page_size=page_size,
         has_more=(page * page_size) < total,
+    )
+
+
+@router.get("/search", response_model=SearchResponse)
+async def search_sessions(
+    q: str = Query(..., min_length=1, max_length=500),
+    tool: str | None = Query(None),
+    days: int | None = Query(None, ge=1, le=365),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=50),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Full-text search across sessions (Pro+ tier required)."""
+    if user.tier == "free":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": {
+                    "code": "TIER_LIMIT",
+                    "message": "Full-text search requires Pro. Upgrade at sessionfs.dev for $12/mo.",
+                    "required_tier": "pro",
+                }
+            },
+        )
+
+    offset = (page - 1) * page_size
+
+    # Build the search query — use SQLite LIKE fallback for test environments,
+    # PostgreSQL ts_vector for production
+    dialect = db.bind.dialect.name if db.bind else "sqlite"
+
+    if dialect == "postgresql":
+        # PostgreSQL full-text search with ts_vector
+        from sqlalchemy import text as sa_text
+
+        search_sql = sa_text("""
+            SELECT id, title, source_tool, model_id, message_count, updated_at,
+                   ts_headline('english', messages_text, query,
+                               'MaxWords=30, MinWords=15, StartSel=<mark>, StopSel=</mark>') as snippet
+            FROM sessions, plainto_tsquery('english', :q) query
+            WHERE user_id = :user_id
+              AND search_vector @@ query
+              AND is_deleted = false
+              AND (:tool IS NULL OR source_tool = :tool)
+              AND (:cutoff IS NULL OR updated_at >= CAST(:cutoff AS timestamptz))
+            ORDER BY ts_rank(search_vector, query) DESC
+            LIMIT :limit OFFSET :offset
+        """)
+        count_sql = sa_text("""
+            SELECT count(*)
+            FROM sessions, plainto_tsquery('english', :q) query
+            WHERE user_id = :user_id
+              AND search_vector @@ query
+              AND is_deleted = false
+              AND (:tool IS NULL OR source_tool = :tool)
+              AND (:cutoff IS NULL OR updated_at >= CAST(:cutoff AS timestamptz))
+        """)
+    else:
+        # SQLite fallback: simple LIKE-based search
+        from sqlalchemy import text as sa_text
+
+        search_sql = sa_text("""
+            SELECT id, title, source_tool, model_id, message_count, updated_at,
+                   substr(messages_text, max(1, instr(lower(messages_text), lower(:q)) - 40), 100) as snippet
+            FROM sessions
+            WHERE user_id = :user_id
+              AND (lower(title) LIKE '%' || lower(:q) || '%'
+                   OR lower(messages_text) LIKE '%' || lower(:q) || '%')
+              AND is_deleted = 0
+              AND (:tool IS NULL OR source_tool = :tool)
+              AND (:cutoff IS NULL OR updated_at >= :cutoff)
+            ORDER BY updated_at DESC
+            LIMIT :limit OFFSET :offset
+        """)
+        count_sql = sa_text("""
+            SELECT count(*)
+            FROM sessions
+            WHERE user_id = :user_id
+              AND (lower(title) LIKE '%' || lower(:q) || '%'
+                   OR lower(messages_text) LIKE '%' || lower(:q) || '%')
+              AND is_deleted = 0
+              AND (:tool IS NULL OR source_tool = :tool)
+              AND (:cutoff IS NULL OR updated_at >= :cutoff)
+        """)
+
+    cutoff = None
+    if days is not None:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+    params = {
+        "q": q,
+        "user_id": user.id,
+        "tool": tool,
+        "cutoff": cutoff,
+        "limit": page_size,
+        "offset": offset,
+    }
+
+    result = await db.execute(search_sql, params)
+    rows = result.fetchall()
+
+    count_result = await db.execute(count_sql, {
+        "q": q, "user_id": user.id, "tool": tool, "cutoff": cutoff,
+    })
+    total = count_result.scalar() or 0
+
+    results = []
+    for row in rows:
+        snippet = row.snippet or ""
+        results.append(SearchResult(
+            session_id=row.id,
+            title=row.title,
+            source_tool=row.source_tool,
+            model_id=row.model_id,
+            message_count=row.message_count,
+            updated_at=row.updated_at,
+            matches=[SearchMatch(snippet=snippet)] if snippet else [],
+        ))
+
+    return SearchResponse(
+        results=results,
+        total=total,
+        page=page,
+        page_size=page_size,
+        query=q,
     )
 
 
@@ -585,6 +789,7 @@ async def sync_push(
 
     # Extract metadata from the archive's manifest.json
     meta = _extract_manifest_metadata(data)
+    messages_text = _extract_messages_text(data)
 
     if existing is None:
         # New session -> create with full metadata
@@ -605,6 +810,7 @@ async def sync_push(
             total_input_tokens=meta["total_input_tokens"],
             total_output_tokens=meta["total_output_tokens"],
             duration_ms=meta["duration_ms"],
+            messages_text=messages_text,
             blob_key=key,
             blob_size_bytes=len(data),
             etag=new_etag,
@@ -654,6 +860,7 @@ async def sync_push(
     existing.total_input_tokens = meta["total_input_tokens"]
     existing.total_output_tokens = meta["total_output_tokens"]
     existing.duration_ms = meta["duration_ms"]
+    existing.messages_text = messages_text
     existing.blob_size_bytes = len(data)
     existing.etag = new_etag
     existing.updated_at = now
@@ -811,6 +1018,7 @@ async def reindex_sessions(
                 continue
 
             meta = _extract_manifest_metadata(data)
+            messages_text = _extract_messages_text(data)
 
             session.title = meta["title"]
             session.tags = meta["tags"]
@@ -825,6 +1033,7 @@ async def reindex_sessions(
             session.total_input_tokens = meta["total_input_tokens"]
             session.total_output_tokens = meta["total_output_tokens"]
             session.duration_ms = meta["duration_ms"]
+            session.messages_text = messages_text
             updated += 1
 
         except Exception as exc:
