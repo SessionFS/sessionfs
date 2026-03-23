@@ -14,6 +14,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from sessionfs import __version__
+
 logger = logging.getLogger("sessionfs.sync")
 
 # Retry config
@@ -112,7 +114,7 @@ class SyncClient:
             self._client = httpx.AsyncClient(
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
-                    "User-Agent": "sessionfs-cli/0.1.0",
+                    "User-Agent": f"sessionfs-cli/{__version__}",
                 },
                 timeout=httpx.Timeout(_METADATA_TIMEOUT),
             )

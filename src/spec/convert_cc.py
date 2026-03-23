@@ -50,6 +50,7 @@ from spike_1a_cc_read import (
     PROJECTS_DIR,
 )
 
+# .sfs format version — independent of package version. Only bump when spec changes.
 SFS_VERSION = "0.1.0"
 CONVERTER_VERSION = "0.1.0"
 

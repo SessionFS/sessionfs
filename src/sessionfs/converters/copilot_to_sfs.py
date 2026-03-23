@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from sessionfs.spec.version import SFS_FORMAT_VERSION, SFS_CONVERTER_VERSION
+
 logger = logging.getLogger("sessionfs.converters.copilot_to_sfs")
 
 
@@ -249,7 +251,7 @@ def convert_copilot_to_sfs(
         title = None
 
     manifest = {
-        "sfs_version": "0.1.0",
+        "sfs_version": SFS_FORMAT_VERSION,
         "session_id": sid,
         "title": title,
         "tags": [],
@@ -258,7 +260,7 @@ def convert_copilot_to_sfs(
         "source": {
             "tool": "copilot-cli",
             "tool_version": copilot_session.cli_version,
-            "sfs_converter_version": "0.1.0",
+            "sfs_converter_version": SFS_CONVERTER_VERSION,
             "original_session_id": copilot_session.session_id,
             "original_path": copilot_session.source_path,
             "interface": "cli",

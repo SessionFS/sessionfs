@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from sessionfs.spec.version import SFS_FORMAT_VERSION, SFS_CONVERTER_VERSION
+
 logger = logging.getLogger("sessionfs.converters.amp_to_sfs")
 
 
@@ -197,7 +199,7 @@ def convert_amp_to_sfs(
         title = None
 
     manifest = {
-        "sfs_version": "0.1.0",
+        "sfs_version": SFS_FORMAT_VERSION,
         "session_id": sid,
         "title": title,
         "tags": [],
@@ -206,7 +208,7 @@ def convert_amp_to_sfs(
         "source": {
             "tool": "amp",
             "tool_version": None,
-            "sfs_converter_version": "0.1.0",
+            "sfs_converter_version": SFS_CONVERTER_VERSION,
             "original_session_id": amp_session.session_id,
             "original_path": amp_session.source_path,
             "interface": "cli",

@@ -25,6 +25,7 @@ from watchdog.observers import Observer
 from sessionfs.daemon.config import CodexWatcherConfig
 from sessionfs.daemon.status import WatcherStatus
 from sessionfs.session_id import session_id_from_native
+from sessionfs.spec.version import SFS_FORMAT_VERSION, SFS_CONVERTER_VERSION
 from sessionfs.store.local import LocalStore
 from sessionfs.watchers.base import NativeSessionRef, WatcherHealth
 
@@ -297,7 +298,7 @@ def convert_codex_to_sfs(
         title = None
 
     manifest = {
-        "sfs_version": "0.1.0",
+        "sfs_version": SFS_FORMAT_VERSION,
         "session_id": sid,
         "title": title,
         "tags": [],
@@ -306,7 +307,7 @@ def convert_codex_to_sfs(
         "source": {
             "tool": "codex",
             "tool_version": codex_session.cli_version,
-            "sfs_converter_version": "0.1.0",
+            "sfs_converter_version": SFS_CONVERTER_VERSION,
             "original_session_id": codex_session.session_id,
             "original_path": codex_session.source_path,
             "interface": "cli",

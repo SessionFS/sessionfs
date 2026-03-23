@@ -1,3 +1,8 @@
 """SessionFS — Portable AI coding sessions."""
 
-__version__ = "0.1.0"
+from importlib.metadata import version, PackageNotFoundError
+
+try:
+    __version__ = version("sessionfs")
+except PackageNotFoundError:
+    __version__ = "0.2.0"  # fallback for development

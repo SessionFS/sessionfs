@@ -13,6 +13,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from sessionfs import __version__
+
 
 class WatcherStatus(BaseModel):
     """Status of a single watcher."""
@@ -33,7 +35,7 @@ class DaemonStatus(BaseModel):
     started_at: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
-    version: str = "0.1.0"
+    version: str = __version__
     status: str = "running"
     store_dir: str = ""
     watchers: list[WatcherStatus] = Field(default_factory=list)

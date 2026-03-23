@@ -31,6 +31,7 @@ from sessionfs.server.db.models import ApiKey, Base, User
 from sessionfs.server.storage.local import LocalBlobStore
 from sessionfs.store.local import LocalStore
 from sessionfs.sync.archive import pack_session, unpack_session
+from sessionfs import __version__
 from sessionfs.sync.client import SyncClient
 
 
@@ -88,7 +89,7 @@ async def pipeline_env(tmp_path: Path):
         base_url="http://test",
         headers={
             "Authorization": f"Bearer {raw_key}",
-            "User-Agent": "sessionfs-cli/0.1.0",
+            "User-Agent": f"sessionfs-cli/{__version__}",
         },
     )
 

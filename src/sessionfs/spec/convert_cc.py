@@ -31,8 +31,9 @@ from sessionfs.watchers.claude_code import (
     parse_session,
 )
 
-SFS_VERSION = "0.1.0"
-CONVERTER_VERSION = "0.1.0"
+# .sfs format version — independent of package version. Only bump when spec changes.
+from sessionfs.spec.version import SFS_FORMAT_VERSION as SFS_VERSION
+from sessionfs.spec.version import SFS_CONVERTER_VERSION as CONVERTER_VERSION
 
 # Default home dir for CLI usage
 _DEFAULT_HOME = Path.home() / ".claude"

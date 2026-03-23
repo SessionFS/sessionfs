@@ -20,6 +20,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from sessionfs.spec.version import SFS_FORMAT_VERSION, SFS_CONVERTER_VERSION
+
 logger = logging.getLogger("sessionfs.converters.cline_to_sfs")
 
 # Platform-specific default storage paths
@@ -426,7 +428,7 @@ def convert_cline_to_sfs(
 
     tool_name = cline_session.tool
     manifest = {
-        "sfs_version": "0.1.0",
+        "sfs_version": SFS_FORMAT_VERSION,
         "session_id": sid,
         "title": title,
         "tags": [],
@@ -435,7 +437,7 @@ def convert_cline_to_sfs(
         "source": {
             "tool": tool_name,
             "tool_version": None,
-            "sfs_converter_version": "0.1.0",
+            "sfs_converter_version": SFS_CONVERTER_VERSION,
             "original_session_id": cline_session.session_id,
             "interface": "ide",
         },

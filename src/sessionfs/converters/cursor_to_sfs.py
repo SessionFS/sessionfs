@@ -25,6 +25,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
+from sessionfs.spec.version import SFS_FORMAT_VERSION, SFS_CONVERTER_VERSION
+
 logger = logging.getLogger("sessionfs.converters.cursor_to_sfs")
 
 # Platform-specific global storage path
@@ -289,7 +291,7 @@ def convert_cursor_to_sfs(
         title = None
 
     manifest = {
-        "sfs_version": "0.1.0",
+        "sfs_version": SFS_FORMAT_VERSION,
         "session_id": sid,
         "title": title,
         "tags": [],
@@ -298,7 +300,7 @@ def convert_cursor_to_sfs(
         "source": {
             "tool": "cursor",
             "tool_version": None,
-            "sfs_converter_version": "0.1.0",
+            "sfs_converter_version": SFS_CONVERTER_VERSION,
             "original_session_id": cursor_session.session_id,
             "interface": "ide",
         },

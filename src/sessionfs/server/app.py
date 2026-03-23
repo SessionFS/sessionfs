@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from sessionfs import __version__
 from sessionfs.server.config import ServerConfig
 from sessionfs.server.db.engine import close_engine, init_engine
 from sessionfs.server.errors import register_exception_handlers
@@ -56,7 +57,7 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
 
     app = FastAPI(
         title="SessionFS API",
-        version="0.1.0",
+        version=__version__,
         lifespan=lifespan,
     )
 
