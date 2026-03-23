@@ -6,10 +6,10 @@ Internal product reference for tiers, feature matrix, build gaps, and pricing-pa
 
 SessionFS monetizes team collaboration features on top of a free individual capture tool.
 
-**The free tier is the distribution channel.**  
+**The free tier is the distribution channel.**
 Every individual developer who installs SessionFS is a potential vector into their team. The conversion event is the first time a developer hands off a session to a teammate and the teammate experiences the value.
 
-**The Team tier is the product.**  
+**The Team tier is the product.**
 Tech leads and engineering managers pay because they get visibility into their team's AI-assisted work, the ability to take over stuck sessions, and an audit trail for compliance.
 
 ---
@@ -24,20 +24,20 @@ Tech leads and engineering managers pay because they get visibility into their t
 
 - Daemon capture (unlimited local capture, always)
 - CLI: list, show, resume, export (markdown, .sfs), checkpoint, fork
-- Cloud sync: up to **25 sessions** in the cloud
+- Cloud sync with **14-day rolling retention**
 - Dashboard access: browse your own sessions only
 - Import from Claude Code and Codex
 - 1 device syncing to cloud
 
 **Limits:**
 
-- 25 cloud-synced sessions (local capture is unlimited and never capped)
+- Cloud sessions expire after 14 days (local capture is unlimited and never capped)
 - No sharing or handoff
 - No team features
 - Single user only
 - Community support (GitHub issues)
 
-**Why 25?** It's enough to experience the full loop — capture, sync, pull on another machine, resume. It's not enough for daily use across months. When a developer hits 25 and wants to keep syncing, they either delete old sessions or upgrade. But the real conversion happens when they try to share a session with a teammate and can't.
+**Why 14 days?** It's enough to experience the full loop — capture, sync, pull on another machine, resume. It's not enough for daily use across months. When a developer's older sessions start expiring and they want permanent cloud storage, they upgrade. But the real conversion happens when they try to share a session with a teammate and can't.
 
 ---
 
@@ -47,11 +47,11 @@ Tech leads and engineering managers pay because they get visibility into their t
 
 **Includes everything in Free, plus:**
 
-- Unlimited cloud-synced sessions
+- **Unlimited cloud retention** — sessions never expire
 - Up to **3 devices** syncing
 - Share sessions via link (read-only, up to 5 active share links)
 - Export to all formats (Claude Code, Codex, OpenAI, markdown)
-- Session search (full-text across all sessions)
+- Full-text cloud search across all sessions
 - Email support
 
 **Why this tier exists:** Some developers will pay for personal convenience before their team adopts. This captures that revenue without requiring team buy-in. The share links also serve as a teaser for team features — when a developer shares a session link with a colleague who isn't on SessionFS, that colleague becomes a new user.
@@ -67,7 +67,7 @@ Tech leads and engineering managers pay because they get visibility into their t
 **Includes everything in Pro, plus:**
 
 - **Team workspace**: shared session library visible to all team members
-- **Handoff**: transfer a session to a teammate with a message — they get an email and can pull + resume immediately
+- **Handoff**: transfer a session to a teammate with email notification — they pull + resume immediately
 - **Team dashboard**: see all team sessions, filter by member, tool, date
 - **Role-based access**: Admin (manage team, billing), Member (capture, handoff, browse team sessions)
 - **Session permissions**: owner controls who can see/resume/fork each session
@@ -113,14 +113,18 @@ Tech leads and engineering managers pay because they get visibility into their t
 | Codex watcher | ✓ | ✓ | ✓ | ✓ |
 | Cursor watcher | ✓ | ✓ | ✓ | ✓ |
 | Gemini CLI watcher | ✓ | ✓ | ✓ | ✓ |
+| Copilot CLI watcher | ✓ | ✓ | ✓ | ✓ |
+| Amp watcher | ✓ | ✓ | ✓ | ✓ |
+| Cline watcher | ✓ | ✓ | ✓ | ✓ |
+| Roo Code watcher | ✓ | ✓ | ✓ | ✓ |
 | **CLI** |
 | list, show, resume | ✓ | ✓ | ✓ | ✓ |
 | checkpoint, fork | ✓ | ✓ | ✓ | ✓ |
 | export (markdown) | ✓ | ✓ | ✓ | ✓ |
 | export (all formats) | — | ✓ | ✓ | ✓ |
-| Full-text search | — | ✓ | ✓ | ✓ |
+| Full-text search | ✓ (local) | ✓ (local + cloud) | ✓ (local + cloud) | ✓ (local + cloud) |
 | **Cloud Sync** |
-| Cloud-synced sessions | 25 | Unlimited | Unlimited | Unlimited |
+| Cloud retention | 14 days | Unlimited | Unlimited | Unlimited |
 | Devices syncing | 1 | 3 | Unlimited | Unlimited |
 | **Sharing** |
 | Share via link (read-only) | — | 5 links | Unlimited | Unlimited |
@@ -149,66 +153,42 @@ Tech leads and engineering managers pay because they get visibility into their t
 
 ---
 
-## Pricing Psychology
+## Ship Status
 
-**Free → Pro conversion trigger:** Developer hits 25 session cloud limit, or wants to share a session link with a colleague.
+### Shipped
 
-**Pro → Team conversion trigger:** Developer shares a session link, the recipient says "we should all be using this." Or the tech lead sees the developer using it and wants team-wide visibility.
+- Eight-tool daemon capture (Claude Code, Codex, Gemini CLI, Cursor, Copilot CLI, Amp, Cline, Roo Code)
+- CLI (core commands: list, show, resume, export, fork, checkpoint, import, daemon, config, cloud sync, handoff, search)
+- Cloud sync with push/pull and ETag conflict detection
+- Email verification for cloud accounts
+- Rolling 14-day retention enforcement for free tier
+- Web dashboard with session management and full-text search
+- MCP server for AI tool integration
+- Cross-tool resume (Claude Code, Codex, Gemini CLI, Copilot CLI)
+- Session search (local and cloud)
+- Team handoff with email notification
+- Self-hosted API server (PostgreSQL, S3/GCS)
 
-**Team → Enterprise conversion trigger:** InfoSec team says "we need this self-hosted" or "we need SAML SSO" or "we need data residency."
+### Planned
+
+- Stripe billing integration (Pro and Team)
+- Share link passwords
+- SSO (Google Workspace, GitHub org)
+- Audit log viewer in dashboard
+- VS Code extension
+- Device count enforcement
+- Session similarity and duplicate detection
+- Cost analytics dashboard
 
 ---
 
-## What We Need To Build For Each Tier
+## Pricing Psychology
 
-### Already built (Phase 1)
+**Free -> Pro conversion trigger:** Developer's older sessions start expiring after 14 days, or they want to share a session link with a colleague.
 
-- Daemon capture ✓
-- CLI (core commands: list, show, resume, export, fork, checkpoint, import, daemon, config, cloud sync) ✓
-- Cloud sync ✓
-- API auth (signup + API keys) ✓
-- Export (markdown, .sfs, Claude Code format) ✓
-- Checkpoint, fork ✓
-- Self-hosted API server (PostgreSQL, object storage, session APIs) ✓
+**Pro -> Team conversion trigger:** Developer shares a session link, the recipient says "we should all be using this." Or the tech lead sees the developer using it and wants team-wide visibility.
 
-### Shipped (v0.2.0)
-
-- **Web dashboard** — browser-based session management with full-text search at app.sessionfs.dev.
-- **Eight-tool capture** — Claude Code, Codex, Gemini CLI, Cursor, Copilot CLI, Amp, Cline, Roo Code.
-- **Cross-tool resume** — resume sessions across Claude Code, Codex, Gemini CLI, and Copilot CLI.
-- **MCP server** — AI tools can search your past sessions for context.
-- **Full-text search** — local (free) and cloud (Pro).
-
-### Needs to be built for Pro
-
-- Session count enforcement (25 limit on Free, unlimited on Pro)
-- Device count tracking and enforcement
-- Share link generation and rendering (read-only session viewer without login)
-- Full-text session search
-- Stripe integration for Pro billing
-
-### Needs to be built for Team
-
-- Team workspaces (create team, invite members, shared session library)
-- Handoff workflow with email notifications
-- Team dashboard view (all team members' sessions)
-- Role-based access (Admin, Member)
-- Session permissions (owner controls visibility)
-- Audit log viewer in dashboard
-- SSO (Google Workspace, GitHub org)
-- Stripe integration for per-seat Team billing
-
-### Needs to be built for Enterprise
-
-- Self-hosted deployment (Docker Compose + Helm)
-- SAML/OIDC integration
-- Data residency configuration
-- DLP webhook integration
-- Retention policy engine
-- Session classification
-- IP allowlisting
-- SIEM log export
-- Everything from Team
+**Team -> Enterprise conversion trigger:** InfoSec team says "we need this self-hosted" or "we need SAML SSO" or "we need data residency."
 
 ---
 
@@ -219,25 +199,25 @@ Tech leads and engineering managers pay because they get visibility into their t
 **Free users:** 5,000
 
 - Conversion to Pro: 3% = 150 Pro subscribers
-- Pro revenue: 150 × $12/mo = $1,800/mo
+- Pro revenue: 150 x $12/mo = $1,800/mo
 
-**Pro → Team conversion:** 10% of Pro users advocate for team adoption
+**Pro -> Team conversion:** 10% of Pro users advocate for team adoption
 
-- 15 teams × average 6 seats × $20/seat = $1,800/mo
+- 15 teams x average 6 seats x $20/seat = $1,800/mo
 
 **Direct Team signups** (from HN, word of mouth, blog posts):
 
-- 30 teams × average 8 seats × $20/seat = $4,800/mo
+- 30 teams x average 8 seats x $20/seat = $4,800/mo
 
-**Enterprise:** 2 contracts × ~$2,500/mo average = $5,000/mo
+**Enterprise:** 2 contracts x ~$2,500/mo average = $5,000/mo
 
 **Total month 12:** ~$13,400 MRR = ~$161K ARR
 
 ### Growth scenario (18 months)
 
-**Free:** 20,000 users  
-**Pro:** 500 subscribers ($6,000/mo)  
-**Team:** 200 teams, avg 8 seats ($32,000/mo)  
+**Free:** 20,000 users
+**Pro:** 500 subscribers ($6,000/mo)
+**Team:** 200 teams, avg 8 seats ($32,000/mo)
 **Enterprise:** 10 contracts ($25,000/mo)
 
 **Total month 18:** ~$63,000 MRR = ~$756K ARR
@@ -252,7 +232,7 @@ The pricing page needs to communicate three things in 5 seconds:
 2. Teams pay for handoff and visibility
 3. Enterprise gets self-hosted and compliance
 
-**Visual design:** 4 columns (Free, Pro, Team, Enterprise). Team column highlighted as "Most Popular." Each column shows price, key features (5–7 bullets max), and a CTA button. Free = "Install Now." Pro = "Start Free Trial." Team = "Start Free Trial." Enterprise = "Contact Sales."
+**Visual design:** 4 columns (Free, Pro, Team, Enterprise). Team column highlighted as "Most Popular." Each column shows price, key features (5-7 bullets max), and a CTA button. Free = "Install Now." Pro = "Start Free Trial." Team = "Start Free Trial." Enterprise = "Contact Sales."
 
 **Free trial:** 14 days of Team features for any new signup. After 14 days, downgrade to Free unless they enter payment. This lets developers experience the team features before committing.
 

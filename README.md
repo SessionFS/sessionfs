@@ -19,30 +19,22 @@ Start a session in Claude Code, resume it in Codex. Push a session to the cloud,
 | Cline | Yes | Capture-only |
 | Roo Code | Yes | Capture-only |
 
-## Quick Install
-
-```bash
-pip install sessionfs
-```
-
-Requires Python 3.10+. Installs two commands: `sfs` (CLI) and `sfsd` (daemon).
-
 ## Quick Start
 
 ```bash
-# Start the daemon — it watches your tools automatically
+# 1. Install
+pip install sessionfs
+
+# 2. Start the daemon — it watches all 8 tools automatically
 sfs daemon start
 
-# Use any supported tool normally — sessions are captured in the background
+# 3. Use your AI tools normally — sessions are captured in the background
 
-# List captured sessions across all tools
+# 4. Browse captured sessions
 sfs list
 
-# Resume a Claude Code session in Codex
+# 5. Resume a session (same tool or different)
 sfs resume ses_abc123 --in codex
-
-# Or hand it off to a teammate
-sfs push ses_abc123
 ```
 
 See the full [Quickstart Guide](docs/quickstart.md) for detailed steps.
@@ -76,9 +68,10 @@ Sessions are indexed locally for fast browsing via the CLI. Cloud sync is opt-in
 | `sfs import` | Import sessions from any supported tool |
 | `sfs push <id>` | Push a session to the cloud |
 | `sfs pull <id>` | Pull a session from the cloud |
+| `sfs handoff <id> --to EMAIL` | Hand off a session to a teammate with email notification |
+| `sfs search "query"` | Full-text search across all sessions |
 | `sfs daemon start\|stop\|status\|logs` | Manage the background daemon |
 | `sfs config show\|set` | Manage configuration |
-| `sfs search "query"` | Full-text search across all sessions |
 | `sfs mcp serve` | Start MCP server for AI tool integration |
 | `sfs mcp install --for TOOL` | Auto-configure MCP for Claude Code, Cursor, or Copilot |
 | `sfs admin reindex` | Re-extract metadata for all cloud sessions |
@@ -94,11 +87,11 @@ sfs resume ses_abc123 --in codex
 # Start in Gemini, resume in Claude Code
 sfs resume ses_def456 --in claude-code
 
-# Cursor sessions can be resumed in any other tool
+# Cursor sessions can be resumed in any bidirectional tool
 sfs resume ses_ghi789 --in gemini
 ```
 
-SessionFS converts between native formats automatically — message roles, tool calls, thinking blocks, and workspace state are mapped across tools.
+SessionFS converts between native formats automatically — message roles, tool calls, thinking blocks, and workspace state are mapped across tools. See [Compatibility](docs/compatibility.md) for details on which tools support resume and why some are capture-only.
 
 ## Cloud Sync (Optional)
 
@@ -114,7 +107,32 @@ sfs pull <session_id>
 sfs resume <session_id>
 ```
 
-See the [Sync Guide](docs/sync-guide.md) for setup, conflict handling, and self-hosted options.
+Free tier includes 14-day cloud retention with 1 device. See the [Sync Guide](docs/sync-guide.md) for setup, conflict handling, and self-hosted options.
+
+## Session Search
+
+```bash
+# Search across all local sessions
+sfs search "rate limiting middleware"
+
+# MCP server lets AI tools search your past sessions
+sfs mcp install --for claude-code
+```
+
+## Team Handoff
+
+```bash
+# Hand off a session to a teammate
+sfs handoff ses_abc123 --to sarah@company.com
+
+# Teammate pulls and resumes
+sfs pull ses_abc123
+sfs resume ses_abc123 --in codex
+```
+
+## Web Dashboard
+
+A browser-based interface for browsing and managing synced sessions. Accessible at `http://localhost:8000` when running the self-hosted server, or at `app.sessionfs.dev` for cloud accounts.
 
 ## Self-Hosted Server
 
@@ -123,10 +141,6 @@ docker compose up -d
 ```
 
 Starts the SessionFS API server, PostgreSQL, and web dashboard. See the [Sync Guide](docs/sync-guide.md#self-hosted) for full configuration.
-
-## Web Dashboard
-
-A browser-based interface for browsing and managing synced sessions. Accessible at `http://localhost:8000` when running the self-hosted server.
 
 ## Session Format
 
@@ -151,10 +165,11 @@ What works today:
 - Cloud sync with push/pull, email verification, and ETag conflict detection
 - Self-hosted API server with auth, PostgreSQL, S3/GCS storage
 - Web dashboard with session management and search
+- Team handoff with email notification
 - 12 security controls including secret detection, path traversal protection, and audit logging
 
 On the roadmap:
-- Team handoff workflows with notifications
+- Stripe billing integration
 - Session similarity and duplicate detection
 - Cost analytics dashboard
 - VS Code extension
