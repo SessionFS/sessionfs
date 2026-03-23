@@ -55,12 +55,62 @@ def _default_cursor_workspace_storage() -> Path:
     return Path.home() / ".config" / "Cursor" / "User" / "workspaceStorage"
 
 
+def _default_amp_data_dir() -> Path:
+    import os
+    xdg = os.environ.get("XDG_DATA_HOME")
+    if xdg:
+        return Path(xdg) / "amp"
+    return Path.home() / ".local" / "share" / "amp"
+
+
+class CopilotWatcherConfig(BaseModel):
+    """Copilot CLI watcher configuration."""
+
+    enabled: bool = False
+    home_dir: Path = Field(default_factory=lambda: Path.home() / ".copilot")
+
+
+class AmpWatcherConfig(BaseModel):
+    """Amp watcher configuration."""
+
+    enabled: bool = False
+    data_dir: Path = Field(default_factory=_default_amp_data_dir)
+
+
 class CursorWatcherConfig(BaseModel):
     """Cursor IDE watcher configuration."""
 
     enabled: bool = False
     global_db_path: Path = Field(default_factory=_default_cursor_global_db)
     workspace_storage_path: Path = Field(default_factory=_default_cursor_workspace_storage)
+
+
+def _default_cline_storage() -> Path:
+    import platform
+    if platform.system() == "Darwin":
+        return Path.home() / "Library" / "Application Support" / "Code" / "User" / "globalStorage" / "saoudrizwan.claude-dev"
+    return Path.home() / ".config" / "Code" / "User" / "globalStorage" / "saoudrizwan.claude-dev"
+
+
+def _default_roo_code_storage() -> Path:
+    import platform
+    if platform.system() == "Darwin":
+        return Path.home() / "Library" / "Application Support" / "Code" / "User" / "globalStorage" / "rooveterinaryinc.roo-cline"
+    return Path.home() / ".config" / "Code" / "User" / "globalStorage" / "rooveterinaryinc.roo-cline"
+
+
+class ClineWatcherConfig(BaseModel):
+    """Cline VS Code extension watcher configuration."""
+
+    enabled: bool = False
+    storage_dir: Path = Field(default_factory=_default_cline_storage)
+
+
+class RooCodeWatcherConfig(BaseModel):
+    """Roo Code VS Code extension watcher configuration."""
+
+    enabled: bool = False
+    storage_dir: Path = Field(default_factory=_default_roo_code_storage)
 
 
 class SyncConfig(BaseModel):
@@ -82,7 +132,11 @@ class DaemonConfig(BaseModel):
     claude_code: ClaudeCodeWatcherConfig = Field(default_factory=ClaudeCodeWatcherConfig)
     codex: CodexWatcherConfig = Field(default_factory=CodexWatcherConfig)
     gemini: GeminiWatcherConfig = Field(default_factory=GeminiWatcherConfig)
+    copilot: CopilotWatcherConfig = Field(default_factory=CopilotWatcherConfig)
     cursor: CursorWatcherConfig = Field(default_factory=CursorWatcherConfig)
+    cline: ClineWatcherConfig = Field(default_factory=ClineWatcherConfig)
+    roo_code: RooCodeWatcherConfig = Field(default_factory=RooCodeWatcherConfig)
+    amp: AmpWatcherConfig = Field(default_factory=AmpWatcherConfig)
     sync: SyncConfig = Field(default_factory=SyncConfig)
 
 
@@ -119,6 +173,22 @@ enabled = false
 [gemini]
 enabled = false
 # home_dir = "~/.gemini"
+
+[copilot]
+enabled = false
+# home_dir = "~/.copilot"
+
+[cline]
+enabled = false
+# storage_dir = "~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev"
+
+[roo_code]
+enabled = false
+# storage_dir = "~/Library/Application Support/Code/User/globalStorage/rooveterinaryinc.roo-cline"
+
+[amp]
+enabled = false
+# data_dir = "~/.local/share/amp"
 
 [sync]
 enabled = false                          # Must be explicitly enabled

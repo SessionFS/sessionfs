@@ -253,6 +253,15 @@ class Daemon:
             )
             self.watchers.append(gemini_watcher)
 
+        if self.config.copilot.enabled:
+            from sessionfs.watchers.copilot import CopilotWatcher
+            copilot_watcher = CopilotWatcher(
+                config=self.config.copilot,
+                store=self.store,
+                scan_interval=self.config.scan_interval_s,
+            )
+            self.watchers.append(copilot_watcher)
+
         if self.config.cursor.enabled:
             from sessionfs.watchers.cursor import CursorWatcher
             cursor_watcher = CursorWatcher(
@@ -261,6 +270,34 @@ class Daemon:
                 scan_interval=self.config.scan_interval_s,
             )
             self.watchers.append(cursor_watcher)
+
+        if self.config.cline.enabled:
+            from sessionfs.watchers.cline import ClineWatcher
+            cline_watcher = ClineWatcher(
+                config=self.config.cline,
+                store=self.store,
+                scan_interval=self.config.scan_interval_s,
+                tool="cline",
+            )
+            self.watchers.append(cline_watcher)
+
+        if self.config.roo_code.enabled:
+            from sessionfs.watchers.roo import RooCodeWatcher
+            roo_watcher = RooCodeWatcher(
+                config=self.config.roo_code,
+                store=self.store,
+                scan_interval=self.config.scan_interval_s,
+            )
+            self.watchers.append(roo_watcher)
+
+        if self.config.amp.enabled:
+            from sessionfs.watchers.amp import AmpWatcher
+            amp_watcher = AmpWatcher(
+                config=self.config.amp,
+                store=self.store,
+                scan_interval=self.config.scan_interval_s,
+            )
+            self.watchers.append(amp_watcher)
 
     def _check_permissions(self) -> None:
         """M8: Check store directory permissions on startup."""

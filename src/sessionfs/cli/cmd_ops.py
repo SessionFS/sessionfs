@@ -25,7 +25,7 @@ def resume(
     project: str | None = typer.Option(None, help="Target project path (overrides workspace)."),
     tool: str = typer.Option(
         "claude-code", "--in",
-        help="Target tool: claude-code, codex, gemini, cursor",
+        help="Target tool: claude-code, codex, copilot, gemini, cursor, cline, roo-code",
     ),
 ) -> None:
     """Resume a session in an AI tool."""
@@ -46,11 +46,32 @@ def resume(
 
         if tool == "codex":
             _resume_in_codex(session_dir, manifest, target_path, full_id)
+        elif tool == "copilot":
+            _resume_in_copilot(session_dir, manifest, target_path, full_id)
         elif tool == "gemini":
             _resume_in_gemini(session_dir, manifest, target_path, full_id)
         elif tool == "cursor":
             err_console.print(
                 "[yellow]Cursor does not support session injection (capture-only).[/yellow]\n"
+                "Resume in a CLI tool instead:\n"
+                f"  sfs resume {session_id} --in claude-code\n"
+                f"  sfs resume {session_id} --in codex\n"
+                f"  sfs resume {session_id} --in gemini"
+            )
+            raise SystemExit(1)
+        elif tool in ("cline", "roo-code"):
+            tool_label = "Cline" if tool == "cline" else "Roo Code"
+            err_console.print(
+                f"[yellow]{tool_label} does not support session injection (capture-only).[/yellow]\n"
+                "Resume in a CLI tool instead:\n"
+                f"  sfs resume {session_id} --in claude-code\n"
+                f"  sfs resume {session_id} --in codex\n"
+                f"  sfs resume {session_id} --in gemini"
+            )
+            raise SystemExit(1)
+        elif tool == "amp":
+            err_console.print(
+                "[yellow]Amp does not support session injection (capture-only).[/yellow]\n"
                 "Resume in a CLI tool instead:\n"
                 f"  sfs resume {session_id} --in claude-code\n"
                 f"  sfs resume {session_id} --in codex\n"
@@ -112,6 +133,34 @@ def _resume_in_codex(
     console.print(f"  Index updated: {inject_result['index_updated']}")
     console.print()
     console.print(f"Run [bold]codex --thread {result['codex_session_id'][:12]}[/bold] to continue.")
+
+
+def _resume_in_copilot(
+    session_dir: Path, manifest: dict, target_path: str | None, sfs_id: str,
+) -> None:
+    from sessionfs.converters.sfs_to_copilot import convert_sfs_to_copilot
+    from sessionfs.converters.copilot_injector import inject_session as copilot_inject
+
+    cwd = target_path or "/tmp"
+
+    # Convert .sfs → Copilot events.jsonl
+    result = convert_sfs_to_copilot(session_dir, cwd=cwd)
+
+    # Inject into Copilot storage
+    title = manifest.get("title") or sfs_id
+    inject_result = copilot_inject(
+        events_jsonl=Path(result["events_path"]),
+        copilot_session_id=result["copilot_session_id"],
+        cwd=cwd,
+        title=title,
+    )
+
+    console.print("[green]Session resumed in Copilot CLI.[/green]")
+    console.print(f"  Copilot Session ID: {result['copilot_session_id'][:12]}...")
+    console.print(f"  Session: {inject_result['session_path']}")
+    console.print(f"  Messages: {result['message_count']}")
+    console.print()
+    console.print(f"Open Copilot CLI in [bold]{cwd}[/bold] to continue.")
 
 
 def _resume_in_gemini(
