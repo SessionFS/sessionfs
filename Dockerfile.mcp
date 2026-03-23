@@ -1,0 +1,15 @@
+# Remote MCP server — deployed to Cloud Run at mcp.sessionfs.dev
+# Thin proxy that delegates to the SessionFS Cloud API.
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install only MCP server dependencies (no database, no storage)
+COPY pyproject.toml README.md ./
+COPY src/ src/
+RUN pip install --no-cache-dir ".[server]"
+
+EXPOSE 8080
+
+CMD ["uvicorn", "sessionfs.mcp.remote_server:app", "--host", "0.0.0.0", "--port", "8080"]
