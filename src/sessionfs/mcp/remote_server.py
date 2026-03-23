@@ -276,8 +276,12 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 # HTTP/SSE App
 # ---------------------------------------------------------------------------
 
+# Persistent MCP sessions: session_id -> (transport, task_group, api_key)
+_mcp_sessions: dict[str, tuple[StreamableHTTPServerTransport, str]] = {}
+
+
 async def handle_mcp(request: Request):
-    """Handle MCP requests (GET for SSE stream, POST for messages)."""
+    """Handle MCP requests — persistent sessions across requests."""
     global _current_api_key
 
     # Authenticate
@@ -293,21 +297,34 @@ async def handle_mcp(request: Request):
 
     _current_api_key = api_key
 
+    # Check for existing session
+    session_id = request.headers.get("mcp-session-id")
+
+    if session_id and session_id in _mcp_sessions:
+        # Reuse existing transport
+        transport = _mcp_sessions[session_id]
+        await transport.handle_request(request.scope, request.receive, request._send)
+        return
+
+    # New session — create transport and start MCP server
+    import anyio
+
     transport = StreamableHTTPServerTransport(
         mcp_session_id=None,
         is_json_response_enabled=True,
     )
 
     async with transport.connect() as (read_stream, write_stream):
-        # Start MCP server in background
-        import anyio
-
         async with anyio.create_task_group() as tg:
             async def run_server():
                 await mcp.run(read_stream, write_stream, mcp.create_initialization_options())
 
             tg.start_soon(run_server)
             await transport.handle_request(request.scope, request.receive, request._send)
+
+            # Store session for reuse if the transport assigned a session ID
+            if transport.mcp_session_id:
+                _mcp_sessions[transport.mcp_session_id] = transport
 
 
 async def handle_health(request: Request):
