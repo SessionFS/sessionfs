@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-03-24
+
+### Added
+- **Session aliases** — `sfs alias ses_d20e auth-debug` then use `auth-debug` everywhere (show, push, pull, resume, search)
+- **Created date column** in dashboard session list
+- **Server-side pagination** in dashboard (Previous/Next)
+- **Landing page redesign** — 10 sections, glass-morphism, scroll animations, free-during-beta pricing
+- **Logo PNGs** — portal mark at 512/256/128px
+
+### Changed
+- GitHub org migrated from `alwaysnix` to `SessionFS`
+- Dashboard readability: brighter colors (#f0f3f6/#d0d7de), 16px base, #0d1117 background
+- LLM providers: correct model IDs, reasoning model support, Google auth header
+- develop branch is LOCAL ONLY with pre-push hook
+
+### Fixed
+- Cursor parser NULL bubble values
+- Sync duplicate key race conditions (5 fixes)
+- Daemon crash on status write
+- OpenRouter response_format rejection
+- Admin user list showing deleted users
+- Dashboard pagination breaking after first page
+
+### Security
+- Deleted develop from public origin (was accidentally pushed)
+- Pre-push hook prevents future develop pushes
+
 ## [0.3.3] - 2026-03-24
 
 ### Added

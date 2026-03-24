@@ -38,7 +38,7 @@ app.add_typer(handoffs_app, name="handoffs")
 
 # Register top-level commands
 from sessionfs.cli.cmd_sessions import list_sessions, show_session
-from sessionfs.cli.cmd_ops import resume, checkpoint, fork
+from sessionfs.cli.cmd_ops import resume, checkpoint, fork, alias
 from sessionfs.cli.cmd_io import import_sessions, export_session
 from sessionfs.cli.cmd_cloud import push, pull, pull_handoff, list_remote, sync_all, handoff
 from sessionfs.cli.cmd_search import search
@@ -49,6 +49,7 @@ app.command("show")(show_session)
 app.command("resume")(resume)
 app.command("checkpoint")(checkpoint)
 app.command("fork")(fork)
+app.command("alias")(alias)
 app.command("import")(import_sessions)
 app.command("export")(export_session)
 app.command("push")(push)

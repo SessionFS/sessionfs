@@ -27,9 +27,11 @@ export default function SessionList() {
   const [dateRange, setDateRange] = useState('');
   const [sortBy, setSortBy] = useState<SortKey>('date');
 
+  const PAGE_SIZE = 20;
+
   const { data, isLoading, error } = useSessions({
     page,
-    page_size: 100,
+    page_size: PAGE_SIZE,
     source_tool: toolFilter === 'all' ? undefined : toolFilter,
   });
 
@@ -37,14 +39,14 @@ export default function SessionList() {
     if (!data?.sessions) return [];
     let list = data.sessions;
 
-    // Date range filter
+    // Date range filter (client-side on current page)
     if (dateRange) {
       const now = Date.now();
       const ms = dateRange === '24h' ? 86400000 : dateRange === '7d' ? 604800000 : 2592000000;
       list = list.filter((s) => now - new Date(s.updated_at).getTime() < ms);
     }
 
-    // Sort
+    // Sort (client-side on current page — server sorts by date by default)
     const sorted = [...list];
     if (sortBy === 'messages') sorted.sort((a, b) => b.message_count - a.message_count);
     else if (sortBy === 'tokens')
@@ -55,14 +57,12 @@ export default function SessionList() {
       );
     else if (sortBy === 'title')
       sorted.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
-    // 'date' is default from server (already sorted)
 
     return sorted;
   }, [data, dateRange, sortBy]);
 
-  const PAGE_SIZE = 20;
-  const paged = sessions.slice(0, PAGE_SIZE * page);
-  const hasMore = sessions.length > paged.length;
+  const hasMore = data?.has_more ?? false;
+  const totalSessions = data?.total ?? 0;
 
   function handleRowClick(id: string) {
     navigate(`/sessions/${id}`);
@@ -126,16 +126,18 @@ export default function SessionList() {
               <thead>
                 <tr className="bg-bg-secondary text-text-secondary text-sm uppercase tracking-wider">
                   <th className="px-3 py-2 text-left w-20">ID</th>
+                  <th className="px-3 py-2 text-left w-24">Alias</th>
                   <th className="px-3 py-2 text-left w-10">Src</th>
                   <th className="px-3 py-2 text-left w-24">Model</th>
                   <th className="px-3 py-2 text-right w-14">Msgs</th>
                   <th className="px-3 py-2 text-right w-16">Tokens</th>
+                  <th className="px-3 py-2 text-left w-20">Created</th>
                   <th className="px-3 py-2 text-left w-20">Updated</th>
                   <th className="px-3 py-2 text-left">Title</th>
                 </tr>
               </thead>
               <tbody>
-                {paged.map((s) => (
+                {sessions.map((s) => (
                   <tr
                     key={s.id}
                     onClick={() => handleRowClick(s.id)}
@@ -144,11 +146,17 @@ export default function SessionList() {
                     className="border-t border-border hover:bg-bg-tertiary cursor-pointer transition-colors focus:bg-bg-tertiary outline-none"
                   >
                     <td className="px-3 py-2 font-mono text-accent text-sm">{s.id.slice(4, 12)}</td>
+                    <td className="px-3 py-2 text-purple-400 text-sm font-mono truncate max-w-[6rem]">
+                      {s.alias || ''}
+                    </td>
                     <td className="px-3 py-2 text-text-muted text-sm">{abbreviateTool(s.source_tool)}</td>
                     <td className="px-3 py-2 text-text-secondary text-sm">{abbreviateModel(s.model_id)}</td>
                     <td className="px-3 py-2 text-right text-text-secondary tabular-nums">{s.message_count}</td>
                     <td className="px-3 py-2 text-right text-text-secondary tabular-nums">
                       {formatTokens(s.total_input_tokens + s.total_output_tokens)}
+                    </td>
+                    <td className="px-3 py-2 text-text-muted text-sm">
+                      <RelativeDate iso={s.created_at} />
                     </td>
                     <td className="px-3 py-2 text-text-muted text-sm">
                       <RelativeDate iso={s.updated_at} />
@@ -168,17 +176,27 @@ export default function SessionList() {
           {/* Pagination */}
           <div className="flex items-center justify-between mt-3 text-sm text-text-muted">
             <span>
-              Showing {paged.length} of {sessions.length} sessions
-              {data && data.total > sessions.length && ` (${data.total} total on server)`}
+              Page {page} — {sessions.length} sessions
+              {totalSessions > 0 && ` (${totalSessions} total)`}
             </span>
-            {hasMore && (
-              <button
-                onClick={() => setPage((p) => p + 1)}
-                className="px-3 py-1 bg-bg-secondary border border-border rounded hover:border-text-muted transition-colors"
-              >
-                Load more
-              </button>
-            )}
+            <div className="flex gap-2">
+              {page > 1 && (
+                <button
+                  onClick={() => setPage((p) => p - 1)}
+                  className="px-3 py-1 bg-bg-secondary border border-border rounded hover:border-text-muted transition-colors"
+                >
+                  Previous
+                </button>
+              )}
+              {hasMore && (
+                <button
+                  onClick={() => setPage((p) => p + 1)}
+                  className="px-3 py-1 bg-bg-secondary border border-border rounded hover:border-text-muted transition-colors"
+                >
+                  Next
+                </button>
+              )}
+            </div>
           </div>
         </>
       )}

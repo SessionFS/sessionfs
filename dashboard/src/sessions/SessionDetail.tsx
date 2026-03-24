@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useSession } from '../hooks/useSession';
 import { useAudit } from '../hooks/useAudit';
+import { useAuth } from '../auth/AuthContext';
 import { abbreviateModel } from '../utils/models';
 import { formatTokens } from '../utils/tokens';
 import { estimateCost } from '../utils/cost';
@@ -17,11 +18,46 @@ type Tab = 'messages' | 'audit';
 export default function SessionDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { data: session, isLoading, error } = useSession(id!);
+  const { data: session, isLoading, error, refetch } = useSession(id!);
   const { data: auditReport } = useAudit(id!);
+  const { auth } = useAuth();
   const [showHandoff, setShowHandoff] = useState(false);
   const [showAuditModal, setShowAuditModal] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>('messages');
+  const [editingAlias, setEditingAlias] = useState(false);
+  const [aliasInput, setAliasInput] = useState('');
+  const [aliasError, setAliasError] = useState<string | null>(null);
+
+  const handleAliasEdit = useCallback(() => {
+    setAliasInput(session?.alias || '');
+    setAliasError(null);
+    setEditingAlias(true);
+  }, [session?.alias]);
+
+  const handleAliasSave = useCallback(async () => {
+    if (!auth || !session) return;
+    const trimmed = aliasInput.trim();
+    try {
+      if (trimmed) {
+        await auth.client.setAlias(session.id, trimmed);
+      } else {
+        await auth.client.clearAlias(session.id);
+      }
+      setEditingAlias(false);
+      setAliasError(null);
+      refetch();
+    } catch (err) {
+      setAliasError(String(err));
+    }
+  }, [auth, session, aliasInput, refetch]);
+
+  const handleAliasKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === 'Enter') handleAliasSave();
+      if (e.key === 'Escape') setEditingAlias(false);
+    },
+    [handleAliasSave],
+  );
 
   if (isLoading) {
     return <div className="p-8 text-text-muted">Loading session...</div>;
@@ -66,6 +102,33 @@ export default function SessionDetail() {
 
           <Section title="Session">
             <Row label="ID" value={session.id} mono />
+            <Row label="Alias">
+              {editingAlias ? (
+                <div className="flex flex-col items-end gap-1">
+                  <input
+                    type="text"
+                    value={aliasInput}
+                    onChange={(e) => setAliasInput(e.target.value)}
+                    onKeyDown={handleAliasKeyDown}
+                    onBlur={handleAliasSave}
+                    autoFocus
+                    placeholder="e.g. auth-debug"
+                    className="w-[140px] px-1.5 py-0.5 text-sm bg-bg-primary border border-border rounded text-text-primary focus:outline-none focus:border-accent"
+                  />
+                  {aliasError && (
+                    <span className="text-red-400 text-[10px]">{aliasError}</span>
+                  )}
+                </div>
+              ) : (
+                <span
+                  onClick={handleAliasEdit}
+                  className="text-text-secondary text-sm cursor-pointer hover:text-accent truncate ml-2 max-w-[140px]"
+                  title="Click to edit alias"
+                >
+                  {session.alias || <span className="text-text-muted italic">Set alias</span>}
+                </span>
+              )}
+            </Row>
             <Row label="Tool" value={`${session.source_tool} ${session.source_tool_version || ''}`} />
             <Row label="Model" value={abbreviateModel(session.model_id)} />
             {session.original_session_id && (

@@ -11,6 +11,7 @@ from pydantic import BaseModel, field_validator
 class SessionSummary(BaseModel):
     id: str
     title: str | None = None
+    alias: str | None = None
     tags: list[str] = []
     source_tool: str
     model_id: str | None = None
@@ -51,6 +52,7 @@ class SessionUploadResponse(BaseModel):
 
 class SessionMetadataUpdate(BaseModel):
     title: str | None = None
+    alias: str | None = None
     tags: list[str] | None = None
 
     @field_validator("title")
@@ -78,6 +80,21 @@ class SessionMetadataUpdate(BaseModel):
                 raise ValueError("Each tag must be 50 characters or fewer")
             if "\x00" in tag:
                 raise ValueError("Null bytes not allowed in tags")
+        return v
+
+
+class SetAliasRequest(BaseModel):
+    alias: str
+
+    @field_validator("alias")
+    @classmethod
+    def validate_alias(cls, v: str) -> str:
+        if len(v) < 3:
+            raise ValueError("Alias must be at least 3 characters")
+        if len(v) > 100:
+            raise ValueError("Alias must be 100 characters or fewer")
+        if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$", v):
+            raise ValueError("Alias must be alphanumeric, hyphens, and underscores only (no spaces), starting with alphanumeric")
         return v
 
 
@@ -123,6 +140,7 @@ class SearchMatch(BaseModel):
 class SearchResult(BaseModel):
     session_id: str
     title: str | None
+    alias: str | None = None
     source_tool: str
     model_id: str | None
     message_count: int

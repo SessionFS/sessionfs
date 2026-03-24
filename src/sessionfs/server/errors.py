@@ -38,11 +38,18 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        # Sanitize errors: Pydantic v2 can include non-serializable objects in ctx
+        sanitized_errors = []
+        for err in exc.errors():
+            clean = {k: v for k, v in err.items() if k != "ctx"}
+            if "ctx" in err:
+                clean["ctx"] = {k: str(v) for k, v in err["ctx"].items()}
+            sanitized_errors.append(clean)
         body = ErrorResponse(
             error=ErrorDetail(
                 code="422",
                 message="Validation error",
-                details={"errors": exc.errors()},
+                details={"errors": sanitized_errors},
             )
         )
         return JSONResponse(status_code=422, content=body.model_dump())

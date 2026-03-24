@@ -163,6 +163,7 @@ def list_sessions(
         # Table output (Issue 3: clean formatting)
         table = Table(title=f"Sessions ({len(sessions)})", show_lines=False, expand=True)
         table.add_column("ID", style="cyan", no_wrap=True, min_width=8, max_width=8)
+        table.add_column("Alias", style="magenta", no_wrap=True, max_width=16)
         table.add_column("Src", style="dim", no_wrap=True, max_width=3)
         table.add_column("Model", no_wrap=True, max_width=10)
         table.add_column("Msgs", justify="right", no_wrap=True, max_width=5)
@@ -197,8 +198,20 @@ def list_sessions(
                     except (json.JSONDecodeError, OSError):
                         pass
 
+            # Load alias from manifest if available
+            alias_display = ""
+            if session_dir:
+                manifest_path = session_dir / "manifest.json"
+                if manifest_path.exists():
+                    try:
+                        manifest_data = json.loads(manifest_path.read_text())
+                        alias_display = manifest_data.get("alias", "") or ""
+                    except (json.JSONDecodeError, OSError):
+                        pass
+
             table.add_row(
                 s["session_id"][:8],
+                alias_display,
                 abbreviate_tool(s.get("source_tool")),
                 abbreviate_model(s.get("model_id")),
                 str(s.get("message_count", 0)),
@@ -239,8 +252,13 @@ def show_session(
         stats = manifest.get("stats", {})
 
         # Detail panel
+        alias_val = manifest.get("alias")
         lines = [
             f"[bold]Session ID:[/bold] {manifest.get('session_id', '')}",
+        ]
+        if alias_val:
+            lines.append(f"[bold]Alias:[/bold] {alias_val}")
+        lines += [
             f"[bold]Title:[/bold] {manifest.get('title', 'Untitled')}",
             f"[bold]Tool:[/bold] {source.get('tool', '')} {source.get('tool_version', '')}",
             f"[bold]Model:[/bold] {model.get('model_id', '')} ({model.get('provider', '')})",

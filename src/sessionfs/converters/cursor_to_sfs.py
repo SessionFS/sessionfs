@@ -153,7 +153,7 @@ def discover_cursor_composers(
                 row = conn.execute(
                     "SELECT value FROM ItemTable WHERE key = 'composer.composerData'"
                 ).fetchone()
-                if row:
+                if row and row["value"] is not None:
                     data = json.loads(row["value"])
                     for c in data.get("allComposers", []):
                         cid = c.get("composerId", "")
@@ -214,8 +214,11 @@ def parse_cursor_composer(
 
     for row in rows:
         try:
-            bubble = json.loads(row["value"])
-        except (json.JSONDecodeError, KeyError):
+            raw = row["value"]
+            if raw is None:
+                continue
+            bubble = json.loads(raw)
+        except (json.JSONDecodeError, KeyError, TypeError):
             continue
 
         bubble_type = bubble.get("type", 0)
