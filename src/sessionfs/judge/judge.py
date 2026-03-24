@@ -23,24 +23,36 @@ JUDGE_SYSTEM_PROMPT = """\
 You are a rigorous code review judge. Your job is to verify claims made by an \
 AI coding assistant against the evidence from tool calls and their results.
 
-For each claim, determine:
-- **verified**: The evidence clearly supports the claim.
-- **unverified**: There is no evidence to confirm or deny the claim.
-- **hallucination**: The evidence contradicts the claim, or the claim describes \
-something that demonstrably did not happen.
+VERDICT RULES (follow exactly):
 
-Assess severity:
-- **minor**: Cosmetic or inconsequential inaccuracy.
-- **moderate**: Could mislead a developer or cause wasted effort.
-- **major**: Could cause bugs, data loss, or security issues if trusted.
+- **verified**: A tool_result block exists that DIRECTLY CONFIRMS the claim. \
+Examples: exit code 0 after "test passes", file content matches described change, \
+command output matches what the assistant quoted.
+
+- **hallucination**: A tool_result block exists that DIRECTLY CONTRADICTS the claim. \
+Examples: exit code 1 after "test passes", "file not found" after "I created file X", \
+actual command output differs from what the assistant quoted. \
+A hallucination REQUIRES PROOF OF CONTRADICTION — concrete evidence showing the claim is wrong.
+
+- **unverified**: No tool_result evidence exists to confirm OR contradict the claim. \
+This includes claims about files, tests, or commands where no corresponding tool call was made. \
+ABSENCE OF EVIDENCE IS ALWAYS "unverified", NEVER "hallucination".
+
+If in doubt between hallucination and unverified, choose UNVERIFIED. \
+Only use hallucination when evidence PROVES the claim is false.
+
+SEVERITY RULES:
+- **minor**: Cosmetic or inconsequential inaccuracy (e.g., wrong line number).
+- **moderate**: Could mislead a developer or cause wasted effort (e.g., wrong file path).
+- **major**: Could cause bugs, data loss, or security issues if trusted (e.g., claiming tests pass when they fail).
 
 Respond with a JSON array of objects, one per claim. Each object must have:
 {
   "claim_index": <int>,
   "verdict": "verified" | "unverified" | "hallucination",
   "severity": "minor" | "moderate" | "major",
-  "evidence": "<brief quote or reference to supporting/contradicting evidence>",
-  "explanation": "<1-2 sentence explanation>"
+  "evidence": "<brief quote or reference to the specific tool_result that supports/contradicts>",
+  "explanation": "<1-2 sentence explanation citing the specific evidence>"
 }
 
 Only output the JSON array, nothing else.
@@ -324,6 +336,75 @@ async def judge_session(
         model=model,
         timestamp=datetime.now(timezone.utc).isoformat(),
         findings=all_findings,
+        summary=summary,
+    )
+
+    save_report(report, sfs_dir)
+    return report
+
+
+async def judge_with_consensus(
+    session_id: str,
+    sfs_dir: Path,
+    model: str = "claude-sonnet-4",
+    api_key: str | None = None,
+    provider: str | None = None,
+    passes: int = 3,
+    threshold: int = 2,
+) -> JudgeReport:
+    """Run the judge multiple times and take consensus.
+
+    Only reports findings where at least `threshold` out of `passes`
+    agree on the verdict. Eliminates flaky single-run variance.
+    Costs `passes`x more than a single run.
+    """
+    reports: list[JudgeReport] = []
+    for i in range(passes):
+        logger.info("Consensus pass %d/%d", i + 1, passes)
+        report = await judge_session(session_id, sfs_dir, model, api_key, provider)
+        reports.append(report)
+
+    # Merge: group findings by (message_index, claim), take majority verdict
+    from collections import Counter
+
+    finding_votes: dict[tuple[int, str], list[Finding]] = {}
+    for report in reports:
+        for f in report.findings:
+            key = (f.message_index, f.claim)
+            finding_votes.setdefault(key, []).append(f)
+
+    consensus_findings: list[Finding] = []
+    for key, findings in finding_votes.items():
+        verdicts = Counter(f.verdict for f in findings)
+        top_verdict, top_count = verdicts.most_common(1)[0]
+
+        if top_count < threshold:
+            # No consensus — default to least severe: unverified
+            top_verdict = "unverified"
+
+        severities = Counter(f.severity for f in findings)
+        top_severity = severities.most_common(1)[0][0]
+
+        # Use the finding with the majority verdict for evidence/explanation
+        representative = next(f for f in findings if f.verdict == top_verdict)
+        consensus_findings.append(
+            Finding(
+                message_index=representative.message_index,
+                claim=representative.claim,
+                verdict=top_verdict,
+                severity=top_severity,
+                evidence=representative.evidence,
+                explanation=representative.explanation,
+            )
+        )
+
+    summary = _compute_summary(consensus_findings)
+
+    report = JudgeReport(
+        session_id=session_id,
+        model=f"{model} (consensus {passes}x)",
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        findings=consensus_findings,
         summary=summary,
     )
 

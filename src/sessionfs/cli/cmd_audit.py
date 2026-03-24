@@ -25,6 +25,7 @@ def audit(
     model: str = typer.Option("claude-sonnet-4", "--model", help="Judge LLM model"),
     api_key: Optional[str] = typer.Option(None, "--api-key", help="LLM API key"),
     provider: Optional[str] = typer.Option(None, "--provider", help="LLM provider (anthropic, openai, google)"),
+    consensus: bool = typer.Option(False, "--consensus", help="Run 3 passes, report only where 2+ agree"),
     report_only: bool = typer.Option(False, "--report", help="Show existing report only"),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ) -> None:
@@ -46,8 +47,10 @@ def audit(
         raise typer.Exit(1)
 
     try:
+        if consensus:
+            console.print("[dim]Running 3 consensus passes (3x cost)...[/dim]")
         report = asyncio.run(
-            _run_judge(session_id, session_dir, model, resolved_key, provider)
+            _run_judge(session_id, session_dir, model, resolved_key, provider, consensus)
         )
     except KeyboardInterrupt:
         raise typer.Exit(1)
@@ -107,8 +110,22 @@ async def _run_judge(
     model: str,
     api_key: str,
     provider: str | None,
+    consensus: bool = False,
 ):
     """Run the judge pipeline asynchronously."""
+    if consensus:
+        from sessionfs.judge.judge import judge_with_consensus
+
+        return await judge_with_consensus(
+            session_id=session_id,
+            sfs_dir=session_dir,
+            model=model,
+            api_key=api_key,
+            provider=provider,
+            passes=3,
+            threshold=2,
+        )
+
     from sessionfs.judge.judge import judge_session
 
     return await judge_session(

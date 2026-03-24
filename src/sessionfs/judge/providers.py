@@ -39,7 +39,7 @@ def _detect_provider(model: str) -> str:
     )
 
 
-async def _call_anthropic(model: str, system: str, prompt: str, api_key: str) -> str:
+async def _call_anthropic(model: str, system: str, prompt: str, api_key: str, temperature: float = 0) -> str:
     """Call the Anthropic Messages API."""
     headers = {
         "x-api-key": api_key,
@@ -49,6 +49,7 @@ async def _call_anthropic(model: str, system: str, prompt: str, api_key: str) ->
     body = {
         "model": model,
         "max_tokens": 4096,
+        "temperature": temperature,
         "system": system,
         "messages": [{"role": "user", "content": prompt}],
     }
@@ -65,7 +66,7 @@ async def _call_anthropic(model: str, system: str, prompt: str, api_key: str) ->
     return "\n".join(parts)
 
 
-async def _call_openai(model: str, system: str, prompt: str, api_key: str) -> str:
+async def _call_openai(model: str, system: str, prompt: str, api_key: str, temperature: float = 0) -> str:
     """Call the OpenAI Chat Completions API."""
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -78,6 +79,7 @@ async def _call_openai(model: str, system: str, prompt: str, api_key: str) -> st
             {"role": "user", "content": prompt},
         ],
         "max_tokens": 4096,
+        "temperature": temperature,
     }
     async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.post(_OPENAI_URL, json=body, headers=headers)
@@ -86,14 +88,14 @@ async def _call_openai(model: str, system: str, prompt: str, api_key: str) -> st
     return data["choices"][0]["message"]["content"]
 
 
-async def _call_google(model: str, system: str, prompt: str, api_key: str) -> str:
+async def _call_google(model: str, system: str, prompt: str, api_key: str, temperature: float = 0) -> str:
     """Call the Google Generative Language API."""
     url = _GOOGLE_URL_TEMPLATE.format(model=model)
     params = {"key": api_key}
     body = {
         "system_instruction": {"parts": [{"text": system}]},
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"maxOutputTokens": 4096},
+        "generationConfig": {"maxOutputTokens": 4096, "temperature": temperature},
     }
     async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.post(url, json=body, params=params)
@@ -112,6 +114,7 @@ async def call_llm(
     prompt: str,
     api_key: str,
     provider: str | None = None,
+    temperature: float = 0,
 ) -> str:
     """Call an LLM provider with the given system prompt and user prompt.
 
@@ -121,19 +124,20 @@ async def call_llm(
     - gemini-* -> google
 
     Uses httpx directly — no SDK dependencies. The API key is used for
-    this single request only and is never persisted.
+    this single request only and is never persisted. Temperature defaults
+    to 0 for deterministic judge output.
     """
     if provider is None:
         provider = _detect_provider(model)
 
     provider = provider.lower()
-    logger.info("Calling %s provider with model %s", provider, model)
+    logger.info("Calling %s provider with model %s (temp=%s)", provider, model, temperature)
 
     if provider == "anthropic":
-        return await _call_anthropic(model, system, prompt, api_key)
+        return await _call_anthropic(model, system, prompt, api_key, temperature)
     elif provider == "openai":
-        return await _call_openai(model, system, prompt, api_key)
+        return await _call_openai(model, system, prompt, api_key, temperature)
     elif provider == "google":
-        return await _call_google(model, system, prompt, api_key)
+        return await _call_google(model, system, prompt, api_key, temperature)
     else:
         raise ValueError(f"Unsupported provider: {provider}")
