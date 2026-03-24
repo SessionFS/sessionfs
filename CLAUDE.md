@@ -38,9 +38,11 @@ A `.sfs` session is a directory containing: `manifest.json`, `messages.jsonl`, `
 
 ## Git Branch Policy
 
-- **Default push target: `develop` (private).** All commits and pushes go here unless explicitly told otherwise. This branch contains internal files (.agents/, src/spikes/, docs/security/, DOGFOOD.md).
-- **Public releases: `main` only.** When the user says "go public" or requests a public release, cherry-pick or merge the relevant changes into the public branch. Strip all internal files before pushing — the .gitignore on that branch already excludes them.
-- **Never push internal files to the public branch.** Agent personas, research spikes, threat models, dogfood logs, and business strategy must stay on the release branch only.
+- **`develop` is LOCAL ONLY.** NEVER push develop to origin. The public repo must only have `main`. Develop contains internal files (.agents/, src/spikes/, docs/security/, DOGFOOD.md, brand/, .release/, CLAUDE.md) that must never be public.
+- **All work happens on `develop` locally.** Commits go here. Tests run here.
+- **Public releases: merge to `main`, sanitize, push.** Use `.release/private-files.txt` to strip internal files before pushing main. The `/release` skill handles this.
+- **NEVER run `git push origin develop`.** This is a security breach — it exposes internal strategy, agent personas, threat models, and business docs.
+- **If develop is accidentally pushed:** delete immediately with `git push origin --delete develop`.
 
 ## Key Decisions (Do Not Violate)
 

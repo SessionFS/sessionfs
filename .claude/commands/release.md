@@ -61,15 +61,15 @@ grep -rn "OLD_TOOL_COUNT\|old version" README.md docs/ landing/ pyproject.toml
 cd dashboard && npm run build && npx vercel --yes --prod
 ```
 
-### 8. Commit on develop
+### 8. Commit on develop (LOCAL ONLY)
 
-Note: files in `.gitignore` (landing/, .claude/, .release/, etc.) need `git add -f` to track on develop.
+**NEVER push develop to origin.** Develop is local only — it contains internal files.
 
 ```bash
 git add -A
-git add -f landing/ .claude/commands/ .release/  # force-add gitignored private files
+git add -f landing/ .claude/commands/ .release/ brand/  # force-add gitignored private files
 git commit --author="sessionfsbot <bot@sessionfs.dev>" -m "Release vX.Y.Z"
-git push origin develop
+# DO NOT push develop. Only main goes to origin.
 ```
 
 ### 9. Merge to main with sanitization
