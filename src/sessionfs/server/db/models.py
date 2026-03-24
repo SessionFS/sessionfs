@@ -76,6 +76,7 @@ class Session(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     messages_text: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    alias: Mapped[str | None] = mapped_column(String(100), nullable=True)
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

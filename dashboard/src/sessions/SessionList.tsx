@@ -126,6 +126,7 @@ export default function SessionList() {
               <thead>
                 <tr className="bg-bg-secondary text-text-secondary text-sm uppercase tracking-wider">
                   <th className="px-3 py-2 text-left w-20">ID</th>
+                  <th className="px-3 py-2 text-left w-24">Alias</th>
                   <th className="px-3 py-2 text-left w-10">Src</th>
                   <th className="px-3 py-2 text-left w-24">Model</th>
                   <th className="px-3 py-2 text-right w-14">Msgs</th>
@@ -145,6 +146,9 @@ export default function SessionList() {
                     className="border-t border-border hover:bg-bg-tertiary cursor-pointer transition-colors focus:bg-bg-tertiary outline-none"
                   >
                     <td className="px-3 py-2 font-mono text-accent text-sm">{s.id.slice(4, 12)}</td>
+                    <td className="px-3 py-2 text-purple-400 text-sm font-mono truncate max-w-[6rem]">
+                      {s.alias || ''}
+                    </td>
                     <td className="px-3 py-2 text-text-muted text-sm">{abbreviateTool(s.source_tool)}</td>
                     <td className="px-3 py-2 text-text-secondary text-sm">{abbreviateModel(s.model_id)}</td>
                     <td className="px-3 py-2 text-right text-text-secondary tabular-nums">{s.message_count}</td>

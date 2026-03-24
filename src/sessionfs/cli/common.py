@@ -30,19 +30,25 @@ def open_store(initialize: bool = True) -> LocalStore:
 
 
 def resolve_session_id(store: LocalStore, prefix: str) -> str:
-    """Resolve a session ID prefix to a full session ID.
+    """Resolve a session ID prefix or alias to a full session ID.
 
-    Requires at least 4 characters. Exact match takes priority.
+    Checks: exact ID match, alias match (from local manifests), then prefix search.
+    Requires at least 3 characters for aliases, 4 for ID prefixes.
     Errors on ambiguity or not found.
     """
-    if len(prefix) < 4:
-        err_console.print("[red]Session ID prefix must be at least 4 characters.[/red]")
-        raise SystemExit(1)
-
     # Exact match first
     session = store.get_session_metadata(prefix)
     if session:
         return prefix
+
+    # Check if input matches an alias in any local session's manifest
+    alias_match = _resolve_alias(store, prefix)
+    if alias_match:
+        return alias_match
+
+    if len(prefix) < 4:
+        err_console.print("[red]Session ID prefix must be at least 4 characters.[/red]")
+        raise SystemExit(1)
 
     # Prefix search
     matches = store.find_sessions_by_prefix(prefix)
@@ -58,6 +64,28 @@ def resolve_session_id(store: LocalStore, prefix: str) -> str:
         raise SystemExit(1)
 
     return matches[0]["session_id"]
+
+
+def _resolve_alias(store: LocalStore, alias: str) -> str | None:
+    """Search local session manifests for a matching alias.
+
+    Returns the session ID if found, None otherwise.
+    """
+    sessions = store.list_sessions()
+    for s in sessions:
+        session_dir = store.get_session_dir(s["session_id"])
+        if session_dir is None:
+            continue
+        manifest_path = session_dir / "manifest.json"
+        if not manifest_path.exists():
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text())
+            if manifest.get("alias") == alias:
+                return s["session_id"]
+        except (json.JSONDecodeError, OSError):
+            continue
+    return None
 
 
 def read_sfs_messages(session_dir: Path) -> list[dict[str, Any]]:

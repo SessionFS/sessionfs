@@ -28,6 +28,7 @@ from sessionfs.server.schemas.sessions import (
     SearchMatch,
     SearchResponse,
     SearchResult,
+    SetAliasRequest,
     SessionDetail,
     SessionListResponse,
     SessionMetadataUpdate,
@@ -66,6 +67,16 @@ def _validate_session_id(session_id: str) -> str:
     if not _SESSION_ID_RE.match(session_id):
         raise HTTPException(status_code=400, detail="Invalid session ID format")
     return session_id
+
+
+def _validate_session_id_or_alias(session_id_or_alias: str) -> str:
+    """Validate as either a session ID or alias format, or raise 400."""
+    if _SESSION_ID_RE.match(session_id_or_alias):
+        return session_id_or_alias
+    # Check alias format: 3-100 chars, alphanumeric + hyphens + underscores
+    if re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{2,99}$", session_id_or_alias):
+        return session_id_or_alias
+    raise HTTPException(status_code=400, detail="Invalid session ID or alias format")
 
 
 async def _read_upload(file: UploadFile, max_bytes: int = MAX_UPLOAD_BYTES) -> bytes:
@@ -141,6 +152,7 @@ def _session_to_summary(s: Session) -> SessionSummary:
     return SessionSummary(
         id=s.id,
         title=s.title,
+        alias=s.alias,
         tags=json.loads(s.tags) if s.tags else [],
         source_tool=s.source_tool,
         model_id=s.model_id,
@@ -160,6 +172,7 @@ def _session_to_detail(s: Session) -> SessionDetail:
     return SessionDetail(
         id=s.id,
         title=s.title,
+        alias=s.alias,
         tags=json.loads(s.tags) if s.tags else [],
         source_tool=s.source_tool,
         source_tool_version=s.source_tool_version,
@@ -566,7 +579,7 @@ async def search_sessions(
         from sqlalchemy import text as sa_text
 
         search_sql = sa_text("""
-            SELECT id, title, source_tool, model_id, message_count, updated_at,
+            SELECT id, title, alias, source_tool, model_id, message_count, updated_at,
                    ts_headline('english', messages_text, query,
                                'MaxWords=30, MinWords=15, StartSel=<mark>, StopSel=</mark>') as snippet
             FROM sessions, plainto_tsquery('english', :q) query
@@ -592,7 +605,7 @@ async def search_sessions(
         from sqlalchemy import text as sa_text
 
         search_sql = sa_text("""
-            SELECT id, title, source_tool, model_id, message_count, updated_at,
+            SELECT id, title, alias, source_tool, model_id, message_count, updated_at,
                    substr(messages_text, max(1, instr(lower(messages_text), lower(:q)) - 40), 100) as snippet
             FROM sessions
             WHERE user_id = :user_id
@@ -642,6 +655,7 @@ async def search_sessions(
         results.append(SearchResult(
             session_id=row.id,
             title=row.title,
+            alias=row.alias,
             source_tool=row.source_tool,
             model_id=row.model_id,
             message_count=row.message_count,
@@ -665,7 +679,7 @@ async def get_session(
     db: AsyncSession = Depends(get_db),
 ):
     """Get session metadata."""
-    _validate_session_id(session_id)
+    _validate_session_id_or_alias(session_id)
     session = await _get_user_session(db, user.id, session_id)
     return _session_to_detail(session)
 
@@ -678,7 +692,7 @@ async def download_session(
     request: Request = None,
 ):
     """Download the session tar.gz blob."""
-    _validate_session_id(session_id)
+    _validate_session_id_or_alias(session_id)
     session = await _get_user_session(db, user.id, session_id)
     blob_store = _get_blob_store(request)
     data = await blob_store.get(session.blob_key)
@@ -699,12 +713,27 @@ async def update_session(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Update session title and/or tags."""
-    _validate_session_id(session_id)
+    """Update session title, alias, and/or tags."""
+    _validate_session_id_or_alias(session_id)
     session = await _get_user_session(db, user.id, session_id)
 
     if body.title is not None:
         session.title = _sanitize_string(body.title)
+    if body.alias is not None:
+        if not _ALIAS_RE.match(body.alias):
+            raise HTTPException(status_code=400, detail="Alias must be 3-100 chars, alphanumeric/hyphens/underscores, starting with alphanumeric")
+        # Check uniqueness
+        existing = await db.execute(
+            select(Session).where(
+                Session.alias == body.alias,
+                Session.user_id == user.id,
+                Session.id != session.id,
+                Session.is_deleted == False,  # noqa: E712
+            )
+        )
+        if existing.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail=f"Alias '{body.alias}' is already in use")
+        session.alias = body.alias
     if body.tags is not None:
         # M11: Validate tags
         for tag in body.tags:
@@ -722,6 +751,52 @@ async def update_session(
     return _session_to_detail(session)
 
 
+@router.put("/{session_id}/alias", response_model=SessionDetail)
+async def set_alias(
+    session_id: str,
+    body: SetAliasRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Set or update a session alias."""
+    _validate_session_id_or_alias(session_id)
+    session = await _get_user_session(db, user.id, session_id)
+
+    # Check uniqueness per user
+    existing = await db.execute(
+        select(Session).where(
+            Session.alias == body.alias,
+            Session.user_id == user.id,
+            Session.id != session.id,
+            Session.is_deleted == False,  # noqa: E712
+        )
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail=f"Alias '{body.alias}' is already in use")
+
+    session.alias = body.alias
+    session.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(session)
+    return _session_to_detail(session)
+
+
+@router.delete("/{session_id}/alias", status_code=200, response_model=SessionDetail)
+async def clear_alias(
+    session_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Clear a session alias."""
+    _validate_session_id_or_alias(session_id)
+    session = await _get_user_session(db, user.id, session_id)
+    session.alias = None
+    session.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(session)
+    return _session_to_detail(session)
+
+
 @router.delete("/{session_id}", status_code=204)
 async def delete_session(
     session_id: str,
@@ -729,7 +804,7 @@ async def delete_session(
     db: AsyncSession = Depends(get_db),
 ):
     """Soft delete a session."""
-    _validate_session_id(session_id)
+    _validate_session_id_or_alias(session_id)
     session = await _get_user_session(db, user.id, session_id)
     session.is_deleted = True
     session.deleted_at = datetime.now(timezone.utc)
@@ -913,7 +988,7 @@ async def sync_pull(
     request: Request = None,
 ):
     """Pull session data with ETag-based caching."""
-    _validate_session_id(session_id)
+    _validate_session_id_or_alias(session_id)
     session = await _get_user_session(db, user.id, session_id)
 
     # Check If-None-Match
@@ -943,7 +1018,7 @@ async def get_session_messages(
     request: Request = None,
 ):
     """Get paginated messages from a session archive."""
-    _validate_session_id(session_id)
+    _validate_session_id_or_alias(session_id)
     session = await _get_user_session(db, user.id, session_id)
     blob_store = _get_blob_store(request)
     data = await blob_store.get(session.blob_key)
@@ -975,7 +1050,7 @@ async def get_session_workspace(
     request: Request = None,
 ):
     """Get workspace metadata from a session archive."""
-    _validate_session_id(session_id)
+    _validate_session_id_or_alias(session_id)
     session = await _get_user_session(db, user.id, session_id)
     blob_store = _get_blob_store(request)
     data = await blob_store.get(session.blob_key)
@@ -999,7 +1074,7 @@ async def get_session_tools(
     request: Request = None,
 ):
     """Get tools metadata from a session archive."""
-    _validate_session_id(session_id)
+    _validate_session_id_or_alias(session_id)
     session = await _get_user_session(db, user.id, session_id)
     blob_store = _get_blob_store(request)
     data = await blob_store.get(session.blob_key)
@@ -1133,8 +1208,10 @@ async def create_share_link(
     db: AsyncSession = Depends(get_db),
 ):
     """Create a share link for a session."""
-    _validate_session_id(session_id)
-    await _get_user_session(db, user.id, session_id)
+    _validate_session_id_or_alias(session_id)
+    session = await _get_user_session(db, user.id, session_id)
+    # Use the real session ID for the share link FK
+    session_id = session.id
 
     link_id = str(uuid.uuid4())
     token = secrets.token_urlsafe(48)
@@ -1237,16 +1314,33 @@ async def access_share_link(
     )
 
 
-async def _get_user_session(db: AsyncSession, user_id: str, session_id: str) -> Session:
-    """Get a session owned by the user, or raise 404."""
+_ALIAS_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{2,99}$")
+
+
+async def _get_user_session(db: AsyncSession, user_id: str, session_id_or_alias: str) -> Session:
+    """Get a session owned by the user by ID or alias, or raise 404."""
+    # Try by ID first
     result = await db.execute(
         select(Session).where(
-            Session.id == session_id,
+            Session.id == session_id_or_alias,
             Session.user_id == user_id,
             Session.is_deleted == False,  # noqa: E712
         )
     )
     session = result.scalar_one_or_none()
-    if session is None:
-        raise HTTPException(status_code=404, detail="Session not found")
-    return session
+    if session:
+        return session
+
+    # Try by alias
+    result = await db.execute(
+        select(Session).where(
+            Session.alias == session_id_or_alias,
+            Session.user_id == user_id,
+            Session.is_deleted == False,  # noqa: E712
+        )
+    )
+    session = result.scalar_one_or_none()
+    if session:
+        return session
+
+    raise HTTPException(status_code=404, detail="Session not found")

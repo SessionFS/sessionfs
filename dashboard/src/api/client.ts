@@ -1,6 +1,7 @@
 export interface SessionSummary {
   id: string;
   title: string | null;
+  alias: string | null;
   tags: string[];
   source_tool: string;
   model_id: string | null;
@@ -322,6 +323,17 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       if (params.page_size) sp.set('page_size', String(params.page_size));
       return request<{ actions: AdminActionLog[]; total: number }>(`/api/v1/admin/actions?${sp}`);
     },
+
+    setAlias: (sessionId: string, alias: string) =>
+      request<SessionDetail>(`/api/v1/sessions/${sessionId}/alias`, {
+        method: 'PUT',
+        body: JSON.stringify({ alias }),
+      }),
+
+    clearAlias: (sessionId: string) =>
+      request<SessionDetail>(`/api/v1/sessions/${sessionId}/alias`, {
+        method: 'DELETE',
+      }),
   };
 }
 

@@ -8,6 +8,8 @@ from pathlib import Path
 
 import typer
 
+import re
+
 from sessionfs.cli.common import (
     console,
     err_console,
@@ -289,5 +291,83 @@ def fork(
         console.print(f"[green]Forked session created: {new_id[:12]}[/green]")
         console.print(f"  Title: {name}")
         console.print(f"  Parent: {full_id[:12]}")
+    finally:
+        store.close()
+
+
+_ALIAS_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{2,99}$")
+
+
+def alias(
+    session_id: str = typer.Argument(help="Session ID or prefix."),
+    name: str = typer.Argument(None, help="Alias name (3-100 chars, alphanumeric/hyphens/underscores)."),
+    clear: bool = typer.Option(False, "--clear", help="Remove the alias from this session."),
+) -> None:
+    """Set or clear a short alias for a session.
+
+    Once set, use the alias anywhere you'd use a session ID:
+      sfs show auth-debug
+      sfs push auth-debug
+      sfs resume auth-debug
+    """
+    store = open_store()
+    try:
+        full_id = resolve_session_id(store, session_id)
+        session_dir = get_session_dir_or_exit(store, full_id)
+
+        manifest_path = session_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+
+        if clear:
+            if "alias" in manifest:
+                del manifest["alias"]
+                manifest_path.write_text(json.dumps(manifest, indent=2))
+                console.print(f"[green]Alias cleared for session {full_id[:12]}.[/green]")
+            else:
+                console.print("[dim]No alias set for this session.[/dim]")
+            return
+
+        if name is None:
+            # Show current alias
+            current = manifest.get("alias")
+            if current:
+                console.print(f"[bold]Alias:[/bold] {current}")
+            else:
+                console.print("[dim]No alias set. Usage: sfs alias <session_id> <name>[/dim]")
+            return
+
+        # Validate alias format
+        if not _ALIAS_RE.match(name):
+            err_console.print(
+                "[red]Invalid alias. Must be 3-100 characters, "
+                "alphanumeric/hyphens/underscores, starting with alphanumeric.[/red]"
+            )
+            raise SystemExit(1)
+
+        # Check uniqueness across local sessions
+        sessions = store.list_sessions()
+        for s in sessions:
+            if s["session_id"] == full_id:
+                continue
+            other_dir = store.get_session_dir(s["session_id"])
+            if other_dir is None:
+                continue
+            other_manifest_path = other_dir / "manifest.json"
+            if other_manifest_path.exists():
+                try:
+                    other = json.loads(other_manifest_path.read_text())
+                    if other.get("alias") == name:
+                        err_console.print(
+                            f"[red]Alias '{name}' is already used by session "
+                            f"{s['session_id'][:12]}.[/red]"
+                        )
+                        raise SystemExit(1)
+                except (json.JSONDecodeError, OSError):
+                    continue
+
+        manifest["alias"] = name
+        manifest_path.write_text(json.dumps(manifest, indent=2))
+        console.print(f"[green]Alias '{name}' set for session {full_id[:12]}.[/green]")
+        console.print(f"  You can now use: sfs show {name}, sfs push {name}, sfs resume {name}")
     finally:
         store.close()
