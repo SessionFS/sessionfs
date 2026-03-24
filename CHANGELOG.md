@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-03-24
+
+### Added
+- **Audit report export** — download as JSON, Markdown, or CSV (CLI `--format` + dashboard dropdown)
+- **OpenRouter provider** — access 400+ models via single API key, auto-detected by `/` in model name
+- **Stored judge API keys** — Fernet-encrypted at rest, Settings page in dashboard
+- **Audit status indicators** — trust score badges on session list, detail sidebar, handoff emails, CLI list
+- **`GET /api/v1/auth/me`** — returns user profile (email, tier, verified status)
+- **Latest model dropdowns** — Opus 4.6, GPT-5.4, Gemini 3.1, DeepSeek V3.2/R1, o3, o4-mini
+
+### Fixed
+- Handoff inbox/sent routes returning 404 (wildcard route was catching them)
+- Audit using hardcoded blob path instead of session.blob_key
+- UTF-8 decode error when reading session archives with non-ASCII content
+- AuditReport type not imported in dashboard AuditTab
+- CLI `sfs auth status` now shows email, tier, and verification status
+
 ## [0.3.0] - 2026-03-23
 
 ### Added
