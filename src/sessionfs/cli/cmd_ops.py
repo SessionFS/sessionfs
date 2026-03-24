@@ -50,30 +50,46 @@ def resume(
             _resume_in_gemini(session_dir, manifest, target_path, full_id)
         elif tool == "cursor":
             err_console.print(
-                "[yellow]Cursor does not support session injection (capture-only).[/yellow]\n"
-                "Resume in a CLI tool instead:\n"
+                "[yellow]Cursor is capture-only: content-addressed hashing prevents session injection.[/yellow]\n"
+                "Resume in a bidirectional tool instead:\n"
                 f"  sfs resume {session_id} --in claude-code\n"
                 f"  sfs resume {session_id} --in codex\n"
-                f"  sfs resume {session_id} --in gemini"
+                f"  sfs resume {session_id} --in copilot\n"
+                f"  sfs resume {session_id} --in gemini\n"
+                "\nLearn more: docs/compatibility.md"
             )
             raise SystemExit(1)
-        elif tool in ("cline", "roo-code"):
-            tool_label = "Cline" if tool == "cline" else "Roo Code"
+        elif tool == "cline":
             err_console.print(
-                f"[yellow]{tool_label} does not support session injection (capture-only).[/yellow]\n"
-                "Resume in a CLI tool instead:\n"
+                "[yellow]Cline is capture-only: VS Code extension state is too fragile for automated injection.[/yellow]\n"
+                "Resume in a bidirectional tool instead:\n"
                 f"  sfs resume {session_id} --in claude-code\n"
                 f"  sfs resume {session_id} --in codex\n"
-                f"  sfs resume {session_id} --in gemini"
+                f"  sfs resume {session_id} --in copilot\n"
+                f"  sfs resume {session_id} --in gemini\n"
+                "\nLearn more: docs/compatibility.md"
+            )
+            raise SystemExit(1)
+        elif tool == "roo-code":
+            err_console.print(
+                "[yellow]Roo Code is capture-only: VS Code extension state is too fragile for automated injection.[/yellow]\n"
+                "Resume in a bidirectional tool instead:\n"
+                f"  sfs resume {session_id} --in claude-code\n"
+                f"  sfs resume {session_id} --in codex\n"
+                f"  sfs resume {session_id} --in copilot\n"
+                f"  sfs resume {session_id} --in gemini\n"
+                "\nLearn more: docs/compatibility.md"
             )
             raise SystemExit(1)
         elif tool == "amp":
             err_console.print(
-                "[yellow]Amp does not support session injection (capture-only).[/yellow]\n"
-                "Resume in a CLI tool instead:\n"
+                "[yellow]Amp is capture-only: cloud-first architecture means local files are a sync cache.[/yellow]\n"
+                "Resume in a bidirectional tool instead:\n"
                 f"  sfs resume {session_id} --in claude-code\n"
                 f"  sfs resume {session_id} --in codex\n"
-                f"  sfs resume {session_id} --in gemini"
+                f"  sfs resume {session_id} --in copilot\n"
+                f"  sfs resume {session_id} --in gemini\n"
+                "\nLearn more: docs/compatibility.md"
             )
             raise SystemExit(1)
         else:

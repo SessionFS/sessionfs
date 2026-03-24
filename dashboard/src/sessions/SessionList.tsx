@@ -1,9 +1,14 @@
 import { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useSessions } from '../hooks/useSessions';
+import type { SessionSummary } from '../api/client';
 import { abbreviateModel, abbreviateTool } from '../utils/models';
 import { formatTokens } from '../utils/tokens';
 import RelativeDate from '../components/RelativeDate';
+
+interface SessionSummaryWithAudit extends SessionSummary {
+  audit_trust_score?: number | null;
+}
 
 const TOOLS = ['all', 'claude-code', 'codex', 'gemini', 'copilot', 'cursor', 'amp', 'cline', 'roo-code'] as const;
 const DATE_RANGES = [
@@ -149,7 +154,10 @@ export default function SessionList() {
                       <RelativeDate iso={s.updated_at} />
                     </td>
                     <td className="px-3 py-2 text-text-primary truncate max-w-xs">
-                      {s.title || <span className="text-text-muted italic">Untitled</span>}
+                      <span className="inline-flex items-center gap-1.5">
+                        {s.title || <span className="text-text-muted italic">Untitled</span>}
+                        <TrustBadge score={(s as SessionSummaryWithAudit).audit_trust_score} />
+                      </span>
                     </td>
                   </tr>
                 ))}
@@ -185,5 +193,22 @@ export default function SessionList() {
         </div>
       )}
     </div>
+  );
+}
+
+function TrustBadge({ score }: { score?: number | null }) {
+  if (score == null) return null;
+  const pct = Math.round(score * 100);
+  const color =
+    pct >= 90
+      ? 'bg-green-500'
+      : pct >= 70
+        ? 'bg-yellow-500'
+        : 'bg-red-500';
+  return (
+    <span
+      className={`inline-block w-2 h-2 rounded-full shrink-0 ${color}`}
+      title={`Trust score: ${pct}%`}
+    />
   );
 }

@@ -1,30 +1,29 @@
-# Connecting SessionFS to Claude.ai
+# SessionFS MCP Server
 
-Use your past coding sessions as context in any Claude.ai conversation.
+Use your past coding sessions as context in AI conversations.
 
-## Setup (2 minutes)
+## Local MCP (Recommended)
 
-### 1. Push sessions to the cloud
+Works with Claude Code, Cursor, and Copilot CLI. Runs locally, no network latency, searches your local session index.
+
+### Install
 
 ```bash
-sfs sync
+# Claude Code
+sfs mcp install --for claude-code
+
+# Cursor
+sfs mcp install --for cursor
+
+# Copilot CLI
+sfs mcp install --for copilot
 ```
 
-### 2. Add SessionFS to Claude.ai
+Restart your tool after installing. The MCP server starts automatically.
 
-1. Go to [claude.ai](https://claude.ai) → Settings → Connectors
-2. Click "Add MCP Server"
-3. Enter the server URL: `https://mcp.sessionfs.dev/sse`
-4. When prompted for authentication, enter your SessionFS API key
+### Use it
 
-Find your key with:
-```bash
-sfs config show
-```
-
-### 3. Start using it
-
-In any Claude.ai conversation, ask about your past sessions:
+In any conversation, ask about your past sessions:
 
 > "Search my past sessions for authentication errors"
 
@@ -32,7 +31,7 @@ In any Claude.ai conversation, ask about your past sessions:
 
 > "Show me the session where I worked on the database migration"
 
-## What it can do
+### Available tools
 
 | Tool | What it does |
 |------|-------------|
@@ -41,17 +40,29 @@ In any Claude.ai conversation, ask about your past sessions:
 | `list_recent_sessions` | Browse your recent sessions |
 | `find_related_sessions` | Find sessions that touched a file or hit an error |
 
-## Also works with
+## Remote MCP (Claude.ai Web)
 
-- **Claude Code** — `sfs mcp install --for claude-code`
-- **Cursor** — `sfs mcp install --for cursor`
-- **Copilot CLI** — `sfs mcp install --for copilot`
+A remote MCP server runs at `https://mcp.sessionfs.dev` for web-based clients.
 
-These use the local MCP server (stdio). The remote server at `mcp.sessionfs.dev` is for web-based clients like Claude.ai.
+### Setup
+
+1. Push sessions to the cloud: `sfs sync`
+2. Go to [claude.ai](https://claude.ai) → Settings → Connectors
+3. Add MCP server: `https://mcp.sessionfs.dev`
+4. Enter your API key when prompted (`sfs config show`)
+
+### Known Limitations
+
+Claude.ai's MCP connector has open bugs that affect all remote MCP servers, not just SessionFS:
+
+- **Tools may not appear** — Claude.ai web sometimes skips `tools/list` after connecting ([anthropics/claude-ai-mcp#83](https://github.com/anthropics/claude-ai-mcp/issues/83))
+- **Auth popup may not close** — The authorize window can stay open after approval ([anthropics/claude-code#30218](https://github.com/anthropics/claude-code/issues/30218))
+- **Token may not be sent** — OAuth completes but Claude.ai never sends the Bearer token ([anthropics/claude-ai-mcp#62](https://github.com/anthropics/claude-ai-mcp/issues/62))
+
+These are Anthropic-side bugs being tracked. The local MCP server (Claude Code, Cursor, Copilot) works reliably. We recommend using the local server until the Claude.ai connector stabilizes.
 
 ## Privacy
 
 - Sessions are only accessible with your API key
-- The MCP server is a proxy — it queries the SessionFS API on your behalf
+- The remote MCP server is a stateless proxy — queries the SessionFS API on your behalf
 - No session data is cached on the MCP server
-- Scale-to-zero: the server shuts down when not in use

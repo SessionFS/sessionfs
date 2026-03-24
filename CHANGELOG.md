@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-03-23
+
+### Added
+- **Team handoff with email notifications** — `sfs handoff --to email --message` sends notification via Resend with session metadata, git context, and pull instructions
+- **Smart workspace resolution** — when pulling a handoff, automatically finds the recipient's local clone by matching git remote URLs
+- **Handoff dashboard** — inbox/sent tabs, detail page with claim button, handoff modal on session detail
+- **LLM-as-a-Judge hallucination detection** — `sfs audit` evaluates AI responses against tool call evidence (BYOK — user provides their own API key)
+- **Multi-provider judge** — supports Anthropic, OpenAI, Google via httpx (no SDK dependencies)
+- **Consensus mode** — `sfs audit --consensus` runs 3 passes, reports only where 2+ agree
+- **Trust score badges** — session list shows green/yellow/red audit badges
+- **Audit dashboard tab** — expandable findings with verdict icons, severity badges, evidence
+- **Compatibility guide** — `docs/compatibility.md` with full 8-tool matrix and technical reasons for capture-only
+- **Remote MCP server** — `mcp.sessionfs.dev` with OAuth 2.1 PKCE + Dynamic Client Registration
+
+### Changed
+- Pricing: free tier changed from 25-session count to 14-day rolling retention
+- Capture-only CLI messages now include tool-specific reasons and Copilot in alternatives
+- Quickstart rewritten as 5-step hero workflow
+- README restructured: hero workflow first, advanced features below
+- Judge uses temperature=0 for deterministic output
+- Judge verdict rules tightened: hallucination requires proof of contradiction, absence of evidence is unverified
+
+### Fixed
+- Dashboard auth persistence via sessionStorage (survives refresh)
+- Vercel SPA routing (catch-all rewrite for direct URL access)
+- Integer overflow on token counts (bigint migration 004)
+- Duplicate search bar removed from session list
+- All lint errors fixed (ruff clean, mypy clean)
+- Node.js 24 opt-in for GitHub Actions
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
 ## [0.2.0] - 2026-03-23
 
 ### Added

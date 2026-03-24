@@ -459,11 +459,15 @@ def sync_all() -> None:
         store.close()
 
 
+handoffs_app = typer.Typer(name="handoffs", help="View handoff inbox and sent items.")
+
+
 def handoff(
     session_id: str = typer.Argument(help="Session ID or prefix."),
     to: str = typer.Option(..., "--to", help="Recipient email."),
+    message: str = typer.Option("", "--message", "-m", help="Message to include."),
 ) -> None:
-    """Hand off a session to another user (push + share instructions)."""
+    """Hand off a session to another user (push + email notification)."""
     from sessionfs.sync.archive import pack_session
     from sessionfs.sync.client import SyncConflictError
 
@@ -481,28 +485,263 @@ def handoff(
         console.print(f"Ensuring session {full_id[:12]} is synced...")
         archive_data = pack_session(session_dir)
 
-        async def _push_handoff():
+        async def _push_and_handoff():
             try:
-                return await client.push_session(full_id, archive_data, etag=local_etag)
+                push_result = await client.push_session(full_id, archive_data, etag=local_etag)
+                return push_result
             finally:
                 await client.close()
 
-        result = asyncio.run(_push_handoff())
+        result = asyncio.run(_push_and_handoff())
         _update_manifest_sync(session_dir, result.etag)
 
+        # Create handoff via API
+        import httpx
+
         cfg = _load_sync_config()
-        console.print("\n[green]Session ready for handoff.[/green]")
-        console.print(f"\nSend these instructions to {to}:\n")
-        console.print("  1. Install sessionfs: pip install sessionfs")
-        console.print(f"  2. Authenticate:      sfs auth login --url {cfg['api_url']}")
-        console.print(f"  3. Pull the session:  sfs pull {full_id}")
-        console.print(f"  4. Resume:            sfs resume {full_id}")
+        body = {
+            "session_id": full_id,
+            "recipient_email": to,
+        }
+        if message:
+            body["message"] = message
+
+        resp = httpx.post(
+            f"{cfg['api_url']}/api/v1/handoffs",
+            headers={"Authorization": f"Bearer {cfg['api_key']}"},
+            json=body,
+            timeout=15.0,
+        )
+
+        if resp.status_code == 201:
+            data = resp.json()
+            handoff_id = data["id"]
+            console.print(f"\n[green]Handoff created: {handoff_id}[/green]")
+            console.print(f"  Recipient: {to}")
+            console.print(f"  Expires: {data['expires_at']}")
+            console.print(f"\nRecipient can pull with:")
+            console.print(f"  sfs pull --handoff {handoff_id}")
+        else:
+            err_console.print(f"[red]Handoff failed: {resp.text}[/red]")
+            raise SystemExit(1)
 
     except SyncConflictError:
         err_console.print("[red]Conflict pushing session. Pull latest first.[/red]")
         raise SystemExit(1)
     finally:
         store.close()
+
+
+def pull_handoff(
+    handoff_id: str = typer.Argument(help="Handoff ID (hnd_xxx)."),
+    force: bool = typer.Option(False, "--force", "-f", help="Overwrite local without prompting."),
+    tool: str = typer.Option(
+        "claude-code", "--in",
+        help="Target tool for resume: claude-code, codex, copilot, gemini",
+    ),
+) -> None:
+    """Pull a session from a handoff link."""
+    import httpx
+    from sessionfs.sync.archive import unpack_session
+
+    store = open_store()
+    cfg = _load_sync_config()
+    headers = {"Authorization": f"Bearer {cfg['api_key']}"}
+
+    try:
+        # Get handoff details
+        console.print(f"Fetching handoff {handoff_id}...")
+        resp = httpx.get(
+            f"{cfg['api_url']}/api/v1/handoffs/{handoff_id}",
+            headers=headers,
+            timeout=15.0,
+        )
+        if resp.status_code == 410:
+            err_console.print("[red]Handoff has expired.[/red]")
+            raise SystemExit(1)
+        if resp.status_code != 200:
+            err_console.print(f"[red]Failed to get handoff: {resp.text}[/red]")
+            raise SystemExit(1)
+
+        handoff_data = resp.json()
+        session_id = handoff_data["session_id"]
+
+        console.print(f"  Session: {handoff_data.get('session_title') or session_id}")
+        console.print(f"  From: {handoff_data['sender_email']}")
+        if handoff_data.get("message"):
+            console.print(f"  Message: {handoff_data['message']}")
+
+        # Claim the handoff
+        claim_resp = httpx.post(
+            f"{cfg['api_url']}/api/v1/handoffs/{handoff_id}/claim",
+            headers=headers,
+            timeout=15.0,
+        )
+        if claim_resp.status_code == 409:
+            console.print("[dim]Handoff already claimed — continuing with pull.[/dim]")
+        elif claim_resp.status_code not in (200, 201):
+            err_console.print(f"[yellow]Warning: could not claim handoff: {claim_resp.text}[/yellow]")
+
+        # Pull the session
+        client = _get_sync_client()
+
+        async def _pull():
+            try:
+                return await client.pull_session(session_id)
+            finally:
+                await client.close()
+
+        console.print(f"Pulling session {session_id[:12]}...")
+        pull_result = asyncio.run(_pull())
+
+        if pull_result.data is None:
+            err_console.print("[red]No data received from server.[/red]")
+            raise SystemExit(1)
+
+        # Check if session exists locally
+        local_dir = store.get_session_dir(session_id)
+        if local_dir and not force:
+            if not typer.confirm("Local session exists. Overwrite?", default=True):
+                console.print("[dim]Pull cancelled.[/dim]")
+                return
+
+        # Extract to local store
+        target_dir = store.allocate_session_dir(session_id)
+        unpack_session(pull_result.data, target_dir)
+
+        # Update index
+        manifest_path = target_dir / "manifest.json"
+        if manifest_path.exists():
+            manifest = json.loads(manifest_path.read_text())
+            store.upsert_session_metadata(session_id, manifest, str(target_dir))
+
+        _update_manifest_sync(target_dir, pull_result.etag)
+
+        # Try workspace resolution
+        workspace_path = target_dir / "workspace.json"
+        if workspace_path.exists():
+            workspace = json.loads(workspace_path.read_text())
+            git_info = workspace.get("git", {})
+            git_remote = git_info.get("remote_url")
+            if git_remote:
+                from sessionfs.workspace.resolver import WorkspaceResolver
+                resolver = WorkspaceResolver()
+                resolved = resolver.resolve(git_remote, git_info.get("branch"))
+                if resolved.path:
+                    console.print(f"  Found local repo: {resolved.path}")
+                    # Update workspace root_path to local clone
+                    workspace["root_path"] = str(resolved.path)
+                    workspace_path.write_text(json.dumps(workspace, indent=2))
+                else:
+                    console.print(
+                        f"[dim]  Could not find local clone of {git_remote}[/dim]"
+                    )
+
+        console.print(
+            f"\n[green]Pulled handoff session {session_id}[/green]\n"
+            f"  Size: {len(pull_result.data):,} bytes"
+        )
+        console.print(f"\nResume with:")
+        console.print(f"  sfs resume {session_id} --in {tool}")
+
+    finally:
+        store.close()
+
+
+@handoffs_app.command("inbox")
+def handoffs_inbox() -> None:
+    """List handoffs sent to you."""
+    import httpx
+
+    cfg = _load_sync_config()
+    if not cfg["api_key"]:
+        err_console.print("[red]Not authenticated. Run 'sfs auth login' first.[/red]")
+        raise SystemExit(1)
+
+    resp = httpx.get(
+        f"{cfg['api_url']}/api/v1/handoffs/inbox/",
+        headers={"Authorization": f"Bearer {cfg['api_key']}"},
+        timeout=15.0,
+    )
+
+    if resp.status_code != 200:
+        err_console.print(f"[red]Failed to fetch inbox: {resp.text}[/red]")
+        raise SystemExit(1)
+
+    data = resp.json()
+    handoffs = data.get("handoffs", [])
+
+    if not handoffs:
+        console.print("[dim]No incoming handoffs.[/dim]")
+        return
+
+    table = Table(title=f"Inbox ({data['total']} handoffs)")
+    table.add_column("ID", style="cyan")
+    table.add_column("From")
+    table.add_column("Session")
+    table.add_column("Tool", style="dim")
+    table.add_column("Status")
+    table.add_column("Created")
+
+    for h in handoffs:
+        status_style = "[green]" if h["status"] == "pending" else "[dim]"
+        table.add_row(
+            h["id"],
+            h["sender_email"],
+            (h.get("session_title") or "")[:30],
+            h.get("session_tool") or "",
+            f"{status_style}{h['status']}[/{status_style.strip('[')}",
+            h["created_at"][:10],
+        )
+
+    console.print(table)
+
+
+@handoffs_app.command("sent")
+def handoffs_sent() -> None:
+    """List handoffs you've sent."""
+    import httpx
+
+    cfg = _load_sync_config()
+    if not cfg["api_key"]:
+        err_console.print("[red]Not authenticated. Run 'sfs auth login' first.[/red]")
+        raise SystemExit(1)
+
+    resp = httpx.get(
+        f"{cfg['api_url']}/api/v1/handoffs/sent/",
+        headers={"Authorization": f"Bearer {cfg['api_key']}"},
+        timeout=15.0,
+    )
+
+    if resp.status_code != 200:
+        err_console.print(f"[red]Failed to fetch sent handoffs: {resp.text}[/red]")
+        raise SystemExit(1)
+
+    data = resp.json()
+    handoffs = data.get("handoffs", [])
+
+    if not handoffs:
+        console.print("[dim]No sent handoffs.[/dim]")
+        return
+
+    table = Table(title=f"Sent ({data['total']} handoffs)")
+    table.add_column("ID", style="cyan")
+    table.add_column("To")
+    table.add_column("Session")
+    table.add_column("Status")
+    table.add_column("Created")
+
+    for h in handoffs:
+        status_style = "[yellow]" if h["status"] == "pending" else "[green]"
+        table.add_row(
+            h["id"],
+            h["recipient_email"],
+            (h.get("session_title") or "")[:30],
+            f"{status_style}{h['status']}[/{status_style.strip('[')}",
+            h["created_at"][:10],
+        )
+
+    console.print(table)
 
 
 def _update_manifest_sync(session_dir: Path, etag: str) -> None:

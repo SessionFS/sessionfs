@@ -40,11 +40,66 @@ export interface MessagesResponse {
   has_more: boolean;
 }
 
+export interface HandoffSummary {
+  id: string;
+  session_id: string;
+  session_title: string | null;
+  sender_email: string;
+  recipient_email: string;
+  message: string | null;
+  status: 'pending' | 'claimed' | 'expired';
+  created_at: string;
+  claimed_at: string | null;
+}
+
+export interface HandoffDetail extends HandoffSummary {
+  session_source_tool: string;
+  session_model_id: string | null;
+  session_message_count: number;
+  session_total_tokens: number;
+}
+
+export interface HandoffListResponse {
+  handoffs: HandoffSummary[];
+  total: number;
+}
+
+export interface CreateHandoffResponse {
+  id: string;
+  recipient_email: string;
+  session_id: string;
+}
+
 export interface SignupResponse {
   user_id: string;
   email: string;
   raw_key: string;
   key_id: string;
+}
+
+export interface AuditFinding {
+  message_index: number;
+  claim: string;
+  verdict: 'verified' | 'unverified' | 'hallucination';
+  severity: 'minor' | 'moderate' | 'major';
+  evidence: string;
+  explanation: string;
+}
+
+export interface AuditSummary {
+  total_claims: number;
+  verified: number;
+  unverified: number;
+  hallucinations: number;
+  trust_score: number;
+}
+
+export interface AuditReport {
+  session_id: string;
+  model: string;
+  timestamp: string;
+  findings: AuditFinding[];
+  summary: AuditSummary;
 }
 
 export class ApiError extends Error {
@@ -114,6 +169,30 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         query: string;
       }>(`/api/v1/sessions/search?${params}`),
 
+    createHandoff: (sessionId: string, recipientEmail: string, message?: string) =>
+      request<CreateHandoffResponse>('/api/v1/handoffs', {
+        method: 'POST',
+        body: JSON.stringify({
+          session_id: sessionId,
+          recipient_email: recipientEmail,
+          ...(message ? { message } : {}),
+        }),
+      }),
+
+    getHandoff: (handoffId: string) =>
+      request<HandoffDetail>(`/api/v1/handoffs/${handoffId}`),
+
+    claimHandoff: (handoffId: string) =>
+      request<HandoffDetail>(`/api/v1/handoffs/${handoffId}/claim`, {
+        method: 'POST',
+      }),
+
+    listInbox: () =>
+      request<HandoffListResponse>('/api/v1/handoffs/inbox'),
+
+    listSent: () =>
+      request<HandoffListResponse>('/api/v1/handoffs/sent'),
+
     downloadSession: async (id: string): Promise<Blob> => {
       const resp = await fetch(`${baseUrl}/api/v1/sessions/${id}/download`, {
         headers: { Authorization: `Bearer ${apiKey}` },
@@ -121,6 +200,20 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       if (!resp.ok) throw new ApiError(resp.status, 'Download failed');
       return resp.blob();
     },
+
+    runAudit: (
+      sessionId: string,
+      model: string,
+      llmApiKey: string,
+      provider?: string,
+    ) =>
+      request<AuditReport>(`/api/v1/sessions/${sessionId}/audit`, {
+        method: 'POST',
+        body: JSON.stringify({ model, llm_api_key: llmApiKey, ...(provider ? { provider } : {}) }),
+      }),
+
+    getAudit: (sessionId: string) =>
+      request<AuditReport>(`/api/v1/sessions/${sessionId}/audit`),
   };
 }
 

@@ -52,6 +52,56 @@ class EmailService:
             resp.raise_for_status()
             return resp.json()
 
+    async def send_handoff(
+        self,
+        to_email: str,
+        sender_email: str,
+        session_title: str | None,
+        source_tool: str | None,
+        model_id: str | None,
+        message_count: int,
+        total_tokens: int,
+        git_remote: str | None,
+        git_branch: str | None,
+        sender_message: str | None,
+        handoff_id: str,
+        dashboard_url: str | None = None,
+    ) -> dict[str, Any]:
+        """Send a handoff notification email."""
+        from sessionfs.server.email_templates import handoff_email
+
+        pull_command = f"sfs pull --handoff {handoff_id}"
+        html = handoff_email(
+            sender_email=sender_email,
+            session_title=session_title,
+            source_tool=source_tool,
+            model_id=model_id,
+            message_count=message_count,
+            total_tokens=total_tokens,
+            git_remote=git_remote,
+            git_branch=git_branch,
+            sender_message=sender_message,
+            handoff_id=handoff_id,
+            pull_command=pull_command,
+            dashboard_url=dashboard_url,
+        )
+        title = session_title or "a session"
+        subject = f"SessionFS: {sender_email} handed off {title}"
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                RESEND_API,
+                headers={"Authorization": f"Bearer {self._api_key}"},
+                json={
+                    "from": self._from_email,
+                    "to": to_email,
+                    "subject": subject,
+                    "html": html,
+                },
+                timeout=10.0,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
     async def send_retention_notice(
         self, to_email: str, purged_count: int, session_titles: list[str],
     ) -> dict[str, Any]:

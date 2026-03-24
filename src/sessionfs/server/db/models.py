@@ -80,6 +80,35 @@ class Session(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class Handoff(Base):
+    __tablename__ = "handoffs"
+    __table_args__ = (
+        Index("idx_handoffs_session_id", "session_id"),
+        Index("idx_handoffs_sender_id", "sender_id"),
+        Index("idx_handoffs_recipient_email", "recipient_email"),
+        Index("idx_handoffs_status", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(20), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("sessions.id"), nullable=False
+    )
+    sender_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id"), nullable=False
+    )
+    recipient_email: Mapped[str] = mapped_column(String(255), nullable=False)
+    recipient_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id"), nullable=True
+    )
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), server_default="pending")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ShareLink(Base):
     __tablename__ = "share_links"
 
