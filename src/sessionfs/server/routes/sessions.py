@@ -807,16 +807,19 @@ async def sync_push(
     messages_text = _extract_messages_text(data)
 
     if existing is None:
-        # Check if session exists for ANY user (different owner check)
+        # Check if session ID exists at all (including soft-deleted)
         any_result = await db.execute(
-            select(Session).where(Session.id == session_id, Session.is_deleted == False)  # noqa: E712
+            select(Session).where(Session.id == session_id)
         )
         any_existing = any_result.scalar_one_or_none()
         if any_existing is not None:
-            # Session exists but belongs to another user
-            if any_existing.user_id != user.id:
+            if any_existing.user_id != user.id and not any_existing.is_deleted:
+                # Active session owned by another user
                 raise HTTPException(status_code=409, detail="Session ID already claimed by another user")
-            # Same user, different query didn't find it — treat as update
+            # Reuse the row: un-delete and update it
+            any_existing.is_deleted = False
+            any_existing.deleted_at = None
+            any_existing.user_id = user.id
             existing = any_existing
         else:
             # Truly new session -> create
