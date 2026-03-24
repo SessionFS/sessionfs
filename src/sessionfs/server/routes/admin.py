@@ -61,7 +61,7 @@ async def list_users(
     db: AsyncSession = Depends(get_db),
 ):
     """List all users with summary info."""
-    query = select(User)
+    query = select(User).where(User.is_active == True)  # noqa: E712
 
     if tier_filter:
         query = query.where(User.tier == tier_filter)
