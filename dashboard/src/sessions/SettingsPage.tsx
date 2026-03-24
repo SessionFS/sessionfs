@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
 import CopyButton from '../components/CopyButton';
 import { useJudgeSettings, useSaveJudgeSettings, useClearJudgeSettings } from '../hooks/useJudgeSettings';
@@ -41,6 +42,11 @@ const PROVIDER_MODELS: Record<string, { value: string; label: string }[]> = {
 
 export default function SettingsPage() {
   const { auth, logout } = useAuth();
+  const { data: profile } = useQuery({
+    queryKey: ['me'],
+    queryFn: () => auth!.client.getMe(),
+    enabled: !!auth,
+  });
   const { data: judgeSettings, isLoading: judgeLoading } = useJudgeSettings();
   const saveJudge = useSaveJudgeSettings();
   const clearJudge = useClearJudgeSettings();
@@ -107,6 +113,23 @@ export default function SettingsPage() {
   return (
     <div className="max-w-lg mx-auto px-4 py-8">
       <h1 className="text-lg font-medium text-text-primary mb-6">Settings</h1>
+
+      {profile && (
+        <div className="bg-bg-secondary border border-border rounded-lg p-4 mb-4">
+          <h2 className="text-xs uppercase tracking-wider text-text-muted mb-3">Account</h2>
+          <div className="mb-2">
+            <label className="text-xs text-text-muted block mb-1">Email</label>
+            <div className="text-sm text-text-primary">{profile.email}</div>
+          </div>
+          <div className="flex gap-4 text-xs text-text-secondary">
+            <span>Tier: <span className="text-text-primary">{profile.tier}</span></span>
+            <span>Verified: {profile.email_verified
+              ? <span className="text-green-400">yes</span>
+              : <span className="text-yellow-400">no</span>
+            }</span>
+          </div>
+        </div>
+      )}
 
       <div className="bg-bg-secondary border border-border rounded-lg p-4 mb-4">
         <h2 className="text-xs uppercase tracking-wider text-text-muted mb-3">Connection</h2>

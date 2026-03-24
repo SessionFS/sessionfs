@@ -136,6 +136,15 @@ export function createApiClient(baseUrl: string, apiKey: string) {
   return {
     health: () => request<{ status: string }>('/health'),
 
+    getMe: () => request<{
+      user_id: string;
+      email: string;
+      display_name: string | null;
+      email_verified: boolean;
+      tier: string;
+      created_at: string | null;
+    }>('/api/v1/auth/me'),
+
     listSessions: (params: {
       page?: number;
       page_size?: number;

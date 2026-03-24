@@ -29,6 +29,19 @@ SFS_VERIFICATION_SECRET = os.environ.get("SFS_VERIFICATION_SECRET", "dev-verific
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 
+@router.get("/me")
+async def get_me(user: User = Depends(get_current_user)):
+    """Return the authenticated user's profile."""
+    return {
+        "user_id": user.id,
+        "email": user.email,
+        "display_name": user.display_name,
+        "email_verified": user.email_verified,
+        "tier": user.tier,
+        "created_at": user.created_at.isoformat() if user.created_at else None,
+    }
+
+
 @router.post("/signup", response_model=SignupResponse, status_code=201)
 async def signup(
     body: SignupRequest,
