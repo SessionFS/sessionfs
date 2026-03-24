@@ -12,16 +12,30 @@ const PROVIDERS = [
 
 const PROVIDER_MODELS: Record<string, { value: string; label: string }[]> = {
   anthropic: [
-    { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
-    { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet' },
+    { value: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
+    { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+    { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
   ],
   openai: [
-    { value: 'gpt-4o', label: 'GPT-4o' },
-    { value: 'gpt-4-turbo', label: 'GPT-4 Turbo' },
+    { value: 'gpt-5.4', label: 'GPT-5.4' },
+    { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' },
+    { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
+    { value: 'o3', label: 'o3' },
+    { value: 'o4-mini', label: 'o4 Mini' },
   ],
   google: [
-    { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
-    { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
+    { value: 'gemini-3.1-pro', label: 'Gemini 3.1 Pro' },
+    { value: 'gemini-3.1-flash', label: 'Gemini 3.1 Flash' },
+  ],
+  openrouter: [
+    { value: 'anthropic/claude-opus-4.6', label: 'Claude Opus 4.6' },
+    { value: 'anthropic/claude-sonnet-4.6', label: 'Claude Sonnet 4.6' },
+    { value: 'openai/gpt-5.4', label: 'GPT-5.4' },
+    { value: 'openai/gpt-5.3-codex', label: 'GPT-5.3 Codex' },
+    { value: 'openai/o3', label: 'o3' },
+    { value: 'google/gemini-3.1-pro', label: 'Gemini 3.1 Pro' },
+    { value: 'deepseek/deepseek-v3.2', label: 'DeepSeek V3.2' },
+    { value: 'deepseek/deepseek-r1', label: 'DeepSeek R1' },
   ],
 };
 

@@ -11,16 +11,30 @@ const PROVIDERS = [
 
 const PROVIDER_MODELS: Record<string, { value: string; label: string }[]> = {
   anthropic: [
-    { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
-    { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet' },
+    { value: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
+    { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+    { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
   ],
   openai: [
-    { value: 'gpt-4o', label: 'GPT-4o' },
-    { value: 'gpt-4-turbo', label: 'GPT-4 Turbo' },
+    { value: 'gpt-5.4', label: 'GPT-5.4' },
+    { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' },
+    { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
+    { value: 'o3', label: 'o3' },
+    { value: 'o4-mini', label: 'o4 Mini' },
   ],
   google: [
-    { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
-    { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
+    { value: 'gemini-3.1-pro', label: 'Gemini 3.1 Pro' },
+    { value: 'gemini-3.1-flash', label: 'Gemini 3.1 Flash' },
+  ],
+  openrouter: [
+    { value: 'anthropic/claude-opus-4.6', label: 'Claude Opus 4.6' },
+    { value: 'anthropic/claude-sonnet-4.6', label: 'Claude Sonnet 4.6' },
+    { value: 'openai/gpt-5.4', label: 'GPT-5.4' },
+    { value: 'openai/gpt-5.3-codex', label: 'GPT-5.3 Codex' },
+    { value: 'openai/o3', label: 'o3' },
+    { value: 'google/gemini-3.1-pro', label: 'Gemini 3.1 Pro' },
+    { value: 'deepseek/deepseek-v3.2', label: 'DeepSeek V3.2' },
+    { value: 'deepseek/deepseek-r1', label: 'DeepSeek R1' },
   ],
 };
 
@@ -63,12 +77,8 @@ export default function AuditModal({ sessionId, messageCount, onClose, onComplet
   // When provider changes, reset model to first available or empty for openrouter
   function handleProviderChange(newProvider: string) {
     setProvider(newProvider);
-    if (newProvider === 'openrouter') {
-      setModel('');
-    } else {
-      const providerModels = PROVIDER_MODELS[newProvider];
-      if (providerModels?.length) setModel(providerModels[0].value);
-    }
+    const providerModels = PROVIDER_MODELS[newProvider];
+    if (providerModels?.length) setModel(providerModels[0].value);
   }
 
   const canSubmit = model && (hasSavedKey || apiKey);
@@ -107,25 +117,32 @@ export default function AuditModal({ sessionId, messageCount, onClose, onComplet
             </select>
 
             <label className="block text-xs text-text-muted mb-1">Model</label>
-            {isOpenRouter ? (
+            <select
+              value={models.some(m => m.value === model) ? model : '__custom__'}
+              onChange={(e) => {
+                if (e.target.value === '__custom__') {
+                  setModel('');
+                } else {
+                  setModel(e.target.value);
+                }
+              }}
+              className="w-full mb-1.5 px-2 py-1.5 bg-bg-primary border border-border rounded text-sm text-text-secondary focus:outline-none focus:border-accent"
+            >
+              {models.map((m) => (
+                <option key={m.value} value={m.value}>{m.label}</option>
+              ))}
+              {isOpenRouter && <option value="__custom__">Custom model ID...</option>}
+            </select>
+            {isOpenRouter && !models.some(m => m.value === model) && (
               <input
                 type="text"
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
-                placeholder="anthropic/claude-sonnet-4"
-                className="w-full mb-3 px-2 py-1.5 bg-bg-primary border border-border rounded text-sm text-text-secondary placeholder:text-text-muted/50 focus:outline-none focus:border-accent font-mono"
+                placeholder="provider/model-name (e.g. meta-llama/llama-3.3-70b)"
+                className="w-full mb-1.5 px-2 py-1.5 bg-bg-primary border border-border rounded text-xs text-text-secondary placeholder:text-text-muted/50 focus:outline-none focus:border-accent font-mono"
               />
-            ) : (
-              <select
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                className="w-full mb-3 px-2 py-1.5 bg-bg-primary border border-border rounded text-sm text-text-secondary focus:outline-none focus:border-accent"
-              >
-                {models.map((m) => (
-                  <option key={m.value} value={m.value}>{m.label}</option>
-                ))}
-              </select>
             )}
+            <div className="mb-3" />
 
             <label className="block text-xs text-text-muted mb-1">API Key</label>
             {hasSavedKey && (

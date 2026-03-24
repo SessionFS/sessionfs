@@ -17,6 +17,7 @@ _PROVIDER_DETECT = [
     ("gpt-", "openai"),
     ("o1", "openai"),
     ("o3", "openai"),
+    ("o4", "openai"),
     ("gemini-", "google"),
 ]
 
