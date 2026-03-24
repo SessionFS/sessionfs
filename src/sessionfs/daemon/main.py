@@ -370,18 +370,21 @@ class Daemon:
 
         try:
             while self._running:
-                # Handle config reload
-                if self._reload_requested:
-                    self._reload_requested = False
-                    self._reload_config()
+                try:
+                    # Handle config reload
+                    if self._reload_requested:
+                        self._reload_requested = False
+                        self._reload_config()
 
-                for watcher in self.watchers:
-                    watcher.process_events()
+                    for watcher in self.watchers:
+                        watcher.process_events()
 
-                # Sync any pending sessions
-                self._syncer.maybe_sync()
+                    # Sync any pending sessions
+                    self._syncer.maybe_sync()
 
-                self._update_status()
+                    self._update_status()
+                except Exception as exc:
+                    logger.error("Error in daemon loop (continuing): %s", exc)
                 time.sleep(1.0)
         finally:
             logger.info("sfsd shutting down...")

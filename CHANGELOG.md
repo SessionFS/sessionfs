@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-03-24
+
+### Added
+- **Admin dashboard** — user management, tier control, system stats, audit log
+- **Brand identity** — portal logo, color system (#4f9cf7/#3ddc84/#0a0c10), favicon, social preview
+- **Tier-based sync limits** — 50MB free, 300MB paid/admin (was flat 10MB)
+
+### Fixed
+- Daemon crash on status file write (FileNotFoundError now caught)
+- Daemon main loop catches all exceptions (no more crash on transient errors)
+- Sync duplicate key race condition (concurrent push from daemon)
+- Sync MissingGreenlet from broken async rollback (replaced with upfront check)
+- Sync soft-deleted sessions blocking new pushes (reuse deleted rows)
+- Sync missing If-Match header on first push (header now optional)
+- Admin user list showing deactivated users (now filtered)
+- Ruff lint errors for CI green
+
 ## [0.3.1] - 2026-03-24
 
 ### Added

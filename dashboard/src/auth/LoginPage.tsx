@@ -55,7 +55,15 @@ export default function LoginPage() {
   return (
     <div className="flex items-center justify-center min-h-screen">
       <div className="w-full max-w-sm p-8 bg-bg-secondary rounded-lg border border-border">
-        <h1 className="text-xl font-semibold text-text-primary mb-1">SessionFS</h1>
+        <div className="flex justify-center mb-6">
+          <svg viewBox="0 0 200 60" className="h-10" xmlns="http://www.w3.org/2000/svg">
+            <path d="M28,10 Q18,10 18,20 L18,40 Q18,50 28,50" fill="none" stroke="#4f9cf7" strokeWidth="3.5" strokeLinecap="round"/>
+            <path d="M52,10 Q62,10 62,20 L62,40 Q62,50 52,50" fill="none" stroke="#3ddc84" strokeWidth="3.5" strokeLinecap="round"/>
+            <circle cx="40" cy="30" r="6" fill="#4f9cf7"/>
+            <text x="76" y="37" fontFamily="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" fontSize="22" fontWeight="500" fill="#e6edf3" letterSpacing="-0.5">Session<tspan fill="#4f9cf7">FS</tspan></text>
+          </svg>
+        </div>
+        <h1 className="text-xl font-semibold text-text-primary mb-1 sr-only">SessionFS</h1>
         <p className="text-text-secondary text-sm mb-6">
           {mode === 'login' ? 'Sign in with your API key' : 'Create a new account'}
         </p>

@@ -108,6 +108,34 @@ export interface JudgeSettings {
   key_set: boolean;
 }
 
+export interface AdminUser {
+  user_id: string;
+  email: string;
+  tier: string;
+  email_verified: boolean;
+  created_at: string;
+  session_count: number;
+}
+
+export interface AdminStats {
+  users: { total: number; verified: number; by_tier: Record<string, number> };
+  sessions: { total: number; total_size_bytes: number; by_tool: Record<string, number> };
+  handoffs: { total: number; pending: number; claimed: number };
+}
+
+export interface AdminUserListResponse {
+  users: AdminUser[];
+  total: number;
+}
+
+export interface AdminActionLog {
+  id: string;
+  admin_email: string;
+  action: string;
+  target: string;
+  timestamp: string;
+}
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -243,6 +271,57 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       request<void>('/api/v1/settings/judge', {
         method: 'DELETE',
       }),
+
+    // Admin endpoints
+    adminListUsers: (params: { page?: number; page_size?: number; email?: string } = {}) => {
+      const sp = new URLSearchParams();
+      if (params.page) sp.set('page', String(params.page));
+      if (params.page_size) sp.set('page_size', String(params.page_size));
+      if (params.email) sp.set('email', params.email);
+      return request<AdminUserListResponse>(`/api/v1/admin/users?${sp}`);
+    },
+
+    adminGetUser: (userId: string) =>
+      request<AdminUser>(`/api/v1/admin/users/${userId}`),
+
+    adminChangeTier: (userId: string, tier: string) =>
+      request<void>(`/api/v1/admin/users/${userId}/tier`, {
+        method: 'PUT',
+        body: JSON.stringify({ tier }),
+      }),
+
+    adminVerifyUser: (userId: string) =>
+      request<void>(`/api/v1/admin/users/${userId}/verify`, {
+        method: 'POST',
+      }),
+
+    adminDeleteUser: (userId: string) =>
+      request<void>(`/api/v1/admin/users/${userId}`, {
+        method: 'DELETE',
+      }),
+
+    adminListSessions: (params: { page?: number; page_size?: number; user_id?: string } = {}) => {
+      const sp = new URLSearchParams();
+      if (params.page) sp.set('page', String(params.page));
+      if (params.page_size) sp.set('page_size', String(params.page_size));
+      if (params.user_id) sp.set('user_id', params.user_id);
+      return request<SessionListResponse>(`/api/v1/admin/sessions?${sp}`);
+    },
+
+    adminDeleteSession: (sessionId: string) =>
+      request<void>(`/api/v1/admin/sessions/${sessionId}`, {
+        method: 'DELETE',
+      }),
+
+    adminGetStats: () =>
+      request<AdminStats>('/api/v1/admin/stats'),
+
+    adminGetActionLog: (params: { page?: number; page_size?: number } = {}) => {
+      const sp = new URLSearchParams();
+      if (params.page) sp.set('page', String(params.page));
+      if (params.page_size) sp.set('page_size', String(params.page_size));
+      return request<{ actions: AdminActionLog[]; total: number }>(`/api/v1/admin/actions?${sp}`);
+    },
   };
 }
 

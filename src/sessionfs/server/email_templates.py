@@ -44,7 +44,7 @@ def handoff_email(
     message_html = ""
     if sender_message:
         message_html = (
-            "<div style='background: #1c2128; border-left: 3px solid #58a6ff; "
+            "<div style='background: #1c2128; border-left: 3px solid #4f9cf7; "
             "padding: 12px 16px; margin: 16px 0; border-radius: 4px;'>"
             f"<p style='color: #8b949e; margin: 0 0 8px 0; font-size: 12px;'>Message from {sender_email}:</p>"
             f"<p style='color: #e6edf3; margin: 0;'>{sender_message}</p>"
@@ -55,13 +55,24 @@ def handoff_email(
     if dashboard_url:
         dashboard_html = (
             f"<p style='margin-top: 12px;'><a href='{dashboard_url}' "
-            "style='color: #58a6ff; text-decoration: none;'>View in dashboard</a></p>"
+            "style='color: #4f9cf7; text-decoration: none;'>View in dashboard</a></p>"
         )
+
+    logo_svg = (
+        "<svg viewBox='0 0 180 50' width='140' xmlns='http://www.w3.org/2000/svg'>"
+        "<path d='M22,8 Q14,8 14,16 L14,34 Q14,42 22,42' fill='none' stroke='#4f9cf7' stroke-width='3' stroke-linecap='round'/>"
+        "<path d='M42,8 Q50,8 50,16 L50,34 Q50,42 42,42' fill='none' stroke='#3ddc84' stroke-width='3' stroke-linecap='round'/>"
+        "<circle cx='32' cy='25' r='5' fill='#4f9cf7'/>"
+        "<text x='60' y='31' font-family='-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif' font-size='19' font-weight='500' fill='#e6edf3' letter-spacing='-0.5'>Session<tspan fill='#4f9cf7'>FS</tspan></text>"
+        "</svg>"
+    )
 
     return (
         "<div style='font-family: system-ui, -apple-system, sans-serif; max-width: 560px; "
-        "margin: 0 auto; background: #0d1117; color: #e6edf3; padding: 32px; "
+        "margin: 0 auto; background: #0a0c10; color: #e6edf3; padding: 32px; "
         "border-radius: 8px;'>"
+        # Logo
+        f"<div style='margin-bottom: 20px;'>{logo_svg}</div>"
         # Header
         "<div style='margin-bottom: 24px;'>"
         "<h2 style='margin: 0 0 8px 0; color: #e6edf3;'>Session handoff</h2>"
@@ -88,7 +99,7 @@ def handoff_email(
         # Pull instructions
         "<div style='background: #161b22; padding: 16px; border-radius: 6px; margin: 16px 0;'>"
         "<p style='color: #8b949e; margin: 0 0 8px 0; font-size: 13px;'>Pull this session:</p>"
-        f"<code style='display: block; background: #0d1117; color: #58a6ff; padding: 10px 14px; "
+        f"<code style='display: block; background: #0a0c10; color: #4f9cf7; padding: 10px 14px; "
         f"border-radius: 4px; font-size: 13px; word-break: break-all;'>{pull_command}</code>"
         "</div>"
         f"{dashboard_html}"

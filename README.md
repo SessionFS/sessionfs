@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="brand/logo-full.svg" alt="SessionFS" width="300">
+</p>
+
 # SessionFS
 
 **Stop re-prompting. Start resuming.**
@@ -154,7 +158,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
-**v0.3.0 — Public Beta.** 657 tests passing.
+**v0.3.2 — Public Beta.** 673 tests passing.
 
 What works today:
 - Eight-tool session capture (Claude Code, Codex, Gemini, Cursor, Copilot CLI, Amp, Cline, Roo Code)

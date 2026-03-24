@@ -70,6 +70,15 @@ async def get_current_user(
     return user
 
 
+async def require_admin(
+    user: User = Depends(get_current_user),
+) -> User:
+    """Require that the authenticated user has admin tier."""
+    if user.tier != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user
+
+
 async def require_verified_user(
     user: User = Depends(get_current_user),
 ) -> User:

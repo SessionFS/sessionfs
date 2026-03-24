@@ -42,7 +42,18 @@ from sessionfs.server.storage.base import BlobStore
 
 router = APIRouter(prefix="/api/v1/sessions", tags=["sessions"])
 
-SFS_MAX_SYNC_BYTES = int(os.environ.get("SFS_MAX_SYNC_BYTES", str(10 * 1024 * 1024)))
+SFS_MAX_SYNC_BYTES_FREE = int(os.environ.get("SFS_MAX_SYNC_BYTES_FREE", str(50 * 1024 * 1024)))
+SFS_MAX_SYNC_BYTES_PAID = int(os.environ.get("SFS_MAX_SYNC_BYTES_PAID", str(300 * 1024 * 1024)))
+
+def _sync_limit_for_user(user) -> int:
+    """Return sync byte limit based on user tier."""
+    if user.tier in ("pro", "team", "enterprise", "admin"):
+        return SFS_MAX_SYNC_BYTES_PAID
+    return SFS_MAX_SYNC_BYTES_FREE
+
+def _sync_limit_human(limit: int) -> str:
+    """Format byte limit for error messages."""
+    return f"{limit // (1024 * 1024)}MB"
 
 # --- Validation helpers ---
 
@@ -737,32 +748,36 @@ async def sync_push(
     _validate_session_id(session_id)
     blob_store = _get_blob_store(request)
 
+    # Tier-based sync limit
+    sync_limit = _sync_limit_for_user(user)
+    limit_str = _sync_limit_human(sync_limit)
+
     # Check content-length against sync limit
     content_length = request.headers.get("content-length")
-    if content_length and int(content_length) > SFS_MAX_SYNC_BYTES:
+    if content_length and int(content_length) > sync_limit:
         raise HTTPException(
             status_code=413,
             detail={
                 "code": "PAYLOAD_TOO_LARGE",
                 "message": (
-                    "Session exceeds 10MB cloud limit. Run sfs compact to reduce "
-                    "size, or keep this session local-only."
+                    f"Session exceeds {limit_str} cloud limit for your tier. "
+                    "Run sfs compact to reduce size, or upgrade your plan."
                 ),
             },
         )
 
     # M3: Upload size limit
-    data = await _read_upload(file)
+    data = await _read_upload(file, max_bytes=sync_limit)
 
     # Enforce sync byte limit on actual data
-    if len(data) > SFS_MAX_SYNC_BYTES:
+    if len(data) > sync_limit:
         raise HTTPException(
             status_code=413,
             detail={
                 "code": "PAYLOAD_TOO_LARGE",
                 "message": (
-                    "Session exceeds 10MB cloud limit. Run sfs compact to reduce "
-                    "size, or keep this session local-only."
+                    f"Session exceeds {limit_str} cloud limit for your tier. "
+                    "Run sfs compact to reduce size, or upgrade your plan."
                 ),
             },
         )
@@ -792,50 +807,65 @@ async def sync_push(
     messages_text = _extract_messages_text(data)
 
     if existing is None:
-        # New session -> create with full metadata
-        await blob_store.put(key, data)
-        session = Session(
-            id=session_id,
-            user_id=user.id,
-            title=meta["title"],
-            tags=meta["tags"],
-            source_tool=meta["source_tool"],
-            source_tool_version=meta["source_tool_version"],
-            original_session_id=meta["original_session_id"],
-            model_provider=meta["model_provider"],
-            model_id=meta["model_id"],
-            message_count=meta["message_count"],
-            turn_count=meta["turn_count"],
-            tool_use_count=meta["tool_use_count"],
-            total_input_tokens=meta["total_input_tokens"],
-            total_output_tokens=meta["total_output_tokens"],
-            duration_ms=meta["duration_ms"],
-            messages_text=messages_text,
-            blob_key=key,
-            blob_size_bytes=len(data),
-            etag=new_etag,
-            created_at=now,
-            updated_at=now,
-            uploaded_at=now,
+        # Check if session ID exists at all (including soft-deleted)
+        any_result = await db.execute(
+            select(Session).where(Session.id == session_id)
         )
-        db.add(session)
-        await db.commit()
-        await db.refresh(session)
+        any_existing = any_result.scalar_one_or_none()
+        if any_existing is not None:
+            if any_existing.user_id != user.id and not any_existing.is_deleted:
+                # Active session owned by another user
+                raise HTTPException(status_code=409, detail="Session ID already claimed by another user")
+            # Reuse the row: un-delete and update it
+            any_existing.is_deleted = False
+            any_existing.deleted_at = None
+            any_existing.user_id = user.id
+            existing = any_existing
+        else:
+            # Truly new session -> create
+            await blob_store.put(key, data)
+            session = Session(
+                id=session_id,
+                user_id=user.id,
+                title=meta["title"],
+                tags=meta["tags"],
+                source_tool=meta["source_tool"],
+                source_tool_version=meta["source_tool_version"],
+                original_session_id=meta["original_session_id"],
+                model_provider=meta["model_provider"],
+                model_id=meta["model_id"],
+                message_count=meta["message_count"],
+                turn_count=meta["turn_count"],
+                tool_use_count=meta["tool_use_count"],
+                total_input_tokens=meta["total_input_tokens"],
+                total_output_tokens=meta["total_output_tokens"],
+                duration_ms=meta["duration_ms"],
+                messages_text=messages_text,
+                blob_key=key,
+                blob_size_bytes=len(data),
+                etag=new_etag,
+                created_at=now,
+                updated_at=now,
+                uploaded_at=now,
+            )
+            db.add(session)
+            await db.commit()
+            await db.refresh(session)
 
-        return Response(
-            status_code=201,
-            content=SyncPushResponse(
-                session_id=session.id,
-                etag=session.etag,
-                blob_size_bytes=session.blob_size_bytes,
-                synced_at=now,
-            ).model_dump_json(),
-            media_type="application/json",
-        )
+            return Response(
+                status_code=201,
+                content=SyncPushResponse(
+                    session_id=session.id,
+                    etag=session.etag,
+                    blob_size_bytes=session.blob_size_bytes,
+                    synced_at=now,
+                ).model_dump_json(),
+                media_type="application/json",
+            )
 
-    # Existing -> check If-Match
+    # Existing -> check If-Match (skip if no header — first-time overwrite)
     if_match = request.headers.get("If-Match", "").strip('"')
-    if not if_match or if_match != existing.etag:
+    if if_match and if_match != existing.etag:
         raise HTTPException(
             status_code=409,
             detail={

@@ -22,7 +22,8 @@ class ServerConfig(BaseSettings):
 
     resend_api_key: str = ""
     verification_secret: str = ""
-    max_sync_bytes: int = 10_485_760  # 10 MB
+    max_sync_bytes_free: int = 52_428_800  # 50 MB — free tier
+    max_sync_bytes_paid: int = 314_572_800  # 300 MB — pro/team/enterprise/admin
     retention_days_free: int = 14
 
     host: str = "0.0.0.0"

@@ -47,10 +47,14 @@ class DaemonStatus(BaseModel):
 
 def write_status(status: DaemonStatus, status_path: Path) -> None:
     """Write daemon status atomically (write to temp, rename)."""
-    status.last_updated_at = datetime.now(timezone.utc).isoformat()
-    tmp_path = status_path.with_suffix(".tmp")
-    tmp_path.write_text(json.dumps(status.model_dump(), indent=2))
-    tmp_path.rename(status_path)
+    try:
+        status.last_updated_at = datetime.now(timezone.utc).isoformat()
+        status_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = status_path.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(status.model_dump(), indent=2))
+        tmp_path.rename(status_path)
+    except OSError:
+        pass  # Non-fatal — status is informational, don't crash the daemon
 
 
 def read_status(status_path: Path) -> DaemonStatus | None:

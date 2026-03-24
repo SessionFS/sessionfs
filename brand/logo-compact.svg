@@ -1,0 +1,6 @@
+<svg viewBox="0 0 180 50" xmlns="http://www.w3.org/2000/svg">
+  <path d="M22,8 Q14,8 14,16 L14,34 Q14,42 22,42" fill="none" stroke="#4f9cf7" stroke-width="3" stroke-linecap="round"/>
+  <path d="M42,8 Q50,8 50,16 L50,34 Q50,42 42,42" fill="none" stroke="#3ddc84" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="32" cy="25" r="5" fill="#4f9cf7"/>
+  <text x="60" y="31" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="19" font-weight="500" fill="#e6edf3" letter-spacing="-0.5">Session<tspan fill="#4f9cf7">FS</tspan></text>
+</svg>
