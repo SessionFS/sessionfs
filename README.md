@@ -154,21 +154,22 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
-**v0.3.0 — Public Beta.** 640 tests passing.
+**v0.3.0 — Public Beta.** 657 tests passing.
 
 What works today:
 - Eight-tool session capture (Claude Code, Codex, Gemini, Cursor, Copilot CLI, Amp, Cline, Roo Code)
 - Cross-tool resume between Claude Code, Codex, Gemini, and Copilot CLI
 - Full-text search across all sessions (CLI + dashboard + API)
 - MCP server — AI tools can search your past sessions for context
+- LLM-as-a-Judge — audit sessions for hallucinations (BYOK, multi-provider, OpenRouter)
+- Team handoff with email notification and smart workspace resolution
 - Browse, inspect, export, fork, and checkpoint sessions
 - Cloud sync with push/pull, email verification, and ETag conflict detection
 - Self-hosted API server with auth, PostgreSQL, S3/GCS storage
-- Web dashboard with session management and search
-- Team handoff with email notification
-- 12 security controls including secret detection, path traversal protection, and audit logging
+- Web dashboard with session management, search, handoffs, and audit
 
 On the roadmap:
+- Admin API and dashboard
 - Stripe billing integration
 - Session similarity and duplicate detection
 - Cost analytics dashboard
