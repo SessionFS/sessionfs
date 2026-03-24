@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useSession } from '../hooks/useSession';
+import { useAudit } from '../hooks/useAudit';
 import { abbreviateModel } from '../utils/models';
 import { formatTokens } from '../utils/tokens';
 import { estimateCost } from '../utils/cost';
@@ -8,6 +9,7 @@ import CopyButton from '../components/CopyButton';
 import RelativeDate from '../components/RelativeDate';
 import ConversationView from './ConversationView';
 import AuditTab from './AuditTab';
+import AuditModal from './AuditModal';
 import HandoffModal from '../handoffs/HandoffModal';
 
 type Tab = 'messages' | 'audit';
@@ -16,7 +18,9 @@ export default function SessionDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { data: session, isLoading, error } = useSession(id!);
+  const { data: auditReport } = useAudit(id!);
   const [showHandoff, setShowHandoff] = useState(false);
+  const [showAuditModal, setShowAuditModal] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>('messages');
 
   if (isLoading) {
@@ -104,6 +108,33 @@ export default function SessionDetail() {
             </Section>
           )}
 
+          <Section title="Audit Status">
+            {auditReport ? (
+              <div className="space-y-2">
+                <AuditScoreBar score={auditReport.summary.trust_score} />
+                <div className="text-xs text-text-muted">
+                  Last audited: <RelativeDate iso={auditReport.timestamp} /> ({auditReport.model})
+                </div>
+                <button
+                  onClick={() => setActiveTab('audit')}
+                  className="text-xs text-accent hover:underline"
+                >
+                  View Report
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <span className="text-xs text-text-muted">Not audited</span>
+                <button
+                  onClick={() => setShowAuditModal(true)}
+                  className="w-full px-3 py-1.5 text-xs border border-border text-text-secondary rounded hover:bg-bg-tertiary transition-colors"
+                >
+                  Run Audit
+                </button>
+              </div>
+            )}
+          </Section>
+
           <Section title="Actions">
             <div className="flex flex-col gap-2">
               <button
@@ -159,13 +190,21 @@ export default function SessionDetail() {
         <div className="flex-1 overflow-y-auto">
           {activeTab === 'messages' && <ConversationView sessionId={session.id} />}
           {activeTab === 'audit' && (
-            <AuditTab sessionId={session.id} messageCount={session.message_count} />
+            <AuditTab sessionId={session.id} messageCount={session.message_count} sessionTitle={session.title || undefined} />
           )}
         </div>
       </div>
 
       {showHandoff && (
         <HandoffModal sessionId={session.id} onClose={() => setShowHandoff(false)} />
+      )}
+      {showAuditModal && (
+        <AuditModal
+          sessionId={session.id}
+          messageCount={session.message_count}
+          onClose={() => setShowAuditModal(false)}
+          onComplete={() => setShowAuditModal(false)}
+        />
       )}
     </div>
   );
@@ -199,6 +238,26 @@ function Row({
           {value}
         </span>
       )}
+    </div>
+  );
+}
+
+function AuditScoreBar({ score }: { score: number }) {
+  const pct = Math.round(score * 100);
+  const color =
+    pct >= 90 ? 'bg-green-500' : pct >= 70 ? 'bg-yellow-500' : 'bg-red-500';
+  const textColor =
+    pct >= 90 ? 'text-green-400' : pct >= 70 ? 'text-yellow-400' : 'text-red-400';
+
+  return (
+    <div>
+      <div className="flex items-baseline justify-between mb-1">
+        <span className="text-xs text-text-muted">Trust</span>
+        <span className={`text-sm font-semibold tabular-nums ${textColor}`}>{pct}%</span>
+      </div>
+      <div className="h-1.5 bg-bg-tertiary rounded-full overflow-hidden">
+        <div className={`h-full rounded-full transition-all ${color}`} style={{ width: `${pct}%` }} />
+      </div>
     </div>
   );
 }

@@ -102,6 +102,12 @@ export interface AuditReport {
   summary: AuditSummary;
 }
 
+export interface JudgeSettings {
+  provider: string;
+  model: string;
+  key_set: boolean;
+}
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -214,6 +220,20 @@ export function createApiClient(baseUrl: string, apiKey: string) {
 
     getAudit: (sessionId: string) =>
       request<AuditReport>(`/api/v1/sessions/${sessionId}/audit`),
+
+    getJudgeSettings: () =>
+      request<JudgeSettings>('/api/v1/settings/judge'),
+
+    saveJudgeSettings: (provider: string, model: string, apiKey: string) =>
+      request<void>('/api/v1/settings/judge', {
+        method: 'PUT',
+        body: JSON.stringify({ provider, model, api_key: apiKey }),
+      }),
+
+    clearJudgeSettings: () =>
+      request<void>('/api/v1/settings/judge', {
+        method: 'DELETE',
+      }),
   };
 }
 

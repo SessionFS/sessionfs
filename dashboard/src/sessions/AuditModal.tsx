@@ -1,11 +1,28 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useRunAudit } from '../hooks/useAudit';
+import { useJudgeSettings } from '../hooks/useJudgeSettings';
 
-const MODELS = [
-  { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4', provider: 'anthropic' },
-  { value: 'gpt-4o', label: 'GPT-4o', provider: 'openai' },
-  { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', provider: 'google' },
-];
+const PROVIDERS = [
+  { value: 'openrouter', label: 'OpenRouter' },
+  { value: 'anthropic', label: 'Anthropic' },
+  { value: 'openai', label: 'OpenAI' },
+  { value: 'google', label: 'Google' },
+] as const;
+
+const PROVIDER_MODELS: Record<string, { value: string; label: string }[]> = {
+  anthropic: [
+    { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
+    { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet' },
+  ],
+  openai: [
+    { value: 'gpt-4o', label: 'GPT-4o' },
+    { value: 'gpt-4-turbo', label: 'GPT-4 Turbo' },
+  ],
+  google: [
+    { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+    { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
+  ],
+};
 
 interface Props {
   sessionId: string;
@@ -15,18 +32,46 @@ interface Props {
 }
 
 export default function AuditModal({ sessionId, messageCount, onClose, onComplete }: Props) {
-  const [model, setModel] = useState(MODELS[0].value);
+  const { data: savedSettings } = useJudgeSettings();
+  const [provider, setProvider] = useState('anthropic');
+  const [model, setModel] = useState('claude-sonnet-4-20250514');
   const [apiKey, setApiKey] = useState('');
+  const [useSavedKey, setUseSavedKey] = useState(false);
   const runAudit = useRunAudit();
 
-  const selectedModel = MODELS.find((m) => m.value === model)!;
+  // Pre-fill from saved settings when they load
+  useEffect(() => {
+    if (savedSettings) {
+      if (savedSettings.provider) setProvider(savedSettings.provider);
+      if (savedSettings.model) setModel(savedSettings.model);
+      if (savedSettings.key_set) setUseSavedKey(true);
+    }
+  }, [savedSettings]);
+
+  const isOpenRouter = provider === 'openrouter';
+  const models = PROVIDER_MODELS[provider] || [];
   const estimatedCost = (messageCount * 0.01).toFixed(2);
+  const hasSavedKey = savedSettings?.key_set === true;
 
   const keyPlaceholder = useMemo(() => {
-    if (selectedModel.provider === 'anthropic') return 'sk-ant-...';
-    if (selectedModel.provider === 'openai') return 'sk-...';
+    if (isOpenRouter) return 'sk-or-...';
+    if (provider === 'anthropic') return 'sk-ant-...';
+    if (provider === 'openai') return 'sk-...';
     return 'AIza...';
-  }, [selectedModel.provider]);
+  }, [provider, isOpenRouter]);
+
+  // When provider changes, reset model to first available or empty for openrouter
+  function handleProviderChange(newProvider: string) {
+    setProvider(newProvider);
+    if (newProvider === 'openrouter') {
+      setModel('');
+    } else {
+      const providerModels = PROVIDER_MODELS[newProvider];
+      if (providerModels?.length) setModel(providerModels[0].value);
+    }
+  }
+
+  const canSubmit = model && (hasSavedKey || apiKey);
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -34,8 +79,8 @@ export default function AuditModal({ sessionId, messageCount, onClose, onComplet
       {
         sessionId,
         model,
-        llmApiKey: apiKey,
-        provider: selectedModel.provider,
+        llmApiKey: useSavedKey && !apiKey ? '__saved__' : apiKey,
+        provider,
       },
       {
         onSuccess: () => onComplete(),
@@ -50,33 +95,85 @@ export default function AuditModal({ sessionId, messageCount, onClose, onComplet
           <div className="p-5">
             <h2 className="text-base font-medium text-text-primary mb-4">Run Audit</h2>
 
-            <label className="block text-xs text-text-muted mb-1">Model</label>
+            <label className="block text-xs text-text-muted mb-1">Provider</label>
             <select
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
+              value={provider}
+              onChange={(e) => handleProviderChange(e.target.value)}
               className="w-full mb-3 px-2 py-1.5 bg-bg-primary border border-border rounded text-sm text-text-secondary focus:outline-none focus:border-accent"
             >
-              {MODELS.map((m) => (
-                <option key={m.value} value={m.value}>{m.label}</option>
+              {PROVIDERS.map((p) => (
+                <option key={p.value} value={p.value}>{p.label}</option>
               ))}
             </select>
 
+            <label className="block text-xs text-text-muted mb-1">Model</label>
+            {isOpenRouter ? (
+              <input
+                type="text"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                placeholder="anthropic/claude-sonnet-4"
+                className="w-full mb-3 px-2 py-1.5 bg-bg-primary border border-border rounded text-sm text-text-secondary placeholder:text-text-muted/50 focus:outline-none focus:border-accent font-mono"
+              />
+            ) : (
+              <select
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                className="w-full mb-3 px-2 py-1.5 bg-bg-primary border border-border rounded text-sm text-text-secondary focus:outline-none focus:border-accent"
+              >
+                {models.map((m) => (
+                  <option key={m.value} value={m.value}>{m.label}</option>
+                ))}
+              </select>
+            )}
+
             <label className="block text-xs text-text-muted mb-1">API Key</label>
-            <input
-              type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder={keyPlaceholder}
-              required
-              className="w-full mb-3 px-2 py-1.5 bg-bg-primary border border-border rounded text-sm text-text-secondary placeholder:text-text-muted/50 focus:outline-none focus:border-accent font-mono"
-            />
+            {hasSavedKey && (
+              <div className="flex items-center gap-2 mb-2">
+                <label className="flex items-center gap-1.5 text-xs text-text-secondary cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={useSavedKey}
+                    onChange={(e) => setUseSavedKey(e.target.checked)}
+                    className="rounded border-border"
+                  />
+                  Use saved API key
+                </label>
+                <span className="text-xs text-green-400">Key saved</span>
+              </div>
+            )}
+            {(!hasSavedKey || !useSavedKey) ? (
+              <input
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder={keyPlaceholder}
+                required={!hasSavedKey}
+                className="w-full mb-3 px-2 py-1.5 bg-bg-primary border border-border rounded text-sm text-text-secondary placeholder:text-text-muted/50 focus:outline-none focus:border-accent font-mono"
+              />
+            ) : (
+              <div className="w-full mb-3 px-2 py-1.5 bg-bg-primary border border-border rounded text-sm text-text-muted">
+                Using saved API key (enter key below to override)
+              </div>
+            )}
+            {hasSavedKey && useSavedKey && (
+              <input
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder="Override with one-time key (optional)"
+                className="w-full mb-3 px-2 py-1.5 bg-bg-primary border border-border rounded text-sm text-text-secondary placeholder:text-text-muted/50 focus:outline-none focus:border-accent font-mono"
+              />
+            )}
 
             <div className="text-xs text-text-muted mb-3">
               Estimated cost: ~${estimatedCost} ({messageCount} messages)
             </div>
 
             <div className="text-xs text-text-muted/70 bg-bg-primary border border-border rounded px-3 py-2 mb-3">
-              Your API key is used for this request only and is never stored.
+              {hasSavedKey && useSavedKey && !apiKey
+                ? 'Using your saved API key from Settings.'
+                : 'Your API key is used for this request only and is never stored.'}
             </div>
 
             {runAudit.isError && (
@@ -99,7 +196,7 @@ export default function AuditModal({ sessionId, messageCount, onClose, onComplet
             </button>
             <button
               type="submit"
-              disabled={!apiKey || runAudit.isPending}
+              disabled={!canSubmit || runAudit.isPending}
               className="px-3 py-1.5 text-xs bg-accent text-white rounded hover:bg-accent/90 transition-colors disabled:opacity-50"
             >
               {runAudit.isPending ? 'Running...' : 'Run Audit'}

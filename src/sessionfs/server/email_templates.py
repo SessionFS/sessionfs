@@ -17,6 +17,7 @@ def handoff_email(
     handoff_id: str,
     pull_command: str,
     dashboard_url: str | None = None,
+    trust_score: float | None = None,
 ) -> str:
     """Generate HTML email for a session handoff notification."""
     title_display = session_title or "Untitled session"
@@ -30,6 +31,14 @@ def handoff_email(
         git_html = (
             f"<tr><td style='padding: 6px 12px; color: #8b949e;'>Repository</td>"
             f"<td style='padding: 6px 12px; color: #e6edf3;'>{git_remote}{branch_part}</td></tr>"
+        )
+
+    audit_html = ""
+    if trust_score is not None:
+        score_pct = f"{trust_score:.0%}"
+        audit_html = (
+            f"<tr><td style='padding: 6px 12px; color: #8b949e;'>Audit Score</td>"
+            f"<td style='padding: 6px 12px; color: #e6edf3;'>{score_pct}</td></tr>"
         )
 
     message_html = ""
@@ -74,6 +83,7 @@ def handoff_email(
         f"<tr><td style='padding: 6px 12px; color: #8b949e;'>Tokens</td>"
         f"<td style='padding: 6px 12px; color: #e6edf3;'>{token_display}</td></tr>"
         f"{git_html}"
+        f"{audit_html}"
         "</table>"
         # Pull instructions
         "<div style='background: #161b22; padding: 16px; border-radius: 6px; margin: 16px 0;'>"
