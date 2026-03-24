@@ -27,9 +27,11 @@ export default function SessionList() {
   const [dateRange, setDateRange] = useState('');
   const [sortBy, setSortBy] = useState<SortKey>('date');
 
+  const PAGE_SIZE = 20;
+
   const { data, isLoading, error } = useSessions({
     page,
-    page_size: 100,
+    page_size: PAGE_SIZE,
     source_tool: toolFilter === 'all' ? undefined : toolFilter,
   });
 
@@ -37,14 +39,14 @@ export default function SessionList() {
     if (!data?.sessions) return [];
     let list = data.sessions;
 
-    // Date range filter
+    // Date range filter (client-side on current page)
     if (dateRange) {
       const now = Date.now();
       const ms = dateRange === '24h' ? 86400000 : dateRange === '7d' ? 604800000 : 2592000000;
       list = list.filter((s) => now - new Date(s.updated_at).getTime() < ms);
     }
 
-    // Sort
+    // Sort (client-side on current page — server sorts by date by default)
     const sorted = [...list];
     if (sortBy === 'messages') sorted.sort((a, b) => b.message_count - a.message_count);
     else if (sortBy === 'tokens')
@@ -55,14 +57,12 @@ export default function SessionList() {
       );
     else if (sortBy === 'title')
       sorted.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
-    // 'date' is default from server (already sorted)
 
     return sorted;
   }, [data, dateRange, sortBy]);
 
-  const PAGE_SIZE = 20;
-  const paged = sessions.slice(0, PAGE_SIZE * page);
-  const hasMore = sessions.length > paged.length;
+  const hasMore = data?.has_more ?? false;
+  const totalSessions = data?.total ?? 0;
 
   function handleRowClick(id: string) {
     navigate(`/sessions/${id}`);
@@ -135,7 +135,7 @@ export default function SessionList() {
                 </tr>
               </thead>
               <tbody>
-                {paged.map((s) => (
+                {sessions.map((s) => (
                   <tr
                     key={s.id}
                     onClick={() => handleRowClick(s.id)}
@@ -168,17 +168,27 @@ export default function SessionList() {
           {/* Pagination */}
           <div className="flex items-center justify-between mt-3 text-sm text-text-muted">
             <span>
-              Showing {paged.length} of {sessions.length} sessions
-              {data && data.total > sessions.length && ` (${data.total} total on server)`}
+              Page {page} — {sessions.length} sessions
+              {totalSessions > 0 && ` (${totalSessions} total)`}
             </span>
-            {hasMore && (
-              <button
-                onClick={() => setPage((p) => p + 1)}
-                className="px-3 py-1 bg-bg-secondary border border-border rounded hover:border-text-muted transition-colors"
-              >
-                Load more
-              </button>
-            )}
+            <div className="flex gap-2">
+              {page > 1 && (
+                <button
+                  onClick={() => setPage((p) => p - 1)}
+                  className="px-3 py-1 bg-bg-secondary border border-border rounded hover:border-text-muted transition-colors"
+                >
+                  Previous
+                </button>
+              )}
+              {hasMore && (
+                <button
+                  onClick={() => setPage((p) => p + 1)}
+                  className="px-3 py-1 bg-bg-secondary border border-border rounded hover:border-text-muted transition-colors"
+                >
+                  Next
+                </button>
+              )}
+            </div>
           </div>
         </>
       )}
