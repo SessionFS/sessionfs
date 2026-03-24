@@ -132,7 +132,6 @@ async def _call_openrouter(model: str, system: str, prompt: str, api_key: str, t
         ],
         "max_tokens": 4096,
         "temperature": temperature,
-        "response_format": {"type": "json_object"},
     }
     async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.post(_OPENROUTER_URL, json=body, headers=headers)
