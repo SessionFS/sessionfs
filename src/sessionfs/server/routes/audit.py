@@ -130,8 +130,7 @@ async def run_audit(
     blob_store = _get_blob_store(request)
 
     # Extract messages from the stored archive
-    blob_key = f"sessions/{user.id}/{session_id}.tar.gz"
-    messages = await _extract_messages_from_archive(blob_store, blob_key)
+    messages = await _extract_messages_from_archive(blob_store, session.blob_key)
     if not messages:
         raise HTTPException(
             status_code=400,
