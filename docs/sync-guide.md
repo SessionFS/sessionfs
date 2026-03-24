@@ -94,7 +94,7 @@ sfs sync pull <session_id>
 Run your own SessionFS API server with Docker Compose:
 
 ```bash
-git clone https://github.com/sessionfs/sessionfs
+git clone https://github.com/SessionFS/sessionfs
 cd sessionfs
 docker compose up -d
 ```

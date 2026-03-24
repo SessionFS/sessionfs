@@ -84,7 +84,7 @@ export default function AuditTab({ sessionId, messageCount, sessionTitle }: Prop
       </div>
 
       {/* Meta */}
-      <div className="flex gap-4 text-xs text-text-muted mb-6">
+      <div className="flex gap-4 text-sm text-text-muted mb-6">
         <span>Model: {report.model}</span>
         <span>Run: {new Date(report.timestamp).toLocaleString()}</span>
       </div>
@@ -93,7 +93,7 @@ export default function AuditTab({ sessionId, messageCount, sessionTitle }: Prop
       <div className="flex items-center gap-2 mb-6">
         <button
           onClick={() => setShowModal(true)}
-          className="px-3 py-1.5 text-xs border border-border text-text-secondary rounded hover:bg-bg-tertiary transition-colors"
+          className="px-3 py-1.5 text-sm border border-border text-text-secondary rounded hover:bg-bg-tertiary transition-colors"
         >
           Re-run Audit
         </button>
@@ -133,7 +133,7 @@ function TrustScoreBar({ score }: { score: number }) {
   return (
     <div className="mb-6">
       <div className="flex items-baseline justify-between mb-1.5">
-        <span className="text-xs text-text-muted uppercase tracking-wider">Trust Score</span>
+        <span className="text-sm text-text-muted uppercase tracking-wider">Trust Score</span>
         <span className={`text-2xl font-semibold tabular-nums ${textColor}`}>{pct}%</span>
       </div>
       <div className="h-2 bg-bg-tertiary rounded-full overflow-hidden">
@@ -175,7 +175,7 @@ function FindingRow({ finding }: { finding: AuditFinding }) {
           {finding.severity}
         </span>
         <span className="text-sm text-text-primary truncate flex-1">{finding.claim}</span>
-        <span className="text-text-muted text-xs shrink-0 ml-2">#{finding.message_index}</span>
+        <span className="text-text-muted text-sm shrink-0 ml-2">#{finding.message_index}</span>
         <svg
           className={`w-3 h-3 text-text-muted shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`}
           fill="none"
@@ -190,9 +190,9 @@ function FindingRow({ finding }: { finding: AuditFinding }) {
       {expanded && (
         <div className="px-3 py-3 border-t border-border bg-bg-primary text-sm space-y-3">
           <div>
-            <span className="text-xs text-text-muted block mb-1">Evidence</span>
+            <span className="text-sm text-text-muted block mb-1">Evidence</span>
             {looksLikeCode ? (
-              <pre className="bg-bg-tertiary border border-border rounded px-3 py-2 text-xs text-text-secondary overflow-x-auto whitespace-pre-wrap">
+              <pre className="bg-bg-tertiary border border-border rounded px-3 py-2 text-sm text-text-secondary overflow-x-auto whitespace-pre-wrap">
                 {finding.evidence}
               </pre>
             ) : (
@@ -200,12 +200,12 @@ function FindingRow({ finding }: { finding: AuditFinding }) {
             )}
           </div>
           <div>
-            <span className="text-xs text-text-muted block mb-1">Explanation</span>
+            <span className="text-sm text-text-muted block mb-1">Explanation</span>
             <p className="text-text-secondary text-sm">{finding.explanation}</p>
           </div>
           <a
             href={`#message-${finding.message_index}`}
-            className="text-accent text-xs hover:underline"
+            className="text-accent text-sm hover:underline"
           >
             Jump to message #{finding.message_index}
           </a>
@@ -244,7 +244,7 @@ function DownloadDropdown({ report, sessionTitle }: { report: AuditReport; sessi
     <div className="relative" ref={ref}>
       <button
         onClick={() => setOpen(!open)}
-        className="px-3 py-1.5 text-xs border border-border text-text-secondary rounded hover:bg-bg-tertiary transition-colors inline-flex items-center gap-1"
+        className="px-3 py-1.5 text-sm border border-border text-text-secondary rounded hover:bg-bg-tertiary transition-colors inline-flex items-center gap-1"
       >
         Download
         <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -255,19 +255,19 @@ function DownloadDropdown({ report, sessionTitle }: { report: AuditReport; sessi
         <div className="absolute top-full left-0 mt-1 bg-bg-secondary border border-border rounded-lg shadow-lg z-10 min-w-[120px]">
           <button
             onClick={() => handleDownload('json')}
-            className="w-full text-left px-3 py-2 text-xs text-text-secondary hover:bg-bg-tertiary transition-colors rounded-t-lg"
+            className="w-full text-left px-3 py-2 text-sm text-text-secondary hover:bg-bg-tertiary transition-colors rounded-t-lg"
           >
             JSON
           </button>
           <button
             onClick={() => handleDownload('md')}
-            className="w-full text-left px-3 py-2 text-xs text-text-secondary hover:bg-bg-tertiary transition-colors"
+            className="w-full text-left px-3 py-2 text-sm text-text-secondary hover:bg-bg-tertiary transition-colors"
           >
             Markdown
           </button>
           <button
             onClick={() => handleDownload('csv')}
-            className="w-full text-left px-3 py-2 text-xs text-text-secondary hover:bg-bg-tertiary transition-colors rounded-b-lg"
+            className="w-full text-left px-3 py-2 text-sm text-text-secondary hover:bg-bg-tertiary transition-colors rounded-b-lg"
           >
             CSV
           </button>

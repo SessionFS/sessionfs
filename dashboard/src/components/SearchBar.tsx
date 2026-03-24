@@ -113,7 +113,7 @@ export default function SearchBar() {
               </div>
               {r.matches[0] && (
                 <p
-                  className="text-xs text-text-secondary truncate [&_mark]:bg-accent/20 [&_mark]:text-accent [&_mark]:px-0.5 [&_mark]:rounded"
+                  className="text-sm text-text-secondary truncate [&_mark]:bg-accent/20 [&_mark]:text-accent [&_mark]:px-0.5 [&_mark]:rounded"
                   dangerouslySetInnerHTML={{ __html: renderSnippet(r.matches[0].snippet) }}
                 />
               )}
@@ -124,7 +124,7 @@ export default function SearchBar() {
               setOpen(false);
               navigate(`/search?q=${encodeURIComponent(input.trim())}`);
             }}
-            className="w-full px-3 py-2 text-xs text-accent hover:bg-bg-tertiary transition-colors text-center"
+            className="w-full px-3 py-2 text-sm text-accent hover:bg-bg-tertiary transition-colors text-center"
           >
             View all results
           </button>

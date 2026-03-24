@@ -15,7 +15,7 @@ function StatusBadge({ status }: { status: HandoffDetailType['status'] }) {
     expired: 'bg-neutral-500/10 text-neutral-400 border-neutral-500/30',
   };
   return (
-    <span className={`px-2 py-1 text-xs border rounded ${styles[status]}`}>
+    <span className={`px-2 py-1 text-sm border rounded ${styles[status]}`}>
       {status}
     </span>
   );
@@ -71,7 +71,7 @@ export default function HandoffDetail() {
           </h2>
           <StatusBadge status={handoff.status} />
         </div>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
           <div>
             <span className="text-text-muted block">Tool</span>
             <span className="text-text-secondary">{handoff.session_source_tool}</span>
@@ -94,7 +94,7 @@ export default function HandoffDetail() {
       {/* Sender message */}
       {handoff.message && (
         <div className="border-l-2 border-accent/50 pl-3 mb-4">
-          <p className="text-xs text-text-muted mb-1">Message from {handoff.sender_email}</p>
+          <p className="text-sm text-text-muted mb-1">Message from {handoff.sender_email}</p>
           <p className="text-sm text-text-secondary whitespace-pre-wrap">{handoff.message}</p>
         </div>
       )}
@@ -110,7 +110,7 @@ export default function HandoffDetail() {
             {claimMutation.isPending ? 'Claiming...' : 'Claim this handoff'}
           </button>
           {claimMutation.isError && (
-            <p className="text-red-400 text-xs mt-2">
+            <p className="text-red-400 text-sm mt-2">
               Failed to claim: {String(claimMutation.error)}
             </p>
           )}
@@ -119,9 +119,9 @@ export default function HandoffDetail() {
 
       {/* CLI pull command */}
       <div className="border border-border rounded-lg bg-bg-secondary p-3 mb-4">
-        <p className="text-xs text-text-muted mb-2">Pull via CLI</p>
+        <p className="text-sm text-text-muted mb-2">Pull via CLI</p>
         <div className="flex items-center gap-2">
-          <code className="text-xs text-text-secondary bg-bg-primary px-2 py-1 rounded flex-1 truncate">
+          <code className="text-sm text-text-secondary bg-bg-primary px-2 py-1 rounded flex-1 truncate">
             {pullCommand}
           </code>
           <CopyButton text={pullCommand} label="Copy" />
@@ -129,7 +129,7 @@ export default function HandoffDetail() {
       </div>
 
       {/* Timestamps */}
-      <div className="text-xs text-text-muted space-y-1 mb-4">
+      <div className="text-sm text-text-muted space-y-1 mb-4">
         <div className="flex gap-2">
           <span>Sent:</span>
           <RelativeDate iso={handoff.created_at} />
@@ -143,7 +143,7 @@ export default function HandoffDetail() {
       </div>
 
       {/* Participants */}
-      <div className="text-xs text-text-muted space-y-1 mb-4">
+      <div className="text-sm text-text-muted space-y-1 mb-4">
         <div>From: <span className="text-text-secondary">{handoff.sender_email}</span></div>
         <div>To: <span className="text-text-secondary">{handoff.recipient_email}</span></div>
       </div>

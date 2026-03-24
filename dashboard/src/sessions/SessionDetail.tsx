@@ -100,7 +100,7 @@ export default function SessionDetail() {
             <Section title="Tags">
               <div className="flex flex-wrap gap-1">
                 {session.tags.map((t) => (
-                  <span key={t} className="px-1.5 py-0.5 text-xs bg-bg-tertiary border border-border rounded text-text-secondary">
+                  <span key={t} className="px-1.5 py-0.5 text-sm bg-bg-tertiary border border-border rounded text-text-secondary">
                     {t}
                   </span>
                 ))}
@@ -112,22 +112,22 @@ export default function SessionDetail() {
             {auditReport ? (
               <div className="space-y-2">
                 <AuditScoreBar score={auditReport.summary.trust_score} />
-                <div className="text-xs text-text-muted">
+                <div className="text-sm text-text-muted">
                   Last audited: <RelativeDate iso={auditReport.timestamp} /> ({auditReport.model})
                 </div>
                 <button
                   onClick={() => setActiveTab('audit')}
-                  className="text-xs text-accent hover:underline"
+                  className="text-sm text-accent hover:underline"
                 >
                   View Report
                 </button>
               </div>
             ) : (
               <div className="space-y-2">
-                <span className="text-xs text-text-muted">Not audited</span>
+                <span className="text-sm text-text-muted">Not audited</span>
                 <button
                   onClick={() => setShowAuditModal(true)}
-                  className="w-full px-3 py-1.5 text-xs border border-border text-text-secondary rounded hover:bg-bg-tertiary transition-colors"
+                  className="w-full px-3 py-1.5 text-sm border border-border text-text-secondary rounded hover:bg-bg-tertiary transition-colors"
                 >
                   Run Audit
                 </button>
@@ -139,18 +139,18 @@ export default function SessionDetail() {
             <div className="flex flex-col gap-2">
               <button
                 onClick={() => setShowHandoff(true)}
-                className="w-full px-3 py-1.5 text-xs bg-accent text-white rounded hover:bg-accent/90 transition-colors"
+                className="w-full px-3 py-1.5 text-sm bg-accent text-white rounded hover:bg-accent/90 transition-colors"
               >
                 Hand Off
               </button>
               <div className="flex items-center gap-2">
-                <code className="text-xs text-text-muted bg-bg-primary px-2 py-1 rounded flex-1 truncate">
+                <code className="text-sm text-text-muted bg-bg-primary px-2 py-1 rounded flex-1 truncate">
                   sfs resume {session.id}
                 </code>
                 <CopyButton text={`sfs resume ${session.id}`} label="Copy" />
               </div>
               <div className="flex items-center gap-2">
-                <code className="text-xs text-text-muted bg-bg-primary px-2 py-1 rounded flex-1 truncate">
+                <code className="text-sm text-text-muted bg-bg-primary px-2 py-1 rounded flex-1 truncate">
                   sfs show {session.id}
                 </code>
                 <CopyButton text={`sfs show ${session.id}`} label="Copy" />
@@ -166,7 +166,7 @@ export default function SessionDetail() {
         <div className="flex border-b border-border bg-bg-secondary shrink-0">
           <button
             onClick={() => setActiveTab('messages')}
-            className={`px-4 py-2 text-xs font-medium transition-colors ${
+            className={`px-4 py-2 text-sm font-medium transition-colors ${
               activeTab === 'messages'
                 ? 'text-accent border-b-2 border-accent'
                 : 'text-text-muted hover:text-text-secondary'
@@ -176,7 +176,7 @@ export default function SessionDetail() {
           </button>
           <button
             onClick={() => setActiveTab('audit')}
-            className={`px-4 py-2 text-xs font-medium transition-colors ${
+            className={`px-4 py-2 text-sm font-medium transition-colors ${
               activeTab === 'audit'
                 ? 'text-accent border-b-2 border-accent'
                 : 'text-text-muted hover:text-text-secondary'
@@ -231,7 +231,7 @@ function Row({
   children?: React.ReactNode;
 }) {
   return (
-    <div className="flex justify-between text-xs py-0.5">
+    <div className="flex justify-between text-sm py-0.5">
       <span className="text-text-muted">{label}</span>
       {children || (
         <span className={`text-text-secondary ${mono ? 'font-mono' : ''} truncate ml-2 max-w-[140px]`}>
@@ -252,7 +252,7 @@ function AuditScoreBar({ score }: { score: number }) {
   return (
     <div>
       <div className="flex items-baseline justify-between mb-1">
-        <span className="text-xs text-text-muted">Trust</span>
+        <span className="text-sm text-text-muted">Trust</span>
         <span className={`text-sm font-semibold tabular-nums ${textColor}`}>{pct}%</span>
       </div>
       <div className="h-1.5 bg-bg-tertiary rounded-full overflow-hidden">

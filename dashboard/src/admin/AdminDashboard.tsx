@@ -96,14 +96,14 @@ export default function AdminDashboard() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {/* Tier breakdown */}
               <div className="border border-border rounded-lg p-4 bg-bg-secondary">
-                <h3 className="text-xs font-medium text-text-secondary uppercase tracking-wider mb-3">
+                <h3 className="text-sm font-medium text-text-secondary uppercase tracking-wider mb-3">
                   Users by Tier
                 </h3>
                 <div className="space-y-2">
                   {Object.entries(stats.users.by_tier).map(([tier, count]) => (
                     <div key={tier} className="flex items-center justify-between text-sm">
                       <span className="text-text-secondary capitalize">{tier}</span>
-                      <span className={`px-2 py-0.5 rounded text-xs font-medium ${TIER_COLORS[tier] || 'bg-gray-500/20 text-gray-400'}`}>
+                      <span className={`px-2 py-0.5 rounded text-sm font-medium ${TIER_COLORS[tier] || 'bg-gray-500/20 text-gray-400'}`}>
                         {count}
                       </span>
                     </div>
@@ -113,7 +113,7 @@ export default function AdminDashboard() {
 
               {/* Tool breakdown */}
               <div className="border border-border rounded-lg p-4 bg-bg-secondary">
-                <h3 className="text-xs font-medium text-text-secondary uppercase tracking-wider mb-3">
+                <h3 className="text-sm font-medium text-text-secondary uppercase tracking-wider mb-3">
                   Sessions by Tool
                 </h3>
                 <div className="space-y-2">
@@ -138,7 +138,7 @@ export default function AdminDashboard() {
                       );
                     })}
                   {Object.keys(stats.sessions.by_tool).length === 0 && (
-                    <div className="text-text-muted text-xs">No sessions yet</div>
+                    <div className="text-text-muted text-sm">No sessions yet</div>
                   )}
                 </div>
               </div>
@@ -176,7 +176,7 @@ export default function AdminDashboard() {
           <div className="border border-border rounded-lg overflow-hidden">
             <table className="w-full text-sm">
               <thead>
-                <tr className="bg-bg-secondary text-text-secondary text-xs uppercase tracking-wider">
+                <tr className="bg-bg-secondary text-text-secondary text-sm uppercase tracking-wider">
                   <th className="px-3 py-2 text-left">Email</th>
                   <th className="px-3 py-2 text-left w-24">Tier</th>
                   <th className="px-3 py-2 text-center w-20">Verified</th>
@@ -212,7 +212,7 @@ export default function AdminDashboard() {
         )}
 
         {usersData && (
-          <div className="mt-2 text-xs text-text-muted">
+          <div className="mt-2 text-sm text-text-muted">
             Showing {usersData.users.length} of {usersData.total} users
           </div>
         )}
@@ -227,7 +227,7 @@ export default function AdminDashboard() {
           <div className="border border-border rounded-lg overflow-hidden">
             <table className="w-full text-sm">
               <thead>
-                <tr className="bg-bg-secondary text-text-secondary text-xs uppercase tracking-wider">
+                <tr className="bg-bg-secondary text-text-secondary text-sm uppercase tracking-wider">
                   <th className="px-3 py-2 text-left">Admin</th>
                   <th className="px-3 py-2 text-left">Action</th>
                   <th className="px-3 py-2 text-left">Target</th>
@@ -239,8 +239,8 @@ export default function AdminDashboard() {
                   <tr key={action.id} className="border-t border-border">
                     <td className="px-3 py-2 text-text-secondary">{action.admin_email}</td>
                     <td className="px-3 py-2 text-text-primary">{action.action}</td>
-                    <td className="px-3 py-2 text-text-muted font-mono text-xs">{action.target}</td>
-                    <td className="px-3 py-2 text-text-muted text-xs">
+                    <td className="px-3 py-2 text-text-muted font-mono text-sm">{action.target}</td>
+                    <td className="px-3 py-2 text-text-muted text-sm">
                       <RelativeDate iso={action.timestamp} />
                     </td>
                   </tr>
@@ -274,7 +274,7 @@ export default function AdminDashboard() {
 function StatCard({ label, value }: { label: string; value: string | number }) {
   return (
     <div className="border border-border rounded-lg p-3 bg-bg-secondary">
-      <div className="text-xs text-text-muted mb-1">{label}</div>
+      <div className="text-sm text-text-muted mb-1">{label}</div>
       <div className="text-lg font-semibold text-text-primary tabular-nums">{value}</div>
     </div>
   );
@@ -317,7 +317,7 @@ function UserRow({
       >
         <td className="px-3 py-2 text-text-primary">{user.email}</td>
         <td className="px-3 py-2">
-          <span className={`px-2 py-0.5 rounded text-xs font-medium ${tierColor}`}>
+          <span className={`px-2 py-0.5 rounded text-sm font-medium ${tierColor}`}>
             {user.tier}
           </span>
         </td>
@@ -331,7 +331,7 @@ function UserRow({
         <td className="px-3 py-2 text-right text-text-secondary tabular-nums">
           {user.session_count}
         </td>
-        <td className="px-3 py-2 text-text-muted text-xs">
+        <td className="px-3 py-2 text-text-muted text-sm">
           <RelativeDate iso={user.created_at} />
         </td>
       </tr>
@@ -341,7 +341,7 @@ function UserRow({
             <div className="flex flex-wrap items-center gap-4">
               {/* Change Tier */}
               <div className="flex items-center gap-2">
-                <label className="text-xs text-text-muted">Tier:</label>
+                <label className="text-sm text-text-muted">Tier:</label>
                 <select
                   value={selectedTier}
                   onChange={(e) => onPendingTierChange(e.target.value)}
@@ -355,7 +355,7 @@ function UserRow({
                   <button
                     onClick={(e) => { e.stopPropagation(); onSaveTier(); }}
                     disabled={isSavingTier}
-                    className="px-3 py-1 text-xs bg-accent hover:bg-accent/90 text-white rounded transition-colors disabled:opacity-50"
+                    className="px-3 py-1 text-sm bg-accent hover:bg-accent/90 text-white rounded transition-colors disabled:opacity-50"
                   >
                     {isSavingTier ? 'Saving...' : 'Save'}
                   </button>
@@ -367,7 +367,7 @@ function UserRow({
                 <button
                   onClick={(e) => { e.stopPropagation(); onVerify(); }}
                   disabled={isVerifying}
-                  className="px-3 py-1 text-xs bg-green-600 hover:bg-green-700 text-white rounded transition-colors disabled:opacity-50"
+                  className="px-3 py-1 text-sm bg-green-600 hover:bg-green-700 text-white rounded transition-colors disabled:opacity-50"
                 >
                   {isVerifying ? 'Verifying...' : 'Verify Email'}
                 </button>
@@ -376,12 +376,12 @@ function UserRow({
               {/* Delete User */}
               <button
                 onClick={(e) => { e.stopPropagation(); onDelete(); }}
-                className="px-3 py-1 text-xs bg-red-600 hover:bg-red-700 text-white rounded transition-colors"
+                className="px-3 py-1 text-sm bg-red-600 hover:bg-red-700 text-white rounded transition-colors"
               >
                 Delete User
               </button>
 
-              <span className="text-xs text-text-muted ml-auto">
+              <span className="text-sm text-text-muted ml-auto">
                 ID: <span className="font-mono">{user.user_id}</span>
               </span>
             </div>

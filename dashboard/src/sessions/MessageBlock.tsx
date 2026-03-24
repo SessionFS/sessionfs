@@ -43,15 +43,15 @@ export default function MessageBlock({ message }: MessageProps) {
   return (
     <div className={`border-l-2 ${style} pl-4 py-2`}>
       <div className="flex items-center gap-2 mb-1">
-        <span className={`text-xs font-medium uppercase tracking-wide ${labelStyle}`}>
+        <span className={`text-sm font-medium uppercase tracking-wide ${labelStyle}`}>
           {role}
         </span>
         {timestamp && (
-          <span className="text-text-muted text-xs">
+          <span className="text-text-muted text-sm">
             <RelativeDate iso={timestamp} />
           </span>
         )}
-        {model && <span className="text-text-muted text-xs font-mono">{model}</span>}
+        {model && <span className="text-text-muted text-sm font-mono">{model}</span>}
       </div>
       <div className="flex flex-col gap-2">
         {blocks.map((block, i) => (

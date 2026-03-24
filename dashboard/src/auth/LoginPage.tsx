@@ -72,7 +72,7 @@ export default function LoginPage() {
           <div className="mb-4 p-3 bg-bg-tertiary rounded border border-role-assistant/30 text-sm">
             <p className="text-role-assistant font-medium mb-1">Account created</p>
             <p className="text-text-secondary mb-2">Save your API key — it won't be shown again:</p>
-            <code className="block p-2 bg-bg-primary rounded text-xs break-all select-all text-text-primary">
+            <code className="block p-2 bg-bg-primary rounded text-sm break-all select-all text-text-primary">
               {signupKey}
             </code>
           </div>
@@ -87,7 +87,7 @@ export default function LoginPage() {
         {mode === 'login' ? (
           <form onSubmit={handleLogin}>
             <label className="block mb-4">
-              <span className="text-text-secondary text-xs uppercase tracking-wide">Server URL</span>
+              <span className="text-text-secondary text-sm uppercase tracking-wide">Server URL</span>
               <input
                 type="url"
                 value={baseUrl}
@@ -96,7 +96,7 @@ export default function LoginPage() {
               />
             </label>
             <label className="block mb-6">
-              <span className="text-text-secondary text-xs uppercase tracking-wide">API Key</span>
+              <span className="text-text-secondary text-sm uppercase tracking-wide">API Key</span>
               <input
                 type="password"
                 value={apiKey}
@@ -113,7 +113,7 @@ export default function LoginPage() {
             >
               {loading ? 'Connecting...' : 'Sign In'}
             </button>
-            <p className="mt-4 text-center text-text-muted text-xs">
+            <p className="mt-4 text-center text-text-muted text-sm">
               No account?{' '}
               <button type="button" onClick={() => setMode('signup')} className="text-accent hover:underline">
                 Sign up
@@ -123,7 +123,7 @@ export default function LoginPage() {
         ) : (
           <form onSubmit={handleSignup}>
             <label className="block mb-4">
-              <span className="text-text-secondary text-xs uppercase tracking-wide">Server URL</span>
+              <span className="text-text-secondary text-sm uppercase tracking-wide">Server URL</span>
               <input
                 type="url"
                 value={baseUrl}
@@ -132,7 +132,7 @@ export default function LoginPage() {
               />
             </label>
             <label className="block mb-6">
-              <span className="text-text-secondary text-xs uppercase tracking-wide">Email</span>
+              <span className="text-text-secondary text-sm uppercase tracking-wide">Email</span>
               <input
                 type="email"
                 value={email}
@@ -149,7 +149,7 @@ export default function LoginPage() {
             >
               {loading ? 'Creating...' : 'Create Account'}
             </button>
-            <p className="mt-4 text-center text-text-muted text-xs">
+            <p className="mt-4 text-center text-text-muted text-sm">
               Have an API key?{' '}
               <button type="button" onClick={() => setMode('login')} className="text-accent hover:underline">
                 Sign in

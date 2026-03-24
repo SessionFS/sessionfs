@@ -16,23 +16,23 @@ const PROVIDER_MODELS: Record<string, { value: string; label: string }[]> = {
     { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
   ],
   openai: [
-    { value: 'gpt-5.4', label: 'GPT-5.4' },
-    { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' },
-    { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
-    { value: 'o3', label: 'o3' },
-    { value: 'o4-mini', label: 'o4 Mini' },
+    { value: 'gpt-5.2', label: 'GPT-5.2' },
+    { value: 'gpt-5.2-pro', label: 'GPT-5.2 Pro' },
+    { value: 'gpt-4o', label: 'GPT-4o' },
+    { value: 'o3', label: 'o3 (reasoning)' },
+    { value: 'o4-mini', label: 'o4 Mini (reasoning)' },
   ],
   google: [
-    { value: 'gemini-3.1-pro', label: 'Gemini 3.1 Pro' },
-    { value: 'gemini-3.1-flash', label: 'Gemini 3.1 Flash' },
+    { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+    { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
   ],
   openrouter: [
-    { value: 'anthropic/claude-opus-4.6', label: 'Claude Opus 4.6' },
-    { value: 'anthropic/claude-sonnet-4.6', label: 'Claude Sonnet 4.6' },
-    { value: 'openai/gpt-5.4', label: 'GPT-5.4' },
-    { value: 'openai/gpt-5.3-codex', label: 'GPT-5.3 Codex' },
-    { value: 'openai/o3', label: 'o3' },
-    { value: 'google/gemini-3.1-pro', label: 'Gemini 3.1 Pro' },
+    { value: 'anthropic/claude-opus-4-6', label: 'Claude Opus 4.6' },
+    { value: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+    { value: 'openai/gpt-5.2', label: 'GPT-5.2' },
+    { value: 'openai/gpt-4o', label: 'GPT-4o' },
+    { value: 'openai/o3', label: 'o3 (reasoning)' },
+    { value: 'google/gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
     { value: 'deepseek/deepseek-v3.2', label: 'DeepSeek V3.2' },
     { value: 'deepseek/deepseek-r1', label: 'DeepSeek R1' },
   ],
@@ -105,7 +105,7 @@ export default function AuditModal({ sessionId, messageCount, onClose, onComplet
           <div className="p-5">
             <h2 className="text-base font-medium text-text-primary mb-4">Run Audit</h2>
 
-            <label className="block text-xs text-text-muted mb-1">Provider</label>
+            <label className="block text-sm text-text-muted mb-1">Provider</label>
             <select
               value={provider}
               onChange={(e) => handleProviderChange(e.target.value)}
@@ -116,7 +116,7 @@ export default function AuditModal({ sessionId, messageCount, onClose, onComplet
               ))}
             </select>
 
-            <label className="block text-xs text-text-muted mb-1">Model</label>
+            <label className="block text-sm text-text-muted mb-1">Model</label>
             <select
               value={models.some(m => m.value === model) ? model : '__custom__'}
               onChange={(e) => {
@@ -139,15 +139,15 @@ export default function AuditModal({ sessionId, messageCount, onClose, onComplet
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
                 placeholder="provider/model-name (e.g. meta-llama/llama-3.3-70b)"
-                className="w-full mb-1.5 px-2 py-1.5 bg-bg-primary border border-border rounded text-xs text-text-secondary placeholder:text-text-muted/50 focus:outline-none focus:border-accent font-mono"
+                className="w-full mb-1.5 px-2 py-1.5 bg-bg-primary border border-border rounded text-sm text-text-secondary placeholder:text-text-muted/50 focus:outline-none focus:border-accent font-mono"
               />
             )}
             <div className="mb-3" />
 
-            <label className="block text-xs text-text-muted mb-1">API Key</label>
+            <label className="block text-sm text-text-muted mb-1">API Key</label>
             {hasSavedKey && (
               <div className="flex items-center gap-2 mb-2">
-                <label className="flex items-center gap-1.5 text-xs text-text-secondary cursor-pointer">
+                <label className="flex items-center gap-1.5 text-sm text-text-secondary cursor-pointer">
                   <input
                     type="checkbox"
                     checked={useSavedKey}
@@ -156,7 +156,7 @@ export default function AuditModal({ sessionId, messageCount, onClose, onComplet
                   />
                   Use saved API key
                 </label>
-                <span className="text-xs text-green-400">Key saved</span>
+                <span className="text-sm text-green-400">Key saved</span>
               </div>
             )}
             {(!hasSavedKey || !useSavedKey) ? (
@@ -183,18 +183,18 @@ export default function AuditModal({ sessionId, messageCount, onClose, onComplet
               />
             )}
 
-            <div className="text-xs text-text-muted mb-3">
+            <div className="text-sm text-text-muted mb-3">
               Estimated cost: ~${estimatedCost} ({messageCount} messages)
             </div>
 
-            <div className="text-xs text-text-muted/70 bg-bg-primary border border-border rounded px-3 py-2 mb-3">
+            <div className="text-sm text-text-muted/70 bg-bg-primary border border-border rounded px-3 py-2 mb-3">
               {hasSavedKey && useSavedKey && !apiKey
                 ? 'Using your saved API key from Settings.'
                 : 'Your API key is used for this request only and is never stored.'}
             </div>
 
             {runAudit.isError && (
-              <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded px-3 py-2 mb-3">
+              <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded px-3 py-2 mb-3">
                 {runAudit.error instanceof Error
                   ? runAudit.error.message
                   : 'Audit failed. Check your API key and try again.'}
@@ -207,14 +207,14 @@ export default function AuditModal({ sessionId, messageCount, onClose, onComplet
               type="button"
               onClick={onClose}
               disabled={runAudit.isPending}
-              className="px-3 py-1.5 text-xs text-text-secondary border border-border rounded hover:bg-bg-tertiary transition-colors"
+              className="px-3 py-1.5 text-sm text-text-secondary border border-border rounded hover:bg-bg-tertiary transition-colors"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={!canSubmit || runAudit.isPending}
-              className="px-3 py-1.5 text-xs bg-accent text-white rounded hover:bg-accent/90 transition-colors disabled:opacity-50"
+              className="px-3 py-1.5 text-sm bg-accent text-white rounded hover:bg-accent/90 transition-colors disabled:opacity-50"
             >
               {runAudit.isPending ? 'Running...' : 'Run Audit'}
             </button>

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sessionfs"
-version = "0.3.2"
+version = "0.3.3"
 description = "Capture, sync, and resume AI coding sessions across 8 tools — Claude Code, Codex, Gemini, Copilot, Cursor, Amp, Cline, and Roo Code."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -40,9 +40,9 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://sessionfs.dev"
-Repository = "https://github.com/sessionfs/sessionfs"
+Repository = "https://github.com/SessionFS/sessionfs"
 Documentation = "https://sessionfs.dev/docs"
-Issues = "https://github.com/sessionfs/sessionfs/issues"
+Issues = "https://github.com/SessionFS/sessionfs/issues"
 
 [project.optional-dependencies]
 server = [

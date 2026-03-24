@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2026-03-24
+
+### Added
+- **Landing page redesign** — 10 sections, asymmetric hero, glass-morphism, scroll animations
+- **Free during beta** pricing — replaced 4-tier grid with beta message
+- **Logo PNGs** — 512, 256, 128px versions of the portal mark
+
+### Changed
+- GitHub org migrated from `alwaysnix` to `SessionFS`
+- All repo URLs, WIF bindings, landing page links, pyproject.toml updated
+- Dashboard readability: background `#0d1117`, text `#f0f3f6`/`#d0d7de`, base 16px, all text-xs→text-sm
+- Landing readability: body text `#c9d1d9`, terminal 14px min, feature descriptions 16px
+- LLM providers: OpenAI `max_completion_tokens`, reasoning models use effort not temperature, Google `x-goog-api-key` header, correct model IDs
+- `develop` branch is now LOCAL ONLY with pre-push hook protection
+
+### Fixed
+- OpenRouter 400: removed unsupported `response_format`
+- OpenAI reasoning models (o3/o4-mini) rejecting `temperature` parameter
+
+### Security
+- Deleted `develop` from public origin (was accidentally pushed with internal files)
+- Pre-push hook blocks future develop pushes
+
 ## [0.3.2] - 2026-03-24
 
 ### Added

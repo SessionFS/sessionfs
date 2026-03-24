@@ -50,9 +50,9 @@ export default function SearchResults() {
     <div className="max-w-7xl mx-auto px-4 py-4 flex gap-6">
       {/* Filters sidebar */}
       <aside className="w-48 shrink-0 hidden md:block">
-        <h3 className="text-xs uppercase tracking-wider text-text-muted mb-2">Filters</h3>
+        <h3 className="text-sm uppercase tracking-wider text-text-muted mb-2">Filters</h3>
 
-        <label className="block text-xs text-text-secondary mb-1 mt-3">Tool</label>
+        <label className="block text-sm text-text-secondary mb-1 mt-3">Tool</label>
         <select
           value={tool}
           onChange={(e) => setTool(e.target.value)}
@@ -63,7 +63,7 @@ export default function SearchResults() {
           ))}
         </select>
 
-        <label className="block text-xs text-text-secondary mb-1 mt-3">Date range</label>
+        <label className="block text-sm text-text-secondary mb-1 mt-3">Date range</label>
         <select
           value={days}
           onChange={(e) => setDays(Number(e.target.value))}
@@ -141,17 +141,17 @@ export default function SearchResults() {
                   <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-accent/15 text-accent shrink-0">
                     {abbreviateTool(r.source_tool)}
                   </span>
-                  <span className="text-xs text-text-muted shrink-0">
+                  <span className="text-sm text-text-muted shrink-0">
                     {r.message_count} msgs
                   </span>
-                  <span className="text-xs text-text-muted shrink-0">
+                  <span className="text-sm text-text-muted shrink-0">
                     <RelativeDate iso={r.updated_at} />
                   </span>
                 </div>
                 {r.matches.slice(0, 3).map((m, i) => (
                   <p
                     key={i}
-                    className="text-xs text-text-secondary mt-1 truncate [&_mark]:bg-accent/20 [&_mark]:text-accent [&_mark]:px-0.5 [&_mark]:rounded"
+                    className="text-sm text-text-secondary mt-1 truncate [&_mark]:bg-accent/20 [&_mark]:text-accent [&_mark]:px-0.5 [&_mark]:rounded"
                     dangerouslySetInnerHTML={{ __html: renderSnippet(m.snippet) }}
                   />
                 ))}
@@ -166,17 +166,17 @@ export default function SearchResults() {
             <button
               disabled={page <= 1}
               onClick={() => setPage((p) => p - 1)}
-              className="px-3 py-1 text-xs bg-bg-secondary border border-border rounded hover:border-text-muted transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              className="px-3 py-1 text-sm bg-bg-secondary border border-border rounded hover:border-text-muted transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
               Previous
             </button>
-            <span className="text-xs text-text-muted">
+            <span className="text-sm text-text-muted">
               Page {page} of {totalPages}
             </span>
             <button
               disabled={page >= totalPages}
               onClick={() => setPage((p) => p + 1)}
-              className="px-3 py-1 text-xs bg-bg-secondary border border-border rounded hover:border-text-muted transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              className="px-3 py-1 text-sm bg-bg-secondary border border-border rounded hover:border-text-muted transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
               Next
             </button>

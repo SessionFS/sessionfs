@@ -18,23 +18,23 @@ const PROVIDER_MODELS: Record<string, { value: string; label: string }[]> = {
     { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
   ],
   openai: [
-    { value: 'gpt-5.4', label: 'GPT-5.4' },
-    { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' },
-    { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
-    { value: 'o3', label: 'o3' },
-    { value: 'o4-mini', label: 'o4 Mini' },
+    { value: 'gpt-5.2', label: 'GPT-5.2' },
+    { value: 'gpt-5.2-pro', label: 'GPT-5.2 Pro' },
+    { value: 'gpt-4o', label: 'GPT-4o' },
+    { value: 'o3', label: 'o3 (reasoning)' },
+    { value: 'o4-mini', label: 'o4 Mini (reasoning)' },
   ],
   google: [
-    { value: 'gemini-3.1-pro', label: 'Gemini 3.1 Pro' },
-    { value: 'gemini-3.1-flash', label: 'Gemini 3.1 Flash' },
+    { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+    { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
   ],
   openrouter: [
-    { value: 'anthropic/claude-opus-4.6', label: 'Claude Opus 4.6' },
-    { value: 'anthropic/claude-sonnet-4.6', label: 'Claude Sonnet 4.6' },
-    { value: 'openai/gpt-5.4', label: 'GPT-5.4' },
-    { value: 'openai/gpt-5.3-codex', label: 'GPT-5.3 Codex' },
-    { value: 'openai/o3', label: 'o3' },
-    { value: 'google/gemini-3.1-pro', label: 'Gemini 3.1 Pro' },
+    { value: 'anthropic/claude-opus-4-6', label: 'Claude Opus 4.6' },
+    { value: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+    { value: 'openai/gpt-5.2', label: 'GPT-5.2' },
+    { value: 'openai/gpt-4o', label: 'GPT-4o' },
+    { value: 'openai/o3', label: 'o3 (reasoning)' },
+    { value: 'google/gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
     { value: 'deepseek/deepseek-v3.2', label: 'DeepSeek V3.2' },
     { value: 'deepseek/deepseek-r1', label: 'DeepSeek R1' },
   ],
@@ -116,12 +116,12 @@ export default function SettingsPage() {
 
       {profile && (
         <div className="bg-bg-secondary border border-border rounded-lg p-4 mb-4">
-          <h2 className="text-xs uppercase tracking-wider text-text-muted mb-3">Account</h2>
+          <h2 className="text-sm uppercase tracking-wider text-text-muted mb-3">Account</h2>
           <div className="mb-2">
-            <label className="text-xs text-text-muted block mb-1">Email</label>
+            <label className="text-sm text-text-muted block mb-1">Email</label>
             <div className="text-sm text-text-primary">{profile.email}</div>
           </div>
-          <div className="flex gap-4 text-xs text-text-secondary">
+          <div className="flex gap-4 text-sm text-text-secondary">
             <span>Tier: <span className="text-text-primary">{profile.tier}</span></span>
             <span>Verified: {profile.email_verified
               ? <span className="text-green-400">yes</span>
@@ -132,10 +132,10 @@ export default function SettingsPage() {
       )}
 
       <div className="bg-bg-secondary border border-border rounded-lg p-4 mb-4">
-        <h2 className="text-xs uppercase tracking-wider text-text-muted mb-3">Connection</h2>
+        <h2 className="text-sm uppercase tracking-wider text-text-muted mb-3">Connection</h2>
 
         <div className="mb-3">
-          <label className="text-xs text-text-muted block mb-1">Server URL</label>
+          <label className="text-sm text-text-muted block mb-1">Server URL</label>
           <div className="flex items-center gap-2">
             <code className="text-sm text-text-secondary bg-bg-primary px-2 py-1 rounded flex-1">
               {auth.baseUrl}
@@ -145,7 +145,7 @@ export default function SettingsPage() {
         </div>
 
         <div className="mb-3">
-          <label className="text-xs text-text-muted block mb-1">API Key</label>
+          <label className="text-sm text-text-muted block mb-1">API Key</label>
           <div className="flex items-center gap-2">
             <code className="text-sm text-text-secondary bg-bg-primary px-2 py-1 rounded flex-1 font-mono">
               {maskedKey}
@@ -157,17 +157,17 @@ export default function SettingsPage() {
 
       {/* Judge Configuration */}
       <div className="bg-bg-secondary border border-border rounded-lg p-4 mb-4">
-        <h2 className="text-xs uppercase tracking-wider text-text-muted mb-3">Judge Configuration</h2>
-        <p className="text-xs text-text-muted mb-3">
+        <h2 className="text-sm uppercase tracking-wider text-text-muted mb-3">Judge Configuration</h2>
+        <p className="text-sm text-text-muted mb-3">
           Configure the LLM used for session audits. Your key is stored server-side and used only for audit requests.
         </p>
 
         {judgeLoading ? (
-          <div className="text-xs text-text-muted py-2">Loading settings...</div>
+          <div className="text-sm text-text-muted py-2">Loading settings...</div>
         ) : (
           <>
             <div className="mb-3">
-              <label className="text-xs text-text-muted block mb-1">Provider</label>
+              <label className="text-sm text-text-muted block mb-1">Provider</label>
               <select
                 value={judgeProvider}
                 onChange={(e) => handleProviderChange(e.target.value)}
@@ -180,7 +180,7 @@ export default function SettingsPage() {
             </div>
 
             <div className="mb-3">
-              <label className="text-xs text-text-muted block mb-1">Model</label>
+              <label className="text-sm text-text-muted block mb-1">Model</label>
               {isOpenRouter ? (
                 <input
                   type="text"
@@ -203,7 +203,7 @@ export default function SettingsPage() {
             </div>
 
             <div className="mb-3">
-              <label className="text-xs text-text-muted block mb-1">API Key</label>
+              <label className="text-sm text-text-muted block mb-1">API Key</label>
               <input
                 type="password"
                 value={judgeApiKey}
@@ -217,7 +217,7 @@ export default function SettingsPage() {
               <button
                 onClick={handleSaveJudge}
                 disabled={!judgeModel || !judgeApiKey || saveJudge.isPending}
-                className="px-3 py-1.5 text-xs bg-accent text-white rounded hover:bg-accent/90 transition-colors disabled:opacity-50"
+                className="px-3 py-1.5 text-sm bg-accent text-white rounded hover:bg-accent/90 transition-colors disabled:opacity-50"
               >
                 {saveJudge.isPending ? 'Saving...' : 'Save'}
               </button>
@@ -225,21 +225,21 @@ export default function SettingsPage() {
                 <button
                   onClick={handleClearJudge}
                   disabled={clearJudge.isPending}
-                  className="px-3 py-1.5 text-xs border border-red-500/30 text-red-400 rounded hover:bg-red-500/10 transition-colors disabled:opacity-50"
+                  className="px-3 py-1.5 text-sm border border-red-500/30 text-red-400 rounded hover:bg-red-500/10 transition-colors disabled:opacity-50"
                 >
                   {clearJudge.isPending ? 'Clearing...' : 'Clear Key'}
                 </button>
               )}
             </div>
 
-            <div className="text-xs">
+            <div className="text-sm">
               {judgeSaved && <span className="text-green-400">Key saved</span>}
               {!judgeSaved && keySet && <span className="text-green-400">Key saved</span>}
               {!judgeSaved && !keySet && <span className="text-text-muted">No key configured</span>}
             </div>
 
             {saveJudge.isError && (
-              <div className="text-xs text-red-400 mt-2">
+              <div className="text-sm text-red-400 mt-2">
                 {saveJudge.error instanceof Error ? saveJudge.error.message : 'Failed to save settings.'}
               </div>
             )}

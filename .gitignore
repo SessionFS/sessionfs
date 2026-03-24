@@ -32,6 +32,7 @@ Thumbs.db
 
 # Internal — never commit to main (see .release/private-files.txt)
 .agents/
+brand/
 .claude/commands/
 .claude/settings.local.json
 .release/

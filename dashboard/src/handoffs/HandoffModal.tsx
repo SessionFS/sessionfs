@@ -48,10 +48,10 @@ export default function HandoffModal({ sessionId, onClose }: HandoffModalProps) 
           <div className="p-4">
             <div className="p-3 bg-green-500/10 border border-green-500/30 rounded mb-3">
               <p className="text-green-400 text-sm font-medium">Handoff sent</p>
-              <p className="text-text-secondary text-xs mt-1">
+              <p className="text-text-secondary text-sm mt-1">
                 Handoff ID: <code className="bg-bg-primary px-1 rounded">{createHandoff.data.id}</code>
               </p>
-              <p className="text-text-muted text-xs mt-1">
+              <p className="text-text-muted text-sm mt-1">
                 Notification sent to {createHandoff.data.recipient_email}
               </p>
             </div>
@@ -65,7 +65,7 @@ export default function HandoffModal({ sessionId, onClose }: HandoffModalProps) 
         ) : (
           <form onSubmit={handleSubmit} className="p-4">
             <label className="block mb-3">
-              <span className="text-xs text-text-muted block mb-1">Recipient email</span>
+              <span className="text-sm text-text-muted block mb-1">Recipient email</span>
               <input
                 type="email"
                 required
@@ -77,7 +77,7 @@ export default function HandoffModal({ sessionId, onClose }: HandoffModalProps) 
             </label>
 
             <label className="block mb-4">
-              <span className="text-xs text-text-muted block mb-1">
+              <span className="text-sm text-text-muted block mb-1">
                 Message <span className="text-text-muted">(optional)</span>
               </span>
               <textarea
@@ -88,13 +88,13 @@ export default function HandoffModal({ sessionId, onClose }: HandoffModalProps) 
                 placeholder="Context for the recipient..."
                 className="w-full px-3 py-2 bg-bg-primary border border-border rounded text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent resize-none"
               />
-              <span className="text-xs text-text-muted mt-0.5 block text-right">
+              <span className="text-sm text-text-muted mt-0.5 block text-right">
                 {message.length}/2000
               </span>
             </label>
 
             {createHandoff.isError && (
-              <div className="mb-3 p-2 bg-red-500/10 border border-red-500/30 rounded text-red-400 text-xs">
+              <div className="mb-3 p-2 bg-red-500/10 border border-red-500/30 rounded text-red-400 text-sm">
                 Failed to create handoff: {String(createHandoff.error)}
               </div>
             )}

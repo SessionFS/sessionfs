@@ -13,7 +13,7 @@ function StatusBadge({ status }: { status: HandoffSummary['status'] }) {
     expired: 'bg-neutral-500/10 text-neutral-400 border-neutral-500/30',
   };
   return (
-    <span className={`px-1.5 py-0.5 text-xs border rounded ${styles[status]}`}>
+    <span className={`px-1.5 py-0.5 text-sm border rounded ${styles[status]}`}>
       {status}
     </span>
   );
@@ -44,7 +44,7 @@ export default function HandoffList() {
         >
           Inbox
           {inbox.data && inbox.data.handoffs.filter((h) => h.status === 'pending').length > 0 && (
-            <span className="ml-1.5 px-1.5 py-0.5 text-xs bg-yellow-500/20 text-yellow-400 rounded-full">
+            <span className="ml-1.5 px-1.5 py-0.5 text-sm bg-yellow-500/20 text-yellow-400 rounded-full">
               {inbox.data.handoffs.filter((h) => h.status === 'pending').length}
             </span>
           )}
@@ -78,7 +78,7 @@ export default function HandoffList() {
         <div className="border border-border rounded-lg overflow-hidden">
           <table className="w-full text-sm">
             <thead>
-              <tr className="bg-bg-secondary text-text-secondary text-xs uppercase tracking-wider">
+              <tr className="bg-bg-secondary text-text-secondary text-sm uppercase tracking-wider">
                 <th className="px-3 py-2 text-left">{isInbox ? 'From' : 'To'}</th>
                 <th className="px-3 py-2 text-left">Session</th>
                 <th className="px-3 py-2 text-left w-24">Date</th>
@@ -96,7 +96,7 @@ export default function HandoffList() {
                 >
                   <td className="px-3 py-2 text-text-secondary">
                     <div className="flex items-center gap-2">
-                      <span className="w-6 h-6 rounded-full bg-bg-tertiary border border-border flex items-center justify-center text-xs text-text-muted uppercase">
+                      <span className="w-6 h-6 rounded-full bg-bg-tertiary border border-border flex items-center justify-center text-sm text-text-muted uppercase">
                         {(isInbox ? h.sender_email : h.recipient_email).charAt(0)}
                       </span>
                       <span className="truncate max-w-[200px]">
@@ -107,7 +107,7 @@ export default function HandoffList() {
                   <td className="px-3 py-2 text-text-primary truncate max-w-xs">
                     {h.session_title || <span className="text-text-muted italic">Untitled</span>}
                   </td>
-                  <td className="px-3 py-2 text-text-muted text-xs">
+                  <td className="px-3 py-2 text-text-muted text-sm">
                     <RelativeDate iso={h.created_at} />
                   </td>
                   <td className="px-3 py-2">

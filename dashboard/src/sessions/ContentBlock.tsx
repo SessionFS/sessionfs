@@ -10,7 +10,7 @@ export default function ContentBlock({ block }: BlockProps) {
 
   if (type === 'text') {
     return (
-      <div className="prose prose-invert prose-sm max-w-none [&_pre]:bg-code-bg [&_pre]:border [&_pre]:border-border [&_pre]:rounded [&_code]:text-xs">
+      <div className="prose prose-invert prose-sm max-w-none [&_pre]:bg-code-bg [&_pre]:border [&_pre]:border-border [&_pre]:rounded [&_code]:text-sm">
         <Markdown>{String(block.text || '')}</Markdown>
       </div>
     );
@@ -39,7 +39,7 @@ export default function ContentBlock({ block }: BlockProps) {
         />
       );
     }
-    return <span className="text-text-muted italic text-xs">[image reference]</span>;
+    return <span className="text-text-muted italic text-sm">[image reference]</span>;
   }
 
   if (type === 'summary') {
@@ -51,7 +51,7 @@ export default function ContentBlock({ block }: BlockProps) {
   }
 
   return (
-    <pre className="text-xs text-text-muted bg-bg-secondary p-2 rounded overflow-x-auto">
+    <pre className="text-sm text-text-muted bg-bg-secondary p-2 rounded overflow-x-auto">
       {JSON.stringify(block, null, 2)}
     </pre>
   );
@@ -65,7 +65,7 @@ function ToolUseBlock({ block }: BlockProps) {
   const isLong = inputStr.length > 200;
 
   return (
-    <div className="border border-border rounded bg-bg-secondary text-xs">
+    <div className="border border-border rounded bg-bg-secondary text-sm">
       <button
         onClick={() => setOpen(!open)}
         className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-bg-tertiary transition-colors"
@@ -92,7 +92,7 @@ function ToolResultBlock({ block }: BlockProps) {
   const isLong = lines.length > 20;
 
   return (
-    <div className="border border-border rounded bg-bg-secondary text-xs">
+    <div className="border border-border rounded bg-bg-secondary text-sm">
       <button
         onClick={() => setOpen(!open)}
         className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-bg-tertiary transition-colors"
@@ -120,13 +120,13 @@ function ThinkingBlock({ text }: { text: string }) {
     <div className="rounded bg-thinking-bg border border-border">
       <button
         onClick={() => setOpen(!open)}
-        className="w-full px-3 py-1.5 text-left text-xs text-text-muted hover:text-text-secondary transition-colors flex items-center gap-2"
+        className="w-full px-3 py-1.5 text-left text-sm text-text-muted hover:text-text-secondary transition-colors flex items-center gap-2"
       >
         <span>Thinking</span>
         <span>{open ? '\u25B2' : '\u25BC'}</span>
       </button>
       {open && (
-        <pre className="px-3 py-2 border-t border-border text-xs text-text-muted whitespace-pre-wrap max-h-80 overflow-y-auto">
+        <pre className="px-3 py-2 border-t border-border text-sm text-text-muted whitespace-pre-wrap max-h-80 overflow-y-auto">
           {text}
         </pre>
       )}

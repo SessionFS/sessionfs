@@ -7,7 +7,7 @@ const TOOL_COLORS: Record<string, string> = {
 export function ToolBadge({ tool }: { tool: string }) {
   const cls = TOOL_COLORS[tool] || 'border-border text-text-secondary';
   return (
-    <span className={`inline-block px-1.5 py-0.5 text-xs border rounded ${cls}`}>
+    <span className={`inline-block px-1.5 py-0.5 text-sm border rounded ${cls}`}>
       {tool}
     </span>
   );
@@ -16,7 +16,7 @@ export function ToolBadge({ tool }: { tool: string }) {
 export function ModelBadge({ model }: { model: string | null | undefined }) {
   if (!model) return null;
   return (
-    <span className="inline-block px-1.5 py-0.5 text-xs border border-border rounded text-text-secondary">
+    <span className="inline-block px-1.5 py-0.5 text-sm border border-border rounded text-text-secondary">
       {model}
     </span>
   );

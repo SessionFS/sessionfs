@@ -122,9 +122,9 @@ export default function SessionList() {
       {!isLoading && sessions.length > 0 && (
         <>
           <div className="border border-border rounded-lg overflow-hidden">
-            <table className="w-full text-sm">
+            <table className="w-full text-[15px]">
               <thead>
-                <tr className="bg-bg-secondary text-text-secondary text-xs uppercase tracking-wider">
+                <tr className="bg-bg-secondary text-text-secondary text-sm uppercase tracking-wider">
                   <th className="px-3 py-2 text-left w-20">ID</th>
                   <th className="px-3 py-2 text-left w-10">Src</th>
                   <th className="px-3 py-2 text-left w-24">Model</th>
@@ -143,14 +143,14 @@ export default function SessionList() {
                     tabIndex={0}
                     className="border-t border-border hover:bg-bg-tertiary cursor-pointer transition-colors focus:bg-bg-tertiary outline-none"
                   >
-                    <td className="px-3 py-2 font-mono text-accent text-xs">{s.id.slice(4, 12)}</td>
-                    <td className="px-3 py-2 text-text-muted text-xs">{abbreviateTool(s.source_tool)}</td>
-                    <td className="px-3 py-2 text-text-secondary text-xs">{abbreviateModel(s.model_id)}</td>
+                    <td className="px-3 py-2 font-mono text-accent text-sm">{s.id.slice(4, 12)}</td>
+                    <td className="px-3 py-2 text-text-muted text-sm">{abbreviateTool(s.source_tool)}</td>
+                    <td className="px-3 py-2 text-text-secondary text-sm">{abbreviateModel(s.model_id)}</td>
                     <td className="px-3 py-2 text-right text-text-secondary tabular-nums">{s.message_count}</td>
                     <td className="px-3 py-2 text-right text-text-secondary tabular-nums">
                       {formatTokens(s.total_input_tokens + s.total_output_tokens)}
                     </td>
-                    <td className="px-3 py-2 text-text-muted text-xs">
+                    <td className="px-3 py-2 text-text-muted text-sm">
                       <RelativeDate iso={s.updated_at} />
                     </td>
                     <td className="px-3 py-2 text-text-primary truncate max-w-xs">
@@ -166,7 +166,7 @@ export default function SessionList() {
           </div>
 
           {/* Pagination */}
-          <div className="flex items-center justify-between mt-3 text-xs text-text-muted">
+          <div className="flex items-center justify-between mt-3 text-sm text-text-muted">
             <span>
               Showing {paged.length} of {sessions.length} sessions
               {data && data.total > sessions.length && ` (${data.total} total on server)`}
