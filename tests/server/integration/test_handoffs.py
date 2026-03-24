@@ -158,7 +158,7 @@ async def test_inbox(
         },
     )
 
-    resp = await client.get("/api/v1/handoffs/inbox/", headers=auth_headers)
+    resp = await client.get("/api/v1/handoffs/inbox", headers=auth_headers)
     assert resp.status_code == 200
     data = resp.json()
     assert data["total"] >= 1
@@ -179,7 +179,7 @@ async def test_sent(
         },
     )
 
-    resp = await client.get("/api/v1/handoffs/sent/", headers=auth_headers)
+    resp = await client.get("/api/v1/handoffs/sent", headers=auth_headers)
     assert resp.status_code == 200
     data = resp.json()
     assert data["total"] >= 1

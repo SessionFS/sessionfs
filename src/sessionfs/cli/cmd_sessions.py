@@ -168,6 +168,7 @@ def list_sessions(
         table.add_column("Msgs", justify="right", no_wrap=True, max_width=5)
         table.add_column("Tokens", justify="right", no_wrap=True, max_width=6)
         table.add_column("Age", no_wrap=True, max_width=8)
+        table.add_column("Audit", no_wrap=True, max_width=5)
         table.add_column("Title", ratio=1)
 
         for s in sessions:
@@ -178,6 +179,24 @@ def list_sessions(
                 from sessionfs.cli.titles import _truncate_at_word
                 title = _truncate_at_word(title, 60)
 
+            # Load audit report if it exists
+            audit_display = ""
+            session_dir = store.get_session_dir(s["session_id"])
+            if session_dir:
+                audit_path = session_dir / "audit_report.json"
+                if audit_path.exists():
+                    try:
+                        audit_data = json.loads(audit_path.read_text())
+                        trust = audit_data.get("summary", {}).get("trust_score", 0)
+                        if trust >= 0.8:
+                            audit_display = f"[green]{trust:.0%}[/green]"
+                        elif trust >= 0.5:
+                            audit_display = f"[yellow]{trust:.0%}[/yellow]"
+                        else:
+                            audit_display = f"[red]{trust:.0%}[/red]"
+                    except (json.JSONDecodeError, OSError):
+                        pass
+
             table.add_row(
                 s["session_id"][:8],
                 abbreviate_tool(s.get("source_tool")),
@@ -185,6 +204,7 @@ def list_sessions(
                 str(s.get("message_count", 0)),
                 format_token_count(total_tokens),
                 format_relative_time(s.get("updated_at") or s.get("created_at")),
+                audit_display,
                 title,
             )
 

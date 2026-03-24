@@ -1,14 +1,21 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useAudit } from '../hooks/useAudit';
 import AuditModal from './AuditModal';
-import type { AuditFinding } from '../api/client';
+import type { AuditFinding, AuditReport } from '../api/client';
+import {
+  exportAuditJson,
+  exportAuditMarkdown,
+  exportAuditCsv,
+  downloadFile,
+} from '../utils/auditExport';
 
 interface Props {
   sessionId: string;
   messageCount: number;
+  sessionTitle?: string;
 }
 
-export default function AuditTab({ sessionId, messageCount }: Props) {
+export default function AuditTab({ sessionId, messageCount, sessionTitle }: Props) {
   const { data: report, isLoading, error } = useAudit(sessionId);
   const [showModal, setShowModal] = useState(false);
 
@@ -82,14 +89,15 @@ export default function AuditTab({ sessionId, messageCount }: Props) {
         <span>Run: {new Date(report.timestamp).toLocaleString()}</span>
       </div>
 
-      {/* Re-run button */}
-      <div className="mb-6">
+      {/* Re-run + Download */}
+      <div className="flex items-center gap-2 mb-6">
         <button
           onClick={() => setShowModal(true)}
           className="px-3 py-1.5 text-xs border border-border text-text-secondary rounded hover:bg-bg-tertiary transition-colors"
         >
           Re-run Audit
         </button>
+        <DownloadDropdown report={report} sessionTitle={sessionTitle} />
       </div>
 
       {/* Findings */}
@@ -201,6 +209,68 @@ function FindingRow({ finding }: { finding: AuditFinding }) {
           >
             Jump to message #{finding.message_index}
           </a>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DownloadDropdown({ report, sessionTitle }: { report: AuditReport; sessionTitle?: string }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    if (open) document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [open]);
+
+  const base = `audit-${report.session_id.slice(0, 12)}`;
+
+  function handleDownload(format: 'json' | 'md' | 'csv') {
+    setOpen(false);
+    if (format === 'json') {
+      downloadFile(exportAuditJson(report), `${base}.json`, 'application/json');
+    } else if (format === 'md') {
+      downloadFile(exportAuditMarkdown(report, sessionTitle), `${base}.md`, 'text/markdown');
+    } else {
+      downloadFile(exportAuditCsv(report), `${base}.csv`, 'text/csv');
+    }
+  }
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen(!open)}
+        className="px-3 py-1.5 text-xs border border-border text-text-secondary rounded hover:bg-bg-tertiary transition-colors inline-flex items-center gap-1"
+      >
+        Download
+        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+      {open && (
+        <div className="absolute top-full left-0 mt-1 bg-bg-secondary border border-border rounded-lg shadow-lg z-10 min-w-[120px]">
+          <button
+            onClick={() => handleDownload('json')}
+            className="w-full text-left px-3 py-2 text-xs text-text-secondary hover:bg-bg-tertiary transition-colors rounded-t-lg"
+          >
+            JSON
+          </button>
+          <button
+            onClick={() => handleDownload('md')}
+            className="w-full text-left px-3 py-2 text-xs text-text-secondary hover:bg-bg-tertiary transition-colors"
+          >
+            Markdown
+          </button>
+          <button
+            onClick={() => handleDownload('csv')}
+            className="w-full text-left px-3 py-2 text-xs text-text-secondary hover:bg-bg-tertiary transition-colors rounded-b-lg"
+          >
+            CSV
+          </button>
         </div>
       )}
     </div>

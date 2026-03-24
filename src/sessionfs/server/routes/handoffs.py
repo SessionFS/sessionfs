@@ -133,6 +133,62 @@ async def create_handoff(
     )
 
 
+@router.get("/inbox", response_model=HandoffListResponse)
+async def inbox(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List handoffs sent TO this user (matched by email)."""
+    now = datetime.now(timezone.utc)
+    result = await db.execute(
+        select(Handoff)
+        .where(Handoff.recipient_email == user.email)
+        .order_by(Handoff.created_at.desc())
+    )
+    handoffs = list(result.scalars().all())
+
+    responses = []
+    for h in handoffs:
+        sender = await db.execute(select(User).where(User.id == h.sender_id))
+        sender_user = sender.scalar_one_or_none()
+        sender_email = sender_user.email if sender_user else "unknown"
+        session_result = await db.execute(select(Session).where(Session.id == h.session_id))
+        session = session_result.scalar_one_or_none()
+        responses.append(_handoff_to_response(
+            h, sender_email=sender_email,
+            session_title=session.title if session else None,
+            session_tool=session.source_tool if session else None,
+        ))
+
+    return HandoffListResponse(handoffs=responses, total=len(responses))
+
+
+@router.get("/sent", response_model=HandoffListResponse)
+async def sent(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List handoffs sent BY this user."""
+    result = await db.execute(
+        select(Handoff)
+        .where(Handoff.sender_id == user.id)
+        .order_by(Handoff.created_at.desc())
+    )
+    handoffs = list(result.scalars().all())
+
+    responses = []
+    for h in handoffs:
+        session_result = await db.execute(select(Session).where(Session.id == h.session_id))
+        session = session_result.scalar_one_or_none()
+        responses.append(_handoff_to_response(
+            h, sender_email=user.email,
+            session_title=session.title if session else None,
+            session_tool=session.source_tool if session else None,
+        ))
+
+    return HandoffListResponse(handoffs=responses, total=len(responses))
+
+
 @router.get("/{handoff_id}", response_model=HandoffResponse)
 async def get_handoff(
     handoff_id: str,
@@ -207,63 +263,3 @@ async def claim_handoff(
     )
 
 
-@router.get("/inbox/", response_model=HandoffListResponse)
-async def inbox(
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """List handoffs sent TO this user (matched by email)."""
-    now = datetime.now(timezone.utc)
-    result = await db.execute(
-        select(Handoff)
-        .where(Handoff.recipient_email == user.email, Handoff.expires_at > now)
-        .order_by(Handoff.created_at.desc())
-    )
-    handoffs = list(result.scalars().all())
-
-    # Batch-fetch sender emails and session info
-    responses = []
-    for h in handoffs:
-        sender = await db.execute(select(User).where(User.id == h.sender_id))
-        sender_user = sender.scalar_one_or_none()
-        sender_email = sender_user.email if sender_user else "unknown"
-
-        session_result = await db.execute(select(Session).where(Session.id == h.session_id))
-        session = session_result.scalar_one_or_none()
-
-        responses.append(_handoff_to_response(
-            h,
-            sender_email=sender_email,
-            session_title=session.title if session else None,
-            session_tool=session.source_tool if session else None,
-        ))
-
-    return HandoffListResponse(handoffs=responses, total=len(responses))
-
-
-@router.get("/sent/", response_model=HandoffListResponse)
-async def sent(
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """List handoffs sent BY this user."""
-    result = await db.execute(
-        select(Handoff)
-        .where(Handoff.sender_id == user.id)
-        .order_by(Handoff.created_at.desc())
-    )
-    handoffs = list(result.scalars().all())
-
-    responses = []
-    for h in handoffs:
-        session_result = await db.execute(select(Session).where(Session.id == h.session_id))
-        session = session_result.scalar_one_or_none()
-
-        responses.append(_handoff_to_response(
-            h,
-            sender_email=user.email,
-            session_title=session.title if session else None,
-            session_tool=session.source_tool if session else None,
-        ))
-
-    return HandoffListResponse(handoffs=responses, total=len(responses))

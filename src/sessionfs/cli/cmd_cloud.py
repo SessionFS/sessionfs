@@ -194,13 +194,35 @@ def auth_signup(
 def auth_status() -> None:
     """Show current authentication status."""
     cfg = _load_sync_config()
-    if cfg["api_key"]:
-        console.print("[green]Authenticated[/green]")
-        console.print(f"  Server: {cfg['api_url']}")
-        console.print(f"  Sync enabled: {cfg['enabled']}")
-        console.print(f"  API key: {cfg['api_key'][:8]}...")
-    else:
+    if not cfg["api_key"]:
         console.print("[dim]Not authenticated. Run 'sfs auth login'.[/dim]")
+        return
+
+    console.print("[green]Authenticated[/green]")
+    console.print(f"  Server: {cfg['api_url']}")
+    console.print(f"  API key: {cfg['api_key'][:12]}...")
+
+    # Fetch user profile from server
+    try:
+        import httpx
+
+        resp = httpx.get(
+            f"{cfg['api_url']}/api/v1/auth/me",
+            headers={"Authorization": f"Bearer {cfg['api_key']}"},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            me = resp.json()
+            console.print(f"  Email: [cyan]{me.get('email', '?')}[/cyan]")
+            console.print(f"  Tier: {me.get('tier', 'free')}")
+            verified = me.get("email_verified", False)
+            console.print(f"  Verified: {'[green]yes[/green]' if verified else '[yellow]no — check your inbox[/yellow]'}")
+        else:
+            console.print(f"  [dim]Could not fetch profile (HTTP {resp.status_code})[/dim]")
+    except Exception:
+        console.print("  [dim]Could not reach server[/dim]")
+
+    console.print(f"  Sync enabled: {cfg['enabled']}")
 
 
 def push(

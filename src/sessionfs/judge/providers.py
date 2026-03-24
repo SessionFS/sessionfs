@@ -17,6 +17,7 @@ _PROVIDER_DETECT = [
     ("gpt-", "openai"),
     ("o1", "openai"),
     ("o3", "openai"),
+    ("o4", "openai"),
     ("gemini-", "google"),
 ]
 
@@ -25,18 +26,25 @@ _OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 _GOOGLE_URL_TEMPLATE = (
     "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 )
+_OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 
 def _detect_provider(model: str) -> str:
-    """Auto-detect provider from model name."""
+    """Auto-detect provider from model name.
+
+    Models containing "/" are routed to OpenRouter.
+    Unknown models fall back to OpenRouter.
+    """
+    if "/" in model:
+        return "openrouter"
+
     model_lower = model.lower()
     for prefix, provider in _PROVIDER_DETECT:
         if model_lower.startswith(prefix):
             return provider
-    raise ValueError(
-        f"Cannot auto-detect provider for model '{model}'. "
-        "Pass --provider explicitly (anthropic, openai, google)."
-    )
+
+    # Unknown model — fall back to OpenRouter
+    return "openrouter"
 
 
 async def _call_anthropic(model: str, system: str, prompt: str, api_key: str, temperature: float = 0) -> str:
@@ -108,6 +116,31 @@ async def _call_google(model: str, system: str, prompt: str, api_key: str, tempe
     return ""
 
 
+async def _call_openrouter(model: str, system: str, prompt: str, api_key: str, temperature: float = 0) -> str:
+    """Call the OpenRouter Chat Completions API."""
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://sessionfs.dev",
+        "X-Title": "SessionFS",
+    }
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ],
+        "max_tokens": 4096,
+        "temperature": temperature,
+        "response_format": {"type": "json_object"},
+    }
+    async with httpx.AsyncClient(timeout=120) as client:
+        resp = await client.post(_OPENROUTER_URL, json=body, headers=headers)
+    resp.raise_for_status()
+    data = resp.json()
+    return data["choices"][0]["message"]["content"]
+
+
 async def call_llm(
     model: str,
     system: str,
@@ -122,6 +155,8 @@ async def call_llm(
     - claude-* -> anthropic
     - gpt-*, o1*, o3* -> openai
     - gemini-* -> google
+    - models containing "/" -> openrouter
+    - unknown models -> openrouter (fallback)
 
     Uses httpx directly — no SDK dependencies. The API key is used for
     this single request only and is never persisted. Temperature defaults
@@ -139,5 +174,7 @@ async def call_llm(
         return await _call_openai(model, system, prompt, api_key, temperature)
     elif provider == "google":
         return await _call_google(model, system, prompt, api_key, temperature)
+    elif provider == "openrouter":
+        return await _call_openrouter(model, system, prompt, api_key, temperature)
     else:
         raise ValueError(f"Unsupported provider: {provider}")

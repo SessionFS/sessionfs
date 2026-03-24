@@ -24,9 +24,9 @@ router = APIRouter(prefix="/api/v1/sessions", tags=["audit"])
 
 
 class AuditRequest(BaseModel):
-    model: str = "claude-sonnet-4"
+    model: str | None = None
     provider: str | None = None
-    llm_api_key: str
+    llm_api_key: str | None = None
 
 
 class AuditFinding(BaseModel):
@@ -94,7 +94,7 @@ async def _extract_messages_from_archive(
                 if member.name.endswith("messages.jsonl"):
                     f = tar.extractfile(member)
                     if f is not None:
-                        for line in f.read().decode("utf-8").splitlines():
+                        for line in f.read().decode("utf-8", errors="replace").splitlines():
                             line = line.strip()
                             if line:
                                 messages.append(json.loads(line))
@@ -129,9 +129,40 @@ async def run_audit(
     session = await _get_session_or_404(session_id, user, db)
     blob_store = _get_blob_store(request)
 
+    # Resolve API key: explicit param > stored settings > error
+    llm_api_key = body.llm_api_key
+    model = body.model or "claude-sonnet-4"
+    provider = body.provider
+
+    if not llm_api_key:
+        from sessionfs.server.db.models import UserJudgeSettings
+
+        stmt = select(UserJudgeSettings).where(UserJudgeSettings.user_id == user.id)
+        result = await db.execute(stmt)
+        settings = result.scalar_one_or_none()
+        if settings:
+            import base64
+            import hashlib
+            import os
+
+            from cryptography.fernet import Fernet
+
+            secret = os.environ.get("SFS_VERIFICATION_SECRET", "dev-secret")
+            key = base64.urlsafe_b64encode(hashlib.sha256(secret.encode()).digest())
+            fernet = Fernet(key)
+            llm_api_key = fernet.decrypt(settings.encrypted_api_key.encode()).decode()
+            if not body.model:
+                model = settings.model
+            if not provider:
+                provider = settings.provider
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="No API key configured. Provide llm_api_key in request or configure judge settings.",
+            )
+
     # Extract messages from the stored archive
-    blob_key = f"sessions/{user.id}/{session_id}.tar.gz"
-    messages = await _extract_messages_from_archive(blob_store, blob_key)
+    messages = await _extract_messages_from_archive(blob_store, session.blob_key)
     if not messages:
         raise HTTPException(
             status_code=400,
@@ -158,7 +189,7 @@ async def run_audit(
     if not all_claims:
         report = JudgeReport(
             session_id=session_id,
-            model=body.model,
+            model=model,
             timestamp=datetime.now(timezone.utc).isoformat(),
             findings=[],
             summary=_compute_summary([]),
@@ -187,11 +218,11 @@ async def run_audit(
 
             try:
                 response = await call_llm(
-                    model=body.model,
+                    model=model,
                     system=JUDGE_SYSTEM_PROMPT,
                     prompt=prompt,
-                    api_key=body.llm_api_key,
-                    provider=body.provider,
+                    api_key=llm_api_key,
+                    provider=provider,
                 )
             except Exception as exc:
                 raise HTTPException(
@@ -205,7 +236,7 @@ async def run_audit(
         all_findings = _deduplicate_findings(all_findings)
         report = JudgeReport(
             session_id=session_id,
-            model=body.model,
+            model=model,
             timestamp=datetime.now(timezone.utc).isoformat(),
             findings=all_findings,
             summary=_compute_summary(all_findings),

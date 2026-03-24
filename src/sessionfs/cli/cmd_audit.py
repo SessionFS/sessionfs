@@ -24,10 +24,11 @@ def audit(
     session_id: str = typer.Argument(..., help="Session ID or prefix"),
     model: str = typer.Option("claude-sonnet-4", "--model", help="Judge LLM model"),
     api_key: Optional[str] = typer.Option(None, "--api-key", help="LLM API key"),
-    provider: Optional[str] = typer.Option(None, "--provider", help="LLM provider (anthropic, openai, google)"),
+    provider: Optional[str] = typer.Option(None, "--provider", help="LLM provider (anthropic, openai, google, openrouter)"),
     consensus: bool = typer.Option(False, "--consensus", help="Run 3 passes, report only where 2+ agree"),
     report_only: bool = typer.Option(False, "--report", help="Show existing report only"),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+    fmt: Optional[str] = typer.Option(None, "--format", help="Export format: json, markdown, csv (use with --report)"),
 ) -> None:
     """Audit a session for hallucinations using LLM-as-a-Judge."""
     store = open_store()
@@ -35,7 +36,7 @@ def audit(
     session_dir = get_session_dir_or_exit(store, session_id)
 
     if report_only:
-        _show_existing_report(session_dir, session_id, json_output)
+        _show_existing_report(session_dir, session_id, json_output, fmt)
         return
 
     resolved_key = _resolve_api_key(api_key, model)
@@ -58,7 +59,10 @@ def audit(
         err_console.print(f"[red]Audit failed: {exc}[/red]")
         raise typer.Exit(1)
 
-    _display_report(report, json_output)
+    if fmt:
+        _export_report(report, fmt, session_dir)
+    else:
+        _display_report(report, json_output)
 
 
 def _resolve_api_key(explicit_key: str | None, model: str) -> str | None:
@@ -137,7 +141,7 @@ async def _run_judge(
     )
 
 
-def _show_existing_report(session_dir, session_id: str, json_output: bool) -> None:
+def _show_existing_report(session_dir, session_id: str, json_output: bool, fmt: str | None = None) -> None:
     """Load and display an existing audit report."""
     from sessionfs.judge.report import load_report
 
@@ -149,7 +153,41 @@ def _show_existing_report(session_dir, session_id: str, json_output: bool) -> No
         )
         raise typer.Exit(1)
 
-    _display_report(report, json_output)
+    if fmt:
+        _export_report(report, fmt, session_dir)
+    else:
+        _display_report(report, json_output)
+
+
+def _export_report(report, fmt: str, session_dir=None) -> None:
+    """Export report in the specified format."""
+    from sessionfs.judge.export import export_csv, export_json, export_markdown
+
+    fmt = fmt.lower()
+
+    if fmt == "markdown":
+        # Try to read session metadata for richer markdown export
+        session_title = ""
+        session_tool = ""
+        message_count = 0
+        if session_dir:
+            manifest_path = session_dir / "manifest.json"
+            if manifest_path.exists():
+                try:
+                    manifest = json.loads(manifest_path.read_text())
+                    session_title = manifest.get("title", "")
+                    session_tool = manifest.get("source", {}).get("tool", "")
+                    message_count = manifest.get("stats", {}).get("message_count", 0)
+                except (json.JSONDecodeError, OSError):
+                    pass
+        console.print(export_markdown(report, session_title, session_tool, message_count))
+    elif fmt == "csv":
+        console.print(export_csv(report))
+    elif fmt == "json":
+        console.print(export_json(report))
+    else:
+        err_console.print(f"[red]Unknown format: {fmt}. Use json, markdown, or csv.[/red]")
+        raise typer.Exit(1)
 
 
 def _display_report(report, json_output: bool) -> None:
