@@ -1,12 +1,15 @@
 import { Link, Outlet, useLocation } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { useHandoffInbox } from '../hooks/useHandoffs';
+import { useMe } from '../hooks/useMe';
 import SearchBar from './SearchBar';
 
 export default function Layout() {
   const { logout } = useAuth();
   const location = useLocation();
   const inbox = useHandoffInbox();
+  const me = useMe();
+  const isAdmin = me.data?.tier === 'admin';
   const pendingCount = inbox.data?.handoffs.filter((h) => h.status === 'pending').length ?? 0;
 
   return (
@@ -39,6 +42,14 @@ export default function Layout() {
               </span>
             )}
           </Link>
+          {isAdmin && (
+            <Link
+              to="/admin"
+              className={`hover:text-accent transition-colors ${location.pathname === '/admin' ? 'text-accent' : 'text-text-secondary'}`}
+            >
+              Admin
+            </Link>
+          )}
           <Link
             to="/settings"
             className={`hover:text-accent transition-colors ${location.pathname === '/settings' ? 'text-accent' : 'text-text-secondary'}`}
