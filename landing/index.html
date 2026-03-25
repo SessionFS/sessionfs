@@ -61,15 +61,19 @@
     /* Pricing hover */
     .price-card { transition: transform 0.2s, box-shadow 0.2s; }
     .price-card:hover { transform: translateY(-4px); box-shadow: 0 0 24px rgba(79,156,247,0.15); }
-    /* Fade-up animation */
-    .fade-up { opacity: 0; transform: translateY(24px); transition: opacity 0.6s ease-out, transform 0.6s ease-out; }
-    .fade-up.visible { opacity: 1; transform: translateY(0); }
+    /* Fade-up animation — visible by default, animation is progressive enhancement */
+    .fade-up { opacity: 1; transform: translateY(0); }
+    @media (prefers-reduced-motion: no-preference) {
+      .fade-up { opacity: 0; transform: translateY(24px); transition: opacity 0.6s ease-out, transform 0.6s ease-out; }
+      .fade-up.visible { opacity: 1; transform: translateY(0); }
+    }
     /* Pulse */
     @keyframes pulse-glow { 0%, 100% { box-shadow: 0 0 8px rgba(79,156,247,0.3); } 50% { box-shadow: 0 0 20px rgba(79,156,247,0.6); } }
     .pulse-badge { animation: pulse-glow 3s ease-in-out infinite; }
     /* Hero glow */
     .hero-glow { position: absolute; width: 420px; height: 420px; background: radial-gradient(circle, rgba(79,156,247,0.12) 0%, transparent 70%); border-radius: 50%; pointer-events: none; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 0; }
   </style>
+  <noscript><style>.fade-up { opacity: 1 !important; transform: none !important; }</style></noscript>
 </head>
 <body class="text-txt antialiased overflow-x-hidden">
 
@@ -90,7 +94,7 @@
         <a href="https://github.com/SessionFS/sessionfs" class="flex items-center gap-2 text-[#b1b8c1] hover:text-txt transition-colors">
           <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
           <span class="hidden sm:inline">GitHub</span>
-          <img src="https://img.shields.io/github/stars/SessionFS/sessionfs?style=flat&color=30363d&labelColor=161b22&logo=github&logoColor=e6edf3" alt="stars" class="h-5 hidden md:block">
+          <!-- Stars badge moved to footer -->
         </a>
       </div>
     </div>
@@ -442,7 +446,7 @@
           Get Started
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
         </a>
-        <a href="mailto:waitlist@sessionfs.dev?subject=Pro%20waitlist" class="inline-flex items-center justify-center border border-border text-txt font-medium rounded-lg px-7 py-3 hover:border-muted transition">
+        <a href="mailto:sessionfs@gmail.com?subject=Waitlist%20for%20Pro&body=I'm%20interested%20in%20SessionFS%20Pro.%20My%20email%3A%20" class="inline-flex items-center justify-center border border-border text-txt font-medium rounded-lg px-7 py-3 hover:border-muted transition">
           Join Waitlist for Pro
         </a>
       </div>
@@ -493,8 +497,11 @@
           </ul>
         </div>
       </div>
-      <div class="border-t border-border pt-6 text-center text-[13px] text-[#9ca3af]">
-        &copy; 2026 SessionFS. All rights reserved.
+      <div class="border-t border-border pt-6 flex flex-col sm:flex-row items-center justify-between gap-3 text-[13px] text-[#9ca3af]">
+        <span>&copy; 2026 SessionFS. All rights reserved.</span>
+        <a href="https://github.com/SessionFS/sessionfs" class="hover:opacity-80 transition-opacity">
+          <img src="https://img.shields.io/github/stars/SessionFS/sessionfs?style=flat&color=30363d&labelColor=161b22&logo=github&logoColor=e6edf3" alt="GitHub stars" class="h-5">
+        </a>
       </div>
     </div>
   </footer>
@@ -509,6 +516,11 @@
 
     const observer = new IntersectionObserver((entries) => {
       entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); } });
+    }, { threshold: 0.1 });
+    document.querySelectorAll('.fade-up').forEach(el => observer.observe(el));
+  </script>
+</body>
+</html>; } });
     }, { threshold: 0.1 });
     document.querySelectorAll('.fade-up').forEach(el => observer.observe(el));
   </script>
