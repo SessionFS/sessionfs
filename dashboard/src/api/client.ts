@@ -137,6 +137,30 @@ export interface AdminActionLog {
   timestamp: string;
 }
 
+export interface FolderResponse {
+  id: string;
+  name: string;
+  color: string | null;
+  bookmark_count: number;
+  created_at: string;
+}
+
+export interface FolderListResponse {
+  folders: FolderResponse[];
+}
+
+export interface BookmarkResponse {
+  id: string;
+  folder_id: string;
+  session_id: string;
+  created_at: string;
+}
+
+export interface FolderSessionsResponse {
+  sessions: (SessionSummary & { bookmark_id: string; bookmarked_at: string })[];
+  total: number;
+}
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -334,6 +358,41 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       request<SessionDetail>(`/api/v1/sessions/${sessionId}/alias`, {
         method: 'DELETE',
       }),
+
+    // Bookmark endpoints
+    createFolder: (name: string, color?: string) =>
+      request<FolderResponse>('/api/v1/bookmarks/folders', {
+        method: 'POST',
+        body: JSON.stringify({ name, ...(color ? { color } : {}) }),
+      }),
+
+    listFolders: () =>
+      request<FolderListResponse>('/api/v1/bookmarks/folders'),
+
+    updateFolder: (folderId: string, updates: { name?: string; color?: string }) =>
+      request<FolderResponse>(`/api/v1/bookmarks/folders/${folderId}`, {
+        method: 'PUT',
+        body: JSON.stringify(updates),
+      }),
+
+    deleteFolder: (folderId: string) =>
+      request<void>(`/api/v1/bookmarks/folders/${folderId}`, {
+        method: 'DELETE',
+      }),
+
+    addBookmark: (folderId: string, sessionId: string) =>
+      request<BookmarkResponse>('/api/v1/bookmarks', {
+        method: 'POST',
+        body: JSON.stringify({ folder_id: folderId, session_id: sessionId }),
+      }),
+
+    removeBookmark: (bookmarkId: string) =>
+      request<void>(`/api/v1/bookmarks/${bookmarkId}`, {
+        method: 'DELETE',
+      }),
+
+    listFolderSessions: (folderId: string) =>
+      request<FolderSessionsResponse>(`/api/v1/bookmarks/folders/${folderId}/sessions`),
   };
 }
 

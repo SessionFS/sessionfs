@@ -12,7 +12,7 @@ from sessionfs import __version__
 from sessionfs.server.config import ServerConfig
 from sessionfs.server.db.engine import close_engine, init_engine
 from sessionfs.server.errors import register_exception_handlers
-from sessionfs.server.routes import admin, audit, auth, handoffs, health, sessions, settings
+from sessionfs.server.routes import admin, audit, auth, bookmarks, handoffs, health, sessions, settings
 from sessionfs.server.storage.local import LocalBlobStore
 
 
@@ -82,6 +82,7 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     app.include_router(handoffs.router)
     app.include_router(audit.router)
     app.include_router(settings.router)
+    app.include_router(bookmarks.router)
     app.include_router(admin.router)
 
     # Serve dashboard static files if the dist directory exists.
