@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-03-25
+
+### Added
+- **`sfs watcher list`** — shows all 8 tools with enabled/disabled status and install detection
+- **`sfs watcher enable/disable`** — toggle tool watchers with automatic daemon restart
+
+### Changed
+- Landing page scroll animations visible by default (progressive enhancement)
+- Stars badge moved from nav to footer
+- Waitlist CTA now functional (mailto)
+
+### Fixed
+- Content invisible on first load due to fade-up animation gating visibility
+- GitHub App secrets wired to Cloud Run via Terraform
+
 ## [0.6.0] - 2026-03-25
 
 ### Added
