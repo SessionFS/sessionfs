@@ -13,9 +13,10 @@ interface Props {
   sessionId: string;
   messageCount: number;
   sessionTitle?: string;
+  onJumpToMessage?: (messageIndex: number) => void;
 }
 
-export default function AuditTab({ sessionId, messageCount, sessionTitle }: Props) {
+export default function AuditTab({ sessionId, messageCount, sessionTitle, onJumpToMessage }: Props) {
   const { data: report, isLoading, error } = useAudit(sessionId);
   const [showModal, setShowModal] = useState(false);
 
@@ -103,7 +104,7 @@ export default function AuditTab({ sessionId, messageCount, sessionTitle }: Prop
       {/* Findings */}
       <div className="flex flex-col gap-2">
         {report.findings.map((f, i) => (
-          <FindingRow key={i} finding={f} />
+          <FindingRow key={i} finding={f} onJump={onJumpToMessage} />
         ))}
       </div>
 
@@ -143,7 +144,7 @@ function TrustScoreBar({ score }: { score: number }) {
   );
 }
 
-function FindingRow({ finding }: { finding: AuditFinding }) {
+function FindingRow({ finding, onJump }: { finding: AuditFinding; onJump?: (idx: number) => void }) {
   const [expanded, setExpanded] = useState(false);
 
   const verdictIcon =
@@ -203,12 +204,12 @@ function FindingRow({ finding }: { finding: AuditFinding }) {
             <span className="text-sm text-text-muted block mb-1">Explanation</span>
             <p className="text-text-secondary text-sm">{finding.explanation}</p>
           </div>
-          <a
-            href={`#message-${finding.message_index}`}
+          <button
+            onClick={() => onJump?.(finding.message_index)}
             className="text-accent text-sm hover:underline"
           >
             Jump to message #{finding.message_index}
-          </a>
+          </button>
         </div>
       )}
     </div>

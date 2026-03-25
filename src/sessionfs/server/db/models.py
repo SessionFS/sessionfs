@@ -79,6 +79,9 @@ class Session(Base):
     alias: Mapped[str | None] = mapped_column(String(100), nullable=True)
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    git_remote_normalized: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    git_branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    git_commit: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
 
 class Handoff(Base):
@@ -189,3 +192,37 @@ class ShareLink(Base):
         DateTime(timezone=True), server_default=func.now()
     )
     is_revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class GitHubInstallation(Base):
+    __tablename__ = "github_installations"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)  # GitHub's installation ID
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id"), nullable=False
+    )
+    account_login: Mapped[str] = mapped_column(String(255), nullable=False)
+    account_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    auto_comment: Mapped[bool] = mapped_column(Boolean, default=True)
+    include_trust_score: Mapped[bool] = mapped_column(Boolean, default=True)
+    include_session_links: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class PRComment(Base):
+    __tablename__ = "pr_comments"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    installation_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    repo_full_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    pr_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    comment_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    session_ids: Mapped[str] = mapped_column(Text, nullable=False)  # JSON array
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

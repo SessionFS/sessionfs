@@ -25,6 +25,13 @@ export default function SessionDetail() {
   const [showHandoff, setShowHandoff] = useState(false);
   const [showAuditModal, setShowAuditModal] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>('messages');
+  const [jumpToPage, setJumpToPage] = useState<number | undefined>(undefined);
+
+  function handleJumpToMessage(messageIndex: number) {
+    const page = Math.floor(messageIndex / 50) + 1;
+    setJumpToPage(page);
+    setActiveTab('messages');
+  }
   const [editingAlias, setEditingAlias] = useState(false);
   const [aliasInput, setAliasInput] = useState('');
   const [aliasError, setAliasError] = useState<string | null>(null);
@@ -254,9 +261,9 @@ export default function SessionDetail() {
 
         {/* Tab content */}
         <div className="flex-1 overflow-y-auto">
-          {activeTab === 'messages' && <ConversationView sessionId={session.id} />}
+          {activeTab === 'messages' && <ConversationView sessionId={session.id} initialPage={jumpToPage} />}
           {activeTab === 'audit' && (
-            <AuditTab sessionId={session.id} messageCount={session.message_count} sessionTitle={session.title || undefined} />
+            <AuditTab sessionId={session.id} messageCount={session.message_count} sessionTitle={session.title || undefined} onJumpToMessage={handleJumpToMessage} />
           )}
         </div>
       </div>

@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-03-25
+
+### Added
+- **GitHub PR AI Context App** — automatically comments on PRs with linked AI sessions, tools, trust scores
+- **Webhook handler** at `/webhooks/github` with HMAC-SHA256 signature verification
+- **Git metadata indexing** — sessions store normalized remote, branch, commit for fast PR matching
+- **PR comment builder** — single and multi-session markdown with dashboard links
+- **Installation management** — toggles for auto-comment, trust scores, session links
+- **"What is this?" page** — `docs/github-app.md` conversion funnel for PR reviewers
+- **Jump to message** in audit findings — switches to Messages tab at correct page
+- **Bookmark folders** — create colored folders, bookmark sessions, filter by folder
+- **Background audit** — large sessions return 202, floating toast indicator while processing
+- **Numbered page navigation** for messages (1, 2, 3... not just Next)
+- **Helm chart** for Kubernetes self-hosted deployment
+- **GHCR image publish pipeline**
+
+### Fixed
+- Search SQL asyncpg ambiguous parameter types
+- Cursor parser NULL bubble values
+- Audit timeout on large sessions (10 claim-dense chunks max)
+- Messages pagination exceeding server 100 limit
+- Missing JSONResponse import in audit route
+
+### Security
+- `*.pem` added to gitignore
+- `github-app-manifest.json` added to private files
+- `.vercel/` directories blocked from commits
+
 ## [0.5.0] - 2026-03-25
 
 ### Added
