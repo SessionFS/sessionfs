@@ -197,7 +197,24 @@ async def run_audit(
     else:
         from sessionfs.judge.report import Finding
 
-        chunks = chunk_messages(messages)
+        # Use larger windows for big sessions, cap at 10 chunks max
+        msg_count = len(messages)
+        window = 100 if msg_count > 500 else 50
+        chunks = chunk_messages(messages, window_size=window, overlap=10)
+
+        # For very large sessions, only audit chunks that contain claims
+        MAX_CHUNKS = 10
+        claim_indices = {c.message_index for c in all_claims}
+        scored_chunks = []
+        for chunk in chunks:
+            start = messages.index(chunk[0]) if chunk else 0
+            end = start + len(chunk)
+            claims_in_chunk = sum(1 for ci in claim_indices if start <= ci < end)
+            if claims_in_chunk > 0:
+                scored_chunks.append((claims_in_chunk, chunk))
+        scored_chunks.sort(key=lambda x: x[0], reverse=True)
+        chunks = [c for _, c in scored_chunks[:MAX_CHUNKS]]
+
         all_findings: list[Finding] = []
 
         for chunk in chunks:
