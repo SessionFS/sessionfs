@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-03-25
+
+### Added
+- **Bookmark folders** — create colored folders, bookmark sessions, filter session list by folder
+- **Background audit** — large sessions (500+ msgs) return 202 and run in background with floating toast indicator
+- **Helm chart** — production Kubernetes deployment (API, MCP, Dashboard, PostgreSQL, migrations, ingress, network policies, HPA)
+- **Dashboard Dockerfile** — containerized dashboard for self-hosted deploy
+- **GHCR publish pipeline** — builds and pushes api/mcp/dashboard images on release
+- **Audit status endpoint** — `GET /audit/status` for polling background audits
+- **Self-hosted docs** — `docs/self-hosted.md` with AWS/GCP/generic K8s examples
+
+### Fixed
+- Search SQL ambiguous parameter types on PostgreSQL (asyncpg)
+- Cursor parser crash on NULL bubble values in SQLite
+- Audit timeout on large sessions (now capped at 10 claim-dense chunks)
+- Audit modal closes immediately — no more blocking the UI
+
 ## [0.4.0] - 2026-03-24
 
 ### Added
