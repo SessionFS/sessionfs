@@ -578,7 +578,11 @@ async def search_sessions(
         # PostgreSQL full-text search with ts_vector
         from sqlalchemy import text as sa_text
 
-        search_sql = sa_text("""
+        # Build query dynamically to avoid asyncpg ambiguous param types
+        tool_clause = "AND source_tool = :tool" if tool else ""
+        cutoff_clause = "AND updated_at >= CAST(:cutoff AS timestamptz)" if days else ""
+
+        search_sql = sa_text(f"""
             SELECT id, title, alias, source_tool, model_id, message_count, updated_at,
                    ts_headline('english', messages_text, query,
                                'MaxWords=30, MinWords=15, StartSel=<mark>, StopSel=</mark>') as snippet
@@ -586,25 +590,28 @@ async def search_sessions(
             WHERE user_id = :user_id
               AND search_vector @@ query
               AND is_deleted = false
-              AND (:tool IS NULL OR source_tool = :tool)
-              AND (:cutoff IS NULL OR updated_at >= CAST(:cutoff AS timestamptz))
+              {tool_clause}
+              {cutoff_clause}
             ORDER BY ts_rank(search_vector, query) DESC
             LIMIT :limit OFFSET :offset
         """)
-        count_sql = sa_text("""
+        count_sql = sa_text(f"""
             SELECT count(*)
             FROM sessions, plainto_tsquery('english', :q) query
             WHERE user_id = :user_id
               AND search_vector @@ query
               AND is_deleted = false
-              AND (:tool IS NULL OR source_tool = :tool)
-              AND (:cutoff IS NULL OR updated_at >= CAST(:cutoff AS timestamptz))
+              {tool_clause}
+              {cutoff_clause}
         """)
     else:
         # SQLite fallback: simple LIKE-based search
         from sqlalchemy import text as sa_text
 
-        search_sql = sa_text("""
+        tool_clause = "AND source_tool = :tool" if tool else ""
+        cutoff_clause = "AND updated_at >= :cutoff" if days else ""
+
+        search_sql = sa_text(f"""
             SELECT id, title, alias, source_tool, model_id, message_count, updated_at,
                    substr(messages_text, max(1, instr(lower(messages_text), lower(:q)) - 40), 100) as snippet
             FROM sessions
@@ -612,41 +619,44 @@ async def search_sessions(
               AND (lower(title) LIKE '%' || lower(:q) || '%'
                    OR lower(messages_text) LIKE '%' || lower(:q) || '%')
               AND is_deleted = 0
-              AND (:tool IS NULL OR source_tool = :tool)
-              AND (:cutoff IS NULL OR updated_at >= :cutoff)
+              {tool_clause}
+              {cutoff_clause}
             ORDER BY updated_at DESC
             LIMIT :limit OFFSET :offset
         """)
-        count_sql = sa_text("""
+        count_sql = sa_text(f"""
             SELECT count(*)
             FROM sessions
             WHERE user_id = :user_id
               AND (lower(title) LIKE '%' || lower(:q) || '%'
                    OR lower(messages_text) LIKE '%' || lower(:q) || '%')
               AND is_deleted = 0
-              AND (:tool IS NULL OR source_tool = :tool)
-              AND (:cutoff IS NULL OR updated_at >= :cutoff)
+              {tool_clause}
+              {cutoff_clause}
         """)
 
     cutoff = None
     if days is not None:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
-    params = {
+    params: dict = {
         "q": q,
         "user_id": user.id,
-        "tool": tool,
-        "cutoff": cutoff,
         "limit": page_size,
         "offset": offset,
     }
+    count_params: dict = {"q": q, "user_id": user.id}
+    if tool:
+        params["tool"] = tool
+        count_params["tool"] = tool
+    if cutoff:
+        params["cutoff"] = cutoff
+        count_params["cutoff"] = cutoff
 
     result = await db.execute(search_sql, params)
     rows = result.fetchall()
 
-    count_result = await db.execute(count_sql, {
-        "q": q, "user_id": user.id, "tool": tool, "cutoff": cutoff,
-    })
+    count_result = await db.execute(count_sql, count_params)
     total = count_result.scalar() or 0
 
     results = []
