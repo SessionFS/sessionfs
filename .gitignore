@@ -28,6 +28,9 @@ Thumbs.db
 .env.local
 .env.*.local
 
+# Private keys
+*.pem
+
 # SessionFS local data (never commit user sessions)
 .sessionfs/
 
