@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
 import CopyButton from '../components/CopyButton';
 import { useJudgeSettings, useSaveJudgeSettings, useClearJudgeSettings } from '../hooks/useJudgeSettings';
@@ -247,12 +247,112 @@ export default function SettingsPage() {
         )}
       </div>
 
+      {/* GitHub Integration */}
+      <GitHubIntegrationSection />
+
       <button
         onClick={logout}
         className="px-4 py-2 text-sm border border-red-500/30 text-red-400 rounded hover:bg-red-500/10 transition-colors"
       >
         Logout
       </button>
+    </div>
+  );
+}
+
+function GitHubIntegrationSection() {
+  const { auth } = useAuth();
+  const queryClient = useQueryClient();
+
+  const { data: ghSettings, isLoading } = useQuery({
+    queryKey: ['github-installation'],
+    queryFn: () => auth!.client.getGitHubInstallation(),
+    enabled: !!auth,
+  });
+
+  const updateSettings = useMutation({
+    mutationFn: (updates: { auto_comment?: boolean; include_trust_score?: boolean; include_session_links?: boolean }) =>
+      auth!.client.updateGitHubInstallation(updates),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['github-installation'] }),
+  });
+
+  const connected = ghSettings && ghSettings.account_login;
+
+  return (
+    <div className="bg-bg-secondary border border-border rounded-lg p-4 mb-4">
+      <h2 className="text-sm uppercase tracking-wider text-text-muted mb-3">GitHub Integration</h2>
+      <p className="text-sm text-text-muted mb-3">
+        Automatically post AI context comments on pull requests showing which sessions contributed to the code.
+      </p>
+
+      {isLoading ? (
+        <div className="text-sm text-text-muted py-2">Loading...</div>
+      ) : connected ? (
+        <>
+          <div className="flex items-center gap-2 mb-3">
+            <span className="inline-block w-2 h-2 rounded-full bg-green-400" />
+            <span className="text-sm text-text-primary">
+              Connected to <span className="font-medium">{ghSettings.account_login}</span>
+              <span className="text-text-muted ml-1">({ghSettings.account_type})</span>
+            </span>
+          </div>
+
+          <div className="space-y-2 mb-3">
+            <label className="flex items-center gap-2 text-sm text-text-secondary cursor-pointer">
+              <input
+                type="checkbox"
+                checked={ghSettings.auto_comment ?? true}
+                onChange={(e) => updateSettings.mutate({ auto_comment: e.target.checked })}
+                className="rounded border-border bg-bg-primary text-accent focus:ring-accent"
+              />
+              Auto-comment on PRs
+            </label>
+            <label className="flex items-center gap-2 text-sm text-text-secondary cursor-pointer">
+              <input
+                type="checkbox"
+                checked={ghSettings.include_trust_score ?? true}
+                onChange={(e) => updateSettings.mutate({ include_trust_score: e.target.checked })}
+                className="rounded border-border bg-bg-primary text-accent focus:ring-accent"
+              />
+              Include trust scores
+            </label>
+            <label className="flex items-center gap-2 text-sm text-text-secondary cursor-pointer">
+              <input
+                type="checkbox"
+                checked={ghSettings.include_session_links ?? true}
+                onChange={(e) => updateSettings.mutate({ include_session_links: e.target.checked })}
+                className="rounded border-border bg-bg-primary text-accent focus:ring-accent"
+              />
+              Include session links
+            </label>
+          </div>
+
+          {updateSettings.isError && (
+            <div className="text-sm text-red-400 mb-2">Failed to update settings.</div>
+          )}
+
+          <a
+            href="https://github.com/apps/sessionfs-ai-context/installations/new"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-sm text-accent hover:underline"
+          >
+            Manage installation
+          </a>
+        </>
+      ) : (
+        <div>
+          <p className="text-sm text-text-muted mb-3">Not connected</p>
+          <a
+            href="https://github.com/apps/sessionfs-ai-context/installations/new"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-block px-3 py-1.5 text-sm bg-accent text-white rounded hover:bg-accent/90 transition-colors"
+          >
+            Connect GitHub
+          </a>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,0 +1,21 @@
+{
+  "name": "SessionFS AI Context",
+  "description": "Automatically posts AI session context on pull requests, showing which AI sessions contributed to the code changes.",
+  "url": "https://sessionfs.dev",
+  "hook_attributes": {
+    "url": "https://api.sessionfs.dev/webhooks/github",
+    "active": true
+  },
+  "redirect_url": "https://app.sessionfs.dev/settings/github/callback",
+  "setup_url": "https://app.sessionfs.dev/settings/github/setup",
+  "setup_on_update": true,
+  "public": true,
+  "default_events": [
+    "pull_request",
+    "installation"
+  ],
+  "default_permissions": {
+    "pull_requests": "write",
+    "metadata": "read"
+  }
+}

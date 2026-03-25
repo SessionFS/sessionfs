@@ -44,6 +44,13 @@ A `.sfs` session is a directory containing: `manifest.json`, `messages.jsonl`, `
 - **NEVER run `git push origin develop`.** This is a security breach — it exposes internal strategy, agent personas, threat models, and business docs.
 - **If develop is accidentally pushed:** delete immediately with `git push origin --delete develop`.
 
+## Release Process
+
+- **ALWAYS use the `/release` skill** (at `.claude/commands/release.md`) for every release. No ad-hoc releases.
+- The skill covers: version bump, changelog, docs update, ruff lint, tests, deploy landing + dashboard, merge to main with sanitization, tag, verify pipelines, update memories.
+- **Run `ruff check src/` before committing.** Lint failures break CI and are embarrassing.
+- **Run tests before every release.** No exceptions.
+
 ## Key Decisions (Do Not Violate)
 
 - NO WebSockets, NO Redis, NO real-time sync. HTTP + ETags only.

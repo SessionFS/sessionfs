@@ -280,6 +280,29 @@ def _extract_manifest_metadata(data: bytes) -> dict:
     return defaults
 
 
+def _extract_workspace_from_archive(data: bytes) -> dict | None:
+    """Extract git metadata from workspace.json in a .sfs tar.gz archive.
+
+    Returns a dict with git_remote, git_branch, git_commit or None if missing.
+    """
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+            for member in tar.getmembers():
+                if member.name == "workspace.json" or member.name.endswith("/workspace.json"):
+                    f = tar.extractfile(member)
+                    if f:
+                        ws = json.loads(f.read())
+                        git = ws.get("git") or {}
+                        return {
+                            "git_remote": git.get("remote_url", ""),
+                            "git_branch": git.get("branch", ""),
+                            "git_commit": git.get("commit_sha", ""),
+                        }
+    except Exception as exc:
+        _logger.warning("Failed to extract workspace metadata: %s", exc)
+    return None
+
+
 _MAX_MESSAGES_TEXT_BYTES = 100 * 1024  # 100KB limit
 
 
@@ -465,6 +488,17 @@ async def upload_session(
     meta = _extract_manifest_metadata(data)
     messages_text = _extract_messages_text(data)
 
+    # Extract git metadata for PR matching
+    workspace_data = _extract_workspace_from_archive(data)
+    git_remote_normalized = ""
+    git_branch = ""
+    git_commit = ""
+    if workspace_data:
+        from sessionfs.server.github_app import normalize_git_remote
+        git_remote_normalized = normalize_git_remote(workspace_data.get("git_remote", ""))
+        git_branch = workspace_data.get("git_branch", "")
+        git_commit = workspace_data.get("git_commit", "")
+
     now = datetime.now(timezone.utc)
     session = Session(
         id=session_id,
@@ -489,6 +523,9 @@ async def upload_session(
         created_at=now,
         updated_at=now,
         uploaded_at=now,
+        git_remote_normalized=git_remote_normalized,
+        git_branch=git_branch,
+        git_commit=git_commit,
     )
     db.add(session)
     await db.commit()
@@ -891,6 +928,17 @@ async def sync_push(
     meta = _extract_manifest_metadata(data)
     messages_text = _extract_messages_text(data)
 
+    # Extract git metadata for PR matching
+    workspace_data = _extract_workspace_from_archive(data)
+    git_remote_normalized = ""
+    git_branch = ""
+    git_commit = ""
+    if workspace_data:
+        from sessionfs.server.github_app import normalize_git_remote
+        git_remote_normalized = normalize_git_remote(workspace_data.get("git_remote", ""))
+        git_branch = workspace_data.get("git_branch", "")
+        git_commit = workspace_data.get("git_commit", "")
+
     if existing is None:
         # Check if session ID exists at all (including soft-deleted)
         any_result = await db.execute(
@@ -932,6 +980,9 @@ async def sync_push(
                 created_at=now,
                 updated_at=now,
                 uploaded_at=now,
+                git_remote_normalized=git_remote_normalized,
+                git_branch=git_branch,
+                git_commit=git_commit,
             )
             db.add(session)
             await db.commit()
@@ -979,6 +1030,9 @@ async def sync_push(
     existing.blob_size_bytes = len(data)
     existing.etag = new_etag
     existing.updated_at = now
+    existing.git_remote_normalized = git_remote_normalized
+    existing.git_branch = git_branch
+    existing.git_commit = git_commit
     await db.commit()
     await db.refresh(existing)
 
@@ -1149,6 +1203,15 @@ async def reindex_sessions(
             session.total_output_tokens = meta["total_output_tokens"]
             session.duration_ms = meta["duration_ms"]
             session.messages_text = messages_text
+
+            # Update git metadata for PR matching
+            ws = _extract_workspace_from_archive(data)
+            if ws:
+                from sessionfs.server.github_app import normalize_git_remote
+                session.git_remote_normalized = normalize_git_remote(ws.get("git_remote", ""))
+                session.git_branch = ws.get("git_branch", "")
+                session.git_commit = ws.get("git_commit", "")
+
             updated += 1
 
         except Exception as exc:

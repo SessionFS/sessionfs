@@ -137,6 +137,14 @@ export interface AdminActionLog {
   timestamp: string;
 }
 
+export interface GitHubInstallationResponse {
+  account_login: string | null;
+  account_type: string | null;
+  auto_comment: boolean;
+  include_trust_score: boolean;
+  include_session_links: boolean;
+}
+
 export interface FolderResponse {
   id: string;
   name: string;
@@ -393,6 +401,20 @@ export function createApiClient(baseUrl: string, apiKey: string) {
 
     listFolderSessions: (folderId: string) =>
       request<FolderSessionsResponse>(`/api/v1/bookmarks/folders/${folderId}/sessions`),
+
+    // GitHub integration
+    getGitHubInstallation: () =>
+      request<GitHubInstallationResponse>('/api/v1/settings/github'),
+
+    updateGitHubInstallation: (updates: {
+      auto_comment?: boolean;
+      include_trust_score?: boolean;
+      include_session_links?: boolean;
+    }) =>
+      request<GitHubInstallationResponse>('/api/v1/settings/github', {
+        method: 'PUT',
+        body: JSON.stringify(updates),
+      }),
   };
 }
 
