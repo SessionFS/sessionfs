@@ -11,6 +11,7 @@ import SettingsPage from './sessions/SettingsPage';
 import HandoffList from './handoffs/HandoffList';
 import HandoffDetail from './handoffs/HandoffDetail';
 import AdminDashboard from './admin/AdminDashboard';
+import { BackgroundTasksProvider } from './components/BackgroundTasks';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -40,6 +41,7 @@ export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
+        <BackgroundTasksProvider>
         <BrowserRouter>
           <Routes>
             <Route path="/login" element={<LoginPage />} />
@@ -68,6 +70,7 @@ export default function App() {
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </BrowserRouter>
+        </BackgroundTasksProvider>
       </AuthProvider>
     </QueryClientProvider>
   );

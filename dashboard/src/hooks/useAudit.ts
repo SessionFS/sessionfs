@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
 import type { AuditReport } from '../api/client';
+import { useState, useEffect, useRef } from 'react';
 
 export function useAudit(sessionId: string) {
   const { auth } = useAuth();
@@ -10,7 +11,6 @@ export function useAudit(sessionId: string) {
     enabled: !!auth && !!sessionId,
     staleTime: 300_000,
     retry: (failureCount, error) => {
-      // Don't retry 404s — just means no audit exists yet
       if (error && 'status' in error && (error as { status: number }).status === 404) return false;
       return failureCount < 1;
     },
@@ -20,9 +20,33 @@ export function useAudit(sessionId: string) {
 export function useRunAudit() {
   const { auth } = useAuth();
   const queryClient = useQueryClient();
+  const [polling, setPolling] = useState(false);
+  const [pollingSessionId, setPollingSessionId] = useState('');
+  const intervalRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
 
-  return useMutation({
-    mutationFn: ({
+  // Poll for background audit completion
+  useEffect(() => {
+    if (!polling || !pollingSessionId || !auth) return;
+
+    intervalRef.current = setInterval(async () => {
+      try {
+        const report = await auth.client.getAudit(pollingSessionId);
+        if (report && report.session_id) {
+          // Audit completed
+          queryClient.setQueryData(['audit', pollingSessionId], report);
+          setPolling(false);
+          setPollingSessionId('');
+        }
+      } catch {
+        // Still running or not found — keep polling
+      }
+    }, 5000);
+
+    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
+  }, [polling, pollingSessionId, auth, queryClient]);
+
+  const mutation = useMutation({
+    mutationFn: async ({
       sessionId,
       model,
       llmApiKey,
@@ -32,11 +56,21 @@ export function useRunAudit() {
       model: string;
       llmApiKey: string;
       provider?: string;
-    }): Promise<AuditReport> => {
-      return auth!.client.runAudit(sessionId, model, llmApiKey, provider);
+    }) => {
+      const resp = await auth!.client.runAudit(sessionId, model, llmApiKey, provider);
+      return resp;
     },
-    onSuccess: (data) => {
-      queryClient.setQueryData(['audit', data.session_id], data);
+    onSuccess: (data: AuditReport | { status: string; session_id: string }) => {
+      if ('status' in data && data.status === 'accepted') {
+        // Background audit — start polling
+        setPollingSessionId(data.session_id);
+        setPolling(true);
+      } else if ('findings' in data) {
+        // Synchronous audit — done immediately
+        queryClient.setQueryData(['audit', (data as AuditReport).session_id], data);
+      }
     },
   });
+
+  return { ...mutation, isPolling: polling };
 }

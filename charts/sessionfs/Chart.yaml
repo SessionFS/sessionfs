@@ -1,0 +1,17 @@
+apiVersion: v2
+name: sessionfs
+description: Capture, sync, and resume AI coding sessions across 8 tools
+type: application
+version: 0.4.0
+appVersion: "0.4.0"
+keywords:
+  - ai
+  - sessions
+  - developer-tools
+  - mcp
+home: https://sessionfs.dev
+sources:
+  - https://github.com/SessionFS/sessionfs
+maintainers:
+  - name: SessionFS
+    url: https://sessionfs.dev

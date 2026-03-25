@@ -1,10 +1,12 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useSessions } from '../hooks/useSessions';
+import { useFolders, useAddBookmark, useFolderSessions } from '../hooks/useBookmarks';
 import type { SessionSummary } from '../api/client';
 import { abbreviateModel, abbreviateTool } from '../utils/models';
 import { formatTokens } from '../utils/tokens';
 import RelativeDate from '../components/RelativeDate';
+import BookmarkSidebar from '../components/BookmarkSidebar';
 
 interface SessionSummaryWithAudit extends SessionSummary {
   audit_trust_score?: number | null;
@@ -26,6 +28,7 @@ export default function SessionList() {
   const [toolFilter, setToolFilter] = useState('all');
   const [dateRange, setDateRange] = useState('');
   const [sortBy, setSortBy] = useState<SortKey>('date');
+  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
 
   const PAGE_SIZE = 20;
 
@@ -35,7 +38,30 @@ export default function SessionList() {
     source_tool: toolFilter === 'all' ? undefined : toolFilter,
   });
 
+  const { data: folderSessionsData } = useFolderSessions(selectedFolderId);
+
   const sessions = useMemo(() => {
+    // If a folder is selected, show folder sessions instead
+    if (selectedFolderId && folderSessionsData) {
+      let list: SessionSummary[] = folderSessionsData.sessions;
+      if (dateRange) {
+        const now = Date.now();
+        const ms = dateRange === '24h' ? 86400000 : dateRange === '7d' ? 604800000 : 2592000000;
+        list = list.filter((s) => now - new Date(s.updated_at).getTime() < ms);
+      }
+      const sorted = [...list];
+      if (sortBy === 'messages') sorted.sort((a, b) => b.message_count - a.message_count);
+      else if (sortBy === 'tokens')
+        sorted.sort(
+          (a, b) =>
+            b.total_input_tokens + b.total_output_tokens -
+            (a.total_input_tokens + a.total_output_tokens),
+        );
+      else if (sortBy === 'title')
+        sorted.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+      return sorted;
+    }
+
     if (!data?.sessions) return [];
     let list = data.sessions;
 
@@ -59,10 +85,10 @@ export default function SessionList() {
       sorted.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
 
     return sorted;
-  }, [data, dateRange, sortBy]);
+  }, [data, dateRange, sortBy, selectedFolderId, folderSessionsData]);
 
-  const hasMore = data?.has_more ?? false;
-  const totalSessions = data?.total ?? 0;
+  const hasMore = selectedFolderId ? false : (data?.has_more ?? false);
+  const totalSessions = selectedFolderId ? (folderSessionsData?.total ?? 0) : (data?.total ?? 0);
 
   function handleRowClick(id: string) {
     navigate(`/sessions/${id}`);
@@ -73,7 +99,9 @@ export default function SessionList() {
   }
 
   return (
-    <div className="max-w-7xl mx-auto px-4 py-4">
+    <div className="flex flex-1 min-h-0">
+      <BookmarkSidebar selectedFolderId={selectedFolderId} onSelectFolder={(id) => { setSelectedFolderId(id); setPage(1); }} />
+      <div className="flex-1 max-w-7xl mx-auto px-4 py-4">
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-3 mb-4">
         <select
@@ -134,6 +162,7 @@ export default function SessionList() {
                   <th className="px-3 py-2 text-left w-20">Created</th>
                   <th className="px-3 py-2 text-left w-20">Updated</th>
                   <th className="px-3 py-2 text-left">Title</th>
+                  <th className="px-3 py-2 w-8"></th>
                 </tr>
               </thead>
               <tbody>
@@ -166,6 +195,9 @@ export default function SessionList() {
                         {s.title || <span className="text-text-muted italic">Untitled</span>}
                         <TrustBadge score={(s as SessionSummaryWithAudit).audit_trust_score} />
                       </span>
+                    </td>
+                    <td className="px-1 py-2" onClick={(e) => e.stopPropagation()}>
+                      <BookmarkDropdown sessionId={s.id} />
                     </td>
                   </tr>
                 ))}
@@ -206,8 +238,70 @@ export default function SessionList() {
         <div className="text-center py-16">
           <p className="text-text-secondary mb-2">No sessions found</p>
           <p className="text-text-muted text-sm">
-            Push sessions from the CLI: <code className="bg-bg-secondary px-1.5 py-0.5 rounded">sfs push &lt;id&gt;</code>
+            {selectedFolderId
+              ? 'No sessions bookmarked in this folder yet.'
+              : <>Push sessions from the CLI: <code className="bg-bg-secondary px-1.5 py-0.5 rounded">sfs push &lt;id&gt;</code></>
+            }
           </p>
+        </div>
+      )}
+      </div>
+    </div>
+  );
+}
+
+function BookmarkDropdown({ sessionId }: { sessionId: string }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const { data: foldersData } = useFolders();
+  const addBookmark = useAddBookmark();
+
+  const folders = foldersData?.folders ?? [];
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    if (open) document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [open]);
+
+  // We don't have per-session bookmark info from the list endpoint,
+  // so the dropdown just shows add options for each folder.
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen(!open)}
+        className="text-text-muted hover:text-accent transition-colors text-sm"
+        title="Bookmark"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
+        </svg>
+      </button>
+      {open && (
+        <div className="absolute right-0 top-6 z-20 bg-bg-primary border border-border rounded shadow-lg py-1 min-w-[140px]">
+          {folders.length === 0 && (
+            <div className="px-3 py-1 text-sm text-text-muted">No folders yet</div>
+          )}
+          {folders.map((f) => (
+            <button
+              key={f.id}
+              onClick={() => {
+                addBookmark.mutate({ folderId: f.id, sessionId }, {
+                  onSuccess: () => setOpen(false),
+                  onError: () => setOpen(false), // likely duplicate, just close
+                });
+              }}
+              className="w-full text-left px-3 py-1 text-sm text-text-secondary hover:bg-bg-tertiary flex items-center gap-2"
+            >
+              <span
+                className="w-2 h-2 rounded-full shrink-0"
+                style={{ backgroundColor: f.color || '#4f9cf7' }}
+              />
+              {f.name}
+            </button>
+          ))}
         </div>
       )}
     </div>

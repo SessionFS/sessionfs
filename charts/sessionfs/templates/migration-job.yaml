@@ -1,0 +1,51 @@
+{{- if .Values.migrations.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "sessionfs.fullname" . }}-migrate-{{ .Release.Revision }}
+  labels:
+    {{- include "sessionfs.componentLabels" (list . "migration") | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    {{- with .Values.commonAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  backoffLimit: {{ .Values.migrations.backoffLimit }}
+  template:
+    metadata:
+      labels:
+        {{- include "sessionfs.componentSelectorLabels" (list . "migration") | nindent 8 }}
+    spec:
+      {{- include "sessionfs.imagePullSecrets" . | nindent 6 }}
+      serviceAccountName: {{ include "sessionfs.serviceAccountName" . }}
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 1000
+      containers:
+        - name: migrate
+          image: {{ include "sessionfs.api.image" . }}
+          imagePullPolicy: {{ .Values.api.image.pullPolicy | default .Values.global.imagePullPolicy }}
+          command: ["alembic", "upgrade", "head"]
+          env:
+            {{- include "sessionfs.databaseEnv" . | nindent 12 }}
+            - name: DATABASE_URL
+              value: {{ include "sessionfs.migrationDatabaseUrl" . | quote }}
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+{{- end }}

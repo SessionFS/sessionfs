@@ -1,0 +1,17 @@
+{{- if .Values.api.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "sessionfs.fullname" . }}-api
+  labels:
+    {{- include "sessionfs.componentLabels" (list . "api") | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  minAvailable: {{ .Values.api.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "sessionfs.componentSelectorLabels" (list . "api") | nindent 6 }}
+{{- end }}

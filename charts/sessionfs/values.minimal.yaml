@@ -1,0 +1,28 @@
+api:
+  replicaCount: 1
+  autoscaling:
+    enabled: false
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+mcp:
+  enabled: false
+
+dashboard:
+  replicaCount: 1
+
+postgresql:
+  persistence:
+    size: 1Gi
+
+ingress:
+  enabled: false
+
+security:
+  networkPolicies:
+    enabled: false

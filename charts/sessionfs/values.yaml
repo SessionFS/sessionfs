@@ -1,0 +1,213 @@
+## Global settings
+global:
+  imageRegistry: ghcr.io/sessionfs
+  imagePullPolicy: IfNotPresent
+  imagePullSecrets: []
+  storageClass: ""
+
+## API Server
+api:
+  replicaCount: 2
+  image:
+    repository: sessionfs-api
+    tag: ""  # defaults to appVersion
+    pullPolicy: ""  # defaults to global.imagePullPolicy
+  service:
+    type: ClusterIP
+    port: 8000
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  env: {}
+  logLevel: "INFO"
+  corsOrigins: ""
+  rateLimitPerMinute: 100
+
+## MCP Server
+mcp:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: sessionfs-mcp
+    tag: ""
+    pullPolicy: ""
+  service:
+    type: ClusterIP
+    port: 3001
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+## Web Dashboard
+dashboard:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: sessionfs-dashboard
+    tag: ""
+    pullPolicy: ""
+  service:
+    type: ClusterIP
+    port: 80
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+## Built-in PostgreSQL (disable for external database)
+postgresql:
+  enabled: true
+  image:
+    repository: postgres
+    tag: "16-alpine"
+  auth:
+    username: sessionfs
+    password: ""  # auto-generated if empty
+    database: sessionfs
+    existingSecret: ""
+    secretKeys:
+      usernameKey: username
+      passwordKey: password
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+## External Database (used when postgresql.enabled=false)
+externalDatabase:
+  host: ""
+  port: 5432
+  username: sessionfs
+  password: ""
+  database: sessionfs
+  sslMode: require
+  existingSecret: ""
+  secretKey: database-url
+
+## Blob Storage
+storage:
+  type: local  # local, s3, or gcs
+  local:
+    path: /data/blobs
+    persistence:
+      enabled: true
+      size: 10Gi
+      storageClass: ""
+  s3:
+    bucket: ""
+    region: us-east-1
+    endpointUrl: ""
+    existingSecret: ""
+    secretKeys:
+      accessKeyId: aws-access-key-id
+      secretAccessKey: aws-secret-access-key
+  gcs:
+    bucket: ""
+    existingSecret: ""
+    secretKey: gcs-credentials-json
+
+## Ingress
+ingress:
+  enabled: true
+  className: ""
+  annotations: {}
+  hosts:
+    - host: sessionfs.local
+      paths:
+        api: /api
+        mcp: /mcp
+        dashboard: /
+  tls: []
+
+## Email (Resend)
+email:
+  resendApiKey: ""
+  existingSecret: ""
+  secretKey: resend-api-key
+
+## Security
+security:
+  verificationSecret: ""
+  encryptionKey: ""
+  existingSecret: ""
+  secretKeys:
+    verificationSecret: verification-secret
+    encryptionKey: encryption-key
+  networkPolicies:
+    enabled: false
+  podSecurityStandards:
+    enforce: "baseline"
+
+## Database Migrations
+migrations:
+  enabled: true
+  image:
+    repository: sessionfs-api
+    tag: ""
+  backoffLimit: 3
+
+## Monitoring
+monitoring:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    labels: {}
+
+## Service Account
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+## Common labels added to all resources
+commonLabels: {}
+
+## Common annotations added to all resources
+commonAnnotations: {}

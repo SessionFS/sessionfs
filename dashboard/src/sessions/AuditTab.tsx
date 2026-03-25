@@ -36,7 +36,7 @@ export default function AuditTab({ sessionId, messageCount, sessionTitle }: Prop
           Run Audit
         </button>
         {showModal && (
-          <AuditModal
+          <AuditModal sessionTitle={sessionTitle}
             sessionId={sessionId}
             messageCount={messageCount}
             onClose={() => setShowModal(false)}
@@ -112,7 +112,7 @@ export default function AuditTab({ sessionId, messageCount, sessionTitle }: Prop
       )}
 
       {showModal && (
-        <AuditModal
+        <AuditModal sessionTitle={sessionTitle}
           sessionId={sessionId}
           messageCount={messageCount}
           onClose={() => setShowModal(false)}

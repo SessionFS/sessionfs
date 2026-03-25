@@ -113,16 +113,55 @@ def _report_to_response(report) -> AuditResponse:
     return AuditResponse(**data)
 
 
-@router.post("/{session_id}/audit", response_model=AuditResponse)
+import asyncio as _asyncio
+
+# Track running audit jobs: session_id -> task
+_audit_jobs: dict[str, _asyncio.Task] = {}
+# Store completed results: session_id -> AuditResponse (temp cache until stored in blob)
+_audit_results: dict[str, dict] = {}
+
+
+@router.get("/{session_id}/audit/status")
+async def audit_status(
+    session_id: str,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Check if an audit is running, completed, or not started."""
+    await _get_session_or_404(session_id, user, db)
+
+    if session_id in _audit_jobs and not _audit_jobs[session_id].done():
+        return {"status": "running", "session_id": session_id}
+
+    if session_id in _audit_results:
+        return {"status": "completed", "session_id": session_id}
+
+    # Check blob store for stored report
+    blob_store = _get_blob_store(request)
+    report_key = f"sessions/{user.id}/{session_id}_audit.json"
+    try:
+        data = await blob_store.get(report_key)
+        if data:
+            return {"status": "completed", "session_id": session_id}
+    except Exception:
+        pass
+
+    return {"status": "not_started", "session_id": session_id}
+
+
+@router.post("/{session_id}/audit")
 async def run_audit(
     session_id: str,
     body: AuditRequest,
     request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> AuditResponse:
+):
     """Run LLM-as-a-Judge audit on a session.
 
+    For large sessions, returns 202 Accepted and runs in background.
+    For small sessions (<500 messages), runs synchronously.
     The llm_api_key is used for the single LLM call and is NEVER logged
     or persisted.
     """
@@ -169,7 +208,61 @@ async def run_audit(
             detail="No messages found in session archive",
         )
 
-    # Run the judge pipeline
+    # For large sessions (500+ messages), run in background
+    BACKGROUND_THRESHOLD = 500
+    if len(messages) >= BACKGROUND_THRESHOLD:
+        # Launch background task and return 202
+        async def _run_audit_background():
+            try:
+                report = await _run_judge_pipeline(
+                    session_id, messages, model, llm_api_key, provider,
+                )
+                report_key = f"sessions/{user.id}/{session_id}_audit.json"
+                from dataclasses import asdict
+                report_data = json.dumps(asdict(report), indent=2).encode("utf-8")
+                await blob_store.put(report_key, report_data)
+                _audit_results[session_id] = asdict(report)
+                logger.info("Background audit completed for %s", session_id)
+            except Exception as exc:
+                logger.error("Background audit failed for %s: %s", session_id, exc)
+                _audit_results[session_id] = {"error": str(exc)}
+            finally:
+                _audit_jobs.pop(session_id, None)
+
+        task = _asyncio.create_task(_run_audit_background())
+        _audit_jobs[session_id] = task
+
+        return JSONResponse(
+            status_code=202,
+            content={
+                "status": "accepted",
+                "session_id": session_id,
+                "message": f"Audit started in background ({len(messages)} messages). Poll GET /audit/status to check progress.",
+            },
+        )
+
+    # Small sessions — run synchronously
+    report = await _run_judge_pipeline(
+        session_id, messages, model, llm_api_key, provider,
+    )
+
+    # Store the report
+    report_key = f"sessions/{user.id}/{session_id}_audit.json"
+    from dataclasses import asdict
+    report_data = json.dumps(asdict(report), indent=2).encode("utf-8")
+    await blob_store.put(report_key, report_data)
+
+    return _report_to_response(report)
+
+
+async def _run_judge_pipeline(
+    session_id: str,
+    messages: list[dict],
+    model: str,
+    llm_api_key: str,
+    provider: str | None,
+):
+    """Run the judge pipeline — extracted for sync and background use."""
     from sessionfs.judge.evidence import gather_evidence
     from sessionfs.judge.extractor import extract_claims
     from sessionfs.judge.judge import (
@@ -181,75 +274,67 @@ async def run_audit(
         chunk_messages,
     )
     from sessionfs.judge.providers import call_llm
-    from sessionfs.judge.report import JudgeReport
+    from sessionfs.judge.report import Finding, JudgeReport
 
     all_claims = extract_claims(messages)
     all_evidence = gather_evidence(messages)
 
     if not all_claims:
-        report = JudgeReport(
+        return JudgeReport(
             session_id=session_id,
             model=model,
             timestamp=datetime.now(timezone.utc).isoformat(),
             findings=[],
             summary=_compute_summary([]),
         )
-    else:
-        from sessionfs.judge.report import Finding
 
-        chunks = chunk_messages(messages)
-        all_findings: list[Finding] = []
+    msg_count = len(messages)
+    window = 100 if msg_count > 500 else 50
+    chunks = chunk_messages(messages, window_size=window, overlap=10)
 
-        for chunk in chunks:
-            chunk_start = messages.index(chunk[0]) if chunk else 0
-            chunk_end = chunk_start + len(chunk)
+    MAX_CHUNKS = 10
+    claim_indices = {c.message_index for c in all_claims}
+    scored_chunks = []
+    for chunk in chunks:
+        start = messages.index(chunk[0]) if chunk else 0
+        end = start + len(chunk)
+        claims_in_chunk = sum(1 for ci in claim_indices if start <= ci < end)
+        if claims_in_chunk > 0:
+            scored_chunks.append((claims_in_chunk, chunk))
+    scored_chunks.sort(key=lambda x: x[0], reverse=True)
+    chunks = [c for _, c in scored_chunks[:MAX_CHUNKS]]
 
-            chunk_claims = [
-                c for c in all_claims if chunk_start <= c.message_index < chunk_end
-            ]
-            chunk_evidence = [
-                e for e in all_evidence if chunk_start <= e.message_index < chunk_end
-            ]
+    all_findings: list[Finding] = []
 
-            if not chunk_claims:
-                continue
+    for chunk in chunks:
+        chunk_start = messages.index(chunk[0]) if chunk else 0
+        chunk_end = chunk_start + len(chunk)
+        chunk_claims = [c for c in all_claims if chunk_start <= c.message_index < chunk_end]
+        chunk_evidence = [e for e in all_evidence if chunk_start <= e.message_index < chunk_end]
 
-            prompt = build_judge_prompt(chunk_claims, chunk_evidence, messages)
+        if not chunk_claims:
+            continue
 
-            try:
-                response = await call_llm(
-                    model=model,
-                    system=JUDGE_SYSTEM_PROMPT,
-                    prompt=prompt,
-                    api_key=llm_api_key,
-                    provider=provider,
-                )
-            except Exception as exc:
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"LLM call failed: {exc}",
-                )
+        prompt = build_judge_prompt(chunk_claims, chunk_evidence, messages)
+        try:
+            response = await call_llm(
+                model=model, system=JUDGE_SYSTEM_PROMPT, prompt=prompt,
+                api_key=llm_api_key, provider=provider,
+            )
+        except Exception:
+            continue  # Skip failed chunks, don't crash the whole audit
 
-            findings = _parse_judge_response(response, chunk_claims)
-            all_findings.extend(findings)
+        findings = _parse_judge_response(response, chunk_claims)
+        all_findings.extend(findings)
 
-        all_findings = _deduplicate_findings(all_findings)
-        report = JudgeReport(
-            session_id=session_id,
-            model=model,
-            timestamp=datetime.now(timezone.utc).isoformat(),
-            findings=all_findings,
-            summary=_compute_summary(all_findings),
-        )
-
-    # Store the report in the blob store alongside the session
-    report_key = f"sessions/{user.id}/{session_id}_audit.json"
-    from dataclasses import asdict
-
-    report_data = json.dumps(asdict(report), indent=2).encode("utf-8")
-    await blob_store.put(report_key, report_data)
-
-    return _report_to_response(report)
+    all_findings = _deduplicate_findings(all_findings)
+    return JudgeReport(
+        session_id=session_id,
+        model=model,
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        findings=all_findings,
+        summary=_compute_summary(all_findings),
+    )
 
 
 @router.get("/{session_id}/audit", response_model=AuditResponse)

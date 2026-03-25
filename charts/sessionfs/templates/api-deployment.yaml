@@ -1,0 +1,177 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sessionfs.fullname" . }}-api
+  labels:
+    {{- include "sessionfs.componentLabels" (list . "api") | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if not .Values.api.autoscaling.enabled }}
+  replicas: {{ .Values.api.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "sessionfs.componentSelectorLabels" (list . "api") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "sessionfs.componentSelectorLabels" (list . "api") | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/api-configmap.yaml") . | sha256sum }}
+        checksum/secrets: {{ include (print $.Template.BasePath "/secrets.yaml") . | sha256sum }}
+    spec:
+      {{- include "sessionfs.imagePullSecrets" . | nindent 6 }}
+      serviceAccountName: {{ include "sessionfs.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 1000
+      containers:
+        - name: api
+          image: {{ include "sessionfs.api.image" . }}
+          imagePullPolicy: {{ .Values.api.image.pullPolicy | default .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.api.service.port }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "sessionfs.fullname" . }}-api
+          env:
+            {{- include "sessionfs.databaseEnv" . | nindent 12 }}
+            - name: SFS_DATABASE_URL
+              value: {{ include "sessionfs.databaseUrl" . | quote }}
+            {{- if .Values.security.existingSecret }}
+            - name: SFS_VERIFICATION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.security.existingSecret }}
+                  key: {{ .Values.security.secretKeys.verificationSecret }}
+            - name: SFS_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.security.existingSecret }}
+                  key: {{ .Values.security.secretKeys.encryptionKey }}
+            {{- else }}
+            - name: SFS_VERIFICATION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sessionfs.secretsName" . }}
+                  key: verification-secret
+            - name: SFS_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sessionfs.secretsName" . }}
+                  key: encryption-key
+            {{- end }}
+            {{- if or .Values.email.resendApiKey .Values.email.existingSecret }}
+            - name: SFS_RESEND_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.email.existingSecret | default (include "sessionfs.secretsName" .) }}
+                  key: {{ .Values.email.secretKey | default "resend-api-key" }}
+            {{- end }}
+            {{- if eq .Values.storage.type "s3" }}
+            - name: SFS_BLOB_STORE_TYPE
+              value: "s3"
+            - name: SFS_S3_BUCKET
+              value: {{ .Values.storage.s3.bucket | quote }}
+            - name: SFS_S3_REGION
+              value: {{ .Values.storage.s3.region | quote }}
+            {{- if .Values.storage.s3.endpointUrl }}
+            - name: SFS_S3_ENDPOINT_URL
+              value: {{ .Values.storage.s3.endpointUrl | quote }}
+            {{- end }}
+            {{- if .Values.storage.s3.existingSecret }}
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.storage.s3.existingSecret }}
+                  key: {{ .Values.storage.s3.secretKeys.accessKeyId }}
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.storage.s3.existingSecret }}
+                  key: {{ .Values.storage.s3.secretKeys.secretAccessKey }}
+            {{- end }}
+            {{- else if eq .Values.storage.type "gcs" }}
+            - name: SFS_BLOB_STORE_TYPE
+              value: "gcs"
+            - name: SFS_GCS_BUCKET
+              value: {{ .Values.storage.gcs.bucket | quote }}
+            {{- if .Values.storage.gcs.existingSecret }}
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: /var/secrets/gcs/credentials.json
+            {{- end }}
+            {{- else }}
+            - name: SFS_BLOB_STORE_TYPE
+              value: "local"
+            - name: SFS_BLOB_STORE_LOCAL_PATH
+              value: {{ .Values.storage.local.path | quote }}
+            {{- end }}
+            {{- range $key, $value := .Values.api.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          {{- if and (eq .Values.storage.type "local") .Values.storage.local.persistence.enabled }}
+          volumeMounts:
+            - name: blob-storage
+              mountPath: {{ .Values.storage.local.path }}
+          {{- end }}
+          {{- if and (eq .Values.storage.type "gcs") .Values.storage.gcs.existingSecret }}
+          volumeMounts:
+            - name: gcs-credentials
+              mountPath: /var/secrets/gcs
+              readOnly: true
+          {{- end }}
+      {{- if and (eq .Values.storage.type "local") .Values.storage.local.persistence.enabled }}
+      volumes:
+        - name: blob-storage
+          persistentVolumeClaim:
+            claimName: {{ include "sessionfs.fullname" . }}-blob-storage
+      {{- end }}
+      {{- if and (eq .Values.storage.type "gcs") .Values.storage.gcs.existingSecret }}
+      volumes:
+        - name: gcs-credentials
+          secret:
+            secretName: {{ .Values.storage.gcs.existingSecret }}
+      {{- end }}
+      {{- with .Values.api.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.api.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.api.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

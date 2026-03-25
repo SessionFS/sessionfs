@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useSession } from '../hooks/useSession';
 import { useAudit } from '../hooks/useAudit';
+import { useFolders, useAddBookmark } from '../hooks/useBookmarks';
 import { useAuth } from '../auth/AuthContext';
 import { abbreviateModel } from '../utils/models';
 import { formatTokens } from '../utils/tokens';
@@ -171,6 +172,8 @@ export default function SessionDetail() {
             </Section>
           )}
 
+          <BookmarksSection sessionId={session.id} />
+
           <Section title="Audit Status">
             {auditReport ? (
               <div className="space-y-2">
@@ -302,6 +305,65 @@ function Row({
         </span>
       )}
     </div>
+  );
+}
+
+function BookmarksSection({ sessionId }: { sessionId: string }) {
+  const { data: foldersData } = useFolders();
+  const addBookmark = useAddBookmark();
+  const [showAdd, setShowAdd] = useState(false);
+
+  const folders = foldersData?.folders ?? [];
+
+  // We check all folders' sessions to see if this session is bookmarked.
+  // For simplicity, we track locally after mutations; the real source of truth
+  // is the folder sessions endpoint, but we avoid N+1 queries here.
+  // The bookmark IDs are not available from the folder list, so we show
+  // folder names and let users add/remove via the add dropdown.
+
+  return (
+    <Section title="Bookmarks">
+      <div className="space-y-1">
+        {folders.length === 0 && (
+          <span className="text-sm text-text-muted">No folders created</span>
+        )}
+        {folders.length > 0 && !showAdd && (
+          <button
+            onClick={() => setShowAdd(true)}
+            className="text-sm text-accent hover:underline"
+          >
+            + Add to folder
+          </button>
+        )}
+        {showAdd && (
+          <div className="space-y-1">
+            {folders.map((f) => (
+              <button
+                key={f.id}
+                onClick={() => {
+                  addBookmark.mutate({ folderId: f.id, sessionId }, {
+                    onSettled: () => setShowAdd(false),
+                  });
+                }}
+                className="w-full text-left px-2 py-1 text-sm text-text-secondary hover:bg-bg-tertiary rounded flex items-center gap-2"
+              >
+                <span
+                  className="w-2 h-2 rounded-full shrink-0"
+                  style={{ backgroundColor: f.color || '#4f9cf7' }}
+                />
+                {f.name}
+              </button>
+            ))}
+            <button
+              onClick={() => setShowAdd(false)}
+              className="text-xs text-text-muted hover:text-text-secondary"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+      </div>
+    </Section>
   );
 }
 

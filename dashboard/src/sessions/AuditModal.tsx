@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
-import { useRunAudit } from '../hooks/useAudit';
 import { useJudgeSettings } from '../hooks/useJudgeSettings';
+import { useBackgroundTasks } from '../components/BackgroundTasks';
 
 const PROVIDERS = [
   { value: 'openrouter', label: 'OpenRouter' },
@@ -40,18 +40,21 @@ const PROVIDER_MODELS: Record<string, { value: string; label: string }[]> = {
 
 interface Props {
   sessionId: string;
+  sessionTitle?: string;
   messageCount: number;
   onClose: () => void;
   onComplete: () => void;
 }
 
-export default function AuditModal({ sessionId, messageCount, onClose, onComplete }: Props) {
+export default function AuditModal({ sessionId, sessionTitle, messageCount, onClose, onComplete }: Props) {
   const { data: savedSettings } = useJudgeSettings();
   const [provider, setProvider] = useState('anthropic');
-  const [model, setModel] = useState('claude-sonnet-4-20250514');
+  const [model, setModel] = useState('claude-sonnet-4-6');
   const [apiKey, setApiKey] = useState('');
   const [useSavedKey, setUseSavedKey] = useState(false);
-  const runAudit = useRunAudit();
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const { startAudit } = useBackgroundTasks();
 
   // Pre-fill from saved settings when they load
   useEffect(() => {
@@ -81,21 +84,23 @@ export default function AuditModal({ sessionId, messageCount, onClose, onComplet
     if (providerModels?.length) setModel(providerModels[0].value);
   }
 
-  const canSubmit = model && (hasSavedKey || apiKey);
+  const canSubmit = model && (hasSavedKey || apiKey) && !submitting;
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    runAudit.mutate(
-      {
-        sessionId,
-        model,
-        llmApiKey: useSavedKey && !apiKey ? '__saved__' : apiKey,
-        provider,
-      },
-      {
-        onSuccess: () => onComplete(),
-      },
-    );
+    setError(null);
+    setSubmitting(true);
+
+    const key = useSavedKey && !apiKey ? '' : apiKey;
+
+    // Launch as background task — closes modal immediately
+    try {
+      startAudit(sessionId, sessionTitle || sessionId.slice(0, 12), model, key, provider);
+      onComplete();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start audit');
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -193,10 +198,10 @@ export default function AuditModal({ sessionId, messageCount, onClose, onComplet
                 : 'Your API key is used for this request only and is never stored.'}
             </div>
 
-            {runAudit.isError && (
+            {!!error && (
               <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded px-3 py-2 mb-3">
-                {runAudit.error instanceof Error
-                  ? runAudit.error.message
+                {error
+                  ? error
                   : 'Audit failed. Check your API key and try again.'}
               </div>
             )}
@@ -206,17 +211,17 @@ export default function AuditModal({ sessionId, messageCount, onClose, onComplet
             <button
               type="button"
               onClick={onClose}
-              disabled={runAudit.isPending}
+              disabled={submitting}
               className="px-3 py-1.5 text-sm text-text-secondary border border-border rounded hover:bg-bg-tertiary transition-colors"
             >
               Cancel
             </button>
             <button
               type="submit"
-              disabled={!canSubmit || runAudit.isPending}
+              disabled={!canSubmit || submitting}
               className="px-3 py-1.5 text-sm bg-accent text-white rounded hover:bg-accent/90 transition-colors disabled:opacity-50"
             >
-              {runAudit.isPending ? 'Running...' : 'Run Audit'}
+              {submitting ? 'Running...' : 'Run Audit'}
             </button>
           </div>
         </form>

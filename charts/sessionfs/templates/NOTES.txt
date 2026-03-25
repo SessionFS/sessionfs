@@ -1,0 +1,56 @@
+SessionFS has been deployed successfully.
+
+{{- if .Values.ingress.enabled }}
+
+Access your deployment:
+{{- range .Values.ingress.hosts }}
+  {{- if $.Values.ingress.tls }}
+  API:       https://{{ .host }}{{ .paths.api }}
+  {{- if $.Values.mcp.enabled }}
+  MCP:       https://{{ .host }}{{ .paths.mcp }}
+  {{- end }}
+  {{- if $.Values.dashboard.enabled }}
+  Dashboard: https://{{ .host }}{{ .paths.dashboard }}
+  {{- end }}
+  {{- else }}
+  API:       http://{{ .host }}{{ .paths.api }}
+  {{- if $.Values.mcp.enabled }}
+  MCP:       http://{{ .host }}{{ .paths.mcp }}
+  {{- end }}
+  {{- if $.Values.dashboard.enabled }}
+  Dashboard: http://{{ .host }}{{ .paths.dashboard }}
+  {{- end }}
+  {{- end }}
+{{- end }}
+
+{{- else }}
+
+Access your deployment via port-forward:
+
+  # API Server
+  kubectl port-forward svc/{{ include "sessionfs.fullname" . }}-api {{ .Values.api.service.port }}:{{ .Values.api.service.port }}
+  curl http://localhost:{{ .Values.api.service.port }}/health
+
+{{- if .Values.mcp.enabled }}
+
+  # MCP Server
+  kubectl port-forward svc/{{ include "sessionfs.fullname" . }}-mcp {{ .Values.mcp.service.port }}:{{ .Values.mcp.service.port }}
+{{- end }}
+
+{{- if .Values.dashboard.enabled }}
+
+  # Dashboard
+  kubectl port-forward svc/{{ include "sessionfs.fullname" . }}-dashboard 8080:{{ .Values.dashboard.service.port }}
+  open http://localhost:8080
+{{- end }}
+
+{{- end }}
+
+{{- if .Values.migrations.enabled }}
+
+Database migrations will run automatically as a post-install/post-upgrade hook.
+Check migration status:
+  kubectl get jobs -l app.kubernetes.io/component=migration
+{{- end }}
+
+For more information, visit https://sessionfs.dev/docs/self-hosted
