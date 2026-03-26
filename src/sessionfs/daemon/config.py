@@ -113,6 +113,16 @@ class RooCodeWatcherConfig(BaseModel):
     storage_dir: Path = Field(default_factory=_default_roo_code_storage)
 
 
+class StoragePolicyConfig(BaseModel):
+    """Local storage retention policy."""
+
+    max_local_storage: str = "2GB"
+    local_retention_days: int = 90
+    synced_retention_days: int = 30
+    preserve_bookmarked: bool = True
+    preserve_aliased: bool = True
+
+
 class SyncConfig(BaseModel):
     """Cloud sync configuration."""
 
@@ -137,6 +147,7 @@ class DaemonConfig(BaseModel):
     cline: ClineWatcherConfig = Field(default_factory=ClineWatcherConfig)
     roo_code: RooCodeWatcherConfig = Field(default_factory=RooCodeWatcherConfig)
     amp: AmpWatcherConfig = Field(default_factory=AmpWatcherConfig)
+    storage: StoragePolicyConfig = Field(default_factory=StoragePolicyConfig)
     sync: SyncConfig = Field(default_factory=SyncConfig)
 
 
@@ -189,6 +200,13 @@ enabled = false
 [amp]
 enabled = false
 # data_dir = "~/.local/share/amp"
+
+[storage]
+max_local_storage = "2GB"                # Maximum local storage for .sfs sessions
+local_retention_days = 90                # Delete unsynced sessions older than this
+synced_retention_days = 30               # Delete synced sessions older than this
+preserve_bookmarked = true               # Never auto-prune bookmarked sessions
+preserve_aliased = true                  # Never auto-prune aliased sessions
 
 [sync]
 enabled = false                          # Must be explicitly enabled

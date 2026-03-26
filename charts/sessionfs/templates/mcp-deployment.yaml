@@ -23,9 +23,10 @@ spec:
     spec:
       {{- include "sessionfs.imagePullSecrets" . | nindent 6 }}
       serviceAccountName: {{ include "sessionfs.serviceAccountName" . }}
+      {{- with .Values.mcp.podSecurityContext }}
       securityContext:
-        runAsNonRoot: true
-        fsGroup: 1000
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: mcp
           image: {{ include "sessionfs.mcp.image" . }}
@@ -57,13 +58,10 @@ spec:
             failureThreshold: 3
           resources:
             {{- toYaml .Values.mcp.resources | nindent 12 }}
+          {{- with .Values.mcp.containerSecurityContext }}
           securityContext:
-            runAsNonRoot: true
-            readOnlyRootFilesystem: true
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop:
-                - ALL
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
       {{- with .Values.mcp.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

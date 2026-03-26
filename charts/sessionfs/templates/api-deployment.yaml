@@ -25,9 +25,10 @@ spec:
     spec:
       {{- include "sessionfs.imagePullSecrets" . | nindent 6 }}
       serviceAccountName: {{ include "sessionfs.serviceAccountName" . }}
+      {{- with .Values.api.podSecurityContext }}
       securityContext:
-        runAsNonRoot: true
-        fsGroup: 1000
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: api
           image: {{ include "sessionfs.api.image" . }}
@@ -66,12 +67,43 @@ spec:
                   name: {{ include "sessionfs.secretsName" . }}
                   key: encryption-key
             {{- end }}
-            {{- if or .Values.email.resendApiKey .Values.email.existingSecret }}
+            - name: SFS_EMAIL_PROVIDER
+              value: {{ .Values.email.provider | quote }}
+            - name: SFS_EMAIL_FROM
+              value: {{ .Values.email.fromAddress | quote }}
+            {{- if or .Values.email.resend.apiKey .Values.email.resend.existingSecret }}
             - name: SFS_RESEND_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.email.existingSecret | default (include "sessionfs.secretsName" .) }}
-                  key: {{ .Values.email.secretKey | default "resend-api-key" }}
+                  name: {{ .Values.email.resend.existingSecret | default (include "sessionfs.secretsName" .) }}
+                  key: {{ .Values.email.resend.secretKey | default "resend-api-key" }}
+            {{- end }}
+            {{- if .Values.email.smtp.host }}
+            - name: SFS_SMTP_HOST
+              value: {{ .Values.email.smtp.host | quote }}
+            - name: SFS_SMTP_PORT
+              value: {{ .Values.email.smtp.port | quote }}
+            - name: SFS_SMTP_TLS
+              value: {{ .Values.email.smtp.tls | quote }}
+            - name: SFS_SMTP_SSL
+              value: {{ .Values.email.smtp.ssl | quote }}
+            {{- if .Values.email.smtp.existingSecret }}
+            - name: SFS_SMTP_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.email.smtp.existingSecret }}
+                  key: {{ .Values.email.smtp.secretKeyUsername }}
+            - name: SFS_SMTP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.email.smtp.existingSecret }}
+                  key: {{ .Values.email.smtp.secretKeyPassword }}
+            {{- else if .Values.email.smtp.username }}
+            - name: SFS_SMTP_USERNAME
+              value: {{ .Values.email.smtp.username | quote }}
+            - name: SFS_SMTP_PASSWORD
+              value: {{ .Values.email.smtp.password | quote }}
+            {{- end }}
             {{- end }}
             {{- if eq .Values.storage.type "s3" }}
             - name: SFS_BLOB_STORE_TYPE
@@ -133,13 +165,10 @@ spec:
             failureThreshold: 3
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
+          {{- with .Values.api.containerSecurityContext }}
           securityContext:
-            runAsNonRoot: true
-            readOnlyRootFilesystem: true
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop:
-                - ALL
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           {{- if and (eq .Values.storage.type "local") .Values.storage.local.persistence.enabled }}
           volumeMounts:
             - name: blob-storage

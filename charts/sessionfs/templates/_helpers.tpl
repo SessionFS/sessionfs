@@ -117,18 +117,7 @@ Otherwise, use externalDatabase values.
 {{- if .Values.postgresql.enabled -}}
 postgresql+asyncpg://$(DATABASE_USER):$(DATABASE_PASSWORD)@{{ include "sessionfs.postgresql.fullname" . }}:5432/{{ .Values.postgresql.auth.database }}
 {{- else -}}
-postgresql+asyncpg://{{ .Values.externalDatabase.username }}:$(DATABASE_PASSWORD)@{{ .Values.externalDatabase.host }}:{{ .Values.externalDatabase.port }}/{{ .Values.externalDatabase.database }}?ssl={{ .Values.externalDatabase.sslMode }}
-{{- end -}}
-{{- end }}
-
-{{/*
-Alembic DATABASE_URL (uses psycopg2 sync driver for migrations).
-*/}}
-{{- define "sessionfs.migrationDatabaseUrl" -}}
-{{- if .Values.postgresql.enabled -}}
-postgresql://$(DATABASE_USER):$(DATABASE_PASSWORD)@{{ include "sessionfs.postgresql.fullname" . }}:5432/{{ .Values.postgresql.auth.database }}
-{{- else -}}
-postgresql://{{ .Values.externalDatabase.username }}:$(DATABASE_PASSWORD)@{{ .Values.externalDatabase.host }}:{{ .Values.externalDatabase.port }}/{{ .Values.externalDatabase.database }}?sslmode={{ .Values.externalDatabase.sslMode }}
+postgresql+asyncpg://{{ .Values.externalDatabase.username }}:$(DATABASE_PASSWORD)@{{ .Values.externalDatabase.host }}:{{ .Values.externalDatabase.port }}/{{ .Values.externalDatabase.database }}{{ if .Values.externalDatabase.sslMode }}?sslmode={{ .Values.externalDatabase.sslMode }}{{ end }}
 {{- end -}}
 {{- end }}
 

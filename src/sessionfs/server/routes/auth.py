@@ -77,30 +77,43 @@ async def signup(
 
     await db.commit()
 
-    # Generate verification JWT
-    verification_payload = {
-        "user_id": user_id,
-        "email": body.email,
-        "exp": datetime.now(timezone.utc) + timedelta(hours=24),
-    }
-    verification_token = jwt.encode(
-        verification_payload, SFS_VERIFICATION_SECRET, algorithm="HS256"
-    )
-    verification_link = (
-        f"https://api.sessionfs.dev/api/v1/auth/verify?token={verification_token}"
-    )
+    # Check if email verification is required
+    require_verification = os.environ.get(
+        "SFS_REQUIRE_EMAIL_VERIFICATION", "true"
+    ).lower() == "true"
 
-    # Send verification email if email service is available
-    email_service = getattr(request.app.state, "email_service", None)
-    if email_service is not None:
-        await email_service.send_verification(body.email, verification_link)
+    if require_verification:
+        # Generate verification JWT
+        verification_payload = {
+            "user_id": user_id,
+            "email": body.email,
+            "exp": datetime.now(timezone.utc) + timedelta(hours=24),
+        }
+        verification_token = jwt.encode(
+            verification_payload, SFS_VERIFICATION_SECRET, algorithm="HS256"
+        )
+        verification_link = (
+            f"https://api.sessionfs.dev/api/v1/auth/verify?token={verification_token}"
+        )
+
+        # Send verification email if email service is available
+        email_service = getattr(request.app.state, "email_service", None)
+        if email_service is not None:
+            await email_service.send_verification(body.email, verification_link)
+
+        message = "Account created. Verify your email to enable cloud sync."
+    else:
+        # Auto-verify in environments without email
+        user.email_verified = True
+        await db.commit()
+        message = "Account created and verified."
 
     return SignupResponse(
         user_id=user_id,
         email=body.email,
         raw_key=raw_key,
         key_id=key_id,
-        message="Account created. Verify your email to enable cloud sync.",
+        message=message,
     )
 
 

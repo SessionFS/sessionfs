@@ -32,6 +32,7 @@ class GeminiParsedSession:
     start_time: str | None = None
     last_updated: str | None = None
     summary: str | None = None
+    model_id: str | None = None
     messages: list[dict[str, Any]] = field(default_factory=list)
     message_count: int = 0
     turn_count: int = 0
@@ -184,6 +185,10 @@ def convert_gemini_to_sfs(
             "original_path": gemini_session.source_path,
             "interface": "cli",
         },
+        "model": {
+            "provider": "google",
+            "model_id": gemini_session.model_id,
+        },
         "stats": {
             "message_count": gemini_session.message_count,
             "turn_count": gemini_session.turn_count,
@@ -206,6 +211,29 @@ def convert_gemini_to_sfs(
         (session_dir / "workspace.json").write_text(json.dumps(workspace, indent=2))
 
     return session_dir
+
+
+def _extract_model_from_logs(project_dir: Path, session_id: str) -> str | None:
+    """Extract the model name from logs.json for a given session.
+
+    Gemini CLI logs the --model flag as the first user message (messageId 0)
+    in logs.json with the format: "—model <model-name>"
+    """
+    logs_path = project_dir / "logs.json"
+    if not logs_path.exists():
+        return None
+    try:
+        entries = json.loads(logs_path.read_text())
+        for entry in entries:
+            if entry.get("sessionId", "").startswith(session_id[:8]):
+                msg = entry.get("message", "")
+                # Match both em-dash (—) and double-dash (--)
+                for prefix in ("\u2014model ", "--model "):
+                    if msg.startswith(prefix):
+                        return msg[len(prefix):].strip()
+    except (json.JSONDecodeError, OSError):
+        pass
+    return None
 
 
 def discover_gemini_sessions(home_dir: Path) -> list[dict[str, Any]]:

@@ -20,7 +20,16 @@ class ServerConfig(BaseSettings):
     s3_endpoint_url: str | None = None
     gcs_bucket: str = ""
 
+    require_email_verification: bool = True
+    email_provider: str = "auto"  # "resend", "smtp", "none", or "auto"
+    email_from: str = "SessionFS <noreply@sessionfs.dev>"
     resend_api_key: str = ""
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_tls: bool = True
+    smtp_ssl: bool = False
     verification_secret: str = ""
     max_sync_bytes_free: int = 52_428_800  # 50 MB — free tier
     max_sync_bytes_paid: int = 314_572_800  # 300 MB — pro/team/enterprise/admin

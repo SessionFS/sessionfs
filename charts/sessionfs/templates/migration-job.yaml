@@ -22,9 +22,10 @@ spec:
       {{- include "sessionfs.imagePullSecrets" . | nindent 6 }}
       serviceAccountName: {{ include "sessionfs.serviceAccountName" . }}
       restartPolicy: OnFailure
+      {{- with .Values.migrations.podSecurityContext }}
       securityContext:
-        runAsNonRoot: true
-        fsGroup: 1000
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: migrate
           image: {{ include "sessionfs.api.image" . }}
@@ -32,15 +33,12 @@ spec:
           command: ["alembic", "upgrade", "head"]
           env:
             {{- include "sessionfs.databaseEnv" . | nindent 12 }}
-            - name: DATABASE_URL
-              value: {{ include "sessionfs.migrationDatabaseUrl" . | quote }}
+            - name: SFS_DATABASE_URL
+              value: {{ include "sessionfs.databaseUrl" . | quote }}
+          {{- with .Values.migrations.containerSecurityContext }}
           securityContext:
-            runAsNonRoot: true
-            readOnlyRootFilesystem: true
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop:
-                - ALL
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           resources:
             requests:
               cpu: 100m

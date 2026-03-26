@@ -189,6 +189,8 @@ class DaemonSyncer:
 class Daemon:
     """Main daemon controller."""
 
+    _PRUNE_INTERVAL = 3600  # Check every hour
+
     def __init__(self, config: DaemonConfig) -> None:
         self.config = config
         self.store = LocalStore(config.store_dir)
@@ -198,6 +200,8 @@ class Daemon:
         self._pid_path = config.store_dir / "sfsd.pid"
         self._syncer = DaemonSyncer(config, self.store)
         self._reload_requested = False
+        self._last_prune_check = 0.0
+        self._capture_paused = False
 
     def _setup_signals(self) -> None:
         """Register signal handlers for graceful shutdown and config reload."""
@@ -322,6 +326,70 @@ class Daemon:
         )
         write_status(status, self._status_path)
 
+    def _maybe_prune(self) -> None:
+        """Run pruning check if enough time has elapsed."""
+        now = time.monotonic()
+        if now - self._last_prune_check < self._PRUNE_INTERVAL:
+            return
+        self._last_prune_check = now
+
+        try:
+            from sessionfs.store.pruner import (
+                SessionPruner,
+                StorageConfig,
+                _human_bytes,
+                parse_size,
+            )
+
+            sc = StorageConfig()
+            storage_cfg = self.config.storage
+            sc.max_local_bytes = parse_size(storage_cfg.max_local_storage)
+            sc.local_retention_days = storage_cfg.local_retention_days
+            sc.synced_retention_days = storage_cfg.synced_retention_days
+            sc.preserve_bookmarked = storage_cfg.preserve_bookmarked
+            sc.preserve_aliased = storage_cfg.preserve_aliased
+
+            pruner = SessionPruner(self.store.sessions_dir, self.store.index.conn)
+            usage = pruner.calculate_usage()
+
+            # Disk space warnings
+            pct = (
+                usage.total_bytes / sc.max_local_bytes * 100
+                if sc.max_local_bytes > 0
+                else 0
+            )
+
+            if pct >= 95:
+                logger.error(
+                    "Local storage full (%s / %s). "
+                    "Session capture paused. Run 'sfs storage prune' to free space.",
+                    _human_bytes(usage.total_bytes),
+                    _human_bytes(sc.max_local_bytes),
+                )
+                self._capture_paused = True
+            elif pct >= 80:
+                logger.warning(
+                    "Local storage at %s / %s (%.0f%%). "
+                    "Run 'sfs storage prune' or increase limit.",
+                    _human_bytes(usage.total_bytes),
+                    _human_bytes(sc.max_local_bytes),
+                    pct,
+                )
+                self._capture_paused = False
+            else:
+                self._capture_paused = False
+
+            # Auto-prune synced sessions past retention
+            result = pruner.prune(sc, dry_run=False, force=False)
+            if result.pruned_count > 0:
+                logger.info(
+                    "Pruned %d sessions, freed %s",
+                    result.pruned_count,
+                    result.freed_bytes_human,
+                )
+        except Exception:
+            logger.exception("Prune check failed (non-critical)")
+
     def _collect_dirty_sessions(self) -> None:
         """Mark all sessions with local changes as needing sync."""
         if not self._syncer.is_enabled:
@@ -376,8 +444,15 @@ class Daemon:
                         self._reload_requested = False
                         self._reload_config()
 
-                    for watcher in self.watchers:
-                        watcher.process_events()
+                    # Prune check (hourly)
+                    self._maybe_prune()
+
+                    if not self._capture_paused:
+                        for watcher in self.watchers:
+                            watcher.process_events()
+                    else:
+                        # Still update status even when paused
+                        pass
 
                     # Sync any pending sessions
                     self._syncer.maybe_sync()

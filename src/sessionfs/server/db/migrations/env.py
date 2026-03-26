@@ -18,11 +18,12 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Override sqlalchemy.url from environment variable if set.
-# This lets `docker compose exec api alembic upgrade head` use the
-# SFS_DATABASE_URL from the container environment instead of the
-# hardcoded SQLite default in alembic.ini.
-env_url = os.environ.get("SFS_DATABASE_URL")
+# Support both SFS_DATABASE_URL (standard) and DATABASE_URL (legacy/Helm).
+env_url = os.environ.get("SFS_DATABASE_URL") or os.environ.get("DATABASE_URL")
 if env_url:
+    # Ensure async driver for Alembic async migrations
+    if env_url.startswith("postgresql://"):
+        env_url = env_url.replace("postgresql://", "postgresql+asyncpg://", 1)
     config.set_main_option("sqlalchemy.url", env_url)
 
 target_metadata = Base.metadata

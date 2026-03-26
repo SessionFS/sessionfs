@@ -21,16 +21,17 @@ spec:
     spec:
       {{- include "sessionfs.imagePullSecrets" . | nindent 6 }}
       serviceAccountName: {{ include "sessionfs.serviceAccountName" . }}
+      {{- with .Values.dashboard.podSecurityContext }}
       securityContext:
-        runAsNonRoot: false
-        fsGroup: 101
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: dashboard
           image: {{ include "sessionfs.dashboard.image" . }}
           imagePullPolicy: {{ .Values.dashboard.image.pullPolicy | default .Values.global.imagePullPolicy }}
           ports:
             - name: http
-              containerPort: 80
+              containerPort: 8080
               protocol: TCP
           livenessProbe:
             httpGet:
@@ -50,11 +51,10 @@ spec:
             failureThreshold: 3
           resources:
             {{- toYaml .Values.dashboard.resources | nindent 12 }}
+          {{- with .Values.dashboard.containerSecurityContext }}
           securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop:
-                - ALL
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
       {{- with .Values.dashboard.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
