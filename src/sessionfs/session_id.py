@@ -1,6 +1,6 @@
 """Session ID generation and validation.
 
-All .sfs session IDs use the format: ses_ + 16 alphanumeric characters.
+All .sfs session IDs use the format: ses_ + 8-40 hex characters.
 This module provides the canonical way to generate and validate them.
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 import uuid as uuid_mod
 
-SESSION_ID_RE = re.compile(r"^ses_[a-zA-Z0-9]{12,20}$")
+SESSION_ID_RE = re.compile(r"^ses_[a-z0-9]{8,40}$")
 
 
 def generate_session_id() -> str:

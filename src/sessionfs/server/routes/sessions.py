@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import secrets
@@ -41,6 +42,8 @@ from sessionfs.server.schemas.sessions import (
 )
 from sessionfs.server.storage.base import BlobStore
 
+logger = logging.getLogger("sessionfs.api")
+
 router = APIRouter(prefix="/api/v1/sessions", tags=["sessions"])
 
 SFS_MAX_SYNC_BYTES_FREE = int(os.environ.get("SFS_MAX_SYNC_BYTES_FREE", str(50 * 1024 * 1024)))
@@ -58,13 +61,18 @@ def _sync_limit_human(limit: int) -> str:
 
 # --- Validation helpers ---
 
-_SESSION_ID_RE = re.compile(r"^ses_[a-zA-Z0-9]{12,20}$")
+_SESSION_ID_RE = re.compile(r"^ses_[a-z0-9]{8,40}$")
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100 MB
 
 
 def _validate_session_id(session_id: str) -> str:
     """Validate and return session ID, or raise 400."""
     if not _SESSION_ID_RE.match(session_id):
+        logger.warning(
+            "Rejected invalid session ID: %r (length=%d)",
+            session_id[:50],
+            len(session_id),
+        )
         raise HTTPException(status_code=400, detail="Invalid session ID format")
     return session_id
 

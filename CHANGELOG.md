@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] - 2026-03-26
+
+### Fixed
+- Session ID validation now accepts 8-40 character IDs (was 12-20) — fixes sync rejection for short-form IDs like `ses_ae7652a4`
+- Rate limiter now respects `SFS_RATE_LIMIT_PER_MINUTE` environment variable — was hardcoded to 100, now reads config (default 120, set to 0 to disable)
+- Removed `?sslmode=require` from Helm database URL template — asyncpg handles SSL internally
+- MCP service port corrected from 3001 to 8080 in Helm chart — fixes pod crash-loops from failed health probes
+- Dashboard no longer hardcodes `api.sessionfs.dev` — uses `VITE_API_URL` env var, falls back to `window.location.origin`
+- Dashboard health endpoint returns JSON `{"status":"ok"}` instead of plain text
+- S3 bucket names containing `/` (e.g. `my-bucket/prefix`) are split gracefully into bucket + prefix
+
+### Added
+- Request logging middleware — all 4xx responses logged at WARNING level with method, path, status, and client IP
+- Structured logging for session ID validation failures
+- Rate limit rejection logging with client IP and configured limit
+- `SFS_S3_PREFIX` environment variable for S3 key prefixes
+- `storage.s3.prefix` in Helm values.yaml
+- Dashboard nginx ConfigMap in Helm chart — proxies `/api/` to API service for self-hosted deployments
+- GHCR dashboard image now built with `VITE_API_URL=https://api.sessionfs.dev`
+- `docs/troubleshooting.md` — error responses, session ID format, sync debugging, Kubernetes issues
+- IRSA IAM policy example in `docs/self-hosted.md`
+- Rate limit configuration docs in `docs/self-hosted.md`
+
+### Changed
+- Default rate limit increased from 100 to 120 requests per minute per API key
+- Session ID regex changed from `[a-zA-Z0-9]{12,20}` to `[a-z0-9]{8,40}` (lowercase only, wider range)
+- `externalDatabase.sslMode` removed from Helm values.yaml (was causing asyncpg errors)
+
 ## [0.8.0] - 2026-03-26
 
 ### Added

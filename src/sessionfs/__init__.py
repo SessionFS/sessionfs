@@ -5,4 +5,4 @@ from importlib.metadata import version, PackageNotFoundError
 try:
     __version__ = version("sessionfs")
 except PackageNotFoundError:
-    __version__ = "0.8.0"  # fallback for development
+    __version__ = "0.8.1"  # fallback for development

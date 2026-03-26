@@ -18,6 +18,7 @@ class ServerConfig(BaseSettings):
     s3_bucket: str = ""
     s3_region: str = "us-east-1"
     s3_endpoint_url: str | None = None
+    s3_prefix: str = ""
     gcs_bucket: str = ""
 
     require_email_verification: bool = True
@@ -40,5 +41,5 @@ class ServerConfig(BaseSettings):
 
     cors_origins: list[str] = []
     log_level: str = "INFO"
-    rate_limit_per_minute: int = 100
+    rate_limit_per_minute: int = 120
     dashboard_dir: str = "./static"

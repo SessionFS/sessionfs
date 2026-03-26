@@ -2,8 +2,8 @@ apiVersion: v2
 name: sessionfs
 description: Capture, sync, and resume AI coding sessions across 8 tools
 type: application
-version: 0.8.0
-appVersion: "0.8.0"
+version: 0.8.1
+appVersion: "0.8.1"
 keywords:
   - ai
   - sessions

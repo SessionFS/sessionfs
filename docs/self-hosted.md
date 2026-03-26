@@ -133,11 +133,46 @@ storage:
 storage:
   type: s3
   s3:
-    bucket: my-sessionfs-bucket
+    bucket: my-sessionfs-bucket     # Bucket name only — no slashes
     region: us-east-1
+    prefix: ""                       # Optional key prefix (e.g. "sessionfs/")
 ```
 
-If your nodes use IAM roles for service accounts (IRSA), no additional credentials are needed. Otherwise, create a secret:
+**Using IRSA (IAM Roles for Service Accounts):**
+
+If your EKS nodes use IRSA, no additional credentials are needed. Attach this IAM policy to the service account role:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::my-sessionfs-bucket",
+        "arn:aws:s3:::my-sessionfs-bucket/*"
+      ]
+    }
+  ]
+}
+```
+
+Annotate the service account in your Helm values:
+
+```yaml
+serviceAccount:
+  create: true
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/sessionfs-s3-role
+```
+
+**Using static credentials:**
 
 ```bash
 kubectl create secret generic aws-creds \
@@ -204,9 +239,10 @@ externalDatabase:
   port: 5432
   username: sessionfs
   database: sessionfs
-  sslMode: require
   existingSecret: sessionfs-db
 ```
+
+**Important:** Do NOT add `sslMode` or `?sslmode=require` to the connection URL. SessionFS handles SSL negotiation automatically via asyncpg. For RDS and Cloud SQL, SSL is negotiated transparently for non-localhost connections.
 
 ## TLS / HTTPS
 
@@ -397,6 +433,28 @@ kubectl logs job/sessionfs-migrate-<revision> -n sessionfs
 
 The API will fail to start if tables don't exist. Ensure migrations complete first. The Helm hook handles ordering automatically.
 
+## Rate Limiting
+
+Rate limiting is per API key, defaulting to 120 requests per minute.
+
+```yaml
+api:
+  rateLimitPerMinute: 120    # Requests per minute per API key
+  # Set to 0 to disable rate limiting (recommended for internal deployments)
+```
+
+Or via environment variable:
+
+```yaml
+api:
+  env:
+    SFS_RATE_LIMIT_PER_MINUTE: "0"   # Disable for internal deployments
+```
+
 ## Environment Variables
 
 See [Environment Variables Reference](environment-variables.md) for the complete list of `SFS_*` configuration options.
+
+## Further Troubleshooting
+
+See [Troubleshooting Guide](troubleshooting.md) for common errors, sync debugging, and Kubernetes-specific issues.

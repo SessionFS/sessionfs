@@ -44,7 +44,7 @@ api:
         - ALL
   logLevel: "INFO"
   corsOrigins: ""
-  rateLimitPerMinute: 100
+  rateLimitPerMinute: 120  # Requests per minute per API key. Set to 0 to disable.
 
 ## MCP Server
 mcp:
@@ -63,7 +63,7 @@ mcp:
     pullPolicy: ""
   service:
     type: ClusterIP
-    port: 3001
+    port: 8080
   resources:
     requests:
       cpu: 50m
@@ -148,7 +148,8 @@ externalDatabase:
   username: sessionfs
   password: ""
   database: sessionfs
-  sslMode: require
+  # NOTE: sslMode removed — asyncpg negotiates SSL automatically for RDS/Cloud SQL.
+  # Do NOT add ?sslmode=require to the URL. See docs/self-hosted.md for details.
   existingSecret: ""
   secretKey: database-url
 
@@ -162,8 +163,9 @@ storage:
       size: 10Gi
       storageClass: ""
   s3:
-    bucket: ""
+    bucket: ""              # Bucket name only — no slashes
     region: us-east-1
+    prefix: ""              # Optional key prefix (e.g. "sessionfs/")
     endpointUrl: ""
     existingSecret: ""
     secretKeys:

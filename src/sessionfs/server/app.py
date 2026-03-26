@@ -12,6 +12,7 @@ from sessionfs import __version__
 from sessionfs.server.config import ServerConfig
 from sessionfs.server.db.engine import close_engine, init_engine
 from sessionfs.server.errors import register_exception_handlers
+from sessionfs.server.middleware import RequestLoggingMiddleware
 from sessionfs.server.routes import admin, audit, auth, bookmarks, handoffs, health, sessions, settings, webhooks
 from sessionfs.server.storage.local import LocalBlobStore
 
@@ -33,6 +34,7 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
                 bucket=config.s3_bucket,
                 region=config.s3_region,
                 endpoint_url=config.s3_endpoint_url,
+                prefix=config.s3_prefix,
             )
         elif config.blob_store_type == "gcs":
             from sessionfs.server.storage.gcs import GCSBlobStore
@@ -70,6 +72,9 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
             allow_headers=["Content-Type", "Authorization"],
             max_age=3600,
         )
+
+    # Request logging (4xx responses)
+    app.add_middleware(RequestLoggingMiddleware)
 
     # Exception handlers
     register_exception_handlers(app)

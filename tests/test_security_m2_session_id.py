@@ -13,14 +13,15 @@ from sessionfs.server.routes.sessions import _validate_session_id
 
 class TestSessionIdValidation:
 
-    def test_valid_session_id(self):
-        assert _validate_session_id("ses_abc123def456ab") == "ses_abc123def456ab"
+    def test_valid_session_id_8_chars(self):
+        assert _validate_session_id("ses_ae7652a4") == "ses_ae7652a4"
 
-    def test_valid_session_id_20_chars(self):
-        assert _validate_session_id("ses_12345678901234567890") == "ses_12345678901234567890"
+    def test_valid_session_id_16_chars(self):
+        assert _validate_session_id("ses_346b4d7288214b0f") == "ses_346b4d7288214b0f"
 
-    def test_valid_session_id_12_chars(self):
-        assert _validate_session_id("ses_abcdef123456") == "ses_abcdef123456"
+    def test_valid_session_id_40_chars(self):
+        long_id = "ses_a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+        assert _validate_session_id(long_id) == long_id
 
     def test_missing_prefix(self):
         with pytest.raises(HTTPException) as exc_info:
@@ -49,7 +50,7 @@ class TestSessionIdValidation:
 
     def test_too_long(self):
         with pytest.raises(HTTPException) as exc_info:
-            _validate_session_id("ses_" + "a" * 30)
+            _validate_session_id("ses_" + "a" * 41)
         assert exc_info.value.status_code == 400
 
     def test_null_bytes(self):
@@ -65,4 +66,9 @@ class TestSessionIdValidation:
     def test_special_chars(self):
         with pytest.raises(HTTPException) as exc_info:
             _validate_session_id("ses_abc!@#$%^&*()")
+        assert exc_info.value.status_code == 400
+
+    def test_uppercase_rejected(self):
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_session_id("ses_AE7652A4BCDE")
         assert exc_info.value.status_code == 400

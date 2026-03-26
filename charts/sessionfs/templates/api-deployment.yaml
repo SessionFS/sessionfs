@@ -112,6 +112,10 @@ spec:
               value: {{ .Values.storage.s3.bucket | quote }}
             - name: SFS_S3_REGION
               value: {{ .Values.storage.s3.region | quote }}
+            {{- if .Values.storage.s3.prefix }}
+            - name: SFS_S3_PREFIX
+              value: {{ .Values.storage.s3.prefix | quote }}
+            {{- end }}
             {{- if .Values.storage.s3.endpointUrl }}
             - name: SFS_S3_ENDPOINT_URL
               value: {{ .Values.storage.s3.endpointUrl | quote }}

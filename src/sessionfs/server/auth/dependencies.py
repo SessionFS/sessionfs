@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import os
 from datetime import datetime, timezone
 
 from fastapi import Depends, HTTPException, Request
@@ -13,21 +15,32 @@ from sessionfs.server.auth.rate_limit import SlidingWindowRateLimiter
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import ApiKey, User
 
+logger = logging.getLogger("sessionfs.api")
+
 _rate_limiter: SlidingWindowRateLimiter | None = None
+_rate_limit_disabled: bool | None = None
+
+
+def _get_rate_limit_per_minute() -> int:
+    """Read rate limit from env, defaulting to 120."""
+    return int(os.environ.get("SFS_RATE_LIMIT_PER_MINUTE", "120"))
 
 
 def get_rate_limiter() -> SlidingWindowRateLimiter:
     """Return the global rate limiter instance."""
-    global _rate_limiter
+    global _rate_limiter, _rate_limit_disabled
     if _rate_limiter is None:
-        _rate_limiter = SlidingWindowRateLimiter(max_requests=100)
+        limit = _get_rate_limit_per_minute()
+        _rate_limit_disabled = limit == 0
+        _rate_limiter = SlidingWindowRateLimiter(max_requests=max(limit, 1))
     return _rate_limiter
 
 
 def set_rate_limiter(limiter: SlidingWindowRateLimiter) -> None:
     """Override the rate limiter (for testing)."""
-    global _rate_limiter
+    global _rate_limiter, _rate_limit_disabled
     _rate_limiter = limiter
+    _rate_limit_disabled = False
 
 
 async def get_current_user(
@@ -43,8 +56,14 @@ async def get_current_user(
     raw_key = auth_header[7:]
     key_hash = hash_api_key(raw_key)
 
-    # Rate limit by key hash
-    if not limiter.is_allowed(key_hash):
+    # Rate limit by key hash (skip if disabled via SFS_RATE_LIMIT_PER_MINUTE=0)
+    if not _rate_limit_disabled and not limiter.is_allowed(key_hash):
+        client_ip = request.client.host if request.client else "unknown"
+        logger.warning(
+            "Rate limited: client=%s limit=%d/min",
+            client_ip,
+            limiter.max_requests,
+        )
         raise HTTPException(status_code=429, detail="Rate limit exceeded")
 
     # Look up key

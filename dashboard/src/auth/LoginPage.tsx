@@ -8,9 +8,10 @@ export default function LoginPage() {
   const navigate = useNavigate();
   const [mode, setMode] = useState<'login' | 'signup'>('login');
   const [baseUrl, setBaseUrl] = useState(
-    window.location.hostname === 'localhost'
+    import.meta.env.VITE_API_URL ||
+    (window.location.hostname === 'localhost'
       ? 'http://localhost:8000'
-      : 'https://api.sessionfs.dev',
+      : `${window.location.origin}`),
   );
   const [apiKey, setApiKey] = useState('');
   const [email, setEmail] = useState('');

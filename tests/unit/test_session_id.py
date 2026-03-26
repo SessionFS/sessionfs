@@ -41,9 +41,9 @@ def test_session_id_from_native_no_dashes():
 
 
 def test_validate_session_id_valid():
-    assert validate_session_id("ses_abc123def456gh") is True
-    assert validate_session_id("ses_abcdefghijkl") is True  # 12 chars
-    assert validate_session_id("ses_abcdefghijklmnopqrst") is True  # 20 chars
+    assert validate_session_id("ses_abc123de") is True  # 8 chars (short form)
+    assert validate_session_id("ses_abcdef1234567890") is True  # 16 chars
+    assert validate_session_id("ses_a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2") is True  # 40 chars
 
 
 def test_validate_session_id_invalid():
@@ -51,4 +51,7 @@ def test_validate_session_id_invalid():
     assert validate_session_id("abc") is False
     assert validate_session_id("") is False
     assert validate_session_id("ses_") is False  # too short after prefix
-    assert validate_session_id("ses_ab") is False  # less than 12
+    assert validate_session_id("ses_ab12345") is False  # 7 chars — too short
+    assert validate_session_id("ses_" + "a" * 41) is False  # 41 chars — too long
+    assert validate_session_id("ses_ABCD1234") is False  # uppercase not allowed
+    assert validate_session_id("ses_abc!1234") is False  # special chars not allowed

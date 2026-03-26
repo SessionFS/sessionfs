@@ -44,8 +44,9 @@ All SessionFS server environment variables use the `SFS_` prefix.
 |----------|-------------|---------|
 | `SFS_BLOB_STORE_TYPE` | Storage backend: `local`, `s3`, or `gcs` | `local` |
 | `SFS_BLOB_STORE_LOCAL_PATH` | Path for local blob storage | `./data/blobs` |
-| `SFS_S3_BUCKET` | S3 bucket name | — |
+| `SFS_S3_BUCKET` | S3 bucket name (no slashes — use `SFS_S3_PREFIX` for key prefixes) | — |
 | `SFS_S3_REGION` | AWS region | `us-east-1` |
+| `SFS_S3_PREFIX` | Optional key prefix for all S3 objects (e.g. `sessionfs/`) | — |
 | `SFS_S3_ENDPOINT_URL` | Custom S3 endpoint (for MinIO) | — |
 | `SFS_GCS_BUCKET` | GCS bucket name | — |
 
@@ -57,7 +58,7 @@ All SessionFS server environment variables use the `SFS_` prefix.
 | `SFS_PORT` | Listen port | `8000` |
 | `SFS_LOG_LEVEL` | Log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` | `INFO` |
 | `SFS_CORS_ORIGINS` | Allowed CORS origins (comma-separated) | — |
-| `SFS_RATE_LIMIT_PER_MINUTE` | API rate limit per minute | `100` |
+| `SFS_RATE_LIMIT_PER_MINUTE` | API rate limit per API key per minute. Set to `0` to disable | `120` |
 | `SFS_DASHBOARD_DIR` | Path to dashboard static files | `./static` |
 
 ## Sync Limits
