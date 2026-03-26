@@ -20,19 +20,28 @@ def _prepare_url(database_url: str) -> tuple[str, dict]:
         connect_args["check_same_thread"] = False
         return database_url, connect_args
 
-    # Parse and extract SSL params for asyncpg
-    parsed = urlparse(database_url)
-    params = parse_qs(parsed.query)
-
+    # Only attempt SSL param extraction if URL has a query string with sslmode/ssl
+    # Use string manipulation to avoid urlparse failures on complex URLs
+    # (e.g. Cloud SQL socket paths, passwords with special chars)
     ssl_mode = None
-    for key in ("sslmode", "ssl"):
-        vals = params.pop(key, None)
-        if vals:
-            ssl_mode = vals[0]
+    clean_url = database_url
 
-    # Rebuild URL without SSL params
-    clean_query = urlencode({k: v[0] for k, v in params.items()})
-    clean_url = urlunparse(parsed._replace(query=clean_query))
+    if "?" in database_url and ("sslmode=" in database_url or "ssl=" in database_url):
+        try:
+            parsed = urlparse(database_url)
+            params = parse_qs(parsed.query)
+
+            for key in ("sslmode", "ssl"):
+                vals = params.pop(key, None)
+                if vals:
+                    ssl_mode = vals[0]
+
+            clean_query = urlencode({k: v[0] for k, v in params.items()})
+            clean_url = urlunparse(parsed._replace(query=clean_query))
+        except (ValueError, TypeError):
+            # urlparse can fail on some URL formats (IPv6, special chars)
+            # Fall through with original URL — let SQLAlchemy handle it
+            pass
 
     # Configure SSL via connect_args for asyncpg
     if ssl_mode in ("require", "prefer"):
