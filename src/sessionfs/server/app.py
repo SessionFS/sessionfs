@@ -43,12 +43,11 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
             root.mkdir(parents=True, exist_ok=True)
             app.state.blob_store = LocalBlobStore(root)
 
-        if config.resend_api_key:
-            from sessionfs.server.email import EmailService
+        from sessionfs.server.email import NullProvider, create_email_provider
 
-            app.state.email_service = EmailService(api_key=config.resend_api_key)
-        else:
-            app.state.email_service = None
+        provider = create_email_provider(config)
+        # Only set email_service if a real provider is configured
+        app.state.email_service = None if isinstance(provider, NullProvider) else provider
 
         yield
 

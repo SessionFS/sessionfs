@@ -14,7 +14,7 @@ import typer
 from rich.table import Table
 
 from sessionfs.cli.common import console, err_console, get_store_dir
-from sessionfs.cli.cmd_daemon import _read_pid, _is_running, _pid_path, _log_path
+from sessionfs.cli.cmd_daemon import _read_pid, _is_running
 
 watcher_app = typer.Typer(name="watcher", help="Manage tool watchers.", no_args_is_help=True)
 
@@ -137,37 +137,13 @@ def list_watchers() -> None:
 
 def _restart_daemon() -> None:
     """Restart the daemon if it's running."""
-    import os
-    import signal
-    import subprocess
-    import time
-
     pid = _read_pid()
     if pid is None or not _is_running(pid):
         console.print("[dim]Daemon not running — start it with: sfs daemon start[/dim]")
         return
 
-    # Stop
-    os.kill(pid, signal.SIGTERM)
-    _pid_path().unlink(missing_ok=True)
-
-    # Wait for process to exit
-    for _ in range(20):
-        if not _is_running(pid):
-            break
-        time.sleep(0.25)
-
-    # Start
-    cmd = [sys.executable, "-m", "sessionfs.daemon.main"]
-    log_file = open(_log_path(), "a")
-    proc = subprocess.Popen(
-        cmd,
-        stdout=log_file,
-        stderr=log_file,
-        start_new_session=True,
-    )
-    _pid_path().write_text(str(proc.pid))
-    console.print(f"[green]Daemon restarted (PID {proc.pid}).[/green]")
+    from sessionfs.cli.cmd_daemon import restart
+    restart()
 
 
 @watcher_app.command("enable")

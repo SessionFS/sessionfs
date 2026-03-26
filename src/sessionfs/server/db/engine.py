@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ssl as ssl_mod
 from collections.abc import AsyncGenerator
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
@@ -10,15 +12,48 @@ _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
 
 
+def _prepare_url(database_url: str) -> tuple[str, dict]:
+    """Strip SSL params that asyncpg doesn't understand and return clean URL + connect_args."""
+    connect_args: dict = {}
+
+    if database_url.startswith("sqlite"):
+        connect_args["check_same_thread"] = False
+        return database_url, connect_args
+
+    # Parse and extract SSL params for asyncpg
+    parsed = urlparse(database_url)
+    params = parse_qs(parsed.query)
+
+    ssl_mode = None
+    for key in ("sslmode", "ssl"):
+        vals = params.pop(key, None)
+        if vals:
+            ssl_mode = vals[0]
+
+    # Rebuild URL without SSL params
+    clean_query = urlencode({k: v[0] for k, v in params.items()})
+    clean_url = urlunparse(parsed._replace(query=clean_query))
+
+    # Configure SSL via connect_args for asyncpg
+    if ssl_mode in ("require", "prefer"):
+        ctx = ssl_mod.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl_mod.CERT_NONE
+        connect_args["ssl"] = ctx
+    elif ssl_mode in ("verify-ca", "verify-full"):
+        ctx = ssl_mod.create_default_context()
+        connect_args["ssl"] = ctx
+
+    return clean_url, connect_args
+
+
 def init_engine(database_url: str, echo: bool = False) -> AsyncEngine:
     """Create the async engine and session factory."""
     global _engine, _session_factory
 
-    connect_args = {}
-    if database_url.startswith("sqlite"):
-        connect_args["check_same_thread"] = False
+    clean_url, connect_args = _prepare_url(database_url)
 
-    _engine = create_async_engine(database_url, echo=echo, connect_args=connect_args)
+    _engine = create_async_engine(clean_url, echo=echo, connect_args=connect_args)
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
     return _engine
 

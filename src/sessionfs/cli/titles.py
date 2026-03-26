@@ -62,6 +62,14 @@ _MODEL_ABBREVIATIONS: dict[str, str] = {
     "o1-preview": "o1-preview",
     "o1-mini": "o1-mini",
     "o3-mini": "o3-mini",
+    "gemini-3.1-pro-preview": "gem-3.1p",
+    "gemini-3-pro-preview": "gem-3p",
+    "gemini-3-flash-preview": "gem-3f",
+    "gemini-2.5-pro": "gem-2.5p",
+    "gemini-2.5-flash": "gem-2.5f",
+    "gemini-2.0-flash": "gem-2.0f",
+    "gemini-1.5-pro": "gem-1.5p",
+    "gemini-1.5-flash": "gem-1.5f",
 }
 
 

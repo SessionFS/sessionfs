@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-03-26
+
+### Added
+- **`sfs storage`** — shows local disk usage with progress bar, session counts, retention policy
+- **`sfs storage prune`** — prune old sessions with `--dry-run` and `--force` flags
+- **`sfs daemon restart`** — restart daemon in one command
+- **Multi-provider email** — SMTP support alongside Resend, with auto-detection and null provider for air-gapped deployments
+- **`SFS_REQUIRE_EMAIL_VERIFICATION`** — disable email verification for internal deployments
+- **Gemini model extraction** — reads model name from `logs.json` per session (no more blank Model column)
+- **Environment variables reference** — `docs/environment-variables.md` with all `SFS_*` vars
+- Gemini 3.1 Pro, 3 Pro, 3 Flash model abbreviations in CLI
+
+### Changed
+- Daemon auto-prunes synced sessions hourly based on retention policy (90-day default, 30-day for synced)
+- Daemon warns at 80% storage, pauses capture at 95%
+- Default local storage cap: 2 GB
+- Helm chart security contexts now configurable via values.yaml (no more hardcoded `runAsNonRoot: true`)
+- Dashboard nginx runs as non-root on port 8080 (fixes permission errors on EKS)
+- Migration job uses `SFS_DATABASE_URL` (was `DATABASE_URL`) and async driver
+- Email section in Helm values.yaml supports Resend, SMTP, existing secrets, and provider selection
+- `sfs watcher enable/disable` reuses `sfs daemon restart` instead of duplicating logic
+
+### Fixed
+- Migration job falling back to SQLite due to env var mismatch (`DATABASE_URL` vs `SFS_DATABASE_URL`)
+- asyncpg crash on `?sslmode=require` in database URL — SSL params now handled internally
+- Dashboard nginx `chown` permission errors on EKS (`/var/cache/nginx/client_temp`)
+- Helm migration URL using sync `postgresql://` driver instead of `postgresql+asyncpg://`
+- Gemini sessions showing blank model name in `sfs list`
+
 ## [0.7.1] - 2026-03-25
 
 ### Fixed

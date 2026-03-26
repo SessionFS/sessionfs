@@ -35,6 +35,13 @@ api:
   tolerations: []
   affinity: {}
   env: {}
+  podSecurityContext:
+    runAsNonRoot: false
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
   logLevel: "INFO"
   corsOrigins: ""
   rateLimitPerMinute: 100
@@ -43,6 +50,13 @@ api:
 mcp:
   enabled: true
   replicaCount: 1
+  podSecurityContext:
+    runAsNonRoot: false
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
   image:
     repository: sessionfs-mcp
     tag: ""
@@ -71,6 +85,13 @@ mcp:
 dashboard:
   enabled: true
   replicaCount: 1
+  podSecurityContext:
+    runAsNonRoot: false
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
   image:
     repository: sessionfs-dashboard
     tag: ""
@@ -166,11 +187,25 @@ ingress:
         dashboard: /
   tls: []
 
-## Email (Resend)
+## Email
 email:
-  resendApiKey: ""
-  existingSecret: ""
-  secretKey: resend-api-key
+  # Provider: "resend", "smtp", "none", or "auto" (default)
+  provider: "auto"
+  fromAddress: "noreply@sessionfs.example.com"
+  resend:
+    apiKey: ""
+    existingSecret: ""
+    secretKey: resend-api-key
+  smtp:
+    host: ""
+    port: 587
+    username: ""
+    password: ""
+    existingSecret: ""
+    secretKeyUsername: username
+    secretKeyPassword: password
+    tls: true
+    ssl: false
 
 ## Security
 security:
@@ -192,6 +227,13 @@ migrations:
     repository: sessionfs-api
     tag: ""
   backoffLimit: 3
+  podSecurityContext:
+    runAsNonRoot: false
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
 
 ## Monitoring
 monitoring:

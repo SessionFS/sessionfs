@@ -127,8 +127,16 @@ class GeminiWatcher:
                 convert_gemini_to_sfs,
             )
 
+            from sessionfs.converters.gemini_to_sfs import _extract_model_from_logs
+
             gemini_session = parse_gemini_session(native_path)
             gemini_session.project_path = project_path
+
+            # Extract model from logs.json (parent of chats/)
+            project_dir = native_path.parent.parent
+            model_id = _extract_model_from_logs(project_dir, native_id)
+            if model_id:
+                gemini_session.model_id = model_id
 
             sfs_id = session_id_from_native(native_id)
             session_dir = self._store.allocate_session_dir(sfs_id)

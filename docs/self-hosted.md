@@ -289,3 +289,114 @@ helm test sessionfs --namespace sessionfs
 **Database connection errors:** Verify the database URL and credentials. For external databases, ensure network connectivity (security groups, VPC peering).
 
 **Ingress not working:** Confirm your ingress controller is installed and the ingress class name matches.
+
+**Security context errors (runAsNonRoot):** SessionFS images currently run as root. Set security contexts in values.yaml:
+
+```yaml
+api:
+  podSecurityContext:
+    runAsNonRoot: false
+```
+
+**asyncpg SSL errors:** Do not add `?sslmode=require` to the database URL — SessionFS handles SSL parameter translation internally. For RDS/Cloud SQL, asyncpg negotiates SSL automatically for non-localhost connections.
+
+## API Documentation
+
+After deployment, the API is documented via OpenAPI:
+
+- **Swagger UI:** `https://your-domain/api/docs`
+- **ReDoc:** `https://your-domain/api/redoc`
+- **OpenAPI JSON:** `https://your-domain/api/openapi.json`
+
+Key endpoints:
+
+| Endpoint | Description |
+|----------|-------------|
+| `POST /api/v1/auth/signup` | Create account |
+| `POST /api/v1/auth/login` | Get token |
+| `GET /api/v1/auth/me` | Current user profile |
+| `GET /api/v1/sessions` | List sessions |
+| `POST /api/v1/sessions/{id}/audit` | Run LLM Judge |
+| `GET /health` | Health check |
+
+## Email Configuration
+
+SessionFS supports three email providers: Resend (SaaS), SMTP (enterprise), or none (air-gapped).
+
+### Resend (default for cloud)
+
+```bash
+helm install sessionfs sessionfs/sessionfs \
+  --set email.provider=resend \
+  --set email.resend.apiKey=$RESEND_KEY
+```
+
+### SMTP (enterprise / internal)
+
+```bash
+helm install sessionfs sessionfs/sessionfs \
+  --set email.provider=smtp \
+  --set email.smtp.host=smtp.company.internal \
+  --set email.smtp.port=587 \
+  --set email.smtp.username=sessionfs \
+  --set email.smtp.password=$SMTP_PASS \
+  --set email.fromAddress=sessionfs@company.com
+```
+
+For implicit SSL (port 465):
+
+```bash
+  --set email.smtp.port=465 \
+  --set email.smtp.ssl=true \
+  --set email.smtp.tls=false
+```
+
+### No email (air-gapped)
+
+```bash
+helm install sessionfs sessionfs/sessionfs \
+  --set email.provider=none \
+  --set api.env.SFS_REQUIRE_EMAIL_VERIFICATION=false
+```
+
+Users will be auto-verified on signup. Email notifications (handoff, retention) will be logged but not sent.
+
+### SMTP with Kubernetes Secrets
+
+```bash
+kubectl create secret generic smtp-creds \
+  --namespace sessionfs \
+  --from-literal=username=sessionfs \
+  --from-literal=password=$SMTP_PASS
+
+helm install sessionfs sessionfs/sessionfs \
+  --set email.provider=smtp \
+  --set email.smtp.host=smtp.company.internal \
+  --set email.smtp.existingSecret=smtp-creds
+```
+
+## Database Migrations
+
+### Automatic (Helm)
+
+Migrations run automatically on `helm install` and `helm upgrade` via a post-install/post-upgrade hook. The migration job runs before the API pods start (hook weight `-5`).
+
+### Manual
+
+```bash
+kubectl exec -it deploy/sessionfs-api -- alembic upgrade head
+```
+
+### Troubleshooting Migrations
+
+If the migration job fails, check logs:
+
+```bash
+kubectl logs job/sessionfs-migrate-<revision> -n sessionfs
+```
+
+The API will fail to start if tables don't exist. Ensure migrations complete first. The Helm hook handles ordering automatically.
+
+## Environment Variables
+
+See [Environment Variables Reference](environment-variables.md) for the complete list of `SFS_*` configuration options.

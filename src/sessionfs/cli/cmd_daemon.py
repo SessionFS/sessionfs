@@ -138,6 +138,40 @@ def status() -> None:
 
 
 @daemon_app.command()
+def restart() -> None:
+    """Restart the SessionFS daemon."""
+    import time
+
+    pid = _read_pid()
+    if pid is None or not _is_running(pid):
+        console.print("[dim]Daemon not running. Starting...[/dim]")
+        start()
+        return
+
+    # Stop
+    os.kill(pid, signal.SIGTERM)
+    _pid_path().unlink(missing_ok=True)
+
+    # Wait for process to exit
+    for _ in range(20):
+        if not _is_running(pid):
+            break
+        time.sleep(0.25)
+
+    # Start
+    cmd = [sys.executable, "-m", "sessionfs.daemon.main"]
+    log_file = open(_log_path(), "a")
+    proc = subprocess.Popen(
+        cmd,
+        stdout=log_file,
+        stderr=log_file,
+        start_new_session=True,
+    )
+    _pid_path().write_text(str(proc.pid))
+    console.print(f"[green]Daemon restarted (PID {proc.pid}).[/green]")
+
+
+@daemon_app.command()
 def logs(
     lines: int = typer.Option(50, "--lines", "-n", help="Number of lines to show."),
     follow: bool = typer.Option(False, "--follow", "-f", help="Follow log output."),
