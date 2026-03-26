@@ -1,8 +1,9 @@
 name: Publish Container Images
 
 on:
-  release:
-    types: [published]
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
 
 env:
   REGISTRY: ghcr.io
@@ -16,9 +17,18 @@ jobs:
   build-api:
     name: Build API Image
     runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     steps:
-      - name: Checkout
+      - name: Checkout tag
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_branch }}
+
+      - name: Get version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        env:
+          GITHUB_REF_NAME: ${{ github.event.workflow_run.head_branch }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -29,16 +39,6 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE_PREFIX }}/sessionfs-api
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha
 
       - name: Build and push API image
         uses: docker/build-push-action@v5
@@ -46,8 +46,9 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: |
+            ${{ env.IMAGE_PREFIX }}/sessionfs-api:${{ steps.version.outputs.version }}
+            ${{ env.IMAGE_PREFIX }}/sessionfs-api:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64,linux/arm64
@@ -55,9 +56,18 @@ jobs:
   build-mcp:
     name: Build MCP Image
     runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     steps:
-      - name: Checkout
+      - name: Checkout tag
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_branch }}
+
+      - name: Get version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        env:
+          GITHUB_REF_NAME: ${{ github.event.workflow_run.head_branch }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -68,16 +78,6 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE_PREFIX }}/sessionfs-mcp
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha
 
       - name: Build and push MCP image
         uses: docker/build-push-action@v5
@@ -85,8 +85,9 @@ jobs:
           context: .
           file: ./Dockerfile.mcp
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: |
+            ${{ env.IMAGE_PREFIX }}/sessionfs-mcp:${{ steps.version.outputs.version }}
+            ${{ env.IMAGE_PREFIX }}/sessionfs-mcp:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64,linux/arm64
@@ -94,9 +95,18 @@ jobs:
   build-dashboard:
     name: Build Dashboard Image
     runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     steps:
-      - name: Checkout
+      - name: Checkout tag
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_branch }}
+
+      - name: Get version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        env:
+          GITHUB_REF_NAME: ${{ github.event.workflow_run.head_branch }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -108,24 +118,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE_PREFIX }}/sessionfs-dashboard
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha
-
       - name: Build and push Dashboard image
         uses: docker/build-push-action@v5
         with:
           context: ./dashboard
           file: ./dashboard/Dockerfile
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: |
+            ${{ env.IMAGE_PREFIX }}/sessionfs-dashboard:${{ steps.version.outputs.version }}
+            ${{ env.IMAGE_PREFIX }}/sessionfs-dashboard:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64,linux/arm64
