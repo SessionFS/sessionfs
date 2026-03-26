@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SessionFS — Capture, sync, and resume AI coding sessions</title>
+  <meta name="description" content="Background daemon that captures AI coding sessions from Claude Code, Codex, Gemini, Copilot, Cursor, Amp, Cline, and Roo Code. Resume anywhere, hand off to teammates. Free and open source.">
+  <meta name="keywords" content="AI coding sessions, Claude Code, Codex, Gemini CLI, Copilot CLI, Cursor, Amp, Cline, Roo Code, session sync, developer tools, MCP">
+  <meta property="og:title" content="SessionFS — Capture, sync, and resume AI coding sessions">
+  <meta property="og:description" content="Background daemon that captures AI coding sessions from Claude Code, Codex, Gemini, Copilot, Cursor, Amp, Cline, and Roo Code. Resume anywhere, hand off to teammates.">
+  <meta property="og:image" content="https://sessionfs.dev/og-image.png">
+  <meta property="og:url" content="https://sessionfs.dev">
+  <meta property="og:type" content="website">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="SessionFS — Capture, sync, and resume AI coding sessions">
+  <meta name="twitter:description" content="Background daemon that captures AI coding sessions from Claude Code, Codex, Gemini, Copilot, Cursor, Amp, Cline, and Roo Code. Resume anywhere, hand off to teammates.">
+  <meta name="twitter:image" content="https://sessionfs.dev/og-image.png">
+  <link rel="canonical" href="https://sessionfs.dev">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg viewBox='0 0 64 64' xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='64' height='64' rx='12' fill='%230a0c10'/%3E%3Cpath d='M24 14Q14 14 14 24L14 40Q14 50 24 50' fill='none' stroke='%234f9cf7' stroke-width='4' stroke-linecap='round'/%3E%3Cpath d='M40 14Q50 14 50 24L50 40Q50 50 40 50' fill='none' stroke='%233ddc84' stroke-width='4' stroke-linecap='round'/%3E%3Ccircle cx='32' cy='32' r='6' fill='%234f9cf7'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: '#4f9cf7',
+            accent: '#3ddc84',
+            bg: '#0a0c10',
+            surface: '#161b22',
+            border: '#30363d',
+            txt: '#e6edf3',
+            muted: '#c9d1d9',
+            'muted-dim': '#9ca3af',
+            danger: '#f04060',
+            warning: '#f0c040',
+          },
+          fontFamily: {
+            heading: ['"Plus Jakarta Sans"', 'system-ui', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'ui-monospace', 'monospace'],
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body { background: #0a0c10; font-family: 'Plus Jakarta Sans', system-ui, sans-serif; }
+    /* Noise texture */
+    .noise::before { content: ''; position: absolute; inset: 0; opacity: 0.03; pointer-events: none; background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
+    /* Gradient divider */
+    .grad-divider { height: 1px; background: linear-gradient(90deg, transparent, #4f9cf7, #3ddc84, transparent); }
+    /* Terminal */
+    .term { background: #161b22; border: 1px solid #30363d; border-radius: 10px; overflow: hidden; }
+    .term-bar { background: #1c2128; padding: 10px 14px; display: flex; gap: 7px; border-bottom: 1px solid #30363d; }
+    .term-dot { width: 12px; height: 12px; border-radius: 50%; }
+    /* Glass cards */
+    .glass { backdrop-filter: blur(12px); background: rgba(22,27,34,0.6); border: 1px solid rgba(48,54,61,0.5); border-radius: 12px; transition: transform 0.2s, border-color 0.2s; }
+    .glass:hover { transform: translateY(-2px); border-color: rgba(79,156,247,0.4); }
+    /* Pricing hover */
+    .price-card { transition: transform 0.2s, box-shadow 0.2s; }
+    .price-card:hover { transform: translateY(-4px); box-shadow: 0 0 24px rgba(79,156,247,0.15); }
+    /* Fade-up animation — visible by default, animation is progressive enhancement */
+    .fade-up { opacity: 1; transform: translateY(0); }
+    @media (prefers-reduced-motion: no-preference) {
+      .fade-up { opacity: 0; transform: translateY(24px); transition: opacity 0.6s ease-out, transform 0.6s ease-out; }
+      .fade-up.visible { opacity: 1; transform: translateY(0); }
+    }
+    /* Pulse */
+    @keyframes pulse-glow { 0%, 100% { box-shadow: 0 0 8px rgba(79,156,247,0.3); } 50% { box-shadow: 0 0 20px rgba(79,156,247,0.6); } }
+    .pulse-badge { animation: pulse-glow 3s ease-in-out infinite; }
+    /* Hero glow */
+    .hero-glow { position: absolute; width: 420px; height: 420px; background: radial-gradient(circle, rgba(79,156,247,0.12) 0%, transparent 70%); border-radius: 50%; pointer-events: none; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 0; }
+  </style>
+  <noscript><style>.fade-up { opacity: 1 !important; transform: none !important; }</style></noscript>
+</head>
+<body class="text-txt antialiased overflow-x-hidden">
+
+  <!-- ========== 1. NAV ========== -->
+  <nav class="fixed top-0 w-full bg-bg/70 backdrop-blur-md border-b border-border z-50">
+    <div class="max-w-6xl mx-auto px-5 h-16 flex items-center justify-between">
+      <a href="/" class="flex items-center gap-2.5 shrink-0">
+        <svg viewBox="0 0 180 50" class="h-7" xmlns="http://www.w3.org/2000/svg">
+          <path d="M22,8 Q14,8 14,16 L14,34 Q14,42 22,42" fill="none" stroke="#4f9cf7" stroke-width="3" stroke-linecap="round"/>
+          <path d="M42,8 Q50,8 50,16 L50,34 Q50,42 42,42" fill="none" stroke="#3ddc84" stroke-width="3" stroke-linecap="round"/>
+          <circle cx="32" cy="25" r="5" fill="#4f9cf7"/>
+          <text x="60" y="32" font-family="'Plus Jakarta Sans', system-ui, sans-serif" font-size="19" font-weight="600" fill="#e6edf3" letter-spacing="-0.5">Session<tspan fill="#4f9cf7">FS</tspan></text>
+        </svg>
+      </a>
+      <div class="flex items-center gap-6 text-[15px] font-medium">
+        <a href="https://github.com/SessionFS/sessionfs/blob/main/docs/quickstart.md" class="text-[#b1b8c1] hover:text-txt hidden sm:block transition-colors">Docs</a>
+        <a href="#pricing" class="text-[#b1b8c1] hover:text-txt hidden sm:block transition-colors">Pricing</a>
+        <a href="https://github.com/SessionFS/sessionfs" class="flex items-center gap-2 text-[#b1b8c1] hover:text-txt transition-colors">
+          <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+          <span class="hidden sm:inline">GitHub</span>
+          <!-- Stars badge moved to footer -->
+        </a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ========== 2. HERO ========== -->
+  <section class="relative pt-32 sm:pt-40 pb-20 sm:pb-28 px-5 noise">
+    <div class="max-w-6xl mx-auto flex flex-col lg:flex-row items-center gap-12 lg:gap-8">
+      <!-- Left 60% -->
+      <div class="lg:w-[58%] text-center lg:text-left">
+        <div class="fade-up mb-6">
+          <svg viewBox="0 0 64 64" class="h-12 w-12 mx-auto lg:mx-0" xmlns="http://www.w3.org/2000/svg">
+            <path d="M20,10 Q8,10 8,22 L8,42 Q8,54 20,54" fill="none" stroke="#4f9cf7" stroke-width="4" stroke-linecap="round"/>
+            <path d="M44,10 Q56,10 56,22 L56,42 Q56,54 44,54" fill="none" stroke="#3ddc84" stroke-width="4" stroke-linecap="round"/>
+            <circle cx="32" cy="32" r="7" fill="#4f9cf7"/>
+          </svg>
+        </div>
+        <h1 class="fade-up font-heading text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight leading-[1.1] mb-6">
+          Stop re-prompting.<br>Start resuming.
+        </h1>
+        <p class="fade-up text-lg sm:text-xl text-muted leading-relaxed max-w-xl mx-auto lg:mx-0 mb-8">
+          SessionFS captures your AI coding sessions and makes them portable across tools and teammates.
+        </p>
+        <div class="fade-up inline-flex items-center gap-3 bg-surface border border-border rounded-lg px-5 py-3 mb-8 font-mono text-sm">
+          <span class="text-muted-dim select-none">$</span>
+          <span class="text-accent">pip install sessionfs</span>
+          <button onclick="copyText('pip install sessionfs', this)" class="text-muted-dim hover:text-brand text-[13px] border border-border rounded px-2.5 py-0.5 ml-1 transition-colors">Copy</button>
+        </div>
+        <div class="fade-up flex flex-col sm:flex-row gap-3 justify-center lg:justify-start">
+          <a href="https://github.com/SessionFS/sessionfs/blob/main/docs/quickstart.md" class="inline-flex items-center justify-center gap-2 bg-brand text-white font-semibold rounded-lg px-7 py-3 hover:brightness-110 transition">
+            Get Started
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+          </a>
+          <a href="https://github.com/SessionFS/sessionfs" class="inline-flex items-center justify-center gap-2 border border-border text-txt font-semibold rounded-lg px-7 py-3 hover:border-muted transition">
+            View on GitHub
+          </a>
+        </div>
+      </div>
+      <!-- Right 40% terminal -->
+      <div class="lg:w-[42%] w-full relative fade-up">
+        <div class="hero-glow"></div>
+        <div class="term relative z-10">
+          <div class="term-bar">
+            <div class="term-dot bg-[#ff5f57]"></div>
+            <div class="term-dot bg-[#febc2e]"></div>
+            <div class="term-dot bg-[#28c840]"></div>
+            <span class="ml-3 text-muted-dim text-[13px] font-mono">~/ terminal</span>
+          </div>
+          <div class="p-4 sm:p-5 font-mono text-sm leading-relaxed overflow-x-auto">
+            <div class="text-muted-dim">$ <span class="text-accent">sfs list</span></div>
+            <div class="mt-3 text-muted-dim text-[13px] uppercase tracking-wider">Sessions (8)</div>
+            <table class="w-full mt-2 text-[13px] sm:text-sm">
+              <thead><tr class="text-muted-dim text-left border-b border-border">
+                <th class="pr-2 pb-1.5 font-medium">ID</th>
+                <th class="pr-2 pb-1.5 font-medium">Tool</th>
+                <th class="pr-2 pb-1.5 font-medium text-right">Msgs</th>
+                <th class="pb-1.5 font-medium hidden sm:table-cell">Title</th>
+              </tr></thead>
+              <tbody class="text-txt">
+                <tr><td class="pr-2 py-1 text-brand">ses_a1b2</td><td class="pr-2 text-muted-dim">claude-code</td><td class="pr-2 text-right">47</td><td class="hidden sm:table-cell text-muted">Debug auth token refresh</td></tr>
+                <tr><td class="pr-2 py-1 text-brand">ses_c3d4</td><td class="pr-2 text-muted-dim">codex</td><td class="pr-2 text-right">31</td><td class="hidden sm:table-cell text-muted">Refactor database schema</td></tr>
+                <tr><td class="pr-2 py-1 text-brand">ses_e5f6</td><td class="pr-2 text-muted-dim">gemini</td><td class="pr-2 text-right">23</td><td class="hidden sm:table-cell text-muted">Add rate limiting middleware</td></tr>
+                <tr><td class="pr-2 py-1 text-brand">ses_g7h8</td><td class="pr-2 text-muted-dim">copilot</td><td class="pr-2 text-right">15</td><td class="hidden sm:table-cell text-muted">Fix CI pipeline YAML</td></tr>
+                <tr><td class="pr-2 py-1 text-brand">ses_i9j0</td><td class="pr-2 text-muted-dim">cursor</td><td class="pr-2 text-right">52</td><td class="hidden sm:table-cell text-muted">Implement OAuth2 flow</td></tr>
+                <tr><td class="pr-2 py-1 text-brand">ses_k1l2</td><td class="pr-2 text-muted-dim">amp</td><td class="pr-2 text-right">18</td><td class="hidden sm:table-cell text-muted">Write migration script</td></tr>
+                <tr><td class="pr-2 py-1 text-brand">ses_m3n4</td><td class="pr-2 text-muted-dim">cline</td><td class="pr-2 text-right">9</td><td class="hidden sm:table-cell text-muted">Setup Docker compose</td></tr>
+                <tr><td class="pr-2 py-1 text-brand">ses_o5p6</td><td class="pr-2 text-muted-dim">roo-code</td><td class="pr-2 text-right">27</td><td class="hidden sm:table-cell text-muted">API endpoint tests</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== 3. SOCIAL PROOF BAR ========== -->
+  <div class="grad-divider"></div>
+  <section class="py-8 px-5 fade-up">
+    <div class="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-center gap-4 sm:gap-6 text-sm">
+      <span class="text-muted-dim font-medium shrink-0">Works with</span>
+      <div class="border-l border-border h-4 hidden sm:block"></div>
+      <div class="flex flex-wrap justify-center gap-x-5 gap-y-2 font-mono text-muted text-sm">
+        <span>Claude Code</span><span>Codex</span><span>Gemini</span><span>Copilot</span><span>Cursor</span><span>Amp</span><span>Cline</span><span>Roo Code</span>
+      </div>
+      <div class="border-l border-border h-4 hidden sm:block"></div>
+      <img src="https://img.shields.io/github/stars/SessionFS/sessionfs?style=flat&color=30363d&labelColor=161b22&logo=github&logoColor=e6edf3" alt="GitHub stars" class="h-5 shrink-0">
+    </div>
+  </section>
+  <div class="grad-divider"></div>
+
+  <!-- ========== 4. HOW IT WORKS ========== -->
+  <section class="relative py-20 sm:py-28 px-5 noise">
+    <div class="max-w-5xl mx-auto">
+      <h2 class="fade-up font-heading text-3xl sm:text-4xl font-bold text-center mb-4">How it works</h2>
+      <p class="fade-up text-muted text-center mb-14 max-w-md mx-auto leading-relaxed">Three commands. Under a minute. Zero behavior change.</p>
+      <div class="grid md:grid-cols-3 gap-8">
+        <!-- Step 1 -->
+        <div class="fade-up">
+          <div class="flex items-center gap-3 mb-5">
+            <span class="flex items-center justify-center w-9 h-9 rounded-full bg-brand/10 text-brand text-sm font-bold border border-brand/20">1</span>
+            <h3 class="font-heading font-semibold text-lg">Capture</h3>
+          </div>
+          <div class="term text-sm">
+            <div class="term-bar"><div class="term-dot bg-[#ff5f57]"></div><div class="term-dot bg-[#febc2e]"></div><div class="term-dot bg-[#28c840]"></div></div>
+            <div class="p-4 font-mono">
+              <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs daemon start</span></div>
+              <div class="text-muted mt-2">Watching 8 tools... (PID 48201)</div>
+              <div class="text-muted">claude-code <span class="text-accent">&#10003;</span> codex <span class="text-accent">&#10003;</span> gemini <span class="text-accent">&#10003;</span></div>
+              <div class="text-muted">copilot <span class="text-accent">&#10003;</span> cursor <span class="text-accent">&#10003;</span> amp <span class="text-accent">&#10003;</span></div>
+            </div>
+          </div>
+          <p class="text-muted text-base mt-4 leading-relaxed">Sessions captured from 8 tools automatically. No config needed.</p>
+        </div>
+        <!-- Step 2 -->
+        <div class="fade-up">
+          <div class="flex items-center gap-3 mb-5">
+            <span class="flex items-center justify-center w-9 h-9 rounded-full bg-brand/10 text-brand text-sm font-bold border border-brand/20">2</span>
+            <h3 class="font-heading font-semibold text-lg">Browse</h3>
+          </div>
+          <div class="term text-sm">
+            <div class="term-bar"><div class="term-dot bg-[#ff5f57]"></div><div class="term-dot bg-[#febc2e]"></div><div class="term-dot bg-[#28c840]"></div></div>
+            <div class="p-4 font-mono">
+              <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs list</span></div>
+              <div class="text-muted-dim mt-2">ID&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Tool&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Msgs</div>
+              <div class="text-txt">ses_a1b2 claude-code  47</div>
+              <div class="text-txt">ses_c3d4 codex&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;31</div>
+              <div class="text-txt">ses_e5f6 gemini&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;23</div>
+            </div>
+          </div>
+          <p class="text-muted text-base mt-4 leading-relaxed">Browse sessions across all tools in one unified view.</p>
+        </div>
+        <!-- Step 3 -->
+        <div class="fade-up">
+          <div class="flex items-center gap-3 mb-5">
+            <span class="flex items-center justify-center w-9 h-9 rounded-full bg-brand/10 text-brand text-sm font-bold border border-brand/20">3</span>
+            <h3 class="font-heading font-semibold text-lg">Resume</h3>
+          </div>
+          <div class="term text-sm">
+            <div class="term-bar"><div class="term-dot bg-[#ff5f57]"></div><div class="term-dot bg-[#febc2e]"></div><div class="term-dot bg-[#28c840]"></div></div>
+            <div class="p-4 font-mono">
+              <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs resume ses_d20e --in gemini</span></div>
+              <div class="text-muted mt-2">Converting claude-code -> gemini...</div>
+              <div class="text-accent mt-1">Session resumed. 47 messages loaded.</div>
+            </div>
+          </div>
+          <p class="text-muted text-base mt-4 leading-relaxed">Resume any session in any supported tool. Full context preserved.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- ========== 5. CROSS-TOOL SUPPORT ========== -->
+  <section class="relative py-20 sm:py-28 px-5 bg-surface/50 noise">
+    <div class="max-w-4xl mx-auto text-center">
+      <h2 class="fade-up font-heading text-3xl sm:text-4xl font-bold mb-4">Start anywhere. Resume anywhere.</h2>
+      <p class="fade-up text-muted mb-14 max-w-lg mx-auto leading-relaxed">Your sessions are no longer locked to a single tool.</p>
+      <div class="fade-up grid grid-cols-2 sm:grid-cols-4 gap-3 max-w-3xl mx-auto mb-10">
+        <div class="border border-border rounded-lg px-4 py-5 bg-surface text-center hover:border-accent/40 transition-colors">
+          <div class="font-medium text-sm mb-2">Claude Code</div>
+          <span class="inline-block text-[13px] font-mono px-2 py-0.5 rounded-full tracking-wide bg-accent/10 text-accent">Capture + Resume</span>
+        </div>
+        <div class="border border-border rounded-lg px-4 py-5 bg-surface text-center hover:border-accent/40 transition-colors">
+          <div class="font-medium text-sm mb-2">Codex</div>
+          <span class="inline-block text-[13px] font-mono px-2 py-0.5 rounded-full tracking-wide bg-accent/10 text-accent">Capture + Resume</span>
+        </div>
+        <div class="border border-border rounded-lg px-4 py-5 bg-surface text-center hover:border-accent/40 transition-colors">
+          <div class="font-medium text-sm mb-2">Gemini</div>
+          <span class="inline-block text-[13px] font-mono px-2 py-0.5 rounded-full tracking-wide bg-accent/10 text-accent">Capture + Resume</span>
+        </div>
+        <div class="border border-border rounded-lg px-4 py-5 bg-surface text-center hover:border-accent/40 transition-colors">
+          <div class="font-medium text-sm mb-2">Copilot</div>
+          <span class="inline-block text-[13px] font-mono px-2 py-0.5 rounded-full tracking-wide bg-accent/10 text-accent">Capture + Resume</span>
+        </div>
+        <div class="border border-border rounded-lg px-4 py-5 bg-surface text-center hover:border-warning/40 transition-colors">
+          <div class="font-medium text-sm mb-2">Cursor</div>
+          <span class="inline-block text-[13px] font-mono px-2 py-0.5 rounded-full tracking-wide bg-warning/10 text-warning">Capture</span>
+        </div>
+        <div class="border border-border rounded-lg px-4 py-5 bg-surface text-center hover:border-warning/40 transition-colors">
+          <div class="font-medium text-sm mb-2">Amp</div>
+          <span class="inline-block text-[13px] font-mono px-2 py-0.5 rounded-full tracking-wide bg-warning/10 text-warning">Capture</span>
+        </div>
+        <div class="border border-border rounded-lg px-4 py-5 bg-surface text-center hover:border-warning/40 transition-colors">
+          <div class="font-medium text-sm mb-2">Cline</div>
+          <span class="inline-block text-[13px] font-mono px-2 py-0.5 rounded-full tracking-wide bg-warning/10 text-warning">Capture</span>
+        </div>
+        <div class="border border-border rounded-lg px-4 py-5 bg-surface text-center hover:border-warning/40 transition-colors">
+          <div class="font-medium text-sm mb-2">Roo Code</div>
+          <span class="inline-block text-[13px] font-mono px-2 py-0.5 rounded-full tracking-wide bg-warning/10 text-warning">Capture</span>
+        </div>
+      </div>
+      <div class="fade-up">
+        <span class="pulse-badge inline-flex items-center gap-2 bg-surface border border-brand/30 rounded-full px-6 py-2.5 text-sm font-mono">
+          <span class="text-brand">.sfs</span>
+          <span class="text-muted-dim">portable session format</span>
+        </span>
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- ========== 6. FEATURE GRID ========== -->
+  <section class="relative py-20 sm:py-28 px-5 noise">
+    <div class="max-w-5xl mx-auto">
+      <h2 class="fade-up font-heading text-3xl sm:text-4xl font-bold text-center mb-14">Everything you need</h2>
+      <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
+        <!-- Cloud Sync -->
+        <div class="glass p-6 fade-up">
+          <div class="text-2xl mb-3">&#9729;</div>
+          <h3 class="font-heading font-semibold text-base mb-2">Cloud Sync</h3>
+          <p class="text-muted text-base mb-3 leading-relaxed">Push to the cloud, pull on any machine. Sessions follow you everywhere.</p>
+          <div class="font-mono text-sm text-accent bg-bg/50 rounded-md p-2.5">sfs push &amp;&amp; sfs pull</div>
+        </div>
+        <!-- Team Handoff -->
+        <div class="glass p-6 fade-up">
+          <div class="text-2xl mb-3">&#128101;</div>
+          <h3 class="font-heading font-semibold text-base mb-2">Team Handoff</h3>
+          <p class="text-muted text-base mb-3 leading-relaxed">Hand off sessions with full context. No more pasting chat logs.</p>
+          <div class="font-mono text-sm text-accent bg-bg/50 rounded-md p-2.5">sfs handoff --to sarah@co.dev</div>
+        </div>
+        <!-- Session Search -->
+        <div class="glass p-6 fade-up">
+          <div class="text-2xl mb-3">&#128269;</div>
+          <h3 class="font-heading font-semibold text-base mb-2">Session Search</h3>
+          <p class="text-muted text-base mb-3 leading-relaxed">Full-text search across all sessions. Find that fix from last week.</p>
+          <div class="font-mono text-sm text-accent bg-bg/50 rounded-md p-2.5">sfs search "auth error"</div>
+        </div>
+        <!-- MCP Server -->
+        <div class="glass p-6 fade-up">
+          <div class="text-2xl mb-3">&#9881;</div>
+          <h3 class="font-heading font-semibold text-base mb-2">MCP Server</h3>
+          <p class="text-muted text-base mb-3 leading-relaxed">Your AI agent remembers past sessions via Model Context Protocol.</p>
+          <div class="font-mono text-sm text-accent bg-bg/50 rounded-md p-2.5">sfs mcp install --for claude-code</div>
+        </div>
+        <!-- LLM Judge -->
+        <div class="glass p-6 fade-up">
+          <div class="text-2xl mb-3">&#9878;</div>
+          <h3 class="font-heading font-semibold text-base mb-2">LLM Judge</h3>
+          <p class="text-muted text-base mb-3 leading-relaxed">Detect hallucinations with evidence. Trust scores for every session.</p>
+          <div class="bg-bg/50 rounded-md p-2.5 text-sm"><span class="text-muted-dim">Trust:</span> <span class="text-accent">87%</span> <span class="inline-block w-16 h-1.5 bg-border rounded-full align-middle ml-1 relative"><span class="absolute inset-0 rounded-full bg-accent" style="width:87%"></span></span></div>
+        </div>
+        <!-- Workspace Aware -->
+        <div class="glass p-6 fade-up">
+          <div class="text-2xl mb-3">&#128194;</div>
+          <h3 class="font-heading font-semibold text-base mb-2">Workspace Aware</h3>
+          <p class="text-muted text-base mb-3 leading-relaxed">Git state captured automatically. Branch, commit, dirty files — all recorded.</p>
+          <div class="font-mono text-sm bg-bg/50 rounded-md p-2.5"><span class="text-brand">main</span> <span class="text-muted-dim">@</span> <span class="text-accent">a1b2c3d</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- ========== 7. LLM JUDGE SPOTLIGHT ========== -->
+  <section class="relative py-20 sm:py-28 px-5 noise">
+    <div class="max-w-5xl mx-auto flex flex-col lg:flex-row items-center gap-12">
+      <div class="lg:w-1/2 fade-up">
+        <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-5">Your AI's claims. Verified.</h2>
+        <p class="text-muted text-lg mb-4 leading-relaxed">The LLM Judge evaluates tool outputs against assistant claims, surfacing hallucinations with evidence and confidence scores.</p>
+        <p class="text-muted text-lg mb-6 leading-relaxed">Every finding links back to the exact message and tool call that produced the discrepancy.</p>
+        <p class="text-base text-muted-dim border-l-2 border-brand/30 pl-4 mb-6 leading-relaxed">BYOK — your key, never stored. Supports OpenRouter, Anthropic, OpenAI, and Google.</p>
+        <a href="https://github.com/SessionFS/sessionfs/blob/main/docs/quickstart.md" class="text-brand hover:underline text-sm font-medium">Read the docs &rarr;</a>
+      </div>
+      <div class="lg:w-1/2 w-full fade-up">
+        <div class="term">
+          <div class="term-bar"><div class="term-dot bg-[#ff5f57]"></div><div class="term-dot bg-[#febc2e]"></div><div class="term-dot bg-[#28c840]"></div><span class="ml-3 text-muted-dim text-[13px] font-mono">audit report</span></div>
+          <div class="p-5 font-mono text-sm space-y-4">
+            <div>
+              <div class="text-muted-dim uppercase tracking-wider text-[13px] mb-2">Trust Score</div>
+              <div class="flex items-center gap-3">
+                <span class="text-xl font-bold text-accent">87%</span>
+                <div class="flex-1 h-2 bg-border rounded-full overflow-hidden"><div class="h-full bg-accent rounded-full" style="width:87%"></div></div>
+              </div>
+            </div>
+            <div class="border-t border-border pt-4">
+              <div class="text-muted-dim uppercase tracking-wider text-[13px] mb-2">Findings (1 of 3)</div>
+              <div class="bg-bg/60 rounded-lg p-3 border border-border">
+                <div class="flex items-center gap-2 mb-2">
+                  <span class="bg-danger/15 text-danger text-[13px] font-bold px-2 py-0.5 rounded tracking-wide">HALLUCINATION</span>
+                  <span class="text-muted-dim text-[13px]">msg #34, tool_call #2</span>
+                </div>
+                <div class="text-muted mb-1"><span class="text-txt">Claim:</span> "File tests/auth.py was updated"</div>
+                <div class="text-muted"><span class="text-txt">Evidence:</span> File not found in git diff</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- ========== 8. TEAM HANDOFF SPOTLIGHT ========== -->
+  <section class="relative py-20 sm:py-28 px-5 bg-surface/50 noise">
+    <div class="max-w-5xl mx-auto">
+      <h2 class="fade-up font-heading text-3xl sm:text-4xl font-bold text-center mb-4">Hand off a session, not a Slack message</h2>
+      <p class="fade-up text-muted text-center mb-14 max-w-lg mx-auto leading-relaxed">Full conversation context, workspace state, and tool configs transfer instantly between teammates.</p>
+      <div class="grid md:grid-cols-2 gap-5">
+        <!-- Developer A -->
+        <div class="fade-up">
+          <div class="text-[13px] text-muted-dim mb-2 font-mono uppercase tracking-wider">Developer A</div>
+          <div class="term">
+            <div class="term-bar"><div class="term-dot bg-[#ff5f57]"></div><div class="term-dot bg-[#febc2e]"></div><div class="term-dot bg-[#28c840]"></div></div>
+            <div class="p-4 font-mono text-sm">
+              <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs handoff ses_abc \</span></div>
+              <div class="pl-4"><span class="text-accent">--to sarah@company.com \</span></div>
+              <div class="pl-4"><span class="text-accent">--message "JWT middleware is the problem"</span></div>
+              <div class="text-muted mt-3">Handoff hnd_x7k9 created.</div>
+              <div class="text-muted">Session pushed. Sarah notified.</div>
+            </div>
+          </div>
+        </div>
+        <!-- Developer B -->
+        <div class="fade-up">
+          <div class="text-[13px] text-muted-dim mb-2 font-mono uppercase tracking-wider">Developer B (Sarah)</div>
+          <div class="term">
+            <div class="term-bar"><div class="term-dot bg-[#ff5f57]"></div><div class="term-dot bg-[#febc2e]"></div><div class="term-dot bg-[#28c840]"></div></div>
+            <div class="p-4 font-mono text-sm">
+              <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs pull --handoff hnd_x7k9</span></div>
+              <div class="text-muted mt-2">Workspace resolved via git remote.</div>
+              <div class="mt-3"><span class="text-muted-dim">$</span> <span class="text-accent">sfs resume ses_abc</span></div>
+              <div class="text-accent mt-2">Session resumed. 47 messages loaded.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="fade-up text-muted-dim text-center text-base mt-8 leading-relaxed">Paths auto-resolve by git remote URL. No manual configuration.</p>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- ========== 9. PRICING ========== -->
+  <section id="pricing" class="relative py-20 sm:py-28 px-5 noise">
+    <div class="max-w-2xl mx-auto text-center">
+      <h2 class="fade-up font-heading text-3xl sm:text-5xl font-bold mb-6">Free during beta.</h2>
+      <p class="fade-up text-lg text-muted mb-4 max-w-lg mx-auto leading-relaxed">
+        Local capture, cloud sync, team handoff, session search, MCP, and LLM Judge &mdash; all included. No credit card. No limits.
+      </p>
+      <p class="fade-up text-base text-muted-dim mb-10 leading-relaxed">
+        Paid plans with storage-based pricing are coming after beta.
+      </p>
+      <div class="fade-up flex flex-col sm:flex-row gap-3 justify-center">
+        <a href="https://github.com/SessionFS/sessionfs/blob/main/docs/quickstart.md" class="inline-flex items-center justify-center gap-2 bg-brand text-white font-semibold rounded-lg px-7 py-3 hover:brightness-110 transition">
+          Get Started
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+        </a>
+        <a href="mailto:sessionfs@gmail.com?subject=Waitlist%20for%20Pro&body=I'm%20interested%20in%20SessionFS%20Pro.%20My%20email%3A%20" class="inline-flex items-center justify-center border border-border text-txt font-medium rounded-lg px-7 py-3 hover:border-muted transition">
+          Join Waitlist for Pro
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- ========== 10. FOOTER ========== -->
+  <footer class="py-14 px-5">
+    <div class="max-w-5xl mx-auto">
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-8 mb-12">
+        <!-- Brand col -->
+        <div class="col-span-2 sm:col-span-1">
+          <svg viewBox="0 0 180 50" class="h-6 mb-3" xmlns="http://www.w3.org/2000/svg">
+            <path d="M22,8 Q14,8 14,16 L14,34 Q14,42 22,42" fill="none" stroke="#4f9cf7" stroke-width="3" stroke-linecap="round"/>
+            <path d="M42,8 Q50,8 50,16 L50,34 Q50,42 42,42" fill="none" stroke="#3ddc84" stroke-width="3" stroke-linecap="round"/>
+            <circle cx="32" cy="25" r="5" fill="#4f9cf7"/>
+            <text x="60" y="32" font-family="'Plus Jakarta Sans', system-ui, sans-serif" font-size="19" font-weight="600" fill="#e6edf3" letter-spacing="-0.5">Session<tspan fill="#4f9cf7">FS</tspan></text>
+          </svg>
+          <p class="text-[#9ca3af] text-sm">Portable AI coding sessions.</p>
+        </div>
+        <!-- Product -->
+        <div>
+          <h4 class="font-heading font-semibold text-sm mb-3">Product</h4>
+          <ul class="space-y-2 text-sm text-[#9ca3af]">
+            <li><a href="https://github.com/SessionFS/sessionfs/blob/main/docs/quickstart.md" class="hover:text-txt transition-colors">Get Started</a></li>
+            <li><a href="#pricing" class="hover:text-txt transition-colors">Pricing</a></li>
+            <li><a href="https://github.com/SessionFS/sessionfs/releases" class="hover:text-txt transition-colors">Changelog</a></li>
+          </ul>
+        </div>
+        <!-- Docs -->
+        <div>
+          <h4 class="font-heading font-semibold text-sm mb-3">Docs</h4>
+          <ul class="space-y-2 text-sm text-[#9ca3af]">
+            <li><a href="https://github.com/SessionFS/sessionfs/blob/main/docs/quickstart.md" class="hover:text-txt transition-colors">Quickstart</a></li>
+            <li><a href="https://github.com/SessionFS/sessionfs/blob/main/docs/cli-reference.md" class="hover:text-txt transition-colors">CLI Reference</a></li>
+            <li><a href="https://github.com/SessionFS/sessionfs/blob/main/docs/sfs-format.md" class="hover:text-txt transition-colors">SFS Format</a></li>
+          </ul>
+        </div>
+        <!-- Company -->
+        <div>
+          <h4 class="font-heading font-semibold text-sm mb-3">Company</h4>
+          <ul class="space-y-2 text-sm text-[#9ca3af]">
+            <li><a href="https://github.com/SessionFS/sessionfs" class="hover:text-txt transition-colors">GitHub</a></li>
+            <li><a href="https://github.com/SessionFS/sessionfs/blob/main/CONTRIBUTING.md" class="hover:text-txt transition-colors">Contributing</a></li>
+            <li><a href="mailto:support@sessionfs.dev" class="hover:text-txt transition-colors">support@sessionfs.dev</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="border-t border-border pt-6 flex flex-col sm:flex-row items-center justify-between gap-3 text-[13px] text-[#9ca3af]">
+        <span>&copy; 2026 SessionFS. All rights reserved.</span>
+        <a href="https://github.com/SessionFS/sessionfs" class="hover:opacity-80 transition-opacity">
+          <img src="https://img.shields.io/github/stars/SessionFS/sessionfs?style=flat&color=30363d&labelColor=161b22&logo=github&logoColor=e6edf3" alt="GitHub stars" class="h-5">
+        </a>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Scripts -->
+  <script>
+    function copyText(text, btn) {
+      navigator.clipboard.writeText(text);
+      btn.textContent = 'Copied!';
+      setTimeout(() => btn.textContent = 'Copy', 1500);
+    }
+
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); } });
+    }, { threshold: 0.1 });
+    document.querySelectorAll('.fade-up').forEach(el => observer.observe(el));
+  </script>
+</body>
+</html>
