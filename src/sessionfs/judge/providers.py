@@ -229,6 +229,40 @@ async def _call_openrouter_with_headers(
     return data["choices"][0]["message"]["content"]
 
 
+async def discover_models(base_url: str, api_key: str = "") -> list[str]:
+    """Query an OpenAI-compatible /models endpoint and return model IDs."""
+    url = base_url.rstrip("/")
+    if not url.endswith("/models"):
+        if url.endswith("/v1"):
+            url = f"{url}/models"
+        else:
+            url = f"{url}/v1/models"
+
+    headers: dict[str, str] = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(url, headers=headers)
+        if resp.status_code >= 400:
+            return []
+        data = resp.json()
+        models_list = data.get("data", data.get("models", []))
+        result = []
+        for m in models_list:
+            if isinstance(m, dict):
+                mid = m.get("id", m.get("model", ""))
+                if mid:
+                    result.append(mid)
+            elif isinstance(m, str):
+                result.append(m)
+        return sorted(result)
+    except Exception as e:
+        logger.warning("Model discovery failed for %s: %s", base_url, e)
+        return []
+
+
 async def validate_base_url(base_url: str, api_key: str, model: str) -> bool:
     """Test a custom endpoint with a minimal request."""
     try:

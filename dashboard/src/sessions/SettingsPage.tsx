@@ -56,6 +56,8 @@ export default function SettingsPage() {
   const [judgeApiKey, setJudgeApiKey] = useState('');
   const [judgeBaseUrl, setJudgeBaseUrl] = useState('');
   const [judgeSaved, setJudgeSaved] = useState(false);
+  const [discoveredModels, setDiscoveredModels] = useState<{ id: string; owned_by: string }[]>([]);
+  const [discovering, setDiscovering] = useState(false);
 
   // Populate from saved settings
   useEffect(() => {
@@ -65,6 +67,26 @@ export default function SettingsPage() {
       if (judgeSettings.base_url) setJudgeBaseUrl(judgeSettings.base_url);
     }
   }, [judgeSettings]);
+
+  // Discover models when base URL changes
+  useEffect(() => {
+    if (!judgeBaseUrl || !auth) {
+      setDiscoveredModels([]);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      setDiscovering(true);
+      try {
+        const result = await auth.client.discoverModels(judgeBaseUrl, judgeApiKey || undefined);
+        setDiscoveredModels(result.models || []);
+      } catch {
+        setDiscoveredModels([]);
+      } finally {
+        setDiscovering(false);
+      }
+    }, 500); // debounce
+    return () => clearTimeout(timer);
+  }, [judgeBaseUrl, judgeApiKey, auth]);
 
   if (!auth) return null;
 
@@ -85,7 +107,7 @@ export default function SettingsPage() {
   }
 
   function handleSaveJudge() {
-    if (!judgeModel || !judgeApiKey) return;
+    if (!judgeModel || (!judgeApiKey && !judgeBaseUrl)) return;
     saveJudge.mutate(
       { provider: judgeProvider, model: judgeModel, apiKey: judgeApiKey, baseUrl: judgeBaseUrl || undefined },
       {
@@ -183,8 +205,30 @@ export default function SettingsPage() {
             </div>
 
             <div className="mb-3">
-              <label className="text-sm text-text-muted block mb-1">Model</label>
-              {isOpenRouter ? (
+              <label className="text-sm text-text-muted block mb-1">
+                Model
+                {discovering && <span className="text-text-muted/50 ml-2">discovering...</span>}
+              </label>
+              {judgeBaseUrl && discoveredModels.length > 0 ? (
+                <select
+                  value={judgeModel}
+                  onChange={(e) => { setJudgeModel(e.target.value); setJudgeSaved(false); }}
+                  className="w-full px-2 py-1.5 bg-bg-primary border border-border rounded text-sm text-text-secondary focus:outline-none focus:border-accent font-mono"
+                >
+                  <option value="">Select a model...</option>
+                  {discoveredModels.map((m) => (
+                    <option key={m.id} value={m.id}>{m.id}{m.owned_by ? ` (${m.owned_by})` : ''}</option>
+                  ))}
+                </select>
+              ) : judgeBaseUrl ? (
+                <input
+                  type="text"
+                  value={judgeModel}
+                  onChange={(e) => { setJudgeModel(e.target.value); setJudgeSaved(false); }}
+                  placeholder="model-name"
+                  className="w-full px-2 py-1.5 bg-bg-primary border border-border rounded text-sm text-text-secondary placeholder:text-text-muted/50 focus:outline-none focus:border-accent font-mono"
+                />
+              ) : isOpenRouter ? (
                 <input
                   type="text"
                   value={judgeModel}
@@ -233,7 +277,7 @@ export default function SettingsPage() {
             <div className="flex items-center gap-2 mb-2">
               <button
                 onClick={handleSaveJudge}
-                disabled={!judgeModel || !judgeApiKey || saveJudge.isPending}
+                disabled={!judgeModel || (!judgeApiKey && !judgeBaseUrl) || saveJudge.isPending}
                 className="px-3 py-1.5 text-sm bg-accent text-white rounded hover:bg-accent/90 transition-colors disabled:opacity-50"
               >
                 {saveJudge.isPending ? 'Saving...' : 'Save'}
