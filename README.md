@@ -65,7 +65,7 @@ Sessions are indexed locally for fast browsing via the CLI. Cloud sync is opt-in
 |---------|-------------|
 | `sfs list` | List captured sessions with filtering and sorting |
 | `sfs show <id>` | Show session details, messages, and cost estimates |
-| `sfs resume <id> [--in TOOL]` | Resume a session in any supported tool |
+| `sfs resume <id> [--in TOOL]` | Resume a session in any supported tool (auto-launches) |
 | `sfs fork <id>` | Fork a session into a new independent session |
 | `sfs checkpoint <id>` | Create a named checkpoint of a session |
 | `sfs export <id>` | Export as `.sfs`, markdown, or Claude Code format |
@@ -78,6 +78,8 @@ Sessions are indexed locally for fast browsing via the CLI. Cloud sync is opt-in
 | `sfs storage prune` | Prune old sessions to free disk space |
 | `sfs daemon start\|stop\|restart\|status\|logs` | Manage the background daemon |
 | `sfs watcher list\|enable\|disable` | Manage tool watchers |
+| `sfs audit <id>` | Audit a session for hallucinations with LLM-as-a-Judge |
+| `sfs project init\|edit\|show` | Manage shared project context for your team |
 | `sfs config show\|set` | Manage configuration |
 | `sfs mcp serve` | Start MCP server for AI tool integration |
 | `sfs mcp install --for TOOL` | Auto-configure MCP for Claude Code, Cursor, or Copilot |
@@ -137,6 +139,21 @@ sfs pull ses_abc123
 sfs resume ses_abc123 --in codex
 ```
 
+## Shared Project Context
+
+Share architecture decisions, conventions, and team knowledge with every AI agent working on your codebase.
+
+```bash
+# Initialize project context (run from inside a git repo)
+sfs project init
+sfs project edit    # Opens in $EDITOR
+
+# Any teammate with sessions in the repo can read it
+sfs project show
+```
+
+AI agents connected via the MCP server can call `get_project_context` to read the document automatically. See [Project Context](docs/project-context.md) for details.
+
 ## Web Dashboard
 
 A browser-based interface for browsing and managing synced sessions. Accessible at `http://localhost:8000` when running the self-hosted server, or at `app.sessionfs.dev` for cloud accounts.
@@ -165,11 +182,12 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 What works today:
 - Eight-tool session capture (Claude Code, Codex, Gemini, Cursor, Copilot CLI, Amp, Cline, Roo Code)
-- Cross-tool resume between Claude Code, Codex, Gemini, and Copilot CLI
+- Cross-tool resume between Claude Code, Codex, Gemini, and Copilot CLI (auto-launches native tool)
+- Shared project context — one document per repo, shared across the team, readable via MCP
 - Local storage management with configurable retention, pruning, and disk warnings
 - Full-text search across all sessions (CLI + dashboard + API)
-- MCP server — AI tools can search your past sessions for context
-- LLM-as-a-Judge — audit sessions for hallucinations (BYOK, multi-provider, OpenRouter)
+- MCP server with 5 tools — search, context, recent, related, and project context
+- LLM-as-a-Judge — audit sessions for hallucinations (BYOK, multi-provider, OpenRouter, custom base URL for LiteLLM/vLLM/Ollama)
 - GitHub PR App — auto-comment AI session context on pull requests
 - Team handoff with email notification and smart workspace resolution
 - Multi-provider email (Resend, SMTP, or disabled for air-gapped)
