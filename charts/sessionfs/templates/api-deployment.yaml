@@ -87,6 +87,8 @@ spec:
               value: {{ .Values.email.smtp.tls | quote }}
             - name: SFS_SMTP_SSL
               value: {{ .Values.email.smtp.ssl | quote }}
+            - name: SFS_SMTP_VERIFY_SSL
+              value: {{ .Values.email.smtp.verifySSL | quote }}
             {{- if .Values.email.smtp.existingSecret }}
             - name: SFS_SMTP_USERNAME
               valueFrom:

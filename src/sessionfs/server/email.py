@@ -70,7 +70,7 @@ class EmailProvider(ABC):
     ) -> dict[str, Any]:
         from sessionfs.server.email_templates import handoff_email
 
-        pull_command = f"sfs pull --handoff {handoff_id}"
+        pull_command = f"sfs pull-handoff {handoff_id}"
         html = handoff_email(
             sender_email=sender_email,
             session_title=session_title,
@@ -163,6 +163,7 @@ class SMTPProvider(EmailProvider):
         from_email: str = "SessionFS <noreply@sessionfs.dev>",
         use_tls: bool = True,
         use_ssl: bool = False,
+        verify_ssl: bool = True,
     ) -> None:
         self._host = host
         self._port = port
@@ -171,6 +172,7 @@ class SMTPProvider(EmailProvider):
         self._from_email = from_email
         self._use_tls = use_tls
         self._use_ssl = use_ssl
+        self._verify_ssl = verify_ssl
 
     async def send(self, to: str, subject: str, html: str) -> bool:
         msg = MIMEMultipart("alternative")
@@ -186,6 +188,9 @@ class SMTPProvider(EmailProvider):
         try:
             if self._use_ssl:
                 context = ssl.create_default_context()
+                if not self._verify_ssl:
+                    context.check_hostname = False
+                    context.verify_mode = ssl.CERT_NONE
                 with smtplib.SMTP_SSL(self._host, self._port, context=context) as srv:
                     if self._username:
                         srv.login(self._username, self._password)
@@ -195,6 +200,9 @@ class SMTPProvider(EmailProvider):
                     srv.ehlo()
                     if self._use_tls:
                         context = ssl.create_default_context()
+                        if not self._verify_ssl:
+                            context.check_hostname = False
+                            context.verify_mode = ssl.CERT_NONE
                         srv.starttls(context=context)
                         srv.ehlo()
                     if self._username:
@@ -247,6 +255,7 @@ def create_email_provider(config) -> EmailProvider:
             from_email=config.email_from,
             use_tls=config.smtp_tls,
             use_ssl=config.smtp_ssl,
+            verify_ssl=config.smtp_verify_ssl,
         )
     elif provider == "none":
         return NullProvider()

@@ -208,6 +208,7 @@ email:
     secretKeyPassword: password
     tls: true
     ssl: false
+    verifySSL: true    # Set to false for internal relays with self-signed certs
 
 ## Security
 security:

@@ -59,6 +59,7 @@ All SessionFS server environment variables use the `SFS_` prefix.
 | `SFS_LOG_LEVEL` | Log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` | `INFO` |
 | `SFS_CORS_ORIGINS` | Allowed CORS origins (comma-separated) | — |
 | `SFS_RATE_LIMIT_PER_MINUTE` | API rate limit per API key per minute. Set to `0` to disable | `120` |
+| `SFS_SMTP_VERIFY_SSL` | Verify SSL certificates for SMTP. Set to `false` for self-signed certs | `true` |
 | `SFS_JUDGE_BASE_URL` | Custom OpenAI-compatible endpoint for LLM Judge (LiteLLM, vLLM, Ollama, etc.) | — |
 | `SFS_DASHBOARD_DIR` | Path to dashboard static files | `./static` |
 

@@ -17,10 +17,22 @@ from sessionfs.server.routes import admin, audit, auth, bookmarks, handoffs, hea
 from sessionfs.server.storage.local import LocalBlobStore
 
 
+def _configure_logging() -> None:
+    """Ensure sessionfs loggers propagate to root so uvicorn shows them."""
+    import logging
+
+    for name in ("sessionfs.api", "sessionfs.email", "sessionfs.judge.providers"):
+        logger = logging.getLogger(name)
+        if not logger.handlers:
+            logger.propagate = True
+
+
 def create_app(config: ServerConfig | None = None) -> FastAPI:
     """Create and configure the FastAPI application."""
     if config is None:
         config = ServerConfig()
+
+    _configure_logging()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
