@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.2] - 2026-03-27
+
+### Added
+- **Custom base URL for LLM Judge** — `--base-url` flag, `SFS_JUDGE_BASE_URL` env var, and dashboard settings field for LiteLLM, vLLM, Ollama, Azure OpenAI, and any OpenAI-compatible gateway
+- **Shared project context** — `sfs project init|edit|show|set-context|get-context` CLI commands, REST API, and MCP `get_project_context` tool for team-shared instructions
+- Project context database migration (projects table)
+- Judge base URL database migration (user_judge_settings.base_url column)
+- `docs/project-context.md` guide
+
+### Fixed
+- **Codex resume broken** — rollout files used `source: "custom"` which Codex CLI rejects on resume; changed to `source: "cli"` with `originator: "codex_cli_rs"`
+- Codex rollout missing `output`/`exit_code` on `local_shell_call` payloads and `status` on `function_call` payloads
+- Codex rollout had extra fields (`id`, `end_turn`) on message payloads that native format doesn't use
+- `sfs resume --in codex` hint said `codex --resume` (wrong flag) then `codex --thread` (wrong flag) — Codex uses `codex resume` subcommand
+
+### Changed
+- `sfs resume` now auto-launches the target tool instead of printing a copy-paste command:
+  - Claude Code: `claude --resume <id>`
+  - Codex: `codex resume <uuid>`
+  - Gemini: `gemini --resume latest`
+
 ## [0.8.1] - 2026-03-26
 
 ### Fixed

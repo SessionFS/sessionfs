@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
 import typer
@@ -117,7 +118,14 @@ def _resume_in_claude_code(
     console.print(f"  JSONL: {result['jsonl_path']}")
     console.print(f"  Messages: {result['message_count']}")
     console.print()
-    console.print(f"Open Claude Code in [bold]{target_path}[/bold] to continue.")
+
+    # Launch Claude Code resume directly
+    claude_bin = shutil.which("claude")
+    if claude_bin:
+        console.print(f"Launching [bold]claude --resume {result['cc_session_id'][:12]}...[/bold]")
+        subprocess.run([claude_bin, "--resume", result["cc_session_id"]], cwd=target_path)
+    else:
+        console.print(f"Open Claude Code in [bold]{target_path}[/bold] to continue.")
 
 
 def _resume_in_codex(
@@ -148,7 +156,14 @@ def _resume_in_codex(
     console.print(f"  Messages: {result['message_count']}")
     console.print(f"  Index updated: {inject_result['index_updated']}")
     console.print()
-    console.print(f"Run [bold]codex --thread {result['codex_session_id'][:12]}[/bold] to continue.")
+
+    # Launch Codex resume directly
+    codex_bin = shutil.which("codex")
+    if codex_bin:
+        console.print(f"Launching [bold]codex resume {result['codex_session_id'][:12]}...[/bold]")
+        subprocess.run([codex_bin, "resume", result["codex_session_id"]])
+    else:
+        console.print(f"Run [bold]codex resume {result['codex_session_id']}[/bold] to continue.")
 
 
 def _resume_in_copilot(
@@ -199,7 +214,14 @@ def _resume_in_gemini(
     console.print(f"  File: {inject_result['session_path']}")
     console.print(f"  Messages: {result['message_count']}")
     console.print()
-    console.print(f"Open Gemini CLI in [bold]{project}[/bold] to continue.")
+
+    # Launch Gemini resume directly
+    gemini_bin = shutil.which("gemini")
+    if gemini_bin:
+        console.print("Launching [bold]gemini --resume latest[/bold]...")
+        subprocess.run([gemini_bin, "--resume", "latest"], cwd=project)
+    else:
+        console.print(f"Open Gemini CLI in [bold]{project}[/bold] to continue.")
 
 
 def checkpoint(

@@ -107,6 +107,7 @@ export interface JudgeSettings {
   provider: string;
   model: string;
   key_set: boolean;
+  base_url: string | null;
 }
 
 export interface AdminUser {
@@ -294,10 +295,10 @@ export function createApiClient(baseUrl: string, apiKey: string) {
     getJudgeSettings: () =>
       request<JudgeSettings>('/api/v1/settings/judge'),
 
-    saveJudgeSettings: (provider: string, model: string, apiKey: string) =>
+    saveJudgeSettings: (provider: string, model: string, apiKey: string, baseUrl?: string) =>
       request<void>('/api/v1/settings/judge', {
         method: 'PUT',
-        body: JSON.stringify({ provider, model, api_key: apiKey }),
+        body: JSON.stringify({ provider, model, api_key: apiKey, base_url: baseUrl || null }),
       }),
 
     clearJudgeSettings: () =>

@@ -54,6 +54,7 @@ export default function SettingsPage() {
   const [judgeProvider, setJudgeProvider] = useState('openrouter');
   const [judgeModel, setJudgeModel] = useState('');
   const [judgeApiKey, setJudgeApiKey] = useState('');
+  const [judgeBaseUrl, setJudgeBaseUrl] = useState('');
   const [judgeSaved, setJudgeSaved] = useState(false);
 
   // Populate from saved settings
@@ -61,6 +62,7 @@ export default function SettingsPage() {
     if (judgeSettings) {
       if (judgeSettings.provider) setJudgeProvider(judgeSettings.provider);
       if (judgeSettings.model) setJudgeModel(judgeSettings.model);
+      if (judgeSettings.base_url) setJudgeBaseUrl(judgeSettings.base_url);
     }
   }, [judgeSettings]);
 
@@ -85,7 +87,7 @@ export default function SettingsPage() {
   function handleSaveJudge() {
     if (!judgeModel || !judgeApiKey) return;
     saveJudge.mutate(
-      { provider: judgeProvider, model: judgeModel, apiKey: judgeApiKey },
+      { provider: judgeProvider, model: judgeModel, apiKey: judgeApiKey, baseUrl: judgeBaseUrl || undefined },
       {
         onSuccess: () => {
           setJudgeSaved(true);
@@ -99,6 +101,7 @@ export default function SettingsPage() {
     clearJudge.mutate(undefined, {
       onSuccess: () => {
         setJudgeApiKey('');
+        setJudgeBaseUrl('');
         setJudgeSaved(false);
       },
     });
@@ -211,6 +214,20 @@ export default function SettingsPage() {
                 placeholder={keyPlaceholder}
                 className="w-full px-2 py-1.5 bg-bg-primary border border-border rounded text-sm text-text-secondary placeholder:text-text-muted/50 focus:outline-none focus:border-accent font-mono"
               />
+            </div>
+
+            <div className="mb-3">
+              <label className="text-sm text-text-muted block mb-1">Base URL <span className="text-text-muted/50">(optional)</span></label>
+              <input
+                type="text"
+                value={judgeBaseUrl}
+                onChange={(e) => { setJudgeBaseUrl(e.target.value); setJudgeSaved(false); }}
+                placeholder="https://litellm.company.internal/v1"
+                className="w-full px-2 py-1.5 bg-bg-primary border border-border rounded text-sm text-text-secondary placeholder:text-text-muted/50 focus:outline-none focus:border-accent font-mono"
+              />
+              <p className="text-xs text-text-muted/60 mt-1">
+                Leave blank for provider default. Set for LiteLLM, vLLM, Ollama, or any OpenAI-compatible gateway.
+              </p>
             </div>
 
             <div className="flex items-center gap-2 mb-2">

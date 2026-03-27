@@ -28,6 +28,7 @@ class AuditRequest(BaseModel):
     model: str | None = None
     provider: str | None = None
     llm_api_key: str | None = None
+    base_url: str | None = None
 
 
 class AuditFinding(BaseModel):
@@ -173,6 +174,7 @@ async def run_audit(
     llm_api_key = body.llm_api_key
     model = body.model or "claude-sonnet-4"
     provider = body.provider
+    base_url = body.base_url
 
     if not llm_api_key:
         from sessionfs.server.db.models import UserJudgeSettings
@@ -195,11 +197,18 @@ async def run_audit(
                 model = settings.model
             if not provider:
                 provider = settings.provider
+            if not base_url:
+                base_url = settings.base_url
         else:
             raise HTTPException(
                 status_code=400,
                 detail="No API key configured. Provide llm_api_key in request or configure judge settings.",
             )
+
+    # Fall back to deployment-wide env var
+    if not base_url:
+        import os
+        base_url = os.environ.get("SFS_JUDGE_BASE_URL") or None
 
     # Extract messages from the stored archive
     messages = await _extract_messages_from_archive(blob_store, session.blob_key)
@@ -216,7 +225,7 @@ async def run_audit(
         async def _run_audit_background():
             try:
                 report = await _run_judge_pipeline(
-                    session_id, messages, model, llm_api_key, provider,
+                    session_id, messages, model, llm_api_key, provider, base_url,
                 )
                 report_key = f"sessions/{user.id}/{session_id}_audit.json"
                 from dataclasses import asdict
@@ -244,7 +253,7 @@ async def run_audit(
 
     # Small sessions — run synchronously
     report = await _run_judge_pipeline(
-        session_id, messages, model, llm_api_key, provider,
+        session_id, messages, model, llm_api_key, provider, base_url,
     )
 
     # Store the report
@@ -262,6 +271,7 @@ async def _run_judge_pipeline(
     model: str,
     llm_api_key: str,
     provider: str | None,
+    base_url: str | None = None,
 ):
     """Run the judge pipeline — extracted for sync and background use."""
     from sessionfs.judge.evidence import gather_evidence
@@ -320,7 +330,7 @@ async def _run_judge_pipeline(
         try:
             response = await call_llm(
                 model=model, system=JUDGE_SYSTEM_PROMPT, prompt=prompt,
-                api_key=llm_api_key, provider=provider,
+                api_key=llm_api_key, provider=provider, base_url=base_url,
             )
         except Exception:
             continue  # Skip failed chunks, don't crash the whole audit

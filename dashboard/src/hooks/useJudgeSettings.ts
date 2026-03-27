@@ -21,8 +21,8 @@ export function useSaveJudgeSettings() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ provider, model, apiKey }: { provider: string; model: string; apiKey: string }) =>
-      auth!.client.saveJudgeSettings(provider, model, apiKey),
+    mutationFn: ({ provider, model, apiKey, baseUrl }: { provider: string; model: string; apiKey: string; baseUrl?: string }) =>
+      auth!.client.saveJudgeSettings(provider, model, apiKey, baseUrl),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['judgeSettings'] });
     },
@@ -40,6 +40,7 @@ export function useClearJudgeSettings() {
         provider: '',
         model: '',
         key_set: false,
+        base_url: null,
       });
     },
   });

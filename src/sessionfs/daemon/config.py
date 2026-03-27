@@ -133,6 +133,13 @@ class SyncConfig(BaseModel):
     retry_max: int = 5  # max consecutive failures before degraded
 
 
+class JudgeConfig(BaseModel):
+    """Judge LLM configuration."""
+
+    api_key: str = ""
+    base_url: str = ""
+
+
 class DaemonConfig(BaseModel):
     """Top-level daemon configuration."""
 
@@ -149,6 +156,7 @@ class DaemonConfig(BaseModel):
     amp: AmpWatcherConfig = Field(default_factory=AmpWatcherConfig)
     storage: StoragePolicyConfig = Field(default_factory=StoragePolicyConfig)
     sync: SyncConfig = Field(default_factory=SyncConfig)
+    judge: JudgeConfig = Field(default_factory=JudgeConfig)
 
 
 def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> DaemonConfig:

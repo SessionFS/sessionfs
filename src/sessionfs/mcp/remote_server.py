@@ -147,6 +147,25 @@ _TOOLS = [
             },
         },
     ),
+    Tool(
+        name="get_project_context",
+        description=(
+            "Get the shared project context document for a repository. "
+            "Returns architecture decisions, conventions, API contracts, "
+            "and team information that all agents should know. "
+            "Call this early in a session to understand the project."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "git_remote": {
+                    "type": "string",
+                    "description": "Git remote URL or normalized owner/repo format",
+                },
+            },
+            "required": ["git_remote"],
+        },
+    ),
 ]
 
 
@@ -265,6 +284,36 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             for r in results:
                 lines.append(f"- **{r.get('title', 'Untitled')}** (`{r['session_id']}`) — {r.get('source_tool', '?')}")
             return [TextContent(type="text", text="\n".join(lines))]
+
+        elif name == "get_project_context":
+            git_remote = arguments.get("git_remote", "")
+            if not git_remote:
+                return [TextContent(type="text", text="Provide a git_remote argument (e.g. 'github.com/owner/repo' or SSH URL).")]
+
+            from sessionfs.server.github_app import normalize_git_remote
+            normalized = normalize_git_remote(git_remote)
+            if not normalized:
+                return [TextContent(type="text", text="Could not parse git remote URL.")]
+
+            data = await cloud.get_project_context(api_key, normalized)
+            if data is None:
+                return [TextContent(type="text", text=(
+                    f"No project context found for {normalized}. "
+                    f"Create one with: sfs project init && sfs project edit"
+                ))]
+
+            doc = data.get("context_document", "")
+            if not doc.strip():
+                return [TextContent(type="text", text=(
+                    f"Project context for {normalized} exists but is empty. "
+                    f"Edit it with: sfs project edit"
+                ))]
+
+            return [TextContent(type="text", text=(
+                f"# Project Context: {data.get('name', normalized)}\n"
+                f"_Last updated: {data.get('updated_at', '')[:10]}_\n\n"
+                f"{doc}"
+            ))]
 
         else:
             return [TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))]

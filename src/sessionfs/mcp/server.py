@@ -149,6 +149,24 @@ _TOOLS = [
             },
         },
     ),
+    Tool(
+        name="get_project_context",
+        description=(
+            "Get the shared project context document for a repository. "
+            "Returns architecture decisions, conventions, API contracts, "
+            "and team information that all agents should know. "
+            "Call this early in a session to understand the project."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "git_remote": {
+                    "type": "string",
+                    "description": "Git remote URL (auto-detected from CWD if empty)",
+                },
+            },
+        },
+    ),
 ]
 
 
@@ -168,6 +186,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = _handle_list_recent(arguments)
         elif name == "find_related_sessions":
             result = _handle_find_related(arguments)
+        elif name == "get_project_context":
+            result = await _handle_get_project_context(arguments)
+            return [TextContent(type="text", text=result if isinstance(result, str) else json.dumps(result, indent=2, default=str))]
         else:
             result = {"error": f"Unknown tool: {name}"}
     except Exception as exc:
@@ -320,6 +341,71 @@ def _handle_find_related(args: dict) -> dict[str, Any]:
         "results": results,
         "count": len(results),
     }
+
+
+async def _handle_get_project_context(args: dict) -> str:
+    """Get shared project context from the cloud API."""
+    import subprocess
+
+    git_remote = args.get("git_remote", "")
+    if not git_remote:
+        try:
+            result = subprocess.run(
+                ["git", "remote", "get-url", "origin"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0:
+                git_remote = result.stdout.strip()
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+
+    if not git_remote:
+        return "No git repository detected. Cannot look up project context."
+
+    from sessionfs.server.github_app import normalize_git_remote
+    normalized = normalize_git_remote(git_remote)
+    if not normalized:
+        return "Could not parse git remote URL."
+
+    # Use the cloud API to fetch project context
+    try:
+        from sessionfs.daemon.config import load_config
+        config = load_config()
+        if not config.sync.api_key:
+            return (
+                "Not authenticated with SessionFS cloud. Run 'sfs auth login' first.\n"
+                "To create project context: sfs project init && sfs project edit"
+            )
+
+        import httpx
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{config.sync.api_url.rstrip('/')}/api/v1/projects/{normalized}",
+                headers={"Authorization": f"Bearer {config.sync.api_key}"},
+            )
+        if resp.status_code == 404:
+            return (
+                f"No project context found for {normalized}. "
+                f"Create one with: sfs project init && sfs project edit"
+            )
+        if resp.status_code >= 400:
+            return f"Error fetching project context: {resp.status_code}"
+
+        data = resp.json()
+        doc = data.get("context_document", "")
+        if not doc or doc.strip() == "" or doc.strip().startswith("# Project Context\n\n## Overview\n<!-- "):
+            return (
+                f"Project context for {normalized} exists but is empty. "
+                f"Edit it with: sfs project edit"
+            )
+        return (
+            f"# Project Context: {data.get('name', normalized)}\n"
+            f"_Last updated: {data.get('updated_at', '')[:10]}_\n\n"
+            f"{doc}"
+        )
+    except Exception as e:
+        logger.warning("Failed to fetch project context: %s", e)
+        return f"Could not fetch project context: {e}"
 
 
 # ---------------------------------------------------------------------------

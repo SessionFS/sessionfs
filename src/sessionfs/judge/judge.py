@@ -256,6 +256,7 @@ async def judge_session(
     model: str = "claude-sonnet-4",
     api_key: str | None = None,
     provider: str | None = None,
+    base_url: str | None = None,
 ) -> JudgeReport:
     """Run the full judge pipeline on a session.
 
@@ -321,6 +322,7 @@ async def judge_session(
             prompt=prompt,
             api_key=api_key,
             provider=provider,
+            base_url=base_url,
         )
 
         findings = _parse_judge_response(response, chunk_claims)
@@ -349,6 +351,7 @@ async def judge_with_consensus(
     model: str = "claude-sonnet-4",
     api_key: str | None = None,
     provider: str | None = None,
+    base_url: str | None = None,
     passes: int = 3,
     threshold: int = 2,
 ) -> JudgeReport:
@@ -361,7 +364,7 @@ async def judge_with_consensus(
     reports: list[JudgeReport] = []
     for i in range(passes):
         logger.info("Consensus pass %d/%d", i + 1, passes)
-        report = await judge_session(session_id, sfs_dir, model, api_key, provider)
+        report = await judge_session(session_id, sfs_dir, model, api_key, provider, base_url)
         reports.append(report)
 
     # Merge: group findings by (message_index, claim), take majority verdict

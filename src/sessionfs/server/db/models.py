@@ -122,6 +122,7 @@ class UserJudgeSettings(Base):
     provider: Mapped[str] = mapped_column(String(50), nullable=False)
     model: Mapped[str] = mapped_column(String(100), nullable=False)
     encrypted_api_key: Mapped[str] = mapped_column(Text, nullable=False)
+    base_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -207,6 +208,26 @@ class GitHubInstallation(Base):
     include_trust_score: Mapped[bool] = mapped_column(Boolean, default=True)
     include_session_links: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class Project(Base):
+    __tablename__ = "projects"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    git_remote_normalized: Mapped[str] = mapped_column(
+        String(255), nullable=False, unique=True, index=True
+    )
+    context_document: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    owner_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 

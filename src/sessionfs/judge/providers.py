@@ -56,6 +56,45 @@ def _is_reasoning_model(model: str) -> bool:
     return base in _REASONING_MODELS
 
 
+async def _call_openai_compatible(
+    url: str,
+    model: str,
+    system: str,
+    prompt: str,
+    api_key: str,
+    temperature: float = 0,
+) -> str:
+    """Call any OpenAI-compatible endpoint (OpenAI, OpenRouter, LiteLLM, vLLM, Ollama, etc.)."""
+    url = url.rstrip("/")
+    if not url.endswith("/chat/completions"):
+        url = f"{url}/chat/completions"
+
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    base_model = model.split("/")[-1] if "/" in model else model
+
+    body: dict = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ],
+        "max_completion_tokens": 4096,
+    }
+    if _is_reasoning_model(base_model):
+        body["reasoning"] = {"effort": "medium"}
+    else:
+        body["temperature"] = temperature
+
+    async with httpx.AsyncClient(timeout=120) as client:
+        resp = await client.post(url, json=body, headers=headers)
+    resp.raise_for_status()
+    data = resp.json()
+    return data["choices"][0]["message"]["content"]
+
+
 async def _call_anthropic(model: str, system: str, prompt: str, api_key: str, temperature: float = 0) -> str:
     """Call the Anthropic Messages API."""
     headers = {
@@ -82,33 +121,6 @@ async def _call_anthropic(model: str, system: str, prompt: str, api_key: str, te
     return "\n".join(parts)
 
 
-async def _call_openai(model: str, system: str, prompt: str, api_key: str, temperature: float = 0) -> str:
-    """Call the OpenAI Chat Completions API."""
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    body: dict = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ],
-        "max_completion_tokens": 4096,
-    }
-    # Reasoning models (o3, o4-mini) reject temperature
-    if _is_reasoning_model(model):
-        body["reasoning"] = {"effort": "medium"}
-    else:
-        body["temperature"] = temperature
-
-    async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.post(_OPENAI_URL, json=body, headers=headers)
-    resp.raise_for_status()
-    data = resp.json()
-    return data["choices"][0]["message"]["content"]
-
-
 async def _call_google(model: str, system: str, prompt: str, api_key: str, temperature: float = 0) -> str:
     """Call the Google Generative Language API."""
     url = _GOOGLE_URL_TEMPLATE.format(model=model)
@@ -132,37 +144,6 @@ async def _call_google(model: str, system: str, prompt: str, api_key: str, tempe
     return ""
 
 
-async def _call_openrouter(model: str, system: str, prompt: str, api_key: str, temperature: float = 0) -> str:
-    """Call the OpenRouter Chat Completions API."""
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://sessionfs.dev",
-        "X-Title": "SessionFS",
-    }
-    # Extract the base model name for reasoning check (e.g., "openai/o3" -> "o3")
-    base_model = model.split("/")[-1] if "/" in model else model
-
-    body: dict = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ],
-        "max_tokens": 4096,
-    }
-    if _is_reasoning_model(base_model):
-        body["reasoning"] = {"effort": "medium"}
-    else:
-        body["temperature"] = temperature
-
-    async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.post(_OPENROUTER_URL, json=body, headers=headers)
-    resp.raise_for_status()
-    data = resp.json()
-    return data["choices"][0]["message"]["content"]
-
-
 async def call_llm(
     model: str,
     system: str,
@@ -170,8 +151,13 @@ async def call_llm(
     api_key: str,
     provider: str | None = None,
     temperature: float = 0,
+    base_url: str | None = None,
 ) -> str:
     """Call an LLM provider with the given system prompt and user prompt.
+
+    If base_url is set, always uses OpenAI-compatible chat completions format
+    regardless of provider — this supports LiteLLM, vLLM, Ollama, Azure OpenAI,
+    and any OpenAI-compatible gateway.
 
     Auto-detects provider from model name if not specified:
     - claude-* -> anthropic
@@ -189,15 +175,72 @@ async def call_llm(
         provider = _detect_provider(model)
 
     provider = provider.lower()
-    logger.info("Calling %s provider with model %s (temp=%s)", provider, model, temperature)
+    logger.info("Calling %s provider with model %s (temp=%s, base_url=%s)", provider, model, temperature, base_url or "default")
+
+    # Custom base URL — always use OpenAI-compatible format
+    if base_url:
+        return await _call_openai_compatible(base_url, model, system, prompt, api_key, temperature)
 
     if provider == "anthropic":
         return await _call_anthropic(model, system, prompt, api_key, temperature)
     elif provider == "openai":
-        return await _call_openai(model, system, prompt, api_key, temperature)
+        return await _call_openai_compatible(_OPENAI_URL, model, system, prompt, api_key, temperature)
     elif provider == "google":
         return await _call_google(model, system, prompt, api_key, temperature)
     elif provider == "openrouter":
-        return await _call_openrouter(model, system, prompt, api_key, temperature)
+        headers_extra = {
+            "HTTP-Referer": "https://sessionfs.dev",
+            "X-Title": "SessionFS",
+        }
+        return await _call_openrouter_with_headers(model, system, prompt, api_key, temperature, headers_extra)
     else:
         raise ValueError(f"Unsupported provider: {provider}")
+
+
+async def _call_openrouter_with_headers(
+    model: str, system: str, prompt: str, api_key: str, temperature: float, extra_headers: dict,
+) -> str:
+    """Call OpenRouter with SessionFS-specific headers."""
+    url = _OPENROUTER_URL
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        **extra_headers,
+    }
+    base_model = model.split("/")[-1] if "/" in model else model
+
+    body: dict = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ],
+        "max_tokens": 4096,
+    }
+    if _is_reasoning_model(base_model):
+        body["reasoning"] = {"effort": "medium"}
+    else:
+        body["temperature"] = temperature
+
+    async with httpx.AsyncClient(timeout=120) as client:
+        resp = await client.post(url, json=body, headers=headers)
+    resp.raise_for_status()
+    data = resp.json()
+    return data["choices"][0]["message"]["content"]
+
+
+async def validate_base_url(base_url: str, api_key: str, model: str) -> bool:
+    """Test a custom endpoint with a minimal request."""
+    try:
+        result = await _call_openai_compatible(
+            url=base_url,
+            model=model,
+            system="You are a test assistant.",
+            prompt="Say 'ok'",
+            api_key=api_key,
+            temperature=0,
+        )
+        return bool(result)
+    except Exception as e:
+        logger.warning("Base URL validation failed: %s — %s", base_url, e)
+        return False

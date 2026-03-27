@@ -124,7 +124,7 @@ def _update_sqlite_index(
                 rollout_path,
                 epoch,
                 epoch,
-                "custom",
+                "cli",
                 "openai",
                 cwd,
                 title or "Imported from SessionFS",

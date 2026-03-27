@@ -90,6 +90,23 @@ class CloudAPIClient:
             resp.raise_for_status()
             return resp.json()
 
+    async def get_project_context(self, api_key: str, git_remote_normalized: str) -> dict[str, Any] | None:
+        """Get project context by normalized git remote."""
+        try:
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                resp = await client.get(
+                    f"{self.base_url}/api/v1/projects/{git_remote_normalized}",
+                    headers=self._headers(api_key),
+                )
+                if resp.status_code == 404:
+                    return None
+                if resp.status_code == 403:
+                    return None
+                resp.raise_for_status()
+                return resp.json()
+        except httpx.HTTPError:
+            return None
+
     async def list_sessions(
         self,
         api_key: str,

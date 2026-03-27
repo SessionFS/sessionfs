@@ -25,6 +25,7 @@ def audit(
     model: str = typer.Option("claude-sonnet-4", "--model", help="Judge LLM model"),
     api_key: Optional[str] = typer.Option(None, "--api-key", help="LLM API key"),
     provider: Optional[str] = typer.Option(None, "--provider", help="LLM provider (anthropic, openai, google, openrouter)"),
+    base_url: Optional[str] = typer.Option(None, "--base-url", help="Custom OpenAI-compatible endpoint (LiteLLM, vLLM, Ollama, etc.)"),
     consensus: bool = typer.Option(False, "--consensus", help="Run 3 passes, report only where 2+ agree"),
     report_only: bool = typer.Option(False, "--report", help="Show existing report only"),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
@@ -39,8 +40,11 @@ def audit(
         _show_existing_report(session_dir, session_id, json_output, fmt)
         return
 
+    # Resolve base URL: CLI flag > env var > config.toml
+    resolved_base_url = _resolve_base_url(base_url)
+
     resolved_key = _resolve_api_key(api_key, model)
-    if resolved_key is None:
+    if resolved_key is None and not resolved_base_url:
         err_console.print(
             "[red]No API key found. Provide --api-key, set it in config.toml [judge], "
             "or set ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY env var.[/red]"
@@ -51,7 +55,7 @@ def audit(
         if consensus:
             console.print("[dim]Running 3 consensus passes (3x cost)...[/dim]")
         report = asyncio.run(
-            _run_judge(session_id, session_dir, model, resolved_key, provider, consensus)
+            _run_judge(session_id, session_dir, model, resolved_key or "", provider, consensus, resolved_base_url)
         )
     except KeyboardInterrupt:
         raise typer.Exit(1)
@@ -108,6 +112,33 @@ def _resolve_api_key(explicit_key: str | None, model: str) -> str | None:
     return None
 
 
+def _resolve_base_url(explicit_url: str | None) -> str | None:
+    """Resolve base URL from flag, env var, or config."""
+    if explicit_url:
+        return explicit_url
+
+    # Check environment variable
+    env_url = os.environ.get("SFS_JUDGE_BASE_URL")
+    if env_url:
+        return env_url
+
+    # Check config.toml [judge] section
+    try:
+        from sessionfs.daemon.config import load_config
+
+        config = load_config()
+        raw = config.model_dump()
+        judge_config = raw.get("judge", {})
+        if isinstance(judge_config, dict):
+            config_url = judge_config.get("base_url", "")
+            if config_url:
+                return config_url
+    except Exception:
+        pass
+
+    return None
+
+
 async def _run_judge(
     session_id: str,
     session_dir,
@@ -115,6 +146,7 @@ async def _run_judge(
     api_key: str,
     provider: str | None,
     consensus: bool = False,
+    base_url: str | None = None,
 ):
     """Run the judge pipeline asynchronously."""
     if consensus:
@@ -126,6 +158,7 @@ async def _run_judge(
             model=model,
             api_key=api_key,
             provider=provider,
+            base_url=base_url,
             passes=3,
             threshold=2,
         )
@@ -138,6 +171,7 @@ async def _run_judge(
         model=model,
         api_key=api_key,
         provider=provider,
+        base_url=base_url,
     )
 
 

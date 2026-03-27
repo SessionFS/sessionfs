@@ -96,7 +96,7 @@ def test_session_meta_is_first_line(sfs_session: Path, tmp_path: Path):
 
     first = json.loads(output.read_text().split("\n")[0])
     assert first["type"] == "session_meta"
-    assert first["payload"]["source"] == "custom"
+    assert first["payload"]["source"] == "cli"
     assert first["payload"]["cwd"] == "/Users/test/project"
 
 

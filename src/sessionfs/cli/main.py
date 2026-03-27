@@ -31,6 +31,7 @@ from sessionfs.cli.cmd_admin import admin_app
 from sessionfs.cli.cmd_mcp import mcp_app
 from sessionfs.cli.cmd_watcher import watcher_app
 from sessionfs.cli.cmd_storage import storage_app
+from sessionfs.cli.cmd_project import project_app
 
 app.add_typer(daemon_app, name="daemon")
 app.add_typer(config_app, name="config")
@@ -40,6 +41,7 @@ app.add_typer(mcp_app, name="mcp")
 app.add_typer(handoffs_app, name="handoffs")
 app.add_typer(watcher_app, name="watcher")
 app.add_typer(storage_app, name="storage")
+app.add_typer(project_app, name="project")
 
 # Register top-level commands
 from sessionfs.cli.cmd_sessions import list_sessions, show_session

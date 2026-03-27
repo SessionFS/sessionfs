@@ -82,9 +82,9 @@ def convert_sfs_to_codex(
             "id": codex_session_id,
             "timestamp": created_at,
             "cwd": effective_cwd,
-            "originator": "sessionfs_import",
+            "originator": "codex_cli_rs",
             "cli_version": "0.116.0",
-            "source": "custom",
+            "source": "cli",
             "model_provider": model_info.get("provider", "openai"),
             "base_instructions": None,
             "git": {
@@ -171,7 +171,7 @@ def convert_sfs_to_codex(
                     lines.append(_response_message(
                         ts, "assistant",
                         [{"type": "output_text", "text": block.get("text", "")}],
-                        end_turn=True, phase="final_answer",
+                        phase="final_answer",
                     ))
                     msg_count += 1
 
@@ -212,6 +212,8 @@ def convert_sfs_to_codex(
                                     "env": {},
                                     "user": None,
                                 },
+                                "output": [],
+                                "exit_code": 0,
                             },
                         })
                     else:
@@ -226,6 +228,7 @@ def convert_sfs_to_codex(
                                 "namespace": None,
                                 "arguments": args,
                                 "call_id": call_id,
+                                "status": "completed",
                             },
                         })
 
@@ -358,20 +361,19 @@ def _response_message(
     ts: str,
     role: str,
     content: list[dict],
-    end_turn: bool = False,
-    phase: str = "final_answer",
+    phase: str | None = None,
 ) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "type": "message",
+        "role": role,
+        "content": content,
+    }
+    if phase:
+        payload["phase"] = phase
     return {
         "timestamp": ts,
         "type": "response_item",
-        "payload": {
-            "type": "message",
-            "id": f"msg_{uuid_mod.uuid4().hex[:24]}",
-            "role": role,
-            "content": content,
-            "end_turn": end_turn,
-            "phase": phase,
-        },
+        "payload": payload,
     }
 
 

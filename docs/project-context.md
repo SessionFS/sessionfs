@@ -1,0 +1,137 @@
+# Shared Project Context
+
+Share a single source-of-truth document with every AI agent working on your codebase. Any teammate, on any device, using any AI tool with the SessionFS MCP server, gets the same project context.
+
+## Quick Start
+
+```bash
+# From inside your git repo
+sfs project init
+sfs project edit          # Opens in $EDITOR
+
+# Other teammates can now see it
+sfs project show
+```
+
+## How It Works
+
+1. **One document per repository** — matched by git remote URL (SSH and HTTPS both work)
+2. **Shared across the team** — anyone with sessions in the repo can read and edit
+3. **Accessible via MCP** — AI agents call `get_project_context` to read the document
+4. **Free-form markdown** — write whatever your team needs
+
+## CLI Commands
+
+### `sfs project init`
+
+Create a project context for the current repository. Detects the git remote automatically.
+
+```bash
+cd ~/code/my-project
+sfs project init
+# Project created for myorg/my-project
+# Run 'sfs project edit' to add context.
+```
+
+### `sfs project edit`
+
+Open the context document in your editor. Changes are uploaded on save.
+
+```bash
+sfs project edit
+# Opens in $EDITOR (default: nano)
+```
+
+Set your preferred editor:
+
+```bash
+export EDITOR=vim
+# or
+export EDITOR="code --wait"
+```
+
+### `sfs project show`
+
+Display the current project context with metadata.
+
+```bash
+sfs project show
+# Project: my-project
+# Remote:  myorg/my-project
+# Updated: 2026-03-26
+#
+# # Architecture
+# ...
+```
+
+### `sfs project set-context`
+
+Set the context from a file (useful for CI or scripting).
+
+```bash
+sfs project set-context ./PROJECT_INSTRUCTIONS.md
+# Project context updated (2.4 KB).
+```
+
+### `sfs project get-context`
+
+Output raw markdown to stdout (useful for piping).
+
+```bash
+sfs project get-context > local-copy.md
+```
+
+## MCP Integration
+
+When connected to the SessionFS MCP server, AI agents can call `get_project_context` to read the shared document. This works with any MCP-aware tool (Claude Code, Cursor, etc.).
+
+The tool auto-detects the git remote from the current working directory when using the local MCP server. For the remote MCP server, pass the git remote as an argument.
+
+## What to Include
+
+The default template provides a starting structure:
+
+```markdown
+# Project Context
+
+## Overview
+What is this project? One paragraph.
+
+## Architecture
+Tech stack, infrastructure, key services.
+
+## Conventions
+Coding standards, branch strategy, PR process.
+
+## API Contracts
+Key endpoints, request/response formats.
+
+## Key Decisions
+Important decisions that are locked and shouldn't be revisited.
+
+## Team
+Who works on what.
+```
+
+Write whatever is useful for your team. Some ideas:
+
+- Database schema overview
+- Deployment process
+- Testing conventions
+- Security requirements
+- Third-party service credentials (names only, not values)
+- Links to external documentation
+
+## Access Control
+
+- **Read:** Any authenticated user with sessions in the repository
+- **Write:** Same as read (team trust model)
+- **Owner:** The user who ran `sfs project init`
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/v1/projects/` | Create a project context |
+| GET | `/api/v1/projects/{remote}` | Get project context by git remote |
+| PUT | `/api/v1/projects/{remote}/context` | Update the context document |

@@ -26,12 +26,14 @@ class JudgeSettingsRequest(BaseModel):
     provider: str
     model: str
     api_key: str
+    base_url: str | None = None
 
 
 class JudgeSettingsResponse(BaseModel):
     provider: str
     model: str
     key_set: bool
+    base_url: str | None = None
 
 
 def _get_fernet() -> Fernet:
@@ -59,18 +61,20 @@ async def put_judge_settings(
         existing.provider = body.provider
         existing.model = body.model
         existing.encrypted_api_key = encrypted_key
+        existing.base_url = body.base_url
     else:
         settings = UserJudgeSettings(
             user_id=user.id,
             provider=body.provider,
             model=body.model,
             encrypted_api_key=encrypted_key,
+            base_url=body.base_url,
         )
         db.add(settings)
 
     await db.commit()
 
-    return JudgeSettingsResponse(provider=body.provider, model=body.model, key_set=True)
+    return JudgeSettingsResponse(provider=body.provider, model=body.model, key_set=True, base_url=body.base_url)
 
 
 @router.get("/judge", response_model=JudgeSettingsResponse)
@@ -90,6 +94,7 @@ async def get_judge_settings(
         provider=settings.provider,
         model=settings.model,
         key_set=True,
+        base_url=settings.base_url,
     )
 
 
