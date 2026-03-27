@@ -199,16 +199,18 @@ async def run_audit(
                 provider = settings.provider
             if not base_url:
                 base_url = settings.base_url
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail="No API key configured. Provide llm_api_key in request or configure judge settings.",
-            )
 
     # Fall back to deployment-wide env var
     if not base_url:
         import os
         base_url = os.environ.get("SFS_JUDGE_BASE_URL") or None
+
+    # Require either an API key or a base URL (some endpoints like Ollama need no key)
+    if not llm_api_key and not base_url:
+        raise HTTPException(
+            status_code=400,
+            detail="No API key or base URL configured. Provide llm_api_key, base_url, or configure judge settings.",
+        )
 
     # Extract messages from the stored archive
     messages = await _extract_messages_from_archive(blob_store, session.blob_key)

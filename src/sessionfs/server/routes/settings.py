@@ -7,8 +7,9 @@ import hashlib
 import logging
 import os
 
+import httpx
 from cryptography.fernet import Fernet
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,7 +26,7 @@ router = APIRouter(prefix="/api/v1/settings", tags=["settings"])
 class JudgeSettingsRequest(BaseModel):
     provider: str
     model: str
-    api_key: str
+    api_key: str = ""
     base_url: str | None = None
 
 
@@ -108,6 +109,67 @@ async def delete_judge_settings(
     await db.execute(stmt)
     await db.commit()
     return {"deleted": True}
+
+
+@router.get("/judge/models")
+async def discover_models(
+    base_url: str = Query(..., description="OpenAI-compatible endpoint URL"),
+    api_key: str = Query("", description="API key (optional for local endpoints)"),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Discover available models from an OpenAI-compatible endpoint.
+
+    Queries the /v1/models (or /models) endpoint and returns the model list.
+    Works with LiteLLM, vLLM, Ollama, Azure OpenAI, and any OpenAI-compatible gateway.
+    """
+    url = base_url.rstrip("/")
+    if not url.endswith("/models"):
+        if url.endswith("/v1"):
+            url = f"{url}/models"
+        else:
+            url = f"{url}/v1/models"
+
+    headers: dict[str, str] = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(url, headers=headers)
+
+        if resp.status_code == 404:
+            # Some endpoints use /models without /v1 prefix
+            alt_url = base_url.rstrip("/") + "/models"
+            if alt_url != url:
+                resp = await httpx.AsyncClient(timeout=15).__aenter__()
+                async with httpx.AsyncClient(timeout=15) as client:
+                    resp = await client.get(alt_url, headers=headers)
+
+        if resp.status_code >= 400:
+            return {"models": [], "error": f"Endpoint returned {resp.status_code}"}
+
+        data = resp.json()
+        models_list = data.get("data", data.get("models", []))
+
+        models = []
+        for m in models_list:
+            if isinstance(m, dict):
+                model_id = m.get("id", m.get("model", ""))
+                if model_id:
+                    models.append({
+                        "id": model_id,
+                        "owned_by": m.get("owned_by", ""),
+                    })
+            elif isinstance(m, str):
+                models.append({"id": m, "owned_by": ""})
+
+        return {"models": models, "base_url": base_url}
+
+    except httpx.TimeoutException:
+        return {"models": [], "error": "Connection timed out"}
+    except Exception as e:
+        logger.warning("Model discovery failed for %s: %s", base_url, e)
+        return {"models": [], "error": str(e)}
 
 
 # --- GitHub installation settings ---

@@ -306,6 +306,14 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         method: 'DELETE',
       }),
 
+    discoverModels: (baseUrl: string, apiKey?: string) => {
+      const params = new URLSearchParams({ base_url: baseUrl });
+      if (apiKey) params.set('api_key', apiKey);
+      return request<{ models: { id: string; owned_by: string }[]; error?: string; base_url?: string }>(
+        `/api/v1/settings/judge/models?${params}`,
+      );
+    },
+
     // Admin endpoints
     adminListUsers: (params: { page?: number; page_size?: number; email?: string } = {}) => {
       const sp = new URLSearchParams();
