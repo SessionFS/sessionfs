@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.3] - 2026-03-27
+
+### Added
+- `SFS_SMTP_VERIFY_SSL` — disable SSL certificate verification for internal SMTP relays with self-signed certs
+- Model discovery endpoint `GET /api/v1/settings/judge/models` — queries OpenAI-compatible `/v1/models` to list available models
+- Dashboard auto-discovers models when custom base URL is set (dropdown instead of hardcoded list)
+
+### Fixed
+- Handoff email showed wrong command (`sfs pull --handoff`) — corrected to `sfs pull-handoff`
+- CLI handoff hint showed same wrong command
+- LLM Judge returned 403 when using custom base URL without API key (Ollama, local vLLM) — API key is now optional when `base_url` is set
+- SMTP email logger not visible in uvicorn container logs — propagated to root logger
+
 ## [0.8.2] - 2026-03-27
 
 ### Added
