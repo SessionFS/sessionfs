@@ -31,6 +31,7 @@ class ServerConfig(BaseSettings):
     smtp_password: str = ""
     smtp_tls: bool = True
     smtp_ssl: bool = False
+    smtp_verify_ssl: bool = True
     verification_secret: str = ""
     max_sync_bytes_free: int = 52_428_800  # 50 MB — free tier
     max_sync_bytes_paid: int = 314_572_800  # 300 MB — pro/team/enterprise/admin

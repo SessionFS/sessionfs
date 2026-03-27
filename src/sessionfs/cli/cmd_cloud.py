@@ -542,7 +542,7 @@ def handoff(
             console.print(f"  Recipient: {to}")
             console.print(f"  Expires: {data['expires_at']}")
             console.print("\nRecipient can pull with:")
-            console.print(f"  sfs pull --handoff {handoff_id}")
+            console.print(f"  sfs pull-handoff {handoff_id}")
         else:
             err_console.print(f"[red]Handoff failed: {resp.text}[/red]")
             raise SystemExit(1)
