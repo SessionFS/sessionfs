@@ -411,6 +411,39 @@ export function createApiClient(baseUrl: string, apiKey: string) {
     listFolderSessions: (folderId: string) =>
       request<FolderSessionsResponse>(`/api/v1/bookmarks/folders/${folderId}/sessions`),
 
+    // Sync settings
+    getSyncSettings: () =>
+      request<{ mode: string; debounce_seconds: number }>('/api/v1/sync/settings'),
+
+    updateSyncSettings: (mode: string, debounceSeconds?: number) =>
+      request<{ mode: string; debounce_seconds: number }>('/api/v1/sync/settings', {
+        method: 'PUT',
+        body: JSON.stringify({ mode, debounce_seconds: debounceSeconds }),
+      }),
+
+    getSyncStatus: () =>
+      request<{
+        mode: string;
+        total_sessions: number;
+        synced_sessions: number;
+        watched_sessions: number;
+        queued: number;
+        failed: number;
+        storage_used_bytes: number;
+        storage_limit_bytes: number;
+      }>('/api/v1/sync/status'),
+
+    watchSession: (sessionId: string) =>
+      request<{ status: string }>(`/api/v1/sync/watch/${sessionId}`, { method: 'POST' }),
+
+    unwatchSession: (sessionId: string) =>
+      request<{ status: string }>(`/api/v1/sync/watch/${sessionId}`, { method: 'DELETE' }),
+
+    getSyncWatchlist: () =>
+      request<{ sessions: { session_id: string; status: string; last_synced_at: string | null }[] }>(
+        '/api/v1/sync/watchlist',
+      ),
+
     // GitHub integration
     getGitHubInstallation: () =>
       request<GitHubInstallationResponse>('/api/v1/settings/github'),

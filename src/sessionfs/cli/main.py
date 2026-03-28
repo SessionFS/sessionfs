@@ -32,6 +32,7 @@ from sessionfs.cli.cmd_mcp import mcp_app
 from sessionfs.cli.cmd_watcher import watcher_app
 from sessionfs.cli.cmd_storage import storage_app
 from sessionfs.cli.cmd_project import project_app
+from sessionfs.cli.cmd_sync import sync_app
 
 app.add_typer(daemon_app, name="daemon")
 app.add_typer(config_app, name="config")
@@ -42,12 +43,13 @@ app.add_typer(handoffs_app, name="handoffs")
 app.add_typer(watcher_app, name="watcher")
 app.add_typer(storage_app, name="storage")
 app.add_typer(project_app, name="project")
+app.add_typer(sync_app, name="sync")
 
 # Register top-level commands
 from sessionfs.cli.cmd_sessions import list_sessions, show_session
 from sessionfs.cli.cmd_ops import resume, checkpoint, fork, alias
 from sessionfs.cli.cmd_io import import_sessions, export_session
-from sessionfs.cli.cmd_cloud import push, pull, pull_handoff, list_remote, sync_all, handoff
+from sessionfs.cli.cmd_cloud import push, pull, pull_handoff, list_remote, handoff
 from sessionfs.cli.cmd_search import search
 from sessionfs.cli.cmd_audit import audit
 
@@ -62,7 +64,6 @@ app.command("export")(export_session)
 app.command("push")(push)
 app.command("pull")(pull)
 app.command("list-remote")(list_remote)
-app.command("sync")(sync_all)
 app.command("handoff")(handoff)
 app.command("pull-handoff")(pull_handoff)
 app.command("search")(search)

@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-03-28
+
+### Added
+- **Autosync** — automatic session sync to cloud with three modes: off (default), all, or selective
+- `sfs sync auto --mode all|selective|off` — set autosync mode
+- `sfs sync watch <id>` / `sfs sync unwatch <id>` — manage selective watchlist
+- `sfs sync watchlist` — show watched sessions with sync status
+- `sfs sync status` — show mode, counts, storage, queued/failed
+- API endpoints: `GET/PUT /api/v1/sync/settings`, `GET /api/v1/sync/watchlist`, `POST/DELETE /api/v1/sync/watch/{id}`, `GET /api/v1/sync/status`
+- Dashboard autosync settings (radio buttons for off/all/selective)
+- Dashboard API client methods for sync settings, watchlist, and status
+- Daemon debounces session changes before pushing (30s default, configurable)
+- Daemon polls API for settings changes every 60 seconds
+- `sync_watchlist` database table for selective mode tracking
+- `sync_mode` and `sync_debounce` columns on users table
+
+### Fixed
+- **Handoff claim now copies session data** — blob is duplicated in storage, new session record created for recipient (was only recording `claimed_at` without copying)
+- **Ingress routes all traffic through dashboard nginx** — removed separate `/api` and `/mcp` ALB target groups that stayed in "unused" state on EKS
+- **Nginx body size limit** — added `client_max_body_size 100m` (configurable via `dashboard.clientMaxBodySize`) to prevent 413 on large session uploads
+- MCP proxy added to dashboard nginx for internal routing
+
 ## [0.8.3] - 2026-03-27
 
 ### Added

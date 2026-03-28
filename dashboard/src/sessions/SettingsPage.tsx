@@ -308,6 +308,9 @@ export default function SettingsPage() {
         )}
       </div>
 
+      {/* Autosync */}
+      <AutosyncSection />
+
       {/* GitHub Integration */}
       <GitHubIntegrationSection />
 
@@ -320,6 +323,61 @@ export default function SettingsPage() {
     </div>
   );
 }
+
+function AutosyncSection() {
+  const { auth } = useAuth();
+  const queryClient = useQueryClient();
+
+  const { data: syncSettings, isLoading } = useQuery({
+    queryKey: ['syncSettings'],
+    queryFn: () => auth!.client.getSyncSettings(),
+    enabled: !!auth,
+    staleTime: 30_000,
+  });
+
+  const updateMode = useMutation({
+    mutationFn: (mode: string) => auth!.client.updateSyncSettings(mode),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['syncSettings'] }),
+  });
+
+  const currentMode = syncSettings?.mode || 'off';
+
+  return (
+    <div className="bg-bg-secondary border border-border rounded-lg p-4 mb-4">
+      <h2 className="text-sm uppercase tracking-wider text-text-muted mb-3">Autosync</h2>
+      <p className="text-sm text-text-muted mb-3">
+        Automatically sync sessions to the cloud. The daemon pushes changes after a short debounce period.
+      </p>
+
+      {isLoading ? (
+        <div className="text-sm text-text-muted py-2">Loading...</div>
+      ) : (
+        <div className="space-y-2">
+          {(['off', 'all', 'selective'] as const).map((mode) => (
+            <label key={mode} className="flex items-center gap-2 text-sm text-text-secondary cursor-pointer">
+              <input
+                type="radio"
+                name="sync-mode"
+                checked={currentMode === mode}
+                onChange={() => updateMode.mutate(mode)}
+                disabled={updateMode.isPending}
+                className="text-accent focus:ring-accent"
+              />
+              {mode === 'off' && 'Off — Manual sync only (sfs push)'}
+              {mode === 'all' && 'All sessions — Sync everything automatically'}
+              {mode === 'selective' && 'Selective — Choose which sessions to sync'}
+            </label>
+          ))}
+
+          {updateMode.isError && (
+            <div className="text-sm text-red-400 mt-1">Failed to update sync mode.</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 function GitHubIntegrationSection() {
   const { auth } = useAuth();

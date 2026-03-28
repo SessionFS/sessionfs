@@ -131,6 +131,8 @@ class SyncConfig(BaseModel):
     api_key: str = ""
     push_interval: int = 30  # seconds between sync pushes
     retry_max: int = 5  # max consecutive failures before degraded
+    auto: str = "off"  # "off", "all", "selective"
+    debounce: int = 30  # seconds to wait after last change before syncing
 
 
 class JudgeConfig(BaseModel):

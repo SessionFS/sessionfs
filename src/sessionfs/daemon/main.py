@@ -46,10 +46,17 @@ class DaemonSyncer:
         self._consecutive_failures = 0
         self._last_sync_time = 0.0
         self._pending_sessions: set[str] = set()
+        self._debounce_timestamps: dict[str, float] = {}
+        self._watchlist: set[str] = set()
+        self._last_settings_check = 0.0
 
     @property
     def is_enabled(self) -> bool:
         return self.config.sync.enabled and bool(self.config.sync.api_key)
+
+    @property
+    def auto_mode(self) -> str:
+        return self.config.sync.auto
 
     @property
     def health(self) -> str:
@@ -70,18 +77,51 @@ class DaemonSyncer:
         return self._sync_client
 
     def mark_session_dirty(self, session_id: str) -> None:
-        """Mark a session as needing sync."""
-        if self.is_enabled:
-            self._pending_sessions.add(session_id)
+        """Mark a session as needing sync, respecting autosync mode."""
+        if not self.is_enabled:
+            return
+
+        mode = self.auto_mode
+        if mode == "off":
+            # Still allow explicit pushes via _pending_sessions
+            return
+        elif mode == "selective":
+            if session_id not in self._watchlist:
+                return
+        # mode == "all" or watchlisted in selective — debounce and queue
+        self._debounce_timestamps[session_id] = time.monotonic()
+
+    def add_to_watchlist(self, session_id: str) -> None:
+        """Add a session to the local autosync watchlist."""
+        self._watchlist.add(session_id)
+
+    def remove_from_watchlist(self, session_id: str) -> None:
+        """Remove a session from the local autosync watchlist."""
+        self._watchlist.discard(session_id)
+        self._debounce_timestamps.pop(session_id, None)
 
     def maybe_sync(self) -> None:
         """Run sync if enough time has elapsed since last push. Non-blocking."""
         if not self.is_enabled:
             return
+
+        # Check for settings changes from API (every 60s)
+        self._maybe_check_remote_settings()
+
+        # Promote debounced sessions to pending
+        now = time.monotonic()
+        debounce = self.config.sync.debounce
+        ready = [
+            sid for sid, ts in list(self._debounce_timestamps.items())
+            if now - ts >= debounce
+        ]
+        for sid in ready:
+            self._pending_sessions.add(sid)
+            del self._debounce_timestamps[sid]
+
         if not self._pending_sessions:
             return
 
-        now = time.monotonic()
         if now - self._last_sync_time < self.config.sync.push_interval:
             return
 
@@ -152,6 +192,33 @@ class DaemonSyncer:
             await client.close()
         except Exception:
             pass
+
+    def _maybe_check_remote_settings(self) -> None:
+        """Poll API for settings changes every 60 seconds."""
+        now = time.monotonic()
+        if now - self._last_settings_check < 60:
+            return
+        self._last_settings_check = now
+
+        try:
+            import httpx
+
+            client = self._get_client()
+            resp = httpx.get(
+                f"{client.api_url}/api/v1/sync/settings",
+                headers={"Authorization": f"Bearer {client.api_key}"},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                new_mode = data.get("mode", "off")
+                if new_mode != self.config.sync.auto:
+                    logger.info("Autosync mode changed: %s -> %s", self.config.sync.auto, new_mode)
+                    self.config.sync.auto = new_mode
+                new_debounce = data.get("debounce_seconds", 30)
+                self.config.sync.debounce = new_debounce
+        except Exception:
+            pass  # Offline — keep using local config
 
     def _get_local_etag(self, session_id: str) -> str | None:
         """Read the locally stored etag for a session."""

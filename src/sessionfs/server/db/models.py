@@ -26,6 +26,8 @@ class User(Base):
     tier: Mapped[str] = mapped_column(String(20), default="free")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    sync_mode: Mapped[str] = mapped_column(String(20), default="off", server_default="off")
+    sync_debounce: Mapped[int] = mapped_column(Integer, default=30, server_default="30")
 
 
 class ApiKey(Base):
@@ -210,6 +212,18 @@ class GitHubInstallation(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class SyncWatchlist(Base):
+    __tablename__ = "sync_watchlist"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.id"), nullable=False)
+    session_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending", server_default="pending")
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class Project(Base):
