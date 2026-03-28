@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio as _asyncio
 import io
 import json
 import logging
 import tarfile
 from datetime import datetime, timezone
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -115,8 +117,6 @@ def _report_to_response(report) -> AuditResponse:
     return AuditResponse(**data)
 
 
-import asyncio as _asyncio
-
 # Track running audit jobs: session_id -> task
 _audit_jobs: dict[str, _asyncio.Task] = {}
 # Store completed results: session_id -> AuditResponse (temp cache until stored in blob)
@@ -220,6 +220,13 @@ async def run_audit(
             detail="No messages found in session archive",
         )
 
+    # Count tool calls for diagnostics
+    tool_call_count = sum(
+        1 for m in messages
+        if isinstance(m.get("content", []), list)
+        and any(isinstance(b, dict) and b.get("type") == "tool_use" for b in m.get("content", []))
+    )
+
     # For large sessions (500+ messages), run in background
     BACKGROUND_THRESHOLD = 500
     if len(messages) >= BACKGROUND_THRESHOLD:
@@ -254,9 +261,39 @@ async def run_audit(
         )
 
     # Small sessions — run synchronously
-    report = await _run_judge_pipeline(
-        session_id, messages, model, llm_api_key, provider, base_url,
-    )
+    try:
+        report = await _run_judge_pipeline(
+            session_id, messages, model, llm_api_key, provider, base_url,
+        )
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": "no_claims_extracted",
+                "message": str(exc),
+                "session_stats": {
+                    "tool_calls": tool_call_count,
+                    "messages": len(messages),
+                },
+            },
+        )
+    except httpx.HTTPStatusError as exc:
+        return JSONResponse(
+            status_code=502,
+            content={
+                "error": "llm_request_failed",
+                "message": f"Judge LLM returned {exc.response.status_code}",
+                "detail": exc.response.text[:500],
+            },
+        )
+    except httpx.TimeoutException:
+        return JSONResponse(
+            status_code=504,
+            content={
+                "error": "llm_timeout",
+                "message": "Judge LLM timed out after 120s. Try a smaller session or faster model.",
+            },
+        )
 
     # Store the report
     report_key = f"sessions/{user.id}/{session_id}_audit.json"
@@ -293,6 +330,18 @@ async def _run_judge_pipeline(
     all_evidence = gather_evidence(messages)
 
     if not all_claims:
+        # Check if session has tool calls — if so, this is a parser failure
+        tool_uses = sum(
+            1 for m in messages
+            if isinstance(m.get("content", []), list)
+            and any(isinstance(b, dict) and b.get("type") == "tool_use" for b in m.get("content", []))
+        )
+        if tool_uses > 0:
+            raise ValueError(
+                f"Could not extract claims from session with {tool_uses} tool calls and "
+                f"{len(messages)} messages. The claim parser may not support this session format."
+            )
+        # No tool calls — genuinely nothing to audit
         return JudgeReport(
             session_id=session_id,
             model=model,

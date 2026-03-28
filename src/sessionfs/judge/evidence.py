@@ -46,12 +46,12 @@ def _extract_file_path_from_input(tool_name: str, inp: dict) -> str | None:
     return None
 
 
-def _summarise_text(text: str, max_len: int = 200) -> str:
-    """Truncate text to a summary length."""
+def _summarise_text(text: str, max_len: int = 2000) -> str:
+    """Truncate text to a summary length. Preserves full context for evidence."""
     text = text.strip()
     if len(text) <= max_len:
         return text
-    return text[:max_len] + "..."
+    return text[:max_len] + "...[truncated]"
 
 
 def _extract_text_from_content(content) -> str:
