@@ -13,7 +13,7 @@ interface BackgroundTask {
 
 interface BackgroundTasksContextValue {
   tasks: BackgroundTask[];
-  startAudit: (sessionId: string, sessionTitle: string, model: string, llmApiKey: string, provider?: string) => void;
+  startAudit: (sessionId: string, sessionTitle: string, model: string, llmApiKey: string, provider?: string, baseUrl?: string) => void;
   dismissTask: (id: string) => void;
 }
 
@@ -30,7 +30,7 @@ export function BackgroundTasksProvider({ children }: { children: ReactNode }) {
   const [tasks, setTasks] = useState<BackgroundTask[]>([]);
   const pollingRef = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
 
-  const startAudit = useCallback((sessionId: string, sessionTitle: string, model: string, llmApiKey: string, provider?: string) => {
+  const startAudit = useCallback((sessionId: string, sessionTitle: string, model: string, llmApiKey: string, provider?: string, baseUrl?: string) => {
     if (!auth) return;
 
     const taskId = `audit-${sessionId}-${Date.now()}`;
@@ -46,7 +46,7 @@ export function BackgroundTasksProvider({ children }: { children: ReactNode }) {
     setTasks(prev => [...prev, task]);
 
     // Fire the audit request
-    auth.client.runAudit(sessionId, model, llmApiKey, provider).then(() => {
+    auth.client.runAudit(sessionId, model, llmApiKey, provider, baseUrl).then(() => {
       // If it returns synchronously (small session), mark complete immediately
       // Check if the response was 202 by trying to get the report
       return auth.client.getAudit(sessionId);

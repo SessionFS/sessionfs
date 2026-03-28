@@ -283,10 +283,16 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       model: string,
       llmApiKey: string,
       provider?: string,
+      baseUrl?: string,
     ) =>
       request<AuditReport>(`/api/v1/sessions/${sessionId}/audit`, {
         method: 'POST',
-        body: JSON.stringify({ model, llm_api_key: llmApiKey, ...(provider ? { provider } : {}) }),
+        body: JSON.stringify({
+          model,
+          llm_api_key: llmApiKey || undefined,
+          ...(provider ? { provider } : {}),
+          ...(baseUrl ? { base_url: baseUrl } : {}),
+        }),
       }),
 
     getAudit: (sessionId: string) =>

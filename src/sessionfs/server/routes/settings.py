@@ -116,12 +116,25 @@ async def discover_models(
     base_url: str = Query(..., description="OpenAI-compatible endpoint URL"),
     api_key: str = Query("", description="API key (optional for local endpoints)"),
     user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Discover available models from an OpenAI-compatible endpoint.
 
     Queries the /v1/models (or /models) endpoint and returns the model list.
-    Works with LiteLLM, vLLM, Ollama, Azure OpenAI, and any OpenAI-compatible gateway.
+    If no explicit API key provided, tries the user's saved key.
     """
+    # Fall back to saved key if none provided
+    if not api_key:
+        stmt = select(UserJudgeSettings).where(UserJudgeSettings.user_id == user.id)
+        result = await db.execute(stmt)
+        settings = result.scalar_one_or_none()
+        if settings and settings.encrypted_api_key:
+            try:
+                fernet = _get_fernet()
+                api_key = fernet.decrypt(settings.encrypted_api_key.encode()).decode()
+            except Exception:
+                pass
+
     url = base_url.rstrip("/")
     if not url.endswith("/models"):
         if url.endswith("/v1"):

@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
+import { useAuth } from '../auth/AuthContext';
 import { useJudgeSettings } from '../hooks/useJudgeSettings';
 import { useBackgroundTasks } from '../components/BackgroundTasks';
 
@@ -47,28 +48,55 @@ interface Props {
 }
 
 export default function AuditModal({ sessionId, sessionTitle, messageCount, onClose, onComplete }: Props) {
+  const { auth } = useAuth();
   const { data: savedSettings } = useJudgeSettings();
   const [provider, setProvider] = useState('anthropic');
   const [model, setModel] = useState('claude-sonnet-4-6');
   const [apiKey, setApiKey] = useState('');
+  const [baseUrl, setBaseUrl] = useState('');
   const [useSavedKey, setUseSavedKey] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [discoveredModels, setDiscoveredModels] = useState<{ id: string; owned_by: string }[]>([]);
+  const [discovering, setDiscovering] = useState(false);
+  const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'ok' | 'fail'>('idle');
   const { startAudit } = useBackgroundTasks();
 
-  // Pre-fill from saved settings when they load
+  // Pre-fill from saved settings
   useEffect(() => {
     if (savedSettings) {
       if (savedSettings.provider) setProvider(savedSettings.provider);
       if (savedSettings.model) setModel(savedSettings.model);
       if (savedSettings.key_set) setUseSavedKey(true);
+      if (savedSettings.base_url) setBaseUrl(savedSettings.base_url);
     }
   }, [savedSettings]);
+
+  // Discover models when base URL is set
+  useEffect(() => {
+    if (!baseUrl || !auth) {
+      setDiscoveredModels([]);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      setDiscovering(true);
+      try {
+        const result = await auth.client.discoverModels(baseUrl, apiKey || undefined);
+        setDiscoveredModels(result.models || []);
+      } catch {
+        setDiscoveredModels([]);
+      } finally {
+        setDiscovering(false);
+      }
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [baseUrl, apiKey, auth]);
 
   const isOpenRouter = provider === 'openrouter';
   const models = PROVIDER_MODELS[provider] || [];
   const estimatedCost = (messageCount * 0.01).toFixed(2);
   const hasSavedKey = savedSettings?.key_set === true;
+  const hasBaseUrl = !!baseUrl;
 
   const keyPlaceholder = useMemo(() => {
     if (isOpenRouter) return 'sk-or-...';
@@ -77,14 +105,24 @@ export default function AuditModal({ sessionId, sessionTitle, messageCount, onCl
     return 'AIza...';
   }, [provider, isOpenRouter]);
 
-  // When provider changes, reset model to first available or empty for openrouter
   function handleProviderChange(newProvider: string) {
     setProvider(newProvider);
     const providerModels = PROVIDER_MODELS[newProvider];
-    if (providerModels?.length) setModel(providerModels[0].value);
+    if (providerModels?.length && !hasBaseUrl) setModel(providerModels[0].value);
   }
 
-  const canSubmit = model && (hasSavedKey || apiKey) && !submitting;
+  async function handleTestConnection() {
+    if (!baseUrl || !auth) return;
+    setTestStatus('testing');
+    try {
+      const result = await auth.client.discoverModels(baseUrl, apiKey || undefined);
+      setTestStatus(result.models && result.models.length > 0 ? 'ok' : 'fail');
+    } catch {
+      setTestStatus('fail');
+    }
+  }
+
+  const canSubmit = model && (hasSavedKey || apiKey || hasBaseUrl) && !submitting;
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -93,9 +131,15 @@ export default function AuditModal({ sessionId, sessionTitle, messageCount, onCl
 
     const key = useSavedKey && !apiKey ? '' : apiKey;
 
-    // Launch as background task — closes modal immediately
     try {
-      startAudit(sessionId, sessionTitle || sessionId.slice(0, 12), model, key, provider);
+      startAudit(
+        sessionId,
+        sessionTitle || sessionId.slice(0, 12),
+        model,
+        key,
+        provider,
+        baseUrl || undefined,
+      );
       onComplete();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to start audit');
@@ -105,7 +149,7 @@ export default function AuditModal({ sessionId, sessionTitle, messageCount, onCl
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="bg-bg-secondary border border-border rounded-lg w-full max-w-md mx-4 shadow-xl">
+      <div className="bg-bg-secondary border border-border rounded-lg w-full max-w-md mx-4 shadow-xl max-h-[90vh] overflow-y-auto">
         <form onSubmit={handleSubmit}>
           <div className="p-5">
             <h2 className="text-base font-medium text-text-primary mb-4">Run Audit</h2>
@@ -121,33 +165,56 @@ export default function AuditModal({ sessionId, sessionTitle, messageCount, onCl
               ))}
             </select>
 
-            <label className="block text-sm text-text-muted mb-1">Model</label>
-            <select
-              value={models.some(m => m.value === model) ? model : '__custom__'}
-              onChange={(e) => {
-                if (e.target.value === '__custom__') {
-                  setModel('');
-                } else {
-                  setModel(e.target.value);
-                }
-              }}
-              className="w-full mb-1.5 px-2 py-1.5 bg-bg-primary border border-border rounded text-sm text-text-secondary focus:outline-none focus:border-accent"
-            >
-              {models.map((m) => (
-                <option key={m.value} value={m.value}>{m.label}</option>
-              ))}
-              {isOpenRouter && <option value="__custom__">Custom model ID...</option>}
-            </select>
-            {isOpenRouter && !models.some(m => m.value === model) && (
+            <label className="block text-sm text-text-muted mb-1">
+              Model
+              {discovering && <span className="text-text-muted/50 ml-2">discovering...</span>}
+            </label>
+            {hasBaseUrl && discoveredModels.length > 0 ? (
+              <select
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                className="w-full mb-3 px-2 py-1.5 bg-bg-primary border border-border rounded text-sm text-text-secondary focus:outline-none focus:border-accent font-mono"
+              >
+                <option value="">Select a model...</option>
+                {discoveredModels.map((m) => (
+                  <option key={m.id} value={m.id}>{m.id}{m.owned_by ? ` (${m.owned_by})` : ''}</option>
+                ))}
+              </select>
+            ) : hasBaseUrl ? (
               <input
                 type="text"
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
-                placeholder="provider/model-name (e.g. meta-llama/llama-3.3-70b)"
-                className="w-full mb-1.5 px-2 py-1.5 bg-bg-primary border border-border rounded text-sm text-text-secondary placeholder:text-text-muted/50 focus:outline-none focus:border-accent font-mono"
+                placeholder="model-name"
+                className="w-full mb-3 px-2 py-1.5 bg-bg-primary border border-border rounded text-sm text-text-secondary placeholder:text-text-muted/50 focus:outline-none focus:border-accent font-mono"
               />
+            ) : (
+              <>
+                <select
+                  value={models.some(m => m.value === model) ? model : '__custom__'}
+                  onChange={(e) => {
+                    if (e.target.value === '__custom__') setModel('');
+                    else setModel(e.target.value);
+                  }}
+                  className="w-full mb-1.5 px-2 py-1.5 bg-bg-primary border border-border rounded text-sm text-text-secondary focus:outline-none focus:border-accent"
+                >
+                  {models.map((m) => (
+                    <option key={m.value} value={m.value}>{m.label}</option>
+                  ))}
+                  {isOpenRouter && <option value="__custom__">Custom model ID...</option>}
+                </select>
+                {isOpenRouter && !models.some(m => m.value === model) && (
+                  <input
+                    type="text"
+                    value={model}
+                    onChange={(e) => setModel(e.target.value)}
+                    placeholder="provider/model-name"
+                    className="w-full mb-1.5 px-2 py-1.5 bg-bg-primary border border-border rounded text-sm text-text-secondary placeholder:text-text-muted/50 focus:outline-none focus:border-accent font-mono"
+                  />
+                )}
+                <div className="mb-3" />
+              </>
             )}
-            <div className="mb-3" />
 
             <label className="block text-sm text-text-muted mb-1">API Key</label>
             {hasSavedKey && (
@@ -164,19 +231,15 @@ export default function AuditModal({ sessionId, sessionTitle, messageCount, onCl
                 <span className="text-sm text-green-400">Key saved</span>
               </div>
             )}
-            {(!hasSavedKey || !useSavedKey) ? (
+            {(!hasSavedKey || !useSavedKey) && (
               <input
                 type="password"
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
-                placeholder={keyPlaceholder}
-                required={!hasSavedKey}
+                placeholder={hasBaseUrl ? 'Optional for local endpoints' : keyPlaceholder}
+                required={!hasSavedKey && !hasBaseUrl}
                 className="w-full mb-3 px-2 py-1.5 bg-bg-primary border border-border rounded text-sm text-text-secondary placeholder:text-text-muted/50 focus:outline-none focus:border-accent font-mono"
               />
-            ) : (
-              <div className="w-full mb-3 px-2 py-1.5 bg-bg-primary border border-border rounded text-sm text-text-muted">
-                Using saved API key (enter key below to override)
-              </div>
             )}
             {hasSavedKey && useSavedKey && (
               <input
@@ -188,6 +251,34 @@ export default function AuditModal({ sessionId, sessionTitle, messageCount, onCl
               />
             )}
 
+            <label className="block text-sm text-text-muted mb-1">
+              Base URL <span className="text-text-muted/50">(optional)</span>
+            </label>
+            <div className="flex gap-2 mb-1">
+              <input
+                type="text"
+                value={baseUrl}
+                onChange={(e) => { setBaseUrl(e.target.value); setTestStatus('idle'); }}
+                placeholder="https://litellm.company.internal/v1"
+                className="flex-1 px-2 py-1.5 bg-bg-primary border border-border rounded text-sm text-text-secondary placeholder:text-text-muted/50 focus:outline-none focus:border-accent font-mono"
+              />
+              {baseUrl && (
+                <button
+                  type="button"
+                  onClick={handleTestConnection}
+                  disabled={testStatus === 'testing'}
+                  className="px-2 py-1.5 text-xs border border-border rounded hover:bg-bg-tertiary transition-colors whitespace-nowrap"
+                >
+                  {testStatus === 'testing' ? 'Testing...' :
+                   testStatus === 'ok' ? 'Connected' :
+                   testStatus === 'fail' ? 'Failed' : 'Test'}
+                </button>
+              )}
+            </div>
+            {testStatus === 'ok' && <p className="text-xs text-green-400 mb-3">Connection successful ({discoveredModels.length} models found)</p>}
+            {testStatus === 'fail' && <p className="text-xs text-red-400 mb-3">Connection failed — check URL and API key</p>}
+            {!baseUrl && <p className="text-xs text-text-muted/50 mb-3">Leave blank for provider default. Set for LiteLLM, vLLM, Ollama.</p>}
+
             <div className="text-sm text-text-muted mb-3">
               Estimated cost: ~${estimatedCost} ({messageCount} messages)
             </div>
@@ -195,14 +286,14 @@ export default function AuditModal({ sessionId, sessionTitle, messageCount, onCl
             <div className="text-sm text-text-muted/70 bg-bg-primary border border-border rounded px-3 py-2 mb-3">
               {hasSavedKey && useSavedKey && !apiKey
                 ? 'Using your saved API key from Settings.'
+                : hasBaseUrl && !apiKey
+                ? 'Using custom endpoint (no API key required for local endpoints).'
                 : 'Your API key is used for this request only and is never stored.'}
             </div>
 
             {!!error && (
               <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded px-3 py-2 mb-3">
-                {error
-                  ? error
-                  : 'Audit failed. Check your API key and try again.'}
+                {error}
               </div>
             )}
           </div>
