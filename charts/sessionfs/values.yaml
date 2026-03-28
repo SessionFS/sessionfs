@@ -106,6 +106,7 @@ dashboard:
     limits:
       cpu: 100m
       memory: 128Mi
+  clientMaxBodySize: "100m"  # nginx client_max_body_size for sync uploads
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -183,10 +184,6 @@ ingress:
   annotations: {}
   hosts:
     - host: sessionfs.local
-      paths:
-        api: /api
-        mcp: /mcp
-        dashboard: /
   tls: []
 
 ## Email

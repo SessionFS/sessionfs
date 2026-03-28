@@ -28,30 +28,13 @@ spec:
     - host: {{ .host | quote }}
       http:
         paths:
-          - path: {{ .paths.api }}
-            pathType: Prefix
-            backend:
-              service:
-                name: {{ include "sessionfs.fullname" $ }}-api
-                port:
-                  name: http
-          {{- if $.Values.mcp.enabled }}
-          - path: {{ .paths.mcp }}
-            pathType: Prefix
-            backend:
-              service:
-                name: {{ include "sessionfs.fullname" $ }}-mcp
-                port:
-                  name: http
-          {{- end }}
-          {{- if $.Values.dashboard.enabled }}
-          - path: {{ .paths.dashboard }}
+          {{- /* All traffic routes through the dashboard nginx, which proxies /api/ and /mcp/ internally */}}
+          - path: /
             pathType: Prefix
             backend:
               service:
                 name: {{ include "sessionfs.fullname" $ }}-dashboard
                 port:
                   name: http
-          {{- end }}
     {{- end }}
 {{- end }}

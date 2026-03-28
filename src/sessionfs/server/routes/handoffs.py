@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -12,6 +14,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import Handoff, Session, User
+from sessionfs.session_id import generate_session_id
+
+logger = logging.getLogger("sessionfs.api")
 from sessionfs.server.schemas.handoffs import (
     CreateHandoffRequest,
     HandoffListResponse,
@@ -224,10 +229,11 @@ async def get_handoff(
 @router.post("/{handoff_id}/claim", response_model=HandoffResponse)
 async def claim_handoff(
     handoff_id: str,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Claim a handoff — link the recipient and mark as claimed."""
+    """Claim a handoff — copy session data to recipient and mark as claimed."""
     result = await db.execute(select(Handoff).where(Handoff.id == handoff_id))
     handoff = result.scalar_one_or_none()
     if handoff is None:
@@ -240,26 +246,84 @@ async def claim_handoff(
     if handoff.status == "claimed":
         raise HTTPException(status_code=409, detail="Handoff already claimed")
 
+    # Look up source session
+    session_result = await db.execute(select(Session).where(Session.id == handoff.session_id))
+    source_session = session_result.scalar_one_or_none()
+    if source_session is None:
+        raise HTTPException(status_code=404, detail="Source session no longer exists")
+
+    # Copy blob in storage
+    blob_store = getattr(request.app.state, "blob_store", None)
+    new_session_id = generate_session_id()
+    now = datetime.now(timezone.utc)
+    new_blob_key = f"sessions/{user.id}/{new_session_id}.tar.gz"
+
+    if blob_store and source_session.blob_key:
+        try:
+            data = await blob_store.get(source_session.blob_key)
+            if data:
+                await blob_store.put(new_blob_key, data)
+            else:
+                logger.warning("Handoff claim: source blob empty for %s", handoff.session_id)
+                new_blob_key = source_session.blob_key  # fallback: share blob
+        except Exception:
+            logger.exception("Handoff claim: failed to copy blob for %s", handoff.session_id)
+            new_blob_key = source_session.blob_key  # fallback: share blob
+
+    # Create new session record owned by recipient
+    new_etag = hashlib.sha256(f"{new_session_id}{now.isoformat()}".encode()).hexdigest()[:16]
+    copied_session = Session(
+        id=new_session_id,
+        user_id=user.id,
+        title=source_session.title,
+        tags=source_session.tags,
+        source_tool=source_session.source_tool,
+        source_tool_version=source_session.source_tool_version,
+        original_session_id=source_session.id,
+        model_provider=source_session.model_provider,
+        model_id=source_session.model_id,
+        message_count=source_session.message_count,
+        turn_count=source_session.turn_count,
+        tool_use_count=source_session.tool_use_count,
+        total_input_tokens=source_session.total_input_tokens,
+        total_output_tokens=source_session.total_output_tokens,
+        duration_ms=source_session.duration_ms,
+        blob_key=new_blob_key,
+        blob_size_bytes=source_session.blob_size_bytes,
+        etag=new_etag,
+        parent_session_id=source_session.id,
+        created_at=source_session.created_at,
+        updated_at=now,
+        uploaded_at=now,
+        messages_text=source_session.messages_text,
+        git_remote_normalized=source_session.git_remote_normalized,
+        git_branch=source_session.git_branch,
+        git_commit=source_session.git_commit,
+    )
+    db.add(copied_session)
+
     # Update handoff
     handoff.recipient_id = user.id
     handoff.status = "claimed"
-    handoff.claimed_at = datetime.now(timezone.utc)
+    handoff.claimed_at = now
     await db.commit()
     await db.refresh(handoff)
 
-    # Look up sender email and session info
+    logger.info(
+        "Handoff %s claimed: session %s copied to %s for user %s",
+        handoff_id, handoff.session_id, new_session_id, user.email,
+    )
+
+    # Look up sender email
     sender = await db.execute(select(User).where(User.id == handoff.sender_id))
     sender_user = sender.scalar_one_or_none()
     sender_email = sender_user.email if sender_user else "unknown"
 
-    session_result = await db.execute(select(Session).where(Session.id == handoff.session_id))
-    session = session_result.scalar_one_or_none()
-
     return _handoff_to_response(
         handoff,
         sender_email=sender_email,
-        session_title=session.title if session else None,
-        session_tool=session.source_tool if session else None,
+        session_title=copied_session.title,
+        session_tool=copied_session.source_tool,
     )
 
 

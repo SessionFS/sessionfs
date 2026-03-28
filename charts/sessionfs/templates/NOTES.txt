@@ -5,23 +5,13 @@ SessionFS has been deployed successfully.
 Access your deployment:
 {{- range .Values.ingress.hosts }}
   {{- if $.Values.ingress.tls }}
-  API:       https://{{ .host }}{{ .paths.api }}
-  {{- if $.Values.mcp.enabled }}
-  MCP:       https://{{ .host }}{{ .paths.mcp }}
-  {{- end }}
-  {{- if $.Values.dashboard.enabled }}
-  Dashboard: https://{{ .host }}{{ .paths.dashboard }}
-  {{- end }}
+  https://{{ .host }}
   {{- else }}
-  API:       http://{{ .host }}{{ .paths.api }}
-  {{- if $.Values.mcp.enabled }}
-  MCP:       http://{{ .host }}{{ .paths.mcp }}
-  {{- end }}
-  {{- if $.Values.dashboard.enabled }}
-  Dashboard: http://{{ .host }}{{ .paths.dashboard }}
-  {{- end }}
+  http://{{ .host }}
   {{- end }}
 {{- end }}
+
+All traffic routes through the dashboard nginx, which proxies /api/ and /mcp/ internally.
 
 {{- else }}
 
