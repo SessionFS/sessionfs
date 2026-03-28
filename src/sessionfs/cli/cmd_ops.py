@@ -45,6 +45,12 @@ def resume(
                 workspace = json.loads(workspace_path.read_text())
                 target_path = workspace.get("root_path")
 
+        # Fall back to CWD if original path doesn't exist
+        if target_path and not Path(target_path).exists():
+            console.print(f"[yellow]Original path {target_path} not found.[/yellow]")
+            target_path = str(Path.cwd())
+            console.print(f"Resuming in current directory: [bold]{target_path}[/bold]\n")
+
         if tool == "codex":
             _resume_in_codex(session_dir, manifest, target_path, full_id)
         elif tool == "copilot":
