@@ -6,15 +6,27 @@ import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+# Category → severity mapping (deterministic, not LLM-judged)
+SEVERITY_FROM_CATEGORY = {
+    "test_result": "critical",
+    "command_output": "critical",
+    "dependency": "critical",
+    "file_existence": "high",
+    "data_misread": "high",
+    "code_claim": "high",
+    "other": "low",
+}
+
 
 @dataclass
 class Finding:
     message_index: int
     claim: str
     verdict: str  # verified, unverified, hallucination
-    severity: str  # minor, moderate, major
+    severity: str  # critical, high, low (auto-assigned from category)
     evidence: str
     explanation: str
+    category: str = "other"  # test_result, file_existence, command_output, data_misread, code_claim, dependency, other
 
 
 @dataclass
@@ -24,9 +36,12 @@ class AuditSummary:
     unverified: int
     hallucinations: int
     trust_score: float  # 0.0 to 1.0
-    major_findings: int
-    moderate_findings: int
-    minor_findings: int
+    major_findings: int  # kept for backward compat — maps to critical
+    moderate_findings: int  # maps to high
+    minor_findings: int  # maps to low
+    critical_count: int = 0
+    high_count: int = 0
+    low_count: int = 0
 
 
 @dataclass
@@ -45,8 +60,14 @@ class JudgeReport:
             major_findings=0,
             moderate_findings=0,
             minor_findings=0,
+            critical_count=0,
+            high_count=0,
+            low_count=0,
         )
     )
+    provider: str = ""
+    base_url: str = ""
+    execution_time_ms: int = 0
 
 
 def save_report(report: JudgeReport, sfs_dir: Path) -> Path:
@@ -68,9 +89,10 @@ def load_report(sfs_dir: Path) -> JudgeReport | None:
     except (json.JSONDecodeError, OSError):
         return None
 
-    findings = [Finding(**f) for f in data.get("findings", [])]
+    findings = [Finding(**{k: v for k, v in f.items() if k in Finding.__dataclass_fields__}) for f in data.get("findings", [])]
     summary_data = data.get("summary", {})
-    summary = AuditSummary(**summary_data) if summary_data else AuditSummary(
+    summary_fields = {k: v for k, v in summary_data.items() if k in AuditSummary.__dataclass_fields__}
+    summary = AuditSummary(**summary_fields) if summary_fields else AuditSummary(
         total_claims=0, verified=0, unverified=0, hallucinations=0,
         trust_score=0.0, major_findings=0, moderate_findings=0, minor_findings=0,
     )
@@ -81,4 +103,7 @@ def load_report(sfs_dir: Path) -> JudgeReport | None:
         timestamp=data["timestamp"],
         findings=findings,
         summary=summary,
+        provider=data.get("provider", ""),
+        base_url=data.get("base_url", ""),
+        execution_time_ms=data.get("execution_time_ms", 0),
     )

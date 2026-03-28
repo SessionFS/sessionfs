@@ -82,9 +82,10 @@ export interface AuditFinding {
   message_index: number;
   claim: string;
   verdict: 'verified' | 'unverified' | 'hallucination';
-  severity: 'minor' | 'moderate' | 'major';
+  severity: string;
   evidence: string;
   explanation: string;
+  category?: string;
 }
 
 export interface AuditSummary {
@@ -416,6 +417,46 @@ export function createApiClient(baseUrl: string, apiKey: string) {
 
     listFolderSessions: (folderId: string) =>
       request<FolderSessionsResponse>(`/api/v1/bookmarks/folders/${folderId}/sessions`),
+
+    // Session summary
+    getSessionSummary: (sessionId: string) =>
+      request<{
+        session_id: string;
+        title: string;
+        tool: string;
+        model: string | null;
+        duration_minutes: number;
+        message_count: number;
+        tool_call_count: number;
+        branch: string | null;
+        commit: string | null;
+        files_modified: string[];
+        files_read: string[];
+        commands_executed: number;
+        tests_run: number;
+        tests_passed: number;
+        tests_failed: number;
+        packages_installed: string[];
+        errors_encountered: string[];
+        what_happened: string | null;
+        key_decisions: string[] | null;
+        outcome: string | null;
+        open_issues: string[] | null;
+        generated_at: string;
+      }>(`/api/v1/sessions/${sessionId}/summary`),
+
+    generateSessionSummary: (sessionId: string) =>
+      request<Record<string, unknown>>(`/api/v1/sessions/${sessionId}/summary`, { method: 'POST' }),
+
+    // Audit trigger settings
+    getAuditTrigger: () =>
+      request<{ trigger: string }>('/api/v1/settings/audit-trigger'),
+
+    updateAuditTrigger: (trigger: string) =>
+      request<{ trigger: string }>('/api/v1/settings/audit-trigger', {
+        method: 'PUT',
+        body: JSON.stringify({ trigger }),
+      }),
 
     // Sync settings
     getSyncSettings: () =>

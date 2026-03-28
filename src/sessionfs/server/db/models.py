@@ -28,6 +28,8 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     sync_mode: Mapped[str] = mapped_column(String(20), default="off", server_default="off")
     sync_debounce: Mapped[int] = mapped_column(Integer, default=30, server_default="30")
+    audit_trigger: Mapped[str] = mapped_column(String(20), default="manual", server_default="manual")
+    summarize_trigger: Mapped[str] = mapped_column(String(20), default="manual", server_default="manual")
 
 
 class ApiKey(Base):
@@ -212,6 +214,62 @@ class GitHubInstallation(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class SessionSummaryRecord(Base):
+    __tablename__ = "session_summaries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False, unique=True
+    )
+    duration_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tool_call_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    files_modified: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    files_read: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    commands_executed: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    tests_run: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    tests_passed: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    tests_failed: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    packages_installed: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    errors_encountered: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    what_happened: Mapped[str | None] = mapped_column(Text, nullable=True)
+    key_decisions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    outcome: Mapped[str | None] = mapped_column(Text, nullable=True)
+    open_issues: Mapped[str | None] = mapped_column(Text, nullable=True)
+    narrative_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AuditReport(Base):
+    __tablename__ = "audit_reports"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.id"), nullable=False)
+    judge_model: Mapped[str] = mapped_column(String(100), nullable=False)
+    judge_provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    judge_base_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    trust_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    total_claims: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    verified_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    unverified_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    contradiction_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    findings: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    execution_time_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class GitLabSettings(Base):
+    __tablename__ = "gitlab_settings"
+
+    user_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.id"), primary_key=True)
+    instance_url: Mapped[str] = mapped_column(String(500), nullable=False, server_default="https://gitlab.com")
+    encrypted_access_token: Mapped[str] = mapped_column(Text, nullable=False)
+    webhook_secret: Mapped[str] = mapped_column(String(64), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class SyncWatchlist(Base):

@@ -53,6 +53,26 @@ def _build_single_session(
     row = "| " + " | ".join(row_vals) + " |"
 
     lines.extend([header, sep, row, ""])
+    # Add contradictions table if audit data available
+    contradictions = s.get("contradictions", [])
+    if contradictions:
+        lines.append(f"\n**{len(contradictions)} contradictions found:**\n")
+        lines.append("| Severity | Claim | Reality |")
+        lines.append("| --- | --- | --- |")
+        for c in contradictions[:5]:
+            sev = c.get("severity", "low").upper()
+            claim = c.get("claim", "")[:80]
+            evidence = c.get("evidence", "")[:80]
+            lines.append(f"| {sev} | {claim} | {evidence} |")
+        if len(contradictions) > 5:
+            lines.append(f"\n*...and {len(contradictions) - 5} more. See full audit.*")
+        lines.append("")
+    elif s.get("trust_score") is not None:
+        score = int(s["trust_score"] * 100)
+        total = s.get("total_claims", 0)
+        if total > 0:
+            lines.append(f"\nTrust: {score}% — 0 contradictions found across {total} claims.\n")
+
     lines.append("---")
     lines.append(
         '<sub>Added by <a href="https://sessionfs.dev">SessionFS</a> '

@@ -12,9 +12,10 @@ import RelativeDate from '../components/RelativeDate';
 import ConversationView from './ConversationView';
 import AuditTab from './AuditTab';
 import AuditModal from './AuditModal';
+import SummaryTab from './SummaryTab';
 import HandoffModal from '../handoffs/HandoffModal';
 
-type Tab = 'messages' | 'audit';
+type Tab = 'messages' | 'summary' | 'audit';
 
 export default function SessionDetail() {
   const { id } = useParams<{ id: string }>();
@@ -248,6 +249,16 @@ export default function SessionDetail() {
             Messages
           </button>
           <button
+            onClick={() => setActiveTab('summary')}
+            className={`px-4 py-2 text-sm font-medium transition-colors ${
+              activeTab === 'summary'
+                ? 'text-accent border-b-2 border-accent'
+                : 'text-text-muted hover:text-text-secondary'
+            }`}
+          >
+            Summary
+          </button>
+          <button
             onClick={() => setActiveTab('audit')}
             className={`px-4 py-2 text-sm font-medium transition-colors ${
               activeTab === 'audit'
@@ -262,6 +273,7 @@ export default function SessionDetail() {
         {/* Tab content */}
         <div className="flex-1 overflow-y-auto">
           {activeTab === 'messages' && <ConversationView sessionId={session.id} initialPage={jumpToPage} />}
+          {activeTab === 'summary' && <SummaryTab sessionId={session.id} />}
           {activeTab === 'audit' && (
             <AuditTab sessionId={session.id} messageCount={session.message_count} sessionTitle={session.title || undefined} onJumpToMessage={handleJumpToMessage} />
           )}

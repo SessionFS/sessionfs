@@ -40,6 +40,7 @@ class AuditFinding(BaseModel):
     severity: str
     evidence: str
     explanation: str
+    category: str = "other"
 
 
 class AuditSummaryResponse(BaseModel):
@@ -51,12 +52,18 @@ class AuditSummaryResponse(BaseModel):
     major_findings: int
     moderate_findings: int
     minor_findings: int
+    critical_count: int = 0
+    high_count: int = 0
+    low_count: int = 0
 
 
 class AuditResponse(BaseModel):
     session_id: str
     model: str
     timestamp: str
+    provider: str = ""
+    base_url: str = ""
+    execution_time_ms: int = 0
     findings: list[AuditFinding]
     summary: AuditSummaryResponse
 
@@ -295,11 +302,14 @@ async def run_audit(
             },
         )
 
-    # Store the report
+    # Store in blob storage
     report_key = f"sessions/{user.id}/{session_id}_audit.json"
     from dataclasses import asdict
     report_data = json.dumps(asdict(report), indent=2).encode("utf-8")
     await blob_store.put(report_key, report_data)
+
+    # Store in database for history
+    await _store_audit_report(db, report, user.id, provider or "", base_url or "")
 
     return _report_to_response(report)
 
@@ -422,3 +432,125 @@ async def get_audit(
         raise HTTPException(status_code=500, detail="Stored audit report is corrupted")
 
     return AuditResponse(**report_data)
+
+
+async def _store_audit_report(
+    db: AsyncSession,
+    report,  # JudgeReport
+    user_id: str,
+    provider: str,
+    base_url: str,
+) -> None:
+    """Persist audit report to database for history tracking."""
+    import uuid
+
+    from sessionfs.server.db.models import AuditReport as AuditReportModel
+
+    from dataclasses import asdict
+
+    audit_id = f"aud_{uuid.uuid4().hex[:16]}"
+    findings_json = json.dumps([asdict(f) for f in report.findings])
+
+    record = AuditReportModel(
+        id=audit_id,
+        session_id=report.session_id,
+        user_id=user_id,
+        judge_model=report.model,
+        judge_provider=provider,
+        judge_base_url=base_url or None,
+        trust_score=int(report.summary.trust_score * 100),
+        total_claims=report.summary.total_claims,
+        verified_count=report.summary.verified,
+        unverified_count=report.summary.unverified,
+        contradiction_count=report.summary.hallucinations,
+        findings=findings_json,
+        execution_time_ms=getattr(report, "execution_time_ms", None),
+    )
+    db.add(record)
+    await db.commit()
+
+
+# ---- Audit History ----
+
+
+class AuditHistoryEntry(BaseModel):
+    id: str
+    session_id: str
+    judge_model: str
+    judge_provider: str
+    trust_score: int
+    total_claims: int
+    contradiction_count: int
+    execution_time_ms: int | None
+    created_at: str
+
+
+@router.get("/{session_id}/audits")
+async def get_audit_history(
+    session_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[AuditHistoryEntry]:
+    """Get all audit reports for a session (history)."""
+    from sessionfs.server.db.models import AuditReport as AuditReportModel
+
+    await _get_session_or_404(session_id, user, db)
+
+    stmt = (
+        select(AuditReportModel)
+        .where(AuditReportModel.session_id == session_id, AuditReportModel.user_id == user.id)
+        .order_by(AuditReportModel.created_at.desc())
+    )
+    result = await db.execute(stmt)
+    reports = result.scalars().all()
+
+    return [
+        AuditHistoryEntry(
+            id=r.id,
+            session_id=r.session_id,
+            judge_model=r.judge_model,
+            judge_provider=r.judge_provider,
+            trust_score=r.trust_score,
+            total_claims=r.total_claims,
+            contradiction_count=r.contradiction_count,
+            execution_time_ms=r.execution_time_ms,
+            created_at=r.created_at.isoformat() if r.created_at else "",
+        )
+        for r in reports
+    ]
+
+
+@router.get("/audits/{audit_id}")
+async def get_audit_by_id(
+    audit_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Get a specific historical audit report."""
+    from sessionfs.server.db.models import AuditReport as AuditReportModel
+
+    stmt = select(AuditReportModel).where(
+        AuditReportModel.id == audit_id, AuditReportModel.user_id == user.id
+    )
+    result = await db.execute(stmt)
+    report = result.scalar_one_or_none()
+    if not report:
+        raise HTTPException(404, "Audit report not found")
+
+    findings = json.loads(report.findings) if report.findings else []
+
+    return {
+        "id": report.id,
+        "session_id": report.session_id,
+        "model": report.judge_model,
+        "provider": report.judge_provider,
+        "base_url": report.judge_base_url,
+        "trust_score": report.trust_score / 100.0,
+        "total_claims": report.total_claims,
+        "verified": report.verified_count,
+        "unverified": report.unverified_count,
+        "hallucinations": report.contradiction_count,
+        "findings": findings,
+        "execution_time_ms": report.execution_time_ms,
+        "created_at": report.created_at.isoformat() if report.created_at else "",
+    }

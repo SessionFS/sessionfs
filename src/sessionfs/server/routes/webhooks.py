@@ -1,4 +1,4 @@
-"""GitHub webhook handler for PR events."""
+"""GitHub and GitLab webhook handlers for PR/MR events."""
 
 from __future__ import annotations
 
@@ -7,13 +7,13 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy import select
-
-from sessionfs.server.db.models import GitHubInstallation, PRComment, Session
+from sessionfs.server.db.models import GitHubInstallation, GitLabSettings, PRComment, Session
 from sessionfs.server.github_app import (
     GITHUB_WEBHOOK_SECRET,
     get_installation_token,
@@ -192,3 +192,112 @@ async def _handle_pr_event(payload: dict) -> None:
 
     except Exception as exc:
         logger.error("Failed to handle PR event: %s", exc)
+
+
+# ---- GitLab Webhooks ----
+
+
+@router.post("/webhooks/gitlab")
+async def gitlab_webhook(request: Request):
+    """Handle GitLab webhook events (merge request)."""
+    # Verify webhook token
+    token = request.headers.get("X-Gitlab-Token", "")
+    expected = os.environ.get("SFS_GITLAB_WEBHOOK_SECRET", "")
+    if not expected or not hmac.compare_digest(token, expected):
+        raise HTTPException(401, "Invalid webhook token")
+
+    payload = await request.json()
+    event_type = payload.get("object_kind")
+
+    if event_type != "merge_request":
+        return {"status": "ignored", "reason": f"Not a merge_request event: {event_type}"}
+
+    action = payload.get("object_attributes", {}).get("action", "")
+    if action not in ("open", "update", "reopen"):
+        return {"status": "ignored", "reason": f"Action not handled: {action}"}
+
+    asyncio.ensure_future(_handle_gitlab_mr(payload, request))
+    return {"status": "processing"}
+
+
+async def _handle_gitlab_mr(payload: dict, request: Request):
+    """Match MR to sessions and post comment."""
+    try:
+        async with request.app.state.db_session_factory() as db:
+            mr = payload.get("object_attributes", {})
+            project = payload.get("project", {})
+
+            repo_url = project.get("git_http_url", "")
+            ssh_url = project.get("git_ssh_url", "")
+            branch = mr.get("source_branch", "")
+            mr_iid = mr.get("iid")
+            project_id = project.get("id")
+
+            if not branch or not mr_iid or not project_id:
+                return
+
+            # Normalize both URL formats
+            normalized = normalize_git_remote(repo_url)
+            if not normalized:
+                normalized = normalize_git_remote(ssh_url)
+            if not normalized:
+                return
+
+            # Find matching sessions
+            stmt = select(Session).where(
+                Session.git_remote_normalized == normalized,
+                Session.git_branch == branch,
+                Session.is_deleted == False,  # noqa: E712
+            ).order_by(Session.created_at.desc()).limit(10)
+
+            result = await db.execute(stmt)
+            sessions = result.scalars().all()
+
+            if not sessions:
+                return
+
+            # Build session data for comment
+            session_data = []
+            for s in sessions:
+                session_data.append({
+                    "session_id": s.id,
+                    "title": s.title,
+                    "source_tool": s.source_tool,
+                    "model_id": s.model_id,
+                    "message_count": s.message_count,
+                    "trust_score": None,
+                })
+
+            comment_body = build_pr_comment(session_data)
+
+            # Find GitLab token from the session owner
+            owner_id = sessions[0].user_id
+            gitlab_stmt = select(GitLabSettings).where(GitLabSettings.user_id == owner_id)
+            gitlab_result = await db.execute(gitlab_stmt)
+            gitlab_settings = gitlab_result.scalar_one_or_none()
+
+            if not gitlab_settings:
+                logger.warning("No GitLab token for user %s, skipping MR comment", owner_id)
+                return
+
+            # Decrypt token
+            import base64
+            import hashlib as _hashlib
+
+            from cryptography.fernet import Fernet
+
+            secret = os.environ.get("SFS_VERIFICATION_SECRET", "dev-secret")
+            key = base64.urlsafe_b64encode(_hashlib.sha256(secret.encode()).digest())
+            fernet = Fernet(key)
+            access_token = fernet.decrypt(gitlab_settings.encrypted_access_token.encode()).decode()
+
+            # Post comment
+            from sessionfs.server.gitlab_client import GitLabClient
+
+            client = GitLabClient(gitlab_settings.instance_url, access_token)
+            await client.post_mr_comment(project_id, mr_iid, comment_body)
+
+            logger.info("Posted AI Context comment on GitLab MR %s!%d (%d sessions)", normalized, mr_iid, len(sessions))
+
+    except Exception as exc:
+        logger.error("Failed to handle GitLab MR event: %s", exc)

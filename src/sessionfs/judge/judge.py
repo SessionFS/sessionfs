@@ -11,6 +11,7 @@ from sessionfs.judge.evidence import Evidence, gather_evidence
 from sessionfs.judge.extractor import Claim, extract_claims
 from sessionfs.judge.providers import call_llm
 from sessionfs.judge.report import (
+    SEVERITY_FROM_CATEGORY,
     AuditSummary,
     Finding,
     JudgeReport,
@@ -41,16 +42,20 @@ ABSENCE OF EVIDENCE IS ALWAYS "unverified", NEVER "hallucination".
 If in doubt between hallucination and unverified, choose UNVERIFIED. \
 Only use hallucination when evidence PROVES the claim is false.
 
-SEVERITY RULES:
-- **minor**: Cosmetic or inconsequential inaccuracy (e.g., wrong line number).
-- **moderate**: Could mislead a developer or cause wasted effort (e.g., wrong file path).
-- **major**: Could cause bugs, data loss, or security issues if trusted (e.g., claiming tests pass when they fail).
+CATEGORY RULES — classify each claim into exactly one:
+- **test_result**: Claims about test pass/fail status or test output
+- **file_existence**: Claims about creating, modifying, reading, or deleting files
+- **command_output**: Claims about command execution results or exit codes
+- **data_misread**: Claims that misstate data read from files, APIs, or databases
+- **code_claim**: Claims about what code does, returns, or implements
+- **dependency**: Claims about package installation, availability, or versions
+- **other**: Anything that doesn't fit the above categories
 
 Respond with a JSON array of objects, one per claim. Each object must have:
 {
   "claim_index": <int>,
   "verdict": "verified" | "unverified" | "hallucination",
-  "severity": "minor" | "moderate" | "major",
+  "category": "test_result" | "file_existence" | "command_output" | "data_misread" | "code_claim" | "dependency" | "other",
   "evidence": "<brief quote or reference to the specific tool_result that supports/contradicts>",
   "explanation": "<1-2 sentence explanation citing the specific evidence>"
 }
@@ -182,9 +187,14 @@ def _parse_judge_response(response: str, claims: list[Claim]) -> list[Finding]:
         verdict = v.get("verdict", "unverified")
         if verdict not in ("verified", "unverified", "hallucination"):
             verdict = "unverified"
-        severity = v.get("severity", "minor")
-        if severity not in ("minor", "moderate", "major"):
-            severity = "minor"
+
+        # Category from LLM, severity auto-assigned from category
+        category = v.get("category", "other")
+        valid_categories = ("test_result", "file_existence", "command_output", "data_misread", "code_claim", "dependency", "other")
+        if category not in valid_categories:
+            category = "other"
+
+        severity = SEVERITY_FROM_CATEGORY.get(category, "low")
 
         findings.append(
             Finding(
@@ -194,6 +204,7 @@ def _parse_judge_response(response: str, claims: list[Claim]) -> list[Finding]:
                 severity=severity,
                 evidence=v.get("evidence", ""),
                 explanation=v.get("explanation", ""),
+                category=category,
             )
         )
 
@@ -206,9 +217,9 @@ def _compute_summary(findings: list[Finding]) -> AuditSummary:
     verified = sum(1 for f in findings if f.verdict == "verified")
     unverified = sum(1 for f in findings if f.verdict == "unverified")
     hallucinations = sum(1 for f in findings if f.verdict == "hallucination")
-    major = sum(1 for f in findings if f.severity == "major")
-    moderate = sum(1 for f in findings if f.severity == "moderate")
-    minor = sum(1 for f in findings if f.severity == "minor")
+    critical = sum(1 for f in findings if f.severity == "critical" and f.verdict == "hallucination")
+    high = sum(1 for f in findings if f.severity == "high" and f.verdict == "hallucination")
+    low = sum(1 for f in findings if f.severity == "low" and f.verdict == "hallucination")
 
     trust_score = verified / total if total > 0 else 0.0
 
@@ -218,9 +229,12 @@ def _compute_summary(findings: list[Finding]) -> AuditSummary:
         unverified=unverified,
         hallucinations=hallucinations,
         trust_score=round(trust_score, 3),
-        major_findings=major,
-        moderate_findings=moderate,
-        minor_findings=minor,
+        major_findings=critical,  # backward compat
+        moderate_findings=high,
+        minor_findings=low,
+        critical_count=critical,
+        high_count=high,
+        low_count=low,
     )
 
 

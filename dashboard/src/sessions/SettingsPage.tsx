@@ -308,6 +308,9 @@ export default function SettingsPage() {
         )}
       </div>
 
+      {/* Auto-audit */}
+      <AutoAuditSection />
+
       {/* Autosync */}
       <AutosyncSection />
 
@@ -323,6 +326,46 @@ export default function SettingsPage() {
     </div>
   );
 }
+
+function AutoAuditSection() {
+  const { auth } = useAuth();
+  const queryClient = useQueryClient();
+
+  const { data } = useQuery({
+    queryKey: ['auditTrigger'],
+    queryFn: () => auth!.client.getAuditTrigger(),
+    enabled: !!auth,
+    staleTime: 30_000,
+  });
+
+  const update = useMutation({
+    mutationFn: (trigger: string) => auth!.client.updateAuditTrigger(trigger),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['auditTrigger'] }),
+  });
+
+  const current = data?.trigger || 'manual';
+
+  return (
+    <div className="bg-bg-secondary border border-border rounded-lg p-4 mb-4">
+      <h2 className="text-sm uppercase tracking-wider text-text-muted mb-3">Auto-audit</h2>
+      <div className="space-y-2">
+        {[
+          { value: 'manual', label: 'Manual only — run audits when you choose' },
+          { value: 'on_sync', label: 'On sync — automatically audit after each push' },
+          { value: 'on_pr', label: 'On PR/MR — audit when a pull/merge request is opened' },
+        ].map(({ value, label }) => (
+          <label key={value} className="flex items-center gap-2 text-sm text-text-secondary cursor-pointer">
+            <input type="radio" name="audit-trigger" checked={current === value}
+              onChange={() => update.mutate(value)} disabled={update.isPending}
+              className="text-accent focus:ring-accent" />
+            {label}
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 
 function AutosyncSection() {
   const { auth } = useAuth();

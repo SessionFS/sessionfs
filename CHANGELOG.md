@@ -15,6 +15,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Re-audit page shows hardcoded models** — AuditModal now loads `base_url` from saved settings and runs model discovery with dropdown
 - Added "Test Connection" button to AuditModal for custom base URLs
 
+## [0.9.3] - 2026-03-28
+
+### Added
+- **LLM Judge V2** — severity-classified findings (critical/high/low), category detection (test_result, file_existence, command_output, etc.), auto-assigned from category
+- **Audit history** — every audit persisted in `audit_reports` table with model, provider, scores, findings
+- **Audit history API** — `GET /api/v1/sessions/{id}/audits` (list), `GET /api/v1/audits/{id}` (detail)
+- **Auto-audit trigger** — configurable: manual, on_sync, on_pr. Dashboard radio buttons + `audit_trigger` on users
+- **GitLab webhook** — `POST /webhooks/gitlab` for merge request events, posts AI context comments on MRs
+- **GitLab client** — cloud + self-hosted support, encrypted token storage
+- **Session summarization** — deterministic extraction: files modified/read, commands, test results (pytest/jest/go test), packages, errors, duration
+- `sfs summary <id>` CLI command with `--format md` for markdown export
+- Dashboard Summary tab with metric cards, files, activity, errors sections
+- `GET/POST /api/v1/sessions/{id}/summary` API endpoints
+- PR/MR comments now include contradictions table when audit exists
+- Updated judge prompt to return category alongside verdict
+- `audit_reports`, `gitlab_settings`, `session_summaries` database tables (migrations 014-015)
+
+### Fixed
+- **Claim extractor for Claude Code sessions** — new two-strategy extraction (tool-context + standalone regex) produces 50+ claims from sessions that previously returned 0
+- Evidence truncation raised from 200 to 2000 chars
+- Proper error responses: 422 for 0 claims with tool calls, 502 for LLM HTTP errors, 504 for timeouts
+
+### Changed
+- Landing page updated for v0.9.3 — Judge V2 spotlight, Session Summary spotlight, Enterprise section, 8-card feature grid, fixed handoff command
+- Judge prompt returns `category` instead of `severity` — severity auto-assigned deterministically
+- Dashboard AuditTab redesigned — contradictions-first, metric cards, collapsible verified/unverified, audit history
+
 ## [0.9.0] - 2026-03-28
 
 ### Added

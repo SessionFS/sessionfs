@@ -429,7 +429,7 @@ class TestParseJudgeResponse:
             {
                 "claim_index": 0,
                 "verdict": "verified",
-                "severity": "minor",
+                "category": "file_existence",
                 "evidence": "Tool result shows file created",
                 "explanation": "The file was indeed created",
             }
@@ -437,7 +437,8 @@ class TestParseJudgeResponse:
         findings = _parse_judge_response(response, claims)
         assert len(findings) == 1
         assert findings[0].verdict == "verified"
-        assert findings[0].severity == "minor"
+        assert findings[0].severity == "high"  # file_existence -> high
+        assert findings[0].category == "file_existence"
 
     def test_handles_markdown_fences(self):
         claims = [
@@ -445,7 +446,7 @@ class TestParseJudgeResponse:
                   confidence="likely", evidence_refs=[]),
         ]
         response = "```json\n" + json.dumps([
-            {"claim_index": 0, "verdict": "hallucination", "severity": "major",
+            {"claim_index": 0, "verdict": "hallucination", "category": "test_result",
              "evidence": "exit code 1", "explanation": "test failed"}
         ]) + "\n```"
         findings = _parse_judge_response(response, claims)
@@ -493,19 +494,19 @@ class TestParseJudgeResponse:
 class TestComputeSummary:
     def test_computes_trust_score(self):
         findings = [
-            Finding(message_index=0, claim="a", verdict="verified", severity="minor",
-                    evidence="", explanation=""),
-            Finding(message_index=1, claim="b", verdict="verified", severity="minor",
-                    evidence="", explanation=""),
-            Finding(message_index=2, claim="c", verdict="hallucination", severity="major",
-                    evidence="", explanation=""),
+            Finding(message_index=0, claim="a", verdict="verified", severity="low",
+                    evidence="", explanation="", category="other"),
+            Finding(message_index=1, claim="b", verdict="verified", severity="low",
+                    evidence="", explanation="", category="other"),
+            Finding(message_index=2, claim="c", verdict="hallucination", severity="critical",
+                    evidence="", explanation="", category="test_result"),
         ]
         summary = _compute_summary(findings)
         assert summary.total_claims == 3
         assert summary.verified == 2
         assert summary.hallucinations == 1
         assert summary.trust_score == pytest.approx(0.667, abs=0.001)
-        assert summary.major_findings == 1
+        assert summary.critical_count == 1
 
     def test_empty_findings(self):
         summary = _compute_summary([])

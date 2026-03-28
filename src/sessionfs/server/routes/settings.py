@@ -111,6 +111,36 @@ async def delete_judge_settings(
     return {"deleted": True}
 
 
+# ---- Audit Trigger Settings ----
+
+
+class AuditTriggerRequest(BaseModel):
+    trigger: str  # "manual", "on_sync", "on_pr"
+
+
+@router.get("/audit-trigger")
+async def get_audit_trigger(
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Get user's auto-audit trigger setting."""
+    return {"trigger": user.audit_trigger or "manual"}
+
+
+@router.put("/audit-trigger")
+async def update_audit_trigger(
+    body: AuditTriggerRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Update auto-audit trigger."""
+    if body.trigger not in ("manual", "on_sync", "on_pr"):
+        from fastapi import HTTPException
+        raise HTTPException(400, "Trigger must be 'manual', 'on_sync', or 'on_pr'")
+    user.audit_trigger = body.trigger
+    await db.commit()
+    return {"trigger": body.trigger}
+
+
 @router.get("/judge/models")
 async def discover_models(
     base_url: str = Query(..., description="OpenAI-compatible endpoint URL"),
