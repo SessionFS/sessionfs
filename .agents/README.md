@@ -1,6 +1,6 @@
 # SessionFS Agent Team
 
-Five specialized agent personas for building SessionFS with AI coding agents.
+Eight specialized agent personas for building SessionFS with AI coding agents.
 
 ## Agents
 
@@ -11,6 +11,9 @@ Five specialized agent personas for building SessionFS with AI coding agents.
 | **Forge** (DevOps Engineer) | `forge-devops.md` | CI/CD, Docker, Helm, GitHub Actions, package distribution, self-hosted deploy |
 | **Prism** (Frontend Engineer) | `prism-frontend.md` | Web dashboard, VS Code extension, landing page |
 | **Scribe** (Technical Writer) | `scribe-docs.md` | Documentation, quickstart guides, API reference, README, blog posts |
+| **Ledger** (Revenue Engineer) | `ledger-revenue.md` | Stripe billing, pricing tiers, usage metering, subscription management |
+| **Shield** (Compliance Officer) | `shield-compliance.md` | Data governance, compliance certifications, privacy, regulatory requirements |
+| **Vault** (Licensing Architect) | `vault-licensing.md` | Open source licensing, IP protection, commercial licensing, contributor agreements |
 
 ## How to Use
 
