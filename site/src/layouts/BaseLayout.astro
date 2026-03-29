@@ -17,16 +17,18 @@ const { title, description = 'Capture, sync, and resume AI coding sessions acros
   <meta name="description" content={description}>
   <meta property="og:title" content={title}>
   <meta property="og:description" content={description}>
-  <meta property="og:url" content="https://sessionfs.dev">
+  <meta property="og:url" content={`https://sessionfs.dev${Astro.url.pathname}`}>
   <meta property="og:type" content="website">
+  <meta property="og:image" content="https://sessionfs.dev/og-image.png">
+  <meta name="twitter:card" content="summary_large_image">
   <link rel="canonical" href={`https://sessionfs.dev${Astro.url.pathname}`}>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 </head>
-<body class="antialiased overflow-x-hidden" style="color: #e6edf3;">
+<body class="antialiased overflow-x-hidden text-txt">
 
-  <nav style="background: rgba(10,12,16,0.7); backdrop-filter: blur(12px); border-bottom: 1px solid #30363d;" class="fixed top-0 w-full z-50">
+  <nav class="fixed top-0 w-full z-50 border-b border-border" style="background: rgba(10,12,16,0.7); backdrop-filter: blur(12px);">
     <div class="max-w-6xl mx-auto px-5 h-16 flex items-center justify-between">
       <a href="/" class="flex items-center gap-2.5" aria-label="SessionFS home">
         <svg viewBox="0 0 180 50" class="h-7" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="SessionFS">
@@ -53,12 +55,12 @@ const { title, description = 'Capture, sync, and resume AI coding sessions acros
       </div>
     </div>
 
-    <div id="mobile-menu" class="sm:hidden" style="display: none; background: #161b22; border-top: 1px solid #30363d;">
+    <div id="mobile-menu" class="sm:hidden bg-surface border-t border-border" style="display: none;">
       <nav class="max-w-6xl mx-auto px-5 py-3 flex flex-col" aria-label="Mobile navigation">
-        <a href="/features/" class={`mobile-menu-link py-3 text-[15px] font-medium transition-colors border-b ${activeNav === 'features' ? 'text-white' : 'text-[#b1b8c1] hover:text-white'}`} style="border-color: #30363d;">Features</a>
-        <a href="/quickstart/" class={`mobile-menu-link py-3 text-[15px] font-medium transition-colors border-b ${activeNav === 'docs' ? 'text-white' : 'text-[#b1b8c1] hover:text-white'}`} style="border-color: #30363d;">Docs</a>
-        <a href="/pricing/" class={`mobile-menu-link py-3 text-[15px] font-medium transition-colors border-b ${activeNav === 'pricing' ? 'text-white' : 'text-[#b1b8c1] hover:text-white'}`} style="border-color: #30363d;">Pricing</a>
-        <a href="/enterprise/" class={`mobile-menu-link py-3 text-[15px] font-medium transition-colors border-b ${activeNav === 'enterprise' ? 'text-white' : 'text-[#b1b8c1] hover:text-white'}`} style="border-color: #30363d;">Enterprise</a>
+        <a href="/features/" class={`mobile-menu-link py-3 text-[15px] font-medium transition-colors border-b border-border ${activeNav === 'features' ? 'text-white' : 'text-[#b1b8c1] hover:text-white'}`}>Features</a>
+        <a href="/quickstart/" class={`mobile-menu-link py-3 text-[15px] font-medium transition-colors border-b border-border ${activeNav === 'docs' ? 'text-white' : 'text-[#b1b8c1] hover:text-white'}`}>Docs</a>
+        <a href="/pricing/" class={`mobile-menu-link py-3 text-[15px] font-medium transition-colors border-b border-border ${activeNav === 'pricing' ? 'text-white' : 'text-[#b1b8c1] hover:text-white'}`}>Pricing</a>
+        <a href="/enterprise/" class={`mobile-menu-link py-3 text-[15px] font-medium transition-colors border-b border-border ${activeNav === 'enterprise' ? 'text-white' : 'text-[#b1b8c1] hover:text-white'}`}>Enterprise</a>
         <a href="/changelog/" class={`mobile-menu-link py-3 text-[15px] font-medium transition-colors ${activeNav === 'changelog' ? 'text-white' : 'text-[#b1b8c1] hover:text-white'}`}>Changelog</a>
       </nav>
     </div>
@@ -92,11 +94,11 @@ const { title, description = 'Capture, sync, and resume AI coding sessions acros
     <div class="max-w-5xl mx-auto">
       <div class="grid grid-cols-2 sm:grid-cols-4 gap-8 mb-12">
         <div class="col-span-2 sm:col-span-1">
-          <p class="text-sm" style="color: #9ca3af;">Portable AI coding sessions.</p>
+          <p class="text-sm text-muted-dim">Portable AI coding sessions.</p>
         </div>
         <div>
           <h4 class="font-semibold text-sm mb-3">Product</h4>
-          <ul class="space-y-2 text-sm" style="color: #9ca3af;">
+          <ul class="space-y-2 text-sm text-muted-dim">
             <li><a href="/quickstart/" class="hover:text-white transition-colors">Get Started</a></li>
             <li><a href="/pricing/" class="hover:text-white transition-colors">Pricing</a></li>
             <li><a href="/changelog/" class="hover:text-white transition-colors">Changelog</a></li>
@@ -104,7 +106,7 @@ const { title, description = 'Capture, sync, and resume AI coding sessions acros
         </div>
         <div>
           <h4 class="font-semibold text-sm mb-3">Docs</h4>
-          <ul class="space-y-2 text-sm" style="color: #9ca3af;">
+          <ul class="space-y-2 text-sm text-muted-dim">
             <li><a href="/quickstart/" class="hover:text-white transition-colors">Quickstart</a></li>
             <li><a href="/cli/" class="hover:text-white transition-colors">CLI Reference</a></li>
             <li><a href="/self-hosted/" class="hover:text-white transition-colors">Self-hosted</a></li>
@@ -114,14 +116,14 @@ const { title, description = 'Capture, sync, and resume AI coding sessions acros
         </div>
         <div>
           <h4 class="font-semibold text-sm mb-3">Company</h4>
-          <ul class="space-y-2 text-sm" style="color: #9ca3af;">
+          <ul class="space-y-2 text-sm text-muted-dim">
             <li><a href="https://github.com/SessionFS/sessionfs" class="hover:text-white transition-colors">GitHub</a></li>
             <li><a href="/enterprise/" class="hover:text-white transition-colors">Enterprise</a></li>
             <li><a href="mailto:hello@sessionfs.dev" class="hover:text-white transition-colors">hello@sessionfs.dev</a></li>
           </ul>
         </div>
       </div>
-      <div style="border-top: 1px solid #30363d; color: #9ca3af;" class="pt-6 text-center text-[13px]">
+      <div class="pt-6 text-center text-[13px] border-t border-border text-muted-dim">
         &copy; 2026 SessionFS. All rights reserved.
       </div>
     </div>

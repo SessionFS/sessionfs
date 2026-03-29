@@ -2,19 +2,196 @@
 import BaseLayout from '../layouts/BaseLayout.astro';
 ---
 <BaseLayout title="Enterprise — SessionFS" activeNav="enterprise" description="Self-hosted SessionFS on Kubernetes. Your data stays on your infrastructure.">
-  <section class="pt-32 pb-20 px-5 relative noise">
-    <div class="max-w-4xl mx-auto">
-      <div class="text-center mb-16">
-        <h1 class="text-4xl sm:text-5xl font-extrabold mb-6" style="font-family: 'Plus Jakarta Sans';">Deploy anywhere.<br>Control everything.</h1>
-        <p class="text-lg max-w-xl mx-auto" style="color: #c9d1d9;">Self-hosted Kubernetes deployment with Helm. Your data stays on your infrastructure. Enterprise-tested on AWS EKS.</p>
+
+  <!-- Hero -->
+  <section class="relative pt-32 sm:pt-40 pb-16 px-5 noise">
+    <div class="max-w-4xl mx-auto text-center">
+      <h1 class="fade-up font-heading text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight leading-[1.1] mb-6">
+        Deploy anywhere.<br>Control everything.
+      </h1>
+      <p class="fade-up text-lg sm:text-xl text-muted leading-relaxed max-w-xl mx-auto mb-4">
+        Self-hosted Kubernetes deployment with Helm. Your data stays on your infrastructure.
+      </p>
+      <p class="fade-up text-base text-muted-dim max-w-lg mx-auto">Enterprise-tested on AWS EKS. Works on GKE, AKS, and on-prem clusters.</p>
+      <div class="fade-up mt-10 flex flex-col sm:flex-row gap-3 justify-center">
+        <a href="mailto:enterprise@sessionfs.dev?subject=SessionFS%20Enterprise" class="inline-flex items-center justify-center gap-2 bg-brand text-white font-semibold rounded-lg px-7 py-3 hover:brightness-110 transition">
+          Contact Enterprise Sales
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+        </a>
+        <a href="/quickstart/" class="inline-flex items-center justify-center gap-2 border border-border text-txt font-semibold rounded-lg px-7 py-3 hover:border-muted transition">
+          View docs
+        </a>
       </div>
-      <div class="grid md:grid-cols-2 gap-6 mb-16">
-        <div class="glass p-6"><h3 class="text-lg font-semibold mb-3">Self-hosted deployment</h3><p class="text-sm mb-4" style="color: #c9d1d9;">Deploy to any Kubernetes cluster — AWS EKS, GCP GKE, Azure AKS, or on-prem.</p><code class="block text-sm p-3 rounded" style="background: #0a0c10; color: #3ddc84; font-family: 'JetBrains Mono', monospace;">helm install sessionfs ./charts/sessionfs</code></div>
-        <div class="glass p-6"><h3 class="text-lg font-semibold mb-3">Data sovereignty</h3><p class="text-sm mb-4" style="color: #c9d1d9;">Your bucket, your database, your infrastructure. Session data never leaves your network.</p><p class="text-sm" style="color: #9ca3af;">S3, GCS, or local PVC. PostgreSQL (RDS, Cloud SQL, or built-in).</p></div>
-        <div class="glass p-6"><h3 class="text-lg font-semibold mb-3">AI governance</h3><p class="text-sm mb-4" style="color: #c9d1d9;">Complete audit trail of every AI agent action. LLM Judge V2 with severity-classified findings.</p><p class="text-sm" style="color: #9ca3af;">Auto-audit on sync or PR/MR. Audit history with model comparison.</p></div>
-        <div class="glass p-6"><h3 class="text-lg font-semibold mb-3">Your LLM gateway</h3><p class="text-sm mb-4" style="color: #c9d1d9;">Bring your own LLM — Anthropic, OpenAI, Google, or any OpenAI-compatible endpoint.</p><p class="text-sm" style="color: #9ca3af;">LiteLLM, vLLM, Ollama, Azure OpenAI all supported.</p></div>
-      </div>
-      <div class="glass p-8 text-center max-w-lg mx-auto"><h3 class="text-xl font-bold mb-3">Talk to us</h3><p class="text-sm mb-4" style="color: #c9d1d9;">Self-hosted deployment, HIPAA compliance, SAML SSO, SLA, and dedicated support.</p><a href="mailto:enterprise@sessionfs.dev?subject=SessionFS%20Enterprise" class="inline-flex items-center justify-center text-white font-semibold rounded-lg px-7 py-3 hover:brightness-110 transition" style="background: #4f9cf7;">Contact Enterprise Sales</a></div>
     </div>
   </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- Helm terminal + deployment highlight -->
+  <section class="relative py-20 sm:py-28 px-5 noise">
+    <div class="max-w-5xl mx-auto flex flex-col lg:flex-row items-center gap-12">
+      <div class="lg:w-1/2 fade-up">
+        <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-5">One Helm chart. Any cluster.</h2>
+        <p class="text-muted text-lg mb-4 leading-relaxed">Deploy to AWS EKS, GCP GKE, Azure AKS, or on-prem Kubernetes with a single command. The Helm chart handles API, dashboard, daemon config, ingress, and PostgreSQL.</p>
+        <p class="text-muted text-lg mb-6 leading-relaxed">Bring your own object store — S3, GCS, or local PVC. Connect to an existing PostgreSQL (RDS, Cloud SQL, or the bundled instance).</p>
+        <div class="flex flex-wrap gap-3">
+          <span class="font-mono text-sm bg-surface border border-border rounded px-3 py-1.5 text-muted-dim">AWS EKS</span>
+          <span class="font-mono text-sm bg-surface border border-border rounded px-3 py-1.5 text-muted-dim">GCP GKE</span>
+          <span class="font-mono text-sm bg-surface border border-border rounded px-3 py-1.5 text-muted-dim">Azure AKS</span>
+          <span class="font-mono text-sm bg-surface border border-border rounded px-3 py-1.5 text-muted-dim">On-prem</span>
+        </div>
+      </div>
+      <div class="lg:w-1/2 w-full fade-up">
+        <div class="relative">
+          <div class="hero-glow"></div>
+          <div class="term relative z-10">
+            <div class="term-bar">
+              <div class="term-dot bg-[#ff5f57]"></div>
+              <div class="term-dot bg-[#febc2e]"></div>
+              <div class="term-dot bg-[#28c840]"></div>
+              <span class="ml-3 text-muted-dim text-[13px] font-mono">helm deploy</span>
+            </div>
+            <div class="p-5 font-mono text-sm space-y-3">
+              <div>
+                <span class="text-muted-dim">$</span>
+                <span class="text-accent"> helm install sessionfs ./charts/sessionfs \</span>
+              </div>
+              <div class="pl-4 text-accent">--set api.image=ghcr.io/sessionfs/api:v0.9.3 \</div>
+              <div class="pl-4 text-accent">--set storage.backend=s3 \</div>
+              <div class="pl-4 text-accent">--set storage.bucket=my-sessions-bucket \</div>
+              <div class="pl-4 text-accent">--values values.prod.yaml</div>
+              <div class="border-t border-border pt-3 text-muted">
+                Release "sessionfs" has been deployed.<br>
+                <span class="text-accent">&#10003;</span> API ready at api.internal.company.com<br>
+                <span class="text-accent">&#10003;</span> Dashboard ready at sessions.company.com<br>
+                <span class="text-accent">&#10003;</span> PostgreSQL migrations applied (10 migrations)
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- Feature cards -->
+  <section class="relative py-20 sm:py-28 px-5 bg-surface/50 noise">
+    <div class="max-w-5xl mx-auto">
+      <h2 class="fade-up font-heading text-3xl sm:text-4xl font-bold text-center mb-4">Built for engineering teams</h2>
+      <p class="fade-up text-muted text-center mb-14 max-w-lg mx-auto leading-relaxed">Everything you need to run SessionFS at scale, on your own infrastructure.</p>
+      <div class="grid md:grid-cols-2 gap-5">
+
+        <div class="glass fade-up p-6">
+          <div class="text-2xl mb-3">&#128274;</div>
+          <h3 class="font-heading font-semibold text-lg mb-3">Data sovereignty</h3>
+          <p class="text-muted text-sm mb-4 leading-relaxed">Your bucket, your database, your infrastructure. Session data never leaves your network. No callbacks, no telemetry, no surprise egress.</p>
+          <p class="text-muted-dim text-sm">S3, GCS, or local PVC &middot; PostgreSQL (RDS, Cloud SQL, or built-in)</p>
+        </div>
+
+        <div class="glass fade-up p-6">
+          <div class="text-2xl mb-3">&#9878;</div>
+          <h3 class="font-heading font-semibold text-lg mb-3">AI governance</h3>
+          <p class="text-muted text-sm mb-4 leading-relaxed">Complete audit trail of every AI agent action across your team. LLM Judge with severity-classified findings, stored audit history, and model comparison over time.</p>
+          <p class="text-muted-dim text-sm">Auto-audit on sync or PR/MR &middot; Contradiction reports in PR comments</p>
+        </div>
+
+        <div class="glass fade-up p-6">
+          <div class="text-2xl mb-3">&#128640;</div>
+          <h3 class="font-heading font-semibold text-lg mb-3">Your LLM gateway</h3>
+          <p class="text-muted text-sm mb-4 leading-relaxed">Bring your own LLM — connect the Judge to your internal gateway and never expose API keys to developers. Works with any OpenAI-compatible endpoint.</p>
+          <p class="text-muted-dim text-sm">LiteLLM, vLLM, Ollama, Azure OpenAI, Anthropic, Google</p>
+        </div>
+
+        <div class="glass fade-up p-6">
+          <div class="text-2xl mb-3">&#128101;</div>
+          <h3 class="font-heading font-semibold text-lg mb-3">Team handoff at scale</h3>
+          <p class="text-muted text-sm mb-4 leading-relaxed">Engineers hand off sessions with full context — conversation, workspace state, git snapshot. Paths auto-resolve by git remote URL across different machines.</p>
+          <p class="text-muted-dim text-sm">Email notifications via Resend, SMTP, or air-gapped (no email)</p>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- Security & Compliance -->
+  <section class="relative py-20 sm:py-28 px-5 noise">
+    <div class="max-w-5xl mx-auto">
+      <div class="flex flex-col lg:flex-row items-start gap-12">
+        <div class="lg:w-1/2 fade-up">
+          <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-5">Security &amp; compliance</h2>
+          <p class="text-muted text-lg mb-6 leading-relaxed">Designed for regulated industries and security-conscious teams. SessionFS self-hosted gives you complete control over access, storage, and audit trails.</p>
+          <a href="mailto:enterprise@sessionfs.dev?subject=SessionFS%20Compliance" class="text-brand hover:underline text-sm font-medium">Ask about compliance requirements &rarr;</a>
+        </div>
+        <div class="lg:w-1/2 fade-up">
+          <div class="glass p-6 space-y-4">
+            <div class="flex items-start gap-3">
+              <span class="text-accent text-lg mt-0.5">&#10003;</span>
+              <div>
+                <div class="font-semibold text-sm mb-1">HIPAA-ready deployment</div>
+                <div class="text-muted text-sm">Air-gapped install with no external network calls. All session data stays within your VPC.</div>
+              </div>
+            </div>
+            <div class="border-t border-border pt-4 flex items-start gap-3">
+              <span class="text-accent text-lg mt-0.5">&#10003;</span>
+              <div>
+                <div class="font-semibold text-sm mb-1">SAML SSO</div>
+                <div class="text-muted text-sm">Integrate with Okta, Azure AD, or any SAML 2.0 identity provider for centralized access control.</div>
+              </div>
+            </div>
+            <div class="border-t border-border pt-4 flex items-start gap-3">
+              <span class="text-accent text-lg mt-0.5">&#10003;</span>
+              <div>
+                <div class="font-semibold text-sm mb-1">Full audit log</div>
+                <div class="text-muted text-sm">Every session write, push, handoff, and audit is logged with user, timestamp, and IP. Exportable for SIEM.</div>
+              </div>
+            </div>
+            <div class="border-t border-border pt-4 flex items-start gap-3">
+              <span class="text-accent text-lg mt-0.5">&#10003;</span>
+              <div>
+                <div class="font-semibold text-sm mb-1">Role-based access</div>
+                <div class="text-muted text-sm">Admin, member, and read-only roles. Team-scoped session visibility with per-repo isolation.</div>
+              </div>
+            </div>
+            <div class="border-t border-border pt-4 flex items-start gap-3">
+              <span class="text-accent text-lg mt-0.5">&#10003;</span>
+              <div>
+                <div class="font-semibold text-sm mb-1">SLA &amp; dedicated support</div>
+                <div class="text-muted text-sm">Guaranteed uptime SLA, named support contact, and direct Slack channel for enterprise accounts.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- CTA -->
+  <section class="relative py-16 px-5 noise">
+    <div class="max-w-2xl mx-auto">
+      <div class="glass fade-up p-8 sm:p-10 text-center" style="border-color: rgba(79,156,247,0.3);">
+        <h2 class="font-heading text-2xl sm:text-3xl font-bold mb-3">Talk to the team</h2>
+        <p class="text-muted mb-2 leading-relaxed">Self-hosted deployment, compliance requirements, custom SLA, and pricing for large teams.</p>
+        <p class="text-muted-dim text-sm mb-8">We typically respond within one business day.</p>
+        <a href="mailto:enterprise@sessionfs.dev?subject=SessionFS%20Enterprise" class="inline-flex items-center justify-center gap-2 bg-brand text-white font-semibold rounded-lg px-8 py-3.5 hover:brightness-110 transition">
+          Contact Enterprise Sales
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
 </BaseLayout>
+
+<script>
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); } });
+  }, { threshold: 0.1 });
+  document.querySelectorAll('.fade-up').forEach(el => observer.observe(el));
+</script>

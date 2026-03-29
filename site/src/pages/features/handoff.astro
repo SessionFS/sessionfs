@@ -2,59 +2,153 @@
 import BaseLayout from '../../layouts/BaseLayout.astro';
 ---
 <BaseLayout title="Team Handoff — SessionFS" activeNav="features" description="Hand off AI coding sessions to teammates with full context.">
-<section class="pt-32 pb-20 px-5 noise">
+
+  <!-- Hero -->
+  <section class="relative pt-32 sm:pt-40 pb-16 px-5 noise">
+    <div class="max-w-4xl mx-auto text-center">
+      <div class="fade-up inline-flex items-center gap-2 text-sm font-mono text-muted-dim mb-6">
+        <a href="/features/" class="hover:text-brand transition-colors">Features</a>
+        <span>&#47;</span>
+        <span class="text-txt">Team Handoff</span>
+      </div>
+      <h1 class="fade-up font-heading text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight leading-[1.1] mb-6">
+        Hand off a session,<br>not a Slack message
+      </h1>
+      <p class="fade-up text-lg sm:text-xl text-muted leading-relaxed max-w-xl mx-auto">
+        Full conversation context, workspace state, and tool configs transfer instantly between teammates.
+      </p>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- Terminal demo -->
+  <section class="relative py-20 sm:py-28 px-5 noise">
     <div class="max-w-5xl mx-auto">
-      <div class="text-center mb-16">
-        <h1 class="text-4xl sm:text-5xl font-extrabold mb-6" style="font-family: 'Plus Jakarta Sans';">Hand off a session,<br>not a Slack message</h1>
-        <p class="text-lg max-w-xl mx-auto" style="color: #c9d1d9;">Full conversation context, workspace state, and tool configs transfer instantly between teammates.</p>
-      </div>
-
-      <div class="grid md:grid-cols-2 gap-6 mb-16">
-        <div>
-          <div class="text-[13px] mb-2 uppercase tracking-wider" style="color: #9ca3af; font-family: 'JetBrains Mono', monospace;">Developer A</div>
+      <div class="grid md:grid-cols-2 gap-5 mb-12">
+        <div class="fade-up">
+          <div class="text-[13px] text-muted-dim mb-2 font-mono uppercase tracking-wider">Developer A</div>
           <div class="term">
-            <div class="term-bar"><div class="term-dot" style="background:#ff5f57"></div><div class="term-dot" style="background:#febc2e"></div><div class="term-dot" style="background:#28c840"></div></div>
-            <div class="p-4 text-sm" style="font-family: 'JetBrains Mono', monospace;">
-              <div><span style="color:#9ca3af;">$</span> <span style="color:#3ddc84;">sfs handoff ses_abc \</span></div>
-              <div class="pl-4"><span style="color:#3ddc84;">--to sarah@company.com \</span></div>
-              <div class="pl-4"><span style="color:#3ddc84;">--message "JWT middleware is the problem"</span></div>
-              <div class="mt-3" style="color:#c9d1d9;">Handoff hnd_x7k9 created.</div>
-              <div style="color:#c9d1d9;">Session pushed. Sarah notified.</div>
+            <div class="term-bar">
+              <div class="term-dot bg-[#ff5f57]"></div>
+              <div class="term-dot bg-[#febc2e]"></div>
+              <div class="term-dot bg-[#28c840]"></div>
+            </div>
+            <div class="p-4 font-mono text-sm">
+              <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs handoff ses_abc \</span></div>
+              <div class="pl-4 text-accent">--to sarah@company.com \</div>
+              <div class="pl-4 text-accent">--message "JWT middleware is the problem"</div>
+              <div class="text-muted mt-3">Handoff hnd_x7k9 created.</div>
+              <div class="text-muted">Session pushed. Sarah notified.</div>
             </div>
           </div>
         </div>
-        <div>
-          <div class="text-[13px] mb-2 uppercase tracking-wider" style="color: #9ca3af; font-family: 'JetBrains Mono', monospace;">Developer B (Sarah)</div>
+        <div class="fade-up">
+          <div class="text-[13px] text-muted-dim mb-2 font-mono uppercase tracking-wider">Developer B (Sarah)</div>
           <div class="term">
-            <div class="term-bar"><div class="term-dot" style="background:#ff5f57"></div><div class="term-dot" style="background:#febc2e"></div><div class="term-dot" style="background:#28c840"></div></div>
-            <div class="p-4 text-sm" style="font-family: 'JetBrains Mono', monospace;">
-              <div><span style="color:#9ca3af;">$</span> <span style="color:#3ddc84;">sfs pull-handoff hnd_x7k9</span></div>
-              <div class="mt-2" style="color:#c9d1d9;">Workspace resolved via git remote.</div>
-              <div class="mt-3"><span style="color:#9ca3af;">$</span> <span style="color:#3ddc84;">sfs resume ses_abc --in codex</span></div>
-              <div class="mt-2" style="color:#3ddc84;">Session resumed. 47 messages loaded.</div>
+            <div class="term-bar">
+              <div class="term-dot bg-[#ff5f57]"></div>
+              <div class="term-dot bg-[#febc2e]"></div>
+              <div class="term-dot bg-[#28c840]"></div>
+            </div>
+            <div class="p-4 font-mono text-sm">
+              <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs pull-handoff hnd_x7k9</span></div>
+              <div class="text-muted mt-2">Workspace resolved via git remote.</div>
+              <div class="mt-3"><span class="text-muted-dim">$</span> <span class="text-accent">sfs resume ses_abc --in codex</span></div>
+              <div class="text-accent mt-2">Session resumed. 47 messages loaded.</div>
             </div>
           </div>
         </div>
       </div>
+      <p class="fade-up text-muted-dim text-center text-base leading-relaxed">Paths auto-resolve by git remote URL. No manual configuration.</p>
+    </div>
+  </section>
 
-      <div class="grid md:grid-cols-3 gap-6">
-        <div class="glass p-6">
-          <h3 class="font-semibold mb-2">Session copy on claim</h3>
-          <p class="text-sm" style="color: #c9d1d9;">When the recipient claims a handoff, the session blob is duplicated. Changes by the recipient don't affect the sender's original.</p>
-        </div>
-        <div class="glass p-6">
-          <h3 class="font-semibold mb-2">Cross-environment</h3>
-          <p class="text-sm" style="color: #c9d1d9;">Paths auto-resolve by git remote URL. If the sender's path doesn't exist, SessionFS falls back to the current directory.</p>
-        </div>
-        <div class="glass p-6">
-          <h3 class="font-semibold mb-2">Email notification</h3>
-          <p class="text-sm" style="color: #c9d1d9;">Recipients get an email with session details and the pull command. Supports Resend, SMTP, or no email for air-gapped deployments.</p>
-        </div>
-      </div>
+  <div class="grad-divider"></div>
 
-      <div class="text-center mt-12">
-        <a href="/handoff/" class="inline-flex items-center gap-2 font-semibold rounded-lg px-6 py-3 text-white hover:brightness-110 transition" style="background: #4f9cf7;">Read the handoff docs</a>
+  <!-- Sub-feature cards -->
+  <section class="relative py-20 sm:py-28 px-5 bg-surface/50 noise">
+    <div class="max-w-5xl mx-auto">
+      <h2 class="fade-up font-heading text-3xl font-bold text-center mb-12">How handoff works</h2>
+      <div class="grid md:grid-cols-3 gap-5">
+
+        <div class="glass fade-up p-6">
+          <div class="text-2xl mb-3">&#128260;</div>
+          <h3 class="font-heading font-semibold mb-2">Session copy on claim</h3>
+          <p class="text-muted text-sm leading-relaxed">When the recipient claims a handoff, the session blob is duplicated. Changes by the recipient don't affect the sender's original. Both sides remain independent.</p>
+        </div>
+
+        <div class="glass fade-up p-6">
+          <div class="text-2xl mb-3">&#128736;</div>
+          <h3 class="font-heading font-semibold mb-2">Cross-environment</h3>
+          <p class="text-muted text-sm leading-relaxed">Paths auto-resolve by git remote URL. If the sender's path doesn't exist on the recipient's machine, SessionFS falls back to the current directory gracefully.</p>
+        </div>
+
+        <div class="glass fade-up p-6">
+          <div class="text-2xl mb-3">&#128140;</div>
+          <h3 class="font-heading font-semibold mb-2">Email notification</h3>
+          <p class="text-muted text-sm leading-relaxed">Recipients get an email with session details and the pull command. Supports Resend, SMTP, or no email for air-gapped enterprise deployments.</p>
+        </div>
+
       </div>
     </div>
   </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- What transfers -->
+  <section class="relative py-20 px-5 noise">
+    <div class="max-w-4xl mx-auto flex flex-col lg:flex-row items-start gap-12">
+      <div class="lg:w-1/2 fade-up">
+        <h2 class="font-heading text-2xl sm:text-3xl font-bold mb-4">What transfers in a handoff</h2>
+        <p class="text-muted text-lg mb-6 leading-relaxed">Everything the recipient needs to continue exactly where you left off — not just the messages, but the full context.</p>
+        <a href="/handoff/" class="inline-flex items-center gap-2 bg-brand text-white font-semibold rounded-lg px-6 py-3 hover:brightness-110 transition">
+          Read the handoff docs
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+        </a>
+      </div>
+      <div class="lg:w-1/2 fade-up">
+        <div class="glass p-6 space-y-4">
+          <div class="flex items-start gap-3">
+            <span class="text-accent text-lg mt-0.5">&#10003;</span>
+            <div>
+              <div class="font-semibold text-sm mb-1">Full conversation history</div>
+              <div class="text-muted text-sm">Every message, tool call, and response from the original session.</div>
+            </div>
+          </div>
+          <div class="border-t border-border pt-4 flex items-start gap-3">
+            <span class="text-accent text-lg mt-0.5">&#10003;</span>
+            <div>
+              <div class="font-semibold text-sm mb-1">Git workspace snapshot</div>
+              <div class="text-muted text-sm">Branch, commit SHA, remote URL, and dirty file list at handoff time.</div>
+            </div>
+          </div>
+          <div class="border-t border-border pt-4 flex items-start gap-3">
+            <span class="text-accent text-lg mt-0.5">&#10003;</span>
+            <div>
+              <div class="font-semibold text-sm mb-1">Tool configuration</div>
+              <div class="text-muted text-sm">Which tool was used (Claude Code, Codex, Gemini, etc.) and resume target.</div>
+            </div>
+          </div>
+          <div class="border-t border-border pt-4 flex items-start gap-3">
+            <span class="text-accent text-lg mt-0.5">&#10003;</span>
+            <div>
+              <div class="font-semibold text-sm mb-1">Sender's message</div>
+              <div class="text-muted text-sm">The optional note you add at handoff time to orient the recipient.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
 </BaseLayout>
+
+<script>
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); } });
+  }, { threshold: 0.1 });
+  document.querySelectorAll('.fade-up').forEach(el => observer.observe(el));
+</script>

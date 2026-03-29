@@ -2,77 +2,122 @@
 import BaseLayout from '../layouts/BaseLayout.astro';
 ---
 <BaseLayout title="Changelog — SessionFS" activeNav="changelog" description="SessionFS release history and changelog.">
-<section class="pt-32 pb-20 px-5">
+
+  <!-- Hero -->
+  <section class="relative pt-32 sm:pt-40 pb-10 px-5 noise">
     <div class="max-w-3xl mx-auto">
-      <h1 class="text-4xl font-extrabold mb-12" style="font-family: 'Plus Jakarta Sans';">Changelog</h1>
-
-      <article class="mb-12 pb-12" style="border-bottom: 1px solid #30363d;">
-        <div class="flex items-center gap-3 mb-4">
-          <span class="text-sm font-semibold px-3 py-1 rounded-full" style="background: rgba(79,156,247,0.15); color: #4f9cf7;">v0.9.3</span>
-          <span class="text-sm" style="color: #9ca3af;">March 28, 2026</span>
-        </div>
-        <h2 class="text-xl font-bold mb-3">Judge V2, Session Summarization, GitLab Integration</h2>
-        <ul class="space-y-2 text-sm" style="color: #c9d1d9;">
-          <li>Severity-classified findings (CRITICAL, HIGH, LOW) with auto-categorization</li>
-          <li>Contradictions-first audit dashboard with metric cards</li>
-          <li>Audit history stored in database with model comparison</li>
-          <li>GitLab MR integration (cloud + self-hosted)</li>
-          <li>Auto-audit trigger (manual, on_sync, on_pr)</li>
-          <li>Session summarization — files, tests, commands, packages extracted automatically</li>
-          <li>Claim extractor fixed for Claude Code sessions (0 claims to 50+)</li>
-          <li>Landing page with enterprise and summary sections</li>
-          <li>848 tests passing</li>
-        </ul>
-      </article>
-
-      <article class="mb-12 pb-12" style="border-bottom: 1px solid #30363d;">
-        <div class="flex items-center gap-3 mb-4">
-          <span class="text-sm font-semibold px-3 py-1 rounded-full" style="background: rgba(79,156,247,0.15); color: #4f9cf7;">v0.9.0</span>
-          <span class="text-sm" style="color: #9ca3af;">March 28, 2026</span>
-        </div>
-        <h2 class="text-xl font-bold mb-3">Autosync, Handoff Session Copy, Single-Ingress</h2>
-        <ul class="space-y-2 text-sm" style="color: #c9d1d9;">
-          <li>Autosync with three modes: off, all, selective (per-session watchlist)</li>
-          <li>Handoff claim now copies session blob and creates recipient's session</li>
-          <li>Single-ingress via dashboard nginx (removed separate API/MCP ALB targets)</li>
-          <li>Nginx client_max_body_size 100m for session uploads</li>
-          <li>835 tests passing</li>
-        </ul>
-      </article>
-
-      <article class="mb-12 pb-12" style="border-bottom: 1px solid #30363d;">
-        <div class="flex items-center gap-3 mb-4">
-          <span class="text-sm font-semibold px-3 py-1 rounded-full" style="background: rgba(79,156,247,0.15); color: #4f9cf7;">v0.8.2</span>
-          <span class="text-sm" style="color: #9ca3af;">March 27, 2026</span>
-        </div>
-        <h2 class="text-xl font-bold mb-3">Custom Judge Base URL, Project Context, Resume Auto-Launch</h2>
-        <ul class="space-y-2 text-sm" style="color: #c9d1d9;">
-          <li>Custom base URL for LLM Judge (LiteLLM, vLLM, Ollama, Azure OpenAI)</li>
-          <li>Shared project context (sfs project init/edit/show + MCP tool)</li>
-          <li>Resume auto-launches native tool (Claude Code, Codex, Gemini)</li>
-          <li>Codex resume format fixed (source: "cli", missing fields added)</li>
-          <li>819 tests passing</li>
-        </ul>
-      </article>
-
-      <article class="mb-12 pb-12" style="border-bottom: 1px solid #30363d;">
-        <div class="flex items-center gap-3 mb-4">
-          <span class="text-sm font-semibold px-3 py-1 rounded-full" style="background: rgba(79,156,247,0.15); color: #4f9cf7;">v0.8.0</span>
-          <span class="text-sm" style="color: #9ca3af;">March 26, 2026</span>
-        </div>
-        <h2 class="text-xl font-bold mb-3">Storage Management, EKS Fixes, Multi-Provider Email</h2>
-        <ul class="space-y-2 text-sm" style="color: #c9d1d9;">
-          <li>Local storage management: sfs storage, sfs storage prune</li>
-          <li>Multi-provider email: Resend, SMTP, NullProvider</li>
-          <li>EKS deployment fixes: security contexts, nginx non-root, asyncpg SSL</li>
-          <li>Gemini model extraction from logs.json</li>
-          <li>763 tests passing</li>
-        </ul>
-      </article>
-
-      <div class="text-center">
-        <a href="https://github.com/SessionFS/sessionfs/releases" class="text-sm hover:underline" style="color: #4f9cf7;">View all releases on GitHub &rarr;</a>
-      </div>
+      <h1 class="fade-up font-heading text-4xl sm:text-5xl font-extrabold tracking-tight mb-4">Changelog</h1>
+      <p class="fade-up text-muted text-lg leading-relaxed">Every release, documented. Follow development on <a href="https://github.com/SessionFS/sessionfs/releases" class="text-brand hover:underline">GitHub</a>.</p>
     </div>
   </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- Timeline -->
+  <section class="relative py-16 sm:py-20 px-5 noise">
+    <div class="max-w-3xl mx-auto space-y-0">
+
+      <!-- v0.9.3 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.9.3</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">March 28, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Judge V2, Session Summarization, GitLab Integration</h2>
+        <ul class="space-y-2 text-sm text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Severity-classified findings (CRITICAL, HIGH, LOW) with auto-categorization</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Contradictions-first audit dashboard with metric cards</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Audit history stored in database with model comparison</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>GitLab MR integration (cloud + self-hosted)</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Auto-audit trigger (manual, on_sync, on_pr)</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Session summarization — files, tests, commands, packages extracted automatically</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Claim extractor fixed for Claude Code sessions (0 claims to 50+)</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">848 tests passing</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.9.0 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.9.0</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">March 28, 2026</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Autosync, Handoff Session Copy, Single-Ingress</h2>
+        <ul class="space-y-2 text-sm text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Autosync with three modes: off, all, selective (per-session watchlist)</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Handoff claim now copies session blob and creates recipient's session</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Single-ingress via dashboard nginx (removed separate API/MCP ALB targets)</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Nginx client_max_body_size 100m for session uploads</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">835 tests passing</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.8.2 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.8.2</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">March 27, 2026</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Custom Judge Base URL, Project Context, Resume Auto-Launch</h2>
+        <ul class="space-y-2 text-sm text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Custom base URL for LLM Judge (LiteLLM, vLLM, Ollama, Azure OpenAI)</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Shared project context (sfs project init/edit/show + MCP tool)</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Resume auto-launches native tool (Claude Code, Codex, Gemini)</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Codex resume format fixed (source: "cli", missing fields added)</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">819 tests passing</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.8.0 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.8.0</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">March 26, 2026</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Storage Management, EKS Fixes, Multi-Provider Email</h2>
+        <ul class="space-y-2 text-sm text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Local storage management: sfs storage, sfs storage prune</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Multi-provider email: Resend, SMTP, NullProvider</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>EKS deployment fixes: security contexts, nginx non-root, asyncpg SSL</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Gemini model extraction from logs.json</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">763 tests passing</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <div class="fade-up pt-10 text-center">
+        <a href="https://github.com/SessionFS/sessionfs/releases" class="inline-flex items-center gap-2 text-brand hover:underline font-medium text-sm">
+          View all releases on GitHub
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+        </a>
+      </div>
+
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
 </BaseLayout>
+
+<script>
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); } });
+  }, { threshold: 0.1 });
+  document.querySelectorAll('.fade-up').forEach(el => observer.observe(el));
+</script>

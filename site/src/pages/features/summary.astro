@@ -2,57 +2,143 @@
 import BaseLayout from '../../layouts/BaseLayout.astro';
 ---
 <BaseLayout title="Session Summary — SessionFS" activeNav="features" description="Automatic session summaries — files, tests, commands extracted in seconds.">
-<section class="pt-32 pb-20 px-5 noise">
-    <div class="max-w-5xl mx-auto">
-      <div class="flex flex-col lg:flex-row items-center gap-12 mb-20">
-        <div class="lg:w-1/2">
-          <h1 class="text-4xl sm:text-5xl font-extrabold mb-6" style="font-family: 'Plus Jakarta Sans';">Know what happened.<br>In 10 seconds.</h1>
-          <p class="text-lg mb-4" style="color: #c9d1d9;">Every session automatically summarized — files changed, tests run, commands executed, key decisions made. No more reading 2,000 messages to understand what the AI did.</p>
-          <p class="text-lg mb-8" style="color: #c9d1d9;">Deterministic extraction runs instantly with no LLM cost. Parses pytest, jest, and go test output automatically.</p>
-          <a href="/summary/" class="inline-flex items-center gap-2 font-semibold rounded-lg px-6 py-3 text-white hover:brightness-110 transition" style="background: #4f9cf7;">Read the docs</a>
+
+  <!-- Hero -->
+  <section class="relative pt-32 sm:pt-40 pb-16 px-5 noise">
+    <div class="max-w-5xl mx-auto flex flex-col lg:flex-row items-center gap-12">
+      <div class="lg:w-1/2 fade-up">
+        <div class="inline-flex items-center gap-2 text-sm font-mono text-muted-dim mb-6">
+          <a href="/features/" class="hover:text-brand transition-colors">Features</a>
+          <span>&#47;</span>
+          <span class="text-txt">Session Summary</span>
         </div>
-        <div class="lg:w-1/2 w-full">
-          <div class="term">
-            <div class="term-bar"><div class="term-dot" style="background:#ff5f57"></div><div class="term-dot" style="background:#febc2e"></div><div class="term-dot" style="background:#28c840"></div><span class="ml-3 text-[13px]" style="color:#9ca3af; font-family: 'JetBrains Mono', monospace;">session summary</span></div>
-            <div class="p-5 text-sm space-y-3" style="font-family: 'JetBrains Mono', monospace;">
+        <h1 class="font-heading text-4xl sm:text-5xl font-extrabold tracking-tight leading-[1.1] mb-6">
+          Know what happened.<br>In 10 seconds.
+        </h1>
+        <p class="text-muted text-lg mb-4 leading-relaxed">Every session automatically summarized — files changed, tests run, commands executed, key decisions made. No more reading 2,000 messages to understand what the AI did.</p>
+        <p class="text-muted text-lg mb-6 leading-relaxed">Deterministic extraction runs instantly with no LLM cost. Parses pytest, jest, and go test output automatically.</p>
+        <div class="font-mono text-sm text-accent bg-surface border border-border rounded-md p-3 inline-block mb-8">sfs summary ses_abc</div>
+        <div class="block">
+          <a href="/summary/" class="inline-flex items-center gap-2 bg-brand text-white font-semibold rounded-lg px-6 py-3 hover:brightness-110 transition">
+            Read the docs
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+          </a>
+        </div>
+      </div>
+      <div class="lg:w-1/2 w-full fade-up">
+        <div class="relative">
+          <div class="hero-glow"></div>
+          <div class="term relative z-10">
+            <div class="term-bar">
+              <div class="term-dot bg-[#ff5f57]"></div>
+              <div class="term-dot bg-[#febc2e]"></div>
+              <div class="term-dot bg-[#28c840]"></div>
+              <span class="ml-3 text-muted-dim text-[13px] font-mono">session summary</span>
+            </div>
+            <div class="p-5 font-mono text-sm space-y-3">
               <div>
-                <div class="font-semibold" style="color: #e6edf3;">Debug auth middleware</div>
-                <div style="color: #9ca3af;">2.3h &middot; 327 msgs &middot; 28 tool calls</div>
-                <div style="color: #9ca3af;">Claude Code &middot; feature/auth-fix @ a1b2c3d</div>
+                <div class="text-txt font-semibold">Debug auth middleware</div>
+                <div class="text-muted-dim">2.3h &middot; 327 msgs &middot; 28 tool calls</div>
+                <div class="text-muted-dim">Claude Code &middot; feature/auth-fix @ a1b2c3d</div>
               </div>
-              <div style="border-top: 1px solid #30363d;" class="pt-3">
-                <div class="text-[11px] uppercase tracking-wider mb-1" style="color: #9ca3af;">Files</div>
-                <div class="text-[13px]" style="color: #c9d1d9;">Modified: <span style="color: #e6edf3;">middleware.py, tokens.py, test_auth.py</span></div>
-                <div class="text-[13px]" style="color: #c9d1d9;">Read: <span style="color: #9ca3af;">config.py, user.py + 3 more</span></div>
+              <div class="border-t border-border pt-3">
+                <div class="text-muted-dim uppercase text-[11px] tracking-wider mb-1">Files</div>
+                <div class="text-muted text-[13px]">Modified: <span class="text-txt">middleware.py, tokens.py, test_auth.py</span></div>
+                <div class="text-muted text-[13px]">Read: <span class="text-muted-dim">config.py, user.py + 3 more</span></div>
               </div>
-              <div style="border-top: 1px solid #30363d;" class="pt-3">
-                <div class="text-[11px] uppercase tracking-wider mb-1" style="color: #9ca3af;">Activity</div>
-                <div class="text-[13px]" style="color: #c9d1d9;">Tests: <span style="color: #3ddc84;">5 passed</span>, <span style="color: #f04060;">1 failed</span></div>
-                <div class="text-[13px]" style="color: #c9d1d9;">Commands: 34 &middot; Packages: pyjwt, redis</div>
+              <div class="border-t border-border pt-3">
+                <div class="text-muted-dim uppercase text-[11px] tracking-wider mb-1">Activity</div>
+                <div class="text-muted text-[13px]">Tests: <span class="text-accent">5 passed</span>, <span class="text-danger">1 failed</span></div>
+                <div class="text-muted text-[13px]">Commands: 34 &middot; Packages: pyjwt, redis</div>
               </div>
-              <div style="border-top: 1px solid #30363d;" class="pt-3">
-                <div class="text-[11px] uppercase tracking-wider mb-1" style="color: #9ca3af;">Outcome</div>
-                <div class="text-[13px]" style="color: #3ddc84;">Fix applied. 5/6 tests passing.</div>
+              <div class="border-t border-border pt-3">
+                <div class="text-muted-dim uppercase text-[11px] tracking-wider mb-1">Outcome</div>
+                <div class="text-accent text-[13px]">Fix applied. 5/6 tests passing.</div>
               </div>
             </div>
           </div>
         </div>
       </div>
+    </div>
+  </section>
 
-      <div class="grid md:grid-cols-3 gap-6">
-        <div class="glass p-6">
-          <h3 class="font-semibold mb-2">No LLM needed</h3>
-          <p class="text-sm" style="color: #c9d1d9;">Deterministic extraction parses tool calls directly. Files, commands, test results, packages, and errors — extracted in milliseconds.</p>
+  <div class="grad-divider"></div>
+
+  <!-- Sub-feature cards -->
+  <section class="relative py-20 sm:py-28 px-5 noise">
+    <div class="max-w-5xl mx-auto">
+      <h2 class="fade-up font-heading text-3xl font-bold text-center mb-12">How summaries are built</h2>
+      <div class="grid md:grid-cols-3 gap-5">
+
+        <div class="glass fade-up p-6">
+          <div class="text-2xl mb-3">&#9889;</div>
+          <h3 class="font-heading font-semibold mb-2">No LLM needed</h3>
+          <p class="text-muted text-sm leading-relaxed">Deterministic extraction parses tool calls directly. Files, commands, test results, packages, and errors — extracted in milliseconds, zero API cost.</p>
         </div>
-        <div class="glass p-6">
-          <h3 class="font-semibold mb-2">Test framework support</h3>
-          <p class="text-sm" style="color: #c9d1d9;">Parses pytest ("5 passed, 1 failed"), jest ("Tests: 10 passed"), and go test ("ok/FAIL") output automatically.</p>
+
+        <div class="glass fade-up p-6">
+          <div class="text-2xl mb-3">&#128291;</div>
+          <h3 class="font-heading font-semibold mb-2">Test framework support</h3>
+          <p class="text-muted text-sm leading-relaxed">Parses pytest ("5 passed, 1 failed"), jest ("Tests: 10 passed"), and go test ("ok / FAIL") output automatically — no configuration required.</p>
         </div>
-        <div class="glass p-6">
-          <h3 class="font-semibold mb-2">Dashboard + CLI</h3>
-          <p class="text-sm" style="color: #c9d1d9;">Summary tab in the dashboard with metric cards. CLI with <code style="color: #3ddc84;">sfs summary --today</code> for daily overviews.</p>
+
+        <div class="glass fade-up p-6">
+          <div class="text-2xl mb-3">&#128202;</div>
+          <h3 class="font-heading font-semibold mb-2">Dashboard + CLI</h3>
+          <p class="text-muted text-sm leading-relaxed">Summary tab in the web dashboard with metric cards. CLI with <span class="font-mono text-accent text-[13px]">sfs summary --today</span> for daily overviews across all sessions.</p>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- LLM narrative option -->
+  <section class="relative py-20 px-5 bg-surface/50 noise">
+    <div class="max-w-4xl mx-auto flex flex-col lg:flex-row items-center gap-12">
+      <div class="lg:w-1/2 fade-up">
+        <h2 class="font-heading text-2xl sm:text-3xl font-bold mb-4">Optional: LLM narrative</h2>
+        <p class="text-muted text-lg mb-4 leading-relaxed">The deterministic layer is always free. When you want a "what happened" and "key decisions" paragraph, add your own LLM key and the summary goes narrative.</p>
+        <p class="text-muted text-base mb-6 leading-relaxed">Works with the same BYOK setup as the Judge — your key, any OpenAI-compatible endpoint, never stored.</p>
+        <div class="space-y-2">
+          <div class="flex items-center gap-2 text-sm text-muted"><span class="text-accent">&#10003;</span> Free tier: deterministic summary, always available</div>
+          <div class="flex items-center gap-2 text-sm text-muted"><span class="text-accent">&#10003;</span> BYOK: narrative "what happened" section</div>
+          <div class="flex items-center gap-2 text-sm text-muted"><span class="text-accent">&#10003;</span> Pro: LLM summary on every session automatically</div>
+        </div>
+      </div>
+      <div class="lg:w-1/2 w-full fade-up">
+        <div class="term">
+          <div class="term-bar">
+            <div class="term-dot bg-[#ff5f57]"></div>
+            <div class="term-dot bg-[#febc2e]"></div>
+            <div class="term-dot bg-[#28c840]"></div>
+            <span class="ml-3 text-muted-dim text-[13px] font-mono">narrative summary</span>
+          </div>
+          <div class="p-5 font-mono text-sm space-y-3">
+            <div>
+              <div class="text-muted-dim uppercase text-[11px] tracking-wider mb-1">What happened</div>
+              <div class="text-muted text-[13px] leading-relaxed">Investigated JWT token expiry causing 401s on refresh. Identified the middleware was not renewing the token before expiry window. Applied fix in tokens.py. 5/6 tests now passing.</div>
+            </div>
+            <div class="border-t border-border pt-3">
+              <div class="text-muted-dim uppercase text-[11px] tracking-wider mb-1">Key decisions</div>
+              <div class="text-muted text-[13px]">&bull; Extended expiry window from 60s to 300s</div>
+              <div class="text-muted text-[13px]">&bull; Added redis dependency for token caching</div>
+              <div class="text-muted text-[13px]">&bull; Deferred fixing test_auth_edge_case.py (complexity)</div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
   </section>
+
+  <div class="grad-divider"></div>
+
 </BaseLayout>
+
+<script>
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); } });
+  }, { threshold: 0.1 });
+  document.querySelectorAll('.fade-up').forEach(el => observer.observe(el));
+</script>

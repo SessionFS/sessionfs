@@ -2,46 +2,136 @@
 import BaseLayout from '../../layouts/BaseLayout.astro';
 ---
 <BaseLayout title="MCP Server — SessionFS" activeNav="features" description="MCP server lets AI agents search past sessions and read project context.">
-<section class="pt-32 pb-20 px-5 noise">
-    <div class="max-w-5xl mx-auto">
-      <div class="text-center mb-16">
-        <h1 class="text-4xl sm:text-5xl font-extrabold mb-6" style="font-family: 'Plus Jakarta Sans';">Your AI remembers</h1>
-        <p class="text-lg max-w-xl mx-auto" style="color: #c9d1d9;">The MCP server lets AI agents search your past sessions and read project context during conversations. One command to install.</p>
-      </div>
 
-      <div class="term max-w-2xl mx-auto mb-16">
-        <div class="term-bar"><div class="term-dot" style="background:#ff5f57"></div><div class="term-dot" style="background:#febc2e"></div><div class="term-dot" style="background:#28c840"></div></div>
-        <div class="p-5 text-sm" style="font-family: 'JetBrains Mono', monospace;">
-          <div><span style="color:#9ca3af;">$</span> <span style="color:#3ddc84;">sfs mcp install --for claude-code</span></div>
-          <div class="mt-2" style="color:#c9d1d9;">MCP server configured for Claude Code.</div>
-          <div style="color:#c9d1d9;">Restart Claude Code to activate.</div>
-          <div class="mt-4" style="color:#9ca3af;">Tools available to your AI agent:</div>
-          <div class="mt-1" style="color:#e6edf3;">&bull; search_sessions — Search past sessions by keyword</div>
-          <div style="color:#e6edf3;">&bull; get_session_context — Load full conversation from a past session</div>
-          <div style="color:#e6edf3;">&bull; list_recent_sessions — Browse recent work</div>
-          <div style="color:#e6edf3;">&bull; find_related_sessions — Find sessions for a file or error</div>
-          <div style="color:#e6edf3;">&bull; get_project_context — Read shared team conventions</div>
-        </div>
+  <!-- Hero -->
+  <section class="relative pt-32 sm:pt-40 pb-16 px-5 noise">
+    <div class="max-w-4xl mx-auto text-center">
+      <div class="fade-up inline-flex items-center gap-2 text-sm font-mono text-muted-dim mb-6">
+        <a href="/features/" class="hover:text-brand transition-colors">Features</a>
+        <span>&#47;</span>
+        <span class="text-txt">MCP Server</span>
       </div>
+      <h1 class="fade-up font-heading text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight leading-[1.1] mb-6">
+        Your AI remembers
+      </h1>
+      <p class="fade-up text-lg sm:text-xl text-muted leading-relaxed max-w-xl mx-auto">
+        The MCP server lets AI agents search your past sessions and read project context during conversations. One command to install.
+      </p>
+    </div>
+  </section>
 
-      <div class="grid md:grid-cols-3 gap-6">
-        <div class="glass p-6">
-          <h3 class="font-semibold mb-2">One-command install</h3>
-          <p class="text-sm" style="color: #c9d1d9;">Works with Claude Code, Cursor, and Copilot. Adds SessionFS to your tool's MCP config automatically.</p>
-        </div>
-        <div class="glass p-6">
-          <h3 class="font-semibold mb-2">Project context</h3>
-          <p class="text-sm" style="color: #c9d1d9;">Share architecture decisions, conventions, and API contracts with every AI agent on your team. One document per repo.</p>
-        </div>
-        <div class="glass p-6">
-          <h3 class="font-semibold mb-2">Local + Remote</h3>
-          <p class="text-sm" style="color: #c9d1d9;">Local MCP server on stdio for desktop tools. Remote HTTP/SSE server for cloud-connected AI tools.</p>
-        </div>
-      </div>
+  <div class="grad-divider"></div>
 
-      <div class="text-center mt-12">
-        <a href="/mcp/" class="inline-flex items-center gap-2 font-semibold rounded-lg px-6 py-3 text-white hover:brightness-110 transition" style="background: #4f9cf7;">Read the MCP docs</a>
+  <!-- Terminal -->
+  <section class="relative py-20 sm:py-28 px-5 noise">
+    <div class="max-w-3xl mx-auto">
+      <div class="fade-up relative">
+        <div class="hero-glow"></div>
+        <div class="term relative z-10">
+          <div class="term-bar">
+            <div class="term-dot bg-[#ff5f57]"></div>
+            <div class="term-dot bg-[#febc2e]"></div>
+            <div class="term-dot bg-[#28c840]"></div>
+            <span class="ml-3 text-muted-dim text-[13px] font-mono">mcp install</span>
+          </div>
+          <div class="p-5 font-mono text-sm space-y-1">
+            <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs mcp install --for claude-code</span></div>
+            <div class="mt-2 text-muted">MCP server configured for Claude Code.</div>
+            <div class="text-muted">Restart Claude Code to activate.</div>
+            <div class="mt-4 text-muted-dim">Tools available to your AI agent:</div>
+            <div class="mt-1 text-txt">&bull; <span class="text-brand">search_sessions</span> <span class="text-muted-dim">— Search past sessions by keyword</span></div>
+            <div class="text-txt">&bull; <span class="text-brand">get_session_context</span> <span class="text-muted-dim">— Load full conversation from a past session</span></div>
+            <div class="text-txt">&bull; <span class="text-brand">list_recent_sessions</span> <span class="text-muted-dim">— Browse recent work</span></div>
+            <div class="text-txt">&bull; <span class="text-brand">find_related_sessions</span> <span class="text-muted-dim">— Find sessions for a file or error</span></div>
+            <div class="text-txt">&bull; <span class="text-brand">get_project_context</span> <span class="text-muted-dim">— Read shared team conventions</span></div>
+          </div>
+        </div>
       </div>
     </div>
   </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- Sub-feature cards -->
+  <section class="relative py-20 sm:py-28 px-5 bg-surface/50 noise">
+    <div class="max-w-5xl mx-auto">
+      <h2 class="fade-up font-heading text-3xl font-bold text-center mb-12">What the MCP server gives you</h2>
+      <div class="grid md:grid-cols-3 gap-5">
+
+        <div class="glass fade-up p-6">
+          <div class="text-2xl mb-3">&#9889;</div>
+          <h3 class="font-heading font-semibold mb-2">One-command install</h3>
+          <p class="text-muted text-sm leading-relaxed">Works with Claude Code, Cursor, and Copilot. Adds SessionFS to your tool's MCP config file automatically — no manual JSON editing.</p>
+        </div>
+
+        <div class="glass fade-up p-6">
+          <div class="text-2xl mb-3">&#128196;</div>
+          <h3 class="font-heading font-semibold mb-2">Project context</h3>
+          <p class="text-muted text-sm leading-relaxed">Share architecture decisions, coding conventions, and API contracts with every AI agent on your team. One document per repo, always current.</p>
+        </div>
+
+        <div class="glass fade-up p-6">
+          <div class="text-2xl mb-3">&#127760;</div>
+          <h3 class="font-heading font-semibold mb-2">Local + Remote</h3>
+          <p class="text-muted text-sm leading-relaxed">Local MCP server on stdio for desktop tools — no network required. Remote HTTP/SSE server for cloud-connected AI tools and team sharing.</p>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- How agents use it -->
+  <section class="relative py-20 px-5 noise">
+    <div class="max-w-5xl mx-auto flex flex-col lg:flex-row items-start gap-12">
+      <div class="lg:w-1/2 fade-up">
+        <h2 class="font-heading text-2xl sm:text-3xl font-bold mb-4">How agents use session memory</h2>
+        <p class="text-muted text-lg mb-6 leading-relaxed">When you start a new session, your AI agent can automatically search for related past sessions and load their context — so it already knows what you tried last time.</p>
+        <p class="text-muted text-base mb-6 leading-relaxed">The <span class="font-mono text-accent text-sm">find_related_sessions</span> tool maps file paths and error strings to previous sessions. If you're debugging the same file you touched last week, the agent knows.</p>
+        <a href="/mcp/" class="inline-flex items-center gap-2 bg-brand text-white font-semibold rounded-lg px-6 py-3 hover:brightness-110 transition">
+          Read the MCP docs
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+        </a>
+      </div>
+      <div class="lg:w-1/2 fade-up">
+        <div class="term">
+          <div class="term-bar">
+            <div class="term-dot bg-[#ff5f57]"></div>
+            <div class="term-dot bg-[#febc2e]"></div>
+            <div class="term-dot bg-[#28c840]"></div>
+            <span class="ml-3 text-muted-dim text-[13px] font-mono">agent using MCP</span>
+          </div>
+          <div class="p-5 font-mono text-sm space-y-3">
+            <div>
+              <div class="text-muted-dim text-[11px] uppercase tracking-wider mb-1">Agent calls MCP tool</div>
+              <div class="bg-bg/60 rounded p-2.5 text-[13px]">
+                <span class="text-brand">find_related_sessions</span>
+                <span class="text-muted-dim">(</span><span class="text-accent">"tokens.py"</span><span class="text-muted-dim">)</span>
+              </div>
+            </div>
+            <div class="border-t border-border pt-3">
+              <div class="text-muted-dim text-[11px] uppercase tracking-wider mb-1">SessionFS returns</div>
+              <div class="text-muted text-[13px]">ses_abc — Debug auth middleware (2 days ago)</div>
+              <div class="text-muted text-[13px]">ses_d2e — JWT token refresh fix (5 days ago)</div>
+            </div>
+            <div class="border-t border-border pt-3">
+              <div class="text-muted-dim text-[11px] uppercase tracking-wider mb-1">Agent says</div>
+              <div class="text-muted text-[13px] leading-relaxed">"I found 2 related sessions. The last time you worked on tokens.py, you extended the expiry window and added redis for caching..."</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
 </BaseLayout>
+
+<script>
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); } });
+  }, { threshold: 0.1 });
+  document.querySelectorAll('.fade-up').forEach(el => observer.observe(el));
+</script>
