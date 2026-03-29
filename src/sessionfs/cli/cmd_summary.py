@@ -171,15 +171,20 @@ def _summary_today(fmt: str | None) -> None:
     finally:
         store.close()
 
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today_local = datetime.now().strftime("%Y-%m-%d")
+    today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
     today_sessions = []
     for s in sessions:
-        created = s.get("created_at", "")
-        if isinstance(created, str) and created.startswith(today):
-            today_sessions.append(s)
+        # Check both created_at and updated_at, match either local or UTC date
+        for date_field in ("created_at", "updated_at"):
+            date_val = s.get(date_field, "")
+            if isinstance(date_val, str) and (date_val.startswith(today_local) or date_val.startswith(today_utc)):
+                today_sessions.append(s)
+                break
 
     if not today_sessions:
-        console.print("[dim]No sessions captured today.[/dim]")
+        console.print(f"[dim]No sessions captured today ({today_local}). Is the daemon running?[/dim]")
         return
 
     table = Table(title=f"Today's Sessions ({len(today_sessions)})")
