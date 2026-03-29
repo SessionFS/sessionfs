@@ -1,0 +1,79 @@
+---
+import '../../styles/global.css'
+---
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Team Handoff — SessionFS</title>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body class="antialiased" style="color: #e6edf3;">
+  <nav style="background: rgba(10,12,16,0.7); backdrop-filter: blur(12px); border-bottom: 1px solid #30363d;" class="fixed top-0 w-full z-50">
+    <div class="max-w-6xl mx-auto px-5 h-16 flex items-center justify-between">
+      <a href="/" style="font-family: 'Plus Jakarta Sans'; font-weight: 600; font-size: 18px;">Session<span style="color: #4f9cf7;">FS</span></a>
+      <div class="flex items-center gap-6 text-[15px] font-medium">
+        <a href="/features/" class="text-[#b1b8c1] hover:text-white transition-colors">Features</a>
+        <a href="/docs/" class="text-[#b1b8c1] hover:text-white transition-colors">Docs</a>
+        <a href="/pricing/" class="text-[#b1b8c1] hover:text-white transition-colors">Pricing</a>
+      </div>
+    </div>
+  </nav>
+
+  <section class="pt-32 pb-20 px-5 noise">
+    <div class="max-w-5xl mx-auto">
+      <div class="text-center mb-16">
+        <h1 class="text-4xl sm:text-5xl font-extrabold mb-6" style="font-family: 'Plus Jakarta Sans';">Hand off a session,<br>not a Slack message</h1>
+        <p class="text-lg max-w-xl mx-auto" style="color: #c9d1d9;">Full conversation context, workspace state, and tool configs transfer instantly between teammates.</p>
+      </div>
+
+      <div class="grid md:grid-cols-2 gap-6 mb-16">
+        <div>
+          <div class="text-[13px] mb-2 uppercase tracking-wider" style="color: #9ca3af; font-family: 'JetBrains Mono', monospace;">Developer A</div>
+          <div class="term">
+            <div class="term-bar"><div class="term-dot" style="background:#ff5f57"></div><div class="term-dot" style="background:#febc2e"></div><div class="term-dot" style="background:#28c840"></div></div>
+            <div class="p-4 text-sm" style="font-family: 'JetBrains Mono', monospace;">
+              <div><span style="color:#9ca3af;">$</span> <span style="color:#3ddc84;">sfs handoff ses_abc \</span></div>
+              <div class="pl-4"><span style="color:#3ddc84;">--to sarah@company.com \</span></div>
+              <div class="pl-4"><span style="color:#3ddc84;">--message "JWT middleware is the problem"</span></div>
+              <div class="mt-3" style="color:#c9d1d9;">Handoff hnd_x7k9 created.</div>
+              <div style="color:#c9d1d9;">Session pushed. Sarah notified.</div>
+            </div>
+          </div>
+        </div>
+        <div>
+          <div class="text-[13px] mb-2 uppercase tracking-wider" style="color: #9ca3af; font-family: 'JetBrains Mono', monospace;">Developer B (Sarah)</div>
+          <div class="term">
+            <div class="term-bar"><div class="term-dot" style="background:#ff5f57"></div><div class="term-dot" style="background:#febc2e"></div><div class="term-dot" style="background:#28c840"></div></div>
+            <div class="p-4 text-sm" style="font-family: 'JetBrains Mono', monospace;">
+              <div><span style="color:#9ca3af;">$</span> <span style="color:#3ddc84;">sfs pull-handoff hnd_x7k9</span></div>
+              <div class="mt-2" style="color:#c9d1d9;">Workspace resolved via git remote.</div>
+              <div class="mt-3"><span style="color:#9ca3af;">$</span> <span style="color:#3ddc84;">sfs resume ses_abc --in codex</span></div>
+              <div class="mt-2" style="color:#3ddc84;">Session resumed. 47 messages loaded.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid md:grid-cols-3 gap-6">
+        <div class="glass p-6">
+          <h3 class="font-semibold mb-2">Session copy on claim</h3>
+          <p class="text-sm" style="color: #c9d1d9;">When the recipient claims a handoff, the session blob is duplicated. Changes by the recipient don't affect the sender's original.</p>
+        </div>
+        <div class="glass p-6">
+          <h3 class="font-semibold mb-2">Cross-environment</h3>
+          <p class="text-sm" style="color: #c9d1d9;">Paths auto-resolve by git remote URL. If the sender's path doesn't exist, SessionFS falls back to the current directory.</p>
+        </div>
+        <div class="glass p-6">
+          <h3 class="font-semibold mb-2">Email notification</h3>
+          <p class="text-sm" style="color: #c9d1d9;">Recipients get an email with session details and the pull command. Supports Resend, SMTP, or no email for air-gapped deployments.</p>
+        </div>
+      </div>
+
+      <div class="text-center mt-12">
+        <a href="/docs/handoff/" class="inline-flex items-center gap-2 font-semibold rounded-lg px-6 py-3 text-white hover:brightness-110 transition" style="background: #4f9cf7;">Read the handoff docs</a>
+      </div>
+    </div>
+  </section>
+</body>
+</html>

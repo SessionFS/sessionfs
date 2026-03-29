@@ -1,0 +1,77 @@
+---
+import '../../styles/global.css'
+---
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Session Summary — SessionFS</title>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body class="antialiased" style="color: #e6edf3;">
+  <nav style="background: rgba(10,12,16,0.7); backdrop-filter: blur(12px); border-bottom: 1px solid #30363d;" class="fixed top-0 w-full z-50">
+    <div class="max-w-6xl mx-auto px-5 h-16 flex items-center justify-between">
+      <a href="/" style="font-family: 'Plus Jakarta Sans'; font-weight: 600; font-size: 18px;">Session<span style="color: #4f9cf7;">FS</span></a>
+      <div class="flex items-center gap-6 text-[15px] font-medium">
+        <a href="/features/" class="text-[#b1b8c1] hover:text-white transition-colors">Features</a>
+        <a href="/docs/" class="text-[#b1b8c1] hover:text-white transition-colors">Docs</a>
+        <a href="/pricing/" class="text-[#b1b8c1] hover:text-white transition-colors">Pricing</a>
+      </div>
+    </div>
+  </nav>
+
+  <section class="pt-32 pb-20 px-5 noise">
+    <div class="max-w-5xl mx-auto">
+      <div class="flex flex-col lg:flex-row items-center gap-12 mb-20">
+        <div class="lg:w-1/2">
+          <h1 class="text-4xl sm:text-5xl font-extrabold mb-6" style="font-family: 'Plus Jakarta Sans';">Know what happened.<br>In 10 seconds.</h1>
+          <p class="text-lg mb-4" style="color: #c9d1d9;">Every session automatically summarized — files changed, tests run, commands executed, key decisions made. No more reading 2,000 messages to understand what the AI did.</p>
+          <p class="text-lg mb-8" style="color: #c9d1d9;">Deterministic extraction runs instantly with no LLM cost. Parses pytest, jest, and go test output automatically.</p>
+          <a href="/docs/summary/" class="inline-flex items-center gap-2 font-semibold rounded-lg px-6 py-3 text-white hover:brightness-110 transition" style="background: #4f9cf7;">Read the docs</a>
+        </div>
+        <div class="lg:w-1/2 w-full">
+          <div class="term">
+            <div class="term-bar"><div class="term-dot" style="background:#ff5f57"></div><div class="term-dot" style="background:#febc2e"></div><div class="term-dot" style="background:#28c840"></div><span class="ml-3 text-[13px]" style="color:#9ca3af; font-family: 'JetBrains Mono', monospace;">session summary</span></div>
+            <div class="p-5 text-sm space-y-3" style="font-family: 'JetBrains Mono', monospace;">
+              <div>
+                <div class="font-semibold" style="color: #e6edf3;">Debug auth middleware</div>
+                <div style="color: #9ca3af;">2.3h &middot; 327 msgs &middot; 28 tool calls</div>
+                <div style="color: #9ca3af;">Claude Code &middot; feature/auth-fix @ a1b2c3d</div>
+              </div>
+              <div style="border-top: 1px solid #30363d;" class="pt-3">
+                <div class="text-[11px] uppercase tracking-wider mb-1" style="color: #9ca3af;">Files</div>
+                <div class="text-[13px]" style="color: #c9d1d9;">Modified: <span style="color: #e6edf3;">middleware.py, tokens.py, test_auth.py</span></div>
+                <div class="text-[13px]" style="color: #c9d1d9;">Read: <span style="color: #9ca3af;">config.py, user.py + 3 more</span></div>
+              </div>
+              <div style="border-top: 1px solid #30363d;" class="pt-3">
+                <div class="text-[11px] uppercase tracking-wider mb-1" style="color: #9ca3af;">Activity</div>
+                <div class="text-[13px]" style="color: #c9d1d9;">Tests: <span style="color: #3ddc84;">5 passed</span>, <span style="color: #f04060;">1 failed</span></div>
+                <div class="text-[13px]" style="color: #c9d1d9;">Commands: 34 &middot; Packages: pyjwt, redis</div>
+              </div>
+              <div style="border-top: 1px solid #30363d;" class="pt-3">
+                <div class="text-[11px] uppercase tracking-wider mb-1" style="color: #9ca3af;">Outcome</div>
+                <div class="text-[13px]" style="color: #3ddc84;">Fix applied. 5/6 tests passing.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid md:grid-cols-3 gap-6">
+        <div class="glass p-6">
+          <h3 class="font-semibold mb-2">No LLM needed</h3>
+          <p class="text-sm" style="color: #c9d1d9;">Deterministic extraction parses tool calls directly. Files, commands, test results, packages, and errors — extracted in milliseconds.</p>
+        </div>
+        <div class="glass p-6">
+          <h3 class="font-semibold mb-2">Test framework support</h3>
+          <p class="text-sm" style="color: #c9d1d9;">Parses pytest ("5 passed, 1 failed"), jest ("Tests: 10 passed"), and go test ("ok/FAIL") output automatically.</p>
+        </div>
+        <div class="glass p-6">
+          <h3 class="font-semibold mb-2">Dashboard + CLI</h3>
+          <p class="text-sm" style="color: #c9d1d9;">Summary tab in the dashboard with metric cards. CLI with <code style="color: #3ddc84;">sfs summary --today</code> for daily overviews.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+</body>
+</html>

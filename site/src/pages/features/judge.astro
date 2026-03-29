@@ -1,0 +1,87 @@
+---
+import '../../styles/global.css'
+---
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LLM Judge — SessionFS</title>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body class="antialiased" style="color: #e6edf3;">
+  <nav style="background: rgba(10,12,16,0.7); backdrop-filter: blur(12px); border-bottom: 1px solid #30363d;" class="fixed top-0 w-full z-50">
+    <div class="max-w-6xl mx-auto px-5 h-16 flex items-center justify-between">
+      <a href="/" style="font-family: 'Plus Jakarta Sans'; font-weight: 600; font-size: 18px;">Session<span style="color: #4f9cf7;">FS</span></a>
+      <div class="flex items-center gap-6 text-[15px] font-medium">
+        <a href="/features/" class="text-[#b1b8c1] hover:text-white transition-colors">Features</a>
+        <a href="/docs/" class="text-[#b1b8c1] hover:text-white transition-colors">Docs</a>
+        <a href="/pricing/" class="text-[#b1b8c1] hover:text-white transition-colors">Pricing</a>
+      </div>
+    </div>
+  </nav>
+
+  <section class="pt-32 pb-20 px-5 noise">
+    <div class="max-w-5xl mx-auto">
+      <div class="flex flex-col lg:flex-row items-center gap-12 mb-20">
+        <div class="lg:w-1/2">
+          <h1 class="text-4xl sm:text-5xl font-extrabold mb-6" style="font-family: 'Plus Jakarta Sans';">Your AI's claims.<br>Verified.</h1>
+          <p class="text-lg mb-4" style="color: #c9d1d9;">The LLM Judge cross-references every AI claim against actual tool outputs. When the AI says "the test passes" but the exit code was 1 — that's a critical contradiction, flagged with full evidence.</p>
+          <p class="text-lg mb-6" style="color: #c9d1d9;">Severity-classified findings: <span style="color: #f04060; font-weight: 600;">CRITICAL</span> for test failures and failed commands. <span style="color: #f0c040; font-weight: 600;">HIGH</span> for file mismatches and data misreads. Every finding links to the exact message.</p>
+          <p class="text-base mb-8" style="color: #9ca3af; border-left: 2px solid rgba(79,156,247,0.3); padding-left: 16px;">BYOK — your key, never stored. Works with any OpenAI-compatible endpoint: OpenRouter, LiteLLM, vLLM, Ollama.</p>
+          <a href="/docs/judge/" class="inline-flex items-center gap-2 font-semibold rounded-lg px-6 py-3 text-white hover:brightness-110 transition" style="background: #4f9cf7;">Read the docs</a>
+        </div>
+        <div class="lg:w-1/2 w-full">
+          <div class="term">
+            <div class="term-bar"><div class="term-dot" style="background:#ff5f57"></div><div class="term-dot" style="background:#febc2e"></div><div class="term-dot" style="background:#28c840"></div><span class="ml-3 text-[13px]" style="color:#9ca3af; font-family: 'JetBrains Mono', monospace;">audit report</span></div>
+            <div class="p-5 text-sm space-y-4" style="font-family: 'JetBrains Mono', monospace;">
+              <div>
+                <div class="text-[13px] uppercase tracking-wider mb-2" style="color: #9ca3af;">Trust Score</div>
+                <div class="flex items-center gap-3 mb-2">
+                  <span class="text-xl font-bold" style="color: #f0c040;">74%</span>
+                  <div class="flex-1 h-2 rounded-full overflow-hidden" style="background: #30363d;"><div class="h-full rounded-full" style="width:74%; background: #f0c040;"></div></div>
+                </div>
+                <div class="text-[13px]"><span style="color:#f04060;">3 contradictions</span> &middot; <span style="color:#f0c040;">9 unverified</span> &middot; <span style="color:#3ddc84;">42 verified</span></div>
+              </div>
+              <div style="border-top: 1px solid #30363d;" class="pt-4 space-y-3">
+                <div class="p-3 rounded-lg" style="background: rgba(240,64,96,0.05); border: 1px solid rgba(240,64,96,0.2);">
+                  <div class="flex items-center gap-2 mb-2">
+                    <span class="text-[11px] font-bold px-1.5 py-0.5 rounded" style="background: rgba(240,64,96,0.15); color: #f04060;">CRITICAL</span>
+                    <span class="text-[11px] px-1.5 py-0.5 rounded" style="background: rgba(10,12,16,0.5); color: #9ca3af;">test_result</span>
+                  </div>
+                  <div class="text-[13px] mb-1" style="color: #c9d1d9;">AI: "The test passes successfully"</div>
+                  <div class="rounded px-2 py-1.5 text-[12px] mt-1" style="background: rgba(10,12,16,0.6); color: rgba(240,64,96,0.8);">FAILED tests/test_auth.py<br>assert status_code == 200, got 401<br>exit code: 1</div>
+                </div>
+                <div class="p-3 rounded-lg" style="background: rgba(240,192,64,0.05); border: 1px solid rgba(240,192,64,0.2);">
+                  <div class="flex items-center gap-2 mb-2">
+                    <span class="text-[11px] font-bold px-1.5 py-0.5 rounded" style="background: rgba(240,192,64,0.15); color: #f0c040;">HIGH</span>
+                    <span class="text-[11px] px-1.5 py-0.5 rounded" style="background: rgba(10,12,16,0.5); color: #9ca3af;">file_existence</span>
+                  </div>
+                  <div class="text-[13px]" style="color: #c9d1d9;">AI: "I've created validator.py"</div>
+                  <div class="text-[12px] mt-1" style="color: #9ca3af;">Reality: No Write call to that path</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grad-divider mb-16"></div>
+
+      <div class="grid md:grid-cols-3 gap-6">
+        <div class="glass p-6">
+          <h3 class="font-semibold mb-2">Severity classification</h3>
+          <p class="text-sm" style="color: #c9d1d9;">CRITICAL for test failures and failed commands. HIGH for file mismatches. LOW for ambiguous claims. Auto-assigned from category — no LLM judgment on severity.</p>
+        </div>
+        <div class="glass p-6">
+          <h3 class="font-semibold mb-2">Auto-audit</h3>
+          <p class="text-sm" style="color: #c9d1d9;">Trigger audits automatically: on every sync push, when a PR/MR is opened, or manual only. Configure in the dashboard Settings.</p>
+        </div>
+        <div class="glass p-6">
+          <h3 class="font-semibold mb-2">Audit history</h3>
+          <p class="text-sm" style="color: #c9d1d9;">Every audit is stored in the database. Compare runs over time, track trust score trends, and see which models produce better results.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+</body>
+</html>
