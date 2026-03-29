@@ -360,9 +360,8 @@ def _enrich_with_tool_calls(
     if not tool_messages:
         return bubble_messages
 
-    # Build a lookup of assistant text → index in bubble_messages
-    # Then interleave tool messages between bubble messages
-    result: list[dict[str, Any]] = []
+    # Interleave tool messages between bubble messages
+    enriched: list[dict[str, Any]] = []
     tool_idx = 0
 
     for bubble_msg in bubble_messages:
@@ -376,19 +375,19 @@ def _enrich_with_tool_calls(
                 tm_role = tm.get("role", "")
                 # Insert assistant tool_use and tool result messages
                 if tm_role in ("assistant", "tool"):
-                    result.append(tm)
+                    enriched.append(tm)
                     tool_idx += 1
                 else:
                     break
 
-        result.append(bubble_msg)
+        enriched.append(bubble_msg)
 
     # Append any remaining tool messages
     while tool_idx < len(tool_messages):
-        result.append(tool_messages[tool_idx])
+        enriched.append(tool_messages[tool_idx])
         tool_idx += 1
 
-    return result
+    return enriched
 
 
 # Cursor tool names → standard .sfs tool names
