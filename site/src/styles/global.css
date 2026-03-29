@@ -142,6 +142,36 @@ body:not(:has(.sl-container)) {
 .font-heading   { font-family: var(--font-heading); }
 .font-mono      { font-family: var(--font-mono); }
 
+/* ── Light mode: terminal text overrides ──────────────── */
+[data-theme="light"] .term { color: #1f2328; }
+[data-theme="light"] .term .text-muted-dim,
+[data-theme="light"] .term [class*="text-\[#9ca3af\]"],
+[data-theme="light"] .term [class*="text-\[#b1b8c1\]"] {
+  color: #59636e !important;
+}
+[data-theme="light"] .term .text-muted,
+[data-theme="light"] .term [class*="text-muted"] {
+  color: #59636e !important;
+}
+[data-theme="light"] .term .text-txt,
+[data-theme="light"] .term [class*="text-txt"] {
+  color: #1f2328 !important;
+}
+
+/* ── Light mode: hardcoded color class overrides ─────── */
+[data-theme="light"] body:not(:has(.sl-container)) [class*="text-\[#e6edf3\]"] { color: #1f2328 !important; }
+[data-theme="light"] body:not(:has(.sl-container)) [class*="text-\[#c9d1d9\]"] { color: #59636e !important; }
+[data-theme="light"] body:not(:has(.sl-container)) [class*="text-\[#9ca3af\]"] { color: #6e7781 !important; }
+[data-theme="light"] body:not(:has(.sl-container)) [class*="text-\[#b1b8c1\]"] { color: #59636e !important; }
+[data-theme="light"] body:not(:has(.sl-container)) [class*="bg-\[#161b22\]"] { background-color: #f6f8fa !important; }
+[data-theme="light"] body:not(:has(.sl-container)) [class*="bg-\[#1c2128\]"] { background-color: #eaeef2 !important; }
+[data-theme="light"] body:not(:has(.sl-container)) [class*="border-\[#30363d\]"] { border-color: #d0d7de !important; }
+
+/* ── Light mode: pip install box ─────────────────────── */
+[data-theme="light"] body:not(:has(.sl-container)) .bg-surface {
+  background-color: #f6f8fa !important;
+}
+
 /* ── Light mode: nav link colour overrides ──────────────── */
 [data-theme="light"] body:not(:has(.sl-container)) nav a[class*="text-\[#b1b8c1\]"] {
   color: var(--color-muted) !important;
