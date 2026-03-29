@@ -261,10 +261,157 @@ def parse_cursor_composer(
             })
             prev_role = "assistant"
 
+    # Enrich with tool calls from agentKv:blob: layer
+    sfs_messages = _enrich_with_tool_calls(sfs_messages, global_db)
+
     session.messages = sfs_messages
     session.message_count = len(sfs_messages)
     session.turn_count = turn_count
     return session
+
+
+def _enrich_with_tool_calls(
+    bubble_messages: list[dict[str, Any]],
+    global_db: Path | None,
+) -> list[dict[str, Any]]:
+    """Enrich bubble-layer messages with tool calls from agentKv:blob: layer.
+
+    Cursor stores tool calls in agentKv:blob: entries (content-addressed).
+    These contain role/content with tool-call and tool-result types.
+    We read all blobs, extract tool call sequences, and interleave them
+    with the bubble-layer text messages.
+    """
+    if not global_db or not global_db.exists():
+        return bubble_messages
+
+    try:
+        conn = _safe_read_db(global_db)
+        rows = conn.execute(
+            "SELECT value FROM cursorDiskKV WHERE key LIKE 'agentKv:blob:%' ORDER BY rowid"
+        ).fetchall()
+        conn.close()
+    except Exception:
+        return bubble_messages
+
+    # Parse all valid agent blobs
+    agent_messages: list[dict[str, Any]] = []
+    for row in rows:
+        val = row[0]
+        if val is None:
+            continue
+        if isinstance(val, bytes):
+            val = val.decode("utf-8", errors="replace")
+        try:
+            data = json.loads(val)
+            if not isinstance(data, dict) or "role" not in data:
+                continue
+            agent_messages.append(data)
+        except (json.JSONDecodeError, ValueError):
+            continue
+
+    if not agent_messages:
+        return bubble_messages
+
+    # Extract tool call/result pairs from agent blobs
+    tool_messages: list[dict[str, Any]] = []
+    for msg in agent_messages:
+        role = msg.get("role", "")
+        content = msg.get("content", [])
+        if not isinstance(content, list):
+            continue
+
+        sfs_content: list[dict[str, Any]] = []
+        has_tools = False
+
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type", "")
+
+            if btype == "tool-call":
+                has_tools = True
+                sfs_content.append({
+                    "type": "tool_use",
+                    "id": block.get("toolCallId", ""),
+                    "name": _normalize_tool_name(block.get("toolName", "")),
+                    "input": block.get("args", {}),
+                })
+            elif btype == "tool-result":
+                has_tools = True
+                result = block.get("result", "")
+                sfs_content.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.get("toolCallId", ""),
+                    "content": result if isinstance(result, str) else json.dumps(result),
+                })
+            elif btype == "text":
+                sfs_content.append({
+                    "type": "text",
+                    "text": block.get("text", ""),
+                })
+
+        if has_tools and sfs_content:
+            sfs_role = "tool" if role == "tool" else role
+            tool_messages.append({
+                "role": sfs_role,
+                "content": sfs_content,
+            })
+
+    if not tool_messages:
+        return bubble_messages
+
+    # Build a lookup of assistant text → index in bubble_messages
+    # Then interleave tool messages between bubble messages
+    result: list[dict[str, Any]] = []
+    tool_idx = 0
+
+    for bubble_msg in bubble_messages:
+        role = bubble_msg.get("role", "")
+
+        # Before each assistant text message, insert any pending tool call/result sequences
+        if role == "assistant":
+            # Insert tool messages that come before this assistant text
+            while tool_idx < len(tool_messages):
+                tm = tool_messages[tool_idx]
+                tm_role = tm.get("role", "")
+                # Insert assistant tool_use and tool result messages
+                if tm_role in ("assistant", "tool"):
+                    result.append(tm)
+                    tool_idx += 1
+                else:
+                    break
+
+        result.append(bubble_msg)
+
+    # Append any remaining tool messages
+    while tool_idx < len(tool_messages):
+        result.append(tool_messages[tool_idx])
+        tool_idx += 1
+
+    return result
+
+
+# Cursor tool names → standard .sfs tool names
+_CURSOR_TOOL_MAP = {
+    "read_file": "Read",
+    "edit_file": "Edit",
+    "str_replace": "Edit",
+    "StrReplace": "Edit",
+    "create_file": "Write",
+    "write_file": "Write",
+    "list_dir": "Glob",
+    "search_files": "Grep",
+    "run_terminal_cmd": "Bash",
+    "codebase_search": "Grep",
+    "file_search": "Glob",
+    "grep_search": "Grep",
+    "delete_file": "Bash",
+}
+
+
+def _normalize_tool_name(cursor_name: str) -> str:
+    """Map Cursor-specific tool names to standard .sfs tool names."""
+    return _CURSOR_TOOL_MAP.get(cursor_name, cursor_name)
 
 
 def convert_cursor_to_sfs(
@@ -309,7 +456,10 @@ def convert_cursor_to_sfs(
         "stats": {
             "message_count": cursor_session.message_count,
             "turn_count": cursor_session.turn_count,
-            "tool_use_count": 0,
+            "tool_use_count": sum(
+                1 for m in messages for b in (m.get("content", []) if isinstance(m.get("content"), list) else [])
+                if isinstance(b, dict) and b.get("type") == "tool_use"
+            ),
             "total_input_tokens": 0,
             "total_output_tokens": 0,
         },
