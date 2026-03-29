@@ -1,0 +1,83 @@
+---
+import '../styles/global.css'
+---
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pricing — SessionFS</title>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body class="antialiased" style="color: #e6edf3;">
+  <nav style="background: rgba(10,12,16,0.7); backdrop-filter: blur(12px); border-bottom: 1px solid #30363d;" class="fixed top-0 w-full z-50">
+    <div class="max-w-6xl mx-auto px-5 h-16 flex items-center justify-between">
+      <a href="/" style="font-family: 'Plus Jakarta Sans'; font-weight: 600; font-size: 18px;">Session<span style="color: #4f9cf7;">FS</span></a>
+      <div class="flex items-center gap-6 text-[15px] font-medium">
+        <a href="/docs/" class="text-[#b1b8c1] hover:text-white transition-colors">Docs</a>
+        <a href="/pricing/" class="text-white">Pricing</a>
+        <a href="/enterprise/" class="text-[#b1b8c1] hover:text-white transition-colors">Enterprise</a>
+      </div>
+    </div>
+  </nav>
+
+  <section class="pt-32 pb-20 px-5 noise">
+    <div class="max-w-4xl mx-auto text-center">
+      <h1 class="text-4xl sm:text-5xl font-extrabold mb-6" style="font-family: 'Plus Jakarta Sans';">Free during beta.</h1>
+      <p class="text-lg mb-2" style="color: #c9d1d9;">All features are free during beta. Pricing takes effect at v1.0.</p>
+      <p class="text-base mb-16" style="color: #9ca3af;">Storage-based pricing, not seat-based. Pay for what you store.</p>
+
+      <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 text-left mb-16">
+        <div class="glass p-5">
+          <div class="text-sm font-medium mb-1" style="color: #9ca3af;">Free</div>
+          <div class="text-2xl font-bold mb-4">$0</div>
+          <ul class="text-sm space-y-2" style="color: #c9d1d9;">
+            <li>&#10003; Capture 8 tools</li>
+            <li>&#10003; Resume 4 tools</li>
+            <li>&#10003; Local search</li>
+            <li style="color: #6b7280;">&#8212; No cloud sync</li>
+          </ul>
+        </div>
+        <div class="glass p-5">
+          <div class="text-sm font-medium mb-1" style="color: #9ca3af;">Starter</div>
+          <div class="text-2xl font-bold mb-4">$4.99<span class="text-sm font-normal" style="color: #9ca3af;">/mo</span></div>
+          <ul class="text-sm space-y-2" style="color: #c9d1d9;">
+            <li>&#10003; Everything in Free</li>
+            <li>&#10003; 500MB cloud sync</li>
+            <li>&#10003; Dashboard</li>
+            <li>&#10003; Manual Judge</li>
+          </ul>
+        </div>
+        <div class="glass p-5" style="border-color: rgba(79,156,247,0.4);">
+          <div class="text-sm font-medium mb-1" style="color: #4f9cf7;">Pro</div>
+          <div class="text-2xl font-bold mb-4">$14.99<span class="text-sm font-normal" style="color: #9ca3af;">/mo</span></div>
+          <ul class="text-sm space-y-2" style="color: #c9d1d9;">
+            <li>&#10003; Everything in Starter</li>
+            <li>&#10003; Auto-audit + auto-sync</li>
+            <li>&#10003; Handoff + PR/MR</li>
+            <li>&#10003; LLM Summary</li>
+            <li>&#10003; Project context</li>
+          </ul>
+        </div>
+        <div class="glass p-5">
+          <div class="text-sm font-medium mb-1" style="color: #9ca3af;">Team</div>
+          <div class="text-2xl font-bold mb-4">$14.99<span class="text-sm font-normal" style="color: #9ca3af;">/user/mo</span></div>
+          <ul class="text-sm space-y-2" style="color: #c9d1d9;">
+            <li>&#10003; Everything in Pro</li>
+            <li>&#10003; 1GB/user storage</li>
+            <li>&#10003; Team management</li>
+            <li>&#10003; Priority support</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="glass p-8 text-center max-w-lg mx-auto">
+        <h3 class="text-xl font-bold mb-2">Enterprise</h3>
+        <p class="text-sm mb-4" style="color: #c9d1d9;">Self-hosted, HIPAA DLP, SAML SSO, SLA, dedicated support.</p>
+        <a href="/enterprise/" class="inline-flex items-center justify-center text-white font-semibold rounded-lg px-7 py-3 hover:brightness-110 transition" style="background: #4f9cf7;">
+          Contact Us
+        </a>
+      </div>
+    </div>
+  </section>
+</body>
+</html>

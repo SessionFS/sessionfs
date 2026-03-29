@@ -1,0 +1,52 @@
+---
+title: "Installation"
+---
+
+## Prerequisites
+
+- Python 3.10 or later
+- pip (included with Python)
+
+## Install from PyPI
+
+```bash
+pip install sessionfs
+```
+
+## Verify installation
+
+```bash
+sfs --version
+```
+
+## Start the daemon
+
+```bash
+sfs daemon start
+```
+
+The daemon watches all 8 supported tools automatically. No configuration needed.
+
+## Supported tools
+
+| Tool | Capture | Resume |
+|------|---------|--------|
+| Claude Code | Yes | Yes |
+| Codex CLI | Yes | Yes |
+| Gemini CLI | Yes | Yes |
+| Copilot CLI | Yes | Yes |
+| Cursor IDE | Yes | Capture-only |
+| Amp | Yes | Capture-only |
+| Cline | Yes | Capture-only |
+| Roo Code | Yes | Capture-only |
+
+## Configuration
+
+The default configuration works out of the box. To customize:
+
+```bash
+sfs config show    # View current config
+sfs config set log_level DEBUG    # Change a setting
+```
+
+Config file location: `~/.sessionfs/config.toml`

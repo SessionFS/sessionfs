@@ -1,0 +1,56 @@
+---
+title: "Team Handoff"
+---
+
+Hand off AI coding sessions to teammates with full context — conversation history, workspace state, and tool configs transfer instantly.
+
+## Create a handoff
+
+```bash
+sfs handoff ses_abc --to sarah@company.com --message "JWT middleware is the problem"
+```
+
+The recipient gets an email with:
+- Session title and tool info
+- Message count and token usage
+- Git remote and branch (if available)
+- Pull command: `sfs pull-handoff hnd_xxx`
+
+## Claim a handoff
+
+```bash
+sfs pull-handoff hnd_xxx
+```
+
+This copies the session data to your account. You can then resume it:
+
+```bash
+sfs resume ses_abc --in claude-code
+```
+
+## How it works
+
+1. Sender pushes session to cloud and creates handoff
+2. Recipient gets email notification
+3. Recipient claims handoff — session blob is copied to their account
+4. Recipient resumes in any supported tool
+
+The session copy is independent — changes by the recipient don't affect the sender's original.
+
+## Cross-environment support
+
+If the sender's working directory doesn't exist on the receiver's machine, SessionFS falls back to the current directory automatically:
+
+```bash
+# Sender was in /home/coder/emms/sdk (doesn't exist on receiver)
+# SessionFS falls back to receiver's CWD
+sfs resume ses_abc --in claude-code
+# Warning: Original path /home/coder/emms/sdk not found.
+# Resuming in current directory: /Users/sarah/projects/emms
+```
+
+Use `--project` to specify a different path:
+
+```bash
+sfs resume ses_abc --in claude-code --project ~/my-project
+```

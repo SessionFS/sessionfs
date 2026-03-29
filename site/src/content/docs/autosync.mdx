@@ -1,0 +1,53 @@
+---
+title: "Autosync"
+---
+
+Automatic session syncing so you never lose work. The daemon pushes sessions to the cloud automatically, with configurable modes.
+
+## Modes
+
+| Mode | Behavior |
+|------|----------|
+| **off** (default) | Manual sync only. Run `sfs push` explicitly. |
+| **all** | Every new or updated session auto-pushes to cloud. |
+| **selective** | Only sessions in the watchlist auto-push. |
+
+## Enable autosync
+
+```bash
+sfs sync auto --mode all
+```
+
+## Selective mode
+
+```bash
+sfs sync auto --mode selective
+sfs sync watch ses_abc ses_def    # Add to watchlist
+sfs sync unwatch ses_abc          # Remove from watchlist
+sfs sync watchlist                # Show watched sessions
+```
+
+## Check status
+
+```bash
+sfs sync status
+```
+
+## How it works
+
+1. Daemon detects session changes via filesystem events
+2. Changes are debounced (30 seconds default) to avoid hammering the API
+3. Session is packed and pushed with ETag conflict detection
+4. If offline, changes are queued and retried with exponential backoff
+
+## Configuration
+
+In `~/.sessionfs/config.toml`:
+
+```toml
+[sync]
+auto = "all"
+debounce = 30
+```
+
+Or via the dashboard Settings page (propagates to daemon within 60 seconds).

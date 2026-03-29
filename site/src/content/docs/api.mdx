@@ -1,0 +1,103 @@
+---
+title: "REST API"
+---
+
+The SessionFS API server exposes a REST API for session management, auditing, sync, and settings.
+
+## Base URL
+
+- **Cloud:** `https://api.sessionfs.dev`
+- **Self-hosted:** Your deployment URL
+
+## Authentication
+
+All endpoints (except signup) require a Bearer token:
+
+```
+Authorization: Bearer sk_sfs_...
+```
+
+## Endpoints
+
+### Auth
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/v1/auth/signup` | Create account |
+| GET | `/api/v1/auth/me` | Current user profile |
+| POST | `/api/v1/auth/keys` | Create API key |
+| GET | `/api/v1/auth/keys` | List API keys |
+
+### Sessions
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/v1/sessions` | List sessions (paginated) |
+| GET | `/api/v1/sessions/{id}` | Get session detail |
+| PUT | `/api/v1/sessions/{id}/sync` | Push session (upload archive) |
+| GET | `/api/v1/sessions/{id}/sync` | Pull session (download archive) |
+| GET | `/api/v1/sessions/{id}/messages` | Get paginated messages |
+| GET | `/api/v1/sessions/{id}/summary` | Get session summary |
+| POST | `/api/v1/sessions/{id}/summary` | Generate session summary |
+| GET | `/api/v1/sessions/search` | Full-text search |
+
+### Audit
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/v1/sessions/{id}/audit` | Run LLM Judge audit |
+| GET | `/api/v1/sessions/{id}/audit` | Get latest audit report |
+| GET | `/api/v1/sessions/{id}/audits` | Audit history |
+| GET | `/api/v1/sessions/{id}/audit/status` | Check background audit status |
+
+### Handoffs
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/v1/handoffs` | Create handoff |
+| GET | `/api/v1/handoffs/{id}` | Get handoff details |
+| POST | `/api/v1/handoffs/{id}/claim` | Claim handoff (copies session) |
+| GET | `/api/v1/handoffs/inbox` | Handoffs received |
+| GET | `/api/v1/handoffs/sent` | Handoffs sent |
+
+### Sync
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/v1/sync/settings` | Get autosync settings |
+| PUT | `/api/v1/sync/settings` | Update autosync mode |
+| GET | `/api/v1/sync/watchlist` | Get watchlist |
+| POST | `/api/v1/sync/watch/{id}` | Add to watchlist |
+| DELETE | `/api/v1/sync/watch/{id}` | Remove from watchlist |
+| GET | `/api/v1/sync/status` | Sync status |
+
+### Settings
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/v1/settings/judge` | Get judge settings |
+| PUT | `/api/v1/settings/judge` | Save judge settings |
+| DELETE | `/api/v1/settings/judge` | Clear judge settings |
+| GET | `/api/v1/settings/judge/models` | Discover models from custom endpoint |
+| GET | `/api/v1/settings/audit-trigger` | Get auto-audit trigger |
+| PUT | `/api/v1/settings/audit-trigger` | Set auto-audit trigger |
+
+### Projects
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/v1/projects/` | Create project context |
+| GET | `/api/v1/projects/{remote}` | Get project context |
+| PUT | `/api/v1/projects/{remote}/context` | Update context document |
+
+### Health
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | Health check |
+
+## OpenAPI
+
+After deployment, interactive API docs are available at:
+- **Swagger UI:** `https://your-domain/api/docs`
+- **ReDoc:** `https://your-domain/api/redoc`

@@ -1,0 +1,36 @@
+---
+title: SessionFS Documentation
+description: Capture, sync, and resume AI coding sessions across 8 tools.
+template: splash
+hero:
+  tagline: Capture, sync, and resume AI coding sessions across Claude Code, Codex, Gemini, Copilot, Cursor, Amp, Cline, and Roo Code.
+  actions:
+    - text: Get Started
+      link: /docs/quickstart/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/SessionFS/sessionfs
+      icon: external
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid stagger>
+  <Card title="Quick Start" icon="rocket">
+    Install SessionFS and capture your first session in under 2 minutes.
+    [Get started &rarr;](/docs/quickstart/)
+  </Card>
+  <Card title="CLI Reference" icon="setting">
+    35+ commands for managing sessions, audits, sync, and more.
+    [See all commands &rarr;](/docs/cli/)
+  </Card>
+  <Card title="LLM Judge" icon="approve-check-circle">
+    Severity-classified findings with actual tool output evidence.
+    [Learn more &rarr;](/docs/judge/)
+  </Card>
+  <Card title="Self-Hosted" icon="server">
+    Deploy to any Kubernetes cluster with the official Helm chart.
+    [Deploy guide &rarr;](/docs/self-hosted/)
+  </Card>
+</CardGrid>

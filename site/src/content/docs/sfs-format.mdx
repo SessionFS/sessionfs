@@ -1,0 +1,67 @@
+---
+title: ".sfs Format"
+---
+
+Sessions are stored as `.sfs` directories containing:
+
+- `manifest.json` — identity, provenance, model info, stats
+- `messages.jsonl` — conversation history with content blocks
+- `workspace.json` — git state, files, environment
+- `tools.json` — tool definitions and shell context
+
+All file paths within are relative to workspace root. Sessions are append-only — conflict resolution appends both sides rather than merging.
+
+## manifest.json
+
+```json
+{
+  "sfs_version": "0.1.0",
+  "session_id": "ses_a1b2c3d4e5f6a1b2",
+  "title": "Debug auth middleware",
+  "tags": ["auth", "jwt"],
+  "created_at": "2026-03-20T14:30:00Z",
+  "updated_at": "2026-03-20T16:45:00Z",
+  "source": {
+    "tool": "claude-code",
+    "tool_version": "2.1.59",
+    "original_session_id": "abc123-def456"
+  },
+  "model": {
+    "provider": "anthropic",
+    "model_id": "claude-opus-4-6"
+  },
+  "stats": {
+    "message_count": 47,
+    "turn_count": 12,
+    "tool_use_count": 28,
+    "total_input_tokens": 34200,
+    "total_output_tokens": 12800
+  }
+}
+```
+
+## messages.jsonl
+
+Each line is a JSON object with `role`, `content`, and optional metadata:
+
+```jsonl
+{"role": "user", "content": [{"type": "text", "text": "Fix the auth bug"}]}
+{"role": "assistant", "content": [{"type": "text", "text": "I'll read the middleware."}]}
+{"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "src/auth.py"}}]}
+{"role": "tool", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "import jwt\n..."}]}
+```
+
+Content block types: `text`, `tool_use`, `tool_result`, `thinking`, `image`.
+
+## workspace.json
+
+```json
+{
+  "root_path": "/Users/dev/project",
+  "git": {
+    "remote_url": "https://github.com/org/repo.git",
+    "branch": "feature/auth-fix",
+    "commit_sha": "a1b2c3d4e5f6"
+  }
+}
+```

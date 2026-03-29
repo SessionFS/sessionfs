@@ -1,0 +1,46 @@
+---
+title: "MCP Server"
+---
+
+The SessionFS MCP server lets AI agents search your past sessions and read project context during conversations. Runs on stdio transport for local use, or HTTP/SSE for remote access.
+
+## Install for Claude Code
+
+```bash
+sfs mcp install --for claude-code
+```
+
+This adds SessionFS to your Claude Code MCP configuration automatically.
+
+## Install for Cursor
+
+```bash
+sfs mcp install --for cursor
+```
+
+## Available tools
+
+The MCP server exposes 5 tools:
+
+| Tool | Description |
+|------|-------------|
+| `search_sessions` | Search past sessions by keyword, error message, or file path |
+| `get_session_context` | Get full conversation context from a specific session |
+| `list_recent_sessions` | List recent sessions with filtering |
+| `find_related_sessions` | Find sessions related to specific files or errors |
+| `get_project_context` | Get shared project context document for a repository |
+
+## How agents use it
+
+When connected, AI agents can:
+- Search for past solutions: "Have we solved this auth error before?"
+- Load full session context: "Show me the session where we debugged the migration"
+- Read project conventions: "What are the team's coding standards?"
+
+## Manual start
+
+```bash
+sfs mcp serve
+```
+
+Runs on stdio transport. Connect from any MCP-aware tool.

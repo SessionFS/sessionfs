@@ -1,0 +1,64 @@
+---
+title: "Git Integration"
+---
+
+AI session context on every pull request (GitHub) and merge request (GitLab). When audit findings exist, contradictions are surfaced inline for reviewers.
+
+## GitHub
+
+SessionFS has a GitHub App that automatically comments on PRs with AI session context.
+
+### Setup
+
+1. Install the [SessionFS GitHub App](https://github.com/apps/sessionfs-ai-context/installations/new)
+2. Select the repositories you want to monitor
+3. Push sessions from those repos: `sfs push ses_xxx`
+
+When a PR is opened on a branch that has matching sessions, SessionFS posts a comment with:
+- Session title and tool info
+- Message count and model used
+- Contradictions table (if audited)
+- Link to full session in the dashboard
+
+### Configure in dashboard
+
+Dashboard → Settings → GitHub Integration
+
+Options:
+- Auto-comment on PRs (on/off)
+- Include trust scores (on/off)
+- Include session links (on/off)
+
+## GitLab
+
+SessionFS supports GitLab merge request comments for both cloud and self-hosted instances.
+
+### Setup
+
+1. Create a GitLab personal or project access token with `api` scope
+2. Add a webhook to your GitLab project:
+   - URL: `https://your-sessionfs-domain/webhooks/gitlab`
+   - Secret token: set via `SFS_GITLAB_WEBHOOK_SECRET` env var
+   - Events: "Merge request events"
+3. Save the access token in the dashboard Settings → GitLab Integration
+
+### Self-hosted GitLab
+
+Works with any GitLab instance — just enter your custom instance URL in the dashboard settings.
+
+## PR/MR comment format
+
+```markdown
+### AI Context (via SessionFS)
+
+| Session | Tool | Messages | Trust |
+|---------|------|----------|-------|
+| Debug auth middleware | Claude Code | 47 | 74% |
+
+**2 contradictions found:**
+
+| Severity | Claim | Reality |
+|----------|-------|---------|
+| CRITICAL | "Test passes" (msg #34) | Exit code 1 |
+| HIGH | "Created validator.py" | No Write call |
+```

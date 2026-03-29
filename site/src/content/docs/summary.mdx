@@ -1,0 +1,60 @@
+---
+title: "Session Summary"
+---
+
+Every session automatically summarized — files changed, tests run, commands executed, packages installed. No more reading 2,000 messages to understand what the AI did.
+
+## Quick start
+
+```bash
+sfs summary ses_abc
+```
+
+Output:
+```
+Debug auth middleware
+2.3h | 327 msgs | 28 tool calls | Claude Code
+Branch: feature/auth-fix @ a1b2c3d
+
+Files modified (3):
+  src/auth/middleware.py
+  src/auth/tokens.py
+  tests/test_auth.py
+
+Commands: 34
+Tests: 6 runs (5 passed, 1 failed)
+Packages: pyjwt, redis
+```
+
+## What's extracted
+
+| Data | Source |
+|------|--------|
+| Files modified/read | Read, Write, Edit tool calls |
+| Commands executed | Bash tool calls |
+| Test results | pytest, jest, go test output parsing |
+| Packages installed | pip install, npm install commands |
+| Errors encountered | Error patterns in tool output |
+| Duration | First to last message timestamp |
+
+## Export as markdown
+
+```bash
+sfs summary ses_abc --format md > session-summary.md
+```
+
+## Today's sessions
+
+```bash
+sfs summary --today
+```
+
+Shows a table of all sessions captured today with key metrics.
+
+## Dashboard
+
+The Summary tab in the session detail page shows:
+- Metric cards (duration, messages, tool calls, tests)
+- Files modified and read (expandable)
+- Activity section (commands, tests, packages, errors)
+- Narrative section (if LLM-generated)

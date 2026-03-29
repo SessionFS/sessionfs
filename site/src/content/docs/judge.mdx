@@ -1,0 +1,62 @@
+---
+title: "LLM Judge"
+---
+
+The LLM Judge cross-references every AI claim against actual tool outputs. When the AI says "the test passes" but the exit code was 1, that's a critical contradiction flagged with full evidence.
+
+## Quick start
+
+```bash
+sfs audit ses_abc --model gpt-4o
+```
+
+## Severity classification
+
+Findings are auto-classified by category:
+
+| Severity | Categories | Example |
+|----------|-----------|---------|
+| **CRITICAL** | test_result, command_output, dependency | "Test passes" but exit code 1 |
+| **HIGH** | file_existence, data_misread, code_claim | "Created file" but no Write call |
+| **LOW** | other | Ambiguous claims |
+
+## Custom LLM endpoint
+
+Works with any OpenAI-compatible endpoint:
+
+```bash
+# LiteLLM
+sfs audit ses_abc --base-url https://litellm.internal/v1 --model gpt-4o
+
+# Ollama (no API key needed)
+sfs audit ses_abc --base-url http://localhost:11434/v1 --model llama3
+
+# vLLM
+sfs audit ses_abc --base-url http://gpu-server:8000/v1 --model my-model
+```
+
+## Auto-audit
+
+Configure automatic auditing in the dashboard Settings or via CLI:
+
+```bash
+sfs config set audit.trigger on_sync    # Audit after every push
+sfs config set audit.trigger on_pr      # Audit when PR/MR is opened
+sfs config set audit.trigger manual     # Only when you run sfs audit
+```
+
+## Consensus mode
+
+Run 3 passes and only report findings where 2+ agree:
+
+```bash
+sfs audit ses_abc --consensus    # 3x cost, higher confidence
+```
+
+## Export
+
+```bash
+sfs audit ses_abc --format json      # JSON
+sfs audit ses_abc --format markdown  # Markdown report
+sfs audit ses_abc --format csv       # CSV table
+```

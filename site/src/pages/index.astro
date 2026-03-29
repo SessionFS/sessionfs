@@ -1,0 +1,167 @@
+---
+import '../styles/global.css'
+---
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SessionFS — Capture, sync, and resume AI coding sessions</title>
+  <meta name="description" content="Background daemon that captures AI coding sessions from 8 tools. Resume anywhere, hand off to teammates, audit for hallucinations. Free and open source.">
+  <meta property="og:title" content="SessionFS — Capture, sync, and resume AI coding sessions">
+  <meta property="og:description" content="Background daemon that captures AI coding sessions from 8 tools. Resume anywhere, hand off to teammates, audit for hallucinations.">
+  <meta property="og:url" content="https://sessionfs.dev">
+  <meta property="og:type" content="website">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body class="antialiased overflow-x-hidden" style="color: #e6edf3;">
+
+  <!-- Nav -->
+  <nav style="background: rgba(10,12,16,0.7); backdrop-filter: blur(12px); border-bottom: 1px solid #30363d;" class="fixed top-0 w-full z-50">
+    <div class="max-w-6xl mx-auto px-5 h-16 flex items-center justify-between">
+      <a href="/" class="flex items-center gap-2.5">
+        <svg viewBox="0 0 180 50" class="h-7" xmlns="http://www.w3.org/2000/svg">
+          <path d="M22,8 Q14,8 14,16 L14,34 Q14,42 22,42" fill="none" stroke="#4f9cf7" stroke-width="3" stroke-linecap="round"/>
+          <path d="M42,8 Q50,8 50,16 L50,34 Q50,42 42,42" fill="none" stroke="#3ddc84" stroke-width="3" stroke-linecap="round"/>
+          <circle cx="32" cy="25" r="5" fill="#4f9cf7"/>
+          <text x="60" y="32" font-family="'Plus Jakarta Sans', system-ui, sans-serif" font-size="19" font-weight="600" fill="#e6edf3" letter-spacing="-0.5">Session<tspan fill="#4f9cf7">FS</tspan></text>
+        </svg>
+      </a>
+      <div class="flex items-center gap-6 text-[15px] font-medium">
+        <a href="/docs/" class="text-[#b1b8c1] hover:text-white hidden sm:block transition-colors">Docs</a>
+        <a href="/pricing/" class="text-[#b1b8c1] hover:text-white hidden sm:block transition-colors">Pricing</a>
+        <a href="/enterprise/" class="text-[#b1b8c1] hover:text-white hidden sm:block transition-colors">Enterprise</a>
+        <a href="https://github.com/SessionFS/sessionfs" class="flex items-center gap-2 text-[#b1b8c1] hover:text-white transition-colors">
+          <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+          <span class="hidden sm:inline">GitHub</span>
+        </a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <section class="relative pt-32 sm:pt-40 pb-20 sm:pb-28 px-5 noise">
+    <div class="max-w-6xl mx-auto text-center">
+      <h1 class="text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight leading-[1.1] mb-6" style="font-family: 'Plus Jakarta Sans', system-ui, sans-serif;">
+        Stop re-prompting.<br>Start resuming.
+      </h1>
+      <p class="text-lg sm:text-xl max-w-xl mx-auto mb-8" style="color: #c9d1d9;">
+        SessionFS captures your AI coding sessions and makes them portable, searchable, and verifiable across tools and teammates.
+      </p>
+      <div class="flex flex-col sm:flex-row gap-3 justify-center mb-8">
+        <a href="/docs/quickstart/" class="inline-flex items-center justify-center gap-2 text-white font-semibold rounded-lg px-7 py-3 hover:brightness-110 transition" style="background: #4f9cf7;">
+          Get Started
+        </a>
+        <a href="https://github.com/SessionFS/sessionfs" class="inline-flex items-center justify-center gap-2 font-semibold rounded-lg px-7 py-3 hover:border-gray-400 transition" style="border: 1px solid #30363d; color: #e6edf3;">
+          View on GitHub
+        </a>
+      </div>
+      <div class="flex flex-wrap justify-center gap-x-5 gap-y-2 text-sm" style="font-family: 'JetBrains Mono', monospace; color: #c9d1d9;">
+        <span>Claude Code</span><span>Codex</span><span>Gemini</span><span>Copilot</span><span>Cursor</span><span>Amp</span><span>Cline</span><span>Roo Code</span>
+        <span style="color: #9ca3af;">· 848 tests · Enterprise tested</span>
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- Feature Grid -->
+  <section class="relative py-20 sm:py-28 px-5 noise">
+    <div class="max-w-5xl mx-auto">
+      <h2 class="text-3xl sm:text-4xl font-bold text-center mb-14" style="font-family: 'Plus Jakarta Sans', system-ui, sans-serif;">Everything you need</h2>
+      <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-5">
+        <div class="glass p-6"><div class="text-2xl mb-3">&#9729;</div><h3 class="font-semibold mb-2">Cloud Sync</h3><p class="text-sm mb-3" style="color: #c9d1d9;">Push to the cloud, pull on any machine. Auto-sync available.</p></div>
+        <div class="glass p-6"><div class="text-2xl mb-3">&#128101;</div><h3 class="font-semibold mb-2">Team Handoff</h3><p class="text-sm mb-3" style="color: #c9d1d9;">Hand off sessions with full context. Session data copies to recipient.</p></div>
+        <div class="glass p-6"><div class="text-2xl mb-3">&#128269;</div><h3 class="font-semibold mb-2">Session Search</h3><p class="text-sm mb-3" style="color: #c9d1d9;">Full-text search across all sessions. Find that fix from last week.</p></div>
+        <div class="glass p-6"><div class="text-2xl mb-3">&#9881;</div><h3 class="font-semibold mb-2">MCP Server</h3><p class="text-sm mb-3" style="color: #c9d1d9;">Your AI agent remembers past sessions and project context via MCP.</p></div>
+        <div class="glass p-6"><div class="text-2xl mb-3">&#9878;</div><h3 class="font-semibold mb-2">LLM Judge</h3><p class="text-sm mb-3" style="color: #c9d1d9;">Catch what the AI got wrong. Severity-classified findings with evidence.</p></div>
+        <div class="glass p-6"><div class="text-2xl mb-3">&#128203;</div><h3 class="font-semibold mb-2">Session Summary</h3><p class="text-sm mb-3" style="color: #c9d1d9;">See what happened in 10 seconds. Files, tests, commands extracted automatically.</p></div>
+        <div class="glass p-6"><div class="text-2xl mb-3">&#128279;</div><h3 class="font-semibold mb-2">GitHub &amp; GitLab</h3><p class="text-sm mb-3" style="color: #c9d1d9;">AI session context on every PR and MR. Contradictions surfaced for reviewers.</p></div>
+        <div class="glass p-6"><div class="text-2xl mb-3">&#128194;</div><h3 class="font-semibold mb-2">Workspace Aware</h3><p class="text-sm mb-3" style="color: #c9d1d9;">Git state captured automatically. Branch, commit, dirty files recorded.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- Enterprise -->
+  <section class="relative py-20 sm:py-28 px-5 noise">
+    <div class="max-w-5xl mx-auto text-center">
+      <h2 class="text-3xl sm:text-4xl font-bold mb-4" style="font-family: 'Plus Jakarta Sans', system-ui, sans-serif;">Deploy anywhere. Control everything.</h2>
+      <p class="mb-14 max-w-lg mx-auto" style="color: #c9d1d9;">Self-hosted Kubernetes deployment with Helm. Your data stays on your infrastructure.</p>
+      <div class="grid md:grid-cols-3 gap-5">
+        <div class="glass p-6 text-left"><h3 class="font-semibold mb-2">Self-hosted</h3><p class="text-sm mb-4" style="color: #c9d1d9;">Deploy to any Kubernetes cluster — AWS EKS, GCP GKE, or on-prem. Helm chart, enterprise-tested.</p></div>
+        <div class="glass p-6 text-left"><h3 class="font-semibold mb-2">Git integration</h3><p class="text-sm mb-4" style="color: #c9d1d9;">AI session context on every PR (GitHub) and MR (GitLab). Audit findings surfaced inline.</p></div>
+        <div class="glass p-6 text-left"><h3 class="font-semibold mb-2">Your LLM gateway</h3><p class="text-sm mb-4" style="color: #c9d1d9;">Bring your own LLM — Anthropic, OpenAI, Google, or any OpenAI-compatible endpoint.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- Pricing -->
+  <section id="pricing" class="relative py-20 sm:py-28 px-5 noise">
+    <div class="max-w-2xl mx-auto text-center">
+      <h2 class="text-3xl sm:text-5xl font-bold mb-6" style="font-family: 'Plus Jakarta Sans', system-ui, sans-serif;">Free during beta.</h2>
+      <p class="text-lg mb-4 max-w-lg mx-auto" style="color: #c9d1d9;">
+        Local capture, cloud sync, team handoff, session search, MCP, LLM Judge, and session summary — all included. No credit card. No limits.
+      </p>
+      <p class="text-base mb-10" style="color: #9ca3af;">
+        Paid plans with storage-based pricing are coming after beta.
+      </p>
+      <div class="flex flex-col sm:flex-row gap-3 justify-center">
+        <a href="/docs/quickstart/" class="inline-flex items-center justify-center gap-2 text-white font-semibold rounded-lg px-7 py-3 hover:brightness-110 transition" style="background: #4f9cf7;">
+          Get Started
+        </a>
+        <a href="mailto:hello@sessionfs.dev?subject=SessionFS%20Pro%20Waitlist" class="inline-flex items-center justify-center font-medium rounded-lg px-7 py-3 hover:border-gray-400 transition" style="border: 1px solid #30363d; color: #e6edf3;">
+          Join Waitlist for Pro
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- Footer -->
+  <footer class="py-14 px-5">
+    <div class="max-w-5xl mx-auto">
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-8 mb-12">
+        <div class="col-span-2 sm:col-span-1">
+          <p class="text-sm" style="color: #9ca3af;">Portable AI coding sessions.</p>
+        </div>
+        <div>
+          <h4 class="font-semibold text-sm mb-3">Product</h4>
+          <ul class="space-y-2 text-sm" style="color: #9ca3af;">
+            <li><a href="/docs/quickstart/" class="hover:text-white transition-colors">Get Started</a></li>
+            <li><a href="/pricing/" class="hover:text-white transition-colors">Pricing</a></li>
+            <li><a href="/changelog/" class="hover:text-white transition-colors">Changelog</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4 class="font-semibold text-sm mb-3">Docs</h4>
+          <ul class="space-y-2 text-sm" style="color: #9ca3af;">
+            <li><a href="/docs/quickstart/" class="hover:text-white transition-colors">Quickstart</a></li>
+            <li><a href="/docs/cli/" class="hover:text-white transition-colors">CLI Reference</a></li>
+            <li><a href="/docs/self-hosted/" class="hover:text-white transition-colors">Self-hosted Guide</a></li>
+            <li><a href="/docs/environment/" class="hover:text-white transition-colors">Environment Variables</a></li>
+            <li><a href="/docs/troubleshooting/" class="hover:text-white transition-colors">Troubleshooting</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4 class="font-semibold text-sm mb-3">Company</h4>
+          <ul class="space-y-2 text-sm" style="color: #9ca3af;">
+            <li><a href="https://github.com/SessionFS/sessionfs" class="hover:text-white transition-colors">GitHub</a></li>
+            <li><a href="/enterprise/" class="hover:text-white transition-colors">Enterprise</a></li>
+            <li><a href="mailto:hello@sessionfs.dev" class="hover:text-white transition-colors">hello@sessionfs.dev</a></li>
+          </ul>
+        </div>
+      </div>
+      <div style="border-top: 1px solid #30363d;" class="pt-6 text-center text-[13px]" style="color: #9ca3af;">
+        &copy; 2026 SessionFS. All rights reserved.
+      </div>
+    </div>
+  </footer>
+
+</body>
+</html>

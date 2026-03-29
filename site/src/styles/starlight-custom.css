@@ -1,0 +1,19 @@
+/* SessionFS design system overrides for Starlight */
+:root {
+  --sl-color-accent-low: #1a2744;
+  --sl-color-accent: #4f9cf7;
+  --sl-color-accent-high: #a8d0ff;
+  --sl-color-white: #e6edf3;
+  --sl-color-gray-1: #c9d1d9;
+  --sl-color-gray-2: #9ca3af;
+  --sl-color-gray-3: #6b7280;
+  --sl-color-gray-4: #30363d;
+  --sl-color-gray-5: #161b22;
+  --sl-color-gray-6: #0d1117;
+  --sl-color-gray-7: #0a0c10;
+  --sl-color-black: #0a0c10;
+  --sl-font: 'Plus Jakarta Sans', system-ui, sans-serif;
+  --sl-font-mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
