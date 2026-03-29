@@ -25,8 +25,18 @@ export default defineConfig({
       },
       social: [
         { icon: 'github', label: 'GitHub', href: 'https://github.com/SessionFS/sessionfs' },
+        { icon: 'external', label: 'Back to site', href: '/' },
       ],
       sidebar: [
+        {
+          label: 'Back to Site',
+          items: [
+            { label: 'Home', link: '/' },
+            { label: 'Features', link: '/features/' },
+            { label: 'Pricing', link: '/pricing/' },
+            { label: 'Enterprise', link: '/enterprise/' },
+          ],
+        },
         {
           label: 'Getting Started',
           items: [
