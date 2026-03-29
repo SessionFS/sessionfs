@@ -1,107 +1,39 @@
 ---
-import '../../styles/global.css'
-
-const features = [
-  {
-    icon: '&#9878;',
-    title: 'LLM Judge',
-    desc: 'Cross-references every AI claim against actual tool outputs. Severity-classified findings with full evidence.',
-    highlight: 'CRITICAL — "Test passes" but exit code 1',
-    link: '/features/judge/',
-  },
-  {
-    icon: '&#128101;',
-    title: 'Team Handoff',
-    desc: 'Hand off sessions to teammates with full context. Session data copies to the recipient automatically.',
-    highlight: 'sfs handoff ses_abc --to sarah@co.dev',
-    link: '/features/handoff/',
-  },
-  {
-    icon: '&#128203;',
-    title: 'Session Summary',
-    desc: 'See what happened in 10 seconds. Files changed, tests run, commands executed — extracted automatically.',
-    highlight: '3 modified · 5/6 tests · 34 commands',
-    link: '/features/summary/',
-  },
-  {
-    icon: '&#9881;',
-    title: 'MCP Server',
-    desc: 'AI agents search your past sessions and read project context during conversations. 5 tools exposed via MCP.',
-    highlight: 'sfs mcp install --for claude-code',
-    link: '/features/mcp/',
-  },
-  {
-    icon: '&#9729;',
-    title: 'Cloud Sync & Autosync',
-    desc: 'Push to the cloud, pull on any machine. Three modes: off, all, or selective with per-session watchlist.',
-    highlight: 'sfs sync auto --mode all',
-    link: '/docs/autosync/',
-  },
-  {
-    icon: '&#128279;',
-    title: 'GitHub & GitLab',
-    desc: 'AI session context on every PR and MR. Contradictions surfaced inline for reviewers.',
-    highlight: 'Cloud + self-hosted GitLab supported',
-    link: '/docs/git-integration/',
-  },
-  {
-    icon: '&#128269;',
-    title: 'Full-Text Search',
-    desc: 'Search across all sessions by keyword, error message, or file path. Local and cloud.',
-    highlight: 'sfs search "rate limiting"',
-    link: '/docs/cli/',
-  },
-  {
-    icon: '&#128194;',
-    title: 'Workspace Aware',
-    desc: 'Git state captured automatically — branch, commit, remote URL, dirty files. All recorded.',
-    highlight: 'feature/auth-fix @ a1b2c3d',
-    link: '/docs/sfs-format/',
-  },
-]
+import BaseLayout from '../../layouts/BaseLayout.astro';
 ---
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Features — SessionFS</title>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-</head>
-<body class="antialiased" style="color: #e6edf3;">
-  <nav style="background: rgba(10,12,16,0.7); backdrop-filter: blur(12px); border-bottom: 1px solid #30363d;" class="fixed top-0 w-full z-50">
-    <div class="max-w-6xl mx-auto px-5 h-16 flex items-center justify-between">
-      <a href="/" style="font-family: 'Plus Jakarta Sans'; font-weight: 600; font-size: 18px;">Session<span style="color: #4f9cf7;">FS</span></a>
-      <div class="flex items-center gap-6 text-[15px] font-medium">
-        <a href="/features/" class="text-white">Features</a>
-        <a href="/docs/" class="text-[#b1b8c1] hover:text-white transition-colors">Docs</a>
-        <a href="/pricing/" class="text-[#b1b8c1] hover:text-white transition-colors">Pricing</a>
-        <a href="/enterprise/" class="text-[#b1b8c1] hover:text-white transition-colors">Enterprise</a>
-      </div>
-    </div>
-  </nav>
-
-  <section class="pt-32 pb-20 px-5 noise">
+<BaseLayout title="Features — SessionFS" activeNav="features" description="SessionFS features: capture, resume, audit, handoff, sync, and more.">
+  <section class="pt-32 pb-20 px-5 relative noise">
     <div class="max-w-5xl mx-auto">
       <div class="text-center mb-16">
         <h1 class="text-4xl sm:text-5xl font-extrabold mb-6" style="font-family: 'Plus Jakarta Sans';">Everything you need</h1>
         <p class="text-lg max-w-xl mx-auto" style="color: #c9d1d9;">Capture sessions from 8 tools. Resume anywhere. Audit for hallucinations. Share with teammates.</p>
       </div>
-
       <div class="grid sm:grid-cols-2 gap-6">
-        {features.map((f) => (
-          <a href={f.link} class="glass p-6 block hover:border-[rgba(79,156,247,0.4)] transition-all">
-            <div class="flex items-start gap-4">
-              <div class="text-3xl shrink-0" set:html={f.icon} />
-              <div>
-                <h3 class="text-lg font-semibold mb-2" style="font-family: 'Plus Jakarta Sans';">{f.title}</h3>
-                <p class="text-sm mb-3" style="color: #c9d1d9;">{f.desc}</p>
-                <div class="text-sm px-3 py-1.5 rounded" style="background: rgba(10,12,16,0.5); font-family: 'JetBrains Mono', monospace; color: #3ddc84;" set:html={f.highlight} />
-              </div>
-            </div>
-          </a>
-        ))}
+        <a href="/features/judge/" class="glass p-6 block">
+          <div class="flex items-start gap-4"><div class="text-3xl shrink-0">&#9878;</div><div><h3 class="text-lg font-semibold mb-2">LLM Judge</h3><p class="text-sm mb-3" style="color: #c9d1d9;">Cross-references every AI claim against actual tool outputs. Severity-classified findings.</p><div class="text-sm px-3 py-1.5 rounded" style="background: rgba(10,12,16,0.5); font-family: 'JetBrains Mono', monospace; color: #3ddc84;">CRITICAL — "Test passes" but exit code 1</div></div></div>
+        </a>
+        <a href="/features/handoff/" class="glass p-6 block">
+          <div class="flex items-start gap-4"><div class="text-3xl shrink-0">&#128101;</div><div><h3 class="text-lg font-semibold mb-2">Team Handoff</h3><p class="text-sm mb-3" style="color: #c9d1d9;">Hand off sessions to teammates with full context. Session data copies to recipient.</p><div class="text-sm px-3 py-1.5 rounded" style="background: rgba(10,12,16,0.5); font-family: 'JetBrains Mono', monospace; color: #3ddc84;">sfs handoff ses_abc --to sarah@co.dev</div></div></div>
+        </a>
+        <a href="/features/summary/" class="glass p-6 block">
+          <div class="flex items-start gap-4"><div class="text-3xl shrink-0">&#128203;</div><div><h3 class="text-lg font-semibold mb-2">Session Summary</h3><p class="text-sm mb-3" style="color: #c9d1d9;">See what happened in 10 seconds. Files, tests, commands extracted automatically.</p><div class="text-sm px-3 py-1.5 rounded" style="background: rgba(10,12,16,0.5); font-family: 'JetBrains Mono', monospace; color: #3ddc84;">3 modified &middot; 5/6 tests &middot; 34 commands</div></div></div>
+        </a>
+        <a href="/features/mcp/" class="glass p-6 block">
+          <div class="flex items-start gap-4"><div class="text-3xl shrink-0">&#9881;</div><div><h3 class="text-lg font-semibold mb-2">MCP Server</h3><p class="text-sm mb-3" style="color: #c9d1d9;">AI agents search your past sessions and read project context. 5 tools via MCP.</p><div class="text-sm px-3 py-1.5 rounded" style="background: rgba(10,12,16,0.5); font-family: 'JetBrains Mono', monospace; color: #3ddc84;">sfs mcp install --for claude-code</div></div></div>
+        </a>
+        <a href="/autosync/" class="glass p-6 block">
+          <div class="flex items-start gap-4"><div class="text-3xl shrink-0">&#9729;</div><div><h3 class="text-lg font-semibold mb-2">Cloud Sync &amp; Autosync</h3><p class="text-sm mb-3" style="color: #c9d1d9;">Push to the cloud, pull on any machine. Three modes: off, all, selective.</p><div class="text-sm px-3 py-1.5 rounded" style="background: rgba(10,12,16,0.5); font-family: 'JetBrains Mono', monospace; color: #3ddc84;">sfs sync auto --mode all</div></div></div>
+        </a>
+        <a href="/git-integration/" class="glass p-6 block">
+          <div class="flex items-start gap-4"><div class="text-3xl shrink-0">&#128279;</div><div><h3 class="text-lg font-semibold mb-2">GitHub &amp; GitLab</h3><p class="text-sm mb-3" style="color: #c9d1d9;">AI session context on every PR and MR. Contradictions surfaced for reviewers.</p><div class="text-sm px-3 py-1.5 rounded" style="background: rgba(10,12,16,0.5); font-family: 'JetBrains Mono', monospace; color: #3ddc84;">Cloud + self-hosted GitLab</div></div></div>
+        </a>
+        <a href="/cli/" class="glass p-6 block">
+          <div class="flex items-start gap-4"><div class="text-3xl shrink-0">&#128269;</div><div><h3 class="text-lg font-semibold mb-2">Full-Text Search</h3><p class="text-sm mb-3" style="color: #c9d1d9;">Search across all sessions by keyword, error message, or file path.</p><div class="text-sm px-3 py-1.5 rounded" style="background: rgba(10,12,16,0.5); font-family: 'JetBrains Mono', monospace; color: #3ddc84;">sfs search "rate limiting"</div></div></div>
+        </a>
+        <a href="/sfs-format/" class="glass p-6 block">
+          <div class="flex items-start gap-4"><div class="text-3xl shrink-0">&#128194;</div><div><h3 class="text-lg font-semibold mb-2">Workspace Aware</h3><p class="text-sm mb-3" style="color: #c9d1d9;">Git state captured automatically — branch, commit, remote URL, dirty files.</p><div class="text-sm px-3 py-1.5 rounded" style="background: rgba(10,12,16,0.5); font-family: 'JetBrains Mono', monospace; color: #3ddc84;">feature/auth-fix @ a1b2c3d</div></div></div>
+        </a>
       </div>
     </div>
   </section>
-</body>
-</html>
+</BaseLayout>

@@ -1,0 +1,95 @@
+---
+import '../styles/global.css'
+
+interface Props {
+  title: string;
+  description?: string;
+  activeNav?: string;
+}
+
+const { title, description = 'Capture, sync, and resume AI coding sessions across 8 tools. Audit for hallucinations. Free and open source.', activeNav = '' } = Astro.props;
+---
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{title}</title>
+  <meta name="description" content={description}>
+  <meta property="og:title" content={title}>
+  <meta property="og:description" content={description}>
+  <meta property="og:url" content="https://sessionfs.dev">
+  <meta property="og:type" content="website">
+  <link rel="canonical" href={`https://sessionfs.dev${Astro.url.pathname}`}>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body class="antialiased overflow-x-hidden" style="color: #e6edf3;">
+
+  <nav style="background: rgba(10,12,16,0.7); backdrop-filter: blur(12px); border-bottom: 1px solid #30363d;" class="fixed top-0 w-full z-50">
+    <div class="max-w-6xl mx-auto px-5 h-16 flex items-center justify-between">
+      <a href="/" class="flex items-center gap-2.5" aria-label="SessionFS home">
+        <svg viewBox="0 0 180 50" class="h-7" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="SessionFS">
+          <path d="M22,8 Q14,8 14,16 L14,34 Q14,42 22,42" fill="none" stroke="#4f9cf7" stroke-width="3" stroke-linecap="round"/>
+          <path d="M42,8 Q50,8 50,16 L50,34 Q50,42 42,42" fill="none" stroke="#3ddc84" stroke-width="3" stroke-linecap="round"/>
+          <circle cx="32" cy="25" r="5" fill="#4f9cf7"/>
+          <text x="60" y="32" font-family="'Plus Jakarta Sans', system-ui, sans-serif" font-size="19" font-weight="600" fill="#e6edf3" letter-spacing="-0.5">Session<tspan fill="#4f9cf7">FS</tspan></text>
+        </svg>
+      </a>
+      <div class="flex items-center gap-6 text-[15px] font-medium">
+        <a href="/features/" class={`hidden sm:block transition-colors ${activeNav === 'features' ? 'text-white' : 'text-[#b1b8c1] hover:text-white'}`}>Features</a>
+        <a href="/docs/" class={`hidden sm:block transition-colors ${activeNav === 'docs' ? 'text-white' : 'text-[#b1b8c1] hover:text-white'}`}>Docs</a>
+        <a href="/pricing/" class={`hidden sm:block transition-colors ${activeNav === 'pricing' ? 'text-white' : 'text-[#b1b8c1] hover:text-white'}`}>Pricing</a>
+        <a href="/enterprise/" class={`hidden sm:block transition-colors ${activeNav === 'enterprise' ? 'text-white' : 'text-[#b1b8c1] hover:text-white'}`}>Enterprise</a>
+        <a href="/changelog/" class={`hidden sm:block transition-colors ${activeNav === 'changelog' ? 'text-white' : 'text-[#b1b8c1] hover:text-white'}`}>Changelog</a>
+        <a href="https://github.com/SessionFS/sessionfs" class="flex items-center gap-2 text-[#b1b8c1] hover:text-white transition-colors" aria-label="GitHub">
+          <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+        </a>
+      </div>
+    </div>
+  </nav>
+
+  <slot />
+
+  <div class="grad-divider"></div>
+  <footer class="py-14 px-5">
+    <div class="max-w-5xl mx-auto">
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-8 mb-12">
+        <div class="col-span-2 sm:col-span-1">
+          <p class="text-sm" style="color: #9ca3af;">Portable AI coding sessions.</p>
+        </div>
+        <div>
+          <h4 class="font-semibold text-sm mb-3">Product</h4>
+          <ul class="space-y-2 text-sm" style="color: #9ca3af;">
+            <li><a href="/docs/quickstart/" class="hover:text-white transition-colors">Get Started</a></li>
+            <li><a href="/pricing/" class="hover:text-white transition-colors">Pricing</a></li>
+            <li><a href="/changelog/" class="hover:text-white transition-colors">Changelog</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4 class="font-semibold text-sm mb-3">Docs</h4>
+          <ul class="space-y-2 text-sm" style="color: #9ca3af;">
+            <li><a href="/quickstart/" class="hover:text-white transition-colors">Quickstart</a></li>
+            <li><a href="/cli/" class="hover:text-white transition-colors">CLI Reference</a></li>
+            <li><a href="/self-hosted/" class="hover:text-white transition-colors">Self-hosted</a></li>
+            <li><a href="/environment/" class="hover:text-white transition-colors">Environment Variables</a></li>
+            <li><a href="/troubleshooting/" class="hover:text-white transition-colors">Troubleshooting</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4 class="font-semibold text-sm mb-3">Company</h4>
+          <ul class="space-y-2 text-sm" style="color: #9ca3af;">
+            <li><a href="https://github.com/SessionFS/sessionfs" class="hover:text-white transition-colors">GitHub</a></li>
+            <li><a href="/enterprise/" class="hover:text-white transition-colors">Enterprise</a></li>
+            <li><a href="mailto:hello@sessionfs.dev" class="hover:text-white transition-colors">hello@sessionfs.dev</a></li>
+          </ul>
+        </div>
+      </div>
+      <div style="border-top: 1px solid #30363d; color: #9ca3af;" class="pt-6 text-center text-[13px]">
+        &copy; 2026 SessionFS. All rights reserved.
+      </div>
+    </div>
+  </footer>
+
+</body>
+</html>
