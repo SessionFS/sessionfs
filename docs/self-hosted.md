@@ -493,6 +493,18 @@ api:
 
 GitLab MR comments include the same AI session context as GitHub PR comments, including audit findings when available.
 
+## CI/CD Pipelines
+
+The following GitHub Actions pipelines handle deployment:
+
+| Workflow | Trigger | Target |
+|----------|---------|--------|
+| Deploy API | Push to main (server code changes) | Cloud Run |
+| Deploy MCP Server | Push to main (MCP code changes) | Cloud Run |
+| Deploy Dashboard | Push to main (`dashboard/` changes) | Vercel |
+| Deploy Site | Push to main (`site/` changes) | Vercel |
+| Publish Container Images | After Release workflow | GHCR |
+
 ## Environment Variables
 
 See [Environment Variables Reference](environment-variables.md) for the complete list of `SFS_*` configuration options.

@@ -440,6 +440,7 @@ sfs summary SESSION_ID [OPTIONS]
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `--format` | string | — | Export format: `md` for markdown |
+| `--today` | flag | `false` | Show summary table of all sessions from today |
 
 **Example:**
 
@@ -708,6 +709,18 @@ Restart the daemon (stop + start).
 ```
 sfs daemon restart
 ```
+
+---
+
+## `sfs daemon rebuild-index`
+
+Rebuild the local session index from .sfs files on disk. Backfills missing `source_tool` from tracked sessions.
+
+```
+sfs daemon rebuild-index
+```
+
+Use this when the index is corrupted or sessions appear missing despite files existing on disk.
 
 ---
 

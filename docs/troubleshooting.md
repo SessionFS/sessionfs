@@ -121,13 +121,23 @@ Changes require a pod restart to take effect.
 
 ### Cursor sessions show 0 tool calls / audit returns 0 claims
 
-Cursor sessions captured before v0.9.4 may be missing tool calls. The Cursor converter now reads the `agentKv:blob:` layer which contains full tool call data. To fix existing sessions:
+Cursor sessions captured before v0.9.3 may be missing tool calls. The Cursor converter now reads the `agentKv:blob:` layer which contains full tool call data. To fix existing sessions:
 
 1. Restart the daemon: `sfs daemon restart`
 2. The daemon re-scans and re-captures Cursor sessions with the updated converter
 3. Re-push affected sessions: `sfs sync`
 
 If the audit still returns 0 claims, the session may genuinely have no tool calls (e.g., a question-answer chat without code operations).
+
+### Rebuild local index
+
+If sessions appear missing or the index is corrupted:
+
+```bash
+sfs daemon rebuild-index
+```
+
+This re-reads all `.sfs` manifest files and rebuilds the SQLite index. Also backfills `source_tool` from the tracked sessions table.
 
 ### Codex resume fails
 

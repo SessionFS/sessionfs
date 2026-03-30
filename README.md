@@ -72,7 +72,7 @@ Sessions are indexed locally for fast browsing via the CLI. Cloud sync is opt-in
 | `sfs export <id>` | Export as `.sfs`, markdown, or Claude Code format |
 | `sfs import` | Import sessions from any supported tool |
 | `sfs search "query"` | Full-text search across all sessions |
-| `sfs summary <id>` | Show session summary (files, tests, commands, packages) |
+| `sfs summary <id>` | Show session summary (files, tests, commands, packages) (or --today for daily overview) |
 | `sfs audit <id>` | Audit a session for hallucinations with LLM-as-a-Judge |
 | `sfs push <id>` | Push a session to the cloud |
 | `sfs pull <id>` | Pull a session from the cloud |
@@ -89,6 +89,7 @@ Sessions are indexed locally for fast browsing via the CLI. Cloud sync is opt-in
 | `sfs storage` | Show local disk usage and retention policy |
 | `sfs storage prune` | Prune old sessions to free disk space |
 | `sfs daemon start\|stop\|restart\|status\|logs` | Manage the background daemon |
+| `sfs daemon rebuild-index` | Rebuild local session index from .sfs files on disk |
 | `sfs watcher list\|enable\|disable` | Manage tool watchers |
 | `sfs auth login\|signup\|status` | Manage cloud authentication |
 | `sfs config show\|set` | Manage configuration |
@@ -199,7 +200,7 @@ What works today:
 - Full-text search across all sessions (CLI + dashboard + API)
 - MCP server with 5 tools — search, context, recent, related, and project context
 - LLM-as-a-Judge — audit sessions for hallucinations (BYOK, multi-provider, OpenRouter, custom base URL for LiteLLM/vLLM/Ollama)
-- GitHub PR App — auto-comment AI session context on pull requests
+- GitHub PR App + GitLab MR integration — auto-comment AI session context on pull requests and merge requests
 - Team handoff with email notification and smart workspace resolution
 - Multi-provider email (Resend, SMTP, or disabled for air-gapped)
 - Browse, inspect, export, fork, and checkpoint sessions

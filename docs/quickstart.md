@@ -78,41 +78,6 @@ Four tools support resume: Claude Code, Codex, Gemini CLI, and Copilot CLI. Sess
 
 ---
 
-## What's Next
-
-**Cloud sync** -- Push sessions to the cloud and pull them on another machine:
-
-```bash
-sfs auth signup --url https://api.sessionfs.dev
-sfs push ses_a1b2c3d4
-# On another machine:
-sfs pull ses_a1b2c3d4
-```
-
-See the [Sync Guide](sync-guide.md) for setup.
-
-**Search** -- Full-text search across all your sessions:
-
-```bash
-sfs search "rate limiting middleware"
-```
-
-**Hand off to a teammate** -- Push a session and notify them by email:
-
-```bash
-sfs handoff ses_a1b2c3d4 --to sarah@company.com
-```
-
-**MCP server** -- Let your AI tools search past sessions for context:
-
-```bash
-sfs mcp install --for claude-code
-```
-
-**Web dashboard** -- Browse and manage synced sessions in the browser. Start the self-hosted server with `docker compose up -d` or visit `app.sessionfs.dev`.
-
----
-
 ## Troubleshooting
 
 **"No sessions found" after `sfs list`**
