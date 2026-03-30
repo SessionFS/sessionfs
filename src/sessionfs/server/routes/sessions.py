@@ -171,6 +171,7 @@ def _session_to_summary(s: Session) -> SessionSummary:
         total_output_tokens=s.total_output_tokens,
         blob_size_bytes=s.blob_size_bytes,
         etag=s.etag,
+        parent_session_id=s.parent_session_id,
         created_at=s.created_at,
         updated_at=s.updated_at,
     )
@@ -235,6 +236,7 @@ def _extract_manifest_metadata(data: bytes) -> dict:
         "total_output_tokens": 0,
         "duration_ms": None,
         "tags": "[]",
+        "parent_session_id": None,
     }
     try:
         manifest = None
@@ -281,6 +283,7 @@ def _extract_manifest_metadata(data: bytes) -> dict:
         defaults["total_output_tokens"] = stats.get("total_output_tokens", 0)
         defaults["duration_ms"] = stats.get("duration_ms")
         defaults["tags"] = json.dumps(manifest.get("tags", []))
+        defaults["parent_session_id"] = manifest.get("parent_session_id") or manifest.get("_resume_parent_id")
 
     except Exception as exc:
         _logger.warning("Failed to extract manifest metadata: %s", exc)
@@ -516,6 +519,7 @@ async def upload_session(
         source_tool=source_tool,
         source_tool_version=meta["source_tool_version"],
         original_session_id=meta["original_session_id"],
+        parent_session_id=meta.get("parent_session_id"),
         model_provider=meta["model_provider"],
         model_id=meta["model_id"],
         message_count=meta["message_count"],
@@ -973,6 +977,7 @@ async def sync_push(
                 source_tool=meta["source_tool"],
                 source_tool_version=meta["source_tool_version"],
                 original_session_id=meta["original_session_id"],
+        parent_session_id=meta.get("parent_session_id"),
                 model_provider=meta["model_provider"],
                 model_id=meta["model_id"],
                 message_count=meta["message_count"],
@@ -1026,6 +1031,7 @@ async def sync_push(
     existing.source_tool = meta["source_tool"]
     existing.source_tool_version = meta["source_tool_version"]
     existing.original_session_id = meta["original_session_id"]
+    existing.parent_session_id = meta.get("parent_session_id")
     existing.model_provider = meta["model_provider"]
     existing.model_id = meta["model_id"]
     existing.message_count = meta["message_count"]

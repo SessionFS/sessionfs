@@ -22,6 +22,7 @@ class SessionSummary(BaseModel):
     total_output_tokens: int = 0
     blob_size_bytes: int = 0
     etag: str
+    parent_session_id: str | None = None
     created_at: datetime
     updated_at: datetime
 

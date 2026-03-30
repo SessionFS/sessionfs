@@ -283,6 +283,33 @@ def show_session(
 
         console.print(Panel("\n".join(lines), title="Session Details"))
 
+        # Lineage
+        parent_id = manifest.get("parent_session_id") or manifest.get("_resume_parent_id")
+        if parent_id:
+            parent_manifest = store.get_session_manifest(parent_id)
+            if parent_manifest:
+                ptool = parent_manifest.get("source", {}).get("tool", "?")
+                pmsgs = parent_manifest.get("stats", {}).get("message_count", 0)
+                console.print(f"[dim]Forked from:[/dim] {parent_id} ({ptool}, {pmsgs} msgs)")
+            else:
+                console.print(f"[dim]Forked from:[/dim] {parent_id} [dim](not found locally)[/dim]")
+
+        # Check for children
+        children = [
+            s for s in store.list_sessions()
+            if store.get_session_manifest(s.get("session_id", "")) and
+            (store.get_session_manifest(s.get("session_id", "")) or {}).get("parent_session_id") == full_id
+        ]
+        if children:
+            console.print(f"\n[dim]Forks ({len(children)}):[/dim]")
+            for child in children[:10]:
+                cid = child.get("session_id", "")
+                ctool = child.get("source_tool", "?")
+                cmsgs = child.get("message_count", 0)
+                console.print(f"  {cid[:16]}  {ctool}  {cmsgs} msgs")
+            if len(children) > 10:
+                console.print(f"  [dim]+ {len(children) - 10} more[/dim]")
+
         # Cost estimate
         if cost and model.get("model_id"):
             cost_info = estimate_cost(

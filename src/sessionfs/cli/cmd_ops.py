@@ -37,6 +37,10 @@ def resume(
 
         manifest = json.loads((session_dir / "manifest.json").read_text())
 
+        # Record lineage — the new session is forked from this one
+        manifest["_resume_parent_id"] = full_id
+        manifest["_resume_source_tool"] = manifest.get("source", {}).get("tool", "unknown")
+
         # Determine project path
         target_path = project
         if not target_path:

@@ -92,7 +92,7 @@ def convert_sfs_to_codex(
                 "branch": git_info.get("branch"),
                 "repository_url": git_info.get("remote_url"),
             } if git_info else None,
-            "forked_from_id": None,
+            "forked_from_id": manifest.get("_resume_parent_id"),
             "agent_nickname": None,
             "agent_role": None,
             "memory_mode": None,
