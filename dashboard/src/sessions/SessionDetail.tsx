@@ -236,6 +236,16 @@ export default function SessionDetail() {
 
       {/* Main content area */}
       <div className="flex-1 flex flex-col overflow-hidden">
+        {/* Lineage banner */}
+        {session.parent_session_id && (
+          <div className="mx-4 mt-2 mb-0 px-4 py-2 rounded-lg border-l-4 border-l-accent bg-bg-secondary border border-border text-sm">
+            <span className="text-text-muted">Forked from </span>
+            <a href={`/sessions/${session.parent_session_id}`} className="text-accent hover:underline font-mono">
+              {session.parent_session_id.slice(0, 16)}
+            </a>
+          </div>
+        )}
+
         {/* Tabs */}
         <div className="flex border-b border-border bg-bg-secondary shrink-0">
           <button

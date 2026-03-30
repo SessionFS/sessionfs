@@ -193,6 +193,7 @@ export default function SessionList() {
                     <td className="px-3 py-2 text-text-primary truncate max-w-xs">
                       <span className="inline-flex items-center gap-1.5">
                         {s.title || <span className="text-text-muted italic">Untitled</span>}
+                        {s.parent_session_id && <span className="text-text-muted text-xs ml-1">↩ fork</span>}
                         <TrustBadge score={(s as SessionSummaryWithAudit).audit_trust_score} />
                       </span>
                     </td>

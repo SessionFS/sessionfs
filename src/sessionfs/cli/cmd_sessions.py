@@ -90,6 +90,106 @@ def _get_display_title(session: dict[str, Any], store=None) -> str:
     return "Untitled session"
 
 
+_TREE_MAX_DEPTH = 5
+_TREE_MAX_CHILDREN = 10
+
+
+def _read_parent_id(store, session_id: str) -> str | None:
+    """Return parent_session_id from a session's manifest, or None."""
+    session_dir = store.get_session_dir(session_id)
+    if not session_dir:
+        return None
+    manifest_path = session_dir / "manifest.json"
+    if not manifest_path.exists():
+        return None
+    try:
+        data = json.loads(manifest_path.read_text())
+        return data.get("parent_session_id") or data.get("_resume_parent_id")
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _render_tree(sessions: list[dict[str, Any]], store) -> None:
+    """Render sessions grouped by parent/child lineage."""
+    # Index sessions by full id prefix lookup
+    by_id: dict[str, dict[str, Any]] = {s["session_id"]: s for s in sessions}
+
+    # Build parent -> children map using manifests
+    parent_of: dict[str, str | None] = {}
+    for s in sessions:
+        sid = s["session_id"]
+        parent_of[sid] = _read_parent_id(store, sid)
+
+    # Determine which parents actually exist in the current filtered list
+    children_of: dict[str, list[str]] = {s["session_id"]: [] for s in sessions}
+    orphans: list[str] = []  # roots or sessions whose parent is not in the list
+
+    for s in sessions:
+        sid = s["session_id"]
+        pid = parent_of.get(sid)
+        if pid and pid in by_id:
+            children_of[pid].append(sid)
+        else:
+            orphans.append(sid)
+
+    # Sort roots by created_at descending
+    orphans.sort(key=lambda sid: by_id[sid].get("created_at", ""), reverse=True)
+    # Sort children by created_at ascending (chronological forks)
+    for pid in children_of:
+        children_of[pid].sort(key=lambda sid: by_id[sid].get("created_at", ""))
+
+    def _fmt_session(s: dict[str, Any], indent_prefix: str, connector: str) -> None:
+        sid = s["session_id"]
+        tool_abbr = abbreviate_tool(s.get("source_tool"))
+        model_abbr = abbreviate_model(s.get("model_id"))
+        msgs = s.get("message_count", 0)
+        title = _get_display_title(s, store)
+        if len(title) > 55:
+            from sessionfs.cli.titles import _truncate_at_word
+            title = _truncate_at_word(title, 55)
+        if indent_prefix:
+            line = (
+                f"[dim]{indent_prefix}{connector}[/dim] "
+                f"[cyan]{sid[:8]}[/cyan]  "
+                f"[dim]{tool_abbr}[/dim]  "
+                f"[dim]{model_abbr}[/dim]  "
+                f"{msgs}  {title}"
+            )
+        else:
+            line = (
+                f"[cyan]{sid[:8]}[/cyan]  "
+                f"[dim]{tool_abbr}[/dim]  "
+                f"[dim]{model_abbr}[/dim]  "
+                f"{msgs}  {title}"
+            )
+        console.print(line)
+
+    def _walk(sid: str, depth: int, indent: str) -> None:
+        if depth > _TREE_MAX_DEPTH:
+            return
+        s = by_id[sid]
+        kids = children_of.get(sid, [])
+        # Render this node (root nodes have no connector prefix)
+        if depth == 0:
+            _fmt_session(s, "", "")
+        # Render children
+        for i, kid in enumerate(kids[:_TREE_MAX_CHILDREN]):
+            is_last = (i == len(kids[:_TREE_MAX_CHILDREN]) - 1) and len(kids) <= _TREE_MAX_CHILDREN
+            connector = "└─" if is_last else "├─"
+            child_indent = indent + ("   " if is_last else "│  ")
+            kid_s = by_id[kid]
+            _fmt_session(kid_s, indent + " ", connector)
+            _walk(kid, depth + 1, child_indent)
+        if len(kids) > _TREE_MAX_CHILDREN:
+            console.print(
+                f"[dim]{indent} └─ + {len(kids) - _TREE_MAX_CHILDREN} more children[/dim]"
+            )
+
+    console.print(f"[bold]Sessions ({len(sessions)})[/bold]")
+    for root_id in orphans:
+        _walk(root_id, 0, "")
+
+
 def list_sessions(
     tool: str | None = typer.Option(None, help="Filter by source tool."),
     since: str | None = typer.Option(None, help="Show sessions since (7d, 24h, ISO date)."),
@@ -102,6 +202,7 @@ def list_sessions(
         _DEFAULT_MIN_MESSAGES, "--min-messages",
         help="Minimum message count to display.",
     ),
+    tree: bool = typer.Option(False, "--tree", help="Group sessions by lineage (parent/child)."),
 ) -> None:
     """List captured sessions."""
     store = open_store()
@@ -158,6 +259,16 @@ def list_sessions(
 
         if output_json:
             console.print(json.dumps(sessions, indent=2))
+            return
+
+        if tree:
+            _render_tree(sessions, store)
+            hidden = total_before_filter - len(sessions)
+            if hidden > 0 and not show_all:
+                console.print(
+                    f"[dim]Showing {len(sessions)} of {total_before_filter} sessions "
+                    f"(use --all to show all)[/dim]"
+                )
             return
 
         # Table output (Issue 3: clean formatting)

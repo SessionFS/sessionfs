@@ -14,6 +14,7 @@ export interface SessionSummary {
   etag: string;
   created_at: string;
   updated_at: string;
+  parent_session_id: string | null;
 }
 
 export interface SessionDetail extends SessionSummary {
