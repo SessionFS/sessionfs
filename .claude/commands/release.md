@@ -204,9 +204,23 @@ gh release view vX.Y.Z --repo SessionFS/sessionfs
 
 ### 13. Wait for all pipelines
 ```bash
-gh run list --repo SessionFS/sessionfs --limit 6
+gh run list --repo SessionFS/sessionfs --limit 10
 ```
-Wait until CI, Release, Deploy API, Deploy MCP, and Publish Images all show `completed success`.
+Wait until ALL of these show `completed success`:
+- **CI** — tests + mypy
+- **Release** — PyPI + GitHub Release
+- **Deploy API** — Cloud Run
+- **Deploy MCP Server** — Cloud Run
+- **Deploy Dashboard** — Vercel (triggers when `dashboard/` changes)
+- **Deploy Site** — Vercel (triggers when `site/` changes)
+- **Publish Container Images** — GHCR (triggers after Release)
+
+If Deploy Dashboard or Deploy Site didn't trigger (no changes in those dirs), that's fine — they only run when their files change. But verify the current deployments are healthy:
+```bash
+curl -s https://api.sessionfs.dev/health
+curl -s -o /dev/null -w "%{http_code}" https://app.sessionfs.dev
+curl -s -o /dev/null -w "%{http_code}" https://sessionfs.dev
+```
 
 ### 14. Update memory
 - Update `project_status.md` with new version, test count, features, migration count
@@ -226,8 +240,8 @@ Print summary table:
 | PyPI | published / pending |
 | GitHub Release | created / pending |
 | API | healthy at api.sessionfs.dev |
-| Landing | deployed at sessionfs.dev |
-| Dashboard | deployed at app.sessionfs.dev |
+| Site | deployed at sessionfs.dev (auto via pipeline) |
+| Dashboard | deployed at app.sessionfs.dev (auto via pipeline) |
 | Tag | vX.Y.Z pushed |
 | Leak check | clean |
 
@@ -238,5 +252,8 @@ Print summary table:
 | `.release/private-files.txt` | Files to strip from main — the single source of truth |
 | `CHANGELOG.md` | Release notes — Keep a Changelog format |
 | `.github/workflows/release.yml` | Tag → PyPI + GitHub Release automation |
-| `.github/workflows/deploy-api.yml` | Push to main → Cloud Run deploy automation |
+| `.github/workflows/deploy-api.yml` | Push to main → Cloud Run deploy (API server) |
+| `.github/workflows/deploy-mcp.yml` | Push to main → Cloud Run deploy (MCP server) |
+| `.github/workflows/deploy-dashboard.yml` | Push to main → Vercel deploy (dashboard, when `dashboard/` changes) |
+| `.github/workflows/deploy-site.yml` | Push to main → Vercel deploy (product site, when `site/` changes) |
 | `.github/workflows/publish-images.yml` | Release → GHCR images (with VITE_API_URL build arg) |
