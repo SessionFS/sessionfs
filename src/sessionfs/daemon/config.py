@@ -233,3 +233,6 @@ def ensure_config(config_path: Path = DEFAULT_CONFIG_PATH) -> None:
         return
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(default_config_toml())
+    import os
+    import stat
+    os.chmod(config_path, stat.S_IRUSR | stat.S_IWUSR)  # 0o600
