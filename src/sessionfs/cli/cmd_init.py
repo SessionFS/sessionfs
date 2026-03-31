@@ -190,10 +190,10 @@ def init_cmd() -> None:
         default=True,
     )
 
+    enabled_keys: set[str] = set()
     if track_all:
         enabled_keys = {t.info.config_key for t in detected}
     else:
-        enabled_keys: set[str] = set()
         for tool in detected:
             if typer.confirm(f"  Track {tool.info.name}?", default=True):
                 enabled_keys.add(tool.info.config_key)
