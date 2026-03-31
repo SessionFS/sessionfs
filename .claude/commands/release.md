@@ -134,9 +134,26 @@ Fix any stale test counts or version numbers.
 | `LICENSE` | MIT license present at root |
 | `ee/LICENSE` | FSL-1.1-Apache-2.0 license present in ee/ |
 | `ee/sessionfs_ee/__init__.py` | ee package importable |
-| `landing/index.html` | Test count, feature cards, tool count in meta tags |
+| `site/src/pages/index.astro` | Version, test count, feature cards, meta tags |
+| `site/src/pages/changelog.astro` | New version section added |
+| `site/src/pages/pricing.astro` | Tiers match server-side definitions |
 
-#### 6f. Forbidden strings
+#### 6f. MANDATORY: Run Scribe-Site Sync
+
+**The product site must NEVER be stale after a release.**
+
+Load the Scribe-Site agent from `.agents/scribe-site-sync.md` and run the full site sync:
+
+```
+Prompt: "You are the Scribe-Site agent. Load your persona from .agents/scribe-site-sync.md and sync the product site (site/) for v{VERSION}. Update version numbers, test counts, changelog, feature pages, pricing, MCP docs, and meta tags. Verify zero stale references remain."
+```
+
+After the agent completes, deploy the site:
+```bash
+cd site && npx vercel --yes --prod
+```
+
+#### 6g. Forbidden strings
 ```bash
 grep -rn "sfs pull --handoff\|alwaysnix\|Dropbox" README.md docs/ landing/ src/ dashboard/src/
 ```

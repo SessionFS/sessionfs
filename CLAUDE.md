@@ -20,6 +20,7 @@ Project-specific agent personas are in `.agents/`. Load the relevant agent for y
 | Ledger | `.agents/ledger-revenue.md` | Revenue, billing, Stripe, pricing |
 | Shield | `.agents/shield-compliance.md` | Compliance, data governance, certifications |
 | Shield-SR | `.agents/shield-security-review.md` | Pre-release security review (MANDATORY before every release) |
+| Scribe-Site | `.agents/scribe-site-sync.md` | Pre-release site sync (MANDATORY — no stale site content) |
 | Vault | `.agents/vault-licensing.md` | Licensing, open source, IP protection |
 
 ## Architecture
