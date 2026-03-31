@@ -95,6 +95,7 @@ Sessions are indexed locally for fast browsing via the CLI. Cloud sync is opt-in
 | `sfs config show\|set` | Manage configuration |
 | `sfs mcp serve` | Start MCP server for AI tool integration |
 | `sfs mcp install --for TOOL` | Auto-configure MCP for Claude Code, Cursor, or Copilot |
+| `sfs org create\|list\|show\|invite\|remove` | Manage organizations, members, and roles |
 | `sfs admin reindex` | Re-extract metadata for all cloud sessions |
 
 See the full [CLI Reference](docs/cli-reference.md) for options and examples.
@@ -190,7 +191,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
-**v0.9.4 — Public Beta.** 848 tests passing.
+**v0.9.5 — Public Beta.** 921 tests passing.
 
 What works today:
 - Eight-tool session capture (Claude Code, Codex, Gemini, Cursor, Copilot CLI, Amp, Cline, Roo Code)
@@ -205,11 +206,15 @@ What works today:
 - Multi-provider email (Resend, SMTP, or disabled for air-gapped)
 - Browse, inspect, export, fork, and checkpoint sessions
 - Cloud sync with push/pull, email verification, and ETag conflict detection
-- Self-hosted deployment via Helm chart (EKS/GKE/AKS tested)
+- FSL licensing with open-source core and enterprise extensions
+- Server-side tier gating (5 tiers, 30+ gated features)
+- RBAC with admin and member roles
+- Stripe billing integration with subscription management
+- Organization management (`sfs org` commands)
+- Self-hosted deployment via Helm chart with license validation (EKS/GKE/AKS tested)
 - Web dashboard with session management, search, handoffs, and audit
 
 On the roadmap:
-- Stripe billing integration
 - Session similarity and duplicate detection
 - Cost analytics dashboard
 - VS Code extension
@@ -220,4 +225,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, testing, and PR gu
 
 ## License
 
-Apache 2.0
+Apache 2.0 — Core. FSL (Functional Source License) — Enterprise extensions in `ee/`.

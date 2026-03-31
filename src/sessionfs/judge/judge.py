@@ -11,6 +11,7 @@ from sessionfs.judge.evidence import Evidence, gather_evidence
 from sessionfs.judge.extractor import Claim, extract_claims
 from sessionfs.judge.providers import call_llm
 from sessionfs.judge.report import (
+    CWE_FROM_CATEGORY,
     SEVERITY_FROM_CATEGORY,
     AuditSummary,
     Finding,
@@ -55,10 +56,15 @@ Respond with a JSON array of objects, one per claim. Each object must have:
 {
   "claim_index": <int>,
   "verdict": "verified" | "unverified" | "hallucination",
+  "confidence": <int 0-100>,
   "category": "test_result" | "file_existence" | "command_output" | "data_misread" | "code_claim" | "dependency" | "other",
   "evidence": "<brief quote or reference to the specific tool_result that supports/contradicts>",
-  "explanation": "<1-2 sentence explanation citing the specific evidence>"
+  "explanation": "<1-2 sentence explanation citing the specific evidence>",
+  "evidence_snippets": [{"source": "tool_result", "message_index": <int>, "text": "<relevant excerpt>"}]
 }
+
+- confidence: 0-100 how confident you are in the verdict. 90+ = strong evidence, 50-89 = moderate, <50 = weak.
+- evidence_snippets: array of specific text excerpts from tool results or messages that support the verdict. Include the message_index and a short excerpt (max 200 chars). source is "tool_result" or "message".
 
 Only output the JSON array, nothing else.
 """
@@ -93,17 +99,12 @@ def build_judge_prompt(
     """Build the structured prompt for the judge LLM."""
     sections: list[str] = []
 
-    # Claims section
-    sections.append("## Claims to Verify\n")
-    for i, claim in enumerate(claims):
-        sections.append(
-            f"{i}. [msg {claim.message_index}] ({claim.category}, {claim.confidence}) "
-            f"{claim.text}"
-        )
-
-    # Evidence section
-    sections.append("\n## Evidence from Tool Calls\n")
+    # Build an index of evidence by message_index for efficient lookup
+    evidence_by_index: dict[int, list[Evidence]] = {}
     for ev in evidence:
+        evidence_by_index.setdefault(ev.message_index, []).append(ev)
+
+    def _format_evidence(ev: Evidence) -> str:
         parts = [f"[msg {ev.message_index}] {ev.tool_name}"]
         if ev.file_path:
             parts.append(f"file={ev.file_path}")
@@ -111,7 +112,47 @@ def build_judge_prompt(
             parts.append(f"exit_code={ev.exit_code}")
         parts.append(f"input: {ev.input_summary}")
         parts.append(f"output: {ev.output_summary}")
-        sections.append("- " + " | ".join(parts))
+        return "- " + " | ".join(parts)
+
+    # Claims section with linked evidence
+    sections.append("## Claims to Verify\n")
+    linked_evidence_indices: set[int] = set()
+    for i, claim in enumerate(claims):
+        sections.append(
+            f"{i}. [msg {claim.message_index}] ({claim.category}, {claim.confidence}) "
+            f"{claim.text}"
+        )
+
+        # Find relevant evidence: referenced by claim or within 3 messages
+        relevant: list[Evidence] = []
+        for ref_idx in claim.evidence_refs:
+            relevant.extend(evidence_by_index.get(ref_idx, []))
+        for offset in range(-3, 4):
+            idx = claim.message_index + offset
+            if idx not in claim.evidence_refs:
+                relevant.extend(evidence_by_index.get(idx, []))
+
+        # Deduplicate by identity
+        seen_ev: set[int] = set()
+        unique_relevant: list[Evidence] = []
+        for ev in relevant:
+            ev_id = id(ev)
+            if ev_id not in seen_ev:
+                seen_ev.add(ev_id)
+                unique_relevant.append(ev)
+                linked_evidence_indices.add(id(ev))
+
+        if unique_relevant:
+            sections.append("  Relevant Evidence:")
+            for ev in unique_relevant:
+                sections.append("  " + _format_evidence(ev))
+
+    # Additional context: evidence not linked to any claim
+    unlinked = [ev for ev in evidence if id(ev) not in linked_evidence_indices]
+    if unlinked:
+        sections.append("\n## Additional Context\n")
+        for ev in unlinked:
+            sections.append(_format_evidence(ev))
 
     # Relevant message context (abbreviated)
     claim_indices = {c.message_index for c in claims}
@@ -195,6 +236,19 @@ def _parse_judge_response(response: str, claims: list[Claim]) -> list[Finding]:
             category = "other"
 
         severity = SEVERITY_FROM_CATEGORY.get(category, "low")
+        confidence = v.get("confidence", 50)
+        if not isinstance(confidence, int):
+            try:
+                confidence = int(confidence)
+            except (TypeError, ValueError):
+                confidence = 50
+        confidence = max(0, min(100, confidence))
+
+        evidence_snippets = v.get("evidence_snippets", [])
+        if not isinstance(evidence_snippets, list):
+            evidence_snippets = []
+
+        cwe_id = CWE_FROM_CATEGORY.get(category, "")
 
         findings.append(
             Finding(
@@ -205,6 +259,9 @@ def _parse_judge_response(response: str, claims: list[Claim]) -> list[Finding]:
                 evidence=v.get("evidence", ""),
                 explanation=v.get("explanation", ""),
                 category=category,
+                confidence=confidence,
+                evidence_snippets=evidence_snippets,
+                cwe_id=cwe_id,
             )
         )
 

@@ -37,6 +37,8 @@ router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 @router.get("/me")
 async def get_me(user: User = Depends(get_current_user)):
     """Return the authenticated user's profile."""
+    from sessionfs import __version__ as server_version
+
     return {
         "user_id": user.id,
         "email": user.email,
@@ -44,6 +46,11 @@ async def get_me(user: User = Depends(get_current_user)):
         "email_verified": user.email_verified,
         "tier": user.tier,
         "created_at": user.created_at.isoformat() if user.created_at else None,
+        "last_client_version": user.last_client_version,
+        "last_client_platform": user.last_client_platform,
+        "last_client_device": user.last_client_device,
+        "last_sync_at": user.last_sync_at.isoformat() if user.last_sync_at else None,
+        "latest_version": server_version,
     }
 
 

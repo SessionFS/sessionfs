@@ -167,6 +167,44 @@ _TOOLS = [
             },
         },
     ),
+    Tool(
+        name="get_session_summary",
+        description=(
+            "Get a structured summary of a past session — files modified, "
+            "commands run, tests executed, errors encountered, and packages "
+            "installed. Useful for understanding what a session accomplished "
+            "before resuming or reviewing it."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "The session ID (ses_... format)",
+                },
+            },
+            "required": ["session_id"],
+        },
+    ),
+    Tool(
+        name="get_audit_report",
+        description=(
+            "Get the trust audit report for a session — verifiable claims, "
+            "their verdicts (verified/unverified/hallucination), confidence "
+            "scores, and severity classifications. Use when evaluating the "
+            "trustworthiness of work done in a past session."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "The session ID (ses_... format)",
+                },
+            },
+            "required": ["session_id"],
+        },
+    ),
 ]
 
 
@@ -189,6 +227,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         elif name == "get_project_context":
             result = await _handle_get_project_context(arguments)
             return [TextContent(type="text", text=result if isinstance(result, str) else json.dumps(result, indent=2, default=str))]
+        elif name == "get_session_summary":
+            result = _handle_get_summary(arguments)
+        elif name == "get_audit_report":
+            result = _handle_get_audit(arguments)
         else:
             result = {"error": f"Unknown tool: {name}"}
     except Exception as exc:
@@ -406,6 +448,72 @@ async def _handle_get_project_context(args: dict) -> str:
     except Exception as e:
         logger.warning("Failed to fetch project context: %s", e)
         return f"Could not fetch project context: {e}"
+
+
+def _handle_get_summary(args: dict) -> dict[str, Any]:
+    """Get deterministic session summary."""
+    session_id = args.get("session_id", "")
+    store = _get_store()
+    session_dir = store.get_session_dir(session_id)
+    if not session_dir:
+        return {"error": f"Session {session_id} not found"}
+
+    manifest_path = session_dir / "manifest.json"
+    if not manifest_path.exists():
+        return {"error": f"No manifest for session {session_id}"}
+
+    manifest = json.loads(manifest_path.read_text())
+    messages = read_sfs_messages(session_dir)
+
+    workspace_path = session_dir / "workspace.json"
+    workspace = {}
+    if workspace_path.exists():
+        try:
+            workspace = json.loads(workspace_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    from sessionfs.server.services.summarizer import summarize_session
+    from dataclasses import asdict
+
+    summary = summarize_session(messages, manifest, workspace)
+    data = asdict(summary)
+    # Remove None narrative fields for cleaner output
+    for key in ("what_happened", "key_decisions", "outcome", "open_issues", "narrative_model"):
+        if data.get(key) is None:
+            del data[key]
+    return data
+
+
+def _handle_get_audit(args: dict) -> dict[str, Any]:
+    """Get audit report for a session."""
+    session_id = args.get("session_id", "")
+    store = _get_store()
+    session_dir = store.get_session_dir(session_id)
+    if not session_dir:
+        return {"error": f"Session {session_id} not found"}
+
+    from sessionfs.judge.report import load_report
+
+    report = load_report(session_dir)
+    if not report:
+        return {"error": f"No audit report for session {session_id}. Run: sfs audit {session_id}"}
+
+    from dataclasses import asdict
+    data = asdict(report)
+
+    # Add human-readable summary
+    s = report.summary
+    data["readable_summary"] = (
+        f"Trust Score: {s.trust_score:.0%} | "
+        f"Claims: {s.total_claims} | "
+        f"Verified: {s.verified} | "
+        f"Unverified: {s.unverified} | "
+        f"Hallucinations: {s.hallucinations} | "
+        f"Critical: {s.critical_count} | High: {s.high_count}"
+    )
+
+    return data
 
 
 # ---------------------------------------------------------------------------

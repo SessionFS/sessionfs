@@ -52,15 +52,16 @@ def export_markdown(
     if report.findings:
         lines.append("## Findings")
         lines.append("")
-        lines.append("| Msg | Verdict | Severity | Claim | Evidence | Explanation |")
-        lines.append("|-----|---------|----------|-------|----------|-------------|")
+        lines.append("| Msg | Verdict | Confidence | Severity | CWE | Claim | Evidence | Explanation |")
+        lines.append("|-----|---------|------------|----------|-----|-------|----------|-------------|")
         for f in report.findings:
             claim = f.claim.replace("|", "\\|")
             evidence = f.evidence.replace("|", "\\|")
             explanation = f.explanation.replace("|", "\\|")
+            cwe = f.cwe_id if f.cwe_id else ""
             lines.append(
-                f"| {f.message_index} | {f.verdict} | {f.severity} "
-                f"| {claim} | {evidence} | {explanation} |"
+                f"| {f.message_index} | {f.verdict} | {f.confidence}% | {f.severity} "
+                f"| {cwe} | {claim} | {evidence} | {explanation} |"
             )
         lines.append("")
     else:
@@ -74,9 +75,9 @@ def export_csv(report: JudgeReport) -> str:
     """Export as CSV: message_index,verdict,severity,claim,evidence,explanation"""
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["message_index", "verdict", "severity", "claim", "evidence", "explanation"])
+    writer.writerow(["message_index", "verdict", "severity", "confidence", "cwe_id", "category", "claim", "evidence", "explanation"])
     for f in report.findings:
-        writer.writerow([f.message_index, f.verdict, f.severity, f.claim, f.evidence, f.explanation])
+        writer.writerow([f.message_index, f.verdict, f.severity, f.confidence, f.cwe_id, f.category, f.claim, f.evidence, f.explanation])
     return output.getvalue()
 
 

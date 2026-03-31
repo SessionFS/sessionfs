@@ -400,7 +400,7 @@ class TestBuildPrompt:
         ]
 
         prompt = build_judge_prompt(claims, evidence, messages)
-        assert "Evidence from Tool Calls" in prompt
+        assert "Relevant Evidence" in prompt or "Additional Context" in prompt
         assert "exit_code=0" in prompt
 
     def test_includes_message_context(self):

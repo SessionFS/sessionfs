@@ -20,6 +20,7 @@ from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import Session, User
 from sessionfs.server.storage.base import BlobStore
+from sessionfs.server.tier_gate import UserContext, check_feature, get_user_context
 
 logger = logging.getLogger("sessionfs.server.routes.audit")
 
@@ -33,6 +34,12 @@ class AuditRequest(BaseModel):
     base_url: str | None = None
 
 
+class EvidenceSnippet(BaseModel):
+    source: str = ""  # "tool_result" or "message"
+    message_index: int = 0
+    text: str = ""
+
+
 class AuditFinding(BaseModel):
     message_index: int
     claim: str
@@ -41,6 +48,12 @@ class AuditFinding(BaseModel):
     evidence: str
     explanation: str
     category: str = "other"
+    confidence: int = 50  # 0-100
+    cwe_id: str = ""
+    evidence_snippets: list[EvidenceSnippet] = []
+    dismissed: bool = False
+    dismissed_by: str = ""
+    dismissed_reason: str = ""
 
 
 class AuditSummaryResponse(BaseModel):
@@ -165,6 +178,7 @@ async def run_audit(
     body: AuditRequest,
     request: Request,
     user: User = Depends(get_current_user),
+    ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ):
     """Run LLM-as-a-Judge audit on a session.
@@ -174,6 +188,7 @@ async def run_audit(
     The llm_api_key is used for the single LLM call and is NEVER logged
     or persisted.
     """
+    check_feature(ctx, "judge_manual")
     session = await _get_session_or_404(session_id, user, db)
     blob_store = _get_blob_store(request)
 
@@ -518,6 +533,48 @@ async def get_audit_history(
         )
         for r in reports
     ]
+
+
+class DismissFindingRequest(BaseModel):
+    finding_index: int
+    dismissed: bool = True
+    reason: str = ""
+
+
+@router.post("/{session_id}/audit/dismiss")
+async def dismiss_finding(
+    session_id: str,
+    body: DismissFindingRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Dismiss or un-dismiss a finding in an audit report."""
+    await _get_session_or_404(session_id, user, db)
+    blob_store = _get_blob_store(request)
+
+    report_key = f"sessions/{user.id}/{session_id}_audit.json"
+    data = await blob_store.get(report_key)
+    if data is None:
+        raise HTTPException(404, "No audit report found")
+
+    try:
+        report_data = json.loads(data.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(500, "Stored audit report is corrupted")
+
+    findings = report_data.get("findings", [])
+    if body.finding_index < 0 or body.finding_index >= len(findings):
+        raise HTTPException(400, f"Invalid finding index: {body.finding_index}")
+
+    findings[body.finding_index]["dismissed"] = body.dismissed
+    findings[body.finding_index]["dismissed_by"] = user.email if body.dismissed else ""
+    findings[body.finding_index]["dismissed_reason"] = body.reason if body.dismissed else ""
+
+    report_data["findings"] = findings
+    await blob_store.put(report_key, json.dumps(report_data).encode("utf-8"))
+
+    return {"status": "ok", "finding_index": body.finding_index, "dismissed": body.dismissed}
 
 
 @router.get("/audits/{audit_id}")

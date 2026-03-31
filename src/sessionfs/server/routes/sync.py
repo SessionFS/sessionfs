@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import Session, SyncWatchlist, User
+from sessionfs.server.tier_gate import UserContext, check_feature, get_user_context
 
 router = APIRouter(prefix="/api/v1/sync", tags=["sync"])
 
@@ -68,9 +69,12 @@ async def get_sync_settings(
 async def update_sync_settings(
     body: UpdateSyncSettings,
     user: User = Depends(get_current_user),
+    ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> SyncSettingsResponse:
     """Update autosync mode."""
+    if body.mode != "off":
+        check_feature(ctx, "autosync")
     if body.mode not in ("off", "all", "selective"):
         raise HTTPException(400, "Mode must be 'off', 'all', or 'selective'")
 

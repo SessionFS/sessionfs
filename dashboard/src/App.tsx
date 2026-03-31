@@ -11,6 +11,8 @@ import SettingsPage from './sessions/SettingsPage';
 import HandoffList from './handoffs/HandoffList';
 import HandoffDetail from './handoffs/HandoffDetail';
 import AdminDashboard from './admin/AdminDashboard';
+import BillingPage from './billing/BillingPage';
+import OrgPage from './org/OrgPage';
 import { BackgroundTasksProvider } from './components/BackgroundTasks';
 
 const queryClient = new QueryClient({
@@ -58,6 +60,8 @@ export default function App() {
               <Route path="/handoffs" element={<HandoffList />} />
               <Route path="/handoffs/:id" element={<HandoffDetail />} />
               <Route path="/settings" element={<SettingsPage />} />
+              <Route path="/settings/billing" element={<BillingPage />} />
+              <Route path="/settings/organization" element={<OrgPage />} />
               <Route
                 path="/admin"
                 element={

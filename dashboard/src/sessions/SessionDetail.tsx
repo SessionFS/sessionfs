@@ -1,6 +1,7 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useSession } from '../hooks/useSession';
+import { useMessages } from '../hooks/useMessages';
 import { useAudit } from '../hooks/useAudit';
 import { useFolders, useAddBookmark } from '../hooks/useBookmarks';
 import { useAuth } from '../auth/AuthContext';
@@ -22,6 +23,10 @@ export default function SessionDetail() {
   const navigate = useNavigate();
   const { data: session, isLoading, error, refetch } = useSession(id!);
   const { data: auditReport } = useAudit(id!);
+
+  // Fetch last page of messages for Quick Preview
+  const lastMsgPage = session ? Math.max(1, Math.ceil(session.message_count / 50)) : 1;
+  const { data: lastMessagesData } = useMessages(id!, lastMsgPage, 50);
   const { auth } = useAuth();
   const [showHandoff, setShowHandoff] = useState(false);
   const [showAuditModal, setShowAuditModal] = useState(false);
@@ -246,6 +251,12 @@ export default function SessionDetail() {
           </div>
         )}
 
+        {/* Quick Preview */}
+        <QuickPreview
+          session={session}
+          messages={lastMessagesData?.messages}
+        />
+
         {/* Tabs */}
         <div className="flex border-b border-border bg-bg-secondary shrink-0">
           <button
@@ -393,6 +404,98 @@ function BookmarksSection({ sessionId }: { sessionId: string }) {
         )}
       </div>
     </Section>
+  );
+}
+
+function QuickPreview({
+  session,
+  messages,
+}: {
+  session: { id: string; source_tool: string; message_count: number };
+  messages?: Record<string, unknown>[];
+}) {
+  const [copied, setCopied] = useState(false);
+  const resumeCmd = `sfs resume ${session.id} --in ${session.source_tool}`;
+
+  const preview = useMemo(() => {
+    if (!messages || messages.length === 0) return null;
+
+    // Last 3 messages
+    const last3 = messages.slice(-3).map((m) => {
+      const role = String(m.role || 'unknown');
+      let text = '';
+      if (typeof m.content === 'string') {
+        text = m.content;
+      } else if (Array.isArray(m.content)) {
+        const textBlock = m.content.find(
+          (b: unknown) => typeof b === 'object' && b !== null && (b as Record<string, unknown>).type === 'text',
+        ) as Record<string, unknown> | undefined;
+        if (textBlock) text = String(textBlock.text || '');
+      } else if (m.messages_text) {
+        text = String(m.messages_text);
+      }
+      return { role, text: text.slice(0, 100) + (text.length > 100 ? '...' : '') };
+    });
+
+    // Extract file paths from messages text
+    const filePattern = /(?:^|\s)((?:[\w.-]+\/)+[\w.-]+\.\w+)/g;
+    const filesSet = new Set<string>();
+    for (const m of messages) {
+      const text = typeof m.content === 'string' ? m.content : String(m.messages_text || '');
+      let match;
+      while ((match = filePattern.exec(text)) !== null) {
+        if (filesSet.size < 5) filesSet.add(match[1]);
+      }
+    }
+
+    return { last3, files: Array.from(filesSet) };
+  }, [messages]);
+
+  if (!preview) return null;
+
+  function handleCopy() {
+    navigator.clipboard.writeText(resumeCmd).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  }
+
+  return (
+    <div className="mx-4 mt-2 mb-0 p-3 bg-bg-secondary border border-border rounded-lg">
+      <div className="flex items-center justify-between mb-2">
+        <h3 className="text-xs uppercase tracking-wider text-text-muted">Quick Preview</h3>
+        <button
+          onClick={handleCopy}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs bg-accent text-white rounded hover:bg-accent/90 transition-colors"
+        >
+          {copied ? 'Copied!' : `Resume in ${session.source_tool}`}
+        </button>
+      </div>
+
+      {/* Last messages */}
+      <div className="space-y-1 mb-2">
+        {preview.last3.map((m, i) => (
+          <div key={i} className="flex gap-2 text-sm">
+            <span className={`shrink-0 font-medium ${
+              m.role === 'assistant' ? 'text-role-assistant' : 'text-accent'
+            }`}>
+              {m.role === 'assistant' ? 'AI' : m.role === 'user' ? 'You' : m.role}
+            </span>
+            <span className="text-text-muted truncate">{m.text || '(no text)'}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Files touched */}
+      {preview.files.length > 0 && (
+        <div className="border-t border-border pt-1.5">
+          <span className="text-xs text-text-muted">Files: </span>
+          <span className="text-xs text-text-secondary font-mono">
+            {preview.files.join(', ')}
+          </span>
+        </div>
+      )}
+    </div>
   );
 }
 

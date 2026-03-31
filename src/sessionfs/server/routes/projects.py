@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import Project, Session, User
+from sessionfs.server.tier_gate import UserContext, check_feature, get_user_context
 
 router = APIRouter(prefix="/api/v1/projects", tags=["projects"])
 
@@ -73,9 +74,11 @@ async def _check_repo_access(db: AsyncSession, user_id: str, git_remote: str) ->
 async def create_project(
     body: CreateProjectRequest,
     user: User = Depends(get_current_user),
+    ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> ProjectResponse:
     """Create a project context for a repository."""
+    check_feature(ctx, "project_context")
     # Check for existing project
     stmt = select(Project).where(Project.git_remote_normalized == body.git_remote_normalized)
     result = await db.execute(stmt)

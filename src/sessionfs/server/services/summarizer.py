@@ -1,10 +1,14 @@
-"""Deterministic session summary extraction — no LLM needed."""
+"""Deterministic session summary extraction + optional LLM narrative."""
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+
+logger = logging.getLogger("sessionfs.summarizer")
 
 
 @dataclass
@@ -92,6 +96,100 @@ def summarize_session(
         errors_encountered=errors[:5],
         generated_at=datetime.now(timezone.utc).isoformat(),
     )
+
+
+_NARRATIVE_SYSTEM_PROMPT = """\
+You summarize AI coding sessions. Given the session stats and recent messages, provide a brief narrative summary.
+Respond with JSON: {"what_happened": "...", "key_decisions": ["..."], "outcome": "...", "open_issues": ["..."]}
+- what_happened: 2-3 sentences describing what was accomplished
+- key_decisions: list of important decisions made during the session
+- outcome: 1 sentence — was the task completed, partially done, or blocked?
+- open_issues: list of things left undone or needing follow-up
+Only output JSON, nothing else."""
+
+
+def _build_narrative_prompt(summary: SessionSummary, messages: list[dict]) -> str:
+    """Build a user prompt from deterministic stats + recent assistant messages."""
+    parts: list[str] = []
+    parts.append("## Session stats")
+    parts.append(f"- Title: {summary.title}")
+    parts.append(f"- Tool: {summary.tool}, Model: {summary.model or 'unknown'}")
+    parts.append(f"- Duration: {summary.duration_minutes} min, Messages: {summary.message_count}")
+    parts.append(f"- Tool calls: {summary.tool_call_count}, Commands: {summary.commands_executed}")
+
+    if summary.files_modified:
+        parts.append(f"- Files modified: {', '.join(summary.files_modified[:20])}")
+    if summary.tests_run > 0:
+        parts.append(f"- Tests: {summary.tests_passed}/{summary.tests_run} passed, {summary.tests_failed} failed")
+    if summary.packages_installed:
+        parts.append(f"- Packages installed: {', '.join(summary.packages_installed[:10])}")
+    if summary.errors_encountered:
+        parts.append(f"- Errors: {'; '.join(summary.errors_encountered[:3])}")
+
+    # Last 20 assistant messages (truncated)
+    assistant_msgs = [
+        m for m in messages if m.get("role") == "assistant"
+    ][-20:]
+    if assistant_msgs:
+        parts.append("\n## Recent assistant messages (truncated)")
+        for msg in assistant_msgs:
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                text_parts = [
+                    b.get("text", "") for b in content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                ]
+                content = " ".join(text_parts)
+            if isinstance(content, str) and content.strip():
+                parts.append(content[:500])
+
+    return "\n".join(parts)
+
+
+async def generate_narrative(
+    summary: SessionSummary,
+    messages: list[dict],
+    model: str = "claude-sonnet-4",
+    api_key: str | None = None,
+    provider: str | None = None,
+    base_url: str | None = None,
+) -> SessionSummary:
+    """Add LLM-generated narrative to an existing deterministic summary."""
+    if not api_key:
+        logger.warning("No API key provided for narrative generation — skipping")
+        return summary
+
+    from sessionfs.judge.providers import call_llm
+
+    prompt = _build_narrative_prompt(summary, messages)
+
+    try:
+        raw = await call_llm(
+            model=model,
+            system=_NARRATIVE_SYSTEM_PROMPT,
+            prompt=prompt,
+            api_key=api_key,
+            provider=provider,
+            base_url=base_url,
+        )
+
+        # Strip markdown code fences if present
+        text = raw.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text)
+            text = re.sub(r"\s*```$", "", text)
+
+        data = json.loads(text)
+
+        summary.what_happened = data.get("what_happened")
+        summary.key_decisions = data.get("key_decisions") or []
+        summary.outcome = data.get("outcome")
+        summary.open_issues = data.get("open_issues") or []
+        summary.narrative_model = model
+    except Exception:
+        logger.warning("Narrative generation failed — returning summary without narrative", exc_info=True)
+
+    return summary
 
 
 def _extract_tool_calls(messages: list[dict]) -> list[dict]:
