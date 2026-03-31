@@ -793,6 +793,122 @@ sfs auth status
 
 ---
 
+## `sfs org`
+
+Manage your organization — create, invite members, and view team info. Requires cloud authentication (`sfs auth login`).
+
+### `sfs org info`
+
+Show organization info and member count.
+
+```
+sfs org info
+```
+
+**Example:**
+
+```bash
+$ sfs org info
+
+Organization: Acme Corp
+  Slug: acme-corp
+  Tier: Team
+  Members: 5
+  Created: 2026-01-15
+```
+
+### `sfs org create`
+
+Create a new organization (you become admin). Requires Team tier.
+
+```
+sfs org create NAME SLUG
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `NAME` | yes | Display name for the organization |
+| `SLUG` | yes | URL-friendly identifier (lowercase, hyphens) |
+
+**Example:**
+
+```bash
+$ sfs org create "Acme Corp" acme-corp
+
+Organization created: Acme Corp (acme-corp)
+  You are now admin.
+```
+
+### `sfs org invite`
+
+Invite a user to your organization (admin only). Invite expires in 7 days.
+
+```
+sfs org invite EMAIL [OPTIONS]
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `EMAIL` | yes | Email address of the user to invite |
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--role` | string | `member` | Role to assign: `member` or `admin` |
+
+**Example:**
+
+```bash
+$ sfs org invite alice@example.com --role admin
+
+Invitation sent to alice@example.com (role: admin).
+  Expires: 2026-04-06
+```
+
+### `sfs org members`
+
+List all members in your organization with roles and join dates.
+
+```
+sfs org members
+```
+
+**Example:**
+
+```bash
+$ sfs org members
+
+                   Members (3)
+┌───────────────────────┬────────┬────────────┐
+│ Email                 │ Role   │ Joined     │
+├───────────────────────┼────────┼────────────┤
+│ you@example.com       │ admin  │ 2026-01-15 │
+│ alice@example.com     │ admin  │ 2026-02-01 │
+│ bob@example.com       │ member │ 2026-03-10 │
+└───────────────────────┴────────┴────────────┘
+```
+
+### `sfs org remove`
+
+Remove a member from the organization (admin only). Cannot remove yourself.
+
+```
+sfs org remove USER_ID
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `USER_ID` | yes | User ID of the member to remove |
+
+**Example:**
+
+```bash
+$ sfs org remove usr_b0b123
+
+Removed usr_b0b123 from Acme Corp.
+```
+
+---
+
 ## `sfs mcp serve`
 
 Start the MCP server on stdio transport.
@@ -826,3 +942,19 @@ Re-extract metadata for all cloud sessions (admin only).
 ```
 sfs admin reindex
 ```
+
+---
+
+## Billing and Tier Enforcement
+
+When any cloud command receives a `403` response with an `upgrade_required` error, the CLI displays a friendly message indicating the required tier and a URL to upgrade:
+
+```bash
+$ sfs org create "Acme Corp" acme-corp
+
+This feature requires the Team tier.
+  Your tier: Free
+  Upgrade: https://sessionfs.dev/pricing
+```
+
+This applies to all commands that interact with the cloud API, including `sfs org`, `sfs push`, `sfs handoff`, and `sfs sync`.

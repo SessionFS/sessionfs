@@ -1,0 +1,70 @@
+Functional Source License, Version 1.1, Apache 2.0 Future License
+
+Abbreviation
+
+FSL-1.1-Apache-2.0
+
+Notice
+
+Copyright 2026 SessionFS Inc.
+
+Terms and Conditions
+
+Licensor:             SessionFS Inc.
+Software:             SessionFS Enterprise Edition
+
+Use Limitation
+
+You may use the Licensed Work for any Permitted Purpose, but you may not use
+the Licensed Work for any Competing Use. A "Competing Use" is any use of the
+Licensed Work in or for a commercial product or service that competes with the
+Licensed Work or any other product or service we offer using the Licensed Work
+as of the date we make the Licensed Work available.
+
+Competing Use includes, without limitation:
+- Offering a session capture, sync, or management service for AI coding tools
+- Providing an LLM-as-a-Judge audit service for AI coding sessions
+- Offering a team handoff service for AI coding sessions
+- Building a commercial DLP scanning service for AI agent sessions
+
+Permitted Use includes, without limitation:
+- Using the Licensed Work internally within your organization
+- Modifying the Licensed Work for your own internal use
+- Using the Licensed Work as part of a non-competing product or service
+- Evaluating the Licensed Work for potential purchase
+
+Change Date:          Two years from the date the Licensed Work is made
+                      available under this License, as indicated at
+                      https://github.com/SessionFS/sessionfs/blob/main/ee/LICENSE
+
+Change License:       Apache License, Version 2.0
+
+For information about alternative licensing arrangements for the Licensed Work,
+please contact: licensing@sessionfs.dev
+
+License text below is provided for informational purposes only.
+
+Licensed Work
+
+The Licensed Work is (c) 2026 SessionFS Inc.
+
+Additional Use Grant
+
+Internal production use of the Licensed Work is permitted.
+
+Change Date
+
+The Change Date is two years from the date the Licensed Work is first made
+available under this License.
+
+Change License
+
+On the Change Date, or the fourth anniversary of the first publicly available
+distribution of a specific version of the Licensed Work under this License,
+whichever comes first, the Licensor hereby grants you rights under the terms
+of the Change License, and the rights granted in the paragraphs above
+terminate.
+
+If the Licensor makes the Licensed Work available under a later version of
+this License, you may use the Licensed Work under the terms of that later
+version.

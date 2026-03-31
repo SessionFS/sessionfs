@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sessionfs.server.auth.dependencies import get_current_user, require_verified_user
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import Session, ShareLink, User
+from sessionfs.server.tier_gate import UserContext, check_feature, get_user_context
 from sessionfs.server.schemas.sessions import (
     CreateShareLinkRequest,
     MessagesResponse,
@@ -875,12 +876,28 @@ async def sync_push(
     session_id: str,
     file: UploadFile,
     user: User = Depends(require_verified_user),
+    ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
     request: Request = None,
 ):
     """Push session data with ETag-based conflict detection."""
+    check_feature(ctx, "cloud_sync")
     _validate_session_id(session_id)
     blob_store = _get_blob_store(request)
+
+    # Track client version and device info from headers
+    _client_version = request.headers.get("X-Client-Version", "")
+    _client_platform = request.headers.get("X-Client-Platform", "")
+    _client_device = request.headers.get("X-Client-Device", "")
+    if not _client_version:
+        ua = request.headers.get("User-Agent", "")
+        if ua.startswith("sessionfs-cli/"):
+            _client_version = ua.split("/", 1)[1].split(" ", 1)[0]
+    if _client_version or _client_platform:
+        user.last_client_version = _client_version[:20] if _client_version else None
+        user.last_client_platform = _client_platform[:50] if _client_platform else None
+        user.last_client_device = _client_device[:100] if _client_device else None
+        user.last_sync_at = datetime.now(timezone.utc)
 
     # Tier-based sync limit
     sync_limit = _sync_limit_for_user(user)

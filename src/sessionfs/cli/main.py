@@ -1,6 +1,7 @@
 """SessionFS CLI entry point.
 
 Usage:
+    sfs init
     sfs daemon start|stop|status|logs
     sfs list [--tool] [--since] [--tag] [--sort] [--json] [--quiet]
     sfs show <session_id> [--messages] [--cost]
@@ -34,6 +35,8 @@ from sessionfs.cli.cmd_storage import storage_app
 from sessionfs.cli.cmd_project import project_app
 from sessionfs.cli.cmd_sync import sync_app
 from sessionfs.cli.cmd_summary import summary_app
+from sessionfs.cli.cmd_org import org_app
+from sessionfs.cli.cmd_security import security_app
 
 app.add_typer(daemon_app, name="daemon")
 app.add_typer(config_app, name="config")
@@ -46,6 +49,8 @@ app.add_typer(storage_app, name="storage")
 app.add_typer(project_app, name="project")
 app.add_typer(sync_app, name="sync")
 app.add_typer(summary_app, name="summary")
+app.add_typer(org_app, name="org")
+app.add_typer(security_app, name="security")
 
 # Register top-level commands
 from sessionfs.cli.cmd_sessions import list_sessions, show_session
@@ -54,6 +59,7 @@ from sessionfs.cli.cmd_io import import_sessions, export_session
 from sessionfs.cli.cmd_cloud import push, pull, pull_handoff, list_remote, handoff
 from sessionfs.cli.cmd_search import search
 from sessionfs.cli.cmd_audit import audit
+from sessionfs.cli.cmd_init import init_cmd
 
 app.command("list")(list_sessions)
 app.command("show")(show_session)
@@ -70,6 +76,7 @@ app.command("handoff")(handoff)
 app.command("pull-handoff")(pull_handoff)
 app.command("search")(search)
 app.command("audit")(audit)
+app.command("init")(init_cmd)
 
 
 def cli_main() -> None:

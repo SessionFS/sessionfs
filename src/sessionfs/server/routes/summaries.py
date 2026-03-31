@@ -17,10 +17,18 @@ from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import Session, SessionSummaryRecord, User
 from sessionfs.server.storage.base import BlobStore
+from sessionfs.server.tier_gate import UserContext, check_feature, get_user_context
 
 logger = logging.getLogger("sessionfs.api")
 
 router = APIRouter(prefix="/api/v1/sessions", tags=["summaries"])
+
+
+class NarrativeRequest(BaseModel):
+    model: str | None = None
+    provider: str | None = None
+    llm_api_key: str | None = None
+    base_url: str | None = None
 
 
 class SummaryResponse(BaseModel):
@@ -45,6 +53,7 @@ class SummaryResponse(BaseModel):
     key_decisions: list[str] | None = None
     outcome: str | None = None
     open_issues: list[str] | None = None
+    narrative_model: str | None = None
     generated_at: str = ""
 
 
@@ -89,9 +98,11 @@ async def generate_summary(
     session_id: str,
     request: Request,
     user: User = Depends(get_current_user),
+    ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> SummaryResponse:
     """Generate or regenerate a session summary."""
+    check_feature(ctx, "summary_deterministic")
     stmt = select(Session).where(Session.id == session_id, Session.user_id == user.id)
     result = await db.execute(stmt)
     session = result.scalar_one_or_none()
@@ -120,6 +131,123 @@ async def generate_summary(
     await db.commit()
 
     return _summary_to_response(summary, session)
+
+
+@router.post("/{session_id}/summary/narrative", response_model=SummaryResponse)
+async def generate_narrative_summary(
+    session_id: str,
+    body: NarrativeRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+    ctx: UserContext = Depends(get_user_context),
+    db: AsyncSession = Depends(get_db),
+) -> SummaryResponse:
+    """Generate an LLM-powered narrative for a session summary."""
+    check_feature(ctx, "summary_narrative")
+
+    stmt = select(Session).where(Session.id == session_id, Session.user_id == user.id)
+    result = await db.execute(stmt)
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(404, "Session not found")
+
+    # Get or generate the deterministic summary first
+    cached = await db.execute(
+        select(SessionSummaryRecord).where(SessionSummaryRecord.session_id == session_id)
+    )
+    existing = cached.scalar_one_or_none()
+
+    summary = await _generate_summary(session, request)
+    if summary is None:
+        raise HTTPException(422, "Could not generate summary — no messages found")
+
+    # Extract messages for narrative prompt
+    messages = await _extract_messages(session, request)
+
+    # Resolve LLM API key — prefer request body, fall back to saved judge settings
+    api_key = body.llm_api_key
+    model = body.model or "claude-sonnet-4"
+    provider = body.provider
+    base_url = body.base_url
+
+    if not api_key:
+        # Try saved judge settings (same pattern as audit route)
+        import base64
+        import hashlib
+        import os
+
+        from cryptography.fernet import Fernet
+
+        from sessionfs.server.db.models import UserJudgeSettings
+
+        judge_stmt = select(UserJudgeSettings).where(UserJudgeSettings.user_id == user.id)
+        judge_result = await db.execute(judge_stmt)
+        judge_settings = judge_result.scalar_one_or_none()
+        if judge_settings and judge_settings.encrypted_api_key:
+            secret = os.environ.get("SFS_VERIFICATION_SECRET", "dev-secret")
+            key = base64.urlsafe_b64encode(hashlib.sha256(secret.encode()).digest())
+            fernet = Fernet(key)
+            api_key = fernet.decrypt(judge_settings.encrypted_api_key.encode()).decode()
+            if not body.model and judge_settings.model:
+                model = judge_settings.model
+            if not body.provider and judge_settings.provider:
+                provider = judge_settings.provider
+            if not body.base_url and judge_settings.base_url:
+                base_url = judge_settings.base_url
+
+    if not api_key:
+        raise HTTPException(400, "No API key provided — set judge settings or pass llm_api_key")
+
+    from sessionfs.server.services.summarizer import generate_narrative
+
+    summary = await generate_narrative(
+        summary=summary,
+        messages=messages,
+        model=model,
+        api_key=api_key,
+        provider=provider,
+        base_url=base_url,
+    )
+
+    # Update the DB record with narrative fields
+    if existing:
+        existing.what_happened = summary.what_happened
+        existing.key_decisions = json.dumps(summary.key_decisions) if summary.key_decisions else None
+        existing.outcome = summary.outcome
+        existing.open_issues = json.dumps(summary.open_issues) if summary.open_issues else None
+        existing.narrative_model = summary.narrative_model
+    else:
+        record = _summary_to_record(session_id, summary)
+        db.add(record)
+    await db.commit()
+
+    return _summary_to_response(summary, session)
+
+
+async def _extract_messages(session: Session, request: Request) -> list[dict]:
+    """Extract raw messages from session blob."""
+    blob_store: BlobStore = request.app.state.blob_store
+    data = await blob_store.get(session.blob_key) if session.blob_key else None
+    if not data:
+        return []
+
+    messages: list[dict] = []
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+            for member in tar.getmembers():
+                f = tar.extractfile(member)
+                if not f:
+                    continue
+                if member.name.endswith("messages.jsonl"):
+                    content = f.read().decode("utf-8", errors="replace")
+                    for line in content.splitlines():
+                        line = line.strip()
+                        if line:
+                            messages.append(json.loads(line))
+    except Exception:
+        logger.warning("Failed to extract messages for narrative generation")
+
+    return messages
 
 
 # ---- Batch endpoint for reporting ----
@@ -257,6 +385,7 @@ def _record_to_response(record: SessionSummaryRecord, session: Session) -> Summa
         key_decisions=json.loads(record.key_decisions) if record.key_decisions else None,
         outcome=record.outcome,
         open_issues=json.loads(record.open_issues) if record.open_issues else None,
+        narrative_model=record.narrative_model,
         generated_at=record.created_at.isoformat() if record.created_at else "",
     )
 
@@ -282,5 +411,6 @@ def _summary_to_response(summary, session: Session) -> SummaryResponse:
         key_decisions=summary.key_decisions,
         outcome=summary.outcome,
         open_issues=summary.open_issues,
+        narrative_model=summary.narrative_model,
         generated_at=summary.generated_at,
     )

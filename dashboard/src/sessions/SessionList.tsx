@@ -8,6 +8,17 @@ import { formatTokens } from '../utils/tokens';
 import RelativeDate from '../components/RelativeDate';
 import BookmarkSidebar from '../components/BookmarkSidebar';
 
+const TOOL_COLORS: Record<string, string> = {
+  'claude-code': '#F97316',
+  'cursor': '#8B5CF6',
+  'codex': '#3B82F6',
+  'gemini': '#10B981',
+  'copilot': '#6366F1',
+  'amp': '#EC4899',
+  'cline': '#14B8A6',
+  'roo-code': '#F59E0B',
+};
+
 interface SessionSummaryWithAudit extends SessionSummary {
   audit_trust_score?: number | null;
 }
@@ -140,6 +151,9 @@ export default function SessionList() {
           Failed to load sessions: {String(error)}
         </div>
       )}
+
+      {/* Analytics Cards */}
+      {!isLoading && sessions.length > 0 && <AnalyticsCards sessions={sessions} />}
 
       {/* Loading */}
       {isLoading && (
@@ -323,5 +337,138 @@ function TrustBadge({ score }: { score?: number | null }) {
       className={`inline-block w-2 h-2 rounded-full shrink-0 ${color}`}
       title={`Trust score: ${pct}%`}
     />
+  );
+}
+
+function AnalyticsCards({ sessions }: { sessions: SessionSummary[] }) {
+  const stats = useMemo(() => {
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const yesterdayStart = todayStart - 86400000;
+
+    // Sessions today
+    const sessionsToday = sessions.filter(
+      (s) => new Date(s.created_at).getTime() >= todayStart,
+    ).length;
+    const sessionsYesterday = sessions.filter((s) => {
+      const t = new Date(s.created_at).getTime();
+      return t >= yesterdayStart && t < todayStart;
+    }).length;
+
+    // Tool breakdown
+    const toolCounts: Record<string, number> = {};
+    for (const s of sessions) {
+      toolCounts[s.source_tool] = (toolCounts[s.source_tool] || 0) + 1;
+    }
+    const sortedTools = Object.entries(toolCounts).sort((a, b) => b[1] - a[1]);
+    const topTools = sortedTools.slice(0, 3);
+    const otherCount = sortedTools.slice(3).reduce((sum, [, c]) => sum + c, 0);
+    if (otherCount > 0) topTools.push(['Other', otherCount]);
+    const totalForBar = sessions.length;
+
+    // Total tokens
+    const totalTokens = sessions.reduce(
+      (sum, s) => sum + s.total_input_tokens + s.total_output_tokens,
+      0,
+    );
+
+    // Active hours — find the peak hour
+    const hourCounts = new Array(24).fill(0);
+    for (const s of sessions) {
+      const h = new Date(s.created_at).getHours();
+      hourCounts[h]++;
+    }
+    let peakHour = 0;
+    let peakCount = 0;
+    for (let h = 0; h < 24; h++) {
+      // Use a 2-hour window for peak
+      const windowCount = hourCounts[h] + hourCounts[(h + 1) % 24];
+      if (windowCount > peakCount) {
+        peakCount = windowCount;
+        peakHour = h;
+      }
+    }
+    const fmtHour = (h: number) => {
+      const ampm = h >= 12 ? 'PM' : 'AM';
+      const h12 = h % 12 || 12;
+      return `${h12} ${ampm}`;
+    };
+    const peakLabel = peakCount > 0
+      ? `${fmtHour(peakHour)}-${fmtHour((peakHour + 2) % 24)}`
+      : 'N/A';
+
+    return {
+      sessionsToday,
+      sessionsYesterday,
+      topTools,
+      totalForBar,
+      totalTokens,
+      peakLabel,
+    };
+  }, [sessions]);
+
+  return (
+    <div className="grid grid-cols-4 gap-3 mb-4">
+      {/* Sessions Today */}
+      <div className="bg-bg-secondary rounded-lg p-3 border border-border">
+        <div className="text-xl font-bold text-text-primary tabular-nums">{stats.sessionsToday}</div>
+        <div className="text-xs text-text-muted">Sessions Today</div>
+        {stats.sessionsYesterday > 0 && (
+          <div className="text-xs text-text-muted mt-1">
+            +{stats.sessionsYesterday} yesterday
+          </div>
+        )}
+      </div>
+
+      {/* Tool Breakdown */}
+      <div className="bg-bg-secondary rounded-lg p-3 border border-border">
+        <div className="text-xs text-text-muted mb-1.5">Tool Breakdown</div>
+        {stats.totalForBar > 0 && (
+          <>
+            <div className="flex h-2 rounded-full overflow-hidden mb-2">
+              {stats.topTools.map(([tool, count]) => (
+                <div
+                  key={tool}
+                  style={{
+                    width: `${(count / stats.totalForBar) * 100}%`,
+                    backgroundColor: TOOL_COLORS[tool] || '#6B7280',
+                  }}
+                  title={`${tool}: ${count}`}
+                />
+              ))}
+            </div>
+            <div className="space-y-0.5">
+              {stats.topTools.map(([tool, count]) => (
+                <div key={tool} className="flex items-center gap-1.5 text-xs">
+                  <span
+                    className="w-2 h-2 rounded-full shrink-0"
+                    style={{ backgroundColor: TOOL_COLORS[tool] || '#6B7280' }}
+                  />
+                  <span className="text-text-secondary truncate">{tool}</span>
+                  <span className="text-text-muted ml-auto tabular-nums">{count}</span>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+        {stats.totalForBar === 0 && (
+          <div className="text-sm text-text-muted">No data</div>
+        )}
+      </div>
+
+      {/* Total Tokens */}
+      <div className="bg-bg-secondary rounded-lg p-3 border border-border">
+        <div className="text-xl font-bold text-text-primary tabular-nums">
+          {formatTokens(stats.totalTokens)}
+        </div>
+        <div className="text-xs text-text-muted">Total Tokens</div>
+      </div>
+
+      {/* Active Hours */}
+      <div className="bg-bg-secondary rounded-lg p-3 border border-border">
+        <div className="text-xl font-bold text-text-primary">{stats.peakLabel}</div>
+        <div className="text-xs text-text-muted">Peak Hours</div>
+      </div>
+    </div>
   );
 }

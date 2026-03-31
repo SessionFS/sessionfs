@@ -110,10 +110,14 @@ class SyncClient:
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
+            import platform as _platform
             self._client = httpx.AsyncClient(
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
                     "User-Agent": f"sessionfs-cli/{__version__}",
+                    "X-Client-Version": __version__,
+                    "X-Client-Platform": _platform.system(),
+                    "X-Client-Device": _platform.node(),
                 },
                 timeout=httpx.Timeout(_METADATA_TIMEOUT),
             )

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useHandoffInbox, useHandoffSent } from '../hooks/useHandoffs';
 import RelativeDate from '../components/RelativeDate';
+import { ToolBadge } from '../components/Badge';
 import type { HandoffSummary } from '../api/client';
 
 type Tab = 'inbox' | 'sent';
@@ -10,7 +11,7 @@ function StatusBadge({ status }: { status: HandoffSummary['status'] }) {
   const styles = {
     pending: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/30',
     claimed: 'bg-green-500/10 text-green-400 border-green-500/30',
-    expired: 'bg-neutral-500/10 text-neutral-400 border-neutral-500/30',
+    expired: 'bg-red-500/10 text-red-400 border-red-500/30',
   };
   return (
     <span className={`px-1.5 py-0.5 text-sm border rounded ${styles[status]}`}>
@@ -81,6 +82,8 @@ export default function HandoffList() {
               <tr className="bg-bg-secondary text-text-secondary text-sm uppercase tracking-wider">
                 <th className="px-3 py-2 text-left">{isInbox ? 'From' : 'To'}</th>
                 <th className="px-3 py-2 text-left">Session</th>
+                <th className="px-3 py-2 text-left w-20">Tool</th>
+                <th className="px-3 py-2 text-left w-16">Msgs</th>
                 <th className="px-3 py-2 text-left w-24">Date</th>
                 <th className="px-3 py-2 text-left w-20">Status</th>
               </tr>
@@ -106,6 +109,16 @@ export default function HandoffList() {
                   </td>
                   <td className="px-3 py-2 text-text-primary truncate max-w-xs">
                     {h.session_title || <span className="text-text-muted italic">Untitled</span>}
+                  </td>
+                  <td className="px-3 py-2">
+                    {h.session_tool ? (
+                      <ToolBadge tool={h.session_tool} />
+                    ) : (
+                      <span className="text-text-muted">-</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-text-muted tabular-nums">
+                    {h.session_message_count ?? '-'}
                   </td>
                   <td className="px-3 py-2 text-text-muted text-sm">
                     <RelativeDate iso={h.created_at} />

@@ -47,6 +47,20 @@ A `.sfs` session is a directory containing: `manifest.json`, `messages.jsonl`, `
 - **NEVER run `git push origin develop`.** This is a security breach — it exposes internal strategy, agent personas, threat models, and business docs.
 - **If develop is accidentally pushed:** delete immediately with `git push origin --delete develop`.
 
+## Multi-LLM Review
+
+Before major releases, use a second LLM (e.g., Gemini CLI) to review specific areas. This catches blind spots and provides architectural critique.
+
+```bash
+export GOOGLE_GEMINI_BASE_URL="http://100.96.105.123:4000"
+export GEMINI_API_KEY=sk-training-2025
+gemini --model gemini-3-flash-preview --yolo -p "Review [area] in the codebase and suggest improvements..."
+```
+
+**When to use:** UI/UX review, architecture critique, missed edge cases, security audit of new features.
+**Not for:** Writing code. Use it for reviewing what was built, not generating implementations.
+**Models available:** gemini-3-flash-preview, gpt-5, claude-opus-4.1, deepseek-r1 (via proxy at 100.96.105.123:4000)
+
 ## Release Process
 
 - **ALWAYS use the `/release` skill** (at `.claude/commands/release.md`) for every release. No ad-hoc releases.
@@ -66,6 +80,6 @@ A `.sfs` session is a directory containing: `manifest.json`, `messages.jsonl`, `
 
 ## Current Phase
 
-**Phase 3 complete — Team Intelligence + Trust Verification**
+**Phase 4 complete — Licensing, Billing & Organization Management**
 
-848 tests passing. Eight-tool capture + four-tool resume (auto-launch). Session summarization (files, tests, commands, packages — deterministic). Autosync (off/all/selective modes, debounce, watchlist). Local storage management (pruning, retention, disk warnings). Multi-provider email (Resend, SMTP, none). Team handoff with email + session copy on claim. LLM Judge V2 (severity classification, category detection, audit history DB, auto-audit trigger, custom base URL, model discovery). Shared project context (CLI + API + MCP tool). MCP server (local + remote, 5 tools). Full-text search. GitHub PR App + GitLab MR integration. Admin dashboard. Helm chart (EKS validated, single-ingress via nginx). Cursor tool call extraction from agentKv layer. Tier-based sync limits (50MB free, 300MB paid).
+921 tests passing. DB migrations: 001–016. Eight-tool capture + four-tool resume (auto-launch). Session summarization (files, tests, commands, packages — deterministic). Autosync (off/all/selective modes, debounce, watchlist). Local storage management (pruning, retention, disk warnings). Multi-provider email (Resend, SMTP, none). Team handoff with email + session copy on claim. LLM Judge V2 (severity classification, category detection, audit history DB, auto-audit trigger, custom base URL, model discovery). Shared project context (CLI + API + MCP tool). MCP server (local + remote, 5 tools). Full-text search. GitHub PR App + GitLab MR integration. Admin dashboard. Helm chart (EKS validated, single-ingress via nginx, license validation). Cursor tool call extraction from agentKv layer. Tier-based sync limits (50MB free, 300MB paid). FSL licensing (ee/ directory). Server-side tier gating (5 tiers, 30+ features). RBAC (admin/member roles). Stripe billing integration. Organization management. Telemetry endpoint. Client version tracking.

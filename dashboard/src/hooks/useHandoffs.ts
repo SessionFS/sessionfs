@@ -31,6 +31,16 @@ export function useHandoff(id: string) {
   });
 }
 
+export function useHandoffSummary(handoffId: string) {
+  const { auth } = useAuth();
+  return useQuery({
+    queryKey: ['handoff', handoffId, 'summary'],
+    queryFn: () => auth!.client.getHandoffSummary(handoffId),
+    enabled: !!auth && !!handoffId,
+    staleTime: 120_000,
+  });
+}
+
 export function useCreateHandoff() {
   const { auth } = useAuth();
   const queryClient = useQueryClient();

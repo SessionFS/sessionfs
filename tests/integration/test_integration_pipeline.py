@@ -56,6 +56,7 @@ async def pipeline_env(tmp_path: Path):
             id=str(uuid.uuid4()),
             email="pipeline@test.com",
             display_name="Pipeline Tester",
+            tier="pro",
             created_at=datetime.now(timezone.utc),
             email_verified=True,
         )

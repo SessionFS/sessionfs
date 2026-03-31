@@ -17,6 +17,16 @@ SEVERITY_FROM_CATEGORY = {
     "other": "low",
 }
 
+CWE_FROM_CATEGORY = {
+    "test_result": "CWE-393",      # Return of Wrong Status Code
+    "command_output": "CWE-684",    # Incorrect Provision of Specified Functionality
+    "dependency": "CWE-1104",       # Use of Unmaintained Third Party Components
+    "file_existence": "CWE-552",    # Files or Directories Accessible to External Parties
+    "data_misread": "CWE-135",      # Incorrect Calculation of Multi-Byte String Length (data misinterpretation)
+    "code_claim": "CWE-710",        # Improper Adherence to Coding Standards
+    "other": "",
+}
+
 
 @dataclass
 class Finding:
@@ -27,6 +37,12 @@ class Finding:
     evidence: str
     explanation: str
     category: str = "other"  # test_result, file_existence, command_output, data_misread, code_claim, dependency, other
+    confidence: int = 0  # 0-100, LLM-judged confidence in the verdict
+    evidence_snippets: list[dict] = field(default_factory=list)  # [{"source": "tool_result|message", "message_index": int, "text": str}]
+    cwe_id: str = ""  # CWE mapping from category
+    dismissed: bool = False
+    dismissed_by: str = ""
+    dismissed_reason: str = ""
 
 
 @dataclass

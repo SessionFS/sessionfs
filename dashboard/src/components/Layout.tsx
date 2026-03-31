@@ -52,9 +52,15 @@ export default function Layout() {
           )}
           <Link
             to="/settings"
-            className={`hover:text-accent transition-colors ${location.pathname === '/settings' ? 'text-accent' : 'text-[#b1b8c1]'}`}
+            className={`hover:text-accent transition-colors ${location.pathname.startsWith('/settings') ? 'text-accent' : 'text-[#b1b8c1]'}`}
           >
             Settings
+          </Link>
+          <Link
+            to="/settings/billing"
+            className={`hover:text-accent transition-colors ${location.pathname === '/settings/billing' ? 'text-accent' : 'text-[#b1b8c1]'}`}
+          >
+            Billing
           </Link>
           <button
             onClick={logout}

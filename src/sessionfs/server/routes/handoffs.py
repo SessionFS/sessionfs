@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import Handoff, Session, User
+from sessionfs.server.tier_gate import UserContext, check_feature, get_user_context
 from sessionfs.session_id import generate_session_id
 
 logger = logging.getLogger("sessionfs.api")
@@ -21,6 +22,7 @@ from sessionfs.server.schemas.handoffs import (
     CreateHandoffRequest,
     HandoffListResponse,
     HandoffResponse,
+    HandoffSummaryResponse,
 )
 
 router = APIRouter(prefix="/api/v1/handoffs", tags=["handoffs"])
@@ -36,6 +38,7 @@ def _generate_handoff_id() -> str:
 def _handoff_to_response(
     handoff: Handoff,
     sender_email: str,
+    session: Session | None = None,
     session_title: str | None = None,
     session_tool: str | None = None,
 ) -> HandoffResponse:
@@ -46,9 +49,17 @@ def _handoff_to_response(
         recipient_email=handoff.recipient_email,
         message=handoff.message,
         status=handoff.status,
-        session_title=session_title,
-        session_tool=session_tool,
+        session_title=session_title or (session.title if session else None),
+        session_tool=session_tool or (session.source_tool if session else None),
+        session_model_id=session.model_id if session else None,
+        session_message_count=session.message_count if session else None,
+        session_total_tokens=(
+            (session.total_input_tokens or 0) + (session.total_output_tokens or 0)
+            if session
+            else None
+        ),
         created_at=handoff.created_at,
+        claimed_at=handoff.claimed_at,
         expires_at=handoff.expires_at,
     )
 
@@ -58,9 +69,11 @@ async def create_handoff(
     body: CreateHandoffRequest,
     request: Request,
     user: User = Depends(get_current_user),
+    ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ):
     """Create a handoff — push session to recipient via email."""
+    check_feature(ctx, "handoff")
     # Verify session exists and belongs to sender
     result = await db.execute(
         select(Session).where(Session.id == body.session_id, Session.user_id == user.id)
@@ -133,8 +146,7 @@ async def create_handoff(
     return _handoff_to_response(
         handoff,
         sender_email=user.email,
-        session_title=session.title,
-        session_tool=session.source_tool,
+        session=session,
     )
 
 
@@ -160,9 +172,7 @@ async def inbox(
         session_result = await db.execute(select(Session).where(Session.id == h.session_id))
         session = session_result.scalar_one_or_none()
         responses.append(_handoff_to_response(
-            h, sender_email=sender_email,
-            session_title=session.title if session else None,
-            session_tool=session.source_tool if session else None,
+            h, sender_email=sender_email, session=session,
         ))
 
     return HandoffListResponse(handoffs=responses, total=len(responses))
@@ -186,9 +196,7 @@ async def sent(
         session_result = await db.execute(select(Session).where(Session.id == h.session_id))
         session = session_result.scalar_one_or_none()
         responses.append(_handoff_to_response(
-            h, sender_email=user.email,
-            session_title=session.title if session else None,
-            session_tool=session.source_tool if session else None,
+            h, sender_email=user.email, session=session,
         ))
 
     return HandoffListResponse(handoffs=responses, total=len(responses))
@@ -221,8 +229,7 @@ async def get_handoff(
     return _handoff_to_response(
         handoff,
         sender_email=sender_email,
-        session_title=session.title if session else None,
-        session_tool=session.source_tool if session else None,
+        session=session,
     )
 
 
@@ -322,8 +329,110 @@ async def claim_handoff(
     return _handoff_to_response(
         handoff,
         sender_email=sender_email,
-        session_title=copied_session.title,
-        session_tool=copied_session.source_tool,
+        session=copied_session,
     )
 
 
+@router.get("/{handoff_id}/summary", response_model=HandoffSummaryResponse)
+async def get_handoff_summary(
+    handoff_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get a deterministic summary of the handoff's session context."""
+    import io
+    import json
+    import tarfile
+
+    from sessionfs.server.services.summarizer import summarize_session
+    from sessionfs.server.storage.base import BlobStore
+
+    result = await db.execute(select(Handoff).where(Handoff.id == handoff_id))
+    handoff = result.scalar_one_or_none()
+    if handoff is None:
+        raise HTTPException(status_code=404, detail="Handoff not found")
+
+    session_result = await db.execute(
+        select(Session).where(Session.id == handoff.session_id)
+    )
+    session = session_result.scalar_one_or_none()
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Extract messages from blob storage
+    blob_store: BlobStore = request.app.state.blob_store
+    data = await blob_store.get(session.blob_key) if session.blob_key else None
+
+    messages: list[dict] = []
+    manifest: dict = {}
+    workspace: dict = {}
+
+    if data:
+        try:
+            with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+                for member in tar.getmembers():
+                    f = tar.extractfile(member)
+                    if not f:
+                        continue
+                    content = f.read().decode("utf-8", errors="replace")
+                    if member.name.endswith("messages.jsonl"):
+                        for line in content.splitlines():
+                            line = line.strip()
+                            if line:
+                                messages.append(json.loads(line))
+                    elif member.name.endswith("manifest.json"):
+                        manifest = json.loads(content)
+                    elif member.name.endswith("workspace.json"):
+                        workspace = json.loads(content)
+        except Exception:
+            logger.warning("Failed to extract session archive for handoff summary")
+
+    # Run deterministic summarizer
+    if messages:
+        summary = summarize_session(messages, manifest, workspace)
+        files_modified = summary.files_modified[:10]
+        errors = summary.errors_encountered[:3]
+        commands_executed = summary.commands_executed
+        tests_run = summary.tests_run
+        tests_passed = summary.tests_passed
+        tests_failed = summary.tests_failed
+    else:
+        files_modified = []
+        errors = []
+        commands_executed = 0
+        tests_run = 0
+        tests_passed = 0
+        tests_failed = 0
+
+    # Extract last 3 assistant messages (truncated)
+    last_assistant: list[str] = []
+    for msg in reversed(messages):
+        if msg.get("role") == "assistant":
+            text = ""
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        text = block.get("text", "")
+                        break
+            if text:
+                last_assistant.append(text[:200])
+            if len(last_assistant) >= 3:
+                break
+
+    return HandoffSummaryResponse(
+        session_id=session.id,
+        title=session.title or "Untitled",
+        tool=session.source_tool or "",
+        model=session.model_id,
+        message_count=session.message_count or 0,
+        files_modified=files_modified,
+        commands_executed=commands_executed,
+        tests_run=tests_run,
+        tests_passed=tests_passed,
+        tests_failed=tests_failed,
+        errors_encountered=errors,
+        last_assistant_messages=last_assistant,
+    )

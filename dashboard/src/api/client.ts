@@ -46,6 +46,10 @@ export interface HandoffSummary {
   id: string;
   session_id: string;
   session_title: string | null;
+  session_tool: string | null;
+  session_model_id: string | null;
+  session_message_count: number | null;
+  session_total_tokens: number | null;
   sender_email: string;
   recipient_email: string;
   message: string | null;
@@ -55,10 +59,22 @@ export interface HandoffSummary {
 }
 
 export interface HandoffDetail extends HandoffSummary {
-  session_source_tool: string;
-  session_model_id: string | null;
-  session_message_count: number;
-  session_total_tokens: number;
+  expires_at: string;
+}
+
+export interface HandoffSessionSummary {
+  session_id: string;
+  title: string;
+  tool: string;
+  model: string | null;
+  message_count: number;
+  files_modified: string[];
+  commands_executed: number;
+  tests_run: number;
+  tests_passed: number;
+  tests_failed: number;
+  errors_encountered: string[];
+  last_assistant_messages: string[];
 }
 
 export interface HandoffListResponse {
@@ -87,6 +103,9 @@ export interface AuditFinding {
   evidence: string;
   explanation: string;
   category?: string;
+  confidence?: number;
+  cwe_id?: string;
+  evidence_snippets?: { text: string; message_index: number }[];
 }
 
 export interface AuditSummary {
@@ -207,6 +226,11 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       email_verified: boolean;
       tier: string;
       created_at: string | null;
+      last_client_version: string | null;
+      last_client_platform: string | null;
+      last_client_device: string | null;
+      last_sync_at: string | null;
+      latest_version: string;
     }>('/api/v1/auth/me'),
 
     listSessions: (params: {
@@ -271,6 +295,9 @@ export function createApiClient(baseUrl: string, apiKey: string) {
 
     listSent: () =>
       request<HandoffListResponse>('/api/v1/handoffs/sent'),
+
+    getHandoffSummary: (handoffId: string) =>
+      request<HandoffSessionSummary>(`/api/v1/handoffs/${handoffId}/summary`),
 
     downloadSession: async (id: string): Promise<Blob> => {
       const resp = await fetch(`${baseUrl}/api/v1/sessions/${id}/download`, {
@@ -443,11 +470,39 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         key_decisions: string[] | null;
         outcome: string | null;
         open_issues: string[] | null;
+        narrative_model: string | null;
         generated_at: string;
       }>(`/api/v1/sessions/${sessionId}/summary`),
 
     generateSessionSummary: (sessionId: string) =>
       request<Record<string, unknown>>(`/api/v1/sessions/${sessionId}/summary`, { method: 'POST' }),
+
+    generateNarrativeSummary: (sessionId: string, body: { model?: string; provider?: string; llm_api_key?: string; base_url?: string }) =>
+      request<{
+        session_id: string;
+        title: string;
+        tool: string;
+        model: string | null;
+        duration_minutes: number;
+        message_count: number;
+        tool_call_count: number;
+        branch: string | null;
+        commit: string | null;
+        files_modified: string[];
+        files_read: string[];
+        commands_executed: number;
+        tests_run: number;
+        tests_passed: number;
+        tests_failed: number;
+        packages_installed: string[];
+        errors_encountered: string[];
+        what_happened: string | null;
+        key_decisions: string[] | null;
+        outcome: string | null;
+        open_issues: string[] | null;
+        narrative_model: string | null;
+        generated_at: string;
+      }>(`/api/v1/sessions/${sessionId}/summary/narrative`, { method: 'POST', body: JSON.stringify(body) }),
 
     getAuditHistory: (sessionId: string) =>
       request<{ id: string; judge_model: string; trust_score: number; total_claims: number; contradiction_count: number; created_at: string }[]>(

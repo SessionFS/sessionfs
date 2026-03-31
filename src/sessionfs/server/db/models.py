@@ -24,12 +24,21 @@ class User(Base):
     display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     tier: Mapped[str] = mapped_column(String(20), default="free")
+    stripe_customer_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    stripe_subscription_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tier_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    storage_used_bytes: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
+    beta_pro_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     sync_mode: Mapped[str] = mapped_column(String(20), default="off", server_default="off")
     sync_debounce: Mapped[int] = mapped_column(Integer, default=30, server_default="30")
     audit_trigger: Mapped[str] = mapped_column(String(20), default="manual", server_default="manual")
     summarize_trigger: Mapped[str] = mapped_column(String(20), default="manual", server_default="manual")
+    last_client_version: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    last_client_platform: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    last_client_device: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ApiKey(Base):
@@ -318,4 +327,112 @@ class PRComment(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class Organization(Base):
+    __tablename__ = "organizations"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    slug: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    tier: Mapped[str] = mapped_column(String(20), nullable=False, server_default="team")
+    stripe_customer_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    stripe_subscription_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    storage_limit_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    storage_used_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    seats_limit: Mapped[int] = mapped_column(Integer, nullable=False, server_default="5")
+    settings: Mapped[str] = mapped_column(Text, nullable=False, server_default="{}")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class OrgMember(Base):
+    __tablename__ = "org_members"
+    __table_args__ = (
+        Index("idx_org_members_org", "org_id"),
+        Index("idx_org_members_user", "user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    role: Mapped[str] = mapped_column(String(20), nullable=False, server_default="member")
+    invited_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id"), nullable=True
+    )
+    invited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    joined_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class OrgInvite(Base):
+    __tablename__ = "org_invites"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    org_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[str] = mapped_column(String(20), nullable=False, server_default="member")
+    invited_by: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class StripeEvent(Base):
+    __tablename__ = "stripe_events"
+
+    event_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    event_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    processed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class HelmLicense(Base):
+    __tablename__ = "helm_licenses"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    org_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    contact_email: Mapped[str] = mapped_column(String(255), nullable=False)
+    tier: Mapped[str] = mapped_column(String(20), nullable=False, server_default="enterprise")
+    seats_limit: Mapped[int | None] = mapped_column(Integer, server_default="25")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="active")
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class TelemetryEvent(Base):
+    __tablename__ = "telemetry_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    install_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    version: Mapped[str] = mapped_column(String(20), nullable=False)
+    os: Mapped[str] = mapped_column(String(50), nullable=False)
+    tools_active: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    sessions_captured_24h: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    avg_session_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    features_used: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    errors_24h: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    tier: Mapped[str] = mapped_column(String(20), nullable=False, server_default="free")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )

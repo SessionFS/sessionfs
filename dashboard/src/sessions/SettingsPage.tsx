@@ -156,6 +156,51 @@ export default function SettingsPage() {
         </div>
       )}
 
+      {/* Client Version + Device */}
+      {profile?.last_client_version && (
+        <div className="bg-bg-secondary border border-border rounded-lg p-4 mb-4">
+          <h2 className="text-sm uppercase tracking-wider text-text-muted mb-3">Last Sync</h2>
+          <div className="grid grid-cols-2 gap-3 text-sm">
+            <div>
+              <span className="text-text-muted">Package version: </span>
+              <span className="text-text-primary font-mono">{profile.last_client_version}</span>
+              {profile.latest_version && profile.last_client_version !== profile.latest_version && (
+                <span className="ml-2 px-2 py-0.5 bg-yellow-500/10 text-yellow-400 rounded text-xs">
+                  Update available: {profile.latest_version}
+                </span>
+              )}
+              {profile.latest_version && profile.last_client_version === profile.latest_version && (
+                <span className="ml-2 px-2 py-0.5 bg-green-500/10 text-green-400 rounded text-xs">
+                  Up to date
+                </span>
+              )}
+            </div>
+            <div>
+              <span className="text-text-muted">Platform: </span>
+              <span className="text-text-primary">{profile.last_client_platform || '-'}</span>
+            </div>
+            <div>
+              <span className="text-text-muted">Device: </span>
+              <span className="text-text-primary font-mono">{profile.last_client_device || '-'}</span>
+            </div>
+            <div>
+              <span className="text-text-muted">Last synced: </span>
+              <span className="text-text-primary">
+                {profile.last_sync_at ? new Date(profile.last_sync_at).toLocaleString() : '-'}
+              </span>
+            </div>
+          </div>
+          {profile.latest_version && profile.last_client_version !== profile.latest_version && (
+            <div className="mt-3 p-3 bg-yellow-500/5 border border-yellow-500/20 rounded-lg text-sm">
+              <p className="text-yellow-400 font-medium">New version available</p>
+              <p className="text-text-muted mt-1">
+                Run <code className="bg-bg-primary px-1.5 py-0.5 rounded text-text-secondary">pip install --upgrade sessionfs</code> to update from {profile.last_client_version} to {profile.latest_version}.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="bg-bg-secondary border border-border rounded-lg p-4 mb-4">
         <h2 className="text-sm uppercase tracking-wider text-text-muted mb-3">Connection</h2>
 

@@ -44,3 +44,10 @@ class ServerConfig(BaseSettings):
     log_level: str = "INFO"
     rate_limit_per_minute: int = 120
     dashboard_dir: str = "./static"
+
+    # Stripe billing
+    stripe_secret_key: str = ""
+    stripe_webhook_secret: str = ""
+    stripe_price_starter: str = ""
+    stripe_price_pro: str = ""
+    stripe_price_team: str = ""

@@ -82,6 +82,9 @@ def start(
     _pid_path().write_text(str(proc.pid))
     console.print(f"[green]Daemon started (PID {proc.pid}).[/green]")
     console.print(f"Logs: {_log_path()}")
+    console.print()
+    console.print("[dim]  Dashboard: sfs mcp serve (for AI tool integration)[/dim]")
+    console.print("[dim]  Sessions:  sfs list[/dim]")
 
 
 @daemon_app.command()

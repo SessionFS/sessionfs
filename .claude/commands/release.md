@@ -109,6 +109,9 @@ Fix any stale test counts or version numbers.
 | `pyproject.toml` | `description` field matches current tool count |
 | `charts/sessionfs/Chart.yaml` | `version` and `appVersion` bumped |
 | `charts/sessionfs/values.yaml` | Comments accurate, no stale defaults |
+| `LICENSE` | MIT license present at root |
+| `ee/LICENSE` | FSL-1.1-Apache-2.0 license present in ee/ |
+| `ee/sessionfs_ee/__init__.py` | ee package importable |
 | `landing/index.html` | Test count, feature cards, tool count in meta tags |
 
 #### 6f. Forbidden strings

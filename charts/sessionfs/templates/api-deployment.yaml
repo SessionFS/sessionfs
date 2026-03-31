@@ -29,6 +29,38 @@ spec:
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if .Values.license.key }}
+      initContainers:
+        - name: license-check
+          image: curlimages/curl:latest
+          command: ["sh", "-c"]
+          args:
+            - |
+              RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+                {{ .Values.license.server | default "https://api.sessionfs.dev" }}/api/v1/helm/validate \
+                -H "Content-Type: application/json" \
+                -d "{\"license_key\":\"$(SFS_LICENSE_KEY)\"}")
+
+              HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+              BODY=$(echo "$RESPONSE" | sed '$d')
+
+              if [ "$HTTP_CODE" != "200" ]; then
+                echo "License validation failed: $BODY"
+                exit 1
+              fi
+
+              echo "$BODY" > /etc/sessionfs/license.json
+              echo "License validated successfully"
+          env:
+            - name: SFS_LICENSE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sessionfs.fullname" . }}-license
+                  key: license-key
+          volumeMounts:
+            - name: license-volume
+              mountPath: /etc/sessionfs
+      {{- end }}
       containers:
         - name: api
           image: {{ include "sessionfs.api.image" . }}
@@ -186,18 +218,21 @@ spec:
               mountPath: /var/secrets/gcs
               readOnly: true
           {{- end }}
-      {{- if and (eq .Values.storage.type "local") .Values.storage.local.persistence.enabled }}
       volumes:
+        {{- if .Values.license.key }}
+        - name: license-volume
+          emptyDir: {}
+        {{- end }}
+        {{- if and (eq .Values.storage.type "local") .Values.storage.local.persistence.enabled }}
         - name: blob-storage
           persistentVolumeClaim:
             claimName: {{ include "sessionfs.fullname" . }}-blob-storage
-      {{- end }}
-      {{- if and (eq .Values.storage.type "gcs") .Values.storage.gcs.existingSecret }}
-      volumes:
+        {{- end }}
+        {{- if and (eq .Values.storage.type "gcs") .Values.storage.gcs.existingSecret }}
         - name: gcs-credentials
           secret:
             secretName: {{ .Values.storage.gcs.existingSecret }}
-      {{- end }}
+        {{- end }}
       {{- with .Values.api.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

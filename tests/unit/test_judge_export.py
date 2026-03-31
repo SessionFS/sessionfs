@@ -105,7 +105,7 @@ class TestExportCSV:
         output = export_csv(report)
         reader = csv.reader(io.StringIO(output))
         header = next(reader)
-        assert header == ["message_index", "verdict", "severity", "claim", "evidence", "explanation"]
+        assert header == ["message_index", "verdict", "severity", "confidence", "cwe_id", "category", "claim", "evidence", "explanation"]
 
     def test_row_count(self):
         report = _make_report()

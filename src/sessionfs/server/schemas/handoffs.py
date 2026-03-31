@@ -22,10 +22,31 @@ class HandoffResponse(BaseModel):
     status: str
     session_title: str | None
     session_tool: str | None
+    session_model_id: str | None = None
+    session_message_count: int | None = None
+    session_total_tokens: int | None = None
     created_at: datetime
+    claimed_at: datetime | None = None
     expires_at: datetime
 
 
 class HandoffListResponse(BaseModel):
     handoffs: list[HandoffResponse]
     total: int
+
+
+class HandoffSummaryResponse(BaseModel):
+    """Compact deterministic summary for a handoff's session."""
+
+    session_id: str
+    title: str
+    tool: str
+    model: str | None = None
+    message_count: int = 0
+    files_modified: list[str] = []
+    commands_executed: int = 0
+    tests_run: int = 0
+    tests_passed: int = 0
+    tests_failed: int = 0
+    errors_encountered: list[str] = []
+    last_assistant_messages: list[str] = []
