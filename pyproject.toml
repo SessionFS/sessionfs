@@ -57,7 +57,7 @@ server = [
     "PyJWT>=2.8,<3.0",
     "google-cloud-storage>=2.14,<3.0",
     "cryptography>=42.0,<47.0",
-    "stripe>=8.0,<10.0",
+    "stripe>=8.0,<16.0",
 ]
 dev = [
     "sessionfs[server]",
