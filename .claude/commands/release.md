@@ -22,6 +22,28 @@ helm lint charts/sessionfs
 ```
 Stop if lint fails. Auto-fix with `ruff check src/ --fix` if needed.
 
+### 3b. MANDATORY: Run Shield Security Review
+
+**This step is NON-NEGOTIABLE. No release ships without a clean security review.**
+
+Load the Shield-SR agent from `.agents/shield-security-review.md` and run the full review. Use the Agent tool to launch it:
+
+```
+Prompt: "You are the Shield security review agent. Load your persona from .agents/shield-security-review.md and run the COMPLETE pre-release security review for v{VERSION}. Fix all CRITICAL and HIGH findings. Report results in the specified format."
+```
+
+The agent will:
+1. Run pip-audit — fix all vulnerabilities
+2. Run npm audit — fix all vulnerabilities
+3. Run bandit — fix HIGH/MEDIUM findings
+4. Scan for hardcoded secrets
+5. Review all new code since last release for OWASP issues
+6. Check config, Helm, and LLM-specific security
+7. Run full test suite after any fixes
+
+**STOP if the agent reports any unresolved CRITICAL or HIGH finding.**
+Only proceed to step 4 when the agent reports: "Zero critical/high findings. Release approved."
+
 ### 4. Bump version
 
 Only TWO files hold the version — everything else reads dynamically:
