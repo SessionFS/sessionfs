@@ -269,6 +269,14 @@ def convert_amp_to_sfs(
         for msg in messages:
             f.write(json.dumps(msg, separators=(",", ":")) + "\n")
 
+    # Detect slash-command skills in user messages
+    from sessionfs.converters.skill_detector import detect_skills, skills_to_tools_json
+
+    detected = detect_skills(messages, "amp")
+    if detected:
+        tools_data = {"custom_tools": skills_to_tools_json(detected)}
+        (output_dir / "tools.json").write_text(json.dumps(tools_data, indent=2))
+
     return output_dir
 
 

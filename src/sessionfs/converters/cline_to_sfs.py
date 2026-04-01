@@ -460,6 +460,14 @@ def convert_cline_to_sfs(
         workspace = {"root_path": cline_session.workspace_folder, "git": {}}
         (session_dir / "workspace.json").write_text(json.dumps(workspace, indent=2))
 
+    # Detect slash-command skills in user messages
+    from sessionfs.converters.skill_detector import detect_skills, skills_to_tools_json
+
+    detected = detect_skills(messages, tool_name)
+    if detected:
+        tools_data = {"custom_tools": skills_to_tools_json(detected)}
+        (session_dir / "tools.json").write_text(json.dumps(tools_data, indent=2))
+
     return session_dir
 
 
