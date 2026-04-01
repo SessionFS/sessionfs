@@ -292,6 +292,14 @@ def convert_copilot_to_sfs(
         }
         (output_dir / "workspace.json").write_text(json.dumps(workspace, indent=2))
 
+    # Detect slash-command skills in user messages
+    from sessionfs.converters.skill_detector import detect_skills, skills_to_tools_json
+
+    detected = detect_skills(messages, "copilot-cli")
+    if detected:
+        tools_data = {"custom_tools": skills_to_tools_json(detected)}
+        (output_dir / "tools.json").write_text(json.dumps(tools_data, indent=2))
+
     return output_dir
 
 

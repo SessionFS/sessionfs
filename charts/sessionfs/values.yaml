@@ -211,6 +211,11 @@ email:
 license:
   key: ""           # Helm license key (sfs_helm_xxx) — required for self-hosted
   server: ""        # License validation server (default: https://api.sessionfs.dev)
+  mode: "cloud"     # "cloud" or "local" — cloud validates against remote server, local validates against own API
+  tier: "enterprise"  # Local mode tier (ignored in cloud mode)
+  seats: 25         # Local mode seats (ignored in cloud mode)
+  org: ""           # Local mode org name (ignored in cloud mode)
+  expiresAt: ""     # Local mode expiry (ISO date or empty = no expiry, ignored in cloud mode)
 
 ## Security
 security:

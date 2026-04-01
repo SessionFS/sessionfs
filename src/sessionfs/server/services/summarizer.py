@@ -39,6 +39,7 @@ class SessionSummary:
     tests_failed: int = 0
     packages_installed: list[str] = field(default_factory=list)
     errors_encountered: list[str] = field(default_factory=list)
+    skills_used: list[str] = field(default_factory=list)
 
     # LLM narrative (optional)
     what_happened: str | None = None
@@ -76,6 +77,13 @@ def summarize_session(
 
     duration = _calc_duration(messages)
 
+    # Detect slash-command skills
+    from sessionfs.converters.skill_detector import detect_skills
+
+    source_tool = manifest.get("source_tool", manifest.get("source", {}).get("tool", ""))
+    detected_skills = detect_skills(messages, source_tool)
+    skills_used = sorted(set(s.name for s in detected_skills))
+
     return SessionSummary(
         session_id=manifest.get("session_id", ""),
         title=manifest.get("title", "Untitled"),
@@ -94,6 +102,7 @@ def summarize_session(
         tests_failed=test_results.failed,
         packages_installed=installs,
         errors_encountered=errors[:5],
+        skills_used=skills_used,
         generated_at=datetime.now(timezone.utc).isoformat(),
     )
 

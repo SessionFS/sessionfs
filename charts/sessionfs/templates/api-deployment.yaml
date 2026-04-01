@@ -36,21 +36,56 @@ spec:
           command: ["sh", "-c"]
           args:
             - |
-              RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
-                {{ .Values.license.server | default "https://api.sessionfs.dev" }}/api/v1/helm/validate \
-                -H "Content-Type: application/json" \
-                -d "{\"license_key\":\"$(SFS_LICENSE_KEY)\"}")
+              {{- if eq .Values.license.mode "local" }}
+              VALIDATE_URL="http://{{ include "sessionfs.fullname" . }}-api:{{ .Values.api.service.port }}/api/v1/helm/validate"
+              {{- else }}
+              VALIDATE_URL="{{ .Values.license.server | default "https://api.sessionfs.dev" }}/api/v1/helm/validate"
+              {{- end }}
 
-              HTTP_CODE=$(echo "$RESPONSE" | tail -1)
-              BODY=$(echo "$RESPONSE" | sed '$d')
+              ATTEMPT=0
+              MAX_RETRIES=5
+              SUCCESS=false
 
-              if [ "$HTTP_CODE" != "200" ]; then
-                echo "License validation failed: $BODY"
+              while [ "$ATTEMPT" -lt "$MAX_RETRIES" ]; do
+                ATTEMPT=$((ATTEMPT + 1))
+                echo "License validation attempt $ATTEMPT/$MAX_RETRIES..."
+
+                RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$VALIDATE_URL" \
+                  -H "Content-Type: application/json" \
+                  -H "X-Client-Version: {{ .Chart.AppVersion }}" \
+                  -d "{\"license_key\":\"$(SFS_LICENSE_KEY)\"}" 2>/dev/null) || true
+
+                HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+                BODY=$(echo "$RESPONSE" | sed '$d')
+
+                if [ "$HTTP_CODE" = "200" ]; then
+                  echo "{\"validated_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"response\":$BODY}" > /etc/sessionfs/license.json
+                  echo "License validated successfully"
+                  SUCCESS=true
+                  break
+                fi
+
+                echo "Attempt $ATTEMPT failed (HTTP $HTTP_CODE): $BODY"
+                if [ "$ATTEMPT" -lt "$MAX_RETRIES" ]; then
+                  sleep 5
+                fi
+              done
+
+              if [ "$SUCCESS" = "false" ]; then
+                # Cache fallback: use cached license if less than 7 days old
+                if [ -f /etc/sessionfs/license.json ]; then
+                  CACHE_AGE=$(( $(date +%s) - $(date -r /etc/sessionfs/license.json +%s 2>/dev/null || echo 0) ))
+                  MAX_AGE=$((7 * 86400))
+                  if [ "$CACHE_AGE" -lt "$MAX_AGE" ]; then
+                    echo "Validation server unreachable, using cached license (age: ${CACHE_AGE}s)"
+                    exit 0
+                  else
+                    echo "Cached license expired (age: ${CACHE_AGE}s, max: ${MAX_AGE}s)"
+                  fi
+                fi
+                echo "License validation failed after $MAX_RETRIES attempts and no valid cache"
                 exit 1
               fi
-
-              echo "$BODY" > /etc/sessionfs/license.json
-              echo "License validated successfully"
           env:
             - name: SFS_LICENSE_KEY
               valueFrom:

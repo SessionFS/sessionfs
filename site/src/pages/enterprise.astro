@@ -1,18 +1,20 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
 ---
-<BaseLayout title="Enterprise — SessionFS" activeNav="enterprise" description="Self-hosted SessionFS on Kubernetes. Your data stays on your infrastructure.">
+<BaseLayout title="Enterprise — SessionFS" activeNav="enterprise" description="AI coding agent governance for enterprise. Audit trail across 8 tools. Self-hosted on your infrastructure.">
 
-  <!-- Hero -->
+  <!-- Section 1: Hero -->
   <section class="relative pt-32 sm:pt-40 pb-16 px-5 noise">
     <div class="max-w-4xl mx-auto text-center">
       <h1 class="fade-up font-heading text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight leading-[1.1] mb-6">
-        Deploy anywhere.<br>Control everything.
+        Know what your AI coding agents are doing.
       </h1>
-      <p class="fade-up text-lg sm:text-xl text-muted leading-relaxed max-w-xl mx-auto mb-4">
-        Self-hosted Kubernetes deployment with Helm. Your data stays on your infrastructure.
+      <p class="fade-up text-lg sm:text-xl text-muted leading-relaxed max-w-2xl mx-auto mb-4">
+        Your engineers use Claude Code, Codex, Gemini, Cursor, and Copilot every day. Every session generates file writes, test runs, and package installs. Today, none of it is audited.
       </p>
-      <p class="fade-up text-base text-muted-dim max-w-lg mx-auto">Enterprise-tested on AWS EKS. Works on GKE, AKS, and on-prem clusters.</p>
+      <p class="fade-up text-base text-muted-dim max-w-2xl mx-auto">
+        SessionFS captures every AI coding session automatically — across 8 tools, with zero developer behavior change. The audit trail your compliance team needs. The visibility your CISO demands.
+      </p>
       <div class="fade-up mt-10 flex flex-col sm:flex-row gap-3 justify-center">
         <a href="mailto:enterprise@sessionfs.dev?subject=SessionFS%20Enterprise" class="inline-flex items-center justify-center gap-2 bg-brand text-white font-semibold rounded-lg px-7 py-3 hover:brightness-110 transition">
           Contact Enterprise Sales
@@ -27,8 +29,166 @@ import BaseLayout from '../layouts/BaseLayout.astro';
 
   <div class="grad-divider"></div>
 
-  <!-- Helm terminal + deployment highlight -->
+  <!-- Section 2: The Problem — 3 stat cards -->
   <section class="relative py-20 sm:py-28 px-5 noise">
+    <div class="max-w-5xl mx-auto">
+      <h2 class="fade-up font-heading text-3xl sm:text-4xl font-bold text-center mb-4">The shadow AI problem</h2>
+      <p class="fade-up text-muted text-center mb-14 max-w-lg mx-auto leading-relaxed">AI coding agents are already on your network. The question is whether you can see what they do.</p>
+      <div class="grid md:grid-cols-3 gap-5">
+        <div class="glass fade-up p-6 text-center">
+          <div class="font-heading text-4xl sm:text-5xl font-extrabold text-brand mb-3">80.9%</div>
+          <p class="text-muted text-base leading-relaxed">of engineering teams run AI agents without full security approval</p>
+        </div>
+        <div class="glass fade-up p-6 text-center">
+          <div class="font-heading text-4xl sm:text-5xl font-extrabold text-brand mb-3">24.4%</div>
+          <p class="text-muted text-base leading-relaxed">have visibility into AI agent communications</p>
+        </div>
+        <div class="glass fade-up p-6 text-center">
+          <div class="font-heading text-4xl sm:text-5xl font-extrabold text-brand mb-3">$670K</div>
+          <p class="text-muted text-base leading-relaxed">more per incident when shadow AI is involved</p>
+        </div>
+      </div>
+      <p class="fade-up text-muted-dim text-sm text-center mt-8">Sources: Gravitee 2026, Microsoft Data Security Index 2026</p>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- Section 3: Three Pillars -->
+
+  <!-- Pillar 1: Complete Visibility -->
+  <section class="relative py-20 sm:py-28 px-5 noise">
+    <div class="max-w-5xl mx-auto flex flex-col lg:flex-row items-center gap-12">
+      <div class="lg:w-1/2 fade-up">
+        <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-5">Complete visibility</h2>
+        <p class="text-muted text-lg mb-4 leading-relaxed">SessionFS captures every session across 8 tools automatically. No developer behavior change required. No agents to install in each tool. One daemon watches everything.</p>
+        <div class="flex flex-wrap gap-3">
+          <span class="font-mono text-sm bg-surface border border-border rounded px-3 py-1.5 text-muted-dim">Claude Code</span>
+          <span class="font-mono text-sm bg-surface border border-border rounded px-3 py-1.5 text-muted-dim">Codex</span>
+          <span class="font-mono text-sm bg-surface border border-border rounded px-3 py-1.5 text-muted-dim">Gemini</span>
+          <span class="font-mono text-sm bg-surface border border-border rounded px-3 py-1.5 text-muted-dim">Copilot</span>
+          <span class="font-mono text-sm bg-surface border border-border rounded px-3 py-1.5 text-muted-dim">Cursor</span>
+          <span class="font-mono text-sm bg-surface border border-border rounded px-3 py-1.5 text-muted-dim">Amp</span>
+          <span class="font-mono text-sm bg-surface border border-border rounded px-3 py-1.5 text-muted-dim">Cline</span>
+          <span class="font-mono text-sm bg-surface border border-border rounded px-3 py-1.5 text-muted-dim">Roo Code</span>
+        </div>
+      </div>
+      <div class="lg:w-1/2 w-full fade-up">
+        <div class="relative">
+          <div class="hero-glow"></div>
+          <div class="term relative z-10">
+            <div class="term-bar">
+              <div class="term-dot bg-[#ff5f57]"></div>
+              <div class="term-dot bg-[#febc2e]"></div>
+              <div class="term-dot bg-[#28c840]"></div>
+              <span class="ml-3 text-muted-dim text-[13px] font-mono">session list</span>
+            </div>
+            <div class="p-5 font-mono text-sm leading-relaxed">
+              <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs list --today</span></div>
+              <div class="mt-3 text-muted-dim text-sm uppercase tracking-wider">Sessions (12)</div>
+              <table class="w-full mt-2 text-sm">
+                <thead><tr class="text-muted-dim text-left border-b border-border">
+                  <th class="pr-2 pb-1.5 font-medium">ID</th>
+                  <th class="pr-2 pb-1.5 font-medium">Tool</th>
+                  <th class="pr-2 pb-1.5 font-medium text-right">Msgs</th>
+                  <th class="pb-1.5 font-medium hidden sm:table-cell">Title</th>
+                </tr></thead>
+                <tbody class="text-txt">
+                  <tr><td class="pr-2 py-1 text-brand">ses_a1b2</td><td class="pr-2 text-muted-dim">claude-code</td><td class="pr-2 text-right">47</td><td class="hidden sm:table-cell text-muted">Debug auth middleware</td></tr>
+                  <tr><td class="pr-2 py-1 text-brand">ses_c3d4</td><td class="pr-2 text-muted-dim">codex</td><td class="pr-2 text-right">31</td><td class="hidden sm:table-cell text-muted">Refactor database schema</td></tr>
+                  <tr><td class="pr-2 py-1 text-brand">ses_e5f6</td><td class="pr-2 text-muted-dim">gemini</td><td class="pr-2 text-right">23</td><td class="hidden sm:table-cell text-muted">Add rate limiting</td></tr>
+                  <tr><td class="pr-2 py-1 text-brand">ses_g7h8</td><td class="pr-2 text-muted-dim">cursor</td><td class="pr-2 text-right">52</td><td class="hidden sm:table-cell text-muted">Implement OAuth2 flow</td></tr>
+                  <tr><td class="pr-2 py-1 text-brand">ses_i9j0</td><td class="pr-2 text-muted-dim">amp</td><td class="pr-2 text-right">18</td><td class="hidden sm:table-cell text-muted">Write migration script</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- Pillar 2: AI-Verified Audit Trail -->
+  <section class="relative py-20 sm:py-28 px-5 bg-surface/50 noise">
+    <div class="max-w-5xl mx-auto flex flex-col lg:flex-row items-center gap-12">
+      <div class="lg:w-1/2 fade-up">
+        <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-5">AI-verified audit trail</h2>
+        <p class="text-muted text-lg mb-4 leading-relaxed">LLM Judge cross-references every claim an AI agent makes against the actual evidence in your codebase. CWE classification. Confidence scores. Dismiss false positives with a single command.</p>
+        <p class="text-muted text-lg leading-relaxed">Runs automatically on sync or PR/MR. Contradiction reports appear directly in GitHub PR comments and GitLab MR threads.</p>
+      </div>
+      <div class="lg:w-1/2 w-full fade-up">
+        <div class="relative">
+          <div class="hero-glow"></div>
+          <div class="term relative z-10">
+            <div class="term-bar">
+              <div class="term-dot bg-[#ff5f57]"></div>
+              <div class="term-dot bg-[#febc2e]"></div>
+              <div class="term-dot bg-[#28c840]"></div>
+              <span class="ml-3 text-muted-dim text-[13px] font-mono">audit report</span>
+            </div>
+            <div class="p-5 font-mono text-sm leading-relaxed">
+              <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs audit ses_a1b2</span></div>
+              <div class="mt-3 text-muted">Trust Score: <span class="text-txt font-semibold">87%</span>&nbsp; |&nbsp; Claims: <span class="text-txt">23</span>&nbsp; |&nbsp; Verified: <span class="text-accent">18</span>&nbsp; |&nbsp; Contradictions: <span class="text-[#ff5f57]">2</span></div>
+              <div class="border-t border-border mt-3 pt-3">
+                <div class="text-[#ff5f57] font-semibold">CRITICAL [CWE-393] Confidence: 94%</div>
+                <div class="text-muted-dim mt-1 pl-2">Claim: "All tests pass with exit code 0"</div>
+                <div class="text-muted pl-2">Evidence: exit code 1, 3 tests failed</div>
+              </div>
+              <div class="border-t border-border mt-3 pt-3">
+                <div class="text-[#febc2e] font-semibold">HIGH [CWE-552] Confidence: 78%</div>
+                <div class="text-muted-dim mt-1 pl-2">Claim: "Created config.yaml with database settings"</div>
+                <div class="text-muted pl-2">Evidence: File not found in workspace</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- Pillar 3: Secrets Never Leave -->
+  <section class="relative py-20 sm:py-28 px-5 noise">
+    <div class="max-w-5xl mx-auto flex flex-col lg:flex-row items-center gap-12">
+      <div class="lg:w-1/2 fade-up">
+        <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-5">Secrets never leave</h2>
+        <p class="text-muted text-lg mb-4 leading-relaxed">DLP scanning detects sensitive content before any session syncs to the cloud. AWS keys, connection strings, API tokens, and 18 PHI identifiers for HIPAA compliance. BLOCK, REDACT, or WARN policies per organization.</p>
+        <p class="text-muted text-lg leading-relaxed">BAA available for healthcare deployments.</p>
+      </div>
+      <div class="lg:w-1/2 w-full fade-up">
+        <div class="relative">
+          <div class="hero-glow"></div>
+          <div class="term relative z-10">
+            <div class="term-bar">
+              <div class="term-dot bg-[#ff5f57]"></div>
+              <div class="term-dot bg-[#febc2e]"></div>
+              <div class="term-dot bg-[#28c840]"></div>
+              <span class="ml-3 text-muted-dim text-[13px] font-mono">dlp scan</span>
+            </div>
+            <div class="p-5 font-mono text-sm leading-relaxed">
+              <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs push ses_abc</span></div>
+              <div class="mt-3 text-muted">DLP scan...</div>
+              <div class="text-[#febc2e] mt-1 pl-2">AWS_ACCESS_KEY detected in message 23</div>
+              <div class="text-[#febc2e] pl-2">CONNECTION_STRING detected in message 41</div>
+              <div class="border-t border-border mt-3 pt-3">
+                <div class="text-muted">Policy: <span class="text-txt font-semibold">REDACT</span></div>
+                <div class="text-accent mt-1">2 secrets redacted. Session pushed.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="text-muted-dim text-sm mt-4">DLP scanning — coming in v1.0</p>
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- Section 4: Infrastructure (Helm) -->
+  <section class="relative py-20 sm:py-28 px-5 bg-surface/50 noise">
     <div class="max-w-5xl mx-auto flex flex-col lg:flex-row items-center gap-12">
       <div class="lg:w-1/2 fade-up">
         <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-5">One Helm chart. Any cluster.</h2>
@@ -75,48 +235,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
 
   <div class="grad-divider"></div>
 
-  <!-- Feature cards -->
-  <section class="relative py-20 sm:py-28 px-5 bg-surface/50 noise">
-    <div class="max-w-5xl mx-auto">
-      <h2 class="fade-up font-heading text-3xl sm:text-4xl font-bold text-center mb-4">Built for engineering teams</h2>
-      <p class="fade-up text-muted text-center mb-14 max-w-lg mx-auto leading-relaxed">Everything you need to run SessionFS at scale, on your own infrastructure.</p>
-      <div class="grid md:grid-cols-2 gap-5">
-
-        <div class="glass fade-up p-6">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#4f9cf7" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/></svg></div>
-          <h3 class="font-heading font-semibold text-lg mb-3">Data sovereignty</h3>
-          <p class="text-muted text-base mb-4 leading-relaxed">Your bucket, your database, your infrastructure. Session data never leaves your network. No callbacks, no telemetry, no surprise egress.</p>
-          <p class="text-muted-dim text-sm">S3, GCS, or local PVC &middot; PostgreSQL (RDS, Cloud SQL, or built-in)</p>
-        </div>
-
-        <div class="glass fade-up p-6">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#4f9cf7" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/></svg></div>
-          <h3 class="font-heading font-semibold text-lg mb-3">AI governance</h3>
-          <p class="text-muted text-base mb-4 leading-relaxed">Complete audit trail of every AI agent action across your team. LLM Judge with severity-classified findings, stored audit history, and model comparison over time.</p>
-          <p class="text-muted-dim text-sm">Auto-audit on sync or PR/MR &middot; Contradiction reports in PR comments</p>
-        </div>
-
-        <div class="glass fade-up p-6">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#4f9cf7" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg></div>
-          <h3 class="font-heading font-semibold text-lg mb-3">Your LLM gateway</h3>
-          <p class="text-muted text-base mb-4 leading-relaxed">Bring your own LLM — connect the Judge to your internal gateway and never expose API keys to developers. Works with any OpenAI-compatible endpoint.</p>
-          <p class="text-muted-dim text-sm">LiteLLM, vLLM, Ollama, Azure OpenAI, Anthropic, Google</p>
-        </div>
-
-        <div class="glass fade-up p-6">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#4f9cf7" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z"/></svg></div>
-          <h3 class="font-heading font-semibold text-lg mb-3">Team handoff at scale</h3>
-          <p class="text-muted text-base mb-4 leading-relaxed">Engineers hand off sessions with full context — conversation, workspace state, git snapshot. Paths auto-resolve by git remote URL across different machines.</p>
-          <p class="text-muted-dim text-sm">Email notifications via Resend, SMTP, or air-gapped (no email)</p>
-        </div>
-
-      </div>
-    </div>
-  </section>
-
-  <div class="grad-divider"></div>
-
-  <!-- Security & Compliance -->
+  <!-- Section 5: Security & Compliance Checklist -->
   <section class="relative py-20 sm:py-28 px-5 noise">
     <div class="max-w-5xl mx-auto">
       <div class="flex flex-col lg:flex-row items-start gap-12">
@@ -158,6 +277,20 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <div class="border-t border-border pt-4 flex items-start gap-3">
               <span class="text-accent text-lg mt-0.5">&#10003;</span>
               <div>
+                <div class="font-semibold text-sm mb-1">DLP / Secret scanning</div>
+                <div class="text-muted text-base">18 PHI identifiers, BLOCK/REDACT/WARN policies per organization. Detects API keys, connection strings, and tokens before sync. <span class="text-muted-dim">(Coming v1.0)</span></div>
+              </div>
+            </div>
+            <div class="border-t border-border pt-4 flex items-start gap-3">
+              <span class="text-accent text-lg mt-0.5">&#10003;</span>
+              <div>
+                <div class="font-semibold text-sm mb-1">License management</div>
+                <div class="text-muted text-base">Trial keys, paid licenses, cloud or local validation. Self-hosted license server for air-gapped environments.</div>
+              </div>
+            </div>
+            <div class="border-t border-border pt-4 flex items-start gap-3">
+              <span class="text-accent text-lg mt-0.5">&#10003;</span>
+              <div>
                 <div class="font-semibold text-sm mb-1">SLA &amp; dedicated support</div>
                 <div class="text-muted text-base">Guaranteed uptime SLA, named support contact, and direct Slack channel for enterprise accounts.</div>
               </div>
@@ -170,12 +303,27 @@ import BaseLayout from '../layouts/BaseLayout.astro';
 
   <div class="grad-divider"></div>
 
-  <!-- CTA -->
+  <!-- Section 6: Social Proof -->
+  <section class="relative py-16 sm:py-20 px-5 noise">
+    <div class="max-w-3xl mx-auto">
+      <div class="glass fade-up p-8 sm:p-10" style="border-left: 3px solid rgba(79,156,247,0.5);">
+        <blockquote class="text-lg sm:text-xl text-muted leading-relaxed italic mb-6">
+          "A major healthcare organization deploys SessionFS on AWS EKS with full network isolation for HIPAA compliance."
+        </blockquote>
+        <p class="text-muted-dim text-sm font-medium">— Enterprise deployed, HIPAA environment</p>
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- Section 7: CTA -->
   <section class="relative py-16 px-5 noise">
     <div class="max-w-2xl mx-auto">
       <div class="glass fade-up p-8 sm:p-10 text-center" style="border-color: rgba(79,156,247,0.3);">
         <h2 class="font-heading text-2xl sm:text-3xl font-bold mb-3">Talk to the team</h2>
         <p class="text-muted mb-2 leading-relaxed">Self-hosted deployment, compliance requirements, custom SLA, and pricing for large teams.</p>
+        <p class="text-muted-dim text-sm mb-2">14-day trial license available for self-hosted evaluation.</p>
         <p class="text-muted-dim text-sm mb-8">We typically respond within one business day.</p>
         <a href="mailto:enterprise@sessionfs.dev?subject=SessionFS%20Enterprise" class="inline-flex items-center justify-center gap-2 bg-brand text-white font-semibold rounded-lg px-8 py-3.5 hover:brightness-110 transition">
           Contact Enterprise Sales
