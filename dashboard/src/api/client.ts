@@ -192,6 +192,42 @@ export interface FolderSessionsResponse {
   total: number;
 }
 
+export interface HelmLicense {
+  id: string;
+  org_name: string;
+  contact_email: string;
+  license_type: string;
+  tier: string;
+  seats_limit: number;
+  status: string;
+  effective_status: string;
+  expires_at: string | null;
+  last_validated_at: string | null;
+  validation_count: number;
+  created_at: string;
+  notes: string | null;
+}
+
+export interface LicenseValidation {
+  id: number;
+  cluster_id: string | null;
+  ip_address: string | null;
+  result: string;
+  tier: string;
+  version: string | null;
+  validated_at: string;
+}
+
+export interface CreateLicenseRequest {
+  org_name: string;
+  contact_email: string;
+  license_type: 'trial' | 'paid';
+  tier: string;
+  seats_limit: number;
+  days?: number;
+  notes?: string;
+}
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -400,6 +436,30 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       if (params.page_size) sp.set('page_size', String(params.page_size));
       return request<{ actions: AdminActionLog[]; total: number }>(`/api/v1/admin/actions?${sp}`);
     },
+
+    adminListLicenses: (status?: string) =>
+      request<{ licenses: HelmLicense[] }>(`/api/v1/admin/licenses?status=${status || 'all'}`),
+
+    adminCreateLicense: (data: CreateLicenseRequest) =>
+      request<HelmLicense>('/api/v1/admin/licenses', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+
+    adminExtendLicense: (key: string, days: number) =>
+      request<HelmLicense>(`/api/v1/admin/licenses/${key}/extend`, {
+        method: 'PUT',
+        body: JSON.stringify({ days }),
+      }),
+
+    adminRevokeLicense: (key: string, reason: string) =>
+      request<{ status: string }>(`/api/v1/admin/licenses/${key}`, {
+        method: 'PUT',
+        body: JSON.stringify({ status: 'revoked', notes: reason }),
+      }),
+
+    adminGetLicenseHistory: (key: string) =>
+      request<{ validations: LicenseValidation[] }>(`/api/v1/admin/licenses/${key}/history`),
 
     setAlias: (sessionId: string, alias: string) =>
       request<SessionDetail>(`/api/v1/sessions/${sessionId}/alias`, {

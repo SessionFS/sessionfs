@@ -10,6 +10,9 @@ import {
 import type { AdminUser } from '../api/client';
 import RelativeDate from '../components/RelativeDate';
 import ConfirmModal from './ConfirmModal';
+import LicensesTab from './LicensesTab';
+
+type AdminTab = 'users' | 'licenses';
 
 const TIER_COLORS: Record<string, string> = {
   free: 'bg-gray-500/20 text-gray-400',
@@ -28,6 +31,7 @@ function formatBytes(bytes: number): string {
 }
 
 export default function AdminDashboard() {
+  const [activeTab, setActiveTab] = useState<AdminTab>('users');
   const [emailSearch, setEmailSearch] = useState('');
   const [expandedUserId, setExpandedUserId] = useState<string | null>(null);
   const [pendingTier, setPendingTier] = useState<Record<string, string>>({});
@@ -147,8 +151,34 @@ export default function AdminDashboard() {
         )}
       </section>
 
+      {/* Tab Navigation */}
+      <div className="flex gap-0 border-b border-border mb-6">
+        <button
+          onClick={() => setActiveTab('users')}
+          className={`px-4 py-2 text-sm font-medium transition-colors ${
+            activeTab === 'users'
+              ? 'text-text-primary border-b-2 border-accent -mb-px'
+              : 'text-text-muted hover:text-text-secondary'
+          }`}
+        >
+          Users
+        </button>
+        <button
+          onClick={() => setActiveTab('licenses')}
+          className={`px-4 py-2 text-sm font-medium transition-colors ${
+            activeTab === 'licenses'
+              ? 'text-text-primary border-b-2 border-accent -mb-px'
+              : 'text-text-muted hover:text-text-secondary'
+          }`}
+        >
+          Licenses
+        </button>
+      </div>
+
+      {activeTab === 'licenses' && <LicensesTab />}
+
       {/* User Management */}
-      <section className="mb-8">
+      {activeTab === 'users' && <><section className="mb-8">
         <h2 className="text-sm font-medium text-text-secondary uppercase tracking-wider mb-3">
           User Management
         </h2>
@@ -251,7 +281,7 @@ export default function AdminDashboard() {
         ) : (
           <div className="text-center py-8 text-text-muted text-sm">No recent actions</div>
         )}
-      </section>
+      </section></>}
 
       {/* Delete confirmation modal */}
       <ConfirmModal
