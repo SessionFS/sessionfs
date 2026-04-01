@@ -1,0 +1,57 @@
+{{- if and .Values.license.key (eq .Values.license.mode "local") }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "sessionfs.fullname" . }}-seed-license-{{ .Release.Revision }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "-4"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: seed
+          image: {{ include "sessionfs.api.image" . }}
+          command: ["python", "-c"]
+          args:
+            - |
+              import os, sys
+              from sqlalchemy import create_engine, text
+              url = os.environ["SFS_DATABASE_URL"].replace("+asyncpg", "").replace("+aiosqlite", "")
+              engine = create_engine(url)
+              with engine.connect() as conn:
+                  conn.execute(text("""
+                      INSERT INTO helm_licenses (id, org_name, contact_email, tier, seats_limit, status, license_type)
+                      VALUES (:key, :org, :email, :tier, :seats, 'active', :ltype)
+                      ON CONFLICT (id) DO UPDATE SET
+                          tier = EXCLUDED.tier,
+                          seats_limit = EXCLUDED.seats_limit,
+                          status = 'active'
+                  """), {
+                      "key": os.environ["SFS_LICENSE_KEY"],
+                      "org": os.environ.get("SFS_LICENSE_ORG", "Self-Hosted"),
+                      "email": "admin@localhost",
+                      "tier": os.environ.get("SFS_LICENSE_TIER", "enterprise"),
+                      "seats": int(os.environ.get("SFS_LICENSE_SEATS", "25")),
+                      "ltype": "trial" if os.environ["SFS_LICENSE_KEY"].startswith("sfs_trial_") else "paid",
+                  })
+                  conn.commit()
+              print("License seeded successfully")
+          env:
+            - name: SFS_DATABASE_URL
+              value: {{ include "sessionfs.databaseUrl" . | quote }}
+            - name: SFS_LICENSE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sessionfs.fullname" . }}-license
+                  key: license-key
+            - name: SFS_LICENSE_ORG
+              value: {{ .Values.license.org | quote }}
+            - name: SFS_LICENSE_TIER
+              value: {{ .Values.license.tier | quote }}
+            - name: SFS_LICENSE_SEATS
+              value: {{ .Values.license.seats | quote }}
+            {{- include "sessionfs.databaseEnv" . | nindent 12 }}
+{{- end }}
