@@ -2,12 +2,15 @@ const TOOL_MAP: Record<string, { color: string; label: string }> = {
   'claude-code': { color: 'var(--tool-claude)', label: 'Claude Code' },
   claude: { color: 'var(--tool-claude)', label: 'Claude' },
   codex: { color: 'var(--tool-codex)', label: 'Codex' },
-  gemini: { color: 'var(--tool-gemini)', label: 'Gemini' },
+  gemini: { color: 'var(--tool-gemini)', label: 'Gemini CLI' },
+  'gemini-cli': { color: 'var(--tool-gemini)', label: 'Gemini CLI' },
   copilot: { color: 'var(--tool-copilot)', label: 'Copilot' },
+  'copilot-cli': { color: 'var(--tool-copilot)', label: 'Copilot' },
   cursor: { color: 'var(--tool-cursor)', label: 'Cursor' },
   amp: { color: 'var(--tool-amp)', label: 'Amp' },
   cline: { color: 'var(--tool-cline)', label: 'Cline' },
-  roo: { color: 'var(--tool-roo)', label: 'Roo' },
+  roo: { color: 'var(--tool-roo)', label: 'Roo Code' },
+  'roo-code': { color: 'var(--tool-roo)', label: 'Roo Code' },
 };
 
 const SIZES = {

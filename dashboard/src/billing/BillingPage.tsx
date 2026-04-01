@@ -98,6 +98,7 @@ export default function BillingPage() {
 
   const currentTier = billing?.tier || 'free';
   const hasSubscription = billing?.has_subscription;
+  const isBeta = !hasSubscription; // During beta, all features are free
   const storagePct = billing?.storage_limit_bytes > 0
     ? Math.min(100, (billing.storage_used_bytes / billing.storage_limit_bytes) * 100)
     : 0;
@@ -113,9 +114,16 @@ export default function BillingPage() {
             <p className="text-sm text-[var(--text-tertiary)] mb-1">Current Plan</p>
             <div className="flex items-center gap-2">
               <p className="text-xl font-semibold text-[var(--text-primary)] capitalize">{currentTier}</p>
-              <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-[var(--brand)]/15 text-[var(--brand)]">
-                Current plan
-              </span>
+              {isBeta && (
+                <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-[var(--accent)]/15 text-[var(--accent)]">
+                  Beta — all features included
+                </span>
+              )}
+              {!isBeta && (
+                <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-[var(--brand)]/15 text-[var(--brand)]">
+                  Current plan
+                </span>
+              )}
             </div>
           </div>
           {billing?.storage_limit_bytes > 0 && (
@@ -187,7 +195,9 @@ export default function BillingPage() {
               <div className="mt-6">
                 {isCurrent ? (
                   <span className="block text-center py-2 text-[var(--text-tertiary)] text-sm">Current plan</span>
-                ) : t.tier === 'free' ? null : (
+                ) : t.tier === 'free' ? null : isBeta ? (
+                  <span className="block text-center py-2 text-[var(--text-tertiary)] text-sm">Coming soon</span>
+                ) : (
                   <button
                     onClick={() => checkoutMutation.mutate(t.tier)}
                     disabled={checkoutMutation.isPending}
@@ -207,8 +217,27 @@ export default function BillingPage() {
       </div>
 
       <p className="text-center text-sm text-[var(--text-tertiary)] mt-8">
-        Need Enterprise? <a href="mailto:sales@sessionfs.dev" className="text-[var(--brand)] hover:underline">Contact sales</a>
+        Need Enterprise? <a href="mailto:enterprise@sessionfs.dev" className="text-[var(--brand)] hover:underline">Contact sales</a>
+        {' · '}
+        <a href="https://sessionfs.dev/enterprise/" className="text-[var(--brand)] hover:underline">Learn more</a>
       </p>
+
+      {/* Storage usage */}
+      {billing?.storage_used_bytes != null && (
+        <div className="mt-8 pt-6 border-t border-[var(--border)]">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-[var(--text-tertiary)] mb-3">Storage Usage</h2>
+          <div className="w-full h-3 bg-[var(--border)] rounded-full overflow-hidden">
+            <div
+              className="h-full bg-[var(--brand)] rounded-full transition-all"
+              style={{ width: `${Math.min(100, billing.storage_limit_bytes > 0 ? (billing.storage_used_bytes / billing.storage_limit_bytes) * 100 : 0)}%` }}
+            />
+          </div>
+          <p className="text-sm text-[var(--text-tertiary)] mt-2">
+            {formatBytes(billing.storage_used_bytes)} used
+            {billing.storage_limit_bytes > 0 && ` of ${formatBytes(billing.storage_limit_bytes)}`}
+          </p>
+        </div>
+      )}
     </div>
   );
 }
