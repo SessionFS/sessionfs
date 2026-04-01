@@ -248,10 +248,9 @@ async def test_search_free_tier_gets_403(
     assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
     data = resp.json()
     # Custom error handler wraps as: {"error": {"code": "403", "details": {...}}}
-    tier_error = data["error"]["details"]["error"]
-    assert tier_error["code"] == "TIER_LIMIT"
-    assert "Pro" in tier_error["message"]
-    assert tier_error["required_tier"] == "pro"
+    details = data["error"]["details"]
+    assert details["error"] == "upgrade_required"
+    assert details["feature"] == "cloud_sync"
 
 
 @pytest.mark.asyncio

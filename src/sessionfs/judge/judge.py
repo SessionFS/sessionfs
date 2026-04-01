@@ -345,6 +345,20 @@ async def judge_session(
     if not messages:
         raise ValueError(f"No messages found in session {session_id}")
 
+    # Check for zero tool calls and prepare warning
+    _warnings: list[str] = []
+    has_tool_calls = any(
+        isinstance(b, dict) and b.get("type") == "tool_use"
+        for msg in messages
+        for b in (msg.get("content", []) if isinstance(msg.get("content"), list) else [])
+    )
+    if not has_tool_calls:
+        _warnings.append(
+            "This session contains no tool call data. The audit may produce limited results "
+            "because there is no tool output evidence to verify claims against. "
+            "Tools that don't expose tool calls: Gemini CLI, Amp."
+        )
+
     # Extract claims and evidence from the full message list
     all_claims = extract_claims(messages)
     all_evidence = gather_evidence(messages)
@@ -361,6 +375,7 @@ async def judge_session(
                 trust_score=1.0, major_findings=0, moderate_findings=0,
                 minor_findings=0,
             ),
+            warnings=_warnings,
         )
         save_report(report, sfs_dir)
         return report
@@ -410,6 +425,7 @@ async def judge_session(
         timestamp=datetime.now(timezone.utc).isoformat(),
         findings=all_findings,
         summary=summary,
+        warnings=_warnings,
     )
 
     save_report(report, sfs_dir)

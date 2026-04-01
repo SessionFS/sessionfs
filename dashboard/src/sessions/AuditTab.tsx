@@ -196,6 +196,16 @@ function AuditReportView({
 
   return (
     <div className="p-4 max-w-3xl mx-auto">
+      {/* Warnings banner */}
+      {report.warnings && report.warnings.length > 0 && (
+        <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3 mb-4">
+          <p className="text-yellow-400 text-sm font-medium">Warning</p>
+          {report.warnings.map((w, i) => (
+            <p key={i} className="text-text-muted text-sm mt-1">{w}</p>
+          ))}
+        </div>
+      )}
+
       {/* Metric Cards */}
       <div className="grid grid-cols-3 sm:grid-cols-6 gap-3 mb-6">
         <MetricCard

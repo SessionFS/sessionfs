@@ -68,6 +68,11 @@ def audit(
     else:
         _display_report(report, json_output)
 
+    # Show warnings if present
+    if hasattr(report, "warnings") and report.warnings:
+        for warning in report.warnings:
+            err_console.print(f"[yellow]Warning: {warning}[/yellow]")
+
 
 def _resolve_api_key(explicit_key: str | None, model: str) -> str | None:
     """Resolve API key from flag, config, or environment."""

@@ -21,6 +21,27 @@ from sessionfs.spec.version import SFS_FORMAT_VERSION, SFS_CONVERTER_VERSION
 logger = logging.getLogger("sessionfs.converters.gemini_to_sfs")
 
 
+def _extract_tool_result_text(result: list[dict[str, Any]] | Any) -> str:
+    """Extract a text string from a Gemini toolCalls result array.
+
+    Each entry in the result array is a dict with a ``functionResponse`` key
+    containing ``response.output``.  We concatenate all output strings.
+    """
+    if not isinstance(result, list):
+        return str(result) if result else ""
+
+    parts: list[str] = []
+    for entry in result:
+        if not isinstance(entry, dict):
+            continue
+        fr = entry.get("functionResponse", {})
+        resp = fr.get("response", {})
+        output = resp.get("output", "")
+        if output:
+            parts.append(str(output))
+    return "\n".join(parts) if parts else ""
+
+
 @dataclass
 class GeminiParsedSession:
     """Intermediate representation of a parsed Gemini CLI session."""
@@ -36,6 +57,7 @@ class GeminiParsedSession:
     messages: list[dict[str, Any]] = field(default_factory=list)
     message_count: int = 0
     turn_count: int = 0
+    tool_use_count: int = 0
     parse_errors: list[str] = field(default_factory=list)
 
 
@@ -54,6 +76,7 @@ def parse_gemini_session(session_path: Path) -> GeminiParsedSession:
 
     sfs_messages: list[dict[str, Any]] = []
     turn_count = 0
+    tool_use_count = 0
     prev_role = None
 
     for msg in data.get("messages", []):
@@ -98,7 +121,63 @@ def parse_gemini_session(session_path: Path) -> GeminiParsedSession:
         elif msg_type == "gemini":
             # Content is a plain string
             text = str(content_raw) if content_raw else ""
-            if text:
+            tool_calls = msg.get("toolCalls", [])
+
+            if tool_calls:
+                # Gemini CLI stores tool calls as a `toolCalls` array on
+                # assistant messages. Each entry has: id, name, args, result,
+                # status, timestamp, displayName, description.
+                #
+                # We emit the assistant text + tool_use blocks in one message,
+                # then a separate tool_result message for each call's response.
+                asst_content: list[dict[str, Any]] = []
+                if text:
+                    asst_content.append({"type": "text", "text": text})
+
+                for tc in tool_calls:
+                    tc_id = tc.get("id", f"tc_{len(sfs_messages):04d}")
+                    tc_name = tc.get("displayName") or tc.get("name", "unknown")
+                    tc_args = tc.get("args", {})
+
+                    asst_content.append({
+                        "type": "tool_use",
+                        "id": tc_id,
+                        "name": tc_name,
+                        "input": tc_args if isinstance(tc_args, dict) else {},
+                    })
+                    tool_use_count += 1
+
+                if asst_content:
+                    sfs_messages.append({
+                        "msg_id": msg_id,
+                        "role": "assistant",
+                        "content": asst_content,
+                        "timestamp": timestamp,
+                    })
+
+                # Emit tool_result messages
+                for tc in tool_calls:
+                    tc_id = tc.get("id", "")
+                    tc_result = tc.get("result", [])
+                    tc_status = tc.get("status", "")
+                    result_text = _extract_tool_result_text(tc_result)
+                    is_error = tc_status == "error"
+
+                    result_msg_id = f"{msg_id}_result_{tc_id}"
+                    tc_timestamp = tc.get("timestamp", timestamp)
+                    sfs_messages.append({
+                        "msg_id": result_msg_id,
+                        "role": "tool",
+                        "content": [{
+                            "type": "tool_result",
+                            "tool_use_id": tc_id,
+                            "content": result_text,
+                            "is_error": is_error,
+                        }],
+                        "timestamp": tc_timestamp,
+                    })
+
+            elif text:
                 sfs_messages.append({
                     "msg_id": msg_id,
                     "role": "assistant",
@@ -133,6 +212,7 @@ def parse_gemini_session(session_path: Path) -> GeminiParsedSession:
     session.messages = sfs_messages
     session.message_count = len(sfs_messages)
     session.turn_count = turn_count
+    session.tool_use_count = tool_use_count
     return session
 
 
@@ -192,7 +272,7 @@ def convert_gemini_to_sfs(
         "stats": {
             "message_count": gemini_session.message_count,
             "turn_count": gemini_session.turn_count,
-            "tool_use_count": 0,
+            "tool_use_count": gemini_session.tool_use_count,
             "total_input_tokens": 0,
             "total_output_tokens": 0,
             "duration_ms": duration_ms,

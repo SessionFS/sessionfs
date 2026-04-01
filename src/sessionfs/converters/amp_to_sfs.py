@@ -34,6 +34,7 @@ class AmpParsedSession:
     messages: list[dict[str, Any]] = field(default_factory=list)
     message_count: int = 0
     turn_count: int = 0
+    tool_use_count: int = 0
     total_input_tokens: int = 0
     total_output_tokens: int = 0
     parse_errors: list[str] = field(default_factory=list)
@@ -106,6 +107,7 @@ def parse_amp_session(thread_path: Path) -> AmpParsedSession:
 
     sfs_messages: list[dict[str, Any]] = []
     turn_count = 0
+    tool_use_count = 0
     prev_role = None
     last_timestamp = start_time
 
@@ -116,15 +118,48 @@ def parse_amp_session(thread_path: Path) -> AmpParsedSession:
 
         msg_id = str(msg.get("messageId", f"msg_{len(sfs_messages):04d}"))
 
-        # Content blocks: [{type, text}]
+        # Content blocks: [{type, text}, {type, tool_use}, {type, tool_result}]
+        # Amp uses the Anthropic content block format:
+        #   assistant: tool_use  -> {type: "tool_use", id, name, input}
+        #   user:      tool_result -> {type: "tool_result", tool_use_id, content, is_error}
         sfs_content = []
         content_raw = msg.get("content", [])
         if isinstance(content_raw, list):
             for part in content_raw:
-                if isinstance(part, dict) and part.get("type") == "text":
+                if not isinstance(part, dict):
+                    continue
+                block_type = part.get("type", "")
+
+                if block_type == "text":
                     text = part.get("text", "")
                     if text:
                         sfs_content.append({"type": "text", "text": text})
+
+                elif block_type == "tool_use":
+                    tool_use_id = part.get("id", "")
+                    tool_name = part.get("name", "")
+                    tool_input = part.get("input", {})
+                    sfs_content.append({
+                        "type": "tool_use",
+                        "tool_use_id": tool_use_id,
+                        "name": tool_name,
+                        "input": tool_input,
+                    })
+                    tool_use_count += 1
+
+                elif block_type == "tool_result":
+                    tool_use_id = part.get("tool_use_id", "")
+                    result_content = part.get("content", "")
+                    is_error = part.get("is_error", False)
+                    sfs_block: dict[str, Any] = {
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": result_content,
+                    }
+                    if is_error:
+                        sfs_block["is_error"] = True
+                    sfs_content.append(sfs_block)
+
         elif isinstance(content_raw, str):
             sfs_content.append({"type": "text", "text": content_raw})
 
@@ -151,6 +186,7 @@ def parse_amp_session(thread_path: Path) -> AmpParsedSession:
     session.messages = sfs_messages
     session.message_count = len(sfs_messages)
     session.turn_count = turn_count
+    session.tool_use_count = tool_use_count
     return session
 
 
@@ -220,7 +256,7 @@ def convert_amp_to_sfs(
         "stats": {
             "message_count": amp_session.message_count,
             "turn_count": amp_session.turn_count,
-            "tool_use_count": 0,
+            "tool_use_count": amp_session.tool_use_count,
             "total_input_tokens": amp_session.total_input_tokens,
             "total_output_tokens": amp_session.total_output_tokens,
             "duration_ms": duration_ms,

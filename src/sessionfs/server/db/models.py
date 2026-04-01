@@ -410,14 +410,35 @@ class HelmLicense(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     org_name: Mapped[str] = mapped_column(String(255), nullable=False)
     contact_email: Mapped[str] = mapped_column(String(255), nullable=False)
+    license_type: Mapped[str] = mapped_column(String(20), nullable=False, server_default="paid")
     tier: Mapped[str] = mapped_column(String(20), nullable=False, server_default="enterprise")
     seats_limit: Mapped[int | None] = mapped_column(Integer, server_default="25")
     status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="active")
+    cluster_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    last_validated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    validation_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    license_metadata: Mapped[str] = mapped_column("metadata", Text, nullable=False, server_default="{}")
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class LicenseValidation(Base):
+    __tablename__ = "license_validations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    license_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("helm_licenses.id", ondelete="CASCADE"), nullable=False
+    )
+    cluster_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    result: Mapped[str] = mapped_column(String(20), nullable=False)
+    version: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class TelemetryEvent(Base):

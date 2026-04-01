@@ -84,6 +84,7 @@ class JudgeReport:
     provider: str = ""
     base_url: str = ""
     execution_time_ms: int = 0
+    warnings: list[str] = field(default_factory=list)
 
 
 def save_report(report: JudgeReport, sfs_dir: Path) -> Path:

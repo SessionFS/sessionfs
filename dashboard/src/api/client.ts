@@ -122,6 +122,7 @@ export interface AuditReport {
   timestamp: string;
   findings: AuditFinding[];
   summary: AuditSummary;
+  warnings?: string[];
 }
 
 export interface JudgeSettings {

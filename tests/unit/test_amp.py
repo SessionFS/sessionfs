@@ -104,6 +104,150 @@ def amp_thread_no_title(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def amp_thread_with_tools(tmp_path: Path) -> Path:
+    """Create an Amp thread with tool_use and tool_result blocks."""
+    threads_dir = tmp_path / "threads"
+    threads_dir.mkdir(parents=True, exist_ok=True)
+
+    thread_data = {
+        "id": "thr_tools999",
+        "title": "Refactor auth module",
+        "created": 1711100000000,
+        "messages": [
+            {
+                "role": "user",
+                "messageId": 1,
+                "content": [{"type": "text", "text": "Read the auth module and fix the bug"}],
+            },
+            {
+                "role": "assistant",
+                "messageId": 2,
+                "content": [
+                    {"type": "text", "text": "I'll read the auth module first."},
+                    {
+                        "type": "tool_use",
+                        "id": "tu_001",
+                        "name": "read_file",
+                        "input": {"path": "src/auth/token.py"},
+                    },
+                ],
+            },
+            {
+                "role": "user",
+                "messageId": 3,
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tu_001",
+                        "content": "def refresh_token(tok):\n    return tok",
+                        "is_error": False,
+                    },
+                ],
+            },
+            {
+                "role": "assistant",
+                "messageId": 4,
+                "content": [
+                    {"type": "text", "text": "I see the issue. Let me fix it."},
+                    {
+                        "type": "tool_use",
+                        "id": "tu_002",
+                        "name": "edit_file",
+                        "input": {"path": "src/auth/token.py", "content": "fixed"},
+                    },
+                ],
+            },
+            {
+                "role": "user",
+                "messageId": 5,
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tu_002",
+                        "content": "File edited successfully",
+                        "is_error": False,
+                    },
+                ],
+            },
+            {
+                "role": "assistant",
+                "messageId": 6,
+                "content": [{"type": "text", "text": "Done! The bug is fixed."}],
+            },
+        ],
+        "usageLedger": {
+            "events": [
+                {"inputTokens": 500, "outputTokens": 300},
+            ],
+        },
+        "env": {
+            "initial": {
+                "tags": ["model:claude-sonnet-4"],
+            },
+        },
+    }
+
+    path = threads_dir / "thr_tools999.json"
+    path.write_text(json.dumps(thread_data))
+    return path
+
+
+@pytest.fixture
+def amp_thread_tool_error(tmp_path: Path) -> Path:
+    """Create an Amp thread with a tool_result that has is_error=True."""
+    threads_dir = tmp_path / "threads"
+    threads_dir.mkdir(parents=True, exist_ok=True)
+
+    thread_data = {
+        "id": "thr_toolerr",
+        "title": "Tool error thread",
+        "created": 1711100000000,
+        "messages": [
+            {
+                "role": "user",
+                "messageId": 1,
+                "content": [{"type": "text", "text": "Delete the temp files"}],
+            },
+            {
+                "role": "assistant",
+                "messageId": 2,
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tu_err1",
+                        "name": "delete_file",
+                        "input": {"path": "/tmp/nonexistent"},
+                    },
+                ],
+            },
+            {
+                "role": "user",
+                "messageId": 3,
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tu_err1",
+                        "content": "Error: file not found",
+                        "is_error": True,
+                    },
+                ],
+            },
+            {
+                "role": "assistant",
+                "messageId": 4,
+                "content": [{"type": "text", "text": "The file doesn't exist."}],
+            },
+        ],
+        "usageLedger": {"events": []},
+        "env": {"initial": {"tags": []}},
+    }
+
+    path = threads_dir / "thr_toolerr.json"
+    path.write_text(json.dumps(thread_data))
+    return path
+
+
+@pytest.fixture
 def amp_thread_empty(tmp_path: Path) -> Path:
     """Create an Amp thread with no messages."""
     threads_dir = tmp_path / "threads"
@@ -288,3 +432,78 @@ class TestDiscovery:
     def test_session_has_size(self, amp_thread_file: Path, tmp_path: Path):
         sessions = discover_amp_sessions(tmp_path)
         assert sessions[0]["size_bytes"] > 0
+
+
+# ---------------------------------------------------------------------------
+# Tool call extraction tests
+# ---------------------------------------------------------------------------
+
+
+class TestToolCallExtraction:
+    def test_tool_use_count(self, amp_thread_with_tools: Path):
+        session = parse_amp_session(amp_thread_with_tools)
+        assert session.tool_use_count == 2
+
+    def test_tool_use_blocks_in_messages(self, amp_thread_with_tools: Path):
+        session = parse_amp_session(amp_thread_with_tools)
+        # Second message (assistant) should have text + tool_use
+        asst_msg = session.messages[1]
+        assert asst_msg["role"] == "assistant"
+        tool_blocks = [b for b in asst_msg["content"] if b["type"] == "tool_use"]
+        assert len(tool_blocks) == 1
+        assert tool_blocks[0]["name"] == "read_file"
+        assert tool_blocks[0]["tool_use_id"] == "tu_001"
+        assert tool_blocks[0]["input"] == {"path": "src/auth/token.py"}
+
+    def test_tool_result_blocks_in_messages(self, amp_thread_with_tools: Path):
+        session = parse_amp_session(amp_thread_with_tools)
+        # Third message (user) should have tool_result
+        user_msg = session.messages[2]
+        assert user_msg["role"] == "user"
+        result_blocks = [b for b in user_msg["content"] if b["type"] == "tool_result"]
+        assert len(result_blocks) == 1
+        assert result_blocks[0]["tool_use_id"] == "tu_001"
+        assert "refresh_token" in result_blocks[0]["content"]
+
+    def test_tool_result_no_error_flag(self, amp_thread_with_tools: Path):
+        """Non-error tool results should not have is_error key."""
+        session = parse_amp_session(amp_thread_with_tools)
+        user_msg = session.messages[2]
+        result_block = user_msg["content"][0]
+        assert "is_error" not in result_block
+
+    def test_tool_error_flag(self, amp_thread_tool_error: Path):
+        session = parse_amp_session(amp_thread_tool_error)
+        # Message index 2 = tool_result with error
+        user_msg = session.messages[2]
+        result_block = user_msg["content"][0]
+        assert result_block["type"] == "tool_result"
+        assert result_block["is_error"] is True
+        assert "file not found" in result_block["content"]
+
+    def test_tool_use_count_in_manifest(self, amp_thread_with_tools: Path, tmp_path: Path):
+        sfs_dir = tmp_path / "output.sfs"
+        convert_amp_to_sfs(amp_thread_with_tools, sfs_dir)
+        manifest = json.loads((sfs_dir / "manifest.json").read_text())
+        assert manifest["stats"]["tool_use_count"] == 2
+
+    def test_tool_use_count_zero_for_text_only(self, amp_thread_file: Path):
+        session = parse_amp_session(amp_thread_file)
+        assert session.tool_use_count == 0
+
+    def test_message_count_includes_tool_messages(self, amp_thread_with_tools: Path):
+        session = parse_amp_session(amp_thread_with_tools)
+        # 6 messages total: user, assistant(text+tool), user(result),
+        # assistant(text+tool), user(result), assistant(text)
+        assert session.message_count == 6
+
+    def test_tool_messages_in_jsonl(self, amp_thread_with_tools: Path, tmp_path: Path):
+        sfs_dir = tmp_path / "output.sfs"
+        convert_amp_to_sfs(amp_thread_with_tools, sfs_dir)
+        lines = (sfs_dir / "messages.jsonl").read_text().strip().split("\n")
+        assert len(lines) == 6
+        # Check that tool_use block is present in JSONL
+        second_msg = json.loads(lines[1])
+        tool_blocks = [b for b in second_msg["content"] if b["type"] == "tool_use"]
+        assert len(tool_blocks) == 1
+        assert tool_blocks[0]["name"] == "read_file"

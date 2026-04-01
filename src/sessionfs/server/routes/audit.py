@@ -79,6 +79,7 @@ class AuditResponse(BaseModel):
     execution_time_ms: int = 0
     findings: list[AuditFinding]
     summary: AuditSummaryResponse
+    warnings: list[str] = []
 
 
 def _get_blob_store(request: Request) -> BlobStore:
@@ -249,6 +250,15 @@ async def run_audit(
         and any(isinstance(b, dict) and b.get("type") == "tool_use" for b in m.get("content", []))
     )
 
+    # Check for zero tool calls and prepare warning
+    audit_warnings: list[str] = []
+    if tool_call_count == 0:
+        audit_warnings.append(
+            "This session contains no tool call data. The audit may produce limited results "
+            "because there is no tool output evidence to verify claims against. "
+            "Tools that don't expose tool calls: Gemini CLI, Amp."
+        )
+
     # For large sessions (500+ messages), run in background
     BACKGROUND_THRESHOLD = 500
     if len(messages) >= BACKGROUND_THRESHOLD:
@@ -258,6 +268,7 @@ async def run_audit(
                 report = await _run_judge_pipeline(
                     session_id, messages, model, llm_api_key, provider, base_url,
                 )
+                report.warnings = audit_warnings
                 report_key = f"sessions/{user.id}/{session_id}_audit.json"
                 from dataclasses import asdict
                 report_data = json.dumps(asdict(report), indent=2).encode("utf-8")
@@ -316,6 +327,9 @@ async def run_audit(
                 "message": "Judge LLM timed out after 120s. Try a smaller session or faster model.",
             },
         )
+
+    # Attach warnings to report
+    report.warnings = audit_warnings
 
     # Store in blob storage
     report_key = f"sessions/{user.id}/{session_id}_audit.json"

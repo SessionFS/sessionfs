@@ -84,6 +84,178 @@ def gemini_session_file(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def gemini_session_with_tools(tmp_path: Path) -> Path:
+    """Create a Gemini CLI session with toolCalls (agentic mode)."""
+    project_hash = "toolhash123"
+    chats_dir = tmp_path / "tmp" / project_hash / "chats"
+    chats_dir.mkdir(parents=True)
+
+    session_data = {
+        "sessionId": "tool-sess-001",
+        "projectHash": project_hash,
+        "startTime": "2026-03-27T14:00:00.000Z",
+        "lastUpdated": "2026-03-27T14:05:00.000Z",
+        "messages": [
+            {
+                "id": "msg-u1",
+                "timestamp": "2026-03-27T14:00:00.000Z",
+                "type": "user",
+                "content": [{"text": "List the files in src/"}],
+            },
+            {
+                "id": "msg-a1",
+                "timestamp": "2026-03-27T14:00:05.000Z",
+                "type": "gemini",
+                "content": "I will list the directory contents.",
+                "thoughts": [
+                    {
+                        "subject": "Planning",
+                        "description": "Listing directory.",
+                        "timestamp": "2026-03-27T14:00:04.000Z",
+                    }
+                ],
+                "tokens": {
+                    "input": 100, "output": 20, "cached": 0,
+                    "thoughts": 10, "tool": 0, "total": 130,
+                },
+                "model": "gemini-3-flash-preview",
+                "toolCalls": [
+                    {
+                        "id": "list_directory_001",
+                        "name": "list_directory",
+                        "args": {"dir_path": "src/"},
+                        "result": [
+                            {
+                                "functionResponse": {
+                                    "id": "list_directory_001",
+                                    "name": "list_directory",
+                                    "response": {
+                                        "output": "main.py\nutils.py\nconfig.py"
+                                    },
+                                }
+                            }
+                        ],
+                        "status": "success",
+                        "timestamp": "2026-03-27T14:00:05.100Z",
+                        "resultDisplay": "Listed 3 item(s).",
+                        "displayName": "ReadFolder",
+                        "description": "Lists directory contents.",
+                    }
+                ],
+            },
+            {
+                "id": "msg-a2",
+                "timestamp": "2026-03-27T14:00:10.000Z",
+                "type": "gemini",
+                "content": "I will read and search in the main file.",
+                "toolCalls": [
+                    {
+                        "id": "read_file_002",
+                        "name": "read_file",
+                        "args": {"file_path": "src/main.py"},
+                        "result": [
+                            {
+                                "functionResponse": {
+                                    "id": "read_file_002",
+                                    "name": "read_file",
+                                    "response": {
+                                        "output": "import sys\ndef main(): pass"
+                                    },
+                                }
+                            }
+                        ],
+                        "status": "success",
+                        "timestamp": "2026-03-27T14:00:10.100Z",
+                        "displayName": "ReadFile",
+                    },
+                    {
+                        "id": "grep_search_003",
+                        "name": "grep_search",
+                        "args": {"pattern": "def main", "include": "*.py"},
+                        "result": [
+                            {
+                                "functionResponse": {
+                                    "id": "grep_search_003",
+                                    "name": "grep_search",
+                                    "response": {
+                                        "output": "Found 1 match"
+                                    },
+                                }
+                            }
+                        ],
+                        "status": "success",
+                        "timestamp": "2026-03-27T14:00:10.200Z",
+                        "displayName": "SearchText",
+                    },
+                ],
+            },
+            {
+                "id": "msg-a3",
+                "timestamp": "2026-03-27T14:00:15.000Z",
+                "type": "gemini",
+                "content": "The src/ directory has three Python files.",
+            },
+            {
+                "id": "msg-u2",
+                "timestamp": "2026-03-27T14:01:00.000Z",
+                "type": "user",
+                "content": [{"text": "Thanks!"}],
+            },
+        ],
+    }
+
+    path = chats_dir / "session-2026-03-27T14-00-tool0001.json"
+    path.write_text(json.dumps(session_data))
+    (tmp_path / "projects.json").write_text(json.dumps({"projects": {}}))
+    return path
+
+
+@pytest.fixture
+def gemini_session_with_error_tool(tmp_path: Path) -> Path:
+    """Create a Gemini CLI session with a failed tool call."""
+    project_hash = "errhash456"
+    chats_dir = tmp_path / "tmp" / project_hash / "chats"
+    chats_dir.mkdir(parents=True)
+
+    session_data = {
+        "sessionId": "err-sess-001",
+        "projectHash": project_hash,
+        "startTime": "2026-03-27T15:00:00.000Z",
+        "lastUpdated": "2026-03-27T15:00:10.000Z",
+        "messages": [
+            {
+                "id": "msg-u1",
+                "timestamp": "2026-03-27T15:00:00.000Z",
+                "type": "user",
+                "content": [{"text": "Read /nonexistent"}],
+            },
+            {
+                "id": "msg-a1",
+                "timestamp": "2026-03-27T15:00:05.000Z",
+                "type": "gemini",
+                "content": "I'll try to read that file.",
+                "toolCalls": [
+                    {
+                        "id": "read_file_err",
+                        "name": "read_file",
+                        "args": {"file_path": "/nonexistent"},
+                        "result": [],
+                        "status": "error",
+                        "timestamp": "2026-03-27T15:00:05.100Z",
+                        "displayName": "ReadFile",
+                    }
+                ],
+            },
+        ],
+    }
+
+    path = chats_dir / "session-2026-03-27T15-00-errsess1.json"
+    path.write_text(json.dumps(session_data))
+    (tmp_path / "projects.json").write_text(json.dumps({"projects": {}}))
+    return path
+
+
+@pytest.fixture
 def sfs_session(tmp_path: Path) -> Path:
     """Create a minimal .sfs session for conversion to Gemini."""
     d = tmp_path / "ses_gemtest1234abcd.sfs"
@@ -173,6 +345,130 @@ class TestParseGeminiSession:
         session = parse_gemini_session(gemini_session_file)
         system_msgs = [m for m in session.messages if m["role"] == "system"]
         assert any("[Info]" in m["content"][0]["text"] for m in system_msgs)
+
+
+class TestToolCallExtraction:
+    """Tests for extracting Gemini CLI toolCalls into SFS tool_use/tool_result."""
+
+    def test_tool_use_count(self, gemini_session_with_tools: Path):
+        session = parse_gemini_session(gemini_session_with_tools)
+        assert session.tool_use_count == 3  # 1 + 2 tool calls
+
+    def test_tool_use_blocks_in_assistant_message(self, gemini_session_with_tools: Path):
+        session = parse_gemini_session(gemini_session_with_tools)
+        # First assistant message should have text + tool_use
+        asst_msgs = [m for m in session.messages if m["role"] == "assistant"]
+        first_asst = asst_msgs[0]
+        types = [b["type"] for b in first_asst["content"]]
+        assert "text" in types
+        assert "tool_use" in types
+
+    def test_tool_use_has_correct_fields(self, gemini_session_with_tools: Path):
+        session = parse_gemini_session(gemini_session_with_tools)
+        asst_msgs = [m for m in session.messages if m["role"] == "assistant"]
+        tool_blocks = [
+            b for m in asst_msgs for b in m["content"]
+            if b["type"] == "tool_use"
+        ]
+        assert len(tool_blocks) == 3
+        first_tool = tool_blocks[0]
+        assert first_tool["id"] == "list_directory_001"
+        assert first_tool["name"] == "ReadFolder"  # Uses displayName
+        assert first_tool["input"] == {"dir_path": "src/"}
+
+    def test_tool_result_messages(self, gemini_session_with_tools: Path):
+        session = parse_gemini_session(gemini_session_with_tools)
+        tool_msgs = [m for m in session.messages if m["role"] == "tool"]
+        assert len(tool_msgs) == 3
+        # First result has directory listing
+        first_result = tool_msgs[0]["content"][0]
+        assert first_result["type"] == "tool_result"
+        assert first_result["tool_use_id"] == "list_directory_001"
+        assert "main.py" in first_result["content"]
+        assert first_result["is_error"] is False
+
+    def test_multiple_tool_calls_per_message(self, gemini_session_with_tools: Path):
+        session = parse_gemini_session(gemini_session_with_tools)
+        asst_msgs = [m for m in session.messages if m["role"] == "assistant"]
+        # Second assistant message has 2 tool calls
+        second_asst = asst_msgs[1]
+        tool_blocks = [b for b in second_asst["content"] if b["type"] == "tool_use"]
+        assert len(tool_blocks) == 2
+        assert tool_blocks[0]["name"] == "ReadFile"
+        assert tool_blocks[1]["name"] == "SearchText"
+
+    def test_plain_assistant_message_still_works(self, gemini_session_with_tools: Path):
+        session = parse_gemini_session(gemini_session_with_tools)
+        asst_msgs = [m for m in session.messages if m["role"] == "assistant"]
+        # Third assistant message has no tool calls
+        third_asst = asst_msgs[2]
+        assert len(third_asst["content"]) == 1
+        assert third_asst["content"][0]["type"] == "text"
+
+    def test_error_tool_call(self, gemini_session_with_error_tool: Path):
+        session = parse_gemini_session(gemini_session_with_error_tool)
+        assert session.tool_use_count == 1
+        tool_msgs = [m for m in session.messages if m["role"] == "tool"]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0]["content"][0]["is_error"] is True
+
+    def test_manifest_includes_tool_count(
+        self, gemini_session_with_tools: Path, tmp_path: Path,
+    ):
+        session = parse_gemini_session(gemini_session_with_tools)
+        sfs_dir = tmp_path / "output.sfs"
+        convert_gemini_to_sfs(session, sfs_dir)
+        manifest = json.loads((sfs_dir / "manifest.json").read_text())
+        assert manifest["stats"]["tool_use_count"] == 3
+
+    def test_displayname_preferred_over_name(self, gemini_session_with_tools: Path):
+        """displayName (user-facing) is preferred over internal name."""
+        session = parse_gemini_session(gemini_session_with_tools)
+        asst_msgs = [m for m in session.messages if m["role"] == "assistant"]
+        tool_blocks = [
+            b for m in asst_msgs for b in m["content"]
+            if b["type"] == "tool_use"
+        ]
+        # list_directory -> ReadFolder, read_file -> ReadFile, grep_search -> SearchText
+        names = [b["name"] for b in tool_blocks]
+        assert names == ["ReadFolder", "ReadFile", "SearchText"]
+
+    def test_fallback_to_name_when_no_displayname(self, tmp_path: Path):
+        """Falls back to internal name when displayName is absent."""
+        project_hash = "fallback123"
+        chats_dir = tmp_path / "tmp" / project_hash / "chats"
+        chats_dir.mkdir(parents=True)
+        session_data = {
+            "sessionId": "fb-sess-001",
+            "startTime": "2026-03-27T16:00:00.000Z",
+            "lastUpdated": "2026-03-27T16:00:10.000Z",
+            "messages": [
+                {
+                    "id": "msg-u1", "timestamp": "2026-03-27T16:00:00.000Z",
+                    "type": "user", "content": [{"text": "hi"}],
+                },
+                {
+                    "id": "msg-a1", "timestamp": "2026-03-27T16:00:05.000Z",
+                    "type": "gemini", "content": "Checking.",
+                    "toolCalls": [{
+                        "id": "tc1", "name": "shell",
+                        "args": {"command": "ls"},
+                        "result": [{"functionResponse": {"id": "tc1", "name": "shell",
+                                    "response": {"output": "file.txt"}}}],
+                        "status": "success",
+                        "timestamp": "2026-03-27T16:00:05.100Z",
+                    }],
+                },
+            ],
+        }
+        path = chats_dir / "session-2026-03-27T16-00-fbsess01.json"
+        path.write_text(json.dumps(session_data))
+        session = parse_gemini_session(path)
+        tool_blocks = [
+            b for m in session.messages if m["role"] == "assistant"
+            for b in m["content"] if b["type"] == "tool_use"
+        ]
+        assert tool_blocks[0]["name"] == "shell"
 
 
 class TestConvertGeminiToSfs:

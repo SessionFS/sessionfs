@@ -603,20 +603,11 @@ async def search_sessions(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=50),
     user: User = Depends(get_current_user),
+    ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ):
-    """Full-text search across sessions (Pro+ tier required)."""
-    if user.tier == "free":
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "error": {
-                    "code": "TIER_LIMIT",
-                    "message": "Full-text search requires Pro. Upgrade at sessionfs.dev for $12/mo.",
-                    "required_tier": "pro",
-                }
-            },
-        )
+    """Full-text search across sessions (Starter+ tier required)."""
+    check_feature(ctx, "cloud_sync")
 
     offset = (page - 1) * page_size
 
