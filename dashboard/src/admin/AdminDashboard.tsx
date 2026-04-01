@@ -100,7 +100,7 @@ export default function AdminDashboard() {
 
   // Compute storage percentage for progress bar
   const storageUsed = stats?.sessions?.total_size_bytes ?? 0;
-  const storageLimit = stats?.storage_limit_bytes ?? 0;
+  const storageLimit = 500 * 1024 * 1024; // Default 500MB
   const storagePct = storageLimit > 0 ? Math.min(100, (storageUsed / storageLimit) * 100) : 0;
 
   // Compute active tools count
