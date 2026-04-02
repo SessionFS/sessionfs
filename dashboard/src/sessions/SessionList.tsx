@@ -387,14 +387,12 @@ function AnalyticsCards({ sessions, dateRange }: { sessions: SessionSummary[]; d
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
     const yesterdayStart = todayStart - 86400000;
 
-    // Sessions today
-    const sessionsToday = sessions.filter(
-      (s) => new Date(s.created_at).getTime() >= todayStart,
-    ).length;
-    const sessionsYesterday = sessions.filter((s) => {
-      const t = new Date(s.created_at).getTime();
-      return t >= yesterdayStart && t < todayStart;
-    }).length;
+    // Sessions count — use total count for filtered period (sessions are already filtered)
+    const sessionsCount = sessions.length;
+    // Comparison: previous period of same length
+    const sessionsComparison = dateRange === '24h'
+      ? sessions.filter((s) => { const t = new Date(s.created_at).getTime(); return t >= yesterdayStart && t < todayStart; }).length
+      : null; // No meaningful comparison for week/month/all
 
     // Tool breakdown
     const toolCounts: Record<string, number> = {};
@@ -438,8 +436,8 @@ function AnalyticsCards({ sessions, dateRange }: { sessions: SessionSummary[]; d
       : 'N/A';
 
     return {
-      sessionsToday,
-      sessionsYesterday,
+      sessionsCount,
+      sessionsComparison,
       topTools,
       totalForBar,
       totalTokens,
@@ -451,11 +449,11 @@ function AnalyticsCards({ sessions, dateRange }: { sessions: SessionSummary[]; d
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
       {/* Sessions */}
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 shadow-[var(--shadow-sm)] hover:shadow-[var(--shadow-md)] transition-shadow duration-150">
-        <div className="text-2xl font-bold text-[var(--text-primary)] tabular-nums">{stats.sessionsToday}</div>
+        <div className="text-2xl font-bold text-[var(--text-primary)] tabular-nums">{stats.sessionsCount}</div>
         <div className="text-xs text-[var(--text-tertiary)] uppercase tracking-wide mt-1">{sessionsLabel}</div>
-        {stats.sessionsYesterday > 0 && (
+        {stats.sessionsComparison != null && stats.sessionsComparison > 0 && (
           <div className="text-xs text-[var(--text-tertiary)] mt-1">
-            +{stats.sessionsYesterday} yesterday
+            +{stats.sessionsComparison} yesterday
           </div>
         )}
       </div>
@@ -513,15 +511,20 @@ function AnalyticsCards({ sessions, dateRange }: { sessions: SessionSummary[]; d
   );
 }
 
+const CAPTURE_ONLY_TOOLS = new Set(['cursor', 'cline', 'roo-code', 'amp']);
+
 function RecentlyActiveStrip({ sessions }: { sessions: SessionSummary[] }) {
   const { addToast } = useToast();
-  const recent = sessions.slice(0, 3);
+  // Always show most recent by date, regardless of current sort
+  const recent = [...sessions].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()).slice(0, 3);
   if (recent.length === 0) return null;
 
   function handleResume(s: SessionSummary) {
-    const toolArg = s.source_tool || 'claude-code';
-    navigator.clipboard.writeText(`sfs resume ${s.id} --in ${toolArg}`);
-    addToast('success', 'Resume command copied');
+    const tool = s.source_tool || 'claude-code';
+    // Capture-only tools can't be resumed — use claude-code as fallback
+    const resumeTool = CAPTURE_ONLY_TOOLS.has(tool) ? 'claude-code' : tool;
+    navigator.clipboard.writeText(`sfs resume ${s.id} --in ${resumeTool}`);
+    addToast('success', `Resume command copied${CAPTURE_ONLY_TOOLS.has(tool) ? ` (${tool} is capture-only, using claude-code)` : ''}`);
   }
 
   return (
