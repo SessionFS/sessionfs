@@ -189,7 +189,7 @@ export default function SessionList() {
       {!isLoading && sessions.length > 0 && <AnalyticsCards sessions={sessions} dateRange={dateRange} totalSessions={totalSessions} />}
 
       {/* Recently active strip */}
-      {!isLoading && sessions.length > 0 && <RecentlyActiveStrip sessions={sessions} />}
+      {!isLoading && sessions.length > 0 && <RecentlyActiveStrip sessions={sessions} isPageLocal={sessions.length < totalSessions} />}
 
       {/* Loading */}
       {isLoading && (
@@ -396,7 +396,7 @@ function AnalyticsCards({ sessions, dateRange, totalSessions }: { sessions: Sess
   const periodLabel = dateRange === '24h' ? 'Last 24h' : dateRange === '7d' ? 'Last 7 Days' : dateRange === '30d' ? 'Last 30 Days' : 'All Time';
   // All stats except "Sessions · All Time" are computed from the current page only
   const pageNote = sessions.length < totalSessions ? ' (this page)' : '';
-  const sessionsLabel = `Sessions · ${periodLabel}`;
+  const sessionsLabel = dateRange === '' ? 'Sessions · All Time' : `Sessions · ${periodLabel}${pageNote}`;
   const tokensLabel = `Tokens${pageNote}`;
   const peakLabel_ = `Peak Hours${pageNote}`;
   const stats = useMemo(() => {
@@ -516,7 +516,7 @@ function AnalyticsCards({ sessions, dateRange, totalSessions }: { sessions: Sess
 
 const CAPTURE_ONLY_TOOLS = new Set(['cursor', 'cline', 'roo-code', 'amp']);
 
-function RecentlyActiveStrip({ sessions }: { sessions: SessionSummary[] }) {
+function RecentlyActiveStrip({ sessions, isPageLocal }: { sessions: SessionSummary[]; isPageLocal: boolean }) {
   const { addToast } = useToast();
   // Always show most recent by date, regardless of current sort
   const recent = [...sessions].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()).slice(0, 3);
@@ -531,7 +531,11 @@ function RecentlyActiveStrip({ sessions }: { sessions: SessionSummary[] }) {
   }
 
   return (
-    <div className="flex gap-3 mb-4 overflow-x-auto">
+    <div className="mb-4">
+      <div className="text-xs text-[var(--text-tertiary)] uppercase tracking-wide mb-2">
+        Quick Resume{isPageLocal ? ' (this page)' : ''}
+      </div>
+      <div className="flex gap-3 overflow-x-auto">
       {recent.map((s) => (
         <div key={s.id} className="flex-shrink-0 bg-[var(--surface)] border border-[var(--border)] rounded-xl p-3 min-w-[280px]">
           <div className="flex items-center gap-2 mb-1">
@@ -552,6 +556,7 @@ function RecentlyActiveStrip({ sessions }: { sessions: SessionSummary[] }) {
           </div>
         </div>
       ))}
+      </div>
     </div>
   );
 }
