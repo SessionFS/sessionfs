@@ -3,22 +3,24 @@
 /* === Design System Tokens === */
 
 :root, [data-theme="light"] {
-  --bg-primary: #ffffff;
-  --bg-secondary: #f8f9fa;
-  --bg-tertiary: #f0f1f3;
-  --bg-elevated: #ffffff;
-  --surface: #ffffff;
-  --surface-hover: #f5f6f8;
-  --surface-active: #eef0f3;
-  --border: #e2e5e9;
-  --border-strong: #cdd1d6;
-  --text-primary: #1a1d21;
-  --text-secondary: #5a6069;
-  --text-tertiary: #8b929a;
+  --bg-primary: #f4f5f7;        /* off-white page background */
+  --bg-secondary: #ebedf0;      /* sidebar, nav — slightly darker */
+  --bg-tertiary: #e4e6ea;       /* tertiary surfaces */
+  --bg-elevated: #ffffff;        /* cards — true white, pops from bg */
+  --surface: #ffffff;            /* cards, elevated content */
+  --surface-hover: #f0f1f4;     /* visible hover shift */
+  --surface-active: #e8eaee;    /* active/pressed state */
+  --border: #c9cdd3;            /* noticeably darker borders */
+  --border-strong: #a8aeb6;     /* strong borders for focus/emphasis */
+  --text-primary: #111318;      /* near-black for max contrast */
+  --text-secondary: #424750;    /* dark gray — clearly readable */
+  --text-tertiary: #6b7280;     /* medium gray — still visible */
   --text-inverse: #ffffff;
-  --shadow-sm: 0 1px 2px rgba(0,0,0,0.06);
-  --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
-  --shadow-lg: 0 8px 24px rgba(0,0,0,0.1);
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.12), 0 2px 4px rgba(0,0,0,0.08);
+  --shadow-lg: 0 8px 24px rgba(0,0,0,0.15), 0 4px 8px rgba(0,0,0,0.1);
+  --brand: #2563eb;              /* deeper blue for light backgrounds */
+  --brand-hover: #1d4ed8;
 }
 
 [data-theme="dark"] {
