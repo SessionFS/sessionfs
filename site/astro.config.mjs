@@ -9,6 +9,10 @@ export default defineConfig({
     starlight({
       title: 'SessionFS',
       head: [
+        {
+          tag: 'script',
+          content: `(function(){var p=new URLSearchParams(window.location.search);var t=p.get('theme');if(t==='dark'||t==='light'){document.documentElement.setAttribute('data-theme',t);try{localStorage.setItem('starlight-theme',t)}catch(e){}}})();`,
+        },
         { tag: 'link', attrs: { rel: 'preconnect', href: 'https://fonts.googleapis.com' } },
         { tag: 'link', attrs: { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossorigin: true } },
         {

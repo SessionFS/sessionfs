@@ -14,6 +14,14 @@ const NAV_LINKS = [
   { to: '/settings/billing', label: 'Billing', match: (p: string) => p === '/settings/billing' },
 ];
 
+function siteHref(path: string): string {
+  const theme = typeof document !== 'undefined'
+    ? document.documentElement.getAttribute('data-theme') || 'dark'
+    : 'dark';
+  const sep = path.includes('?') ? '&' : '?';
+  return `https://sessionfs.dev${path}${sep}theme=${theme}`;
+}
+
 export default function Layout() {
   const { logout } = useAuth();
   const location = useLocation();
@@ -152,8 +160,8 @@ export default function Layout() {
       </main>
       <footer className="text-center py-8 text-[11px] text-[var(--text-tertiary)] border-t border-[var(--border)]">
         SessionFS v0.9.6 &middot;{' '}
-        <a href="https://sessionfs.dev/quickstart/" className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors">Docs</a> &middot;{' '}
-        <a href="https://sessionfs.dev" className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors">Status</a> &middot;{' '}
+        <a href={siteHref('/quickstart/')} className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors">Docs</a> &middot;{' '}
+        <a href={siteHref('/')} className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors">Status</a> &middot;{' '}
         <a href="mailto:support@sessionfs.dev" className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors">Support</a>
       </footer>
     </div>
