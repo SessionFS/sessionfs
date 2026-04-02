@@ -368,7 +368,18 @@ def reverse_convert_session(
                     messages.append(json.loads(line))
 
     # Filter out sidechain messages
-    main_messages = [m for m in messages if not m.get("is_sidechain")]
+    all_main_messages = [m for m in messages if not m.get("is_sidechain")]
+
+    # For cross-tool resume: limit to last 50 messages to avoid context overflow.
+    # Claude Code compresses old messages — with 1000+ turns, the AI loses context.
+    # The handoff summary (appended later) provides the full session context.
+    MAX_RESUME_MESSAGES = 50
+    if len(all_main_messages) > MAX_RESUME_MESSAGES:
+        _writeback_logger.info(
+            "Trimming %d messages to last %d for cross-tool resume",
+            len(all_main_messages), MAX_RESUME_MESSAGES,
+        )
+    main_messages = all_main_messages[-MAX_RESUME_MESSAGES:]
 
     # Read workspace for project path context
     workspace_path = session_dir / "workspace.json"
@@ -395,7 +406,7 @@ def reverse_convert_session(
 
     # Extract first user prompt for index entry
     first_prompt = ""
-    for msg in main_messages:
+    for msg in all_main_messages:
         if msg.get("role") == "user":
             for block in msg.get("content", []):
                 if block.get("type") == "text" and block.get("text"):
@@ -422,7 +433,7 @@ def reverse_convert_session(
     # With 1000+ messages, Claude compacts old turns — this summary survives.
     source_tool = manifest.get("source", {}).get("tool", "another tool")
     stats = manifest.get("stats", {})
-    msg_count = stats.get("message_count", len(main_messages))
+    msg_count = stats.get("message_count", len(all_main_messages))
     tool_count = stats.get("tool_use_count", 0)
     title = manifest.get("title", "Untitled session")
 
@@ -437,14 +448,22 @@ def reverse_convert_session(
             if len(last_assistant_texts) >= 3:
                 break
 
+    trimmed = len(all_main_messages) > MAX_RESUME_MESSAGES
     context_lines = [
         f"[SessionFS Resume] This session was transferred from {source_tool}.",
         f"Original session: {manifest.get('session_id', 'unknown')}",
         f"Title: {title}",
-        f"Stats: {msg_count} messages, {tool_count} tool calls.",
+        f"Full session: {msg_count} messages, {tool_count} tool calls.",
+    ]
+    if trimmed:
+        context_lines.append(
+            f"Note: Only the last {MAX_RESUME_MESSAGES} messages were included. "
+            f"The earlier {len(all_main_messages) - MAX_RESUME_MESSAGES} messages were trimmed to fit context."
+        )
+    context_lines.extend([
         "",
         "Last activity in the prior session:",
-    ]
+    ])
     for txt in reversed(last_assistant_texts):
         context_lines.append(f"  - {txt[:200]}")
     context_lines.append("")
