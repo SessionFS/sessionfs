@@ -93,25 +93,8 @@ export default function BookmarkSidebar({ selectedFolderId, onSelectFolder }: Bo
     });
   }
 
-  // Mobile folder selector (visible only on small screens)
-  const mobileFolderSelector = (
-    <div className="sm:hidden px-3 mb-3">
-      <select
-        value={selectedFolderId || ''}
-        onChange={(e) => onSelectFolder(e.target.value || null)}
-        className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)]"
-      >
-        <option value="">All Sessions</option>
-        {folders.map((f) => (
-          <option key={f.id} value={f.id}>{f.name}</option>
-        ))}
-      </select>
-    </div>
-  );
-
   if (collapsed) {
     return (
-      <>{mobileFolderSelector}
       <div className="hidden sm:flex w-12 shrink-0 border-r border-border bg-bg-secondary flex-col items-center pt-3 gap-2">
         <button
           onClick={toggleCollapsed}
@@ -145,12 +128,10 @@ export default function BookmarkSidebar({ selectedFolderId, onSelectFolder }: Bo
           </button>
         ))}
       </div>
-      </>
     );
   }
 
   return (
-    <>{mobileFolderSelector}
     <div className="hidden sm:block w-52 shrink-0 border-r border-border bg-bg-secondary overflow-y-auto">
       <div className="p-3">
         {/* Header */}
@@ -325,6 +306,5 @@ export default function BookmarkSidebar({ selectedFolderId, onSelectFolder }: Bo
         )}
       </div>
     </div>
-    </>
   );
 }

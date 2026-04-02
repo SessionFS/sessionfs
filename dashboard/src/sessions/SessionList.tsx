@@ -116,6 +116,16 @@ export default function SessionList() {
     <div className="flex flex-1 min-h-0">
       <BookmarkSidebar selectedFolderId={selectedFolderId} onSelectFolder={(id) => { setSelectedFolderId(id); setPage(1); }} />
       <div className="flex-1 max-w-7xl mx-auto px-4 py-4">
+      {/* Mobile folder selector */}
+      <div className="sm:hidden mb-3">
+        <select
+          value={selectedFolderId || ''}
+          onChange={(e) => { setSelectedFolderId(e.target.value || null); setPage(1); }}
+          className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)]"
+        >
+          <option value="">All Sessions</option>
+        </select>
+      </div>
       {/* Filter bar */}
       <div className="flex flex-wrap items-center gap-3 mb-4">
         <div className="relative">
@@ -171,7 +181,7 @@ export default function SessionList() {
       )}
 
       {/* Analytics Cards */}
-      {!isLoading && sessions.length > 0 && <AnalyticsCards sessions={sessions} dateRange={dateRange} />}
+      {!isLoading && sessions.length > 0 && <AnalyticsCards sessions={sessions} dateRange={dateRange} totalSessions={totalSessions} />}
 
       {/* Recently active strip */}
       {!isLoading && sessions.length > 0 && <RecentlyActiveStrip sessions={sessions} />}
@@ -377,18 +387,18 @@ function TrustBadge({ score }: { score?: number | null }) {
   );
 }
 
-function AnalyticsCards({ sessions, dateRange }: { sessions: SessionSummary[]; dateRange: string }) {
-  const periodLabel = dateRange === '24h' ? 'Today' : dateRange === '7d' ? 'This Week' : dateRange === '30d' ? 'This Month' : '';
-  const sessionsLabel = periodLabel ? `Sessions ${periodLabel}` : 'Sessions';
-  const tokensLabel = periodLabel ? `Tokens ${periodLabel}` : 'Total Tokens';
-  const peakLabel_ = periodLabel ? `Peak ${periodLabel}` : 'Peak Hours';
+function AnalyticsCards({ sessions, dateRange, totalSessions }: { sessions: SessionSummary[]; dateRange: string; totalSessions: number }) {
+  const periodLabel = dateRange === '24h' ? 'Last 24h' : dateRange === '7d' ? 'Last 7 Days' : dateRange === '30d' ? 'Last 30 Days' : 'All Time';
+  const sessionsLabel = `Sessions · ${periodLabel}`;
+  const tokensLabel = `Tokens · ${periodLabel}`;
+  const peakLabel_ = `Peak Hours · ${periodLabel}`;
   const stats = useMemo(() => {
     const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
     const yesterdayStart = todayStart - 86400000;
 
-    // Sessions count — use total count for filtered period (sessions are already filtered)
-    const sessionsCount = sessions.length;
+    // Sessions count — use API total for "all time", page count for filtered periods
+    const sessionsCount = dateRange === '' ? totalSessions : sessions.length;
     // Comparison: previous period of same length
     const sessionsComparison = dateRange === '24h'
       ? sessions.filter((s) => { const t = new Date(s.created_at).getTime(); return t >= yesterdayStart && t < todayStart; }).length
@@ -443,7 +453,7 @@ function AnalyticsCards({ sessions, dateRange }: { sessions: SessionSummary[]; d
       totalTokens,
       peakLabel,
     };
-  }, [sessions]);
+  }, [sessions, totalSessions, dateRange]);
 
   return (
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
@@ -451,9 +461,9 @@ function AnalyticsCards({ sessions, dateRange }: { sessions: SessionSummary[]; d
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 shadow-[var(--shadow-sm)] hover:shadow-[var(--shadow-md)] transition-shadow duration-150">
         <div className="text-2xl font-bold text-[var(--text-primary)] tabular-nums">{stats.sessionsCount}</div>
         <div className="text-xs text-[var(--text-tertiary)] uppercase tracking-wide mt-1">{sessionsLabel}</div>
-        {stats.sessionsComparison != null && stats.sessionsComparison > 0 && (
+        {dateRange === '24h' && stats.sessionsComparison != null && stats.sessionsComparison > 0 && (
           <div className="text-xs text-[var(--text-tertiary)] mt-1">
-            +{stats.sessionsComparison} yesterday
+            +{stats.sessionsComparison} prev 24h
           </div>
         )}
       </div>
