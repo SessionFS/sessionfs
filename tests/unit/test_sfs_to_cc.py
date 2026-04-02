@@ -286,15 +286,18 @@ class TestReverseConvertSession:
 
         result = reverse_convert_session(session_dir, output_path=output_path)
 
-        assert result["message_count"] == 2
+        assert result["message_count"] == 3  # 2 original + 1 handoff context
         assert output_path.exists()
 
         lines = output_path.read_text().strip().split("\n")
-        assert len(lines) == 2
+        assert len(lines) == 3  # 2 original + 1 handoff
         first = json.loads(lines[0])
         assert first["type"] == "user"
         second = json.loads(lines[1])
         assert second["type"] == "assistant"
+        handoff = json.loads(lines[2])
+        assert handoff["type"] == "user"
+        assert "[SessionFS Resume]" in handoff["message"]["content"]
 
     def test_resume_mode(self, tmp_path: Path):
         session_dir = self._make_sfs_session(tmp_path)
@@ -306,7 +309,7 @@ class TestReverseConvertSession:
             cc_home=cc_home,
         )
 
-        assert result["message_count"] == 2
+        assert result["message_count"] == 3  # 2 original + 1 handoff context
         assert result["project_dir"] is not None
 
         # Check JSONL was written
@@ -338,4 +341,4 @@ class TestReverseConvertSession:
         result = reverse_convert_session(session_dir, output_path=output_path)
 
         # Sidechain should be filtered out
-        assert result["message_count"] == 2
+        assert result["message_count"] == 3  # 2 original + 1 handoff context

@@ -418,6 +418,60 @@ def reverse_convert_session(
         if cc_entry is not None:
             cc_lines.append(cc_entry)
 
+    # Add a context handoff message at the end so Claude has context after compaction.
+    # With 1000+ messages, Claude compacts old turns — this summary survives.
+    source_tool = manifest.get("source", {}).get("tool", "another tool")
+    stats = manifest.get("stats", {})
+    msg_count = stats.get("message_count", len(main_messages))
+    tool_count = stats.get("tool_use_count", 0)
+    title = manifest.get("title", "Untitled session")
+
+    # Build a concise context summary from the last few assistant messages
+    last_assistant_texts: list[str] = []
+    for msg in reversed(main_messages):
+        if msg.get("role") == "assistant":
+            for block in msg.get("content", []):
+                if block.get("type") == "text" and block.get("text"):
+                    last_assistant_texts.append(block["text"][:300])
+                    break
+            if len(last_assistant_texts) >= 3:
+                break
+
+    context_lines = [
+        f"[SessionFS Resume] This session was transferred from {source_tool}.",
+        f"Original session: {manifest.get('session_id', 'unknown')}",
+        f"Title: {title}",
+        f"Stats: {msg_count} messages, {tool_count} tool calls.",
+        "",
+        "Last activity in the prior session:",
+    ]
+    for txt in reversed(last_assistant_texts):
+        context_lines.append(f"  - {txt[:200]}")
+    context_lines.append("")
+    context_lines.append("Continue from where you left off.")
+
+    last_uuid = cc_lines[-1]["uuid"] if cc_lines else str(uuid_mod.uuid4())
+    handoff_uuid = str(uuid_mod.uuid4())
+    now_ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    handoff_entry: dict[str, Any] = {
+        "parentUuid": last_uuid,
+        "isSidechain": False,
+        "userType": "external",
+        "cwd": project_path,
+        "sessionId": cc_session_id,
+        "version": version,
+        "gitBranch": git_branch,
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": "\n".join(context_lines),
+        },
+        "uuid": handoff_uuid,
+        "timestamp": now_ts,
+    }
+    cc_lines.append(handoff_entry)
+
     # Determine output path
     if target_project_path:
         # Resume mode — write to CC storage
