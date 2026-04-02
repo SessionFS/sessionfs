@@ -149,22 +149,18 @@ export default function SessionList() {
     )[0];
   }, [data]);
 
-  // Detect repo from most recent session (using git_remote_normalized if available via detail)
-  // For now we use session data — git_remote_normalized is on SessionDetail, not SessionSummary
-  // We'll show the "In This Repo" nav if there's a pattern we can detect
-  const _repoLabel: string | null = null; // Would need detail fetch; keep null for now
-
-  // In-repo count (placeholder — would need git_remote on summaries)
+  // "In This Repo" not yet implemented — needs git_remote on session summaries
+  const _repoLabel: string | null = null;
   const inRepoCount = 0;
 
-  // Bookmarked filter: show only sessions that appear in any folder
-  const filteredSessions = useMemo(() => {
-    if (navFilter === 'bookmarked' && !selectedFolderId) {
-      // We don't have a direct "all bookmarked" list — show message instead
-      return sessions;
+  // "Bookmarked" nav: select first folder if none selected
+  useEffect(() => {
+    if (navFilter === 'bookmarked' && !selectedFolderId && foldersData?.folders?.length) {
+      setSelectedFolderId(foldersData.folders[0].id);
     }
-    return sessions;
-  }, [sessions, navFilter, selectedFolderId]);
+  }, [navFilter, selectedFolderId, foldersData]);
+
+  const filteredSessions = sessions;
 
   // Date grouping
   const grouped = useMemo(() => {
