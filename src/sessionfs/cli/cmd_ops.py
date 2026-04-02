@@ -18,7 +18,6 @@ from sessionfs.cli.common import (
     open_store,
     resolve_session_id,
 )
-from sessionfs.cli.sfs_to_cc import reverse_convert_session
 
 
 def resume(
@@ -125,24 +124,66 @@ def _resume_in_claude_code(
         console.print(f"[dim]Using current directory for CC project scope: {cwd}[/dim]")
         target_path = cwd
 
-    result = reverse_convert_session(
-        session_dir,
-        manifest=manifest,
-        target_project_path=target_path,
-    )
-    console.print("[green]Session resumed in Claude Code.[/green]")
-    console.print(f"  CC Session ID: {result['cc_session_id']}")
-    console.print(f"  JSONL: {result['jsonl_path']}")
-    console.print(f"  Messages: {result['message_count']}")
+    # Build handoff context for Claude Code
+    messages_path = session_dir / "messages.jsonl"
+    all_messages: list[dict] = []
+    if messages_path.exists():
+        with open(messages_path) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    all_messages.append(json.loads(line))
+
+    main_msgs = [m for m in all_messages if not m.get("is_sidechain")]
+
+    source_tool = manifest.get("source", {}).get("tool", "another tool")
+    stats = manifest.get("stats", {})
+    title = manifest.get("title", "Untitled session")
+    msg_count = stats.get("message_count", len(main_msgs))
+    tool_count = stats.get("tool_use_count", 0)
+
+    # Extract last assistant messages for context
+    last_texts: list[str] = []
+    for msg in reversed(main_msgs):
+        if msg.get("role") == "assistant":
+            for block in msg.get("content", []):
+                if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
+                    last_texts.append(block["text"][:500])
+                    break
+            if len(last_texts) >= 5:
+                break
+
+    context = [
+        f"You are continuing a session that was transferred from {source_tool} via SessionFS.",
+        f"Session: {manifest.get('session_id', 'unknown')}",
+        f"Title: {title}",
+        f"Stats: {msg_count} messages, {tool_count} tool calls.",
+        "",
+        "Recent activity from the prior session (most recent first):",
+    ]
+    for txt in last_texts:
+        context.append(f"- {txt[:300]}")
+    context.append("")
+    context.append("Continue from where this session left off. The user expects you to pick up the work.")
+
+    handoff_prompt = "\n".join(context)
+
+    console.print("[green]Session context prepared for Claude Code.[/green]")
+    console.print(f"  Source: {source_tool} ({msg_count} messages, {tool_count} tool calls)")
+    console.print(f"  Title: {title}")
     console.print()
 
-    # Launch Claude Code resume directly
+    # Launch Claude Code with handoff context as system prompt
     claude_bin = shutil.which("claude")
     if claude_bin:
-        console.print(f"Launching [bold]claude --resume {result['cc_session_id'][:12]}...[/bold]")
-        subprocess.run([claude_bin, "--resume", result["cc_session_id"]], cwd=target_path)
+        console.print("Launching [bold]Claude Code[/bold] with session context...")
+        subprocess.run(
+            [claude_bin, "--append-system-prompt", handoff_prompt],
+            cwd=target_path,
+        )
     else:
-        console.print(f"Open Claude Code in [bold]{target_path}[/bold] to continue.")
+        console.print(f"Open Claude Code in [bold]{target_path}[/bold] and paste:")
+        console.print(f"  {handoff_prompt[:200]}...")
 
 
 def _resume_in_codex(
