@@ -89,12 +89,10 @@ async def list_projects(
     user_remotes = {r[0] for r in result.all()}
 
     # Get projects: owned by user OR matching user's session remotes
-    stmt = select(Project).where(
-        or_(
-            Project.owner_id == user.id,
-            Project.git_remote_normalized.in_(user_remotes) if user_remotes else False,
-        )
-    ).order_by(Project.updated_at.desc())
+    conditions = [Project.owner_id == user.id]
+    if user_remotes:
+        conditions.append(Project.git_remote_normalized.in_(user_remotes))
+    stmt = select(Project).where(or_(*conditions)).order_by(Project.updated_at.desc())
     result = await db.execute(stmt)
     projects = result.scalars().all()
 
