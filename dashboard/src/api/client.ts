@@ -24,6 +24,7 @@ export interface SessionDetail extends SessionSummary {
   duration_ms: number | null;
   parent_session_id: string | null;
   uploaded_at: string;
+  git_remote_normalized?: string;
 }
 
 export interface SessionListResponse {
@@ -226,6 +227,16 @@ export interface CreateLicenseRequest {
   seats_limit: number;
   days?: number;
   notes?: string;
+}
+
+export interface ProjectContext {
+  id: string;
+  name: string;
+  git_remote_normalized: string;
+  context_document: string;
+  owner_id: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export class ApiError extends Error {
@@ -625,6 +636,30 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       request<GitHubInstallationResponse>('/api/v1/settings/github', {
         method: 'PUT',
         body: JSON.stringify(updates),
+      }),
+
+    // Project context endpoints
+    listProjects: () =>
+      request<ProjectContext[]>('/api/v1/projects/'),
+
+    getProject: (remote: string) =>
+      request<ProjectContext>(`/api/v1/projects/${encodeURIComponent(remote)}`),
+
+    createProject: (data: { name: string; git_remote_normalized: string }) =>
+      request<ProjectContext>('/api/v1/projects/', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+
+    updateProjectContext: (remote: string, doc: string) =>
+      request<{ status: string }>(`/api/v1/projects/${encodeURIComponent(remote)}/context`, {
+        method: 'PUT',
+        body: JSON.stringify({ context_document: doc }),
+      }),
+
+    deleteProject: (id: string) =>
+      request<{ status: string }>(`/api/v1/projects/${id}`, {
+        method: 'DELETE',
       }),
   };
 }

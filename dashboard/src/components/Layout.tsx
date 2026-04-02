@@ -9,6 +9,7 @@ import { Badge } from './Badge';
 
 const NAV_LINKS = [
   { to: '/', label: 'Sessions', match: (p: string) => p === '/' },
+  { to: '/projects', label: 'Projects', match: (p: string) => p.startsWith('/projects') },
   { to: '/handoffs', label: 'Handoffs', match: (p: string) => p.startsWith('/handoffs') },
   { to: '/settings', label: 'Settings', match: (p: string) => p.startsWith('/settings') && p !== '/settings/billing' },
   { to: '/settings/billing', label: 'Billing', match: (p: string) => p === '/settings/billing' },

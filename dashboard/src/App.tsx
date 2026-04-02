@@ -13,6 +13,8 @@ import HandoffDetail from './handoffs/HandoffDetail';
 import AdminDashboard from './admin/AdminDashboard';
 import BillingPage from './billing/BillingPage';
 import OrgPage from './org/OrgPage';
+import ProjectsPage from './projects/ProjectsPage';
+import ProjectDetail from './projects/ProjectDetail';
 import { BackgroundTasksProvider } from './components/BackgroundTasks';
 import { ToastProvider } from './components/Toast';
 
@@ -59,6 +61,8 @@ export default function App() {
               <Route path="/" element={<SessionList />} />
               <Route path="/search" element={<SearchResults />} />
               <Route path="/sessions/:id" element={<SessionDetail />} />
+              <Route path="/projects" element={<ProjectsPage />} />
+              <Route path="/projects/:id" element={<ProjectDetail />} />
               <Route path="/handoffs" element={<HandoffList />} />
               <Route path="/handoffs/:id" element={<HandoffDetail />} />
               <Route path="/settings" element={<SettingsPage />} />

@@ -1,0 +1,281 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+---
+<BaseLayout title="Project Context — SessionFS" activeNav="features" description="Shared project context for every AI agent. Explain your architecture once — every session starts with that knowledge.">
+
+  <!-- Hero -->
+  <section class="relative pt-32 sm:pt-40 pb-16 px-5 noise">
+    <div class="max-w-5xl mx-auto flex flex-col lg:flex-row items-center gap-12">
+      <div class="lg:w-1/2 fade-up">
+        <div class="inline-flex items-center gap-2 text-sm font-mono text-muted-dim mb-6">
+          <a href="/features/" class="hover:text-brand transition-colors">Features</a>
+          <span>&#47;</span>
+          <span class="text-txt">Project Context</span>
+        </div>
+        <h1 class="font-heading text-4xl sm:text-5xl font-extrabold tracking-tight leading-[1.1] mb-6">
+          Shared context for<br>every AI agent.
+        </h1>
+        <p class="text-muted text-lg mb-4 leading-relaxed">Your architecture, conventions, and key decisions — available to every AI coding session in the repo, automatically.</p>
+        <p class="text-muted text-lg mb-8 leading-relaxed">Write it once. Every AI tool that touches your codebase starts with the knowledge it needs.</p>
+        <a href="/quickstart/" class="inline-flex items-center gap-2 bg-brand text-white font-semibold rounded-lg px-6 py-3 hover:brightness-110 transition">
+          Get started
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+        </a>
+      </div>
+      <div class="lg:w-1/2 w-full fade-up">
+        <div class="relative">
+          <div class="hero-glow"></div>
+          <div class="term relative z-10">
+            <div class="term-bar">
+              <div class="term-dot bg-[#ff5f57]"></div>
+              <div class="term-dot bg-[#febc2e]"></div>
+              <div class="term-dot bg-[#28c840]"></div>
+              <span class="ml-3 text-muted-dim text-[13px] font-mono">project context</span>
+            </div>
+            <div class="p-5 font-mono text-sm space-y-3">
+              <div>
+                <div class="text-muted-dim text-[11px] uppercase tracking-wider mb-1">Your context</div>
+                <div class="bg-bg/60 rounded p-2.5 text-sm space-y-1">
+                  <div class="text-brand font-bold"># Project Context</div>
+                  <div class="text-muted">Next.js 14 with App Router</div>
+                  <div class="text-muted">PostgreSQL via Prisma ORM</div>
+                  <div class="text-muted">Trunk-based dev + feature flags</div>
+                  <div class="text-muted">Deploy to Vercel (preview + prod)</div>
+                </div>
+              </div>
+              <div class="border-t border-border pt-3">
+                <div class="text-muted-dim text-[11px] uppercase tracking-wider mb-1">Every AI session reads it</div>
+                <div class="text-muted text-sm">Claude Code, Cursor, Codex, Gemini CLI</div>
+                <div class="text-accent text-sm mt-1">Loaded via MCP automatically</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- How it works -->
+  <section class="relative py-20 sm:py-28 px-5 noise">
+    <div class="max-w-5xl mx-auto">
+      <h2 class="fade-up font-heading text-3xl font-bold text-center mb-12">How it works</h2>
+      <div class="grid lg:grid-cols-3 gap-8">
+
+        <!-- Step 1 -->
+        <div class="fade-up">
+          <div class="text-brand font-mono text-sm font-bold mb-3">Step 1</div>
+          <h3 class="font-heading font-semibold text-lg mb-4">Create context</h3>
+          <div class="term">
+            <div class="term-bar">
+              <div class="term-dot bg-[#ff5f57]"></div>
+              <div class="term-dot bg-[#febc2e]"></div>
+              <div class="term-dot bg-[#28c840]"></div>
+              <span class="ml-3 text-muted-dim text-[13px] font-mono">terminal</span>
+            </div>
+            <div class="p-4 font-mono text-sm space-y-1">
+              <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs project init</span></div>
+              <div class="mt-2 text-muted">Detected: github.com/acme/web-app</div>
+              <div class="text-muted">Project context created.</div>
+              <div class="text-muted">Edit with: <span class="text-accent">sfs project edit</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 2 -->
+        <div class="fade-up">
+          <div class="text-brand font-mono text-sm font-bold mb-3">Step 2</div>
+          <h3 class="font-heading font-semibold text-lg mb-4">Write your knowledge</h3>
+          <div class="term">
+            <div class="term-bar">
+              <div class="term-dot bg-[#ff5f57]"></div>
+              <div class="term-dot bg-[#febc2e]"></div>
+              <div class="term-dot bg-[#28c840]"></div>
+              <span class="ml-3 text-muted-dim text-[13px] font-mono">editor</span>
+            </div>
+            <div class="p-4 font-mono text-sm space-y-1">
+              <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs project edit</span></div>
+              <div class="mt-2 text-brand"># Project Context</div>
+              <div class="text-muted-dim">## Overview</div>
+              <div class="text-muted-dim">## Architecture</div>
+              <div class="text-muted-dim">## Conventions</div>
+              <div class="text-muted-dim">## Key Decisions</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 3 -->
+        <div class="fade-up">
+          <div class="text-brand font-mono text-sm font-bold mb-3">Step 3</div>
+          <h3 class="font-heading font-semibold text-lg mb-4">Every agent reads it</h3>
+          <div class="term">
+            <div class="term-bar">
+              <div class="term-dot bg-[#ff5f57]"></div>
+              <div class="term-dot bg-[#febc2e]"></div>
+              <div class="term-dot bg-[#28c840]"></div>
+              <span class="ml-3 text-muted-dim text-[13px] font-mono">claude code</span>
+            </div>
+            <div class="p-4 font-mono text-sm space-y-1">
+              <div class="text-muted-dim">> What's the architecture?</div>
+              <div class="mt-2 text-muted-dim text-[12px]">[Reading project context via MCP...]</div>
+              <div class="mt-1 text-muted text-[13px] leading-relaxed">"This project uses Next.js 14 with App Router, PostgreSQL via Prisma ORM, and deploys to Vercel..."</div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- Why it matters -->
+  <section class="relative py-20 px-5 bg-surface/50 noise">
+    <div class="max-w-4xl mx-auto flex flex-col lg:flex-row items-center gap-12">
+      <div class="lg:w-1/2 fade-up">
+        <h2 class="font-heading text-2xl sm:text-3xl font-bold mb-4">How many times have you explained your architecture to an AI tool?</h2>
+        <p class="text-muted text-lg mb-6 leading-relaxed">Every developer re-explains the same things: "We use PostgreSQL, not MySQL." "The API is FastAPI." "Don't touch migrations directly."</p>
+        <p class="text-muted text-lg mb-6 leading-relaxed">Project Context: explain once. Every AI session starts with that knowledge — no preamble, no repetition.</p>
+        <div class="space-y-2">
+          <div class="flex items-center gap-2 text-sm text-muted"><span class="text-accent">&#10003;</span> Architecture decisions persisted across sessions</div>
+          <div class="flex items-center gap-2 text-sm text-muted"><span class="text-accent">&#10003;</span> Coding conventions enforced from day one</div>
+          <div class="flex items-center gap-2 text-sm text-muted"><span class="text-accent">&#10003;</span> API contracts and boundaries documented once</div>
+          <div class="flex items-center gap-2 text-sm text-muted"><span class="text-accent">&#10003;</span> Key decisions never lost to chat history</div>
+        </div>
+      </div>
+      <div class="lg:w-1/2 w-full fade-up">
+        <div class="term">
+          <div class="term-bar">
+            <div class="term-dot bg-[#ff5f57]"></div>
+            <div class="term-dot bg-[#febc2e]"></div>
+            <div class="term-dot bg-[#28c840]"></div>
+            <span class="ml-3 text-muted-dim text-[13px] font-mono">every session</span>
+          </div>
+          <div class="p-5 font-mono text-sm space-y-3">
+            <div>
+              <div class="text-muted-dim text-[11px] uppercase tracking-wider mb-1">Without Project Context</div>
+              <div class="text-muted text-sm">"We use PostgreSQL, not MySQL."</div>
+              <div class="text-muted text-sm">"The API is FastAPI, not Flask."</div>
+              <div class="text-muted text-sm">"Don't modify migrations directly."</div>
+              <div class="text-danger text-[12px] mt-1">Repeated every session, by every developer.</div>
+            </div>
+            <div class="border-t border-border pt-3">
+              <div class="text-muted-dim text-[11px] uppercase tracking-wider mb-1">With Project Context</div>
+              <div class="text-accent text-sm">Already loaded. Zero prompting needed.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- Team multiplier -->
+  <section class="relative py-20 sm:py-28 px-5 noise">
+    <div class="max-w-5xl mx-auto">
+      <h2 class="fade-up font-heading text-3xl font-bold text-center mb-12">Team multiplier</h2>
+      <div class="grid md:grid-cols-3 gap-5">
+
+        <div class="glass fade-up p-6">
+          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#4f9cf7" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7.5v3m0 0v3m0-3h3m-3 0h-3m-2.25-4.125a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zM4 19.235v-.11a6.375 6.375 0 0112.75 0v.109A12.318 12.318 0 0110.374 21c-2.331 0-4.512-.645-6.374-1.766z"/></svg></div>
+          <h3 class="font-heading font-semibold mb-2">New member onboarding</h3>
+          <p class="text-muted text-base leading-relaxed">New developer joins, installs SessionFS, and every AI tool they use immediately knows your codebase conventions. No ramp-up period.</p>
+        </div>
+
+        <div class="glass fade-up p-6">
+          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#3ddc84" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25"/></svg></div>
+          <h3 class="font-heading font-semibold mb-2">One source of truth</h3>
+          <p class="text-muted text-base leading-relaxed">One document per repo, synced to the cloud. Update conventions once and every team member's AI sessions pick up the changes.</p>
+        </div>
+
+        <div class="glass fade-up p-6">
+          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#f0c040" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456z"/></svg></div>
+          <h3 class="font-heading font-semibold mb-2">Consistent AI output</h3>
+          <p class="text-muted text-base leading-relaxed">When every AI agent knows your conventions, generated code follows your patterns. Fewer review comments, less rework.</p>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- Dashboard preview -->
+  <section class="relative py-20 px-5 bg-surface/50 noise">
+    <div class="max-w-4xl mx-auto flex flex-col lg:flex-row items-center gap-12">
+      <div class="lg:w-1/2 fade-up">
+        <h2 class="font-heading text-2xl sm:text-3xl font-bold mb-4">Manage from the dashboard</h2>
+        <p class="text-muted text-lg mb-6 leading-relaxed">The Projects page in the dashboard shows all your repos with session counts, last activity, and quick access to edit project context.</p>
+        <p class="text-muted text-base leading-relaxed">CLI and dashboard stay in sync. Edit context from either — the latest version is always what your AI agents see.</p>
+      </div>
+      <div class="lg:w-1/2 w-full fade-up">
+        <div class="term">
+          <div class="term-bar">
+            <div class="term-dot bg-[#ff5f57]"></div>
+            <div class="term-dot bg-[#febc2e]"></div>
+            <div class="term-dot bg-[#28c840]"></div>
+            <span class="ml-3 text-muted-dim text-[13px] font-mono">dashboard / projects</span>
+          </div>
+          <div class="p-5 font-mono text-sm space-y-3">
+            <div class="flex items-center justify-between border-b border-border pb-2">
+              <div class="text-txt font-semibold">acme/web-app</div>
+              <div class="text-muted-dim text-[12px]">14 sessions</div>
+            </div>
+            <div class="flex items-center justify-between border-b border-border pb-2">
+              <div class="text-txt font-semibold">acme/api-gateway</div>
+              <div class="text-muted-dim text-[12px]">8 sessions</div>
+            </div>
+            <div class="flex items-center justify-between border-b border-border pb-2">
+              <div class="text-txt font-semibold">acme/mobile-app</div>
+              <div class="text-muted-dim text-[12px]">3 sessions</div>
+            </div>
+            <div class="text-accent text-[12px] mt-2">Context configured for all projects</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- CTA -->
+  <section class="relative py-16 px-5 noise">
+    <div class="max-w-2xl mx-auto text-center fade-up">
+      <h2 class="font-heading text-2xl sm:text-3xl font-bold mb-4">Try it now</h2>
+      <p class="text-muted mb-8 leading-relaxed">Two commands to give every AI agent your project knowledge.</p>
+      <div class="term inline-block text-left mb-8 w-full max-w-md">
+        <div class="term-bar">
+          <div class="term-dot bg-[#ff5f57]"></div>
+          <div class="term-dot bg-[#febc2e]"></div>
+          <div class="term-dot bg-[#28c840]"></div>
+          <span class="ml-3 text-muted-dim text-[13px] font-mono">terminal</span>
+        </div>
+        <div class="p-4 font-mono text-sm space-y-1">
+          <div><span class="text-muted-dim">$</span> <span class="text-accent">pip install sessionfs</span></div>
+          <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs project init</span></div>
+        </div>
+      </div>
+      <div class="flex flex-col sm:flex-row gap-3 justify-center">
+        <a href="/quickstart/" class="inline-flex items-center justify-center gap-2 bg-brand text-white font-semibold rounded-lg px-7 py-3 hover:brightness-110 transition">
+          Get Started
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+        </a>
+        <a href="/features/" class="inline-flex items-center justify-center gap-2 border border-border text-txt font-semibold rounded-lg px-7 py-3 hover:border-muted transition">
+          All Features
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+</BaseLayout>
+
+<script>
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); } });
+  }, { threshold: 0.1 });
+  document.querySelectorAll('.fade-up').forEach(el => observer.observe(el));
+</script>

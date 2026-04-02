@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useSession } from '../hooks/useSession';
 import { useMessages } from '../hooks/useMessages';
 import { useAudit } from '../hooks/useAudit';
@@ -250,6 +250,21 @@ export default function SessionDetail() {
             <RelativeDate iso={session.updated_at} />
           </span>
         </div>
+
+        {/* Project link */}
+        {session.git_remote_normalized && (
+          <div className="px-5 mt-2">
+            <Link
+              to={`/projects/${encodeURIComponent(session.git_remote_normalized)}`}
+              className="text-sm text-[var(--brand)] hover:underline inline-flex items-center gap-1"
+            >
+              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+              </svg>
+              {session.git_remote_normalized}
+            </Link>
+          </div>
+        )}
 
         {/* Branch + tags row */}
         {(session.parent_session_id || session.tags.length > 0) && (
