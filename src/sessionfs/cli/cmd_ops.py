@@ -124,7 +124,9 @@ def _resume_in_claude_code(
         console.print(f"[dim]Using current directory for CC project scope: {cwd}[/dim]")
         target_path = cwd
 
-    # Build handoff context for Claude Code
+    # Build full conversation transcript for Claude Code
+    import tempfile
+
     messages_path = session_dir / "messages.jsonl"
     all_messages: list[dict] = []
     if messages_path.exists():
@@ -142,48 +144,96 @@ def _resume_in_claude_code(
     msg_count = stats.get("message_count", len(main_msgs))
     tool_count = stats.get("tool_use_count", 0)
 
-    # Extract last assistant messages for context
-    last_texts: list[str] = []
-    for msg in reversed(main_msgs):
-        if msg.get("role") == "assistant":
-            for block in msg.get("content", []):
-                if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
-                    last_texts.append(block["text"][:500])
-                    break
-            if len(last_texts) >= 5:
-                break
-
-    context = [
-        f"You are continuing a session that was transferred from {source_tool} via SessionFS.",
-        f"Session: {manifest.get('session_id', 'unknown')}",
+    # Build readable transcript from all messages
+    transcript_lines: list[str] = [
+        "# SessionFS Resume — Full Conversation Transcript",
+        f"Transferred from {source_tool}. Session: {manifest.get('session_id', 'unknown')}",
         f"Title: {title}",
         f"Stats: {msg_count} messages, {tool_count} tool calls.",
         "",
-        "Recent activity from the prior session (most recent first):",
+        "---",
+        "",
     ]
-    for txt in last_texts:
-        context.append(f"- {txt[:300]}")
-    context.append("")
-    context.append("Continue from where this session left off. The user expects you to pick up the work.")
 
-    handoff_prompt = "\n".join(context)
+    MAX_TRANSCRIPT_CHARS = 200_000  # ~200KB — safe for system prompt
+    char_count = 0
+
+    for msg in main_msgs:
+        role = msg.get("role", "unknown").upper()
+        content_blocks = msg.get("content", [])
+        if isinstance(content_blocks, str):
+            text = content_blocks
+        else:
+            parts: list[str] = []
+            for block in content_blocks:
+                if isinstance(block, dict):
+                    btype = block.get("type", "")
+                    if btype == "text":
+                        parts.append(block.get("text", ""))
+                    elif btype == "tool_use":
+                        parts.append(f"[Tool: {block.get('name', '')}]")
+                    elif btype == "tool_result":
+                        result = block.get("content", "")
+                        if isinstance(result, str):
+                            parts.append(f"[Result: {result[:200]}]")
+                elif isinstance(block, str):
+                    parts.append(block)
+            text = "\n".join(parts)
+
+        if not text.strip():
+            continue
+
+        entry = f"[{role}]: {text}\n"
+
+        # Truncate from the START if we exceed the limit — keep the END (most recent)
+        char_count += len(entry)
+        transcript_lines.append(entry)
+
+    # If too long, trim from the beginning (keep recent context)
+    full_transcript = "\n".join(transcript_lines)
+    if len(full_transcript) > MAX_TRANSCRIPT_CHARS:
+        # Keep the header + last N chars
+        header = "\n".join(transcript_lines[:8])
+        remaining = MAX_TRANSCRIPT_CHARS - len(header) - 200
+        trimmed_note = f"\n[... {len(full_transcript) - remaining} characters trimmed from earlier in conversation ...]\n\n"
+        full_transcript = header + trimmed_note + full_transcript[-remaining:]
+
+    full_transcript += "\n---\nContinue from where this session left off. The user expects you to pick up the work.\n"
+
+    # Write transcript to temp file for --append-system-prompt-file
+    transcript_file = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".txt", prefix="sfs-resume-", delete=False
+    )
+    transcript_file.write(full_transcript)
+    transcript_file.close()
 
     console.print("[green]Session context prepared for Claude Code.[/green]")
     console.print(f"  Source: {source_tool} ({msg_count} messages, {tool_count} tool calls)")
     console.print(f"  Title: {title}")
+    console.print(f"  Transcript: {len(full_transcript):,} chars")
     console.print()
 
-    # Launch Claude Code with handoff context as system prompt
+    # Launch Claude Code with full conversation transcript
     claude_bin = shutil.which("claude")
     if claude_bin:
-        console.print("Launching [bold]Claude Code[/bold] with session context...")
-        subprocess.run(
-            [claude_bin, "--append-system-prompt", handoff_prompt],
-            cwd=target_path,
-        )
+        console.print("Launching [bold]Claude Code[/bold] with full session context...")
+        # Try --append-system-prompt-file first, fall back to inline
+        try:
+            result = subprocess.run(
+                [claude_bin, "--append-system-prompt-file", transcript_file.name],
+                cwd=target_path,
+            )
+        except Exception:
+            # Fallback: read file content and pass inline (may truncate on very large sessions)
+            with open(transcript_file.name) as f:
+                prompt_text = f.read()[:100_000]
+            subprocess.run(
+                [claude_bin, "--append-system-prompt", prompt_text],
+                cwd=target_path,
+            )
     else:
-        console.print(f"Open Claude Code in [bold]{target_path}[/bold] and paste:")
-        console.print(f"  {handoff_prompt[:200]}...")
+        console.print(f"Transcript saved to: {transcript_file.name}")
+        console.print(f"Open Claude Code in [bold]{target_path}[/bold] and load the transcript.")
 
 
 def _resume_in_codex(
