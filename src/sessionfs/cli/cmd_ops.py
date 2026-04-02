@@ -118,6 +118,13 @@ def _resume_in_claude_code(
         err_console.print("[red]No project path found. Use --project to specify one.[/red]")
         raise SystemExit(1)
 
+    # Claude Code scopes sessions by project directory.
+    # Use CWD if it's more specific (e.g., user is in /repo/sessionfs, not /repo).
+    cwd = str(Path.cwd())
+    if cwd.startswith(target_path) and len(cwd) > len(target_path):
+        console.print(f"[dim]Using current directory for CC project scope: {cwd}[/dim]")
+        target_path = cwd
+
     result = reverse_convert_session(
         session_dir,
         manifest=manifest,
