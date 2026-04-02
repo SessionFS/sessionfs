@@ -58,16 +58,14 @@ def install(
         "roo-code": _install_vscode_extension,
     }
 
-    installer = installers.get(tool)
-    if not installer:
+    if tool in ("cline", "roo-code"):
+        _install_vscode_extension(mcp_config, tool)
+    elif tool in installers:
+        installers[tool](mcp_config)
+    else:
         supported = ", ".join(sorted(installers.keys()))
         err_console.print(f"[red]Unknown tool: {tool}. Supported: {supported}[/red]")
         raise SystemExit(1)
-
-    if tool in ("cline", "roo-code"):
-        installer(mcp_config, tool)
-    else:
-        installer(mcp_config)
 
 
 def _install_claude_code(mcp_config: dict) -> None:
