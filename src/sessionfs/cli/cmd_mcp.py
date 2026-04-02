@@ -178,6 +178,7 @@ def _install_codex(mcp_config: dict) -> None:
         else:
             err_console.print(f"[red]Failed to register: {result.stderr.strip()}[/red]")
             console.print("  Try manually: codex mcp add sessionfs -- sfs mcp serve")
+            raise SystemExit(1)
     except FileNotFoundError:
         err_console.print("[red]'codex' command not found. Install Codex CLI first.[/red]")
         raise SystemExit(1)
@@ -213,6 +214,7 @@ def _install_gemini(mcp_config: dict) -> None:
         else:
             err_console.print(f"[red]Failed to register: {result.stderr.strip()}[/red]")
             console.print("  Try manually: gemini mcp add sessionfs sfs mcp serve")
+            raise SystemExit(1)
     except FileNotFoundError:
         err_console.print("[red]'gemini' command not found. Install Gemini CLI first.[/red]")
         raise SystemExit(1)
