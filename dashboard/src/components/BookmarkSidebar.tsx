@@ -18,7 +18,14 @@ export default function BookmarkSidebar({ selectedFolderId, onSelectFolder }: Bo
   const updateFolder = useUpdateFolder();
   const deleteFolder = useDeleteFolder();
 
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      const stored = localStorage.getItem('sfs-sidebar-collapsed');
+      return stored !== null ? stored === 'true' : true; // default collapsed
+    } catch {
+      return true;
+    }
+  });
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState('');
   const [newColor, setNewColor] = useState(PRESET_COLORS[0]);
@@ -29,6 +36,14 @@ export default function BookmarkSidebar({ selectedFolderId, onSelectFolder }: Bo
   const menuRef = useRef<HTMLDivElement>(null);
 
   const folders = data?.folders ?? [];
+
+  function toggleCollapsed() {
+    setCollapsed((prev) => {
+      const next = !prev;
+      try { localStorage.setItem('sfs-sidebar-collapsed', String(next)); } catch { /* noop */ }
+      return next;
+    });
+  }
 
   // Close menu on outside click
   useEffect(() => {
@@ -80,29 +95,59 @@ export default function BookmarkSidebar({ selectedFolderId, onSelectFolder }: Bo
 
   if (collapsed) {
     return (
-      <div className="w-8 shrink-0 border-r border-border bg-bg-secondary flex flex-col items-center pt-3">
+      <div className="hidden sm:flex w-12 shrink-0 border-r border-border bg-bg-secondary flex-col items-center pt-3 gap-2">
         <button
-          onClick={() => setCollapsed(false)}
-          className="text-text-muted hover:text-text-secondary text-xs"
+          onClick={toggleCollapsed}
+          className="text-text-muted hover:text-text-secondary p-1 rounded hover:bg-bg-tertiary transition-colors"
           title="Expand folders"
         >
-          &rsaquo;
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="9 18 15 12 9 6" />
+          </svg>
         </button>
+        <button
+          onClick={() => onSelectFolder(null)}
+          className={`p-1.5 rounded transition-colors ${selectedFolderId === null ? 'bg-bg-tertiary' : 'hover:bg-bg-tertiary'}`}
+          title="All Sessions"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-text-muted">
+            <path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+          </svg>
+        </button>
+        {folders.map((f) => (
+          <button
+            key={f.id}
+            onClick={() => onSelectFolder(f.id)}
+            className={`p-1.5 rounded transition-colors ${selectedFolderId === f.id ? 'bg-bg-tertiary' : 'hover:bg-bg-tertiary'}`}
+            title={f.name}
+          >
+            <span
+              className="block w-3 h-3 rounded-full"
+              style={{ backgroundColor: f.color || '#4f9cf7' }}
+            />
+          </button>
+        ))}
       </div>
     );
   }
 
   return (
-    <div className="w-52 shrink-0 border-r border-border bg-bg-secondary overflow-y-auto">
+    <div className="hidden sm:block w-52 shrink-0 border-r border-border bg-bg-secondary overflow-y-auto">
       <div className="p-3">
         {/* Header */}
         <div className="flex items-center justify-between mb-2">
-          <button
-            onClick={() => setCollapsed(true)}
-            className="text-[10px] uppercase tracking-wider text-text-muted hover:text-text-secondary"
-          >
-            Folders
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={toggleCollapsed}
+              className="text-text-muted hover:text-text-secondary p-0.5 rounded hover:bg-bg-tertiary transition-colors"
+              title="Collapse sidebar"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="15 18 9 12 15 6" />
+              </svg>
+            </button>
+            <span className="text-[10px] uppercase tracking-wider text-text-muted">Folders</span>
+          </div>
           <button
             onClick={() => setShowCreate(true)}
             className="text-text-muted hover:text-accent text-lg leading-none"
