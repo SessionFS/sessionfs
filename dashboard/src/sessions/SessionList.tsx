@@ -1,13 +1,16 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import { useSessions } from '../hooks/useSessions';
 import { useFolders, useAddBookmark, useFolderSessions } from '../hooks/useBookmarks';
-import type { SessionSummary } from '../api/client';
+import type { SessionSummary, HandoffListResponse } from '../api/client';
 import { abbreviateModel, fullToolName } from '../utils/models';
 import { formatTokens } from '../utils/tokens';
 import RelativeDate from '../components/RelativeDate';
-import BookmarkSidebar from '../components/BookmarkSidebar';
+import BookmarkSidebar, { MobileNavChips } from '../components/BookmarkSidebar';
+import type { NavFilter } from '../components/BookmarkSidebar';
 import { useToast } from '../hooks/useToast';
+import { useAuth } from '../auth/AuthContext';
 
 const TOOL_COLORS: Record<string, string> = {
   'claude-code': 'var(--tool-claude)',
@@ -21,6 +24,8 @@ const TOOL_COLORS: Record<string, string> = {
   'cline': 'var(--tool-cline)',
   'roo-code': 'var(--tool-roo)',
 };
+
+const CAPTURE_ONLY_TOOLS = new Set(['cursor', 'cline', 'roo-code', 'amp']);
 
 interface SessionSummaryWithAudit extends SessionSummary {
   audit_trust_score?: number | null;
@@ -36,17 +41,33 @@ const DATE_RANGES = [
 
 type SortKey = 'date' | 'messages' | 'tokens' | 'title';
 
+function isToday(dateStr: string): boolean {
+  const d = new Date(dateStr);
+  const now = new Date();
+  return d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+}
+
+function isThisWeek(dateStr: string): boolean {
+  const d = new Date(dateStr);
+  const now = new Date();
+  const weekAgo = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7);
+  return d >= weekAgo && !isToday(dateStr);
+}
+
 export default function SessionList() {
   const navigate = useNavigate();
+  const { auth } = useAuth();
+  const { addToast } = useToast();
   const [page, setPage] = useState(1);
   const [toolFilter, setToolFilter] = useState('all');
   const [dateRange, setDateRange] = useState('');
   const [sortBy, setSortBy] = useState<SortKey>('date');
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
+  const [navFilter, setNavFilter] = useState<NavFilter>('all');
 
   const PAGE_SIZE = 20;
-  const { data: foldersForMobile } = useFolders();
-  const mobileFolders = foldersForMobile?.folders ?? [];
 
   const { data, isLoading, error } = useSessions({
     page,
@@ -55,6 +76,23 @@ export default function SessionList() {
   });
 
   const { data: folderSessionsData } = useFolderSessions(selectedFolderId);
+  const { data: foldersData } = useFolders();
+
+  // Handoffs inbox query
+  const { data: handoffsData } = useQuery<HandoffListResponse>({
+    queryKey: ['handoffs-inbox'],
+    queryFn: () => auth!.client.listInbox(),
+    enabled: !!auth,
+    staleTime: 60_000,
+  });
+
+  const pendingHandoffs = useMemo(() => {
+    if (!handoffsData?.handoffs) return [];
+    return handoffsData.handoffs.filter((h) => h.status === 'pending');
+  }, [handoffsData]);
+
+  const allFolders = foldersData?.folders ?? [];
+  const totalBookmarked = allFolders.reduce((sum, f) => sum + f.bookmark_count, 0);
 
   const sessions = useMemo(() => {
     // If a folder is selected, show folder sessions instead
@@ -103,8 +141,85 @@ export default function SessionList() {
     return sorted;
   }, [data, dateRange, sortBy, selectedFolderId, folderSessionsData]);
 
+  // Most recent session (for hero + repo detection)
+  const mostRecent = useMemo(() => {
+    if (!data?.sessions || data.sessions.length === 0) return null;
+    return [...data.sessions].sort(
+      (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
+    )[0];
+  }, [data]);
+
+  // Detect repo from most recent session (using git_remote_normalized if available via detail)
+  // For now we use session data — git_remote_normalized is on SessionDetail, not SessionSummary
+  // We'll show the "In This Repo" nav if there's a pattern we can detect
+  const _repoLabel: string | null = null; // Would need detail fetch; keep null for now
+
+  // In-repo count (placeholder — would need git_remote on summaries)
+  const inRepoCount = 0;
+
+  // Bookmarked filter: show only sessions that appear in any folder
+  const filteredSessions = useMemo(() => {
+    if (navFilter === 'bookmarked' && !selectedFolderId) {
+      // We don't have a direct "all bookmarked" list — show message instead
+      return sessions;
+    }
+    return sessions;
+  }, [sessions, navFilter, selectedFolderId]);
+
+  // Date grouping
+  const grouped = useMemo(() => {
+    const today: SessionSummary[] = [];
+    const thisWeek: SessionSummary[] = [];
+    const earlier: SessionSummary[] = [];
+
+    for (const s of filteredSessions) {
+      if (isToday(s.updated_at)) today.push(s);
+      else if (isThisWeek(s.updated_at)) thisWeek.push(s);
+      else earlier.push(s);
+    }
+
+    return { today, thisWeek, earlier };
+  }, [filteredSessions]);
+
   const hasMore = selectedFolderId ? false : (data?.has_more ?? false);
   const totalSessions = selectedFolderId ? (folderSessionsData?.total ?? 0) : (data?.total ?? 0);
+
+  // Insights strip data
+  const insights = useMemo(() => {
+    if (filteredSessions.length === 0) return null;
+    const toolCounts: Record<string, number> = {};
+    let totalTokensToday = 0;
+    const hourCounts = new Array(24).fill(0);
+
+    for (const s of filteredSessions) {
+      toolCounts[s.source_tool] = (toolCounts[s.source_tool] || 0) + 1;
+      if (isToday(s.created_at)) {
+        totalTokensToday += s.total_input_tokens + s.total_output_tokens;
+      }
+      const h = new Date(s.created_at).getHours();
+      hourCounts[h]++;
+    }
+
+    const total = filteredSessions.length;
+    const sortedTools = Object.entries(toolCounts).sort((a, b) => b[1] - a[1]).slice(0, 3);
+    const toolMix = sortedTools.map(([tool, count]) =>
+      `${fullToolName(tool)} ${Math.round((count / total) * 100)}%`
+    ).join(' / ');
+
+    let peakHour = 0;
+    let peakCount = 0;
+    for (let h = 0; h < 24; h++) {
+      const windowCount = hourCounts[h] + hourCounts[(h + 1) % 24];
+      if (windowCount > peakCount) { peakCount = windowCount; peakHour = h; }
+    }
+    const fmtHour = (h: number) => {
+      const ampm = h >= 12 ? 'PM' : 'AM';
+      return `${h % 12 || 12} ${ampm}`;
+    };
+    const peak = peakCount > 0 ? `${fmtHour(peakHour)}-${fmtHour((peakHour + 2) % 24)}` : null;
+
+    return { toolMix, tokensToday: totalTokensToday, peak };
+  }, [filteredSessions]);
 
   function handleRowClick(id: string) {
     navigate(`/sessions/${id}`);
@@ -114,202 +229,394 @@ export default function SessionList() {
     if (e.key === 'Enter') navigate(`/sessions/${id}`);
   }
 
+  function handleResume(s: SessionSummary) {
+    const tool = s.source_tool || 'claude-code';
+    const resumeTool = CAPTURE_ONLY_TOOLS.has(tool) ? 'claude-code' : tool;
+    navigator.clipboard.writeText(`sfs resume ${s.id} --in ${resumeTool}`);
+    addToast('success', `Resume command copied${CAPTURE_ONLY_TOOLS.has(tool) ? ` (${tool} is capture-only, using claude-code)` : ''}`);
+  }
+
+  const latestHandoff = pendingHandoffs.length > 0 ? pendingHandoffs[0] : null;
+
   return (
     <div className="flex flex-1 min-h-0">
-      <BookmarkSidebar selectedFolderId={selectedFolderId} onSelectFolder={(id) => { setSelectedFolderId(id); setPage(1); }} />
-      <div className="flex-1 max-w-7xl mx-auto px-4 py-4">
-      {/* Mobile folder selector */}
-      <div className="sm:hidden mb-3">
-        <select
-          value={selectedFolderId || ''}
-          onChange={(e) => { setSelectedFolderId(e.target.value || null); setPage(1); }}
-          className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)]"
-        >
-          <option value="">All Sessions</option>
-          {mobileFolders.map((f: any) => (
-            <option key={f.id} value={f.id}>{f.name}</option>
-          ))}
-        </select>
-      </div>
-      {/* Filter bar */}
-      <div className="flex flex-wrap items-center gap-3 mb-4">
-        <div className="relative">
-          <select
-            value={toolFilter}
-            onChange={(e) => { setToolFilter(e.target.value); setPage(1); }}
-            className="appearance-none bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 pr-8 text-sm text-[var(--text-secondary)] focus:outline-none focus:border-[var(--brand)] cursor-pointer transition-colors"
-          >
-            {TOOLS.map((t) => (
-              <option key={t} value={t}>{t === 'all' ? 'All Tools' : fullToolName(t)}</option>
-            ))}
-          </select>
-          <svg className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--text-tertiary)] pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="6 9 12 15 18 9" />
-          </svg>
-        </div>
-        <div className="relative">
-          <select
-            value={dateRange}
-            onChange={(e) => setDateRange(e.target.value)}
-            className="appearance-none bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 pr-8 text-sm text-[var(--text-secondary)] focus:outline-none focus:border-[var(--brand)] cursor-pointer transition-colors"
-          >
-            {DATE_RANGES.map((d) => (
-              <option key={d.value} value={d.value}>{d.label}</option>
-            ))}
-          </select>
-          <svg className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--text-tertiary)] pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="6 9 12 15 18 9" />
-          </svg>
-        </div>
-        <div className="relative">
-          <select
-            value={sortBy}
-            onChange={(e) => setSortBy(e.target.value as SortKey)}
-            className="appearance-none bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 pr-8 text-sm text-[var(--text-secondary)] focus:outline-none focus:border-[var(--brand)] cursor-pointer transition-colors"
-          >
-            <option value="date">Sort: Date</option>
-            <option value="messages">Sort: Messages</option>
-            <option value="tokens">Sort: Tokens</option>
-            <option value="title">Sort: Title</option>
-          </select>
-          <svg className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--text-tertiary)] pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="6 9 12 15 18 9" />
-          </svg>
-        </div>
-      </div>
+      <BookmarkSidebar
+        selectedFilter={navFilter}
+        onSelectFilter={(f) => { setNavFilter(f); setPage(1); }}
+        totalCount={totalSessions}
+        bookmarkedCount={totalBookmarked}
+        inRepoCount={inRepoCount}
+        inRepoLabel={_repoLabel}
+        handoffCount={pendingHandoffs.length}
+        selectedFolderId={selectedFolderId}
+        onSelectFolder={(id) => { setSelectedFolderId(id); setPage(1); }}
+      />
+      <div className="flex-1 max-w-7xl mx-auto px-4 py-4 overflow-y-auto">
 
-      {/* Error */}
-      {error && (
-        <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 text-sm">
-          Failed to load sessions: {String(error)}
-        </div>
-      )}
+        {/* Mobile nav chips */}
+        <MobileNavChips
+          selectedFilter={navFilter}
+          onSelectFilter={(f) => { setNavFilter(f); setPage(1); }}
+          totalCount={totalSessions}
+          bookmarkedCount={totalBookmarked}
+          inRepoCount={inRepoCount}
+          inRepoLabel={_repoLabel}
+          handoffCount={pendingHandoffs.length}
+          selectedFolderId={selectedFolderId}
+          onSelectFolder={(id) => { setSelectedFolderId(id); setPage(1); }}
+        />
 
-      {/* Analytics Cards */}
-      {!isLoading && sessions.length > 0 && <AnalyticsCards sessions={sessions} dateRange={dateRange} totalSessions={totalSessions} />}
-
-      {/* Recently active strip */}
-      {!isLoading && sessions.length > 0 && <RecentlyActiveStrip sessions={sessions} isPageLocal={sessions.length < totalSessions} />}
-
-      {/* Loading */}
-      {isLoading && (
-        <div className="space-y-3">
-          {Array.from({length: 6}).map((_, i) => (
-            <div key={i} className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl p-4 animate-pulse">
-              <div className="flex items-center gap-3">
-                <div className="w-3 h-3 rounded-full bg-[var(--bg-tertiary)]" />
-                <div className="h-4 w-24 rounded bg-[var(--bg-tertiary)]" />
-                <div className="h-3 w-32 rounded bg-[var(--bg-tertiary)]" />
-                <div className="flex-1" />
-                <div className="h-3 w-16 rounded bg-[var(--bg-tertiary)]" />
-              </div>
-              <div className="mt-2 flex items-center gap-3 pl-6">
-                <div className="h-3 w-16 rounded bg-[var(--bg-tertiary)]" />
-                <div className="h-3 w-64 rounded bg-[var(--bg-tertiary)]" />
-              </div>
+        {/* ── Hero: Resume where you left off ── */}
+        {!isLoading && mostRecent && (
+          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-5 mb-5 shadow-[var(--shadow-sm)]">
+            <div className="mb-1">
+              <span className="text-[10px] uppercase tracking-widest text-[var(--brand)] font-semibold">Resume Work</span>
             </div>
-          ))}
-        </div>
-      )}
+            <h2 className="text-lg font-semibold text-[var(--text-primary)] mb-1">Resume where you left off</h2>
+            <p className="text-sm text-[var(--text-tertiary)] mb-4">Pick up recent sessions, handoffs, and repo-specific work across tools.</p>
 
-      {/* Session rows */}
-      {!isLoading && sessions.length > 0 && (
-        <>
-          <div className="flex flex-col gap-1.5">
-            {sessions.map((s) => (
-              <div
-                key={s.id}
-                onClick={() => handleRowClick(s.id)}
-                onKeyDown={(e) => handleRowKeyDown(e, s.id)}
-                tabIndex={0}
-                className="bg-[var(--surface)] border border-[var(--border)] rounded-lg px-4 py-3 cursor-pointer hover:bg-[var(--surface-hover)] hover:shadow-[var(--shadow-sm)] transition-all duration-150 focus:bg-[var(--surface-hover)] outline-none focus:ring-1 focus:ring-[var(--brand)]"
-              >
-                {/* Line 1: Title (dominant) + timestamp right-aligned */}
-                <div className="flex items-center gap-3 mb-1">
-                  <span className="text-[15px] font-medium text-[var(--text-primary)] truncate flex-1">
-                    {s.title || <span className="text-[var(--text-tertiary)] italic">Untitled session</span>}
-                    {s.parent_session_id && (
-                      <span className="text-[var(--text-tertiary)] text-xs ml-1.5">&crarr; fork</span>
-                    )}
-                  </span>
-                  <div className="ml-auto flex items-center gap-2 shrink-0">
-                    <TrustBadge score={(s as SessionSummaryWithAudit).audit_trust_score} />
-                    <span className="text-xs text-[var(--text-tertiary)]">
-                      <RelativeDate iso={s.updated_at} />
-                    </span>
-                    <div onClick={(e) => e.stopPropagation()}>
-                      <BookmarkDropdown sessionId={s.id} />
-                    </div>
-                  </div>
-                </div>
-                {/* Line 2: Tool dot + tool name + session ID (mono) + counts */}
-                <div className="flex items-center gap-2 text-xs text-[var(--text-tertiary)]">
+            <div className="flex flex-col lg:flex-row gap-4">
+              {/* Left: Primary resume card (60%) */}
+              <div className="flex-[3] bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg p-4">
+                <h3 className="text-xl font-semibold text-[var(--text-primary)] mb-2 truncate">
+                  {mostRecent.title || 'Untitled session'}
+                </h3>
+                <div className="flex items-center gap-2 text-sm text-[var(--text-tertiary)] mb-3">
                   <span
                     className="w-2 h-2 rounded-full shrink-0"
-                    style={{ backgroundColor: TOOL_COLORS[s.source_tool] || '#6B7280' }}
+                    style={{ backgroundColor: TOOL_COLORS[mostRecent.source_tool] || '#6B7280' }}
                   />
-                  <span className="whitespace-nowrap">{fullToolName(s.source_tool)}</span>
-                  <span className="opacity-40">&middot;</span>
-                  <span className="font-mono">{s.id.slice(0, 12)}</span>
-                  <span className="opacity-40">&middot;</span>
-                  <span className="tabular-nums">{s.message_count} msgs</span>
-                  <span className="opacity-40">&middot;</span>
-                  <span className="tabular-nums">{formatTokens(s.total_input_tokens + s.total_output_tokens)}</span>
-                  {s.model_id && (
+                  <span>{fullToolName(mostRecent.source_tool)}</span>
+                  {mostRecent.model_id && (
                     <>
                       <span className="opacity-40">&middot;</span>
-                      <span>{abbreviateModel(s.model_id)}</span>
+                      <span>{abbreviateModel(mostRecent.model_id)}</span>
                     </>
                   )}
                 </div>
+                <div className="flex items-center gap-2 text-xs text-[var(--text-tertiary)] mb-4">
+                  <span className="tabular-nums">{mostRecent.message_count} msgs</span>
+                  <span className="opacity-40">&middot;</span>
+                  <span className="tabular-nums">{formatTokens(mostRecent.total_input_tokens + mostRecent.total_output_tokens)} tokens</span>
+                  <span className="opacity-40">&middot;</span>
+                  <RelativeDate iso={mostRecent.updated_at} />
+                </div>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => handleResume(mostRecent)}
+                    className="px-4 py-2 bg-[var(--brand)] text-white text-sm font-medium rounded-lg hover:opacity-90 transition-opacity"
+                  >
+                    {CAPTURE_ONLY_TOOLS.has(mostRecent.source_tool) ? 'Resume in Claude Code' : 'Resume'}
+                  </button>
+                  <button
+                    onClick={() => navigate(`/sessions/${mostRecent.id}`)}
+                    className="px-4 py-2 border border-[var(--border)] text-sm font-medium text-[var(--text-secondary)] rounded-lg hover:bg-[var(--surface-hover)] transition-colors"
+                  >
+                    View Session
+                  </button>
+                </div>
+              </div>
+
+              {/* Right: Stack of 2 cards (40%) */}
+              <div className="flex-[2] flex flex-col gap-3">
+                {/* Handoff card */}
+                <div className="flex-1 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg p-4 flex flex-col justify-between">
+                  {latestHandoff ? (
+                    <>
+                      <div>
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-sm">Handoff from {latestHandoff.sender_email.split('@')[0]}</span>
+                        </div>
+                        <p className="text-sm text-[var(--text-secondary)] truncate mb-1">
+                          {latestHandoff.message || latestHandoff.session_title || 'No message'}
+                        </p>
+                        <div className="text-xs text-[var(--text-tertiary)]">
+                          {latestHandoff.session_message_count != null && (
+                            <span>{latestHandoff.session_message_count} msgs</span>
+                          )}
+                          <span className="opacity-40 mx-1">&middot;</span>
+                          <RelativeDate iso={latestHandoff.created_at} />
+                        </div>
+                      </div>
+                      <Link
+                        to={`/handoffs/${latestHandoff.id}`}
+                        className="mt-2 text-sm font-medium text-[var(--brand)] hover:underline inline-flex items-center gap-1"
+                      >
+                        Open Handoff <span aria-hidden>&rarr;</span>
+                      </Link>
+                    </>
+                  ) : (
+                    <div className="flex items-center justify-center h-full">
+                      <span className="text-sm text-[var(--text-tertiary)]">No pending handoffs</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Project context card */}
+                <div className="flex-1 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg p-4 flex flex-col justify-between">
+                  <div>
+                    <div className="text-sm text-[var(--text-secondary)] mb-1">Project Context</div>
+                    <p className="text-xs text-[var(--text-tertiary)]">
+                      Share repo-level context across tools and team members.
+                    </p>
+                  </div>
+                  <Link
+                    to="/projects"
+                    className="mt-2 text-sm font-medium text-[var(--brand)] hover:underline inline-flex items-center gap-1"
+                  >
+                    View Projects <span aria-hidden>&rarr;</span>
+                  </Link>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Filters row ── */}
+        <div className="flex flex-wrap items-center gap-3 mb-4">
+          <div className="relative">
+            <select
+              value={toolFilter}
+              onChange={(e) => { setToolFilter(e.target.value); setPage(1); }}
+              className="appearance-none bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 pr-8 text-sm text-[var(--text-secondary)] focus:outline-none focus:border-[var(--brand)] cursor-pointer transition-colors"
+            >
+              {TOOLS.map((t) => (
+                <option key={t} value={t}>{t === 'all' ? 'All Tools' : fullToolName(t)}</option>
+              ))}
+            </select>
+            <svg className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--text-tertiary)] pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </div>
+          <div className="relative">
+            <select
+              value={dateRange}
+              onChange={(e) => setDateRange(e.target.value)}
+              className="appearance-none bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 pr-8 text-sm text-[var(--text-secondary)] focus:outline-none focus:border-[var(--brand)] cursor-pointer transition-colors"
+            >
+              {DATE_RANGES.map((d) => (
+                <option key={d.value} value={d.value}>{d.label}</option>
+              ))}
+            </select>
+            <svg className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--text-tertiary)] pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </div>
+          <div className="relative">
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as SortKey)}
+              className="appearance-none bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 pr-8 text-sm text-[var(--text-secondary)] focus:outline-none focus:border-[var(--brand)] cursor-pointer transition-colors"
+            >
+              <option value="date">Sort: Date</option>
+              <option value="messages">Sort: Messages</option>
+              <option value="tokens">Sort: Tokens</option>
+              <option value="title">Sort: Title</option>
+            </select>
+            <svg className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--text-tertiary)] pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </div>
+        </div>
+
+        {/* Error */}
+        {error && (
+          <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 text-sm">
+            Failed to load sessions: {String(error)}
+          </div>
+        )}
+
+        {/* Loading */}
+        {isLoading && (
+          <div className="space-y-3">
+            {Array.from({length: 6}).map((_, i) => (
+              <div key={i} className="bg-[var(--bg-elevated,var(--surface))] border border-[var(--border)] rounded-xl p-4 animate-pulse">
+                <div className="flex items-center gap-3">
+                  <div className="w-3 h-3 rounded-full bg-[var(--bg-tertiary)]" />
+                  <div className="h-4 w-24 rounded bg-[var(--bg-tertiary)]" />
+                  <div className="h-3 w-32 rounded bg-[var(--bg-tertiary)]" />
+                  <div className="flex-1" />
+                  <div className="h-3 w-16 rounded bg-[var(--bg-tertiary)]" />
+                </div>
+                <div className="mt-2 flex items-center gap-3 pl-6">
+                  <div className="h-3 w-16 rounded bg-[var(--bg-tertiary)]" />
+                  <div className="h-3 w-64 rounded bg-[var(--bg-tertiary)]" />
+                </div>
               </div>
             ))}
           </div>
+        )}
 
-          {/* Pagination */}
-          <div className="flex items-center justify-between mt-4 text-sm text-[var(--text-tertiary)]">
-            <span>
-              Page {page} -- {sessions.length} sessions
-              {totalSessions > 0 && ` (${totalSessions} total)`}
-            </span>
-            <div className="flex gap-2">
-              {page > 1 && (
-                <button
-                  onClick={() => setPage((p) => p - 1)}
-                  className="px-3 py-1.5 bg-[var(--surface)] border border-[var(--border)] rounded-lg hover:border-[var(--border-strong)] transition-colors text-[var(--text-secondary)]"
-                >
-                  Previous
-                </button>
-              )}
-              {hasMore && (
-                <button
-                  onClick={() => setPage((p) => p + 1)}
-                  className="px-3 py-1.5 bg-[var(--surface)] border border-[var(--border)] rounded-lg hover:border-[var(--border-strong)] transition-colors text-[var(--text-secondary)]"
-                >
-                  Next
-                </button>
-              )}
+        {/* ── Session list with date grouping ── */}
+        {!isLoading && filteredSessions.length > 0 && (
+          <>
+            <SessionGroup label="Today" sessions={grouped.today} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} />
+            <SessionGroup label="This Week" sessions={grouped.thisWeek} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} />
+            <SessionGroup label="Earlier" sessions={grouped.earlier} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} />
+
+            {/* Pagination */}
+            <div className="flex items-center justify-between mt-4 text-sm text-[var(--text-tertiary)]">
+              <span>
+                Page {page} -- {filteredSessions.length} sessions
+                {totalSessions > 0 && ` (${totalSessions} total)`}
+              </span>
+              <div className="flex gap-2">
+                {page > 1 && (
+                  <button
+                    onClick={() => setPage((p) => p - 1)}
+                    className="px-3 py-1.5 bg-[var(--surface)] border border-[var(--border)] rounded-lg hover:border-[var(--border-strong)] transition-colors text-[var(--text-secondary)]"
+                  >
+                    Previous
+                  </button>
+                )}
+                {hasMore && (
+                  <button
+                    onClick={() => setPage((p) => p + 1)}
+                    className="px-3 py-1.5 bg-[var(--surface)] border border-[var(--border)] rounded-lg hover:border-[var(--border-strong)] transition-colors text-[var(--text-secondary)]"
+                  >
+                    Next
+                  </button>
+                )}
+              </div>
             </div>
-          </div>
-        </>
-      )}
 
-      {/* Empty state */}
-      {!isLoading && sessions.length === 0 && !error && (
-        <div className="text-center py-16">
-          <p className="text-[var(--text-secondary)] mb-2">No sessions found</p>
-          <p className="text-[var(--text-tertiary)] text-sm">
-            {selectedFolderId
-              ? 'No sessions bookmarked in this folder yet.'
-              : <>Push sessions from the CLI: <code className="bg-[var(--bg-secondary)] px-1.5 py-0.5 rounded">sfs push &lt;id&gt;</code></>
-            }
-          </p>
-        </div>
-      )}
+            {/* ── Insights strip ── */}
+            {insights && (
+              <div className="mt-4 pt-3 border-t border-[var(--border)] text-xs text-[var(--text-tertiary)] flex flex-wrap items-center gap-x-4 gap-y-1">
+                {insights.toolMix && <span>Tool Mix: {insights.toolMix}</span>}
+                <span>{formatTokens(insights.tokensToday)} tokens today</span>
+                {insights.peak && <span>Peak: {insights.peak}</span>}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* Empty state */}
+        {!isLoading && filteredSessions.length === 0 && !error && (
+          <div className="text-center py-16">
+            <p className="text-[var(--text-secondary)] mb-2">No sessions found</p>
+            <p className="text-[var(--text-tertiary)] text-sm">
+              {selectedFolderId
+                ? 'No sessions bookmarked in this folder yet.'
+                : <>Push sessions from the CLI: <code className="bg-[var(--bg-secondary)] px-1.5 py-0.5 rounded">sfs push &lt;id&gt;</code></>
+              }
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );
 }
+
+/* ── Date-grouped session section ── */
+
+function SessionGroup({
+  label,
+  sessions,
+  onRowClick,
+  onRowKeyDown,
+  onResume,
+}: {
+  label: string;
+  sessions: SessionSummary[];
+  onRowClick: (id: string) => void;
+  onRowKeyDown: (e: React.KeyboardEvent, id: string) => void;
+  onResume: (s: SessionSummary) => void;
+}) {
+  if (sessions.length === 0) return null;
+
+  return (
+    <div className="mb-5">
+      <h3 className="text-xs uppercase tracking-wide text-[var(--text-tertiary)] pb-1.5 mb-2 border-b border-[var(--border)]">
+        {label}
+      </h3>
+      <div className="flex flex-col gap-1.5">
+        {sessions.map((s) => (
+          <SessionRow
+            key={s.id}
+            session={s}
+            onClick={() => onRowClick(s.id)}
+            onKeyDown={(e) => onRowKeyDown(e, s.id)}
+            onResume={() => onResume(s)}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ── Individual session row with hover actions ── */
+
+function SessionRow({
+  session: s,
+  onClick,
+  onKeyDown,
+  onResume,
+}: {
+  session: SessionSummary;
+  onClick: () => void;
+  onKeyDown: (e: React.KeyboardEvent) => void;
+  onResume: () => void;
+}) {
+  return (
+    <div
+      onClick={onClick}
+      onKeyDown={onKeyDown}
+      tabIndex={0}
+      className="group bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg px-4 py-3 cursor-pointer hover:bg-[var(--surface-hover)] hover:shadow-[var(--shadow-sm)] transition-all duration-150 focus:bg-[var(--surface-hover)] outline-none focus:ring-1 focus:ring-[var(--brand)]"
+    >
+      {/* Line 1: Title + hover actions + timestamp */}
+      <div className="flex items-center gap-3 mb-1">
+        <span className="text-[15px] font-medium text-[var(--text-primary)] truncate flex-1">
+          {s.title || <span className="text-[var(--text-tertiary)] italic">Untitled session</span>}
+          {s.parent_session_id && (
+            <span className="text-[var(--text-tertiary)] text-xs ml-1.5">&crarr; fork</span>
+          )}
+        </span>
+        <div className="ml-auto flex items-center gap-2 shrink-0">
+          {/* Hover actions */}
+          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            <button
+              onClick={(e) => { e.stopPropagation(); onResume(); }}
+              className="px-2 py-0.5 text-xs font-medium text-[var(--brand)] bg-[var(--brand)]/10 rounded hover:bg-[var(--brand)]/20 transition-colors"
+            >
+              Resume
+            </button>
+          </div>
+          <TrustBadge score={(s as SessionSummaryWithAudit).audit_trust_score} />
+          <span className="text-xs text-[var(--text-tertiary)]">
+            <RelativeDate iso={s.updated_at} />
+          </span>
+          <div onClick={(e) => e.stopPropagation()}>
+            <BookmarkDropdown sessionId={s.id} />
+          </div>
+        </div>
+      </div>
+      {/* Line 2: Tool dot + tool name + metadata */}
+      <div className="flex items-center gap-2 text-xs text-[var(--text-tertiary)]">
+        <span
+          className="w-2 h-2 rounded-full shrink-0"
+          style={{ backgroundColor: TOOL_COLORS[s.source_tool] || '#6B7280' }}
+        />
+        <span className="whitespace-nowrap">{fullToolName(s.source_tool)}</span>
+        <span className="opacity-40">&middot;</span>
+        <span className="font-mono">{s.id.slice(0, 12)}</span>
+        <span className="opacity-40">&middot;</span>
+        <span className="tabular-nums">{s.message_count} msgs</span>
+        <span className="opacity-40">&middot;</span>
+        <span className="tabular-nums">{formatTokens(s.total_input_tokens + s.total_output_tokens)}</span>
+        {s.model_id && (
+          <>
+            <span className="opacity-40">&middot;</span>
+            <span>{abbreviateModel(s.model_id)}</span>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ── Bookmark dropdown (unchanged logic) ── */
 
 function BookmarkDropdown({ sessionId }: { sessionId: string }) {
   const [open, setOpen] = useState(false);
@@ -347,7 +654,7 @@ function BookmarkDropdown({ sessionId }: { sessionId: string }) {
         </svg>
       </button>
       {open && (
-        <div className="absolute right-0 top-8 z-20 bg-[var(--bg-elevated)] border border-[var(--border)] rounded-lg shadow-[var(--shadow-md)] py-1 min-w-[140px]">
+        <div className="absolute right-0 top-8 z-20 bg-[var(--bg-elevated,var(--surface))] border border-[var(--border)] rounded-lg shadow-[var(--shadow-md)] py-1 min-w-[140px]">
           {folders.length === 0 && (
             <div className="px-3 py-1.5 text-sm text-[var(--text-tertiary)]">No folders yet</div>
           )}
@@ -389,174 +696,5 @@ function TrustBadge({ score }: { score?: number | null }) {
       className={`inline-block w-2 h-2 rounded-full shrink-0 ${color}`}
       title={`Trust score: ${pct}%`}
     />
-  );
-}
-
-function AnalyticsCards({ sessions, dateRange, totalSessions }: { sessions: SessionSummary[]; dateRange: string; totalSessions: number }) {
-  const periodLabel = dateRange === '24h' ? 'Last 24h' : dateRange === '7d' ? 'Last 7 Days' : dateRange === '30d' ? 'Last 30 Days' : 'All Time';
-  // All stats except "Sessions · All Time" are computed from the current page only
-  const pageNote = sessions.length < totalSessions ? ' (this page)' : '';
-  const sessionsLabel = dateRange === '' ? 'Sessions · All Time' : `Sessions · ${periodLabel}${pageNote}`;
-  const tokensLabel = `Tokens${pageNote}`;
-  const peakLabel_ = `Peak Hours${pageNote}`;
-  const stats = useMemo(() => {
-    // Sessions count — use API total for "all time", page count for filtered
-    const sessionsCount = dateRange === '' ? totalSessions : sessions.length;
-
-    // Tool breakdown
-    const toolCounts: Record<string, number> = {};
-    for (const s of sessions) {
-      toolCounts[s.source_tool] = (toolCounts[s.source_tool] || 0) + 1;
-    }
-    const sortedTools = Object.entries(toolCounts).sort((a, b) => b[1] - a[1]);
-    const topTools = sortedTools.slice(0, 3);
-    const otherCount = sortedTools.slice(3).reduce((sum, [, c]) => sum + c, 0);
-    if (otherCount > 0) topTools.push(['Other', otherCount]);
-    const totalForBar = sessions.length;
-
-    // Total tokens
-    const totalTokens = sessions.reduce(
-      (sum, s) => sum + s.total_input_tokens + s.total_output_tokens,
-      0,
-    );
-
-    // Active hours -- find the peak hour
-    const hourCounts = new Array(24).fill(0);
-    for (const s of sessions) {
-      const h = new Date(s.created_at).getHours();
-      hourCounts[h]++;
-    }
-    let peakHour = 0;
-    let peakCount = 0;
-    for (let h = 0; h < 24; h++) {
-      const windowCount = hourCounts[h] + hourCounts[(h + 1) % 24];
-      if (windowCount > peakCount) {
-        peakCount = windowCount;
-        peakHour = h;
-      }
-    }
-    const fmtHour = (h: number) => {
-      const ampm = h >= 12 ? 'PM' : 'AM';
-      const h12 = h % 12 || 12;
-      return `${h12} ${ampm}`;
-    };
-    const peakLabel = peakCount > 0
-      ? `${fmtHour(peakHour)}-${fmtHour((peakHour + 2) % 24)}`
-      : 'N/A';
-
-    return {
-      sessionsCount,
-      topTools,
-      totalForBar,
-      totalTokens,
-      peakLabel,
-    };
-  }, [sessions, totalSessions, dateRange]);
-
-  return (
-    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
-      {/* Sessions */}
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 shadow-[var(--shadow-sm)] hover:shadow-[var(--shadow-md)] transition-shadow duration-150">
-        <div className="text-2xl font-bold text-[var(--text-primary)] tabular-nums">{stats.sessionsCount}</div>
-        <div className="text-xs text-[var(--text-tertiary)] uppercase tracking-wide mt-1">{sessionsLabel}</div>
-      </div>
-
-      {/* Tool Breakdown */}
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 shadow-[var(--shadow-sm)] hover:shadow-[var(--shadow-md)] transition-shadow duration-150">
-        <div className="text-xs text-[var(--text-tertiary)] uppercase tracking-wide mb-2">Tool Breakdown{pageNote}</div>
-        {stats.totalForBar > 0 && (
-          <>
-            <div className="flex h-2 rounded-full overflow-hidden mb-2">
-              {stats.topTools.map(([tool, count]) => (
-                <div
-                  key={tool}
-                  style={{
-                    width: `${(count / stats.totalForBar) * 100}%`,
-                    backgroundColor: TOOL_COLORS[tool] || '#6B7280',
-                  }}
-                  title={`${fullToolName(tool)}: ${count}`}
-                />
-              ))}
-            </div>
-            <div className="space-y-0.5">
-              {stats.topTools.map(([tool, count]) => (
-                <div key={tool} className="flex items-center gap-1.5 text-xs">
-                  <span
-                    className="w-2 h-2 rounded-full shrink-0"
-                    style={{ backgroundColor: TOOL_COLORS[tool] || '#6B7280' }}
-                  />
-                  <span className="text-[var(--text-secondary)] truncate">{fullToolName(tool)}</span>
-                  <span className="text-[var(--text-tertiary)] ml-auto tabular-nums">{count}</span>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-        {stats.totalForBar === 0 && (
-          <div className="text-sm text-[var(--text-tertiary)]">No data</div>
-        )}
-      </div>
-
-      {/* Total Tokens */}
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 shadow-[var(--shadow-sm)] hover:shadow-[var(--shadow-md)] transition-shadow duration-150">
-        <div className="text-2xl font-bold text-[var(--text-primary)] tabular-nums">
-          {formatTokens(stats.totalTokens)}
-        </div>
-        <div className="text-xs text-[var(--text-tertiary)] uppercase tracking-wide mt-1">{tokensLabel}</div>
-      </div>
-
-      {/* Active Hours */}
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 shadow-[var(--shadow-sm)] hover:shadow-[var(--shadow-md)] transition-shadow duration-150">
-        <div className="text-2xl font-bold text-[var(--text-primary)]">{stats.peakLabel}</div>
-        <div className="text-xs text-[var(--text-tertiary)] uppercase tracking-wide mt-1">{peakLabel_}</div>
-      </div>
-    </div>
-  );
-}
-
-const CAPTURE_ONLY_TOOLS = new Set(['cursor', 'cline', 'roo-code', 'amp']);
-
-function RecentlyActiveStrip({ sessions, isPageLocal }: { sessions: SessionSummary[]; isPageLocal: boolean }) {
-  const { addToast } = useToast();
-  // Always show most recent by date, regardless of current sort
-  const recent = [...sessions].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()).slice(0, 3);
-  if (recent.length === 0) return null;
-
-  function handleResume(s: SessionSummary) {
-    const tool = s.source_tool || 'claude-code';
-    // Capture-only tools can't be resumed — use claude-code as fallback
-    const resumeTool = CAPTURE_ONLY_TOOLS.has(tool) ? 'claude-code' : tool;
-    navigator.clipboard.writeText(`sfs resume ${s.id} --in ${resumeTool}`);
-    addToast('success', `Resume command copied${CAPTURE_ONLY_TOOLS.has(tool) ? ` (${tool} is capture-only, using claude-code)` : ''}`);
-  }
-
-  return (
-    <div className="mb-4">
-      <div className="text-xs text-[var(--text-tertiary)] uppercase tracking-wide mb-2">
-        Quick Resume{isPageLocal ? ' (this page)' : ''}
-      </div>
-      <div className="flex gap-3 overflow-x-auto">
-      {recent.map((s) => (
-        <div key={s.id} className="flex-shrink-0 bg-[var(--surface)] border border-[var(--border)] rounded-xl p-3 min-w-[280px]">
-          <div className="flex items-center gap-2 mb-1">
-            <span
-              className="w-2 h-2 rounded-full shrink-0"
-              style={{ backgroundColor: TOOL_COLORS[s.source_tool] || '#6B7280' }}
-            />
-            <span className="text-sm font-medium text-[var(--text-primary)] truncate">{s.title || 'Untitled'}</span>
-          </div>
-          <div className="flex items-center justify-between text-xs text-[var(--text-tertiary)]">
-            <span>{s.message_count} msgs &middot; <RelativeDate iso={s.updated_at} /></span>
-            <button
-              className="text-[var(--brand)] hover:underline text-xs font-medium"
-              onClick={(e) => { e.stopPropagation(); handleResume(s); }}
-            >
-              Resume
-            </button>
-          </div>
-        </div>
-      ))}
-      </div>
-    </div>
   );
 }

@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import type { FolderResponse } from '../api/client';
 import { useFolders, useCreateFolder, useUpdateFolder, useDeleteFolder } from '../hooks/useBookmarks';
 
@@ -7,25 +8,37 @@ const PRESET_COLORS = [
   '#f04060', '#40c4f0', '#f0c040', '#f06090',
 ];
 
+export type NavFilter = 'all' | 'bookmarked' | 'in-repo' | string; // string = folder ID
+
 interface BookmarkSidebarProps {
+  selectedFilter: NavFilter;
+  onSelectFilter: (filter: NavFilter) => void;
+  totalCount: number;
+  bookmarkedCount: number;
+  inRepoCount: number;
+  inRepoLabel: string | null;
+  handoffCount: number;
   selectedFolderId: string | null;
   onSelectFolder: (folderId: string | null) => void;
 }
 
-export default function BookmarkSidebar({ selectedFolderId, onSelectFolder }: BookmarkSidebarProps) {
+export default function BookmarkSidebar({
+  selectedFilter,
+  onSelectFilter,
+  totalCount,
+  bookmarkedCount,
+  inRepoCount,
+  inRepoLabel,
+  handoffCount,
+  selectedFolderId,
+  onSelectFolder,
+}: BookmarkSidebarProps) {
+  const navigate = useNavigate();
   const { data } = useFolders();
   const createFolder = useCreateFolder();
   const updateFolder = useUpdateFolder();
   const deleteFolder = useDeleteFolder();
 
-  const [collapsed, setCollapsed] = useState(() => {
-    try {
-      const stored = localStorage.getItem('sfs-sidebar-collapsed');
-      return stored !== null ? stored === 'true' : true; // default collapsed
-    } catch {
-      return true;
-    }
-  });
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState('');
   const [newColor, setNewColor] = useState(PRESET_COLORS[0]);
@@ -36,14 +49,6 @@ export default function BookmarkSidebar({ selectedFolderId, onSelectFolder }: Bo
   const menuRef = useRef<HTMLDivElement>(null);
 
   const folders = data?.folders ?? [];
-
-  function toggleCollapsed() {
-    setCollapsed((prev) => {
-      const next = !prev;
-      try { localStorage.setItem('sfs-sidebar-collapsed', String(next)); } catch { /* noop */ }
-      return next;
-    });
-  }
 
   // Close menu on outside click
   useEffect(() => {
@@ -88,92 +93,92 @@ export default function BookmarkSidebar({ selectedFolderId, onSelectFolder }: Bo
     deleteFolder.mutate(folderId, {
       onSuccess: () => {
         setMenuFolder(null);
-        if (selectedFolderId === folderId) onSelectFolder(null);
+        if (selectedFolderId === folderId) {
+          onSelectFolder(null);
+          onSelectFilter('all');
+        }
       },
     });
   }
 
-  if (collapsed) {
-    return (
-      <div className="hidden sm:flex w-12 shrink-0 border-r border-border bg-bg-secondary flex-col items-center pt-3 gap-2">
-        <button
-          onClick={toggleCollapsed}
-          className="text-text-muted hover:text-text-secondary p-1 rounded hover:bg-bg-tertiary transition-colors"
-          title="Expand folders"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="9 18 15 12 9 6" />
-          </svg>
-        </button>
-        <button
-          onClick={() => onSelectFolder(null)}
-          className={`p-1.5 rounded transition-colors ${selectedFolderId === null ? 'bg-bg-tertiary' : 'hover:bg-bg-tertiary'}`}
-          title="All Sessions"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-text-muted">
-            <path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-          </svg>
-        </button>
-        {folders.map((f) => (
-          <button
-            key={f.id}
-            onClick={() => onSelectFolder(f.id)}
-            className={`p-1.5 rounded transition-colors ${selectedFolderId === f.id ? 'bg-bg-tertiary' : 'hover:bg-bg-tertiary'}`}
-            title={f.name}
-          >
-            <span
-              className="block w-3 h-3 rounded-full"
-              style={{ backgroundColor: f.color || '#4f9cf7' }}
-            />
-          </button>
-        ))}
-      </div>
-    );
+  function isActive(filter: NavFilter) {
+    return selectedFilter === filter && !selectedFolderId;
   }
 
-  return (
-    <div className="hidden sm:block w-52 shrink-0 border-r border-border bg-bg-secondary overflow-y-auto">
-      <div className="p-3">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-2">
-          <div className="flex items-center gap-1.5">
-            <button
-              onClick={toggleCollapsed}
-              className="text-text-muted hover:text-text-secondary p-0.5 rounded hover:bg-bg-tertiary transition-colors"
-              title="Collapse sidebar"
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="15 18 9 12 15 6" />
-              </svg>
-            </button>
-            <span className="text-[10px] uppercase tracking-wider text-text-muted">Folders</span>
-          </div>
+  function isFolderActive(folderId: string) {
+    return selectedFolderId === folderId;
+  }
+
+  const activeClass = 'bg-[var(--surface-active,var(--bg-tertiary))] text-[var(--text-primary)] border-l-[3px] border-l-[var(--brand)]';
+  const inactiveClass = 'text-[var(--text-secondary)] hover:bg-[var(--surface-hover,var(--bg-tertiary))] border-l-[3px] border-l-transparent';
+
+  // Mobile chips are rendered separately via MobileNavChips
+
+  // Desktop: vertical rail
+  const desktopRail = (
+    <div className="hidden sm:flex w-[220px] shrink-0 border-r border-[var(--border)] bg-[var(--bg-secondary)] flex-col overflow-y-auto">
+      <div className="p-3 flex flex-col gap-0.5">
+        {/* Nav items */}
+        <button
+          onClick={() => { onSelectFilter('all'); onSelectFolder(null); }}
+          className={`w-full text-left px-3 py-2 text-sm rounded-r-md transition-colors flex items-center justify-between ${
+            isActive('all') ? activeClass : inactiveClass
+          }`}
+        >
+          <span>All Sessions</span>
+          <span className="text-xs text-[var(--text-tertiary)] tabular-nums">{totalCount}</span>
+        </button>
+
+        {inRepoLabel && (
+          <button
+            onClick={() => { onSelectFilter('in-repo'); onSelectFolder(null); }}
+            className={`w-full text-left px-3 py-2 text-sm rounded-r-md transition-colors flex items-center justify-between ${
+              isActive('in-repo') ? activeClass : inactiveClass
+            }`}
+          >
+            <span className="truncate">In This Repo</span>
+            <span className="text-xs text-[var(--text-tertiary)] tabular-nums">{inRepoCount}</span>
+          </button>
+        )}
+
+        <button
+          onClick={() => { onSelectFilter('bookmarked'); onSelectFolder(null); }}
+          className={`w-full text-left px-3 py-2 text-sm rounded-r-md transition-colors flex items-center justify-between ${
+            isActive('bookmarked') ? activeClass : inactiveClass
+          }`}
+        >
+          <span>Bookmarked</span>
+          <span className="text-xs text-[var(--text-tertiary)] tabular-nums">{bookmarkedCount}</span>
+        </button>
+
+        <button
+          onClick={() => navigate('/handoffs')}
+          className={`w-full text-left px-3 py-2 text-sm rounded-r-md transition-colors flex items-center justify-between ${inactiveClass}`}
+        >
+          <span>Handoffs</span>
+          <span className="text-xs text-[var(--text-tertiary)] tabular-nums">{handoffCount}</span>
+        </button>
+
+        {/* Divider */}
+        <div className="border-t border-[var(--border)] my-2" />
+
+        {/* Folders header */}
+        <div className="flex items-center justify-between px-3 mb-1">
+          <span className="text-[10px] uppercase tracking-wider text-[var(--text-tertiary)]">Folders</span>
           <button
             onClick={() => setShowCreate(true)}
-            className="text-text-muted hover:text-accent text-lg leading-none"
+            className="text-[var(--text-tertiary)] hover:text-[var(--brand)] text-lg leading-none"
             title="Create folder"
           >
             +
           </button>
         </div>
 
-        {/* All Sessions */}
-        <button
-          onClick={() => onSelectFolder(null)}
-          className={`w-full text-left px-2 py-1.5 text-sm rounded transition-colors ${
-            selectedFolderId === null
-              ? 'bg-bg-tertiary text-text-primary'
-              : 'text-text-secondary hover:bg-bg-tertiary'
-          }`}
-        >
-          All Sessions
-        </button>
-
         {/* Folder list */}
         {folders.map((f) => (
           <div key={f.id} className="relative">
             {editingFolder === f.id ? (
-              <div className="px-2 py-1.5 space-y-1.5">
+              <div className="px-3 py-1.5 space-y-1.5">
                 <input
                   type="text"
                   value={editName}
@@ -183,7 +188,7 @@ export default function BookmarkSidebar({ selectedFolderId, onSelectFolder }: Bo
                     if (e.key === 'Escape') setEditingFolder(null);
                   }}
                   autoFocus
-                  className="w-full px-1.5 py-0.5 text-sm bg-bg-primary border border-border rounded text-text-primary focus:outline-none focus:border-accent"
+                  className="w-full px-1.5 py-0.5 text-sm bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)]"
                 />
                 <div className="flex gap-1">
                   {PRESET_COLORS.map((c) => (
@@ -198,13 +203,13 @@ export default function BookmarkSidebar({ selectedFolderId, onSelectFolder }: Bo
                 <div className="flex gap-1">
                   <button
                     onClick={() => handleSaveEdit(f.id)}
-                    className="px-2 py-0.5 text-xs bg-accent text-white rounded hover:bg-accent/90"
+                    className="px-2 py-0.5 text-xs bg-[var(--brand)] text-white rounded hover:opacity-90"
                   >
                     Save
                   </button>
                   <button
                     onClick={() => setEditingFolder(null)}
-                    className="px-2 py-0.5 text-xs text-text-muted hover:text-text-secondary"
+                    className="px-2 py-0.5 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
                   >
                     Cancel
                   </button>
@@ -213,11 +218,9 @@ export default function BookmarkSidebar({ selectedFolderId, onSelectFolder }: Bo
             ) : (
               <div className="flex items-center group">
                 <button
-                  onClick={() => onSelectFolder(f.id)}
-                  className={`flex-1 flex items-center gap-2 px-2 py-1.5 text-sm rounded transition-colors text-left ${
-                    selectedFolderId === f.id
-                      ? 'bg-bg-tertiary text-text-primary'
-                      : 'text-text-secondary hover:bg-bg-tertiary'
+                  onClick={() => { onSelectFolder(f.id); onSelectFilter(f.id); }}
+                  className={`flex-1 flex items-center gap-2 px-3 py-2 text-sm rounded-r-md transition-colors text-left ${
+                    isFolderActive(f.id) ? activeClass : inactiveClass
                   }`}
                 >
                   <span
@@ -225,14 +228,14 @@ export default function BookmarkSidebar({ selectedFolderId, onSelectFolder }: Bo
                     style={{ backgroundColor: f.color || '#4f9cf7' }}
                   />
                   <span className="truncate flex-1">{f.name}</span>
-                  <span className="text-text-muted text-xs tabular-nums">{f.bookmark_count}</span>
+                  <span className="text-[var(--text-tertiary)] text-xs tabular-nums">{f.bookmark_count}</span>
                 </button>
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
                     setMenuFolder(menuFolder === f.id ? null : f.id);
                   }}
-                  className="px-1 text-text-muted hover:text-text-secondary opacity-0 group-hover:opacity-100 transition-opacity text-xs"
+                  className="px-1 text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] opacity-0 group-hover:opacity-100 transition-opacity text-xs"
                 >
                   ...
                 </button>
@@ -243,17 +246,17 @@ export default function BookmarkSidebar({ selectedFolderId, onSelectFolder }: Bo
             {menuFolder === f.id && (
               <div
                 ref={menuRef}
-                className="absolute right-0 top-8 z-10 bg-bg-primary border border-border rounded shadow-lg py-1 min-w-[100px]"
+                className="absolute right-0 top-8 z-10 bg-[var(--bg-primary)] border border-[var(--border)] rounded shadow-lg py-1 min-w-[100px]"
               >
                 <button
                   onClick={() => handleStartEdit(f)}
-                  className="w-full text-left px-3 py-1 text-sm text-text-secondary hover:bg-bg-tertiary"
+                  className="w-full text-left px-3 py-1 text-sm text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"
                 >
                   Rename
                 </button>
                 <button
                   onClick={() => handleDelete(f.id)}
-                  className="w-full text-left px-3 py-1 text-sm text-red-400 hover:bg-bg-tertiary"
+                  className="w-full text-left px-3 py-1 text-sm text-red-400 hover:bg-[var(--bg-tertiary)]"
                 >
                   Delete
                 </button>
@@ -262,9 +265,9 @@ export default function BookmarkSidebar({ selectedFolderId, onSelectFolder }: Bo
           </div>
         ))}
 
-        {/* Create folder modal inline */}
+        {/* Create folder inline */}
         {showCreate && (
-          <div className="mt-2 p-2 bg-bg-primary border border-border rounded space-y-2">
+          <div className="mt-2 p-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded space-y-2">
             <input
               type="text"
               value={newName}
@@ -275,7 +278,7 @@ export default function BookmarkSidebar({ selectedFolderId, onSelectFolder }: Bo
               }}
               placeholder="Folder name"
               autoFocus
-              className="w-full px-2 py-1 text-sm bg-bg-secondary border border-border rounded text-text-primary focus:outline-none focus:border-accent"
+              className="w-full px-2 py-1 text-sm bg-[var(--bg-secondary)] border border-[var(--border)] rounded text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)]"
             />
             <div className="flex gap-1">
               {PRESET_COLORS.map((c) => (
@@ -291,20 +294,101 @@ export default function BookmarkSidebar({ selectedFolderId, onSelectFolder }: Bo
               <button
                 onClick={handleCreate}
                 disabled={!newName.trim() || createFolder.isPending}
-                className="px-2 py-0.5 text-xs bg-accent text-white rounded hover:bg-accent/90 disabled:opacity-50"
+                className="px-2 py-0.5 text-xs bg-[var(--brand)] text-white rounded hover:opacity-90 disabled:opacity-50"
               >
                 Create
               </button>
               <button
                 onClick={() => setShowCreate(false)}
-                className="px-2 py-0.5 text-xs text-text-muted hover:text-text-secondary"
+                className="px-2 py-0.5 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
               >
                 Cancel
               </button>
             </div>
           </div>
         )}
+
+        {folders.length === 0 && !showCreate && (
+          <div className="px-3 py-2 text-xs text-[var(--text-tertiary)]">
+            No folders yet
+          </div>
+        )}
       </div>
+    </div>
+  );
+
+  return desktopRail;
+}
+
+/* Mobile horizontal chip row — rendered inside content area by SessionList */
+export function MobileNavChips({
+  selectedFilter,
+  onSelectFilter,
+  totalCount,
+  bookmarkedCount,
+  inRepoCount,
+  inRepoLabel,
+  handoffCount,
+  selectedFolderId,
+  onSelectFolder,
+}: Omit<BookmarkSidebarProps, never>) {
+  const navigate = useNavigate();
+  const { data } = useFolders();
+  const folders = data?.folders ?? [];
+
+  function isActive(filter: NavFilter) {
+    return selectedFilter === filter && !selectedFolderId;
+  }
+
+  function isFolderActive(folderId: string) {
+    return selectedFolderId === folderId;
+  }
+
+  return (
+    <div className="sm:hidden flex gap-2 overflow-x-auto pb-2 mb-3 -mx-1 px-1">
+      <button
+        onClick={() => { onSelectFilter('all'); onSelectFolder(null); }}
+        className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+          isActive('all') ? 'bg-[var(--brand)] text-white' : 'bg-[var(--surface)] text-[var(--text-secondary)] border border-[var(--border)]'
+        }`}
+      >
+        All ({totalCount})
+      </button>
+      {inRepoLabel && (
+        <button
+          onClick={() => { onSelectFilter('in-repo'); onSelectFolder(null); }}
+          className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+            isActive('in-repo') ? 'bg-[var(--brand)] text-white' : 'bg-[var(--surface)] text-[var(--text-secondary)] border border-[var(--border)]'
+          }`}
+        >
+          This Repo ({inRepoCount})
+        </button>
+      )}
+      <button
+        onClick={() => { onSelectFilter('bookmarked'); onSelectFolder(null); }}
+        className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+          isActive('bookmarked') ? 'bg-[var(--brand)] text-white' : 'bg-[var(--surface)] text-[var(--text-secondary)] border border-[var(--border)]'
+        }`}
+      >
+        Bookmarked ({bookmarkedCount})
+      </button>
+      <button
+        onClick={() => navigate('/handoffs')}
+        className="shrink-0 px-3 py-1.5 rounded-full text-xs font-medium bg-[var(--surface)] text-[var(--text-secondary)] border border-[var(--border)] transition-colors"
+      >
+        Handoffs ({handoffCount})
+      </button>
+      {folders.map((f) => (
+        <button
+          key={f.id}
+          onClick={() => { onSelectFolder(f.id); onSelectFilter(f.id); }}
+          className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+            isFolderActive(f.id) ? 'bg-[var(--brand)] text-white' : 'bg-[var(--surface)] text-[var(--text-secondary)] border border-[var(--border)]'
+          }`}
+        >
+          {f.name} ({f.bookmark_count})
+        </button>
+      ))}
     </div>
   );
 }
