@@ -7,6 +7,7 @@ import { abbreviateModel, fullToolName } from '../utils/models';
 import { formatTokens } from '../utils/tokens';
 import RelativeDate from '../components/RelativeDate';
 import BookmarkSidebar from '../components/BookmarkSidebar';
+import { useToast } from '../hooks/useToast';
 
 const TOOL_COLORS: Record<string, string> = {
   'claude-code': 'var(--tool-claude)',
@@ -42,20 +43,6 @@ export default function SessionList() {
   const [dateRange, setDateRange] = useState('');
   const [sortBy, setSortBy] = useState<SortKey>('date');
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
-  const searchRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
-      const mod = navigator.platform.includes('Mac') ? e.metaKey : e.ctrlKey;
-      if (mod && e.key === 'k') {
-        e.preventDefault();
-        searchRef.current?.focus();
-      }
-    }
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, []);
 
   const PAGE_SIZE = 20;
 
@@ -75,15 +62,6 @@ export default function SessionList() {
         const now = Date.now();
         const ms = dateRange === '24h' ? 86400000 : dateRange === '7d' ? 604800000 : 2592000000;
         list = list.filter((s) => now - new Date(s.updated_at).getTime() < ms);
-      }
-      if (searchQuery) {
-        const q = searchQuery.toLowerCase();
-        list = list.filter(
-          (s) =>
-            (s.title || '').toLowerCase().includes(q) ||
-            s.id.toLowerCase().includes(q) ||
-            (s.alias || '').toLowerCase().includes(q),
-        );
       }
       const sorted = [...list];
       if (sortBy === 'messages') sorted.sort((a, b) => b.message_count - a.message_count);
@@ -108,17 +86,6 @@ export default function SessionList() {
       list = list.filter((s) => now - new Date(s.updated_at).getTime() < ms);
     }
 
-    // Search filter (client-side)
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      list = list.filter(
-        (s) =>
-          (s.title || '').toLowerCase().includes(q) ||
-          s.id.toLowerCase().includes(q) ||
-          (s.alias || '').toLowerCase().includes(q),
-      );
-    }
-
     // Sort (client-side on current page -- server sorts by date by default)
     const sorted = [...list];
     if (sortBy === 'messages') sorted.sort((a, b) => b.message_count - a.message_count);
@@ -132,7 +99,7 @@ export default function SessionList() {
       sorted.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
 
     return sorted;
-  }, [data, dateRange, sortBy, selectedFolderId, folderSessionsData, searchQuery]);
+  }, [data, dateRange, sortBy, selectedFolderId, folderSessionsData]);
 
   const hasMore = selectedFolderId ? false : (data?.has_more ?? false);
   const totalSessions = selectedFolderId ? (folderSessionsData?.total ?? 0) : (data?.total ?? 0);
@@ -151,26 +118,6 @@ export default function SessionList() {
       <div className="flex-1 max-w-7xl mx-auto px-4 py-4">
       {/* Filter bar */}
       <div className="flex flex-wrap items-center gap-3 mb-4">
-        <div className="relative flex-1 min-w-[200px] max-w-sm">
-          <input
-            ref={searchRef}
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search sessions..."
-            className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 pr-16 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] focus:outline-none focus:border-[var(--brand)] transition-colors"
-          />
-          <span className="absolute right-8 top-1/2 -translate-y-1/2 flex items-center gap-0.5 pointer-events-none">
-            <kbd className="font-mono text-[11px] px-1.5 py-0.5 rounded border border-[var(--border)] bg-[var(--bg-tertiary)] text-[var(--text-tertiary)]">
-              {typeof navigator !== 'undefined' && navigator.platform.includes('Mac') ? '\u2318' : 'Ctrl'}
-            </kbd>
-            <kbd className="font-mono text-[11px] px-1.5 py-0.5 rounded border border-[var(--border)] bg-[var(--bg-tertiary)] text-[var(--text-tertiary)]">K</kbd>
-          </span>
-          <svg className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-tertiary)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="11" cy="11" r="8" />
-            <line x1="21" y1="21" x2="16.65" y2="16.65" />
-          </svg>
-        </div>
         <div className="relative">
           <select
             value={toolFilter}
@@ -224,7 +171,10 @@ export default function SessionList() {
       )}
 
       {/* Analytics Cards */}
-      {!isLoading && sessions.length > 0 && <AnalyticsCards sessions={sessions} />}
+      {!isLoading && sessions.length > 0 && <AnalyticsCards sessions={sessions} dateRange={dateRange} />}
+
+      {/* Recently active strip */}
+      {!isLoading && sessions.length > 0 && <RecentlyActiveStrip sessions={sessions} />}
 
       {/* Loading */}
       {isLoading && (
@@ -257,56 +207,45 @@ export default function SessionList() {
                 onClick={() => handleRowClick(s.id)}
                 onKeyDown={(e) => handleRowKeyDown(e, s.id)}
                 tabIndex={0}
-                className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-lg px-4 py-3 cursor-pointer hover:bg-[var(--surface-hover)] hover:shadow-[var(--shadow-sm)] transition-all duration-150 focus:bg-[var(--surface-hover)] outline-none focus:ring-1 focus:ring-[var(--brand)]"
+                className="bg-[var(--surface)] border border-[var(--border)] rounded-lg px-4 py-3 cursor-pointer hover:bg-[var(--surface-hover)] hover:shadow-[var(--shadow-sm)] transition-all duration-150 focus:bg-[var(--surface-hover)] outline-none focus:ring-1 focus:ring-[var(--brand)]"
               >
-                {/* Line 1: Tool, ID, message count, tokens, date */}
+                {/* Line 1: Title (dominant) + timestamp right-aligned */}
                 <div className="flex items-center gap-3 mb-1">
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span
-                      className="w-2.5 h-2.5 rounded-full shrink-0"
-                      style={{ backgroundColor: TOOL_COLORS[s.source_tool] || '#6B7280' }}
-                    />
-                    <span className="text-sm font-medium text-[var(--text-primary)] whitespace-nowrap">
-                      {fullToolName(s.source_tool)}
-                    </span>
-                  </div>
-                  <span className="text-xs font-mono text-[var(--text-tertiary)]">
-                    {s.id.slice(0, 12)}
-                  </span>
-                  <div className="flex items-center gap-1 text-xs text-[var(--text-tertiary)]">
-                    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                    </svg>
-                    <span className="tabular-nums">{s.message_count}</span>
-                  </div>
-                  <div className="flex items-center gap-1 text-xs text-[var(--text-tertiary)]">
-                    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <circle cx="12" cy="12" r="10" />
-                      <path d="M12 6v6l4 2" />
-                    </svg>
-                    <span className="tabular-nums">{formatTokens(s.total_input_tokens + s.total_output_tokens)}</span>
-                  </div>
-                  <div className="ml-auto flex items-center gap-2">
-                    <TrustBadge score={(s as SessionSummaryWithAudit).audit_trust_score} />
-                    <span className="text-xs text-[var(--text-tertiary)]">
-                      <RelativeDate iso={s.updated_at} />
-                    </span>
-                  </div>
-                </div>
-                {/* Line 2: Model, title, bookmark */}
-                <div className="flex items-center gap-3">
-                  <span className="text-xs text-[var(--text-tertiary)] shrink-0">
-                    {abbreviateModel(s.model_id)}
-                  </span>
-                  <span className="text-sm text-[var(--text-primary)] truncate flex-1">
-                    {s.title || <span className="text-[var(--text-tertiary)] italic">Untitled</span>}
+                  <span className="text-[15px] font-medium text-[var(--text-primary)] truncate flex-1">
+                    {s.title || <span className="text-[var(--text-tertiary)] italic">Untitled session</span>}
                     {s.parent_session_id && (
                       <span className="text-[var(--text-tertiary)] text-xs ml-1.5">&crarr; fork</span>
                     )}
                   </span>
-                  <div onClick={(e) => e.stopPropagation()} className="shrink-0">
-                    <BookmarkDropdown sessionId={s.id} />
+                  <div className="ml-auto flex items-center gap-2 shrink-0">
+                    <TrustBadge score={(s as SessionSummaryWithAudit).audit_trust_score} />
+                    <span className="text-xs text-[var(--text-tertiary)]">
+                      <RelativeDate iso={s.updated_at} />
+                    </span>
+                    <div onClick={(e) => e.stopPropagation()}>
+                      <BookmarkDropdown sessionId={s.id} />
+                    </div>
                   </div>
+                </div>
+                {/* Line 2: Tool dot + tool name + session ID (mono) + counts */}
+                <div className="flex items-center gap-2 text-xs text-[var(--text-tertiary)]">
+                  <span
+                    className="w-2 h-2 rounded-full shrink-0"
+                    style={{ backgroundColor: TOOL_COLORS[s.source_tool] || '#6B7280' }}
+                  />
+                  <span className="whitespace-nowrap">{fullToolName(s.source_tool)}</span>
+                  <span className="opacity-40">&middot;</span>
+                  <span className="font-mono">{s.id.slice(0, 12)}</span>
+                  <span className="opacity-40">&middot;</span>
+                  <span className="tabular-nums">{s.message_count} msgs</span>
+                  <span className="opacity-40">&middot;</span>
+                  <span className="tabular-nums">{formatTokens(s.total_input_tokens + s.total_output_tokens)}</span>
+                  {s.model_id && (
+                    <>
+                      <span className="opacity-40">&middot;</span>
+                      <span>{abbreviateModel(s.model_id)}</span>
+                    </>
+                  )}
                 </div>
               </div>
             ))}
@@ -438,7 +377,11 @@ function TrustBadge({ score }: { score?: number | null }) {
   );
 }
 
-function AnalyticsCards({ sessions }: { sessions: SessionSummary[] }) {
+function AnalyticsCards({ sessions, dateRange }: { sessions: SessionSummary[]; dateRange: string }) {
+  const periodLabel = dateRange === '24h' ? 'Today' : dateRange === '7d' ? 'This Week' : dateRange === '30d' ? 'This Month' : '';
+  const sessionsLabel = periodLabel ? `Sessions ${periodLabel}` : 'Sessions';
+  const tokensLabel = periodLabel ? `Tokens ${periodLabel}` : 'Total Tokens';
+  const peakLabel_ = periodLabel ? `Peak ${periodLabel}` : 'Peak Hours';
   const stats = useMemo(() => {
     const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
@@ -506,10 +449,10 @@ function AnalyticsCards({ sessions }: { sessions: SessionSummary[] }) {
 
   return (
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
-      {/* Sessions Today */}
-      <div className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl p-4 shadow-[var(--shadow-sm)] hover:shadow-[var(--shadow-md)] transition-shadow duration-150">
+      {/* Sessions */}
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 shadow-[var(--shadow-sm)] hover:shadow-[var(--shadow-md)] transition-shadow duration-150">
         <div className="text-2xl font-bold text-[var(--text-primary)] tabular-nums">{stats.sessionsToday}</div>
-        <div className="text-xs text-[var(--text-tertiary)] uppercase tracking-wide mt-1">Sessions Today</div>
+        <div className="text-xs text-[var(--text-tertiary)] uppercase tracking-wide mt-1">{sessionsLabel}</div>
         {stats.sessionsYesterday > 0 && (
           <div className="text-xs text-[var(--text-tertiary)] mt-1">
             +{stats.sessionsYesterday} yesterday
@@ -518,7 +461,7 @@ function AnalyticsCards({ sessions }: { sessions: SessionSummary[] }) {
       </div>
 
       {/* Tool Breakdown */}
-      <div className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl p-4 shadow-[var(--shadow-sm)] hover:shadow-[var(--shadow-md)] transition-shadow duration-150">
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 shadow-[var(--shadow-sm)] hover:shadow-[var(--shadow-md)] transition-shadow duration-150">
         <div className="text-xs text-[var(--text-tertiary)] uppercase tracking-wide mb-2">Tool Breakdown</div>
         {stats.totalForBar > 0 && (
           <>
@@ -554,18 +497,55 @@ function AnalyticsCards({ sessions }: { sessions: SessionSummary[] }) {
       </div>
 
       {/* Total Tokens */}
-      <div className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl p-4 shadow-[var(--shadow-sm)] hover:shadow-[var(--shadow-md)] transition-shadow duration-150">
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 shadow-[var(--shadow-sm)] hover:shadow-[var(--shadow-md)] transition-shadow duration-150">
         <div className="text-2xl font-bold text-[var(--text-primary)] tabular-nums">
           {formatTokens(stats.totalTokens)}
         </div>
-        <div className="text-xs text-[var(--text-tertiary)] uppercase tracking-wide mt-1">Total Tokens</div>
+        <div className="text-xs text-[var(--text-tertiary)] uppercase tracking-wide mt-1">{tokensLabel}</div>
       </div>
 
       {/* Active Hours */}
-      <div className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl p-4 shadow-[var(--shadow-sm)] hover:shadow-[var(--shadow-md)] transition-shadow duration-150">
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 shadow-[var(--shadow-sm)] hover:shadow-[var(--shadow-md)] transition-shadow duration-150">
         <div className="text-2xl font-bold text-[var(--text-primary)]">{stats.peakLabel}</div>
-        <div className="text-xs text-[var(--text-tertiary)] uppercase tracking-wide mt-1">Peak Hours</div>
+        <div className="text-xs text-[var(--text-tertiary)] uppercase tracking-wide mt-1">{peakLabel_}</div>
       </div>
+    </div>
+  );
+}
+
+function RecentlyActiveStrip({ sessions }: { sessions: SessionSummary[] }) {
+  const { addToast } = useToast();
+  const recent = sessions.slice(0, 3);
+  if (recent.length === 0) return null;
+
+  function handleResume(s: SessionSummary) {
+    const toolArg = s.source_tool || 'claude-code';
+    navigator.clipboard.writeText(`sfs resume ${s.id} --in ${toolArg}`);
+    addToast('success', 'Resume command copied');
+  }
+
+  return (
+    <div className="flex gap-3 mb-4 overflow-x-auto">
+      {recent.map((s) => (
+        <div key={s.id} className="flex-shrink-0 bg-[var(--surface)] border border-[var(--border)] rounded-xl p-3 min-w-[280px]">
+          <div className="flex items-center gap-2 mb-1">
+            <span
+              className="w-2 h-2 rounded-full shrink-0"
+              style={{ backgroundColor: TOOL_COLORS[s.source_tool] || '#6B7280' }}
+            />
+            <span className="text-sm font-medium text-[var(--text-primary)] truncate">{s.title || 'Untitled'}</span>
+          </div>
+          <div className="flex items-center justify-between text-xs text-[var(--text-tertiary)]">
+            <span>{s.message_count} msgs &middot; <RelativeDate iso={s.updated_at} /></span>
+            <button
+              className="text-[var(--brand)] hover:underline text-xs font-medium"
+              onClick={(e) => { e.stopPropagation(); handleResume(s); }}
+            >
+              Resume
+            </button>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }

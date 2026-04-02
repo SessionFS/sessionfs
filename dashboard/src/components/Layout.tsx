@@ -55,7 +55,7 @@ export default function Layout() {
         style={{
           height: 56,
           borderBottom: '1px solid var(--border)',
-          backgroundColor: 'var(--bg-primary)',
+          backgroundColor: 'var(--bg-secondary)',
         }}
       >
         {/* Left: Logo */}
@@ -154,7 +154,7 @@ export default function Layout() {
           </div>
         </div>
       </header>
-      <main className="flex-1">
+      <main className="flex-1 bg-[var(--bg-primary)]">
         <div key={location.pathname} className="page-enter flex flex-col flex-1 min-h-0">
           <Outlet />
         </div>
