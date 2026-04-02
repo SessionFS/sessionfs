@@ -1,7 +1,7 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
 ---
-<BaseLayout title="Enterprise — SessionFS" activeNav="enterprise" description="AI coding agent governance for enterprise. Audit trail across 8 tools. Self-hosted on your infrastructure.">
+<BaseLayout title="Enterprise — SessionFS" activeNav="enterprise" description="AI coding agent governance for enterprise. Audit trail across 8 tools. Managed single-tenant or self-hosted — your data stays yours.">
 
   <!-- Section 1: Hero -->
   <section class="relative pt-32 sm:pt-40 pb-16 px-5 noise">
@@ -187,49 +187,69 @@ import BaseLayout from '../layouts/BaseLayout.astro';
 
   <div class="grad-divider"></div>
 
-  <!-- Section 4: Infrastructure (Helm) -->
+  <!-- Section 4: Deployment Options -->
   <section class="relative py-20 sm:py-28 px-5 bg-surface/50 noise">
-    <div class="max-w-5xl mx-auto flex flex-col lg:flex-row items-center gap-12">
-      <div class="lg:w-1/2 fade-up">
-        <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-5">One Helm chart. Any cluster.</h2>
-        <p class="text-muted text-lg mb-4 leading-relaxed">Deploy to AWS EKS, GCP GKE, Azure AKS, or on-prem Kubernetes with a single command. The Helm chart handles API, dashboard, daemon config, ingress, PostgreSQL, and license validation.</p>
-        <p class="text-muted text-lg mb-6 leading-relaxed">Bring your own object store — S3, GCS, or local PVC. Connect to an existing PostgreSQL (RDS, Cloud SQL, or the bundled instance).</p>
-        <div class="flex flex-wrap gap-3">
-          <span class="font-mono text-sm bg-surface border border-border rounded px-3 py-1.5 text-muted-dim">AWS EKS</span>
-          <span class="font-mono text-sm bg-surface border border-border rounded px-3 py-1.5 text-muted-dim">GCP GKE</span>
-          <span class="font-mono text-sm bg-surface border border-border rounded px-3 py-1.5 text-muted-dim">Azure AKS</span>
-          <span class="font-mono text-sm bg-surface border border-border rounded px-3 py-1.5 text-muted-dim">On-prem</span>
-        </div>
+    <div class="max-w-5xl mx-auto">
+      <div class="text-center mb-14 fade-up">
+        <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-4">Your data. Your boundary.</h2>
+        <p class="text-muted text-lg max-w-2xl mx-auto leading-relaxed">Session data never touches shared infrastructure. Choose how you deploy — we isolate the data either way.</p>
       </div>
-      <div class="lg:w-1/2 w-full fade-up">
-        <div class="relative">
-          <div class="hero-glow"></div>
-          <div class="term relative z-10">
+      <div class="flex flex-col md:flex-row gap-6">
+        <!-- Managed Single-Tenant -->
+        <div class="glass fade-up flex-1 p-6 sm:p-8" style="border-color: rgba(79,156,247,0.5);">
+          <span class="inline-block bg-brand text-white text-xs font-semibold rounded-full px-3 py-1 mb-4">MOST POPULAR</span>
+          <h3 class="font-heading text-xl font-bold mb-1">Managed &middot; Single-Tenant</h3>
+          <p class="text-muted-dim text-sm mb-3">We operate it. Your data stays yours.</p>
+          <p class="text-muted text-base leading-relaxed mb-5">Dedicated database and storage bucket — no shared infra. We handle updates, monitoring, scaling, and support. Zero DevOps on your side.</p>
+          <ul class="space-y-2.5 mb-6">
+            <li class="flex items-start gap-2.5"><span class="text-accent mt-0.5">&#10003;</span><span class="text-muted text-sm">Dedicated PostgreSQL</span></li>
+            <li class="flex items-start gap-2.5"><span class="text-accent mt-0.5">&#10003;</span><span class="text-muted text-sm">Dedicated storage bucket</span></li>
+            <li class="flex items-start gap-2.5"><span class="text-accent mt-0.5">&#10003;</span><span class="text-muted text-sm">Managed updates &amp; patches</span></li>
+            <li class="flex items-start gap-2.5"><span class="text-accent mt-0.5">&#10003;</span><span class="text-muted text-sm">99.9% uptime SLA</span></li>
+            <li class="flex items-start gap-2.5"><span class="text-accent mt-0.5">&#10003;</span><span class="text-muted text-sm">Zero Kubernetes required</span></li>
+          </ul>
+          <a href="mailto:enterprise@sessionfs.dev?subject=SessionFS%20Managed%20Enterprise" class="inline-flex items-center justify-center gap-2 bg-brand text-white font-semibold rounded-lg px-6 py-2.5 text-sm hover:brightness-110 transition">
+            Contact Sales
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+          </a>
+        </div>
+        <!-- Self-Hosted -->
+        <div class="glass fade-up flex-1 p-6 sm:p-8">
+          <h3 class="font-heading text-xl font-bold mb-1 mt-6">Self-Hosted &middot; Your Cloud</h3>
+          <p class="text-muted-dim text-sm mb-3">You operate it. We support it.</p>
+          <p class="text-muted text-base leading-relaxed mb-5">Helm chart deploys to AWS EKS, GCP GKE, Azure AKS, or on-prem. Full network isolation. Bring your own PostgreSQL and object store.</p>
+          <ul class="space-y-2.5 mb-6">
+            <li class="flex items-start gap-2.5"><span class="text-accent mt-0.5">&#10003;</span><span class="text-muted text-sm">Full network isolation</span></li>
+            <li class="flex items-start gap-2.5"><span class="text-accent mt-0.5">&#10003;</span><span class="text-muted text-sm">Air-gapped option</span></li>
+            <li class="flex items-start gap-2.5"><span class="text-accent mt-0.5">&#10003;</span><span class="text-muted text-sm">Your RDS / Cloud SQL</span></li>
+            <li class="flex items-start gap-2.5"><span class="text-accent mt-0.5">&#10003;</span><span class="text-muted text-sm">Your S3 / GCS bucket</span></li>
+            <li class="flex items-start gap-2.5"><span class="text-accent mt-0.5">&#10003;</span><span class="text-muted text-sm">HIPAA BAA available</span></li>
+          </ul>
+          <div class="term mb-5">
             <div class="term-bar">
               <div class="term-dot bg-[#ff5f57]"></div>
               <div class="term-dot bg-[#febc2e]"></div>
               <div class="term-dot bg-[#28c840]"></div>
               <span class="ml-3 text-muted-dim text-[13px] font-mono">helm deploy</span>
             </div>
-            <div class="p-5 font-mono text-sm space-y-3">
-              <div>
-                <span class="text-muted-dim">$</span>
-                <span class="text-accent"> helm install sessionfs ./charts/sessionfs \</span>
-              </div>
-              <div class="pl-4 text-accent">--set api.image=ghcr.io/sessionfs/api:v0.9.5 \</div>
-              <div class="pl-4 text-accent">--set storage.backend=s3 \</div>
-              <div class="pl-4 text-accent">--set storage.bucket=my-sessions-bucket \</div>
+            <div class="p-4 font-mono text-xs sm:text-sm leading-relaxed">
+              <div><span class="text-muted-dim">$</span> <span class="text-accent">helm install sessionfs ./charts/sessionfs \</span></div>
+              <div class="pl-4 text-accent">--set license.key="sfs_helm_xxx" \</div>
+              <div class="pl-4 text-accent">--set license.mode="local" \</div>
               <div class="pl-4 text-accent">--values values.prod.yaml</div>
-              <div class="border-t border-border pt-3 text-muted">
-                Release "sessionfs" has been deployed.<br>
-                <span class="text-accent">&#10003;</span> API ready at api.internal.company.com<br>
-                <span class="text-accent">&#10003;</span> Dashboard ready at sessions.company.com<br>
-                <span class="text-accent">&#10003;</span> PostgreSQL migrations applied (10 migrations)
+              <div class="border-t border-border mt-3 pt-3 text-muted">
+                <span class="text-accent">&#10003;</span> API ready<br>
+                <span class="text-accent">&#10003;</span> Dashboard ready<br>
+                <span class="text-accent">&#10003;</span> Migrations applied
               </div>
             </div>
           </div>
+          <a href="/self-hosted/" class="inline-flex items-center justify-center gap-2 border border-border text-txt font-semibold rounded-lg px-6 py-2.5 text-sm hover:border-muted transition">
+            View Helm docs
+          </a>
         </div>
       </div>
+      <p class="text-muted-dim text-sm text-center mt-8">Both options include dedicated support, custom SLA, and 14-day trial license.</p>
     </div>
   </section>
 
