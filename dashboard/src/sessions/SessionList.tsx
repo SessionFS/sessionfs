@@ -83,6 +83,20 @@ function groupByLineage(sessions: SessionSummary[]): LineageGroup[] {
   return groups;
 }
 
+function findDuplicateGroups(sessions: SessionSummary[]): Map<string, SessionSummary[]> {
+  const groups = new Map<string, SessionSummary[]>();
+  for (const s of sessions) {
+    const key = `${s.title || ''}:${s.message_count}:${s.source_tool}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(s);
+  }
+  const dupes = new Map<string, SessionSummary[]>();
+  for (const [key, group] of groups) {
+    if (group.length >= 2) dupes.set(key, group);
+  }
+  return dupes;
+}
+
 function isToday(dateStr: string): boolean {
   const d = new Date(dateStr);
   const now = new Date();
@@ -525,6 +539,30 @@ export default function SessionList() {
             className="text-[13px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] px-3 py-2 border border-[var(--border)] rounded-lg"
           >
             {selectMode ? 'Cancel' : 'Select'}
+          </button>
+          <button
+            onClick={() => {
+              const dupes = findDuplicateGroups(sessions);
+              if (dupes.size === 0) {
+                addToast('info', 'No duplicates found');
+                return;
+              }
+              setSelectMode(true);
+              const toSelect = new Set<string>();
+              for (const group of dupes.values()) {
+                const sorted = [...group].sort((a, b) =>
+                  new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+                );
+                for (let i = 1; i < sorted.length; i++) {
+                  toSelect.add(sorted[i].id);
+                }
+              }
+              setSelectedIds(toSelect);
+              addToast('warning', `Found ${toSelect.size} duplicate(s) across ${dupes.size} group(s) — oldest copies selected for review`);
+            }}
+            className="text-[13px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] px-3 py-2 border border-[var(--border)] rounded-lg"
+          >
+            Find Duplicates
           </button>
         </div>
 
