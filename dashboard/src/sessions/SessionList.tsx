@@ -41,6 +41,33 @@ const DATE_RANGES = [
 
 type SortKey = 'date' | 'messages' | 'tokens' | 'title';
 
+interface LineageGroup {
+  root: SessionSummary;
+  children: SessionSummary[];
+}
+
+function groupByLineage(sessions: SessionSummary[]): LineageGroup[] {
+  const byId = new Map(sessions.map(s => [s.id, s]));
+  const childIds = new Set<string>();
+
+  // Identify children: sessions whose parent is in the current list
+  for (const s of sessions) {
+    if (s.parent_session_id && byId.has(s.parent_session_id)) {
+      childIds.add(s.id);
+    }
+  }
+
+  // Build groups: roots collect their direct children
+  const groups: LineageGroup[] = [];
+  for (const s of sessions) {
+    if (!childIds.has(s.id)) {
+      const kids = sessions.filter(c => c.parent_session_id === s.id);
+      groups.push({ root: s, children: kids });
+    }
+  }
+  return groups;
+}
+
 function isToday(dateStr: string): boolean {
   const d = new Date(dateStr);
   const now = new Date();
@@ -66,6 +93,16 @@ export default function SessionList() {
   const [sortBy, setSortBy] = useState<SortKey>('date');
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [navFilter, setNavFilter] = useState<NavFilter>('all');
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+
+  function toggleGroup(rootId: string) {
+    setExpandedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(rootId)) next.delete(rootId);
+      else next.add(rootId);
+      return next;
+    });
+  }
 
   const PAGE_SIZE = 20;
 
@@ -446,9 +483,9 @@ export default function SessionList() {
         {/* ── Session list with date grouping ── */}
         {!isLoading && filteredSessions.length > 0 && (
           <>
-            <SessionGroup label="Today" sessions={grouped.today} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} isFirst />
-            <SessionGroup label="This Week" sessions={grouped.thisWeek} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} />
-            <SessionGroup label="Earlier" sessions={grouped.earlier} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} />
+            <DateGroup label="Today" sessions={grouped.today} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} isFirst />
+            <DateGroup label="This Week" sessions={grouped.thisWeek} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} />
+            <DateGroup label="Earlier" sessions={grouped.earlier} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} />
 
             {/* Pagination */}
             <div className="flex items-center justify-between mt-4 text-sm text-[var(--text-tertiary)]">
@@ -504,14 +541,16 @@ export default function SessionList() {
   );
 }
 
-/* ── Date-grouped session section ── */
+/* ── Date-grouped session section with lineage grouping ── */
 
-function SessionGroup({
+function DateGroup({
   label,
   sessions,
   onRowClick,
   onRowKeyDown,
   onResume,
+  expandedGroups,
+  onToggleGroup,
   isFirst,
 }: {
   label: string;
@@ -519,9 +558,13 @@ function SessionGroup({
   onRowClick: (id: string) => void;
   onRowKeyDown: (e: React.KeyboardEvent, id: string) => void;
   onResume: (s: SessionSummary) => void;
+  expandedGroups: Set<string>;
+  onToggleGroup: (rootId: string) => void;
   isFirst?: boolean;
 }) {
   if (sessions.length === 0) return null;
+
+  const lineageGroups = groupByLineage(sessions);
 
   return (
     <div className={`mb-5 ${isFirst ? 'mt-0' : 'mt-6'}`}>
@@ -529,15 +572,56 @@ function SessionGroup({
         {label}
       </h3>
       <div className="flex flex-col gap-1.5">
-        {sessions.map((s) => (
-          <SessionRow
-            key={s.id}
-            session={s}
-            onClick={() => onRowClick(s.id)}
-            onKeyDown={(e) => onRowKeyDown(e, s.id)}
-            onResume={() => onResume(s)}
-          />
-        ))}
+        {lineageGroups.map((group) => {
+          const isExpanded = expandedGroups.has(group.root.id);
+          const hasChildren = group.children.length > 0;
+
+          return (
+            <div key={group.root.id}>
+              <SessionRow
+                session={group.root}
+                onClick={() => onRowClick(group.root.id)}
+                onKeyDown={(e) => onRowKeyDown(e, group.root.id)}
+                onResume={() => onResume(group.root)}
+                lineageBadge={hasChildren ? (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onToggleGroup(group.root.id); }}
+                    className="flex items-center gap-1 text-xs text-[var(--text-tertiary)] hover:text-[var(--brand)] transition-colors"
+                    title={isExpanded ? 'Collapse related sessions' : 'Expand related sessions'}
+                  >
+                    <span>&#8627;</span>
+                    <span>{group.children.length}</span>
+                    <svg
+                      className={`w-3 h-3 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <polyline points="6 9 12 15 18 9" />
+                    </svg>
+                  </button>
+                ) : undefined}
+              />
+              {hasChildren && isExpanded && (
+                <div className="flex flex-col gap-1 mt-1 ml-6 border-l-2 border-[var(--border)] pl-3">
+                  {group.children.map((child) => (
+                    <SessionRow
+                      key={child.id}
+                      session={child}
+                      onClick={() => onRowClick(child.id)}
+                      onKeyDown={(e) => onRowKeyDown(e, child.id)}
+                      onResume={() => onResume(child)}
+                      isChild
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -550,24 +634,29 @@ function SessionRow({
   onClick,
   onKeyDown,
   onResume,
+  lineageBadge,
+  isChild,
 }: {
   session: SessionSummary;
   onClick: () => void;
   onKeyDown: (e: React.KeyboardEvent) => void;
   onResume: () => void;
+  lineageBadge?: React.ReactNode;
+  isChild?: boolean;
 }) {
   return (
     <div
       onClick={onClick}
       onKeyDown={onKeyDown}
       tabIndex={0}
-      className="group bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg px-4 py-4 cursor-pointer hover:bg-[var(--surface-hover)] hover:shadow-[var(--shadow-sm)] transition-all duration-150 focus:bg-[var(--surface-hover)] outline-none focus:ring-1 focus:ring-[var(--brand)]"
+      className={`group bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg cursor-pointer hover:bg-[var(--surface-hover)] hover:shadow-[var(--shadow-sm)] transition-all duration-150 focus:bg-[var(--surface-hover)] outline-none focus:ring-1 focus:ring-[var(--brand)] ${isChild ? 'px-3 py-3' : 'px-4 py-4'}`}
     >
       {/* Line 1: Title + hover actions + timestamp */}
       <div className="flex items-center gap-3 mb-1">
-        <span className="text-[16px] font-medium text-[var(--text-primary)] truncate flex-1">
+        <span className={`font-medium text-[var(--text-primary)] truncate flex-1 ${isChild ? 'text-[14px] text-[var(--text-secondary)]' : 'text-[16px]'}`}>
+          {isChild && <span className="text-[var(--text-tertiary)] mr-1">&#8627;</span>}
           {s.title || <span className="text-[var(--text-tertiary)] italic">Untitled session</span>}
-          {s.parent_session_id && (
+          {s.parent_session_id && !isChild && (
             <span className="text-[var(--text-tertiary)] text-xs ml-1.5">&crarr; fork</span>
           )}
         </span>
@@ -581,8 +670,9 @@ function SessionRow({
               Resume
             </button>
           </div>
+          {lineageBadge}
           <TrustBadge score={(s as SessionSummaryWithAudit).audit_trust_score} />
-          <span className="text-[13px] text-[var(--text-tertiary)]">
+          <span className={`text-[var(--text-tertiary)] ${isChild ? 'text-[12px]' : 'text-[13px]'}`}>
             <RelativeDate iso={s.updated_at} />
           </span>
           <div onClick={(e) => e.stopPropagation()}>
@@ -591,7 +681,7 @@ function SessionRow({
         </div>
       </div>
       {/* Line 2: Tool dot + tool name + metadata */}
-      <div className="flex items-center gap-2 text-[13px] text-[var(--text-tertiary)]">
+      <div className={`flex items-center gap-2 text-[var(--text-tertiary)] ${isChild ? 'text-[12px]' : 'text-[13px]'}`}>
         <span
           className="w-2 h-2 rounded-full shrink-0"
           style={{ backgroundColor: TOOL_COLORS[s.source_tool] || '#6B7280' }}
@@ -601,8 +691,12 @@ function SessionRow({
         <span className="font-mono">{s.id.slice(0, 12)}</span>
         <span className="opacity-40">&middot;</span>
         <span className="tabular-nums">{s.message_count} msgs</span>
-        <span className="opacity-40">&middot;</span>
-        <span className="tabular-nums">{formatTokens(s.total_input_tokens + s.total_output_tokens)}</span>
+        {!isChild && (
+          <>
+            <span className="opacity-40">&middot;</span>
+            <span className="tabular-nums">{formatTokens(s.total_input_tokens + s.total_output_tokens)}</span>
+          </>
+        )}
         {s.model_id && (
           <>
             <span className="opacity-40">&middot;</span>
