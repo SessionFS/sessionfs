@@ -197,6 +197,23 @@ export default function SessionList() {
     }
   }, [navFilter, selectedFolderId, foldersData]);
 
+  // Auto-expand group if the most recent session is a child
+  useEffect(() => {
+    if (!data?.sessions || data.sessions.length === 0) return;
+    const sorted = [...data.sessions].sort(
+      (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
+    );
+    const mostRecentId = sorted[0]?.id;
+    if (!mostRecentId) return;
+    const allGroups = groupByLineage(data.sessions);
+    for (const group of allGroups) {
+      if (group.children.some(c => c.id === mostRecentId)) {
+        setExpandedGroups(prev => new Set([...prev, group.root.id]));
+        break;
+      }
+    }
+  }, [data?.sessions]);
+
   const filteredSessions = sessions;
 
   // Date grouping
@@ -580,23 +597,38 @@ function DateGroup({
             <div key={group.root.id}>
               <SessionRow
                 session={group.root}
-                onClick={() => onRowClick(group.root.id)}
-                onKeyDown={(e) => onRowKeyDown(e, group.root.id)}
+                onClick={() => {
+                  if (hasChildren) {
+                    onToggleGroup(group.root.id);
+                  } else {
+                    onRowClick(group.root.id);
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    if (hasChildren) {
+                      onToggleGroup(group.root.id);
+                    } else {
+                      onRowClick(group.root.id);
+                    }
+                  }
+                }}
                 onResume={() => onResume(group.root)}
+                onNavigate={hasChildren ? () => onRowClick(group.root.id) : undefined}
+                hasChildren={hasChildren}
                 lineageBadge={hasChildren ? (
                   <button
                     onClick={(e) => { e.stopPropagation(); onToggleGroup(group.root.id); }}
-                    className="flex items-center gap-1 text-xs text-[var(--text-tertiary)] hover:text-[var(--brand)] transition-colors"
-                    title={isExpanded ? 'Collapse related sessions' : 'Expand related sessions'}
+                    className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[13px] font-medium text-[var(--brand)] hover:bg-[var(--brand)]/10 transition-colors"
+                    title={isExpanded ? 'Collapse follow-ups' : 'Expand follow-ups'}
                   >
-                    <span>&#8627;</span>
-                    <span>{group.children.length}</span>
+                    <span>{group.children.length === 1 ? '1 follow-up' : `${group.children.length} follow-ups`}</span>
                     <svg
-                      className={`w-3 h-3 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+                      className={`w-3.5 h-3.5 transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`}
                       viewBox="0 0 24 24"
                       fill="none"
                       stroke="currentColor"
-                      strokeWidth="2"
+                      strokeWidth="2.5"
                       strokeLinecap="round"
                       strokeLinejoin="round"
                     >
@@ -606,7 +638,7 @@ function DateGroup({
                 ) : undefined}
               />
               {hasChildren && isExpanded && (
-                <div className="flex flex-col gap-1 mt-1 ml-6 border-l-2 border-[var(--border)] pl-3">
+                <div className="flex flex-col gap-1 mt-1 ml-6 border-l-2 border-[var(--brand)]/30 pl-3 space-y-1">
                   {group.children.map((child) => (
                     <SessionRow
                       key={child.id}
@@ -634,26 +666,34 @@ function SessionRow({
   onClick,
   onKeyDown,
   onResume,
+  onNavigate,
   lineageBadge,
   isChild,
+  hasChildren,
 }: {
   session: SessionSummary;
   onClick: () => void;
   onKeyDown: (e: React.KeyboardEvent) => void;
   onResume: () => void;
+  onNavigate?: () => void;
   lineageBadge?: React.ReactNode;
   isChild?: boolean;
+  hasChildren?: boolean;
 }) {
   return (
     <div
       onClick={onClick}
       onKeyDown={onKeyDown}
       tabIndex={0}
-      className={`group bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg cursor-pointer hover:bg-[var(--surface-hover)] hover:shadow-[var(--shadow-sm)] transition-all duration-150 focus:bg-[var(--surface-hover)] outline-none focus:ring-1 focus:ring-[var(--brand)] ${isChild ? 'px-3 py-3' : 'px-4 py-4'}`}
+      className={`group bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg cursor-pointer hover:bg-[var(--surface-hover)] hover:shadow-[var(--shadow-sm)] transition-all duration-150 focus:bg-[var(--surface-hover)] outline-none focus:ring-1 focus:ring-[var(--brand)] ${isChild ? 'px-3 py-3' : 'px-4 py-4'} ${hasChildren ? 'border-l-[3px] border-l-[var(--brand)]/40' : ''}`}
     >
       {/* Line 1: Title + hover actions + timestamp */}
       <div className="flex items-center gap-3 mb-1">
-        <span className={`font-medium text-[var(--text-primary)] truncate flex-1 ${isChild ? 'text-[14px] text-[var(--text-secondary)]' : 'text-[16px]'}`}>
+        <span
+          className={`font-medium text-[var(--text-primary)] truncate flex-1 ${isChild ? 'text-[14px]' : 'text-[16px]'}`}
+          onClick={onNavigate ? (e) => { e.stopPropagation(); onNavigate(); } : undefined}
+          style={onNavigate ? { cursor: 'pointer' } : undefined}
+        >
           {isChild && <span className="text-[var(--text-tertiary)] mr-1">&#8627;</span>}
           {s.title || <span className="text-[var(--text-tertiary)] italic">Untitled session</span>}
           {s.parent_session_id && !isChild && (
@@ -663,6 +703,14 @@ function SessionRow({
         <div className="ml-auto flex items-center gap-2 shrink-0">
           {/* Hover actions */}
           <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            {onNavigate && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onNavigate(); }}
+                className="px-2 py-0.5 text-xs font-medium text-[var(--text-secondary)] bg-[var(--surface)] border border-[var(--border)] rounded hover:bg-[var(--surface-hover)] transition-colors"
+              >
+                View
+              </button>
+            )}
             <button
               onClick={(e) => { e.stopPropagation(); onResume(); }}
               className="px-2 py-0.5 text-xs font-medium text-[var(--brand)] bg-[var(--brand)]/10 rounded hover:bg-[var(--brand)]/20 transition-colors"
@@ -681,7 +729,7 @@ function SessionRow({
         </div>
       </div>
       {/* Line 2: Tool dot + tool name + metadata */}
-      <div className={`flex items-center gap-2 text-[var(--text-tertiary)] ${isChild ? 'text-[12px]' : 'text-[13px]'}`}>
+      <div className={`flex items-center gap-2 ${isChild ? 'text-[12px] text-[var(--text-tertiary)]' : 'text-[13px] text-[var(--text-tertiary)]'}`}>
         <span
           className="w-2 h-2 rounded-full shrink-0"
           style={{ backgroundColor: TOOL_COLORS[s.source_tool] || '#6B7280' }}
