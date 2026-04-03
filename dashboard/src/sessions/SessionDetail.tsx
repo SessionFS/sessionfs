@@ -191,6 +191,12 @@ export default function SessionDetail() {
                   sourceTool={session.source_tool}
                   onRunAudit={() => { setShowMoreMenu(false); setShowAuditModal(true); }}
                   onEditAlias={() => { setShowMoreMenu(false); handleAliasEdit(); }}
+                  onDelete={() => {
+                    setShowMoreMenu(false);
+                    if (confirm('Delete this session? This cannot be undone.')) {
+                      auth!.client.deleteSession(session.id).then(() => navigate('/'));
+                    }
+                  }}
                   onClose={() => setShowMoreMenu(false)}
                 />
               )}
@@ -388,12 +394,14 @@ function MoreMenu({
   sourceTool,
   onRunAudit,
   onEditAlias,
+  onDelete,
   onClose,
 }: {
   sessionId: string;
   sourceTool: string;
   onRunAudit: () => void;
   onEditAlias: () => void;
+  onDelete: () => void;
   onClose: () => void;
 }) {
   const [copied, setCopied] = useState(false);
@@ -426,6 +434,13 @@ function MoreMenu({
           className="w-full text-left px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] transition-colors"
         >
           Edit Alias
+        </button>
+        <div className="border-t border-[var(--border)] my-1" />
+        <button
+          onClick={onDelete}
+          className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-red-500/10 transition-colors"
+        >
+          Delete Session
         </button>
       </div>
     </>
