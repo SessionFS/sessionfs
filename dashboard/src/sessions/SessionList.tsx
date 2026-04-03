@@ -1,6 +1,6 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSessions } from '../hooks/useSessions';
 import { useFolders, useAddBookmark, useFolderSessions } from '../hooks/useBookmarks';
 import type { SessionSummary, HandoffListResponse } from '../api/client';
@@ -102,6 +102,7 @@ export default function SessionList() {
   const navigate = useNavigate();
   const { auth } = useAuth();
   const { addToast } = useToast();
+  const queryClient = useQueryClient();
   const [page, setPage] = useState(1);
   const [toolFilter, setToolFilter] = useState('all');
   const [dateRange, setDateRange] = useState('');
@@ -109,6 +110,39 @@ export default function SessionList() {
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [navFilter, setNavFilter] = useState<NavFilter>('all');
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [selectMode, setSelectMode] = useState(false);
+
+  function toggleSelect(id: string) {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function selectAll() {
+    setSelectedIds(new Set(sessions.map(s => s.id)));
+  }
+
+  function clearSelection() {
+    setSelectedIds(new Set());
+    setSelectMode(false);
+  }
+
+  async function handleBulkDelete() {
+    if (!confirm(`Delete ${selectedIds.size} session(s)? This cannot be undone.`)) return;
+
+    const promises = Array.from(selectedIds).map(id =>
+      auth!.client.deleteSession(id).catch(() => null)
+    );
+    await Promise.all(promises);
+
+    addToast('success', `${selectedIds.size} session(s) deleted`);
+    clearSelection();
+    queryClient.invalidateQueries({ queryKey: ['sessions'] });
+  }
 
   function toggleGroup(rootId: string) {
     setExpandedGroups(prev => {
@@ -192,6 +226,11 @@ export default function SessionList() {
 
     return sorted;
   }, [data, dateRange, sortBy, selectedFolderId, folderSessionsData]);
+
+  // Clear selection when filters change
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [toolFilter, dateRange, sortBy, selectedFolderId, navFilter, page]);
 
   // Most recent session (for hero + repo detection)
   const mostRecent = useMemo(() => {
@@ -481,6 +520,12 @@ export default function SessionList() {
               <polyline points="6 9 12 15 18 9" />
             </svg>
           </div>
+          <button
+            onClick={() => { if (selectMode) clearSelection(); else setSelectMode(true); }}
+            className="text-[13px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] px-3 py-2 border border-[var(--border)] rounded-lg"
+          >
+            {selectMode ? 'Cancel' : 'Select'}
+          </button>
         </div>
 
         {/* Error */}
@@ -514,9 +559,9 @@ export default function SessionList() {
         {/* ── Session list with date grouping ── */}
         {!isLoading && filteredSessions.length > 0 && (
           <>
-            <DateGroup label="Today" sessions={grouped.today} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} isFirst />
-            <DateGroup label="This Week" sessions={grouped.thisWeek} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} />
-            <DateGroup label="Earlier" sessions={grouped.earlier} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} />
+            <DateGroup label="Today" sessions={grouped.today} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} isFirst selectMode={selectMode} selectedIds={selectedIds} onToggleSelect={toggleSelect} />
+            <DateGroup label="This Week" sessions={grouped.thisWeek} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} selectMode={selectMode} selectedIds={selectedIds} onToggleSelect={toggleSelect} />
+            <DateGroup label="Earlier" sessions={grouped.earlier} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} selectMode={selectMode} selectedIds={selectedIds} onToggleSelect={toggleSelect} />
 
             {/* Pagination */}
             <div className="flex items-center justify-between mt-4 text-sm text-[var(--text-tertiary)]">
@@ -568,6 +613,27 @@ export default function SessionList() {
           </div>
         )}
       </div>
+
+      {/* ── Bulk selection toolbar ── */}
+      {selectedIds.size > 0 && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-lg)] px-5 py-3 flex items-center gap-4">
+          <span className="text-[14px] font-medium text-[var(--text-primary)]">
+            {selectedIds.size} selected
+          </span>
+          <button onClick={selectAll} className="text-[13px] text-[var(--brand)] hover:underline">
+            Select all
+          </button>
+          <button
+            onClick={handleBulkDelete}
+            className="px-4 py-2 bg-red-500 text-white rounded-lg text-[13px] font-semibold hover:bg-red-600 transition-colors"
+          >
+            Delete selected
+          </button>
+          <button onClick={clearSelection} className="text-[13px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)]">
+            Cancel
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -583,6 +649,9 @@ function DateGroup({
   expandedGroups,
   onToggleGroup,
   isFirst,
+  selectMode,
+  selectedIds,
+  onToggleSelect,
 }: {
   label: string;
   sessions: SessionSummary[];
@@ -592,6 +661,9 @@ function DateGroup({
   expandedGroups: Set<string>;
   onToggleGroup: (rootId: string) => void;
   isFirst?: boolean;
+  selectMode: boolean;
+  selectedIds: Set<string>;
+  onToggleSelect: (id: string) => void;
 }) {
   if (sessions.length === 0) return null;
 
@@ -612,7 +684,9 @@ function DateGroup({
               <SessionRow
                 session={group.root}
                 onClick={() => {
-                  if (hasChildren) {
+                  if (selectMode) {
+                    onToggleSelect(group.root.id);
+                  } else if (hasChildren) {
                     onToggleGroup(group.root.id);
                   } else {
                     onRowClick(group.root.id);
@@ -620,7 +694,9 @@ function DateGroup({
                 }}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
-                    if (hasChildren) {
+                    if (selectMode) {
+                      onToggleSelect(group.root.id);
+                    } else if (hasChildren) {
                       onToggleGroup(group.root.id);
                     } else {
                       onRowClick(group.root.id);
@@ -630,6 +706,9 @@ function DateGroup({
                 onResume={() => onResume(group.root)}
                 onNavigate={hasChildren ? () => onRowClick(group.root.id) : undefined}
                 hasChildren={hasChildren}
+                selectMode={selectMode}
+                selected={selectedIds.has(group.root.id)}
+                onToggleSelect={() => onToggleSelect(group.root.id)}
                 lineageBadge={hasChildren ? (
                   <button
                     onClick={(e) => { e.stopPropagation(); onToggleGroup(group.root.id); }}
@@ -657,10 +736,18 @@ function DateGroup({
                     <SessionRow
                       key={child.id}
                       session={child}
-                      onClick={() => onRowClick(child.id)}
-                      onKeyDown={(e) => onRowKeyDown(e, child.id)}
+                      onClick={() => selectMode ? onToggleSelect(child.id) : onRowClick(child.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          if (selectMode) onToggleSelect(child.id);
+                          else onRowKeyDown(e, child.id);
+                        }
+                      }}
                       onResume={() => onResume(child)}
                       isChild
+                      selectMode={selectMode}
+                      selected={selectedIds.has(child.id)}
+                      onToggleSelect={() => onToggleSelect(child.id)}
                     />
                   ))}
                 </div>
@@ -684,6 +771,9 @@ function SessionRow({
   lineageBadge,
   isChild,
   hasChildren,
+  selectMode,
+  selected,
+  onToggleSelect,
 }: {
   session: SessionSummary;
   onClick: () => void;
@@ -693,16 +783,28 @@ function SessionRow({
   lineageBadge?: React.ReactNode;
   isChild?: boolean;
   hasChildren?: boolean;
+  selectMode?: boolean;
+  selected?: boolean;
+  onToggleSelect?: () => void;
 }) {
   return (
     <div
       onClick={onClick}
       onKeyDown={onKeyDown}
       tabIndex={0}
-      className={`group bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg cursor-pointer hover:bg-[var(--surface-hover)] hover:shadow-[var(--shadow-sm)] transition-all duration-150 focus:bg-[var(--surface-hover)] outline-none focus:ring-1 focus:ring-[var(--brand)] ${isChild ? 'px-3 py-3' : 'px-4 py-4'} ${hasChildren ? 'border-l-[3px] border-l-[var(--brand)]/40' : ''}`}
+      className={`group bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg cursor-pointer hover:bg-[var(--surface-hover)] hover:shadow-[var(--shadow-sm)] transition-all duration-150 focus:bg-[var(--surface-hover)] outline-none focus:ring-1 focus:ring-[var(--brand)] ${isChild ? 'px-3 py-3' : 'px-4 py-4'} ${hasChildren ? 'border-l-[3px] border-l-[var(--brand)]/40' : ''} ${selected ? 'ring-1 ring-[var(--brand)] bg-[var(--brand)]/5' : ''}`}
     >
       {/* Line 1: Title + hover actions + timestamp */}
       <div className="flex items-center gap-3 mb-1">
+        {selectMode && (
+          <input
+            type="checkbox"
+            checked={selected || false}
+            onChange={() => onToggleSelect?.()}
+            className="w-4 h-4 rounded border-[var(--border)] accent-[var(--brand)] mr-3 shrink-0"
+            onClick={(e) => e.stopPropagation()}
+          />
+        )}
         <span
           className={`font-medium text-[var(--text-primary)] truncate flex-1 ${isChild ? 'text-[14px]' : 'text-[16px]'}`}
           onClick={onNavigate ? (e) => { e.stopPropagation(); onNavigate(); } : undefined}
