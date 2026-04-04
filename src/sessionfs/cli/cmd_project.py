@@ -406,26 +406,65 @@ def project_health() -> None:
     console.print(f"[bold]Project Health: {result['name']}[/bold]")
     console.print()
 
-    checks = health_result.get("checks", [])
-    for check in checks:
-        status = check.get("status", "unknown")
-        icon = "[green]\u2713[/green]" if status == "pass" else "[red]\u2717[/red]"
-        console.print(f"  {icon}  {check.get('name', 'Unknown check')}")
-        if check.get("detail"):
-            console.print(f"      [dim]{check['detail']}[/dim]")
+    total = health_result.get("total_entries", 0)
+    pending = health_result.get("pending_entries", 0)
+    compiled = health_result.get("compiled_entries", 0)
+    word_count = health_result.get("word_count", 0)
+    section_count = health_result.get("section_count", 0)
+    stale = health_result.get("potentially_stale", False)
+    last_compiled = health_result.get("last_compiled")
 
-    suggestions = health_result.get("suggestions", [])
+    # Build checks from the API data
+    ok = "[green]\u2713[/green]"
+    warn = "[yellow]\u26a0[/yellow]"
+
+    console.print(f"  {ok}  Context document exists ({word_count} words, {section_count} sections)")
+    console.print(f"  {ok}  {total} knowledge entries ({compiled} compiled, {health_result.get('dismissed_entries', 0)} dismissed)")
+
+    if pending > 0:
+        console.print(f"  {warn}  {pending} entries pending compilation")
+    else:
+        console.print(f"  {ok}  All entries compiled")
+
+    if last_compiled:
+        console.print(f"  {ok}  Last compiled: {str(last_compiled)[:10]}")
+    elif total > 0:
+        console.print(f"  {warn}  Never compiled — run 'sfs project compile'")
+
+    if stale:
+        console.print(f"  {warn}  Context may be stale — pending entries contain new information")
+    else:
+        console.print(f"  {ok}  Context appears up to date")
+
+    # Suggestions
+    suggestions = []
+    if pending > 5:
+        suggestions.append(f"Run 'sfs project compile' to merge {pending} pending entries")
+    if word_count == 0:
+        suggestions.append("Add project context: sfs project edit")
+    if stale:
+        suggestions.append("Review pending entries for new information")
+
     if suggestions:
         console.print()
         console.print("[bold]Suggestions:[/bold]")
-        for suggestion in suggestions:
-            console.print(f"  [yellow]\u2022[/yellow] {suggestion}")
+        for s in suggestions:
+            console.print(f"  [yellow]\u2022[/yellow] {s}")
 
-    score = health_result.get("score")
-    if score is not None:
-        console.print()
-        color = "green" if score >= 80 else "yellow" if score >= 50 else "red"
-        console.print(f"[bold]Health Score:[/bold] [{color}]{score}%[/{color}]")
+    # Score
+    score = 100
+    if pending > 10:
+        score -= 20
+    elif pending > 0:
+        score -= 10
+    if stale:
+        score -= 15
+    if word_count == 0:
+        score -= 30
+
+    console.print()
+    color = "green" if score >= 80 else "yellow" if score >= 50 else "red"
+    console.print(f"[bold]Health Score:[/bold] [{color}]{score}%[/{color}]")
 
 
 @project_app.command("ask")
@@ -586,7 +625,7 @@ def project_pages() -> None:
         api_url, api_key,
     ))
 
-    pages = pages_result.get("pages", [])
+    pages = pages_result if isinstance(pages_result, list) else pages_result.get("pages", [])
     if not pages:
         console.print("[dim]No wiki pages found.[/dim]")
         return
