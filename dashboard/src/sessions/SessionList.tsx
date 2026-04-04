@@ -86,7 +86,9 @@ function groupByLineage(sessions: SessionSummary[]): LineageGroup[] {
 function findDuplicateGroups(sessions: SessionSummary[]): Map<string, SessionSummary[]> {
   const groups = new Map<string, SessionSummary[]>();
   for (const s of sessions) {
-    const key = `${s.title || ''}:${s.message_count}:${s.source_tool}`;
+    // Strong key: title + message_count + source_tool + etag (content hash)
+    // etag is the SHA-256 of the session archive — identical content = identical etag
+    const key = `${s.title || ''}:${s.message_count}:${s.source_tool}:${(s as any).etag || ''}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key)!.push(s);
   }
@@ -148,12 +150,23 @@ export default function SessionList() {
   async function handleBulkDelete() {
     if (!confirm(`Delete ${selectedIds.size} session(s)? This cannot be undone.`)) return;
 
-    const promises = Array.from(selectedIds).map(id =>
-      auth!.client.deleteSession(id).catch(() => null)
+    const results = await Promise.all(
+      Array.from(selectedIds).map(id =>
+        auth!.client.deleteSession(id).then(() => true).catch(() => false)
+      )
     );
-    await Promise.all(promises);
 
-    addToast('success', `${selectedIds.size} session(s) deleted`);
+    const succeeded = results.filter(Boolean).length;
+    const failed = results.length - succeeded;
+
+    if (failed === 0) {
+      addToast('success', `${succeeded} session(s) deleted`);
+    } else if (succeeded === 0) {
+      addToast('error', `Failed to delete ${failed} session(s)`);
+    } else {
+      addToast('warning', `${succeeded} deleted, ${failed} failed`);
+    }
+
     clearSelection();
     queryClient.invalidateQueries({ queryKey: ['sessions'] });
   }
@@ -254,14 +267,8 @@ export default function SessionList() {
     )[0];
   }, [data]);
 
-  // "Bookmarked" nav: when selected, show sessions from all folders
-  // by cycling through folders and collecting their session IDs
-  // For now, select the first folder — a proper "all bookmarked" API endpoint
-  // would be needed for a complete implementation
+  // Folder selection is handled by clicking folders directly in the sidebar
   useEffect(() => {
-    if (navFilter === 'bookmarked' && !selectedFolderId && allFolders.length) {
-      setSelectedFolderId(allFolders[0].id);
-    }
   }, [navFilter, selectedFolderId, allFolders]);
 
   // Auto-expand group if the most recent session is a child
