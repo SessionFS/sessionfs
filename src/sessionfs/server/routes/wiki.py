@@ -264,15 +264,23 @@ async def delete_page(
     return {"status": "deleted", "slug": slug}
 
 
-@router.post("/{project_id}/pages/{slug}/regenerate")
+class RegenerateRequest(BaseModel):
+    llm_api_key: str | None = None
+    model: str | None = None
+    provider: str | None = None
+    base_url: str | None = None
+
+
+@router.post("/{project_id}/pages/{slug:path}/regenerate")
 async def regenerate_page(
     project_id: str,
     slug: str,
+    body: RegenerateRequest | None = None,
     user: User = Depends(get_current_user),
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Regenerate a concept page (placeholder for LLM-powered regeneration)."""
+    """Regenerate an auto-generated concept page from latest entries."""
     check_feature(ctx, "project_context")
     await _get_project_or_404(project_id, db)
 
@@ -286,8 +294,90 @@ async def regenerate_page(
     if not page:
         raise HTTPException(404, "Page not found")
 
-    # Placeholder — actual LLM regeneration will be added later
-    return {"status": "queued", "slug": slug, "page_id": page.id}
+    if not page.auto_generated:
+        raise HTTPException(400, "Only auto-generated pages can be regenerated")
+
+    body = body or RegenerateRequest()
+
+    # Get linked entries via knowledge_links
+    from sessionfs.server.db.models import KnowledgeEntry, KnowledgeLink
+
+    links_result = await db.execute(
+        select(KnowledgeLink).where(
+            KnowledgeLink.project_id == project_id,
+            KnowledgeLink.source_type == "entry",
+            KnowledgeLink.target_id == page.id,
+        )
+    )
+    links = list(links_result.scalars().all())
+
+    entries: list = []
+    if links:
+        entry_ids = [int(lnk.source_id) for lnk in links]
+        entries_result = await db.execute(
+            select(KnowledgeEntry).where(
+                KnowledgeEntry.id.in_(entry_ids),
+            )
+        )
+        entries = list(entries_result.scalars().all())
+
+    # If no linked entries, search by page title
+    if not entries:
+        title_words = page.title.lower().split()
+        all_entries_result = await db.execute(
+            select(KnowledgeEntry).where(
+                KnowledgeEntry.project_id == project_id,
+                KnowledgeEntry.dismissed == False,  # noqa: E712
+            )
+        )
+        all_entries = list(all_entries_result.scalars().all())
+        entries = [
+            e for e in all_entries
+            if any(w in e.content.lower() for w in title_words if len(w) > 3)
+        ]
+
+    # Generate updated article
+    from sessionfs.server.services.compiler import generate_concept_article
+
+    content_before = page.content
+    article = await generate_concept_article(
+        topic=page.title,
+        summary=f"Regenerated article about {page.title}",
+        entries=entries,
+        user_id=user.id,
+        api_key=body.llm_api_key,
+        model=body.model or "claude-sonnet-4",
+        provider=body.provider,
+        base_url=body.base_url,
+    )
+
+    # Store before/after in context_compilations
+    from sessionfs.server.db.models import ContextCompilation
+
+    compilation = ContextCompilation(
+        project_id=project_id,
+        user_id=user.id,
+        entries_compiled=len(entries),
+        context_before=content_before,
+        context_after=article,
+    )
+    db.add(compilation)
+
+    # Update the page
+    now = datetime.now(timezone.utc)
+    page.content = article
+    page.word_count = len(article.split())
+    page.entry_count = len(entries)
+    page.updated_at = now
+
+    await db.commit()
+
+    return {
+        "status": "regenerated",
+        "slug": slug,
+        "word_count": page.word_count,
+        "entries_used": len(entries),
+    }
 
 
 @router.get("/{project_id}/links/{target_type}/{target_id}", response_model=list[BacklinkItem])

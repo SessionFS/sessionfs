@@ -159,6 +159,18 @@ export function useDeleteWikiPage(projectId: string | undefined) {
   });
 }
 
+export function useRegenerateWikiPage(projectId: string | undefined) {
+  const { auth } = useAuth();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (slug: string) => auth!.client.regenerateWikiPage(projectId!, slug),
+    onSuccess: (_data, slug) => {
+      void queryClient.invalidateQueries({ queryKey: ['wikiPages', projectId] });
+      void queryClient.invalidateQueries({ queryKey: ['wikiPage', projectId, slug] });
+    },
+  });
+}
+
 export function useUpdateProjectSettings(projectId: string | undefined) {
   const { auth } = useAuth();
   const queryClient = useQueryClient();

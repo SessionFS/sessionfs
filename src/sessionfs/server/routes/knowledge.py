@@ -223,7 +223,10 @@ async def compile_context(
     """Compile pending knowledge entries into project context."""
     await _get_project_or_404(project_id, db)
 
-    from sessionfs.server.services.compiler import compile_project_context
+    from sessionfs.server.services.compiler import (
+        auto_generate_concepts,
+        compile_project_context,
+    )
 
     body = body or CompileRequest()
     compilation = await compile_project_context(
@@ -238,6 +241,20 @@ async def compile_context(
 
     if not compilation:
         raise HTTPException(404, "No pending entries to compile")
+
+    # Auto-generate concept pages after compilation
+    try:
+        await auto_generate_concepts(
+            project_id=project_id,
+            user_id=user.id,
+            db=db,
+            api_key=body.llm_api_key,
+            model=body.model or "claude-sonnet-4",
+            provider=body.provider,
+            base_url=body.base_url,
+        )
+    except Exception:
+        logger.warning("Concept auto-generation failed (non-fatal)", exc_info=True)
 
     return CompilationResponse(
         id=compilation.id,

@@ -655,6 +655,46 @@ def project_page(
             console.print(f"  {bl.get('title') or bl.get('slug', '')}")
 
 
+@project_app.command("regenerate")
+def project_regenerate(
+    slug: str = typer.Argument(help="Page slug to regenerate"),
+) -> None:
+    """Regenerate an auto-generated concept article from latest entries."""
+    from urllib.parse import quote
+
+    git_remote = _get_git_remote()
+    if not git_remote:
+        err_console.print("[red]Not a git repository.[/red]")
+        raise typer.Exit(1)
+
+    normalized = _normalize_remote(git_remote)
+    api_url, api_key = _get_project_client()
+
+    result = asyncio.run(_api_request("GET", f"/api/v1/projects/{normalized}", api_url, api_key))
+    if result.get("_status") == 404:
+        err_console.print("[yellow]No project context found. Run 'sfs project init' first.[/yellow]")
+        raise typer.Exit(1)
+
+    project_id = result["id"]
+
+    console.print(f"[dim]Regenerating page '{slug}'...[/dim]")
+
+    regen_result = asyncio.run(_api_request(
+        "POST", f"/api/v1/projects/{project_id}/pages/{quote(slug, safe='')}/regenerate",
+        api_url, api_key,
+    ))
+
+    if regen_result.get("_status") == 404:
+        err_console.print(f"[red]Page not found: {slug}[/red]")
+        raise typer.Exit(1)
+
+    word_count = regen_result.get("word_count", 0)
+    entries_used = regen_result.get("entries_used", 0)
+    console.print(
+        f"Article regenerated ({word_count} words from {entries_used} entries)."
+    )
+
+
 @project_app.command("set")
 def project_set(
     auto_narrative: bool | None = typer.Option(

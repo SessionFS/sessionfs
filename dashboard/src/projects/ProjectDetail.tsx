@@ -13,6 +13,7 @@ import {
   useWikiPage,
   useUpdateWikiPage,
   useDeleteWikiPage,
+  useRegenerateWikiPage,
   useUpdateProjectSettings,
 } from '../hooks/useProjects';
 import { useToast } from '../hooks/useToast';
@@ -219,6 +220,7 @@ function PagesTab({ projectId }: { projectId: string }) {
   const { data: pageDetail } = useWikiPage(projectId, selectedSlug);
   const updatePage = useUpdateWikiPage(projectId);
   const deletePage = useDeleteWikiPage(projectId);
+  const regeneratePage = useRegenerateWikiPage(projectId);
 
   function handleSaveEdit(slug: string) {
     updatePage.mutate(
@@ -241,6 +243,15 @@ function PagesTab({ projectId }: { projectId: string }) {
         if (selectedSlug === slug) setSelectedSlug(null);
       },
       onError: (err) => addToast('error', `Delete failed: ${String(err)}`),
+    });
+  }
+
+  function handleRegenerate(slug: string) {
+    regeneratePage.mutate(slug, {
+      onSuccess: (result) => {
+        addToast('success', `Article regenerated (${result.word_count} words from ${result.entries_used} entries).`);
+      },
+      onError: (err) => addToast('error', `Regenerate failed: ${String(err)}`),
     });
   }
 
@@ -433,6 +444,15 @@ function PagesTab({ projectId }: { projectId: string }) {
                           >
                             Edit
                           </button>
+                          {page.auto_generated && (
+                            <button
+                              onClick={() => handleRegenerate(page.slug)}
+                              disabled={regeneratePage.isPending}
+                              className="text-xs text-[var(--brand)] hover:underline disabled:opacity-50"
+                            >
+                              {regeneratePage.isPending ? 'Regenerating...' : 'Regenerate'}
+                            </button>
+                          )}
                           <button
                             onClick={() => handleDelete(page.slug)}
                             disabled={deletePage.isPending}

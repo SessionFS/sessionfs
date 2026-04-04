@@ -775,6 +775,12 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         method: 'DELETE',
       }),
 
+    regenerateWikiPage: (projectId: string, slug: string) =>
+      request<{ status: string; slug: string; word_count: number; entries_used: number }>(
+        `/api/v1/projects/${projectId}/pages/${encodeURIComponent(slug)}/regenerate`,
+        { method: 'POST' },
+      ),
+
     updateProjectSettings: (projectId: string, settings: { auto_narrative?: boolean }) =>
       request<{ status: string }>(`/api/v1/projects/${projectId}/settings`, {
         method: 'PUT',

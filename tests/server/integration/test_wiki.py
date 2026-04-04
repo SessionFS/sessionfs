@@ -294,18 +294,63 @@ async def test_update_project_settings(
 
 
 @pytest.mark.asyncio
-async def test_regenerate_page_placeholder(
-    client: AsyncClient, auth_headers: dict, test_project: Project,
+async def test_regenerate_auto_generated_page(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession,
+    test_user: User, test_project: Project,
 ):
-    """Test POST regenerate returns queued status."""
-    await client.put(
-        f"/api/v1/projects/{test_project.id}/pages/concept",
-        json={"content": "Old content.", "title": "Concept"},
-        headers=auth_headers,
+    """Test POST regenerate on auto_generated page succeeds."""
+    # Create an auto-generated page directly in DB
+    page = KnowledgePage(
+        id=f"page_{uuid.uuid4().hex[:16]}",
+        project_id=test_project.id,
+        slug="concept/test-topic",
+        title="Test Topic",
+        page_type="concept",
+        content="Old auto-generated content.",
+        word_count=4,
+        entry_count=0,
+        auto_generated=True,
     )
+    db_session.add(page)
+    await db_session.commit()
+
     resp = await client.post(
-        f"/api/v1/projects/{test_project.id}/pages/concept/regenerate",
+        f"/api/v1/projects/{test_project.id}/pages/concept/test-topic/regenerate",
         headers=auth_headers,
     )
     assert resp.status_code == 200
-    assert resp.json()["status"] == "queued"
+    data = resp.json()
+    assert data["status"] == "regenerated"
+    assert "word_count" in data
+    assert "entries_used" in data
+
+
+@pytest.mark.asyncio
+async def test_regenerate_non_auto_generated_page_returns_400(
+    client: AsyncClient, auth_headers: dict, test_project: Project,
+):
+    """Test POST regenerate on non-auto_generated page returns 400."""
+    # Create a normal (not auto-generated) page
+    await client.put(
+        f"/api/v1/projects/{test_project.id}/pages/manual-page",
+        json={"content": "Manual content.", "title": "Manual Page"},
+        headers=auth_headers,
+    )
+    resp = await client.post(
+        f"/api/v1/projects/{test_project.id}/pages/manual-page/regenerate",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 400
+    assert "auto-generated" in resp.json()["error"]["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_regenerate_nonexistent_page_returns_404(
+    client: AsyncClient, auth_headers: dict, test_project: Project,
+):
+    """Test POST regenerate on non-existent page returns 404."""
+    resp = await client.post(
+        f"/api/v1/projects/{test_project.id}/pages/no-such-page/regenerate",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 404
