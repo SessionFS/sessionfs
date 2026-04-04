@@ -54,7 +54,7 @@ export default function BillingPage() {
   const headers = { Authorization: `Bearer ${auth?.apiKey ?? ''}` };
   const apiBase = auth?.baseUrl || (window as any).__SFS_API_URL__ || '';
 
-  const { data: billing, isLoading } = useQuery({
+  const { data: billing, isLoading, isError } = useQuery({
     queryKey: ['billing-status'],
     queryFn: async () => {
       const res = await fetch(`${apiBase}/api/v1/billing/status`, { headers });
@@ -98,9 +98,9 @@ export default function BillingPage() {
 
   const currentTier = billing?.tier || 'free';
   const hasSubscription = billing?.has_subscription;
-  const isBeta = !hasSubscription; // During beta, all features are free
+  const isBeta = !hasSubscription || isError; // During beta (or no Stripe), all features are free
   const storagePct = billing?.storage_limit_bytes > 0
-    ? Math.min(100, (billing.storage_used_bytes / billing.storage_limit_bytes) * 100)
+    ? Math.min(100, ((billing.storage_used_bytes ?? 0) / billing.storage_limit_bytes) * 100)
     : 0;
 
   return (

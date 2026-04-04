@@ -267,7 +267,7 @@ def convert_gemini_to_sfs(
         },
         "model": {
             "provider": "google",
-            "model_id": gemini_session.model_id,
+            "model_id": None if gemini_session.model_id in ("<synthetic>", "synthetic", "") else gemini_session.model_id,
         },
         "stats": {
             "message_count": gemini_session.message_count,

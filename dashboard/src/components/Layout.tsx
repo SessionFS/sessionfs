@@ -160,7 +160,7 @@ export default function Layout() {
         </div>
       </main>
       <footer className="text-center py-8 text-[11px] text-[var(--text-tertiary)] border-t border-[var(--border)]">
-        SessionFS v0.9.6 &middot;{' '}
+        SessionFS v0.9.7 &middot;{' '}
         <a href={siteHref('/quickstart/')} className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors">Docs</a> &middot;{' '}
         <a href={siteHref('/')} className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors">Status</a> &middot;{' '}
         <a href="mailto:support@sessionfs.dev" className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors">Support</a>

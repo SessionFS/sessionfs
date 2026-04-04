@@ -31,6 +31,7 @@ _JUNK_PREFIXES = (
     "Note:",       # System notes
     "WARNING:",    # System warnings
     "Set ",        # CLI mode toggles: "Set Fast mode to ON"
+    "You are ",    # System prompt preambles
 )
 
 _JUNK_PATTERNS = re.compile(
@@ -86,6 +87,8 @@ def extract_smart_title(
     # Priority 2: first user message with natural language
     if messages:
         for msg in messages:
+            if msg.get("role") in ("system", "developer"):
+                continue
             if msg.get("role") != "user":
                 continue
             if msg.get("is_sidechain"):

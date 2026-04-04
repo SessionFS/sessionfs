@@ -471,7 +471,7 @@ def convert_session(
         },
     }
 
-    if primary_model:
+    if primary_model and primary_model not in ("<synthetic>", "synthetic", ""):
         manifest["model"] = {
             "provider": primary_provider or "anthropic",
             "model_id": primary_model,

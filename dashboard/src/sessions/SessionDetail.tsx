@@ -233,12 +233,20 @@ export default function SessionDetail() {
         {/* Metadata pills */}
         <div className="px-5 mt-2 flex flex-wrap items-center gap-2 text-[13px]">
           <span className="font-mono text-[var(--text-tertiary)]">{session.id}</span>
-          <span className="text-[var(--text-tertiary)]">&middot;</span>
-          <span className="text-[var(--text-secondary)]">{abbreviateModel(session.model_id)}</span>
+          {session.model_id && session.model_id !== '<synthetic>' && (
+            <>
+              <span className="text-[var(--text-tertiary)]">&middot;</span>
+              <span className="text-[var(--text-secondary)]">{abbreviateModel(session.model_id)}</span>
+            </>
+          )}
           <span className="text-[var(--text-tertiary)]">&middot;</span>
           <span className="text-[var(--text-secondary)] tabular-nums">{session.message_count} msgs</span>
-          <span className="text-[var(--text-tertiary)]">&middot;</span>
-          <span className="text-[var(--text-secondary)] tabular-nums">{formatTokens(totalTokens)} tokens</span>
+          {totalTokens > 0 && (
+            <>
+              <span className="text-[var(--text-tertiary)]">&middot;</span>
+              <span className="text-[var(--text-secondary)] tabular-nums">{formatTokens(totalTokens)} tokens</span>
+            </>
+          )}
           {durationStr && (
             <>
               <span className="text-[var(--text-tertiary)]">&middot;</span>

@@ -237,6 +237,7 @@ export interface ProjectContext {
   owner_id: string;
   created_at: string;
   updated_at: string;
+  session_count?: number;
 }
 
 export interface KnowledgeEntry {

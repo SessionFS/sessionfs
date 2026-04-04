@@ -276,7 +276,10 @@ def _extract_manifest_metadata(data: bytes) -> dict:
         defaults["source_tool_version"] = source.get("tool_version")
         defaults["original_session_id"] = source.get("original_session_id")
         defaults["model_provider"] = model.get("provider")
-        defaults["model_id"] = model.get("model_id")
+        raw_model_id = model.get("model_id")
+        if raw_model_id in ("<synthetic>", "synthetic", ""):
+            raw_model_id = None
+        defaults["model_id"] = raw_model_id
         defaults["message_count"] = msg_count
         defaults["turn_count"] = stats.get("turn_count", 0)
         defaults["tool_use_count"] = stats.get("tool_use_count", 0)

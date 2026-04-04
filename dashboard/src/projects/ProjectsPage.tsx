@@ -55,9 +55,16 @@ export default function ProjectsPage() {
                     </div>
                   )}
                 </div>
-                <span className="text-xs text-[var(--text-tertiary)] shrink-0">
-                  <RelativeDate iso={p.updated_at} />
-                </span>
+                <div className="flex flex-col items-end gap-1 shrink-0">
+                  {(p.session_count ?? 0) > 0 && (
+                    <span className="text-xs text-[var(--text-secondary)] tabular-nums">
+                      {p.session_count} {p.session_count === 1 ? 'session' : 'sessions'}
+                    </span>
+                  )}
+                  <span className="text-xs text-[var(--text-tertiary)]">
+                    <RelativeDate iso={p.updated_at} />
+                  </span>
+                </div>
               </div>
             </div>
           ))}

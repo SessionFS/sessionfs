@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import ReactMarkdown from 'react-markdown';
 import {
   useProject,
   useUpdateProjectContext,
@@ -455,12 +456,9 @@ export default function ProjectDetail() {
                 </div>
               </div>
             ) : project.context_document ? (
-              <pre
-                className="text-[15px] text-[var(--text-secondary)] leading-relaxed"
-                style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
-              >
-                {project.context_document}
-              </pre>
+              <div className="prose prose-sm dark:prose-invert max-w-none text-[var(--text-secondary)]">
+                <ReactMarkdown>{project.context_document}</ReactMarkdown>
+              </div>
             ) : (
               <div className="text-center py-8">
                 <p className="text-[var(--text-tertiary)] text-sm mb-3">

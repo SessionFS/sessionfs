@@ -57,6 +57,7 @@ class ProjectResponse(BaseModel):
     owner_id: str
     created_at: datetime
     updated_at: datetime
+    session_count: int = 0
 
 
 async def _check_repo_access(db: AsyncSession, user_id: str, git_remote: str) -> bool:
@@ -77,7 +78,7 @@ async def list_projects(
     db: AsyncSession = Depends(get_db),
 ) -> list[ProjectResponse]:
     """List all projects the user has access to (owner or has sessions in repo)."""
-    from sqlalchemy import distinct, or_
+    from sqlalchemy import distinct, func, or_
 
     # Get git remotes from user's sessions
     session_remotes_stmt = select(distinct(Session.git_remote_normalized)).where(
@@ -96,6 +97,27 @@ async def list_projects(
     result = await db.execute(stmt)
     projects: list[Project] = list(result.scalars().all())
 
+    # Count sessions per git remote for the user
+    if projects:
+        remotes = [p.git_remote_normalized for p in projects]
+        count_stmt = (
+            select(
+                Session.git_remote_normalized,
+                func.count(Session.id).label("cnt"),
+            )
+            .where(
+                Session.user_id == user.id,
+                Session.git_remote_normalized.in_(remotes),
+            )
+            .group_by(Session.git_remote_normalized)
+        )
+        count_result = await db.execute(count_stmt)
+        session_counts: dict[str, int] = {
+            row.git_remote_normalized: row.cnt for row in count_result
+        }
+    else:
+        session_counts = {}
+
     return [
         ProjectResponse(
             id=p.id,
@@ -105,6 +127,7 @@ async def list_projects(
             owner_id=p.owner_id,
             created_at=p.created_at,
             updated_at=p.updated_at,
+            session_count=session_counts.get(p.git_remote_normalized, 0),
         )
         for p in projects
     ]

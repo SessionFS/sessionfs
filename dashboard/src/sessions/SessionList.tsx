@@ -404,7 +404,7 @@ export default function SessionList() {
                     style={{ backgroundColor: TOOL_COLORS[mostRecent.source_tool] || '#6B7280' }}
                   />
                   <span>{fullToolName(mostRecent.source_tool)}</span>
-                  {mostRecent.model_id && (
+                  {mostRecent.model_id && mostRecent.model_id !== '<synthetic>' && (
                     <>
                       <span className="opacity-40">&middot;</span>
                       <span>{abbreviateModel(mostRecent.model_id)}</span>
@@ -413,8 +413,12 @@ export default function SessionList() {
                 </div>
                 <div className="flex items-center gap-2 text-sm text-[var(--text-tertiary)] mb-4">
                   <span className="tabular-nums">{mostRecent.message_count} msgs</span>
-                  <span className="opacity-40">&middot;</span>
-                  <span className="tabular-nums">{formatTokens(mostRecent.total_input_tokens + mostRecent.total_output_tokens)} tokens</span>
+                  {(mostRecent.total_input_tokens + mostRecent.total_output_tokens) > 0 && (
+                    <>
+                      <span className="opacity-40">&middot;</span>
+                      <span className="tabular-nums">{formatTokens(mostRecent.total_input_tokens + mostRecent.total_output_tokens)} tokens</span>
+                    </>
+                  )}
                   <span className="opacity-40">&middot;</span>
                   <RelativeDate iso={mostRecent.updated_at} />
                 </div>
@@ -893,13 +897,13 @@ function SessionRow({
         <span className="font-mono">{s.id.slice(0, 12)}</span>
         <span className="opacity-40">&middot;</span>
         <span className="tabular-nums">{s.message_count} msgs</span>
-        {!isChild && (
+        {!isChild && (s.total_input_tokens + s.total_output_tokens) > 0 && (
           <>
             <span className="opacity-40">&middot;</span>
             <span className="tabular-nums">{formatTokens(s.total_input_tokens + s.total_output_tokens)}</span>
           </>
         )}
-        {s.model_id && (
+        {s.model_id && s.model_id !== '<synthetic>' && (
           <>
             <span className="opacity-40">&middot;</span>
             <span>{abbreviateModel(s.model_id)}</span>

@@ -252,7 +252,7 @@ def convert_amp_to_sfs(
         "model": {
             "provider": _infer_provider(amp_session.model),
             "model_id": amp_session.model,
-        } if amp_session.model else None,
+        } if amp_session.model and amp_session.model not in ("<synthetic>", "synthetic", "") else None,
         "stats": {
             "message_count": amp_session.message_count,
             "turn_count": amp_session.turn_count,

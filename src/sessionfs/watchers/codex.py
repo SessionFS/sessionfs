@@ -114,7 +114,7 @@ def parse_codex_session(jsonl_path: Path) -> CodexParsedSession:
 
                 if evt_type == "user_message":
                     text = payload.get("message", "")
-                    if not session.first_prompt:
+                    if not session.first_prompt and not text.startswith("You are "):
                         session.first_prompt = text[:200]
                     sfs_messages.append({
                         "msg_id": f"msg_{len(sfs_messages):04d}",
@@ -324,7 +324,7 @@ def convert_codex_to_sfs(
         },
     }
 
-    if codex_session.model:
+    if codex_session.model and codex_session.model not in ("<synthetic>", "synthetic", ""):
         manifest["model"] = {
             "provider": codex_session.model_provider or "openai",
             "model_id": codex_session.model,

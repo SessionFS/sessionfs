@@ -273,7 +273,7 @@ def convert_copilot_to_sfs(
         },
     }
 
-    if copilot_session.model:
+    if copilot_session.model and copilot_session.model not in ("<synthetic>", "synthetic", ""):
         manifest["model"] = {
             "provider": copilot_session.model_provider or "github",
             "model_id": copilot_session.model,
