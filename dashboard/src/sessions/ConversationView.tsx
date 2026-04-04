@@ -11,14 +11,16 @@ interface Props {
 
 export default function ConversationView({ sessionId, initialPage }: Props) {
   const [page, setPage] = useState(initialPage || 1);
+  const [order, setOrder] = useState<'oldest' | 'newest'>('newest');
 
   // Jump to page when initialPage changes (from audit "Jump to message")
   useEffect(() => {
     if (initialPage && initialPage !== page) {
       setPage(initialPage);
+      setOrder('oldest'); // Jump to message uses oldest-first indexing
     }
   }, [initialPage]);
-  const { data, isLoading, error } = useMessages(sessionId, page, PAGE_SIZE);
+  const { data, isLoading, error } = useMessages(sessionId, page, PAGE_SIZE, order);
   const prevSessionId = useRef(sessionId);
   const topRef = useRef<HTMLDivElement>(null);
 
@@ -55,7 +57,28 @@ export default function ConversationView({ sessionId, initialPage }: Props) {
     <div className="flex flex-col gap-3 p-4">
       <div ref={topRef} />
 
-      {/* Top pagination */}
+      {/* Order toggle + pagination */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => { setOrder(o => o === 'newest' ? 'oldest' : 'newest'); setPage(1); }}
+            className="text-[13px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] px-3 py-1.5 border border-[var(--border)] rounded-lg transition-colors"
+          >
+            {order === 'newest' ? 'Newest first' : 'Oldest first'}
+          </button>
+          {order === 'oldest' && totalPages > 1 && (
+            <button
+              onClick={() => setPage(totalPages)}
+              className="text-[13px] text-[var(--brand)] hover:underline"
+            >
+              Jump to latest →
+            </button>
+          )}
+        </div>
+        <span className="text-[13px] text-[var(--text-tertiary)]">
+          {total} messages
+        </span>
+      </div>
       {totalPages > 1 && (
         <Pagination page={page} totalPages={totalPages} total={total} onPageChange={setPage} isLoading={isLoading} />
       )}

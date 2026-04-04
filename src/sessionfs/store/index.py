@@ -7,12 +7,15 @@ native-to-sfs session mappings for change detection.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from sessionfs.watchers.base import NativeSessionRef
+
+logger = logging.getLogger("sessionfs.store.index")
 
 _SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS sessions (
@@ -73,16 +76,50 @@ class SessionIndex:
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
         self._conn: sqlite3.Connection | None = None
+        self._needs_reindex: bool = False
 
     def initialize(self) -> None:
-        """Create the database and tables."""
-        self._conn = sqlite3.connect(str(self._db_path))
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA busy_timeout=5000")
-        self._conn.execute("PRAGMA foreign_keys=ON")
-        self._conn.executescript(_SCHEMA_SQL)
-        self._conn.commit()
+        """Create the database and tables.
+
+        If the database is corrupted, automatically deletes the index
+        files and recreates the schema from scratch.
+        """
+        try:
+            self._conn = sqlite3.connect(str(self._db_path))
+            self._conn.row_factory = sqlite3.Row
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA busy_timeout=5000")
+            self._conn.execute("PRAGMA foreign_keys=ON")
+            self._conn.executescript(_SCHEMA_SQL)
+            self._conn.commit()
+        except (sqlite3.DatabaseError, sqlite3.OperationalError) as exc:
+            logger.warning(
+                "Index was corrupted. Rebuilding automatically... (%s)", exc
+            )
+            # Close the broken connection
+            if self._conn:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn = None
+
+            # Delete index files
+            for suffix in ("", "-wal", "-shm"):
+                p = self._db_path.parent / (self._db_path.name + suffix)
+                if p.exists():
+                    p.unlink()
+
+            # Recreate from scratch
+            self._conn = sqlite3.connect(str(self._db_path))
+            self._conn.row_factory = sqlite3.Row
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA busy_timeout=5000")
+            self._conn.execute("PRAGMA foreign_keys=ON")
+            self._conn.executescript(_SCHEMA_SQL)
+            self._conn.commit()
+
+            self._needs_reindex = True
 
     @property
     def conn(self) -> sqlite3.Connection:

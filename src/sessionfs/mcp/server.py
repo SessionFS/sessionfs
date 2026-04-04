@@ -440,11 +440,33 @@ async def _handle_get_project_context(args: dict) -> str:
                 f"Project context for {normalized} exists but is empty. "
                 f"Edit it with: sfs project edit"
             )
-        return (
+        context = (
             f"# Project Context: {data.get('name', normalized)}\n"
             f"_Last updated: {data.get('updated_at', '')[:10]}_\n\n"
             f"{doc}"
         )
+
+        # Enrich with recent knowledge entries
+        try:
+            project_id = data.get("id", "")
+            if project_id:
+                async with httpx.AsyncClient(timeout=10) as entries_client:
+                    entries_resp = await entries_client.get(
+                        f"{config.sync.api_url.rstrip('/')}/api/v1/projects/{project_id}/entries?limit=20&pending=true",
+                        headers={"Authorization": f"Bearer {config.sync.api_key}"},
+                    )
+                if entries_resp.status_code == 200:
+                    entries = entries_resp.json().get("entries", [])
+                    if entries:
+                        activity = "\n\n---\n## Recent Session Activity\n"
+                        activity += "*(Auto-extracted from recent sessions. Not yet compiled into the main document.)*\n\n"
+                        for e in entries:
+                            activity += f"- [{e['entry_type']}] {e['content']}\n"
+                        context += activity
+        except Exception:
+            pass  # Don't fail if entries unavailable
+
+        return context
     except Exception as e:
         logger.warning("Failed to fetch project context: %s", e)
         return f"Could not fetch project context: {e}"

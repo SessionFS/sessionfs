@@ -52,7 +52,8 @@ app.add_typer(summary_app, name="summary")
 app.add_typer(org_app, name="org")
 app.add_typer(security_app, name="security")
 
-# Register top-level commands
+# Register top-level commands (wrapped with handle_errors for resilient error reporting)
+from sessionfs.cli.common import handle_errors
 from sessionfs.cli.cmd_sessions import list_sessions, show_session
 from sessionfs.cli.cmd_ops import resume, checkpoint, fork, alias
 from sessionfs.cli.cmd_io import import_sessions, export_session
@@ -60,23 +61,25 @@ from sessionfs.cli.cmd_cloud import push, pull, pull_handoff, list_remote, hando
 from sessionfs.cli.cmd_search import search
 from sessionfs.cli.cmd_audit import audit
 from sessionfs.cli.cmd_init import init_cmd
+from sessionfs.cli.cmd_doctor import doctor
 
-app.command("list")(list_sessions)
-app.command("show")(show_session)
-app.command("resume")(resume)
-app.command("checkpoint")(checkpoint)
-app.command("fork")(fork)
-app.command("alias")(alias)
-app.command("import")(import_sessions)
-app.command("export")(export_session)
-app.command("push")(push)
-app.command("pull")(pull)
-app.command("list-remote")(list_remote)
-app.command("handoff")(handoff)
-app.command("pull-handoff")(pull_handoff)
-app.command("search")(search)
-app.command("audit")(audit)
-app.command("init")(init_cmd)
+app.command("list")(handle_errors(list_sessions))
+app.command("show")(handle_errors(show_session))
+app.command("resume")(handle_errors(resume))
+app.command("checkpoint")(handle_errors(checkpoint))
+app.command("fork")(handle_errors(fork))
+app.command("alias")(handle_errors(alias))
+app.command("import")(handle_errors(import_sessions))
+app.command("export")(handle_errors(export_session))
+app.command("push")(handle_errors(push))
+app.command("pull")(handle_errors(pull))
+app.command("list-remote")(handle_errors(list_remote))
+app.command("handoff")(handle_errors(handoff))
+app.command("pull-handoff")(handle_errors(pull_handoff))
+app.command("search")(handle_errors(search))
+app.command("audit")(handle_errors(audit))
+app.command("init")(handle_errors(init_cmd))
+app.command("doctor")(handle_errors(doctor))
 
 
 def cli_main() -> None:

@@ -56,3 +56,61 @@ export function useDeleteProject() {
     },
   });
 }
+
+export function useKnowledgeEntries(
+  projectId: string | undefined,
+  params: { pending?: boolean; type?: string; limit?: number } = {},
+) {
+  const { auth } = useAuth();
+  return useQuery({
+    queryKey: ['knowledgeEntries', projectId, params],
+    queryFn: () => auth!.client.listKnowledgeEntries(projectId!, params),
+    enabled: !!auth && !!projectId,
+    staleTime: 15_000,
+  });
+}
+
+export function useDismissEntry(projectId: string | undefined) {
+  const { auth } = useAuth();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (entryId: number) =>
+      auth!.client.dismissEntry(projectId!, entryId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['knowledgeEntries', projectId] });
+    },
+  });
+}
+
+export function useCompileProject(projectId: string | undefined) {
+  const { auth } = useAuth();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => auth!.client.compileProject(projectId!),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['knowledgeEntries', projectId] });
+      void queryClient.invalidateQueries({ queryKey: ['compilations', projectId] });
+      void queryClient.invalidateQueries({ queryKey: ['projects'] });
+    },
+  });
+}
+
+export function useCompilations(projectId: string | undefined) {
+  const { auth } = useAuth();
+  return useQuery({
+    queryKey: ['compilations', projectId],
+    queryFn: () => auth!.client.listCompilations(projectId!),
+    enabled: !!auth && !!projectId,
+    staleTime: 30_000,
+  });
+}
+
+export function useProjectHealth(projectId: string | undefined) {
+  const { auth } = useAuth();
+  return useQuery({
+    queryKey: ['projectHealth', projectId],
+    queryFn: () => auth!.client.getProjectHealth(projectId!),
+    enabled: !!auth && !!projectId,
+    staleTime: 60_000,
+  });
+}

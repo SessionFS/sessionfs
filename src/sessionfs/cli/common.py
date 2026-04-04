@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import functools
 import json
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +15,55 @@ from sessionfs.store.local import LocalStore
 
 console = Console()
 err_console = Console(stderr=True)
+
+
+def handle_errors(func):
+    """Decorator that catches common exceptions and prints friendly messages."""
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except SystemExit:
+            raise
+        except KeyboardInterrupt:
+            err_console.print("\nCancelled.")
+            raise SystemExit(130)
+        except sqlite3.DatabaseError as exc:
+            err_console.print(f"[red]Database error: {exc}[/red]")
+            err_console.print(
+                "[dim]Hint: try deleting ~/.sessionfs/index.db and running "
+                "'sfs daemon rebuild-index'.[/dim]"
+            )
+            raise SystemExit(1)
+        except ConnectionError as exc:
+            err_console.print(f"[red]Connection failed: {exc}[/red]")
+            err_console.print(
+                "[dim]Hint: check your network connection and server URL.[/dim]"
+            )
+            raise SystemExit(1)
+        except PermissionError as exc:
+            err_console.print(f"[red]Permission denied: {exc}[/red]")
+            err_console.print(
+                "[dim]Hint: check file permissions with "
+                "'chmod 700 ~/.sessionfs'.[/dim]"
+            )
+            raise SystemExit(1)
+        except FileNotFoundError as exc:
+            err_console.print(f"[red]File not found: {exc}[/red]")
+            err_console.print(
+                "[dim]Hint: run 'sfs init' to set up SessionFS.[/dim]"
+            )
+            raise SystemExit(1)
+        except Exception as exc:
+            err_console.print(f"[red]Unexpected error: {exc}[/red]")
+            err_console.print(
+                "[dim]If this persists, please report at "
+                "https://github.com/SessionFS/sessionfs/issues[/dim]"
+            )
+            raise SystemExit(1)
+
+    return wrapper
 
 
 def get_store_dir() -> Path:

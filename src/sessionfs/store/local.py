@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sqlite3
 import stat
 from pathlib import Path
 from typing import Any
@@ -68,6 +69,33 @@ class LocalStore:
         index_path = self._store_dir / "index.db"
         if index_path.exists():
             _set_file_permissions(index_path)
+        # Auto-rebuild index if corruption was detected
+        if self._index._needs_reindex:
+            logger.warning("Reindexing sessions after index corruption recovery...")
+            self._rebuild_index_from_disk()
+            self._index._needs_reindex = False
+
+    def _rebuild_index_from_disk(self) -> None:
+        """Rebuild the session index by scanning .sfs directories on disk."""
+        if not self._sessions_dir.is_dir():
+            return
+        count = 0
+        for sfs_dir in sorted(self._sessions_dir.iterdir()):
+            if not sfs_dir.is_dir() or not sfs_dir.name.endswith(".sfs"):
+                continue
+            manifest_path = sfs_dir / "manifest.json"
+            if not manifest_path.exists():
+                continue
+            try:
+                manifest = json.loads(manifest_path.read_text())
+                session_id = manifest.get(
+                    "session_id", sfs_dir.name.replace(".sfs", "")
+                )
+                self.upsert_session_metadata(session_id, manifest, str(sfs_dir))
+                count += 1
+            except (json.JSONDecodeError, OSError) as exc:
+                logger.debug("Skipped %s during reindex: %s", sfs_dir.name, exc)
+        logger.info("Rebuilt index from disk: %d sessions", count)
 
     def check_permissions(self) -> list[str]:
         """Check store directory permissions and return warnings."""
@@ -113,14 +141,46 @@ class LocalStore:
         return self.index.get_tracked_session(native_session_id)
 
     def upsert_tracked_session(self, ref: NativeSessionRef) -> None:
-        """Insert or update a tracked session record."""
-        self.index.upsert_tracked_session(ref)
+        """Insert or update a tracked session record.
+
+        If the database is corrupted during the write, automatically
+        rebuilds the index and retries the operation once.
+        """
+        try:
+            self.index.upsert_tracked_session(ref)
+        except sqlite3.DatabaseError as exc:
+            logger.warning(
+                "Index corrupted during tracked session write. Rebuilding... (%s)", exc
+            )
+            self._index = SessionIndex(self._store_dir / "index.db")
+            self._index.initialize()
+            if self._index._needs_reindex:
+                self._rebuild_index_from_disk()
+                self._index._needs_reindex = False
+            # Retry the write
+            self.index.upsert_tracked_session(ref)
 
     def upsert_session_metadata(
         self, session_id: str, manifest: dict[str, Any], sfs_dir_path: str
     ) -> None:
-        """Insert or update session metadata in the index."""
-        self.index.upsert_session(session_id, manifest, sfs_dir_path)
+        """Insert or update session metadata in the index.
+
+        If the database is corrupted during the write, automatically
+        rebuilds the index and retries the operation once.
+        """
+        try:
+            self.index.upsert_session(session_id, manifest, sfs_dir_path)
+        except sqlite3.DatabaseError as exc:
+            logger.warning(
+                "Index corrupted during write. Rebuilding... (%s)", exc
+            )
+            self._index = SessionIndex(self._store_dir / "index.db")
+            self._index.initialize()
+            if self._index._needs_reindex:
+                self._rebuild_index_from_disk()
+                self._index._needs_reindex = False
+            # Retry the write
+            self.index.upsert_session(session_id, manifest, sfs_dir_path)
 
     def get_session_metadata(self, session_id: str) -> dict[str, Any] | None:
         """Get a single session's index data by ID."""

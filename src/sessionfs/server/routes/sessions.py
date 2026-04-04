@@ -15,7 +15,7 @@ import uuid
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -866,6 +866,7 @@ async def delete_session(
 async def sync_push(
     session_id: str,
     file: UploadFile,
+    background_tasks: BackgroundTasks,
     user: User = Depends(require_verified_user),
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
@@ -1009,6 +1010,12 @@ async def sync_push(
             await db.commit()
             await db.refresh(session)
 
+            # Auto-summarize + knowledge extraction for sessions with enough messages
+            if meta["message_count"] >= 5 and git_remote_normalized:
+                background_tasks.add_task(
+                    _auto_extract_knowledge, session.id, data, git_remote_normalized, user.id
+                )
+
             return Response(
                 status_code=201,
                 content=SyncPushResponse(
@@ -1058,12 +1065,78 @@ async def sync_push(
     await db.commit()
     await db.refresh(existing)
 
+    # Auto-summarize + knowledge extraction for sessions with enough messages
+    if meta["message_count"] >= 5 and git_remote_normalized:
+        background_tasks.add_task(
+            _auto_extract_knowledge, existing.id, data, git_remote_normalized, user.id
+        )
+
     return SyncPushResponse(
         session_id=existing.id,
         etag=existing.etag,
         blob_size_bytes=existing.blob_size_bytes,
         synced_at=now,
     )
+
+
+async def _auto_extract_knowledge(
+    session_id: str, archive_data: bytes, git_remote: str, user_id: str
+) -> None:
+    """Background task: summarize session and extract knowledge entries."""
+    from sessionfs.server.db.engine import get_db as _get_db_gen
+    from sessionfs.server.services.summarizer import summarize_session
+
+    try:
+        # Extract messages and manifest from archive for summarization
+        messages = _extract_messages_list(archive_data)
+        manifest = _extract_manifest_dict(archive_data)
+        workspace = _extract_workspace_from_archive(archive_data)
+
+        summary = summarize_session(messages, manifest, workspace)
+
+        # Find project by git remote
+        async for db in _get_db_gen():
+            from sessionfs.server.db.models import Project
+            result = await db.execute(
+                select(Project).where(Project.git_remote_normalized == git_remote)
+            )
+            project = result.scalar_one_or_none()
+            if not project:
+                return
+
+            from sessionfs.server.services.knowledge import extract_knowledge_entries
+            await extract_knowledge_entries(session_id, summary, project.id, user_id, db)
+    except Exception:
+        logger.warning("Background knowledge extraction failed for %s", session_id, exc_info=True)
+
+
+def _extract_messages_list(data: bytes) -> list[dict]:
+    """Extract messages from archive as a list of dicts."""
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+            for member in tar.getmembers():
+                if member.name.endswith("messages.jsonl"):
+                    f = tar.extractfile(member)
+                    if f:
+                        text = f.read().decode("utf-8", errors="replace")
+                        return [json.loads(line) for line in text.strip().split("\n") if line.strip()]
+    except Exception:
+        pass
+    return []
+
+
+def _extract_manifest_dict(data: bytes) -> dict:
+    """Extract manifest.json from archive as a dict."""
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+            for member in tar.getmembers():
+                if member.name.endswith("manifest.json"):
+                    f = tar.extractfile(member)
+                    if f:
+                        return json.loads(f.read())
+    except Exception:
+        pass
+    return {}
 
 
 @router.get("/{session_id}/sync")
@@ -1112,7 +1185,19 @@ async def get_session_messages(
         raise HTTPException(status_code=404, detail="Session blob not found")
 
     content = _get_cached_archive_content(session_id, session.etag, data)
-    messages = content["messages"]
+    all_messages = content["messages"]
+
+    # Filter out sidechain and empty messages — they render as blank pages
+    messages = [
+        m for m in all_messages
+        if not m.get("is_sidechain")
+        and (m.get("content") or m.get("role") == "tool")
+    ]
+
+    # Support order parameter: "newest" reverses so most recent is page 1
+    order = request.query_params.get("order", "oldest") if request else "oldest"
+    if order == "newest":
+        messages = list(reversed(messages))
 
     total = len(messages)
     start = (page - 1) * page_size
