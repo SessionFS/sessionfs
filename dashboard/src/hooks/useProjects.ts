@@ -114,3 +114,59 @@ export function useProjectHealth(projectId: string | undefined) {
     staleTime: 60_000,
   });
 }
+
+export function useWikiPages(projectId: string | undefined) {
+  const { auth } = useAuth();
+  return useQuery({
+    queryKey: ['wikiPages', projectId],
+    queryFn: () => auth!.client.listWikiPages(projectId!),
+    enabled: !!auth && !!projectId,
+    staleTime: 15_000,
+  });
+}
+
+export function useWikiPage(projectId: string | undefined, slug: string | null) {
+  const { auth } = useAuth();
+  return useQuery({
+    queryKey: ['wikiPage', projectId, slug],
+    queryFn: () => auth!.client.getWikiPage(projectId!, slug!),
+    enabled: !!auth && !!projectId && !!slug,
+    staleTime: 30_000,
+  });
+}
+
+export function useUpdateWikiPage(projectId: string | undefined) {
+  const { auth } = useAuth();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ slug, content, title }: { slug: string; content: string; title?: string }) =>
+      auth!.client.updateWikiPage(projectId!, slug, content, title),
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({ queryKey: ['wikiPages', projectId] });
+      void queryClient.invalidateQueries({ queryKey: ['wikiPage', projectId, variables.slug] });
+    },
+  });
+}
+
+export function useDeleteWikiPage(projectId: string | undefined) {
+  const { auth } = useAuth();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (slug: string) => auth!.client.deleteWikiPage(projectId!, slug),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['wikiPages', projectId] });
+    },
+  });
+}
+
+export function useUpdateProjectSettings(projectId: string | undefined) {
+  const { auth } = useAuth();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (settings: { auto_narrative?: boolean }) =>
+      auth!.client.updateProjectSettings(projectId!, settings),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['projects'] });
+    },
+  });
+}

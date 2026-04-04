@@ -59,6 +59,8 @@ async def _api_request(method: str, path: str, api_url: str, api_key: str, json_
             resp = await client.post(url, headers=headers, json=json_data)
         elif method == "PUT":
             resp = await client.put(url, headers=headers, json=json_data)
+        elif method == "DELETE":
+            resp = await client.delete(url, headers=headers)
         else:
             raise ValueError(f"Unsupported method: {method}")
 
@@ -547,3 +549,148 @@ def project_dismiss(
     ))
 
     console.print(f"Entry {entry_id} dismissed.")
+
+
+@project_app.command("pages")
+def project_pages() -> None:
+    """List wiki pages for this project."""
+    from rich.table import Table
+
+    git_remote = _get_git_remote()
+    if not git_remote:
+        err_console.print("[red]Not a git repository.[/red]")
+        raise typer.Exit(1)
+
+    normalized = _normalize_remote(git_remote)
+    api_url, api_key = _get_project_client()
+
+    result = asyncio.run(_api_request("GET", f"/api/v1/projects/{normalized}", api_url, api_key))
+    if result.get("_status") == 404:
+        err_console.print("[yellow]No project context found. Run 'sfs project init' first.[/yellow]")
+        raise typer.Exit(1)
+
+    project_id = result["id"]
+
+    pages_result = asyncio.run(_api_request(
+        "GET", f"/api/v1/projects/{project_id}/pages",
+        api_url, api_key,
+    ))
+
+    pages = pages_result.get("pages", [])
+    if not pages:
+        console.print("[dim]No wiki pages found.[/dim]")
+        return
+
+    table = Table(show_header=True, header_style="bold", expand=True)
+    table.add_column("Slug", style="bold", ratio=1)
+    table.add_column("Title", ratio=2)
+    table.add_column("Type", width=10)
+    table.add_column("Words", width=8, justify="right")
+    table.add_column("Entries", width=8, justify="right")
+    table.add_column("Auto", width=6, justify="center")
+
+    for page in pages:
+        auto = "[yellow]yes[/yellow]" if page.get("auto_generated") else "[dim]no[/dim]"
+        table.add_row(
+            page.get("slug", ""),
+            page.get("title", ""),
+            page.get("page_type", ""),
+            str(page.get("word_count", 0)),
+            str(page.get("entry_count", 0)),
+            auto,
+        )
+
+    console.print(table)
+    console.print(f"[dim]{len(pages)} pages[/dim]")
+
+
+@project_app.command("page")
+def project_page(
+    slug: str = typer.Argument(help="Page slug"),
+) -> None:
+    """View a wiki page."""
+    from rich.markdown import Markdown
+    from rich.panel import Panel
+
+    git_remote = _get_git_remote()
+    if not git_remote:
+        err_console.print("[red]Not a git repository.[/red]")
+        raise typer.Exit(1)
+
+    normalized = _normalize_remote(git_remote)
+    api_url, api_key = _get_project_client()
+
+    result = asyncio.run(_api_request("GET", f"/api/v1/projects/{normalized}", api_url, api_key))
+    if result.get("_status") == 404:
+        err_console.print("[yellow]No project context found. Run 'sfs project init' first.[/yellow]")
+        raise typer.Exit(1)
+
+    project_id = result["id"]
+
+    from urllib.parse import quote
+    page_result = asyncio.run(_api_request(
+        "GET", f"/api/v1/projects/{project_id}/pages/{quote(slug, safe='')}",
+        api_url, api_key,
+    ))
+
+    if page_result.get("_status") == 404:
+        err_console.print(f"[red]Page not found: {slug}[/red]")
+        raise typer.Exit(1)
+
+    title = page_result.get("title") or page_result.get("slug", slug)
+    content = page_result.get("content", "")
+    auto = page_result.get("auto_generated", False)
+
+    subtitle = f"[dim]{page_result.get('slug', '')}[/dim]"
+    if auto:
+        subtitle += "  [yellow](auto-generated)[/yellow]"
+
+    console.print(Panel(Markdown(content), title=title, subtitle=subtitle, border_style="blue"))
+
+    backlinks = page_result.get("backlinks", [])
+    if backlinks:
+        console.print()
+        console.print("[bold]Backlinks:[/bold]")
+        for bl in backlinks:
+            console.print(f"  {bl.get('title') or bl.get('slug', '')}")
+
+
+@project_app.command("set")
+def project_set(
+    auto_narrative: bool | None = typer.Option(
+        None, "--auto-narrative/--no-auto-narrative",
+        help="Enable or disable auto-narrative on sync",
+    ),
+) -> None:
+    """Update project settings."""
+    git_remote = _get_git_remote()
+    if not git_remote:
+        err_console.print("[red]Not a git repository.[/red]")
+        raise typer.Exit(1)
+
+    normalized = _normalize_remote(git_remote)
+    api_url, api_key = _get_project_client()
+
+    result = asyncio.run(_api_request("GET", f"/api/v1/projects/{normalized}", api_url, api_key))
+    if result.get("_status") == 404:
+        err_console.print("[yellow]No project context found. Run 'sfs project init' first.[/yellow]")
+        raise typer.Exit(1)
+
+    project_id = result["id"]
+
+    settings: dict = {}
+    if auto_narrative is not None:
+        settings["auto_narrative"] = auto_narrative
+
+    if not settings:
+        err_console.print("[yellow]No settings specified. Use --auto-narrative or --no-auto-narrative.[/yellow]")
+        raise typer.Exit(1)
+
+    asyncio.run(_api_request(
+        "PUT", f"/api/v1/projects/{project_id}/settings",
+        api_url, api_key,
+        json_data=settings,
+    ))
+
+    for key, value in settings.items():
+        console.print(f"[bold]{key}[/bold] = {value}")

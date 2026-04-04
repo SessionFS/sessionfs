@@ -50,6 +50,13 @@ class CompileRequest(BaseModel):
     base_url: str | None = None
 
 
+class AddEntryRequest(BaseModel):
+    content: str
+    entry_type: str = "discovery"
+    session_id: str | None = None
+    confidence: float = 1.0
+
+
 class DismissRequest(BaseModel):
     dismissed: bool = True
 
@@ -124,6 +131,48 @@ async def list_entries(
         )
         for e in entries
     ]
+
+
+@router.post("/{project_id}/entries/add", response_model=KnowledgeEntryResponse, status_code=201)
+async def add_entry(
+    project_id: str,
+    body: AddEntryRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> KnowledgeEntryResponse:
+    """Create a single knowledge entry (used by MCP tools and external clients)."""
+    await _get_project_or_404(project_id, db)
+
+    valid_types = {"decision", "pattern", "discovery", "convention", "bug", "dependency"}
+    if body.entry_type not in valid_types:
+        from fastapi import HTTPException as _HTTPException
+        raise _HTTPException(422, f"Invalid entry_type. Must be one of: {', '.join(sorted(valid_types))}")
+
+    entry = KnowledgeEntry(
+        project_id=project_id,
+        session_id=body.session_id or "manual",
+        user_id=user.id,
+        entry_type=body.entry_type,
+        content=body.content,
+        confidence=body.confidence,
+    )
+    db.add(entry)
+    await db.commit()
+    await db.refresh(entry)
+
+    return KnowledgeEntryResponse(
+        id=entry.id,
+        project_id=entry.project_id,
+        session_id=entry.session_id,
+        user_id=entry.user_id,
+        entry_type=entry.entry_type,
+        content=entry.content,
+        confidence=entry.confidence,
+        source_context=entry.source_context,
+        created_at=entry.created_at,
+        compiled_at=entry.compiled_at,
+        dismissed=entry.dismissed,
+    )
 
 
 @router.put("/{project_id}/entries/{entry_id}", response_model=KnowledgeEntryResponse)

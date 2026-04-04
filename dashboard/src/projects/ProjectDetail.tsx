@@ -9,12 +9,17 @@ import {
   useDismissEntry,
   useCompileProject,
   useCompilations,
+  useWikiPages,
+  useWikiPage,
+  useUpdateWikiPage,
+  useDeleteWikiPage,
+  useUpdateProjectSettings,
 } from '../hooks/useProjects';
 import { useToast } from '../hooks/useToast';
 import RelativeDate from '../components/RelativeDate';
-import type { KnowledgeEntry } from '../api/client';
+import type { KnowledgeEntry, WikiPage } from '../api/client';
 
-type ProjectTab = 'context' | 'entries' | 'history';
+type ProjectTab = 'context' | 'pages' | 'entries' | 'history';
 
 const ENTRY_TYPE_COLORS: Record<string, { bg: string; text: string; border: string }> = {
   decision: { bg: 'rgba(34,197,94,0.12)', text: '#22c55e', border: 'rgba(34,197,94,0.3)' },
@@ -198,6 +203,261 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
 }
 
 // ------------------------------------------------------------------
+// Pages Tab
+// ------------------------------------------------------------------
+function PagesTab({ projectId }: { projectId: string }) {
+  const { data, isLoading } = useWikiPages(projectId);
+  const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
+  const [editingSlug, setEditingSlug] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState('');
+  const [showNewPage, setShowNewPage] = useState(false);
+  const [newSlug, setNewSlug] = useState('');
+  const [newTitle, setNewTitle] = useState('');
+  const [newContent, setNewContent] = useState('');
+  const { addToast } = useToast();
+
+  const { data: pageDetail } = useWikiPage(projectId, selectedSlug);
+  const updatePage = useUpdateWikiPage(projectId);
+  const deletePage = useDeleteWikiPage(projectId);
+
+  function handleSaveEdit(slug: string) {
+    updatePage.mutate(
+      { slug, content: editDraft },
+      {
+        onSuccess: () => {
+          addToast('success', 'Page saved.');
+          setEditingSlug(null);
+          setEditDraft('');
+        },
+        onError: (err) => addToast('error', `Save failed: ${String(err)}`),
+      },
+    );
+  }
+
+  function handleDelete(slug: string) {
+    deletePage.mutate(slug, {
+      onSuccess: () => {
+        addToast('success', 'Page deleted.');
+        if (selectedSlug === slug) setSelectedSlug(null);
+      },
+      onError: (err) => addToast('error', `Delete failed: ${String(err)}`),
+    });
+  }
+
+  function handleCreatePage() {
+    if (!newSlug.trim()) {
+      addToast('error', 'Slug is required.');
+      return;
+    }
+    updatePage.mutate(
+      { slug: newSlug.trim(), content: newContent, title: newTitle || undefined },
+      {
+        onSuccess: () => {
+          addToast('success', `Page "${newSlug.trim()}" created.`);
+          setShowNewPage(false);
+          setNewSlug('');
+          setNewTitle('');
+          setNewContent('');
+        },
+        onError: (err) => addToast('error', `Create failed: ${String(err)}`),
+      },
+    );
+  }
+
+  if (isLoading) {
+    return <p className="p-5 text-[var(--text-tertiary)] text-sm">Loading pages...</p>;
+  }
+
+  const pages = data?.pages || [];
+
+  return (
+    <div className="p-5">
+      {/* Toolbar */}
+      <div className="flex items-center justify-between mb-4">
+        <span className="text-sm text-[var(--text-tertiary)]">
+          {pages.length} {pages.length === 1 ? 'page' : 'pages'}
+        </span>
+        <button
+          onClick={() => setShowNewPage(true)}
+          className="px-4 py-2 text-sm font-semibold bg-[var(--brand)] text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors"
+        >
+          + New Page
+        </button>
+      </div>
+
+      {/* New page form */}
+      {showNewPage && (
+        <div className="mb-4 px-4 py-3 rounded-lg border border-[var(--brand)] bg-[var(--bg-primary)]">
+          <div className="flex gap-3 mb-2">
+            <input
+              value={newSlug}
+              onChange={(e) => setNewSlug(e.target.value)}
+              placeholder="page-slug"
+              className="flex-1 px-3 py-1.5 text-sm bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)] placeholder:text-[var(--text-tertiary)]"
+              autoFocus
+            />
+            <input
+              value={newTitle}
+              onChange={(e) => setNewTitle(e.target.value)}
+              placeholder="Page Title (optional)"
+              className="flex-1 px-3 py-1.5 text-sm bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)] placeholder:text-[var(--text-tertiary)]"
+            />
+          </div>
+          <textarea
+            value={newContent}
+            onChange={(e) => setNewContent(e.target.value)}
+            placeholder="Page content (markdown)..."
+            className="w-full min-h-[120px] px-3 py-2 text-sm font-mono bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)] resize-y placeholder:text-[var(--text-tertiary)]"
+          />
+          <div className="flex justify-end gap-3 mt-2">
+            <button
+              onClick={() => { setShowNewPage(false); setNewSlug(''); setNewTitle(''); setNewContent(''); }}
+              className="px-3 py-1.5 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleCreatePage}
+              disabled={updatePage.isPending}
+              className="px-4 py-1.5 text-sm font-semibold bg-[var(--brand)] text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors disabled:opacity-50"
+            >
+              {updatePage.isPending ? 'Creating...' : 'Create'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Page list */}
+      {!pages.length ? (
+        <p className="text-[var(--text-tertiary)] text-sm py-8 text-center">
+          No wiki pages yet. Create one to start documenting project knowledge.
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {pages.map((page: WikiPage) => {
+            const isSelected = selectedSlug === page.slug;
+            const isEditing = editingSlug === page.slug;
+
+            return (
+              <div
+                key={page.slug}
+                className="rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] overflow-hidden"
+              >
+                {/* Card header */}
+                <button
+                  onClick={() => setSelectedSlug(isSelected ? null : page.slug)}
+                  className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-[var(--surface-hover)] transition-colors"
+                >
+                  <span className="shrink-0 text-base" title={page.auto_generated ? 'Auto-generated' : 'User-written'}>
+                    {page.auto_generated ? '\uD83D\uDCA1' : '\uD83D\uDCC4'}
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <span className="text-sm font-medium text-[var(--text-primary)]">
+                      {page.title || page.slug}
+                    </span>
+                    {page.title && (
+                      <span className="ml-2 text-xs text-[var(--text-tertiary)] font-mono">
+                        {page.slug}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-3 shrink-0 text-xs text-[var(--text-tertiary)]">
+                    <span>{page.word_count} words</span>
+                    <span>{page.entry_count} entries</span>
+                    <span className="text-[10px]">{isSelected ? '\u25B2' : '\u25BC'}</span>
+                  </div>
+                </button>
+
+                {/* Expanded detail */}
+                {isSelected && (
+                  <div className="border-t border-[var(--border)] px-4 py-3">
+                    {page.auto_generated && !isEditing && (
+                      <div className="mb-3 px-3 py-2 rounded-lg bg-[rgba(249,115,22,0.08)] border border-[rgba(249,115,22,0.2)] text-xs text-[#f97316]">
+                        Auto-maintained. Manual edits may be overwritten during compilation.
+                      </div>
+                    )}
+
+                    {isEditing ? (
+                      <div>
+                        <textarea
+                          value={editDraft}
+                          onChange={(e) => setEditDraft(e.target.value)}
+                          className="w-full min-h-[300px] px-3 py-3 text-[14px] font-mono bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)] resize-y"
+                          autoFocus
+                        />
+                        <div className="flex justify-end gap-3 mt-3">
+                          <button
+                            onClick={() => { setEditingSlug(null); setEditDraft(''); }}
+                            className="px-3 py-1.5 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            onClick={() => handleSaveEdit(page.slug)}
+                            disabled={updatePage.isPending}
+                            className="px-5 py-2.5 text-sm font-semibold bg-[var(--brand)] text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors disabled:opacity-50"
+                          >
+                            {updatePage.isPending ? 'Saving...' : 'Save'}
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="prose prose-sm dark:prose-invert max-w-none text-[var(--text-secondary)]">
+                          <ReactMarkdown>{pageDetail?.content || page.content}</ReactMarkdown>
+                        </div>
+
+                        {/* Backlinks */}
+                        {pageDetail?.backlinks && pageDetail.backlinks.length > 0 && (
+                          <div className="mt-4 pt-3 border-t border-[var(--border)]">
+                            <span className="text-xs font-medium text-[var(--text-tertiary)]">Backlinks:</span>
+                            <div className="flex flex-wrap gap-2 mt-1">
+                              {pageDetail.backlinks.map((bl) => (
+                                <button
+                                  key={bl.slug}
+                                  onClick={() => setSelectedSlug(bl.slug)}
+                                  className="text-xs text-[var(--brand)] hover:underline"
+                                >
+                                  {bl.title || bl.slug}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Actions */}
+                        <div className="flex items-center gap-3 mt-4 pt-3 border-t border-[var(--border)]">
+                          <button
+                            onClick={() => { setEditingSlug(page.slug); setEditDraft(pageDetail?.content || page.content); }}
+                            className="text-xs text-[var(--brand)] hover:underline"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => handleDelete(page.slug)}
+                            disabled={deletePage.isPending}
+                            className="text-xs text-red-400 hover:underline disabled:opacity-50"
+                          >
+                            Delete
+                          </button>
+                          <span className="text-xs text-[var(--text-tertiary)] ml-auto">
+                            Updated <RelativeDate iso={page.updated_at} />
+                          </span>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------
 // History Tab
 // ------------------------------------------------------------------
 function HistoryTab({ projectId }: { projectId: string }) {
@@ -261,6 +521,8 @@ export default function ProjectDetail() {
   const [draft, setDraft] = useState('');
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const [autoNarrative, setAutoNarrative] = useState(false);
+  const updateSettings = useUpdateProjectSettings(project?.id);
 
   // Enter edit mode if ?edit=1
   useEffect(() => {
@@ -331,6 +593,7 @@ export default function ProjectDetail() {
 
   const tabs: { key: ProjectTab; label: string }[] = [
     { key: 'context', label: 'Context' },
+    { key: 'pages', label: 'Pages' },
     { key: 'entries', label: 'Knowledge Entries' },
     { key: 'history', label: 'History' },
   ];
@@ -364,6 +627,25 @@ export default function ProjectDetail() {
                 Updated <RelativeDate iso={project.updated_at} />
               </span>
             </div>
+            <label className="flex items-center gap-2 text-[13px] text-[var(--text-tertiary)] mt-1">
+              <input
+                type="checkbox"
+                checked={autoNarrative}
+                onChange={(e) => {
+                  const val = e.target.checked;
+                  setAutoNarrative(val);
+                  updateSettings.mutate(
+                    { auto_narrative: val },
+                    {
+                      onSuccess: () => addToast('success', `Auto-narrative ${val ? 'enabled' : 'disabled'}.`),
+                      onError: (err) => { setAutoNarrative(!val); addToast('error', `Failed: ${String(err)}`); },
+                    },
+                  );
+                }}
+                className="accent-[var(--brand)]"
+              />
+              Auto-narrative on sync
+            </label>
           </div>
           <div className="flex items-center gap-2 shrink-0">
             {!editing && activeTab === 'context' && (
@@ -473,6 +755,12 @@ export default function ProjectDetail() {
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {activeTab === 'pages' && (
+        <div className="mt-4 bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-sm)]">
+          <PagesTab projectId={project.id} />
         </div>
       )}
 

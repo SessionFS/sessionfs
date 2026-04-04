@@ -305,6 +305,7 @@ class Project(Base):
     owner_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("users.id"), nullable=False
     )
+    auto_narrative: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -494,3 +495,41 @@ class TelemetryEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class KnowledgePage(Base):
+    __tablename__ = "knowledge_pages"
+    __table_args__ = (
+        Index("idx_kp_project", "project_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    slug: Mapped[str] = mapped_column(String(100), nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    page_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    word_count: Mapped[int] = mapped_column(Integer, server_default="0")
+    entry_count: Mapped[int] = mapped_column(Integer, server_default="0")
+    parent_slug: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    auto_generated: Mapped[bool] = mapped_column(Boolean, server_default="false")
+
+
+class KnowledgeLink(Base):
+    __tablename__ = "knowledge_links"
+    __table_args__ = (
+        Index("idx_kl_source", "project_id", "source_type", "source_id"),
+        Index("idx_kl_target", "project_id", "target_type", "target_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    target_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    link_type: Mapped[str] = mapped_column(String(20), nullable=False, server_default="related")
+    confidence: Mapped[float] = mapped_column(Float, server_default="1.0")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

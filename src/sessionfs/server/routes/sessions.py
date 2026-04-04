@@ -1109,6 +1109,27 @@ async def _auto_extract_knowledge(
 
             from sessionfs.server.services.knowledge import extract_knowledge_entries
             await extract_knowledge_entries(session_id, summary, project.id, user_id, db)
+
+            # Auto-narrative: if project has auto_narrative enabled and user has
+            # judge settings, run LLM narrative after deterministic extraction.
+            if getattr(project, "auto_narrative", False):
+                try:
+                    from sessionfs.server.db.models import UserJudgeSettings
+                    judge_result = await db.execute(
+                        select(UserJudgeSettings).where(UserJudgeSettings.user_id == user_id)
+                    )
+                    judge_settings = judge_result.scalar_one_or_none()
+                    if judge_settings:
+                        logger.info(
+                            "Auto-narrative enabled for project %s, session %s (placeholder)",
+                            project.id, session_id,
+                        )
+                        # Placeholder for LLM narrative generation.
+                        # Will call the narrative service when implemented.
+                except Exception:
+                    logger.warning(
+                        "Auto-narrative check failed for session %s", session_id, exc_info=True
+                    )
     except Exception:
         logger.warning("Background knowledge extraction failed for %s", session_id, exc_info=True)
 

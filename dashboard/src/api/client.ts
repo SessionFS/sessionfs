@@ -229,6 +229,26 @@ export interface CreateLicenseRequest {
   notes?: string;
 }
 
+export interface WikiPage {
+  id: string;
+  slug: string;
+  title: string;
+  page_type: string;
+  content: string;
+  word_count: number;
+  entry_count: number;
+  auto_generated: boolean;
+  updated_at: string;
+}
+
+export interface WikiPageDetail extends WikiPage {
+  backlinks?: { slug: string; title: string }[];
+}
+
+export interface WikiPageListResponse {
+  pages: WikiPage[];
+}
+
 export interface ProjectContext {
   id: string;
   name: string;
@@ -736,6 +756,30 @@ export function createApiClient(baseUrl: string, apiKey: string) {
 
     getProjectHealth: (projectId: string) =>
       request<ProjectHealthResponse>(`/api/v1/projects/${projectId}/health`),
+
+    // Wiki pages
+    listWikiPages: (projectId: string) =>
+      request<WikiPageListResponse>(`/api/v1/projects/${projectId}/pages`),
+
+    getWikiPage: (projectId: string, slug: string) =>
+      request<WikiPageDetail>(`/api/v1/projects/${projectId}/pages/${encodeURIComponent(slug)}`),
+
+    updateWikiPage: (projectId: string, slug: string, content: string, title?: string) =>
+      request<WikiPage>(`/api/v1/projects/${projectId}/pages/${encodeURIComponent(slug)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ content, ...(title ? { title } : {}) }),
+      }),
+
+    deleteWikiPage: (projectId: string, slug: string) =>
+      request<void>(`/api/v1/projects/${projectId}/pages/${encodeURIComponent(slug)}`, {
+        method: 'DELETE',
+      }),
+
+    updateProjectSettings: (projectId: string, settings: { auto_narrative?: boolean }) =>
+      request<{ status: string }>(`/api/v1/projects/${projectId}/settings`, {
+        method: 'PUT',
+        body: JSON.stringify(settings),
+      }),
   };
 }
 
