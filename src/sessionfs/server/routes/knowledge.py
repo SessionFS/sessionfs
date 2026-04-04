@@ -75,12 +75,24 @@ class HealthResponse(BaseModel):
     potentially_stale: bool = False
 
 
-async def _get_project_or_404(project_id: str, db: AsyncSession) -> Project:
-    """Get project by ID or raise 404."""
+async def _get_project_or_404(project_id: str, db: AsyncSession, user_id: str | None = None) -> Project:
+    """Get project by ID, verify access, or raise 404/403."""
     result = await db.execute(select(Project).where(Project.id == project_id))
     project = result.scalar_one_or_none()
     if not project:
         raise HTTPException(404, "Project not found")
+
+    # Enforce access control if user_id provided
+    if user_id and project.owner_id != user_id:
+        from sessionfs.server.db.models import Session
+        access = await db.execute(
+            select(Session.id)
+            .where(Session.user_id == user_id, Session.git_remote_normalized == project.git_remote_normalized)
+            .limit(1)
+        )
+        if access.scalar_one_or_none() is None:
+            raise HTTPException(403, "No access to this project")
+
     return project
 
 
@@ -95,7 +107,7 @@ async def list_entries(
     db: AsyncSession = Depends(get_db),
 ) -> list[KnowledgeEntryResponse]:
     """List knowledge entries for a project."""
-    await _get_project_or_404(project_id, db)
+    await _get_project_or_404(project_id, db, user.id)
 
     stmt = select(KnowledgeEntry).where(KnowledgeEntry.project_id == project_id)
 
@@ -141,7 +153,7 @@ async def add_entry(
     db: AsyncSession = Depends(get_db),
 ) -> KnowledgeEntryResponse:
     """Create a single knowledge entry (used by MCP tools and external clients)."""
-    await _get_project_or_404(project_id, db)
+    await _get_project_or_404(project_id, db, user.id)
 
     valid_types = {"decision", "pattern", "discovery", "convention", "bug", "dependency"}
     if body.entry_type not in valid_types:
@@ -221,7 +233,7 @@ async def compile_context(
     db: AsyncSession = Depends(get_db),
 ) -> CompilationResponse:
     """Compile pending knowledge entries into project context."""
-    await _get_project_or_404(project_id, db)
+    await _get_project_or_404(project_id, db, user.id)
 
     from sessionfs.server.services.compiler import (
         auto_generate_concepts,
@@ -275,7 +287,7 @@ async def list_compilations(
     db: AsyncSession = Depends(get_db),
 ) -> list[CompilationResponse]:
     """List compilation history for a project."""
-    await _get_project_or_404(project_id, db)
+    await _get_project_or_404(project_id, db, user.id)
 
     result = await db.execute(
         select(ContextCompilation)
@@ -306,7 +318,7 @@ async def project_health(
     db: AsyncSession = Depends(get_db),
 ) -> HealthResponse:
     """Get knowledge health status for a project."""
-    await _get_project_or_404(project_id, db)
+    await _get_project_or_404(project_id, db, user.id)
 
     # Total entries
     total_result = await db.execute(
@@ -361,7 +373,7 @@ async def project_health(
     last_compilation_at = last_compilation_result.scalar_one_or_none()
 
     # Context document analysis
-    project = await _get_project_or_404(project_id, db)
+    project = await _get_project_or_404(project_id, db, user.id)
     context_doc = project.context_document or ""
     word_count = len(context_doc.split()) if context_doc.strip() else 0
     section_count = sum(1 for line in context_doc.splitlines() if line.startswith("## "))

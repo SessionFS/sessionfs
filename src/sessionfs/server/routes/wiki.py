@@ -73,11 +73,22 @@ class ProjectSettingsRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-async def _get_project_or_404(project_id: str, db: AsyncSession) -> Project:
+async def _get_project_or_404(project_id: str, db: AsyncSession, user_id: str | None = None) -> Project:
     result = await db.execute(select(Project).where(Project.id == project_id))
     project = result.scalar_one_or_none()
     if not project:
         raise HTTPException(404, "Project not found")
+
+    if user_id and project.owner_id != user_id:
+        from sessionfs.server.db.models import Session as SessionModel
+        access = await db.execute(
+            select(SessionModel.id)
+            .where(SessionModel.user_id == user_id, SessionModel.git_remote_normalized == project.git_remote_normalized)
+            .limit(1)
+        )
+        if access.scalar_one_or_none() is None:
+            raise HTTPException(403, "No access to this project")
+
     return project
 
 
@@ -93,7 +104,7 @@ async def list_pages(
     db: AsyncSession = Depends(get_db),
 ) -> list[PageSummary]:
     """List all wiki pages for a project."""
-    await _get_project_or_404(project_id, db)
+    await _get_project_or_404(project_id, db, user.id)
 
     result = await db.execute(
         select(KnowledgePage)
@@ -124,7 +135,7 @@ async def get_page(
     db: AsyncSession = Depends(get_db),
 ) -> PageDetail:
     """Get a wiki page with backlinks."""
-    await _get_project_or_404(project_id, db)
+    await _get_project_or_404(project_id, db, user.id)
 
     result = await db.execute(
         select(KnowledgePage).where(
@@ -182,7 +193,7 @@ async def create_or_update_page(
 ) -> PageDetail:
     """Create or update a wiki page."""
     check_feature(ctx, "project_context")
-    await _get_project_or_404(project_id, db)
+    await _get_project_or_404(project_id, db, user.id)
 
     result = await db.execute(
         select(KnowledgePage).where(
@@ -246,7 +257,7 @@ async def delete_page(
 ) -> dict:
     """Delete a wiki page."""
     check_feature(ctx, "project_context")
-    await _get_project_or_404(project_id, db)
+    await _get_project_or_404(project_id, db, user.id)
 
     result = await db.execute(
         select(KnowledgePage).where(
@@ -282,7 +293,7 @@ async def regenerate_page(
 ) -> dict:
     """Regenerate an auto-generated concept page from latest entries."""
     check_feature(ctx, "project_context")
-    await _get_project_or_404(project_id, db)
+    await _get_project_or_404(project_id, db, user.id)
 
     result = await db.execute(
         select(KnowledgePage).where(
@@ -389,7 +400,7 @@ async def get_backlinks(
     db: AsyncSession = Depends(get_db),
 ) -> list[BacklinkItem]:
     """Get backlinks for a target."""
-    await _get_project_or_404(project_id, db)
+    await _get_project_or_404(project_id, db, user.id)
 
     result = await db.execute(
         select(KnowledgeLink).where(
@@ -421,7 +432,7 @@ async def update_project_settings(
 ) -> dict:
     """Update project settings (auto_narrative)."""
     check_feature(ctx, "project_context")
-    project = await _get_project_or_404(project_id, db)
+    project = await _get_project_or_404(project_id, db, user.id)
 
     project.auto_narrative = body.auto_narrative
     project.updated_at = datetime.now(timezone.utc)

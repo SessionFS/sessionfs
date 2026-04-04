@@ -592,7 +592,8 @@ async def _handle_get_project_context(args: dict) -> str:
                         headers={"Authorization": f"Bearer {config.sync.api_key}"},
                     )
                 if entries_resp.status_code == 200:
-                    entries = entries_resp.json().get("entries", [])
+                    resp_data = entries_resp.json()
+                    entries = resp_data if isinstance(resp_data, list) else resp_data.get("entries", [])
                     if entries:
                         activity = "\n\n---\n## Recent Session Activity\n"
                         activity += "*(Auto-extracted from recent sessions. Not yet compiled into the main document.)*\n\n"
