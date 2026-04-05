@@ -17,32 +17,33 @@ mcp_app = typer.Typer(name="mcp", help="MCP server for AI tool integration.")
 # Knowledge instruction injection
 # ---------------------------------------------------------------------------
 
-KNOWLEDGE_INSTRUCTIONS = """## SessionFS Knowledge Base
+KNOWLEDGE_INSTRUCTIONS = """## SessionFS Knowledge Base — MANDATORY
 
-When you discover something important about this codebase during a session, write it to the project knowledge base using the SessionFS MCP tools. Do this proactively — don't wait to be asked.
+**IMPORTANT: You MUST call `add_knowledge()` via MCP when you discover something significant about this codebase.** This is not optional — it is a core requirement of working in this repo, just like following commit conventions.
 
-### What to contribute
-- **Decisions:** Architecture or design choices ("Switched from REST to gRPC")
-- **Patterns:** Code patterns discovered ("All routes use require_feature() middleware")
-- **Bugs:** Issues found and workarounds ("SQLite WAL corrupts on power loss")
-- **Conventions:** Coding standards ("Tests go in tests/, not __tests__/")
-- **Dependencies:** External deps and quirks ("Resend has 100/day limit on free tier")
-- **Discoveries:** Anything useful for the next session
+Every discovery you make helps the next AI agent that works here. If you learn it, log it.
+
+### You MUST contribute when you:
+- Make or discover an architecture/design decision → `add_knowledge("description", "decision")`
+- Find a code pattern or convention → `add_knowledge("description", "pattern")`
+- Discover a bug or workaround → `add_knowledge("description", "bug")`
+- Learn about an external dependency → `add_knowledge("description", "dependency")`
+- Establish a coding convention → `add_knowledge("description", "convention")`
+- Learn anything useful for future sessions → `add_knowledge("description", "discovery")`
 
 ### How to contribute
-- Quick facts: `add_knowledge("what you learned", "type")`
-- Full articles: `update_wiki_page("slug", "markdown content")`
-- Browse existing: `list_wiki_pages()`
-- Search first: `search_project_knowledge("topic")` to avoid duplicates
+- Quick facts: `add_knowledge("what you learned", "type")` — call this multiple times per session
+- Full articles: `update_wiki_page("slug", "markdown content")` — for substantial findings
+- Search first: `search_project_knowledge("topic")` — avoid duplicates
+- Browse: `list_wiki_pages()` — see what exists
 
-### When to contribute
-- After making a key decision
-- After discovering a pattern or convention
-- After finding and fixing a bug
-- After adding or configuring a dependency
-- At the end of a significant session
+### Examples of when to call add_knowledge:
+- "The auth middleware resolves effective tier from the org, not the user record" → decision
+- "All converters follow the pattern: parse native format → canonical .sfs → write" → pattern
+- "SQLite WAL mode can corrupt on power loss — index.py has self-healing" → bug
+- "react-markdown is used for rendering project context, not a custom parser" → dependency
 
-Your contributions are immediately available to the next AI agent in this repo.
+**Do NOT end a session without contributing at least one knowledge entry if you learned something new.**
 """
 
 SECTION_MARKER_START = "<!-- sessionfs-knowledge-start -->"

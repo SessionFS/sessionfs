@@ -85,3 +85,35 @@ gemini --model gemini-3-flash-preview --yolo -p "Review [area] in the codebase a
 **Phase 6 complete — Living Project Context & Wiki**
 
 993 tests passing. DB migrations: 001–019. Eight-tool capture + four-tool resume (auto-launch, cross-tool transcript via --append-system-prompt-file, 50-message trim). Session summarization (deterministic + narrative LLM summaries). Autosync (off/all/selective modes, debounce, watchlist). Local storage management (pruning, retention, disk warnings). Multi-provider email (Resend, SMTP, none). Team handoff with email + session copy on claim + status stepper + session context card. LLM Judge with confidence scores (0-100), CWE mapping, evidence linking, dismiss/confirm findings. Shared project context (CLI + API + MCP tool + dashboard page with markdown editor). Living Project Context (auto-summarize on sync, knowledge entries with 6 types, structured compilation, section pages, concept auto-generation, regenerate, wiki pages with backlinks, auto-narrative toggle). MCP server (local + remote, 12 tools including add_knowledge, update_wiki_page, list_wiki_pages, search_project_knowledge, ask_project). MCP install for all 8 tools. Full-text search. GitHub PR App + GitLab MR integration. Admin dashboard. Helm chart (EKS validated, single-ingress via nginx, license validation, seed job with retry + cache fallback). Self-hosted license lifecycle (migration 017, grace periods, admin CLI + API, dashboard licenses tab). Cursor tool call extraction from agentKv layer. Tier-based sync limits (50MB free, 300MB paid). FSL licensing (ee/ directory). Server-side tier gating (5 tiers, 30+ features). RBAC (admin/member roles). Stripe billing integration. Organization management. Telemetry endpoint. Client version tracking. Dashboard redesign (light/dark mode, resume-first layout, date-grouped sessions, lineage grouping, left rail nav, page transitions, toast notifications, skeleton loading). `sfs init` wizard (auto-detects 8 tools, optional sync). `sfs security scan/fix` (config permissions, API key exposure, dependency audit). Security pipeline (GitHub Action: pip-audit, Trivy, Bandit + Dependabot + SECURITY.md). Skill/slash command detection across all converters. Tool call capture for Gemini CLI (toolCalls array) and Amp (tool_use/tool_result blocks). Multi-select bulk delete + Find Duplicates in dashboard. Session deduplication (Codex watcher skips sessionfs_import). Search tier check uses effective org tier. Self-healing SQLite index (auto-rebuild from .sfs files). `sfs doctor` (8 health checks with auto-repair). `handle_errors` decorator on all CLI commands. Message pagination (newest-first, order toggle, sidechain/empty filtering).
+
+
+<!-- sessionfs-knowledge-start -->
+## SessionFS Knowledge Base — MANDATORY
+
+**IMPORTANT: You MUST call `add_knowledge()` via MCP when you discover something significant about this codebase.** This is not optional — it is a core requirement of working in this repo, just like following commit conventions.
+
+Every discovery you make helps the next AI agent that works here. If you learn it, log it.
+
+### You MUST contribute when you:
+- Make or discover an architecture/design decision → `add_knowledge("description", "decision")`
+- Find a code pattern or convention → `add_knowledge("description", "pattern")`
+- Discover a bug or workaround → `add_knowledge("description", "bug")`
+- Learn about an external dependency → `add_knowledge("description", "dependency")`
+- Establish a coding convention → `add_knowledge("description", "convention")`
+- Learn anything useful for future sessions → `add_knowledge("description", "discovery")`
+
+### How to contribute
+- Quick facts: `add_knowledge("what you learned", "type")` — call this multiple times per session
+- Full articles: `update_wiki_page("slug", "markdown content")` — for substantial findings
+- Search first: `search_project_knowledge("topic")` — avoid duplicates
+- Browse: `list_wiki_pages()` — see what exists
+
+### Examples of when to call add_knowledge:
+- "The auth middleware resolves effective tier from the org, not the user record" → decision
+- "All converters follow the pattern: parse native format → canonical .sfs → write" → pattern
+- "SQLite WAL mode can corrupt on power loss — index.py has self-healing" → bug
+- "react-markdown is used for rendering project context, not a custom parser" → dependency
+
+**Do NOT end a session without contributing at least one knowledge entry if you learned something new.**
+
+<!-- sessionfs-knowledge-end -->
