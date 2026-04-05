@@ -47,12 +47,16 @@ def _tool_is_installed(tool: str) -> bool:
     import platform
 
     home = Path.home()
+    import os
+    xdg_data = os.environ.get("XDG_DATA_HOME")
+    amp_path = Path(xdg_data) / "amp" if xdg_data else home / ".local" / "share" / "amp"
+
     checks = {
         "claude-code": home / ".claude",
         "codex": home / ".codex",
         "gemini": home / ".gemini",
         "copilot": home / ".copilot",
-        "amp": home / ".local" / "share" / "amp",
+        "amp": amp_path,
         "cline": (
             home / "Library" / "Application Support" / "Code" / "User" / "globalStorage" / "saoudrizwan.claude-dev"
             if platform.system() == "Darwin"

@@ -58,7 +58,6 @@ def _get_tool_definitions() -> list[ToolInfo]:
             config_key="cursor",
             detect_paths=[
                 cursor_data,  # App Support/Cursor (macOS) or .config/Cursor (Linux)
-                home / ".cursor",  # Fallback — config dir
             ],
         ),
         ToolInfo(
@@ -93,7 +92,6 @@ def _get_tool_definitions() -> list[ToolInfo]:
             name="Cline",
             config_key="cline",
             detect_paths=[
-                home / ".cline",
                 vscode_global / "saoudrizwan.claude-dev",
             ],
         ),
@@ -101,7 +99,6 @@ def _get_tool_definitions() -> list[ToolInfo]:
             name="Roo Code",
             config_key="roo_code",
             detect_paths=[
-                home / ".roo-code",
                 vscode_global / "rooveterinaryinc.roo-cline",
             ],
         ),
