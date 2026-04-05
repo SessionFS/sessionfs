@@ -1111,24 +1111,37 @@ async def _auto_extract_knowledge(
             await extract_knowledge_entries(session_id, summary, project.id, user_id, db)
 
             # Auto-narrative: if project has auto_narrative enabled and user has
-            # judge settings, run LLM narrative after deterministic extraction.
+            # judge settings, run LLM extraction for high-quality knowledge entries.
             if getattr(project, "auto_narrative", False):
                 try:
                     from sessionfs.server.db.models import UserJudgeSettings
+                    from sessionfs.security.encryption import decrypt_api_key
+
                     judge_result = await db.execute(
                         select(UserJudgeSettings).where(UserJudgeSettings.user_id == user_id)
                     )
                     judge_settings = judge_result.scalar_one_or_none()
                     if judge_settings:
-                        logger.info(
-                            "Auto-narrative enabled for project %s, session %s (placeholder)",
-                            project.id, session_id,
+                        api_key = decrypt_api_key(judge_settings.encrypted_api_key)
+                        from sessionfs.server.services.knowledge import extract_knowledge_with_llm
+                        await extract_knowledge_with_llm(
+                            session_id=session_id,
+                            messages=messages,
+                            project_id=project.id,
+                            user_id=user_id,
+                            api_key=api_key,
+                            model=judge_settings.model,
+                            provider=judge_settings.provider,
+                            base_url=judge_settings.base_url,
+                            db=db,
                         )
-                        # Placeholder for LLM narrative generation.
-                        # Will call the narrative service when implemented.
+                        logger.info(
+                            "LLM knowledge extraction completed for session %s",
+                            session_id,
+                        )
                 except Exception:
                     logger.warning(
-                        "Auto-narrative check failed for session %s", session_id, exc_info=True
+                        "LLM knowledge extraction failed for session %s", session_id, exc_info=True
                     )
     except Exception:
         logger.warning("Background knowledge extraction failed for %s", session_id, exc_info=True)
