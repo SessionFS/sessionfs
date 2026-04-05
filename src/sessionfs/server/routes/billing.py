@@ -117,8 +117,8 @@ async def create_checkout(
             "quantity": data.seats if data.tier == "team" else 1,
         }],
         mode="subscription",
-        success_url="https://app.sessionfs.dev/settings/billing?success=true",
-        cancel_url="https://app.sessionfs.dev/settings/billing?cancelled=true",
+        success_url=f"{os.environ.get('SFS_APP_URL', 'https://app.sessionfs.dev')}/settings/billing?success=true",
+        cancel_url=f"{os.environ.get('SFS_APP_URL', 'https://app.sessionfs.dev')}/settings/billing?cancelled=true",
         metadata={"user_id": user.id, "tier": data.tier, "seats": str(data.seats)},
     )
 
@@ -148,7 +148,7 @@ async def create_portal(
 
     session = stripe.billing_portal.Session.create(
         customer=customer_id,
-        return_url="https://app.sessionfs.dev/settings/billing",
+        return_url=f"{os.environ.get('SFS_APP_URL', 'https://app.sessionfs.dev')}/settings/billing",
     )
 
     return PortalResponse(portal_url=session.url)
@@ -251,10 +251,17 @@ async def _sync_billing_to_org(
     org.stripe_subscription_id = subscription_id
     if customer_id:
         org.stripe_customer_id = customer_id
-    if seats and seats > 0:
+
+    # Always sync seats and storage — including on downgrade/cancel
+    if tier == "free":
+        org.seats_limit = 0
+        org.storage_limit_bytes = 0
+    elif seats and seats > 0:
         org.seats_limit = seats
-    if tier in ("team", "enterprise"):
-        org.storage_limit_bytes = seats * 1024 * 1024 * 1024 if seats else org.storage_limit_bytes
+        org.storage_limit_bytes = seats * 1024 * 1024 * 1024  # 1GB per seat
+    elif tier in ("team", "enterprise") and not org.seats_limit:
+        org.seats_limit = 5  # default if no seats specified
+        org.storage_limit_bytes = 5 * 1024 * 1024 * 1024
 
 
 async def _handle_checkout_completed(event, db: AsyncSession) -> None:

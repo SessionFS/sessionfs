@@ -27,6 +27,7 @@ router = APIRouter(prefix="/api/v1/org", tags=["organization"])
 class CreateOrgRequest(BaseModel):
     name: str
     slug: str
+    seats: int | None = None
 
     @field_validator("slug")
     @classmethod
@@ -96,13 +97,21 @@ async def create_organization(
         raise HTTPException(409, "You are already a member of an organization")
 
     org_id = f"org_{secrets.token_hex(8)}"
+    tier = user.tier if user.tier in ("team", "enterprise") else "team"
+
+    # Determine seats from checkout metadata or default
+    seats = data.seats if hasattr(data, 'seats') and data.seats else 5
+    storage = seats * 1024 * 1024 * 1024  # 1GB per seat
+
     org = Organization(
         id=org_id,
         name=data.name,
         slug=data.slug,
-        tier=user.tier if user.tier in ("team", "enterprise") else "team",
+        tier=tier,
         stripe_customer_id=user.stripe_customer_id,
         stripe_subscription_id=user.stripe_subscription_id,
+        seats_limit=seats,
+        storage_limit_bytes=storage,
     )
     db.add(org)
 

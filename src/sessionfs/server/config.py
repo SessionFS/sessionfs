@@ -45,6 +45,9 @@ class ServerConfig(BaseSettings):
     rate_limit_per_minute: int = 120
     dashboard_dir: str = "./static"
 
+    # App URL for billing redirects (configurable for staging/self-hosted)
+    app_url: str = "https://app.sessionfs.dev"
+
     # Stripe billing
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
