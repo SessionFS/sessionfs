@@ -1,7 +1,7 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
 ---
-<BaseLayout title="SessionFS — Capture, sync, and resume AI coding sessions" description="Background daemon that captures AI coding sessions from 8 tools. Resume anywhere, hand off to teammates, audit for hallucinations. Free and open source.">
+<BaseLayout title="SessionFS — AI coding sessions that build organizational memory" description="Background daemon that captures AI coding sessions from 8 tools. Resume anywhere, build organizational memory, audit AI claims. Your team's AI agents get smarter with every session.">
 
 
   <!-- ========== 2. HERO ========== -->
@@ -20,7 +20,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
           Stop re-prompting.<br>Start resuming.
         </h1>
         <p class="fade-up text-lg sm:text-xl text-muted leading-relaxed max-w-xl mx-auto lg:mx-0 mb-8">
-          SessionFS captures your AI coding sessions and makes them portable, searchable, and verifiable across tools and teammates.
+          SessionFS captures your AI coding sessions and turns them into organizational memory. Portable across tools, searchable by your team, verified by AI — and every session makes your codebase knowledge smarter.
         </p>
         <div class="fade-up inline-flex items-center gap-3 bg-surface border border-border rounded-lg px-5 py-3 mb-8 font-mono text-sm">
           <span class="text-muted-dim select-none">$</span>
@@ -234,8 +234,8 @@ import BaseLayout from '../layouts/BaseLayout.astro';
         <!-- MCP Server -->
         <div class="glass p-6 fade-up">
           <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#4f9cf7" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg></div>
-          <h3 class="font-heading font-semibold text-base mb-2">MCP Server</h3>
-          <p class="text-muted text-base mb-3 leading-relaxed">Your AI agent remembers past sessions and project context via MCP.</p>
+          <h3 class="font-heading font-semibold text-base mb-2">MCP Server &middot; 12 Tools</h3>
+          <p class="text-muted text-base mb-3 leading-relaxed">Your AI agents read project context, search knowledge, and write discoveries back — all via MCP.</p>
           <div class="font-mono text-sm text-accent bg-bg/50 rounded-md p-2.5">sfs mcp install --for claude-code</div>
         </div>
         <!-- LLM Judge -->
@@ -259,12 +259,12 @@ import BaseLayout from '../layouts/BaseLayout.astro';
           <p class="text-muted text-base mb-3 leading-relaxed">AI session context on every PR and MR. Contradictions surfaced for reviewers.</p>
           <div class="font-mono text-sm text-accent bg-bg/50 rounded-md p-2.5">PR comment with findings</div>
         </div>
-        <!-- Workspace Aware -->
+        <!-- Knowledge Base -->
         <div class="glass p-6 fade-up">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#3ddc84" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z"/></svg></div>
-          <h3 class="font-heading font-semibold text-base mb-2">Workspace Aware</h3>
-          <p class="text-muted text-base mb-3 leading-relaxed">Git state captured automatically. Branch, commit, dirty files — all recorded.</p>
-          <div class="font-mono text-sm bg-bg/50 rounded-md p-2.5"><span class="text-brand">main</span> <span class="text-muted-dim">@</span> <span class="text-accent">a1b2c3d</span></div>
+          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#4f9cf7" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 18v-5.25m0 0a6.01 6.01 0 001.5-.189m-1.5.189a6.01 6.01 0 01-1.5-.189m3.75 7.478a12.06 12.06 0 01-4.5 0m3.75 2.383a14.406 14.406 0 01-3 0M14.25 18v-.192c0-.983.658-1.823 1.508-2.316a7.5 7.5 0 10-7.517 0c.85.493 1.509 1.333 1.509 2.316V18"/></svg></div>
+          <h3 class="font-heading font-semibold text-base mb-2">Knowledge Base</h3>
+          <p class="text-muted text-base mb-3 leading-relaxed">Every session feeds your team's knowledge base. AI agents read, search, and write back — automatically.</p>
+          <div class="font-mono text-sm text-accent bg-bg/50 rounded-md p-2.5">12 MCP tools &middot; wiki &middot; backlinks</div>
         </div>
       </div>
     </div>
@@ -391,6 +391,42 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <div class="border-t border-border pt-3">
               <div class="text-muted-dim uppercase text-[11px] tracking-wider mb-1">Outcome</div>
               <div class="text-accent text-sm">Fix applied. 5/6 tests passing.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- ========== 8.6 KNOWLEDGE BASE SPOTLIGHT ========== -->
+  <section class="relative py-20 sm:py-28 px-5 bg-surface/50 noise">
+    <div class="max-w-5xl mx-auto flex flex-col lg:flex-row items-center gap-12">
+      <div class="lg:w-1/2 fade-up">
+        <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-5">Your team's AI gets smarter with every session.</h2>
+        <p class="text-muted text-lg mb-4 leading-relaxed">Every captured session is automatically distilled into knowledge entries — architecture decisions, debugging patterns, API contracts, and environment quirks. Your codebase builds its own documentation over time.</p>
+        <p class="text-muted text-lg mb-6 leading-relaxed">AI agents don't just read the knowledge base — they write back. When an agent discovers something new during a session, it adds the finding automatically via MCP. The next agent picks it up.</p>
+        <div class="flex flex-wrap gap-2 mb-6">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-3 py-1 text-sm font-mono text-muted">12 MCP tools</span>
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-3 py-1 text-sm font-mono text-muted">Auto-summarize</span>
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-3 py-1 text-sm font-mono text-muted">Agent write-back</span>
+        </div>
+        <a href="/features/knowledge-base/" class="text-brand hover:underline text-sm font-medium">Learn more &rarr;</a>
+      </div>
+      <div class="lg:w-1/2 w-full fade-up">
+        <div class="term">
+          <div class="term-bar"><div class="term-dot bg-[#ff5f57]"></div><div class="term-dot bg-[#febc2e]"></div><div class="term-dot bg-[#28c840]"></div><span class="ml-3 text-muted-dim text-[13px] font-mono">knowledge base</span></div>
+          <div class="p-5 font-mono text-sm space-y-3">
+            <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs project ask "How does auth work?"</span></div>
+            <div class="mt-3 border-t border-border pt-3">
+              <div class="text-muted-dim uppercase text-[11px] tracking-wider mb-2">Knowledge Base Results</div>
+              <div class="text-muted text-sm mb-2"><span class="text-brand">auth/middleware</span> — JWT validation via PyJWT. Tokens refreshed on 401. Middleware checks Authorization header, decodes with RS256.</div>
+              <div class="text-muted text-sm mb-2"><span class="text-brand">auth/oauth2</span> — OAuth2 flow uses authorization_code grant. Callback at /auth/callback. Tokens stored in httponly cookies.</div>
+              <div class="text-muted text-sm"><span class="text-brand">auth/testing</span> — Test fixtures use factory_boy. Auth tokens mocked via conftest.py pytest fixtures.</div>
+            </div>
+            <div class="border-t border-border pt-3">
+              <div class="text-accent text-sm">Answer saved to knowledge base. &#10003;</div>
             </div>
           </div>
         </div>

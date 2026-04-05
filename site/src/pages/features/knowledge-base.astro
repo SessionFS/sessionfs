@@ -1,0 +1,316 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+---
+<BaseLayout title="Knowledge Base — SessionFS" activeNav="features" description="Every AI session feeds your team's knowledge base. AI agents read, search, and write back — your codebase gets smarter with every session.">
+
+  <!-- Hero -->
+  <section class="relative pt-32 sm:pt-40 pb-16 px-5 noise">
+    <div class="max-w-5xl mx-auto flex flex-col lg:flex-row items-center gap-12">
+      <div class="lg:w-1/2 fade-up">
+        <div class="inline-flex items-center gap-2 text-sm font-mono text-muted-dim mb-6">
+          <a href="/features/" class="hover:text-brand transition-colors">Features</a>
+          <span>&#47;</span>
+          <span class="text-txt">Knowledge Base</span>
+        </div>
+        <h1 class="font-heading text-4xl sm:text-5xl font-extrabold tracking-tight leading-[1.1] mb-6">
+          Your codebase learns<br>from every AI session.
+        </h1>
+        <p class="text-muted text-lg mb-4 leading-relaxed">Every session your team runs is automatically distilled into knowledge entries — architecture decisions, debugging patterns, API contracts, environment quirks. Your codebase builds its own documentation over time.</p>
+        <p class="text-muted text-lg mb-6 leading-relaxed">AI agents don't just read the knowledge base — they write back. Discoveries, fixes, and patterns flow in automatically. The next agent picks them up.</p>
+        <div class="flex flex-wrap gap-2 mb-8">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-3 py-1 text-sm font-mono text-muted">12 MCP tools</span>
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-3 py-1 text-sm font-mono text-muted">Auto-summarize</span>
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-3 py-1 text-sm font-mono text-muted">Agent write-back</span>
+        </div>
+        <a href="/quickstart/" class="inline-flex items-center gap-2 bg-brand text-white font-semibold rounded-lg px-6 py-3 hover:brightness-110 transition">
+          Get started
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+        </a>
+      </div>
+      <div class="lg:w-1/2 w-full fade-up">
+        <div class="relative">
+          <div class="hero-glow"></div>
+          <div class="term relative z-10">
+            <div class="term-bar">
+              <div class="term-dot bg-[#ff5f57]"></div>
+              <div class="term-dot bg-[#febc2e]"></div>
+              <div class="term-dot bg-[#28c840]"></div>
+              <span class="ml-3 text-muted-dim text-[13px] font-mono">knowledge base</span>
+            </div>
+            <div class="p-5 font-mono text-sm space-y-3">
+              <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs project ask "How does auth work?"</span></div>
+              <div class="mt-3 border-t border-border pt-3">
+                <div class="text-muted-dim uppercase text-[11px] tracking-wider mb-2">Knowledge Base Results</div>
+                <div class="text-muted text-sm mb-2"><span class="text-brand">auth/middleware</span> — JWT validation via PyJWT. Tokens refreshed on 401.</div>
+                <div class="text-muted text-sm mb-2"><span class="text-brand">auth/oauth2</span> — OAuth2 authorization_code grant. Callback at /auth/callback.</div>
+                <div class="text-muted text-sm"><span class="text-brand">auth/testing</span> — Test fixtures via factory_boy. Auth tokens mocked in conftest.py.</div>
+              </div>
+              <div class="border-t border-border pt-3">
+                <div class="text-accent text-sm">3 entries found. Answer compiled from 14 sessions.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- The Loop -->
+  <section class="relative py-20 sm:py-28 px-5 noise">
+    <div class="max-w-5xl mx-auto">
+      <h2 class="fade-up font-heading text-3xl font-bold text-center mb-4">The Knowledge Loop</h2>
+      <p class="fade-up text-muted text-center mb-14 max-w-lg mx-auto leading-relaxed">Every session makes the next session smarter. Fully automatic.</p>
+      <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
+
+        <div class="glass fade-up p-6">
+          <div class="flex items-center gap-3 mb-3">
+            <span class="flex items-center justify-center w-8 h-8 rounded-full bg-brand/10 text-brand text-sm font-bold border border-brand/20">1</span>
+            <h3 class="font-heading font-semibold">Capture</h3>
+          </div>
+          <p class="text-muted text-base leading-relaxed">Daemon watches 8 AI tools and captures sessions in real time. Messages, tool calls, file changes, and command outputs — all recorded.</p>
+        </div>
+
+        <div class="glass fade-up p-6">
+          <div class="flex items-center gap-3 mb-3">
+            <span class="flex items-center justify-center w-8 h-8 rounded-full bg-brand/10 text-brand text-sm font-bold border border-brand/20">2</span>
+            <h3 class="font-heading font-semibold">Extract</h3>
+          </div>
+          <p class="text-muted text-base leading-relaxed">Deterministic summarization extracts files changed, tests run, commands executed, packages installed, and key decisions — no LLM cost.</p>
+        </div>
+
+        <div class="glass fade-up p-6">
+          <div class="flex items-center gap-3 mb-3">
+            <span class="flex items-center justify-center w-8 h-8 rounded-full bg-brand/10 text-brand text-sm font-bold border border-brand/20">3</span>
+            <h3 class="font-heading font-semibold">Entries</h3>
+          </div>
+          <p class="text-muted text-base leading-relaxed">Extracted facts become knowledge entries — tagged by topic, linked to source sessions, and indexed for search. Backlinks connect related entries.</p>
+        </div>
+
+        <div class="glass fade-up p-6">
+          <div class="flex items-center gap-3 mb-3">
+            <span class="flex items-center justify-center w-8 h-8 rounded-full bg-brand/10 text-brand text-sm font-bold border border-brand/20">4</span>
+            <h3 class="font-heading font-semibold">Compile</h3>
+          </div>
+          <p class="text-muted text-base leading-relaxed">Related entries are compiled into wiki pages — one page per topic. Pages update automatically as new sessions add information.</p>
+        </div>
+
+        <div class="glass fade-up p-6">
+          <div class="flex items-center gap-3 mb-3">
+            <span class="flex items-center justify-center w-8 h-8 rounded-full bg-brand/10 text-brand text-sm font-bold border border-brand/20">5</span>
+            <h3 class="font-heading font-semibold">Concepts</h3>
+          </div>
+          <p class="text-muted text-base leading-relaxed">Cross-session patterns emerge as concepts. "Auth always uses PyJWT" or "Tests need Redis running" — learned from real sessions, not guesses.</p>
+        </div>
+
+        <div class="glass fade-up p-6">
+          <div class="flex items-center gap-3 mb-3">
+            <span class="flex items-center justify-center w-8 h-8 rounded-full bg-brand/10 text-brand text-sm font-bold border border-brand/20">6</span>
+            <h3 class="font-heading font-semibold">Agent Write-back</h3>
+          </div>
+          <p class="text-muted text-base leading-relaxed">AI agents write discoveries back to the knowledge base during sessions via MCP. The next agent reads them. The loop closes.</p>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- Agent Write-back Terminal -->
+  <section class="relative py-20 px-5 bg-surface/50 noise">
+    <div class="max-w-4xl mx-auto flex flex-col lg:flex-row items-center gap-12">
+      <div class="lg:w-1/2 fade-up">
+        <h2 class="font-heading text-2xl sm:text-3xl font-bold mb-4">Agents write back. Automatically.</h2>
+        <p class="text-muted text-lg mb-6 leading-relaxed">When an AI agent discovers something new — a debugging pattern, an API quirk, a configuration requirement — it writes the finding to the knowledge base via the <code class="text-accent">add_knowledge</code> MCP tool. No manual curation needed.</p>
+        <div class="space-y-2">
+          <div class="flex items-center gap-2 text-sm text-muted"><span class="text-accent">&#10003;</span> Works with any MCP-compatible AI tool</div>
+          <div class="flex items-center gap-2 text-sm text-muted"><span class="text-accent">&#10003;</span> Entries tagged and linked automatically</div>
+          <div class="flex items-center gap-2 text-sm text-muted"><span class="text-accent">&#10003;</span> Backlinks connect related knowledge</div>
+          <div class="flex items-center gap-2 text-sm text-muted"><span class="text-accent">&#10003;</span> Health checks flag stale or conflicting entries</div>
+        </div>
+      </div>
+      <div class="lg:w-1/2 w-full fade-up">
+        <div class="term">
+          <div class="term-bar">
+            <div class="term-dot bg-[#ff5f57]"></div>
+            <div class="term-dot bg-[#febc2e]"></div>
+            <div class="term-dot bg-[#28c840]"></div>
+            <span class="ml-3 text-muted-dim text-[13px] font-mono">agent write-back</span>
+          </div>
+          <div class="p-5 font-mono text-sm space-y-2">
+            <div class="text-muted-dim"># Agent discovers a pattern during session</div>
+            <div class="text-muted-dim">MCP tool call: <span class="text-accent">add_knowledge</span></div>
+            <div class="mt-2 bg-bg/60 rounded p-3 text-sm">
+              <div class="text-muted-dim">topic: <span class="text-txt">"database/migrations"</span></div>
+              <div class="text-muted-dim">content: <span class="text-txt">"Alembic migrations must</span></div>
+              <div class="text-txt pl-[72px]">run with --sql flag in prod.</div>
+              <div class="text-txt pl-[72px]">Direct execution disabled via</div>
+              <div class="text-txt pl-[72px]">env guard in alembic.ini."</div>
+              <div class="text-muted-dim">tags: <span class="text-brand">["database", "migrations", "alembic"]</span></div>
+            </div>
+            <div class="mt-2 text-accent">Entry kb_f8a2 created. Linked to ses_m3n4.</div>
+            <div class="text-muted">Backlinks: database/connection, deploy/prod-checklist</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- 12 MCP Tools -->
+  <section class="relative py-20 sm:py-28 px-5 noise">
+    <div class="max-w-5xl mx-auto">
+      <h2 class="fade-up font-heading text-3xl font-bold text-center mb-4">12 MCP tools. Three categories.</h2>
+      <p class="fade-up text-muted text-center mb-14 max-w-lg mx-auto leading-relaxed">Everything your AI agents need to read, search, and contribute to your team's knowledge.</p>
+      <div class="grid md:grid-cols-3 gap-5">
+
+        <div class="glass fade-up p-6">
+          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#4f9cf7" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 00-1.883 2.542l.857 6a2.25 2.25 0 002.227 1.932H19.05a2.25 2.25 0 002.227-1.932l.857-6a2.25 2.25 0 00-1.883-2.542m-16.5 0V6A2.25 2.25 0 016 3.75h3.879a1.5 1.5 0 011.06.44l2.122 2.12a1.5 1.5 0 001.06.44H18A2.25 2.25 0 0120.25 9v.776"/></svg></div>
+          <h3 class="font-heading font-semibold mb-3">Session Tools <span class="text-muted-dim text-sm font-normal">(6)</span></h3>
+          <ul class="space-y-2 text-base text-muted">
+            <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">list_recent_sessions</span></li>
+            <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">get_session_context</span></li>
+            <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">get_session_summary</span></li>
+            <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">search_sessions</span></li>
+            <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">find_related_sessions</span></li>
+            <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">get_audit_report</span></li>
+          </ul>
+        </div>
+
+        <div class="glass fade-up p-6">
+          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#3ddc84" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25"/></svg></div>
+          <h3 class="font-heading font-semibold mb-3">Knowledge Read <span class="text-muted-dim text-sm font-normal">(3)</span></h3>
+          <ul class="space-y-2 text-base text-muted">
+            <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">get_project_context</span></li>
+            <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">search_project_knowledge</span></li>
+            <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">ask_project</span></li>
+          </ul>
+        </div>
+
+        <div class="glass fade-up p-6">
+          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#3ddc84" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10"/></svg></div>
+          <h3 class="font-heading font-semibold mb-3">Knowledge Write <span class="text-muted-dim text-sm font-normal">(3)</span></h3>
+          <ul class="space-y-2 text-base text-muted">
+            <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">add_knowledge</span></li>
+            <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">update_knowledge</span></li>
+            <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">link_knowledge</span></li>
+          </ul>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- Wiki Structure -->
+  <section class="relative py-20 px-5 bg-surface/50 noise">
+    <div class="max-w-4xl mx-auto">
+      <h2 class="fade-up font-heading text-2xl sm:text-3xl font-bold text-center mb-4">A living wiki. Built from real sessions.</h2>
+      <p class="fade-up text-muted text-center mb-12 max-w-lg mx-auto leading-relaxed">Knowledge entries compile into topic pages. Each page links to its source sessions and related topics.</p>
+      <div class="fade-up term">
+        <div class="term-bar">
+          <div class="term-dot bg-[#ff5f57]"></div>
+          <div class="term-dot bg-[#febc2e]"></div>
+          <div class="term-dot bg-[#28c840]"></div>
+          <span class="ml-3 text-muted-dim text-[13px] font-mono">sfs project wiki</span>
+        </div>
+        <div class="p-5 font-mono text-sm">
+          <div class="text-muted-dim uppercase text-[11px] tracking-wider mb-3">Wiki Pages (12)</div>
+          <table class="w-full text-sm">
+            <thead><tr class="text-muted-dim text-left border-b border-border">
+              <th class="pr-3 pb-2 font-medium">Page</th>
+              <th class="pr-3 pb-2 font-medium text-right">Entries</th>
+              <th class="pr-3 pb-2 font-medium text-right">Sources</th>
+              <th class="pb-2 font-medium">Last updated</th>
+            </tr></thead>
+            <tbody class="text-txt">
+              <tr><td class="pr-3 py-1.5"><svg class="w-3.5 h-3.5 inline mr-1.5 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg><span class="text-brand">auth/middleware</span></td><td class="pr-3 text-right text-muted">8</td><td class="pr-3 text-right text-muted">5 sessions</td><td class="text-muted-dim">2h ago</td></tr>
+              <tr><td class="pr-3 py-1.5"><svg class="w-3.5 h-3.5 inline mr-1.5 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg><span class="text-brand">database/migrations</span></td><td class="pr-3 text-right text-muted">12</td><td class="pr-3 text-right text-muted">9 sessions</td><td class="text-muted-dim">4h ago</td></tr>
+              <tr><td class="pr-3 py-1.5"><svg class="w-3.5 h-3.5 inline mr-1.5 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg><span class="text-brand">api/rate-limiting</span></td><td class="pr-3 text-right text-muted">5</td><td class="pr-3 text-right text-muted">3 sessions</td><td class="text-muted-dim">1d ago</td></tr>
+              <tr><td class="pr-3 py-1.5"><svg class="w-3.5 h-3.5 inline mr-1.5 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/></svg><span class="text-brand">deploy/prod-checklist</span></td><td class="pr-3 text-right text-muted">15</td><td class="pr-3 text-right text-muted">11 sessions</td><td class="text-muted-dim">2d ago</td></tr>
+              <tr><td class="pr-3 py-1.5"><svg class="w-3.5 h-3.5 inline mr-1.5 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg><span class="text-brand">testing/fixtures</span></td><td class="pr-3 text-right text-muted">6</td><td class="pr-3 text-right text-muted">4 sessions</td><td class="text-muted-dim">3d ago</td></tr>
+            </tbody>
+          </table>
+          <div class="mt-3 text-muted-dim text-sm">+ 7 more pages</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- Health Check -->
+  <section class="relative py-20 px-5 noise">
+    <div class="max-w-4xl mx-auto flex flex-col lg:flex-row items-center gap-12">
+      <div class="lg:w-1/2 fade-up">
+        <h2 class="font-heading text-2xl sm:text-3xl font-bold mb-4">Knowledge health. At a glance.</h2>
+        <p class="text-muted text-lg mb-6 leading-relaxed">The health check flags stale entries, conflicting information, and orphaned pages. Keep your knowledge base accurate without manual curation.</p>
+        <div class="space-y-2">
+          <div class="flex items-center gap-2 text-sm text-muted"><span class="text-accent">&#10003;</span> Detects stale entries (no recent sessions)</div>
+          <div class="flex items-center gap-2 text-sm text-muted"><span class="text-accent">&#10003;</span> Flags contradictory information</div>
+          <div class="flex items-center gap-2 text-sm text-muted"><span class="text-accent">&#10003;</span> Identifies orphaned pages without backlinks</div>
+          <div class="flex items-center gap-2 text-sm text-muted"><span class="text-accent">&#10003;</span> Suggests merges for duplicate topics</div>
+        </div>
+      </div>
+      <div class="lg:w-1/2 w-full fade-up">
+        <div class="term">
+          <div class="term-bar">
+            <div class="term-dot bg-[#ff5f57]"></div>
+            <div class="term-dot bg-[#febc2e]"></div>
+            <div class="term-dot bg-[#28c840]"></div>
+            <span class="ml-3 text-muted-dim text-[13px] font-mono">health check</span>
+          </div>
+          <div class="p-5 font-mono text-sm space-y-3">
+            <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs project health</span></div>
+            <div class="mt-3 border-t border-border pt-3">
+              <div class="text-muted-dim uppercase text-[11px] tracking-wider mb-2">Knowledge Base Health</div>
+              <div class="flex items-center gap-3 mb-3">
+                <span class="text-xl font-bold text-accent">92%</span>
+                <div class="flex-1 h-2 bg-border rounded-full overflow-hidden"><div class="h-full bg-accent rounded-full w-[92%]"></div></div>
+              </div>
+              <div class="text-sm text-muted mb-1">12 pages &middot; 46 entries &middot; 87 backlinks</div>
+            </div>
+            <div class="border-t border-border pt-3 space-y-2">
+              <div class="text-warning text-sm">1 stale: deploy/staging — last updated 30d ago</div>
+              <div class="text-warning text-sm">1 conflict: auth/tokens — 2 entries disagree on expiry</div>
+              <div class="text-accent text-sm">10 pages healthy. 0 orphans.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- CTA -->
+  <section class="relative py-16 px-5 noise">
+    <div class="max-w-2xl mx-auto text-center fade-up">
+      <h2 class="font-heading text-2xl sm:text-3xl font-bold mb-4">Start building your knowledge base.</h2>
+      <p class="text-muted mb-8 leading-relaxed">Every session your team runs makes the next one smarter. Free during beta.</p>
+      <div class="flex flex-col sm:flex-row gap-3 justify-center">
+        <a href="/quickstart/" class="inline-flex items-center justify-center gap-2 bg-brand text-white font-semibold rounded-lg px-7 py-3 hover:brightness-110 transition">
+          Get Started
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+        </a>
+        <a href="https://github.com/SessionFS/sessionfs" class="inline-flex items-center justify-center gap-2 border border-border text-txt font-semibold rounded-lg px-7 py-3 hover:border-muted transition">
+          View on GitHub
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+</BaseLayout>
+
+<script>
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); } });
+  }, { threshold: 0.1 });
+  document.querySelectorAll('.fade-up').forEach(el => observer.observe(el));
+</script>
