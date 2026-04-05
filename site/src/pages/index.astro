@@ -103,7 +103,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <div class="text-sm font-mono text-accent uppercase tracking-wider mb-3">Remember</div>
             <h3 class="font-heading font-semibold text-xl mb-3 group-hover:text-brand transition-colors">Your team's AI gets smarter with every session</h3>
           </div>
-          <p class="text-muted text-base leading-relaxed mb-4">Every session feeds your knowledge base. Decisions, debugging patterns, API contracts, and environment quirks are extracted automatically and compiled into a living wiki. Served to agents via MCP — 12 tools that let agents read, search, and write back.</p>
+          <p class="text-muted text-base leading-relaxed mb-4">Onboard new engineers' AI in seconds. Every session extracts decisions, patterns, and bugs into a living wiki — compiled automatically, served via MCP. Knowledge compounds. It never starts from zero.</p>
           <div class="font-mono text-sm text-accent">Learn more &rarr;</div>
         </a>
 
@@ -113,7 +113,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <div class="text-sm font-mono text-brand uppercase tracking-wider mb-3">Verify</div>
             <h3 class="font-heading font-semibold text-xl mb-3 group-hover:text-brand transition-colors">Catch what the AI got wrong</h3>
           </div>
-          <p class="text-muted text-base leading-relaxed mb-4">The LLM Judge cross-references every AI claim against actual tool output. Confidence scores, CWE classification, and severity ratings. When the AI says "test passes" but exit code is 1 — that gets flagged.</p>
+          <p class="text-muted text-base leading-relaxed mb-4">Reviewable AI. Every claim verified before it reaches production. Confidence scores on every finding. Your team reviews AI work the same way they review human work.</p>
           <div class="font-mono text-sm text-brand">Learn more &rarr;</div>
         </a>
 
@@ -123,10 +123,34 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <div class="text-sm font-mono text-brand uppercase tracking-wider mb-3">Continue</div>
             <h3 class="font-heading font-semibold text-xl mb-3 group-hover:text-brand transition-colors">Resume anywhere. Hand off to anyone.</h3>
           </div>
-          <p class="text-muted text-base leading-relaxed mb-4">Resume any session in any supported tool with full context intact. Hand off to teammates with workspace state, conversation history, and git snapshot. Paths auto-resolve by git remote.</p>
+          <p class="text-muted text-base leading-relaxed mb-4">Context never lost. Hand off mid-session. Pick up exactly where the last developer — or the last tool — left off. Full transcript injected. No re-prompting.</p>
           <div class="font-mono text-sm text-brand">Learn more &rarr;</div>
         </a>
 
+      </div>
+    </div>
+  </section>
+
+  <!-- Enterprise Outcomes Strip -->
+  <section class="relative py-14 px-5">
+    <div class="max-w-5xl mx-auto">
+      <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-6 text-center">
+        <div class="fade-up">
+          <div class="text-xl font-bold text-txt mb-1">Governance</div>
+          <p class="text-muted text-sm leading-relaxed">Complete audit trail of every AI action across every tool and every developer.</p>
+        </div>
+        <div class="fade-up">
+          <div class="text-xl font-bold text-txt mb-1">Onboarding</div>
+          <p class="text-muted text-sm leading-relaxed">New engineers' AI tools know the codebase from day one. Zero ramp-up time.</p>
+        </div>
+        <div class="fade-up">
+          <div class="text-xl font-bold text-txt mb-1">Continuity</div>
+          <p class="text-muted text-sm leading-relaxed">Context never lost between sessions, tools, or teammates. Work always resumes.</p>
+        </div>
+        <div class="fade-up">
+          <div class="text-xl font-bold text-txt mb-1">Risk Reduction</div>
+          <p class="text-muted text-sm leading-relaxed">Every AI claim verified. Secrets detected before sync. Contradictions surfaced.</p>
+        </div>
       </div>
     </div>
   </section>
@@ -173,9 +197,9 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-20 sm:py-28 px-5 noise">
     <div class="max-w-5xl mx-auto flex flex-col lg:flex-row items-center gap-12">
       <div class="lg:w-1/2 fade-up">
-        <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-5">Trust, but verify.</h2>
-        <p class="text-muted text-lg mb-4 leading-relaxed">The LLM Judge cross-references every AI claim against actual tool outputs. When the AI says "the test passes" but the exit code was 1 — that's a critical contradiction, flagged with full evidence.</p>
-        <p class="text-muted text-lg mb-4 leading-relaxed">Severity-classified findings: <span class="text-danger font-medium">CRITICAL</span> for test failures and failed commands. <span class="text-warning font-medium">HIGH</span> for file mismatches and data misreads. Every finding links to the exact message.</p>
+        <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-5">Reviewable AI at scale.</h2>
+        <p class="text-muted text-lg mb-4 leading-relaxed">Every AI coding agent makes claims: "the test passes," "I created the file," "the migration is safe." Most go unverified. LLM Judge cross-references every claim against actual evidence — exit codes, file writes, test output.</p>
+        <p class="text-muted text-lg mb-4 leading-relaxed">Confidence-scored findings surface on PRs and in the dashboard. Your team reviews AI work the same way they review human work.</p>
         <p class="text-muted text-base mb-6 leading-relaxed">Verified claims feed the knowledge base — building a trust record your team can reference.</p>
         <p class="text-base text-muted-dim border-l-2 border-brand/30 pl-4 mb-6 leading-relaxed">BYOK — your key, never stored. Works with any OpenAI-compatible endpoint: OpenRouter, LiteLLM, vLLM, Ollama.</p>
         <a href="/features/judge/" class="text-brand hover:underline text-sm font-medium">Read the docs &rarr;</a>
