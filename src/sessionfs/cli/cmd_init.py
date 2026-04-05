@@ -34,20 +34,31 @@ def _get_tool_definitions() -> list[ToolInfo]:
     else:
         vscode_global = home / ".config" / "Code" / "User" / "globalStorage"
 
+    # Cursor data paths (must match daemon config)
+    if is_mac:
+        cursor_data = home / "Library" / "Application Support" / "Cursor"
+    else:
+        cursor_data = home / ".config" / "Cursor"
+
+    # Amp data paths (must match daemon config — XDG_DATA_HOME or ~/.local/share/amp)
+    import os
+    xdg_data = os.environ.get("XDG_DATA_HOME")
+    amp_data = Path(xdg_data) / "amp" if xdg_data else home / ".local" / "share" / "amp"
+
     return [
         ToolInfo(
             name="Claude Code",
             config_key="claude_code",
             detect_paths=[
                 home / ".claude",
-                home / ".config" / "claude-code",
             ],
         ),
         ToolInfo(
             name="Cursor",
             config_key="cursor",
             detect_paths=[
-                home / ".cursor",
+                cursor_data,  # App Support/Cursor (macOS) or .config/Cursor (Linux)
+                home / ".cursor",  # Fallback — config dir
             ],
         ),
         ToolInfo(
@@ -68,7 +79,6 @@ def _get_tool_definitions() -> list[ToolInfo]:
             name="Copilot",
             config_key="copilot",
             detect_paths=[
-                home / ".config" / "github-copilot",
                 home / ".copilot",
             ],
         ),
@@ -76,8 +86,7 @@ def _get_tool_definitions() -> list[ToolInfo]:
             name="Amp",
             config_key="amp",
             detect_paths=[
-                home / ".amp",
-                home / ".local" / "share" / "amp",
+                amp_data,  # ~/.local/share/amp or $XDG_DATA_HOME/amp
             ],
         ),
         ToolInfo(
