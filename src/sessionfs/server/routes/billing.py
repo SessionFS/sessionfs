@@ -81,11 +81,16 @@ async def create_checkout(
     if not price_id:
         raise HTTPException(400, f"Stripe price not configured for tier: {data.tier}")
 
-    # Prevent duplicate subscriptions — redirect to portal if already subscribed
+    # Prevent duplicate subscriptions — check both user and org
     if user.stripe_subscription_id:
         raise HTTPException(
             409,
             {"error": "already_subscribed", "message": "You already have an active subscription. Use the customer portal to manage it."},
+        )
+    if ctx.is_org_user and ctx.org and ctx.org.stripe_subscription_id:
+        raise HTTPException(
+            409,
+            {"error": "already_subscribed", "message": "Your organization already has an active subscription. Use the customer portal to manage it."},
         )
 
     # Get or create Stripe customer
@@ -114,7 +119,7 @@ async def create_checkout(
         mode="subscription",
         success_url="https://app.sessionfs.dev/settings/billing?success=true",
         cancel_url="https://app.sessionfs.dev/settings/billing?cancelled=true",
-        metadata={"user_id": user.id, "tier": data.tier},
+        metadata={"user_id": user.id, "tier": data.tier, "seats": str(data.seats)},
     )
 
     if not session.url:
@@ -126,15 +131,23 @@ async def create_checkout(
 @router.post("/portal", response_model=PortalResponse)
 async def create_portal(
     user: User = Depends(get_current_user),
+    ctx: UserContext = Depends(get_user_context),
 ):
     """Create a Stripe Customer Portal session for self-service management."""
     stripe = _get_stripe()
 
-    if not user.stripe_customer_id:
+    # Use org customer_id for org members, user's for solo
+    customer_id = None
+    if ctx.is_org_user and ctx.org and ctx.org.stripe_customer_id:
+        customer_id = ctx.org.stripe_customer_id
+    elif user.stripe_customer_id:
+        customer_id = user.stripe_customer_id
+
+    if not customer_id:
         raise HTTPException(400, "No subscription found.")
 
     session = stripe.billing_portal.Session.create(
-        customer=user.stripe_customer_id,
+        customer=customer_id,
         return_url="https://app.sessionfs.dev/settings/billing",
     )
 
@@ -213,7 +226,10 @@ async def stripe_webhook(
     return {"status": "ok"}
 
 
-async def _sync_billing_to_org(user_id: str, tier: str, subscription_id: str | None, db: AsyncSession, seats: int | None = None) -> None:
+async def _sync_billing_to_org(
+    user_id: str, tier: str, subscription_id: str | None, db: AsyncSession,
+    seats: int | None = None, customer_id: str | None = None,
+) -> None:
     """Sync billing state to the user's organization if they're in one."""
     from sessionfs.server.db.models import OrgMember, Organization
 
@@ -233,6 +249,8 @@ async def _sync_billing_to_org(user_id: str, tier: str, subscription_id: str | N
 
     org.tier = tier
     org.stripe_subscription_id = subscription_id
+    if customer_id:
+        org.stripe_customer_id = customer_id
     if seats and seats > 0:
         org.seats_limit = seats
     if tier in ("team", "enterprise"):
@@ -260,12 +278,13 @@ async def _handle_checkout_completed(event, db: AsyncSession) -> None:
         )
     )
 
-    # Extract seat count from the checkout line items
-    line_items = session.get("line_items", {}).get("data", [])
-    seats = line_items[0].get("quantity", 1) if line_items else 1
+    # Seats: store in metadata since line_items aren't expanded in webhook
+    # The checkout metadata includes tier; for team, seats come from the form
+    seats = int(session.metadata.get("seats", "1")) if session.metadata else 1
 
     # Sync to org if user is in one
-    await _sync_billing_to_org(user_id, tier, subscription_id, db, seats=seats)
+    customer_id = session.get("customer", "")
+    await _sync_billing_to_org(user_id, tier, subscription_id, db, seats=seats, customer_id=customer_id)
     await db.commit()
 
 
@@ -321,7 +340,7 @@ async def _handle_subscription_updated(event, db: AsyncSession) -> None:
         seats = data_list[0].get("quantity", 1) if data_list else None
 
         # Sync to org
-        await _sync_billing_to_org(user.id, new_tier, subscription.id, db, seats=seats)
+        await _sync_billing_to_org(user.id, new_tier, subscription.id, db, seats=seats, customer_id=customer_id)
         await db.commit()
 
 
