@@ -117,8 +117,8 @@ def _validate_tar_gz(data: bytes) -> None:
                     raise ValueError(f"Absolute path in tar member: {member.name}")
                 if member.issym() or member.islnk():
                     raise ValueError(f"Symlink in tar archive: {member.name}")
-                if member.size > 50 * 1024 * 1024:
-                    raise ValueError(f"Member too large: {member.name} ({member.size} bytes)")
+                if member.size > 100 * 1024 * 1024:  # 100MB per member
+                    raise ValueError(f"Member too large: {member.name} ({member.size // (1024*1024)}MB, limit 100MB)")
     except tarfile.TarError as e:
         raise ValueError(f"Invalid tar.gz archive: {e}") from e
 
