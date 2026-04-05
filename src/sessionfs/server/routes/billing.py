@@ -81,6 +81,13 @@ async def create_checkout(
     if not price_id:
         raise HTTPException(400, f"Stripe price not configured for tier: {data.tier}")
 
+    # Prevent duplicate subscriptions — redirect to portal if already subscribed
+    if user.stripe_subscription_id:
+        raise HTTPException(
+            409,
+            {"error": "already_subscribed", "message": "You already have an active subscription. Use the customer portal to manage it."},
+        )
+
     # Get or create Stripe customer
     if not user.stripe_customer_id:
         customer = stripe.Customer.create(
@@ -140,6 +147,17 @@ async def billing_status(
 ):
     """Get current subscription status."""
     user = ctx.user
+
+    # For org members, use org billing state
+    if ctx.is_org_user and ctx.org:
+        return BillingStatusResponse(
+            tier=ctx.effective_tier.value,
+            storage_used_bytes=ctx.org.storage_used_bytes or 0,
+            storage_limit_bytes=ctx.org.storage_limit_bytes or get_storage_limit(ctx.effective_tier),
+            stripe_customer_id=ctx.org.stripe_customer_id,
+            has_subscription=ctx.org.stripe_subscription_id is not None,
+        )
+
     return BillingStatusResponse(
         tier=ctx.effective_tier.value,
         storage_used_bytes=user.storage_used_bytes or 0,
@@ -195,6 +213,32 @@ async def stripe_webhook(
     return {"status": "ok"}
 
 
+async def _sync_billing_to_org(user_id: str, tier: str, subscription_id: str | None, db: AsyncSession, seats: int | None = None) -> None:
+    """Sync billing state to the user's organization if they're in one."""
+    from sessionfs.server.db.models import OrgMember, Organization
+
+    result = await db.execute(
+        select(OrgMember).where(OrgMember.user_id == user_id)
+    )
+    membership = result.scalar_one_or_none()
+    if not membership:
+        return
+
+    org_result = await db.execute(
+        select(Organization).where(Organization.id == membership.org_id)
+    )
+    org = org_result.scalar_one_or_none()
+    if not org:
+        return
+
+    org.tier = tier
+    org.stripe_subscription_id = subscription_id
+    if seats and seats > 0:
+        org.seats_limit = seats
+    if tier in ("team", "enterprise"):
+        org.storage_limit_bytes = seats * 1024 * 1024 * 1024 if seats else org.storage_limit_bytes
+
+
 async def _handle_checkout_completed(event, db: AsyncSession) -> None:
     """New subscription created via Checkout."""
     session = event.data.object
@@ -215,6 +259,13 @@ async def _handle_checkout_completed(event, db: AsyncSession) -> None:
             tier_updated_at=datetime.now(timezone.utc),
         )
     )
+
+    # Extract seat count from the checkout line items
+    line_items = session.get("line_items", {}).get("data", [])
+    seats = line_items[0].get("quantity", 1) if line_items else 1
+
+    # Sync to org if user is in one
+    await _sync_billing_to_org(user_id, tier, subscription_id, db, seats=seats)
     await db.commit()
 
 
@@ -265,6 +316,12 @@ async def _handle_subscription_updated(event, db: AsyncSession) -> None:
                 tier_updated_at=datetime.now(timezone.utc),
             )
         )
+
+        # Extract seats from subscription quantity
+        seats = data_list[0].get("quantity", 1) if data_list else None
+
+        # Sync to org
+        await _sync_billing_to_org(user.id, new_tier, subscription.id, db, seats=seats)
         await db.commit()
 
 
@@ -290,6 +347,9 @@ async def _handle_subscription_deleted(event, db: AsyncSession) -> None:
             tier_updated_at=datetime.now(timezone.utc),
         )
     )
+
+    # Sync downgrade to org
+    await _sync_billing_to_org(user.id, "free", None, db)
     await db.commit()
 
 
