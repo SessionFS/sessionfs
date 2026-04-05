@@ -314,6 +314,13 @@ def init_cmd() -> None:
             if tool.info.config_key in enabled_keys:
                 mcp_tool = _config_key_to_tool.get(tool.info.config_key)
                 if mcp_tool:
+                    # Install MCP server first, then inject instructions
+                    try:
+                        console.print(f"  Installing MCP for {mcp_tool}...")
+                        from sessionfs.cli.cmd_mcp import _install_mcp_for_tool
+                        _install_mcp_for_tool(mcp_tool)
+                    except (SystemExit, Exception):
+                        console.print(f"  [dim]MCP install skipped for {mcp_tool}[/dim]")
                     inject_agent_instructions(mcp_tool)
 
     # --- Next steps ---

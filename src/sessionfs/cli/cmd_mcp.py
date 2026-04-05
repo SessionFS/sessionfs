@@ -133,10 +133,17 @@ def install(
     ),
 ) -> None:
     """Auto-configure SessionFS as an MCP server for an AI tool."""
+    _install_mcp_for_tool(tool)
+
+    if not skip_instructions:
+        inject_agent_instructions(tool)
+
+
+def _install_mcp_for_tool(tool: str) -> None:
+    """Register SessionFS MCP server for a tool (no instructions)."""
     sfs_path = shutil.which("sfs")
     if not sfs_path:
         err_console.print("[red]'sfs' command not found in PATH.[/red]")
-        err_console.print("Install sessionfs first: pip install sessionfs")
         raise SystemExit(1)
 
     mcp_config = {
@@ -144,7 +151,6 @@ def install(
         "args": ["mcp", "serve"],
     }
 
-    # Map tool names to installer functions
     installers = {
         "claude-code": _install_claude_code,
         "cursor": _install_cursor,
@@ -164,9 +170,6 @@ def install(
         supported = ", ".join(sorted(installers.keys()))
         err_console.print(f"[red]Unknown tool: {tool}. Supported: {supported}[/red]")
         raise SystemExit(1)
-
-    if not skip_instructions:
-        inject_agent_instructions(tool)
 
 
 @mcp_app.command("uninstall")
@@ -188,16 +191,24 @@ def uninstall(
         "roo-code": _uninstall_vscode_extension,
     }
 
-    if tool in ("cline", "roo-code"):
-        _uninstall_vscode_extension(tool)
-    elif tool in uninstallers:
-        uninstallers[tool]()
-    else:
-        supported = ", ".join(sorted(uninstallers.keys()))
-        err_console.print(f"[red]Unknown tool: {tool}. Supported: {supported}[/red]")
-        raise SystemExit(1)
+    uninstall_ok = True
+    try:
+        if tool in ("cline", "roo-code"):
+            _uninstall_vscode_extension(tool)
+        elif tool in uninstallers:
+            uninstallers[tool]()
+        else:
+            supported = ", ".join(sorted(uninstallers.keys()))
+            err_console.print(f"[red]Unknown tool: {tool}. Supported: {supported}[/red]")
+            raise SystemExit(1)
+    except SystemExit:
+        raise
+    except Exception:
+        err_console.print(f"[yellow]MCP server removal failed for {tool}. Keeping instructions.[/yellow]")
+        uninstall_ok = False
 
-    remove_agent_instructions(tool)
+    if uninstall_ok:
+        remove_agent_instructions(tool)
 
 
 # ---------------------------------------------------------------------------
@@ -341,6 +352,7 @@ def _install_claude_code(mcp_config: dict) -> None:
 def _install_cursor(mcp_config: dict) -> None:
     """Add SessionFS to Cursor's MCP config."""
     config_path = Path.home() / ".cursor" / "mcp.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
 
     data: dict = {}
     if config_path.exists():
