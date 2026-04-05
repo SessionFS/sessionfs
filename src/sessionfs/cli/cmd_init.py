@@ -292,6 +292,30 @@ def init_cmd() -> None:
     else:
         console.print("You can start the daemon later with [bold]sfs daemon start[/bold].")
 
+    # --- Step 4: Knowledge contribution instructions ---
+    if detected and typer.confirm(
+        "Enable knowledge contribution? (Agents will proactively write discoveries to the knowledge base)",
+        default=True,
+    ):
+        from sessionfs.cli.cmd_mcp import inject_agent_instructions
+
+        # Map config_key to MCP tool name (underscores to hyphens)
+        _config_key_to_tool = {
+            "claude_code": "claude-code",
+            "cursor": "cursor",
+            "codex": "codex",
+            "gemini": "gemini",
+            "copilot": "copilot",
+            "amp": "amp",
+            "cline": "cline",
+            "roo_code": "roo-code",
+        }
+        for tool in detected:
+            if tool.info.config_key in enabled_keys:
+                mcp_tool = _config_key_to_tool.get(tool.info.config_key)
+                if mcp_tool:
+                    inject_agent_instructions(mcp_tool)
+
     # --- Next steps ---
     console.print()
     console.print("[bold]Next steps:[/bold]")

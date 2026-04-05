@@ -1,8 +1,9 @@
-"""MCP server commands: sfs mcp serve, sfs mcp install."""
+"""MCP server commands: sfs mcp serve, sfs mcp install, sfs mcp uninstall."""
 
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -11,6 +12,98 @@ import typer
 from sessionfs.cli.common import console, err_console
 
 mcp_app = typer.Typer(name="mcp", help="MCP server for AI tool integration.")
+
+# ---------------------------------------------------------------------------
+# Knowledge instruction injection
+# ---------------------------------------------------------------------------
+
+KNOWLEDGE_INSTRUCTIONS = """## SessionFS Knowledge Base
+
+When you discover something important about this codebase during a session, write it to the project knowledge base using the SessionFS MCP tools. Do this proactively — don't wait to be asked.
+
+### What to contribute
+- **Decisions:** Architecture or design choices ("Switched from REST to gRPC")
+- **Patterns:** Code patterns discovered ("All routes use require_feature() middleware")
+- **Bugs:** Issues found and workarounds ("SQLite WAL corrupts on power loss")
+- **Conventions:** Coding standards ("Tests go in tests/, not __tests__/")
+- **Dependencies:** External deps and quirks ("Resend has 100/day limit on free tier")
+- **Discoveries:** Anything useful for the next session
+
+### How to contribute
+- Quick facts: `add_knowledge("what you learned", "type")`
+- Full articles: `update_wiki_page("slug", "markdown content")`
+- Browse existing: `list_wiki_pages()`
+- Search first: `search_project_knowledge("topic")` to avoid duplicates
+
+### When to contribute
+- After making a key decision
+- After discovering a pattern or convention
+- After finding and fixing a bug
+- After adding or configuring a dependency
+- At the end of a significant session
+
+Your contributions are immediately available to the next AI agent in this repo.
+"""
+
+SECTION_MARKER_START = "<!-- sessionfs-knowledge-start -->"
+SECTION_MARKER_END = "<!-- sessionfs-knowledge-end -->"
+
+TOOL_INSTRUCTION_FILES: dict[str, str | None] = {
+    "claude-code": "CLAUDE.md",
+    "codex": "codex.md",
+    "gemini": "GEMINI.md",
+    "cursor": ".cursorrules",
+    "copilot": None,
+    "amp": None,
+    "cline": None,
+    "roo-code": None,
+}
+
+
+def inject_agent_instructions(tool: str) -> None:
+    """Inject knowledge-contribution instructions into the tool's project config file."""
+    instruction_file = TOOL_INSTRUCTION_FILES.get(tool)
+    if not instruction_file:
+        console.print(f"[dim]{tool} doesn't support project-level agent instructions.[/dim]")
+        console.print("[dim]Knowledge instructions will be served via MCP at runtime.[/dim]")
+        return
+
+    path = Path.cwd() / instruction_file
+    content = f"\n{SECTION_MARKER_START}\n{KNOWLEDGE_INSTRUCTIONS}\n{SECTION_MARKER_END}\n"
+
+    if path.exists():
+        existing = path.read_text()
+        if SECTION_MARKER_START in existing:
+            # Update in place
+            pattern = f"{re.escape(SECTION_MARKER_START)}.*?{re.escape(SECTION_MARKER_END)}"
+            updated = re.sub(pattern, content.strip(), existing, flags=re.DOTALL)
+            path.write_text(updated)
+            console.print(f"[green]Updated knowledge instructions in {instruction_file}[/green]")
+        else:
+            path.write_text(existing.rstrip() + "\n\n" + content)
+            console.print(f"[green]Appended knowledge instructions to {instruction_file}[/green]")
+    else:
+        path.write_text(content.strip() + "\n")
+        console.print(f"[green]Created {instruction_file} with knowledge instructions[/green]")
+
+
+def remove_agent_instructions(tool: str) -> None:
+    """Remove knowledge-contribution instructions from the tool's project config file."""
+    instruction_file = TOOL_INSTRUCTION_FILES.get(tool)
+    if not instruction_file:
+        return
+    path = Path.cwd() / instruction_file
+    if not path.exists():
+        return
+    existing = path.read_text()
+    if SECTION_MARKER_START in existing:
+        pattern = f"\n*{re.escape(SECTION_MARKER_START)}.*?{re.escape(SECTION_MARKER_END)}\n*"
+        cleaned = re.sub(pattern, "\n", existing, flags=re.DOTALL).strip()
+        if cleaned:
+            path.write_text(cleaned + "\n")
+        else:
+            path.unlink()
+        console.print(f"[dim]Removed knowledge instructions from {instruction_file}[/dim]")
 
 
 @mcp_app.command("serve")
@@ -32,6 +125,10 @@ def install(
     tool: str = typer.Option(
         ..., "--for",
         help="Tool to configure: claude-code, codex, gemini, cursor, copilot, amp, cline, roo-code",
+    ),
+    skip_instructions: bool = typer.Option(
+        False, "--skip-instructions",
+        help="Skip injecting knowledge-contribution instructions into project config.",
     ),
 ) -> None:
     """Auto-configure SessionFS as an MCP server for an AI tool."""
@@ -66,6 +163,149 @@ def install(
         supported = ", ".join(sorted(installers.keys()))
         err_console.print(f"[red]Unknown tool: {tool}. Supported: {supported}[/red]")
         raise SystemExit(1)
+
+    if not skip_instructions:
+        inject_agent_instructions(tool)
+
+
+@mcp_app.command("uninstall")
+def uninstall(
+    tool: str = typer.Option(
+        ..., "--for",
+        help="Tool to unconfigure: claude-code, codex, gemini, cursor, copilot, amp, cline, roo-code",
+    ),
+) -> None:
+    """Remove SessionFS MCP server registration from an AI tool."""
+    uninstallers = {
+        "claude-code": _uninstall_claude_code,
+        "cursor": _uninstall_cursor,
+        "copilot": _uninstall_copilot,
+        "codex": _uninstall_codex,
+        "gemini": _uninstall_gemini,
+        "amp": _uninstall_amp,
+        "cline": _uninstall_vscode_extension,
+        "roo-code": _uninstall_vscode_extension,
+    }
+
+    if tool in ("cline", "roo-code"):
+        _uninstall_vscode_extension(tool)
+    elif tool in uninstallers:
+        uninstallers[tool]()
+    else:
+        supported = ", ".join(sorted(uninstallers.keys()))
+        err_console.print(f"[red]Unknown tool: {tool}. Supported: {supported}[/red]")
+        raise SystemExit(1)
+
+    remove_agent_instructions(tool)
+
+
+# ---------------------------------------------------------------------------
+# Uninstall helpers
+# ---------------------------------------------------------------------------
+
+
+def _uninstall_json_config(config_path: Path, display_name: str) -> None:
+    """Remove sessionfs from a JSON config file's mcpServers."""
+    if not config_path.exists():
+        console.print(f"[dim]No config found at {config_path}. Nothing to remove.[/dim]")
+        return
+
+    try:
+        data = json.loads(config_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        console.print(f"[yellow]Could not parse {config_path}. Skipping.[/yellow]")
+        return
+
+    servers = data.get("mcpServers", {})
+    if "sessionfs" not in servers:
+        console.print(f"[dim]SessionFS not found in {display_name} config. Nothing to remove.[/dim]")
+        return
+
+    del servers["sessionfs"]
+    config_path.write_text(json.dumps(data, indent=2))
+    console.print(f"[green]Removed SessionFS MCP server from {display_name}.[/green]")
+    console.print(f"  Restart {display_name} to apply.")
+
+
+def _uninstall_claude_code() -> None:
+    """Remove SessionFS from Claude Code's MCP config."""
+    _uninstall_json_config(Path.home() / ".claude.json", "Claude Code")
+
+
+def _uninstall_cursor() -> None:
+    """Remove SessionFS from Cursor's MCP config."""
+    _uninstall_json_config(Path.home() / ".cursor" / "mcp.json", "Cursor")
+
+
+def _uninstall_copilot() -> None:
+    """Remove SessionFS from Copilot CLI's MCP config."""
+    _uninstall_json_config(Path.home() / ".copilot" / "config.json", "Copilot CLI")
+
+
+def _uninstall_amp() -> None:
+    """Remove SessionFS from Amp's MCP config."""
+    _uninstall_json_config(Path.home() / ".amp" / "config.json", "Amp")
+
+
+def _uninstall_codex() -> None:
+    """Remove SessionFS from Codex CLI via `codex mcp remove`."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["codex", "mcp", "remove", "sessionfs"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            console.print("[green]Removed SessionFS MCP server from Codex.[/green]")
+        else:
+            err_console.print(f"[yellow]codex mcp remove failed: {result.stderr.strip()}[/yellow]")
+    except FileNotFoundError:
+        console.print("[dim]'codex' command not found. Skipping.[/dim]")
+
+
+def _uninstall_gemini() -> None:
+    """Remove SessionFS from Gemini CLI via `gemini mcp remove`."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["gemini", "mcp", "remove", "sessionfs"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            console.print("[green]Removed SessionFS MCP server from Gemini CLI.[/green]")
+        else:
+            err_console.print(f"[yellow]gemini mcp remove failed: {result.stderr.strip()}[/yellow]")
+    except FileNotFoundError:
+        console.print("[dim]'gemini' command not found. Skipping.[/dim]")
+
+
+def _uninstall_vscode_extension(tool: str = "cline") -> None:
+    """Remove SessionFS from a VS Code extension's MCP config."""
+    ext_ids = {
+        "cline": "saoudrizwan.claude-dev",
+        "roo-code": "rooveterinaryinc.roo-cline",
+    }
+    ext_id = ext_ids.get(tool, ext_ids["cline"])
+    display = "Cline" if tool == "cline" else "Roo Code"
+
+    import platform
+    system = platform.system()
+    if system == "Darwin":
+        base = Path.home() / "Library" / "Application Support" / "Code" / "User" / "globalStorage"
+    elif system == "Linux":
+        base = Path.home() / ".config" / "Code" / "User" / "globalStorage"
+    else:
+        base = Path.home() / "AppData" / "Roaming" / "Code" / "User" / "globalStorage"
+
+    config_path = base / ext_id / "mcp_config.json"
+    _uninstall_json_config(config_path, display)
+
+
+# ---------------------------------------------------------------------------
+# Install helpers
+# ---------------------------------------------------------------------------
 
 
 def _install_claude_code(mcp_config: dict) -> None:
