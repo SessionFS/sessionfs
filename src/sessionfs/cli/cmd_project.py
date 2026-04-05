@@ -303,7 +303,7 @@ def project_entries(
         api_url, api_key,
     ))
 
-    entries = entries_result.get("entries", [])
+    entries = entries_result if isinstance(entries_result, list) else entries_result.get("entries", [])
     if not entries:
         console.print("[dim]No knowledge entries found.[/dim]")
         return
@@ -352,7 +352,7 @@ def project_entries(
         table.add_row(str(entry.get("id", "")), type_badge, content, age, session_id, status)
 
     console.print(table)
-    total = entries_result.get("total", len(entries))
+    total = len(entries) if isinstance(entries_result, list) else entries_result.get("total", len(entries))
     console.print(f"[dim]Showing {len(entries)} of {total} entries[/dim]")
 
 
