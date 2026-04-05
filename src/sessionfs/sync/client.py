@@ -213,7 +213,22 @@ class SyncClient:
             )
 
         if resp.status_code not in (200, 201):
-            raise SyncError(f"Push failed: {resp.status_code} {resp.text}")
+            # Parse friendly error message from server response
+            try:
+                body = resp.json()
+                error = body.get("error", {})
+                message = error.get("message", resp.text) if isinstance(error, dict) else str(error)
+            except Exception:
+                message = resp.text
+
+            if "Member too large" in message or resp.status_code == 413:
+                raise SyncError(
+                    f"Session too large to sync ({len(archive_data) // (1024*1024)}MB). "
+                    f"This session exceeds the upload limit. "
+                    f"Try: sfs storage prune --session {session_id}"
+                )
+
+            raise SyncError(f"Push failed ({resp.status_code}): {message}")
 
         data = resp.json()
         return SyncResult(
