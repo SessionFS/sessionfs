@@ -27,7 +27,6 @@ router = APIRouter(prefix="/api/v1/org", tags=["organization"])
 class CreateOrgRequest(BaseModel):
     name: str
     slug: str
-    seats: int | None = None
 
     @field_validator("slug")
     @classmethod
@@ -99,8 +98,21 @@ async def create_organization(
     org_id = f"org_{secrets.token_hex(8)}"
     tier = user.tier if user.tier in ("team", "enterprise") else "team"
 
-    # Determine seats from checkout metadata or default
-    seats = data.seats if hasattr(data, 'seats') and data.seats else 5
+    # Derive seats from Stripe subscription quantity if available
+    seats = 5  # default
+    if user.stripe_subscription_id:
+        try:
+            import os
+            stripe_key = os.environ.get("SFS_STRIPE_SECRET_KEY", "")
+            if stripe_key:
+                import stripe
+                stripe.api_key = stripe_key
+                sub = stripe.Subscription.retrieve(user.stripe_subscription_id)
+                if sub.get("items", {}).get("data"):
+                    seats = sub["items"]["data"][0].get("quantity", 5)
+        except Exception:
+            pass  # Fall back to default seats on any Stripe error
+
     storage = seats * 1024 * 1024 * 1024  # 1GB per seat
 
     org = Organization(
