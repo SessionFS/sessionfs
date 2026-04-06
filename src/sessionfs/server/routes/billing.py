@@ -128,7 +128,7 @@ async def create_checkout(
     # (separate from any personal customer) to maintain billing isolation.
     is_org_checkout = ctx.is_org_user and ctx.org and data.tier in ("team", "enterprise")
 
-    if is_org_checkout:
+    if is_org_checkout and ctx.org:
         if ctx.org.stripe_customer_id:
             customer_id = ctx.org.stripe_customer_id
         else:
@@ -168,7 +168,7 @@ async def create_checkout(
             "user_id": user.id,
             "tier": data.tier,
             "seats": str(data.seats),
-            **({"org_id": ctx.org.id} if is_org_checkout else {}),
+            **({"org_id": ctx.org.id} if is_org_checkout and ctx.org else {}),
         },
     )
 
