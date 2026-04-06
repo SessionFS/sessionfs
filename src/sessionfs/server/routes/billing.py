@@ -179,7 +179,7 @@ async def billing_status(
     """Get current subscription status."""
     user = ctx.user
 
-    # Beta = Stripe not fully configured (need secret key + at least starter and pro prices)
+    # Beta = Stripe not fully configured (need secret key + all three price IDs: starter, pro, team)
     stripe_key = os.environ.get("SFS_STRIPE_SECRET_KEY", "")
     stripe_configured = bool(
         stripe_key
