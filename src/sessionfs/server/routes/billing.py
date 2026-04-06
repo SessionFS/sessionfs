@@ -185,6 +185,7 @@ async def billing_status(
         stripe_key
         and TIER_PRICE_MAP.get("starter")
         and TIER_PRICE_MAP.get("pro")
+        and TIER_PRICE_MAP.get("team")
     )
 
     # For org members, use org billing state
