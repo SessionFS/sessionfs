@@ -4,6 +4,8 @@ import { useAuth } from '../auth/AuthContext';
 import CopyButton from '../components/CopyButton';
 import { useJudgeSettings, useSaveJudgeSettings, useClearJudgeSettings } from '../hooks/useJudgeSettings';
 import { useToast } from '../hooks/useToast';
+import { judgeSettingsSchema, fieldErrorsFromZod, type FieldErrors } from '../utils/validation';
+import FieldError from '../components/FieldError';
 
 const PROVIDERS = [
   { value: 'openrouter', label: 'OpenRouter' },
@@ -260,6 +262,7 @@ function JudgeTab() {
   const [judgeSaved, setJudgeSaved] = useState(false);
   const [discoveredModels, setDiscoveredModels] = useState<{ id: string; owned_by: string }[]>([]);
   const [discovering, setDiscovering] = useState(false);
+  const [judgeErrors, setJudgeErrors] = useState<FieldErrors>({});
 
   // Populate from saved settings
   useEffect(() => {
@@ -308,7 +311,17 @@ function JudgeTab() {
   }
 
   function handleSaveJudge() {
-    if (!judgeModel || (!judgeApiKey && !judgeBaseUrl)) return;
+    const result = judgeSettingsSchema.safeParse({
+      provider: judgeProvider,
+      model: judgeModel,
+      apiKey: judgeApiKey || undefined,
+      baseUrl: judgeBaseUrl || undefined,
+    });
+    if (!result.success) {
+      setJudgeErrors(fieldErrorsFromZod(result.error));
+      return;
+    }
+    setJudgeErrors({});
     saveJudge.mutate(
       { provider: judgeProvider, model: judgeModel, apiKey: judgeApiKey, baseUrl: judgeBaseUrl || undefined },
       {
@@ -406,6 +419,7 @@ function JudgeTab() {
                   ))}
                 </select>
               )}
+              <FieldError message={judgeErrors.model} />
             </div>
 
             <div className="mb-4">
@@ -413,10 +427,11 @@ function JudgeTab() {
               <input
                 type="password"
                 value={judgeApiKey}
-                onChange={(e) => { setJudgeApiKey(e.target.value); setJudgeSaved(false); }}
+                onChange={(e) => { setJudgeApiKey(e.target.value); setJudgeSaved(false); if (judgeErrors.apiKey) setJudgeErrors((prev) => ({ ...prev, apiKey: undefined })); }}
                 placeholder={keyPlaceholder}
                 className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 text-[14px] text-[var(--text-secondary)] placeholder:text-[var(--text-tertiary)] placeholder:opacity-50 focus:outline-none focus:border-[var(--brand)] font-mono"
               />
+              <FieldError message={judgeErrors.apiKey} />
             </div>
 
             <div className="mb-4">
@@ -424,10 +439,11 @@ function JudgeTab() {
               <input
                 type="text"
                 value={judgeBaseUrl}
-                onChange={(e) => { setJudgeBaseUrl(e.target.value); setJudgeSaved(false); }}
+                onChange={(e) => { setJudgeBaseUrl(e.target.value); setJudgeSaved(false); if (judgeErrors.baseUrl) setJudgeErrors((prev) => ({ ...prev, baseUrl: undefined })); }}
                 placeholder="https://litellm.company.internal/v1"
                 className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 text-[14px] text-[var(--text-secondary)] placeholder:text-[var(--text-tertiary)] placeholder:opacity-50 focus:outline-none focus:border-[var(--brand)] font-mono"
               />
+              <FieldError message={judgeErrors.baseUrl} />
               <p className="text-xs text-[var(--text-tertiary)] opacity-60 mt-1">
                 Leave blank for provider default. Set for LiteLLM, vLLM, Ollama, or any OpenAI-compatible gateway.
               </p>

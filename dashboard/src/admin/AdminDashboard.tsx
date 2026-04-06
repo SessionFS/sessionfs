@@ -11,6 +11,8 @@ import type { AdminUser } from '../api/client';
 import RelativeDate from '../components/RelativeDate';
 import ConfirmModal from './ConfirmModal';
 import LicensesTab from './LicensesTab';
+import { getAvatarColor } from '../utils/avatar';
+import { formatBytes } from '../utils/format';
 
 type AdminTab = 'users' | 'licenses' | 'activity';
 
@@ -24,30 +26,6 @@ const TIER_COLORS: Record<string, string> = {
 };
 
 const TIERS = ['free', 'starter', 'pro', 'team', 'enterprise', 'admin'] as const;
-
-const AVATAR_COLORS = [
-  'bg-blue-500/20 text-blue-500',
-  'bg-green-500/20 text-green-500',
-  'bg-purple-500/20 text-purple-500',
-  'bg-orange-500/20 text-orange-500',
-  'bg-pink-500/20 text-pink-500',
-  'bg-teal-500/20 text-teal-500',
-];
-
-function getAvatarColor(email: string): string {
-  let hash = 0;
-  for (let i = 0; i < email.length; i++) {
-    hash = email.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
-}
 
 export default function AdminDashboard() {
   const [activeTab, setActiveTab] = useState<AdminTab>('users');

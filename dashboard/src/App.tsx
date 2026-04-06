@@ -1,22 +1,25 @@
+import React, { Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AuthProvider, useAuth } from './auth/AuthContext';
 import { useMe } from './hooks/useMe';
-import LoginPage from './auth/LoginPage';
 import Layout from './components/Layout';
-import SessionList from './sessions/SessionList';
-import SessionDetail from './sessions/SessionDetail';
-import SearchResults from './sessions/SearchResults';
-import SettingsPage from './sessions/SettingsPage';
-import HandoffList from './handoffs/HandoffList';
-import HandoffDetail from './handoffs/HandoffDetail';
-import AdminDashboard from './admin/AdminDashboard';
-import BillingPage from './billing/BillingPage';
-import OrgPage from './org/OrgPage';
-import ProjectsPage from './projects/ProjectsPage';
-import ProjectDetail from './projects/ProjectDetail';
 import { BackgroundTasksProvider } from './components/BackgroundTasks';
 import { ToastProvider } from './components/Toast';
+
+// Lazy-loaded page components for code splitting
+const LoginPage = React.lazy(() => import('./auth/LoginPage'));
+const SessionList = React.lazy(() => import('./sessions/SessionList'));
+const SessionDetail = React.lazy(() => import('./sessions/SessionDetail'));
+const SearchResults = React.lazy(() => import('./sessions/SearchResults'));
+const SettingsPage = React.lazy(() => import('./sessions/SettingsPage'));
+const HandoffList = React.lazy(() => import('./handoffs/HandoffList'));
+const HandoffDetail = React.lazy(() => import('./handoffs/HandoffDetail'));
+const AdminDashboard = React.lazy(() => import('./admin/AdminDashboard'));
+const BillingPage = React.lazy(() => import('./billing/BillingPage'));
+const OrgPage = React.lazy(() => import('./org/OrgPage'));
+const ProjectsPage = React.lazy(() => import('./projects/ProjectsPage'));
+const ProjectDetail = React.lazy(() => import('./projects/ProjectDetail'));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -49,6 +52,7 @@ export default function App() {
         <ToastProvider>
         <BackgroundTasksProvider>
         <BrowserRouter>
+          <Suspense fallback={<div className="flex items-center justify-center h-screen text-text-muted">Loading…</div>}>
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route
@@ -79,6 +83,7 @@ export default function App() {
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
+          </Suspense>
         </BrowserRouter>
         </BackgroundTasksProvider>
         </ToastProvider>

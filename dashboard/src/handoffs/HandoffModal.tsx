@@ -1,5 +1,8 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { useCreateHandoff } from '../hooks/useHandoffs';
+import { useFocusTrap } from '../hooks/useFocusTrap';
+import { handoffSchema, fieldErrorsFromZod, type FieldErrors } from '../utils/validation';
+import FieldError from '../components/FieldError';
 
 interface HandoffModalProps {
   sessionId: string;
@@ -9,11 +12,30 @@ interface HandoffModalProps {
 export default function HandoffModal({ sessionId, onClose }: HandoffModalProps) {
   const [email, setEmail] = useState('');
   const [message, setMessage] = useState('');
+  const [errors, setErrors] = useState<FieldErrors>({});
   const createHandoff = useCreateHandoff();
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(dialogRef);
+
+  function validateField(field: 'recipient_email' | 'message', value: string) {
+    const data = { recipient_email: field === 'recipient_email' ? value : email, message: field === 'message' ? value : message };
+    const result = handoffSchema.safeParse(data);
+    if (!result.success) {
+      const fieldErrors = fieldErrorsFromZod(result.error);
+      setErrors((prev) => ({ ...prev, [field]: fieldErrors[field] }));
+    } else {
+      setErrors((prev) => ({ ...prev, [field]: undefined }));
+    }
+  }
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!email.trim()) return;
+    const result = handoffSchema.safeParse({ recipient_email: email.trim(), message: message.trim() || undefined });
+    if (!result.success) {
+      setErrors(fieldErrorsFromZod(result.error));
+      return;
+    }
+    setErrors({});
     createHandoff.mutate(
       { sessionId, recipientEmail: email.trim(), message: message.trim() || undefined },
     );
@@ -25,6 +47,7 @@ export default function HandoffModal({ sessionId, onClose }: HandoffModalProps) 
 
   return (
     <div
+      ref={dialogRef}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
       onClick={handleBackdropClick}
       onKeyDown={(e) => { if (e.key === 'Escape') onClose(); }}
@@ -70,10 +93,12 @@ export default function HandoffModal({ sessionId, onClose }: HandoffModalProps) 
                 type="email"
                 required
                 value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                onChange={(e) => { setEmail(e.target.value); if (errors.recipient_email) setErrors((prev) => ({ ...prev, recipient_email: undefined })); }}
+                onBlur={() => { if (email.trim()) validateField('recipient_email', email); }}
                 placeholder="teammate@company.com"
                 className="w-full px-3 py-2 bg-bg-primary border border-border rounded text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent"
               />
+              <FieldError message={errors.recipient_email} />
             </label>
 
             <label className="block mb-4">
@@ -82,12 +107,14 @@ export default function HandoffModal({ sessionId, onClose }: HandoffModalProps) 
               </span>
               <textarea
                 value={message}
-                onChange={(e) => setMessage(e.target.value)}
+                onChange={(e) => { setMessage(e.target.value); if (errors.message) setErrors((prev) => ({ ...prev, message: undefined })); }}
+                onBlur={() => { if (message) validateField('message', message); }}
                 maxLength={2000}
                 rows={3}
                 placeholder="Context for the recipient..."
                 className="w-full px-3 py-2 bg-bg-primary border border-border rounded text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent resize-none"
               />
+              <FieldError message={errors.message} />
               <span className="text-sm text-text-muted mt-0.5 block text-right">
                 {message.length}/2000
               </span>

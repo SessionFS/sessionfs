@@ -2,6 +2,8 @@ import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from './AuthContext';
 import { signup, ApiError } from '../api/client';
+import { loginSchema, signupSchema, fieldErrorsFromZod, type FieldErrors } from '../utils/validation';
+import FieldError from '../components/FieldError';
 
 export default function LoginPage() {
   const { login } = useAuth();
@@ -18,10 +20,43 @@ export default function LoginPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [signupKey, setSignupKey] = useState('');
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
+
+  function clearFieldError(field: string) {
+    setFieldErrors((prev) => ({ ...prev, [field]: undefined }));
+  }
+
+  function validateLoginField(field: 'apiKey' | 'baseUrl') {
+    const data = { apiKey, baseUrl };
+    const result = loginSchema.safeParse(data);
+    if (!result.success) {
+      const errs = fieldErrorsFromZod(result.error);
+      setFieldErrors((prev) => ({ ...prev, [field]: errs[field] }));
+    } else {
+      setFieldErrors((prev) => ({ ...prev, [field]: undefined }));
+    }
+  }
+
+  function validateSignupField(field: 'email' | 'baseUrl') {
+    const data = { email, baseUrl };
+    const result = signupSchema.safeParse(data);
+    if (!result.success) {
+      const errs = fieldErrorsFromZod(result.error);
+      setFieldErrors((prev) => ({ ...prev, [field]: errs[field] }));
+    } else {
+      setFieldErrors((prev) => ({ ...prev, [field]: undefined }));
+    }
+  }
 
   async function handleLogin(e: FormEvent) {
     e.preventDefault();
     setError('');
+    const result = loginSchema.safeParse({ apiKey, baseUrl });
+    if (!result.success) {
+      setFieldErrors(fieldErrorsFromZod(result.error));
+      return;
+    }
+    setFieldErrors({});
     setLoading(true);
     try {
       await login(baseUrl, apiKey);
@@ -36,11 +71,17 @@ export default function LoginPage() {
   async function handleSignup(e: FormEvent) {
     e.preventDefault();
     setError('');
+    const result = signupSchema.safeParse({ email, baseUrl });
+    if (!result.success) {
+      setFieldErrors(fieldErrorsFromZod(result.error));
+      return;
+    }
+    setFieldErrors({});
     setLoading(true);
     try {
-      const result = await signup(baseUrl, email);
-      setSignupKey(result.raw_key);
-      setApiKey(result.raw_key);
+      const signupResult = await signup(baseUrl, email);
+      setSignupKey(signupResult.raw_key);
+      setApiKey(signupResult.raw_key);
       setMode('login');
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
@@ -92,20 +133,24 @@ export default function LoginPage() {
               <input
                 type="url"
                 value={baseUrl}
-                onChange={(e) => setBaseUrl(e.target.value)}
+                onChange={(e) => { setBaseUrl(e.target.value); clearFieldError('baseUrl'); }}
+                onBlur={() => validateLoginField('baseUrl')}
                 className="mt-1 block w-full px-3 py-2 bg-bg-primary border border-border rounded text-sm text-text-primary focus:outline-none focus:border-accent"
               />
+              <FieldError message={fieldErrors.baseUrl} />
             </label>
             <label className="block mb-6">
               <span className="text-[var(--text-secondary)] text-[14px] font-medium">API Key</span>
               <input
                 type="password"
                 value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
+                onChange={(e) => { setApiKey(e.target.value); clearFieldError('apiKey'); }}
+                onBlur={() => { if (apiKey) validateLoginField('apiKey'); }}
                 placeholder="sk_sfs_..."
                 className="mt-1 block w-full px-3 py-2 bg-bg-primary border border-border rounded text-sm text-text-primary focus:outline-none focus:border-accent"
                 autoFocus
               />
+              <FieldError message={fieldErrors.apiKey} />
             </label>
             <button
               type="submit"
@@ -116,7 +161,7 @@ export default function LoginPage() {
             </button>
             <p className="mt-4 text-center text-text-muted text-sm">
               No account?{' '}
-              <button type="button" onClick={() => setMode('signup')} className="text-accent hover:underline">
+              <button type="button" onClick={() => { setMode('signup'); setFieldErrors({}); }} className="text-accent hover:underline">
                 Sign up
               </button>
             </p>
@@ -128,20 +173,24 @@ export default function LoginPage() {
               <input
                 type="url"
                 value={baseUrl}
-                onChange={(e) => setBaseUrl(e.target.value)}
+                onChange={(e) => { setBaseUrl(e.target.value); clearFieldError('baseUrl'); }}
+                onBlur={() => validateSignupField('baseUrl')}
                 className="mt-1 block w-full px-3 py-2 bg-bg-primary border border-border rounded text-sm text-text-primary focus:outline-none focus:border-accent"
               />
+              <FieldError message={fieldErrors.baseUrl} />
             </label>
             <label className="block mb-6">
               <span className="text-[var(--text-secondary)] text-[14px] font-medium">Email</span>
               <input
                 type="email"
                 value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                onChange={(e) => { setEmail(e.target.value); clearFieldError('email'); }}
+                onBlur={() => { if (email) validateSignupField('email'); }}
                 placeholder="you@example.com"
                 className="mt-1 block w-full px-3 py-2 bg-bg-primary border border-border rounded text-sm text-text-primary focus:outline-none focus:border-accent"
                 autoFocus
               />
+              <FieldError message={fieldErrors.email} />
             </label>
             <button
               type="submit"
@@ -152,7 +201,7 @@ export default function LoginPage() {
             </button>
             <p className="mt-4 text-center text-text-muted text-sm">
               Have an API key?{' '}
-              <button type="button" onClick={() => setMode('login')} className="text-accent hover:underline">
+              <button type="button" onClick={() => { setMode('login'); setFieldErrors({}); }} className="text-accent hover:underline">
                 Sign in
               </button>
             </p>

@@ -15,17 +15,7 @@ import AuditTab from './AuditTab';
 import AuditModal from './AuditModal';
 import SummaryTab from './SummaryTab';
 import HandoffModal from '../handoffs/HandoffModal';
-
-const TOOL_COLORS: Record<string, string> = {
-  'claude-code': 'var(--tool-claude)',
-  cursor: 'var(--tool-cursor)',
-  codex: 'var(--tool-codex)',
-  gemini: 'var(--tool-gemini)',
-  copilot: 'var(--tool-copilot)',
-  amp: 'var(--tool-amp)',
-  cline: 'var(--tool-cline)',
-  'roo-code': 'var(--tool-roo)',
-};
+import { TOOL_COLORS } from '../utils/tools';
 
 type Tab = 'messages' | 'summary' | 'audit';
 

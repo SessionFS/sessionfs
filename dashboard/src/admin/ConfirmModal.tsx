@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 interface ConfirmModalProps {
   open: boolean;
@@ -20,10 +21,8 @@ export default function ConfirmModal({
   onCancel,
 }: ConfirmModalProps) {
   const cancelRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    if (open) cancelRef.current?.focus();
-  }, [open]);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(open ? dialogRef : { current: null });
 
   useEffect(() => {
     if (!open) return;
@@ -39,7 +38,7 @@ export default function ConfirmModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/60" onClick={onCancel} />
-      <div className="relative bg-bg-secondary border border-border rounded-lg shadow-xl max-w-md w-full mx-4 p-6">
+      <div ref={dialogRef} className="relative bg-bg-secondary border border-border rounded-lg shadow-xl max-w-md w-full mx-4 p-6">
         <h3 className="text-lg font-semibold text-text-primary mb-2">{title}</h3>
         <p className="text-sm text-text-secondary mb-6">{message}</p>
         <div className="flex justify-end gap-3">

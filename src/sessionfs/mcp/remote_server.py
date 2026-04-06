@@ -335,9 +335,14 @@ _mcp_sessions: dict[str, StreamableHTTPServerTransport] = {}
 _session_tasks: dict[str, _asyncio.Task] = {}
 
 
-async def _run_mcp_session(transport: StreamableHTTPServerTransport) -> None:
+async def _run_mcp_session(
+    transport: StreamableHTTPServerTransport,
+    connected: _asyncio.Event,
+) -> None:
     """Background task that keeps the MCP server running for a session."""
     async with transport.connect() as (read_stream, write_stream):
+        # Signal that connect() has completed and streams are ready
+        connected.set()
         await mcp.run(read_stream, write_stream, mcp.create_initialization_options())
 
 
@@ -372,8 +377,12 @@ async def handle_mcp(request: Request):
         is_json_response_enabled=True,
     )
 
-    # Start MCP server as a background task (persists across requests)
-    task = _asyncio.create_task(_run_mcp_session(transport))
+    # Start MCP server as a background task and wait for connect() to
+    # complete before handling the request. This ensures the read/write
+    # streams are initialized — fixes "No read stream writer available".
+    connected = _asyncio.Event()
+    task = _asyncio.create_task(_run_mcp_session(transport, connected))
+    await connected.wait()
 
     # Handle the initialize request
     await transport.handle_request(request.scope, request.receive, request._send)

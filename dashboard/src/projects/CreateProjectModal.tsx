@@ -1,6 +1,9 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { useCreateProject } from '../hooks/useProjects';
 import { useToast } from '../hooks/useToast';
+import { useFocusTrap } from '../hooks/useFocusTrap';
+import { createProjectSchema, fieldErrorsFromZod, type FieldErrors } from '../utils/validation';
+import FieldError from '../components/FieldError';
 
 function nameFromRemote(remote: string): string {
   // "github.com/acme/repo" -> "acme/repo"
@@ -26,15 +29,33 @@ interface Props {
 
 export default function CreateProjectModal({ onClose, onCreated }: Props) {
   const [remote, setRemote] = useState('');
+  const [errors, setErrors] = useState<FieldErrors>({});
   const createProject = useCreateProject();
   const { addToast } = useToast();
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(dialogRef);
 
   const name = remote.trim() ? nameFromRemote(remote.trim()) : '';
+
+  function handleBlur() {
+    if (!remote.trim()) return;
+    const result = createProjectSchema.safeParse({ git_remote_normalized: remote });
+    if (!result.success) {
+      setErrors(fieldErrorsFromZod(result.error));
+    } else {
+      setErrors({});
+    }
+  }
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     const trimmed = remote.trim();
-    if (!trimmed) return;
+    const result = createProjectSchema.safeParse({ git_remote_normalized: trimmed });
+    if (!result.success) {
+      setErrors(fieldErrorsFromZod(result.error));
+      return;
+    }
+    setErrors({});
 
     createProject.mutate(
       { name: nameFromRemote(trimmed), git_remote_normalized: trimmed },
@@ -56,6 +77,7 @@ export default function CreateProjectModal({ onClose, onCreated }: Props) {
       <div className="fixed inset-0 z-50 bg-black/50" onClick={onClose} onKeyDown={(e) => { if (e.key === 'Escape') onClose(); }} />
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
         <div
+          ref={dialogRef}
           role="dialog"
           aria-modal="true"
           aria-labelledby="create-project-title"
@@ -70,11 +92,13 @@ export default function CreateProjectModal({ onClose, onCreated }: Props) {
             <input
               type="text"
               value={remote}
-              onChange={(e) => setRemote(e.target.value)}
+              onChange={(e) => { setRemote(e.target.value); if (errors.git_remote_normalized) setErrors({}); }}
+              onBlur={handleBlur}
               placeholder="github.com/acme/repo"
               autoFocus
               className="w-full px-3 py-2 text-sm bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)] placeholder:text-[var(--text-tertiary)]"
             />
+            <FieldError message={errors.git_remote_normalized} />
             {name && (
               <p className="mt-2 text-xs text-[var(--text-tertiary)]">
                 Project name: <span className="text-[var(--text-secondary)] font-medium">{name}</span>

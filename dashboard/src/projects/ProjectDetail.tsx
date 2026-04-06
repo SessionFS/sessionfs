@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import {
@@ -540,12 +541,51 @@ export default function ProjectDetail() {
   const { addToast } = useToast();
 
   const [activeTab, setActiveTab] = useState<ProjectTab>('context');
+  const [tabKey, setTabKey] = useState(0);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const [workflowHintDismissed, setWorkflowHintDismissed] = useState(
+    () => sessionStorage.getItem('sfs-workflow-hint-dismissed') === '1',
+  );
+  const tabBarRef = useRef<HTMLDivElement>(null);
+  const [indicatorStyle, setIndicatorStyle] = useState<{ left: number; width: number }>({ left: 0, width: 0 });
+  const deleteDialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(showDeleteConfirm ? deleteDialogRef : { current: null });
   const [autoNarrative, setAutoNarrative] = useState(project?.auto_narrative ?? false);
   const updateSettings = useUpdateProjectSettings(project?.id);
+
+  // Fetch pending entries count for workflow hint
+  const { data: pendingData } = useKnowledgeEntries(project?.id, { pending: true, limit: 1 });
+  const pendingCount = pendingData?.total ?? 0;
+  const compile = useCompileProject(project?.id);
+
+  function switchTab(tab: ProjectTab) {
+    setActiveTab(tab);
+    setTabKey((k) => k + 1);
+  }
+
+  function dismissWorkflowHint() {
+    setWorkflowHintDismissed(true);
+    sessionStorage.setItem('sfs-workflow-hint-dismissed', '1');
+  }
+
+  // Measure active tab for sliding indicator
+  useEffect(() => {
+    if (!tabBarRef.current) return;
+    const bar = tabBarRef.current;
+    const btns = bar.querySelectorAll<HTMLButtonElement>('[data-tab]');
+    const activeBtn = Array.from(btns).find((b) => b.dataset.tab === activeTab);
+    if (activeBtn) {
+      const barRect = bar.getBoundingClientRect();
+      const btnRect = activeBtn.getBoundingClientRect();
+      setIndicatorStyle({
+        left: btnRect.left - barRect.left,
+        width: btnRect.width,
+      });
+    }
+  }, [activeTab]);
 
   // Sync auto_narrative state when project data loads
   useEffect(() => {
@@ -621,12 +661,25 @@ export default function ProjectDetail() {
     );
   }
 
-  const tabs: { key: ProjectTab; label: string }[] = [
-    { key: 'context', label: 'Context' },
-    { key: 'pages', label: 'Pages' },
-    { key: 'entries', label: 'Knowledge Entries' },
-    { key: 'history', label: 'History' },
+  const tabs: { key: ProjectTab; label: string; step?: number }[] = [
+    { key: 'entries', label: 'Entries', step: 1 },
+    { key: 'context', label: 'Context', step: 2 },
+    { key: 'pages', label: 'Pages', step: 3 },
+    { key: 'history', label: 'History', step: 4 },
   ];
+  function handleCompileFromContext() {
+    compile.mutate(undefined, {
+      onSuccess: (result) => {
+        const n = result.entries_compiled;
+        if (n === 0) {
+          addToast('info', 'No pending entries to compile.');
+        } else {
+          addToast('success', `Project context updated. ${n} entries compiled.`);
+        }
+      },
+      onError: (err) => addToast('error', `Compile failed: ${String(err)}`),
+    });
+  }
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-6">
@@ -678,14 +731,6 @@ export default function ProjectDetail() {
             </label>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            {!editing && activeTab === 'context' && (
-              <button
-                onClick={handleEdit}
-                className="px-5 py-2.5 text-sm font-semibold bg-[var(--brand)] text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors"
-              >
-                Edit
-              </button>
-            )}
             <div className="relative">
               <button
                 onClick={() => setShowMoreMenu(!showMoreMenu)}
@@ -717,91 +762,174 @@ export default function ProjectDetail() {
           </div>
         </div>
 
+        {/* Workflow hint */}
+        {!workflowHintDismissed && pendingCount > 0 && (
+          <div className="mx-5 mt-3 flex items-center gap-2 px-3 py-2 rounded-lg bg-[rgba(26,115,232,0.06)] border border-[rgba(26,115,232,0.15)]">
+            <div className="flex items-center gap-1 text-xs text-[var(--text-tertiary)]">
+              {['Entries', 'Compile', 'Context', 'Pages'].map((step, i) => (
+                <span key={step} className="flex items-center gap-1">
+                  <span className={`font-medium ${
+                    (i === 0 && activeTab === 'entries') ||
+                    (i === 2 && activeTab === 'context') ||
+                    (i === 3 && activeTab === 'pages')
+                      ? 'text-[var(--brand)]' : ''
+                  }`}>{step}</span>
+                  {i < 3 && <span className="text-[var(--text-tertiary)] mx-0.5">&rarr;</span>}
+                </span>
+              ))}
+            </div>
+            <span className="text-xs text-[var(--brand)] font-medium ml-1">
+              {pendingCount} pending {pendingCount === 1 ? 'entry' : 'entries'}
+            </span>
+            <button
+              onClick={dismissWorkflowHint}
+              className="ml-auto text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] text-xs px-1"
+              title="Dismiss"
+            >
+              &times;
+            </button>
+          </div>
+        )}
+
         {/* Tabs */}
-        <div className="flex px-5 mt-2 border-t border-[var(--border)]">
+        <div ref={tabBarRef} className="relative flex px-5 mt-2 border-t border-[var(--border)]">
           {tabs.map((tab) => (
             <button
               key={tab.key}
-              onClick={() => setActiveTab(tab.key)}
-              className={`px-4 py-3 text-[14px] font-medium transition-colors relative ${
+              data-tab={tab.key}
+              onClick={() => switchTab(tab.key)}
+              className={`px-4 py-3 text-[14px] font-medium transition-colors duration-200 ${
                 activeTab === tab.key
                   ? 'text-[var(--brand)]'
                   : 'text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]'
               }`}
             >
               {tab.label}
-              {activeTab === tab.key && (
-                <span className="absolute bottom-0 left-4 right-4 h-0.5 bg-[var(--brand)] rounded-full" />
+              {tab.key === 'entries' && pendingCount > 0 && (
+                <span className="ml-1.5 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[11px] font-semibold bg-[var(--brand)] text-white leading-none">
+                  {pendingCount > 99 ? '99+' : pendingCount}
+                </span>
               )}
             </button>
           ))}
+          {/* Sliding underline indicator */}
+          <span
+            className="absolute bottom-0 h-[2px] bg-[var(--brand)] rounded-full transition-all duration-300 ease-out pointer-events-none"
+            style={{
+              left: indicatorStyle.left,
+              width: indicatorStyle.width,
+            }}
+          />
         </div>
       </div>
 
       {/* Tab content */}
       {activeTab === 'context' && (
-        <div className="mt-4 bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-sm)]">
-          <div className="px-5 py-4">
-            {editing ? (
-              <div>
-                <textarea
-                  value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
-                  className="w-full min-h-[400px] px-3 py-3 text-[14px] font-mono bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)] resize-y placeholder:text-[var(--text-tertiary)]"
-                  placeholder="Write your project context document here...&#10;&#10;This will be shared with all sessions in this project."
-                  autoFocus
-                />
-                <div className="flex justify-end gap-3 mt-3">
+        <div key={`context-${tabKey}`} className="mt-4 tab-panel-enter">
+          {/* Context hero header card */}
+          {!editing && (
+            <div className="mb-3 bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-sm)] px-5 py-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-base font-semibold text-[var(--text-primary)]">Compiled Context</h2>
+                  <div className="flex items-center gap-3 mt-1 text-xs text-[var(--text-tertiary)]">
+                    {project.context_document ? (
+                      <>
+                        <span>{project.context_document.trim().split(/\s+/).length.toLocaleString()} words</span>
+                        <span>&middot;</span>
+                        <span>Last updated <RelativeDate iso={project.updated_at} /></span>
+                      </>
+                    ) : (
+                      <span>No context compiled yet</span>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
                   <button
-                    onClick={handleCancel}
-                    className="px-3 py-1.5 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+                    onClick={handleCompileFromContext}
+                    disabled={compile.isPending}
+                    className="px-4 py-2 text-sm font-semibold bg-[var(--brand)] text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    Cancel
+                    {compile.isPending ? 'Compiling...' : 'Compile Now'}
                   </button>
                   <button
-                    onClick={handleSave}
-                    disabled={updateContext.isPending}
-                    className="px-5 py-2.5 text-sm font-semibold bg-[var(--brand)] text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    onClick={handleEdit}
+                    className="px-4 py-2 text-sm font-medium text-[var(--text-secondary)] border border-[var(--border)] rounded-lg hover:bg-[var(--surface-hover)] transition-colors"
                   >
-                    {updateContext.isPending ? 'Saving...' : 'Save'}
+                    Edit
                   </button>
                 </div>
               </div>
-            ) : project.context_document ? (
-              <div className="prose prose-sm dark:prose-invert max-w-none text-[var(--text-secondary)]">
-                <ReactMarkdown>{project.context_document}</ReactMarkdown>
-              </div>
-            ) : (
-              <div className="text-center py-8">
-                <p className="text-[var(--text-tertiary)] text-sm mb-3">
-                  No context document yet.
-                </p>
-                <button
-                  onClick={handleEdit}
-                  className="text-sm text-[var(--brand)] hover:underline"
-                >
-                  Add context document
-                </button>
-              </div>
-            )}
+            </div>
+          )}
+
+          {/* Context document body */}
+          <div className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-sm)]">
+            <div className="px-6 py-5">
+              {editing ? (
+                <div>
+                  <textarea
+                    value={draft}
+                    onChange={(e) => setDraft(e.target.value)}
+                    className="w-full min-h-[400px] px-3 py-3 text-[14px] font-mono bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)] resize-y placeholder:text-[var(--text-tertiary)]"
+                    placeholder="Write your project context document here...&#10;&#10;This will be shared with all sessions in this project."
+                    autoFocus
+                  />
+                  <div className="flex justify-end gap-3 mt-3">
+                    <button
+                      onClick={handleCancel}
+                      className="px-3 py-1.5 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleSave}
+                      disabled={updateContext.isPending}
+                      className="px-5 py-2.5 text-sm font-semibold bg-[var(--brand)] text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {updateContext.isPending ? 'Saving...' : 'Save'}
+                    </button>
+                  </div>
+                </div>
+              ) : project.context_document ? (
+                <article className="prose prose-sm dark:prose-invert max-w-none text-[var(--text-secondary)] leading-relaxed">
+                  <ReactMarkdown>{project.context_document}</ReactMarkdown>
+                </article>
+              ) : (
+                <div className="text-center py-12">
+                  <p className="text-[var(--text-tertiary)] text-sm mb-1">
+                    No context document yet.
+                  </p>
+                  <p className="text-[var(--text-tertiary)] text-xs mb-4">
+                    Add knowledge entries, then compile to generate a context document.
+                  </p>
+                  <button
+                    onClick={handleEdit}
+                    className="text-sm text-[var(--brand)] hover:underline"
+                  >
+                    Write one manually
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
 
       {activeTab === 'pages' && (
-        <div className="mt-4 bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-sm)]">
+        <div key={`pages-${tabKey}`} className="mt-4 tab-panel-enter bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-sm)]">
           <PagesTab projectId={project.id} />
         </div>
       )}
 
       {activeTab === 'entries' && (
-        <div className="mt-4 bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-sm)]">
+        <div key={`entries-${tabKey}`} className="mt-4 tab-panel-enter bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-sm)]">
           <KnowledgeEntriesTab projectId={project.id} />
         </div>
       )}
 
       {activeTab === 'history' && (
-        <div className="mt-4 bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-sm)]">
+        <div key={`history-${tabKey}`} className="mt-4 tab-panel-enter bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-sm)]">
           <HistoryTab projectId={project.id} />
         </div>
       )}
@@ -812,6 +940,7 @@ export default function ProjectDetail() {
           <div className="fixed inset-0 z-50 bg-black/50" onClick={() => setShowDeleteConfirm(false)} onKeyDown={(e) => { if (e.key === 'Escape') setShowDeleteConfirm(false); }} />
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
             <div
+              ref={deleteDialogRef}
               role="dialog"
               aria-modal="true"
               aria-labelledby="delete-project-title"

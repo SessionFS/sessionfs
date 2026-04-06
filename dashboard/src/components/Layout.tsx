@@ -33,7 +33,9 @@ export default function Layout() {
 
   const [avatarOpen, setAvatarOpen] = useState(false);
   const avatarRef = useRef<HTMLDivElement>(null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
+  // Close avatar dropdown on outside click
   useEffect(() => {
     function handleClick(e: MouseEvent) {
       if (avatarRef.current && !avatarRef.current.contains(e.target as Node)) {
@@ -43,6 +45,24 @@ export default function Layout() {
     document.addEventListener('mousedown', handleClick);
     return () => document.removeEventListener('mousedown', handleClick);
   }, []);
+
+  // Close drawer on route change
+  useEffect(() => {
+    setDrawerOpen(false);
+  }, [location.pathname]);
+
+  // Lock body scroll when drawer is open
+  useEffect(() => {
+    if (drawerOpen) {
+      document.body.style.overflow = 'hidden';
+      return () => { document.body.style.overflow = ''; };
+    }
+  }, [drawerOpen]);
+
+  const allNavLinks = [
+    ...NAV_LINKS,
+    ...(isAdmin ? [{ to: '/admin', label: 'Admin', match: (p: string) => p === '/admin' }] : []),
+  ];
 
   const tierLabel = me.data?.tier || 'free';
   const tierVariant = tierLabel === 'admin' ? 'info' : tierLabel === 'team' ? 'success' : 'default';
@@ -58,19 +78,31 @@ export default function Layout() {
           backgroundColor: 'var(--bg-secondary)',
         }}
       >
-        {/* Left: Logo */}
-        <Link to="/" className="flex items-center shrink-0 hover:opacity-90 transition-opacity">
-          <span className="text-[17px] tracking-tight">
-            <span className="text-[var(--text-primary)] font-bold">Session</span>
-            <span className="text-[var(--brand)] font-bold">FS</span>
-          </span>
-        </Link>
+        {/* Left: Hamburger (mobile) + Logo */}
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            className="md:hidden flex items-center justify-center w-8 h-8 rounded-[var(--radius-md)] transition-colors hover:bg-[var(--surface-hover)]"
+            onClick={() => setDrawerOpen(true)}
+            aria-label="Open navigation menu"
+          >
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+              <line x1="3" y1="5" x2="17" y2="5" />
+              <line x1="3" y1="10" x2="17" y2="10" />
+              <line x1="3" y1="15" x2="17" y2="15" />
+            </svg>
+          </button>
+          <Link to="/" className="flex items-center hover:opacity-90 transition-opacity">
+            <span className="text-[17px] tracking-tight">
+              <span className="text-[var(--text-primary)] font-bold">Session</span>
+              <span className="text-[var(--brand)] font-bold">FS</span>
+            </span>
+          </Link>
+        </div>
 
-        {/* Center: Nav links */}
-        <nav className="flex items-center gap-1 text-[14px] overflow-x-auto whitespace-nowrap">
+        {/* Center: Nav links (desktop only) */}
+        <nav className="hidden md:flex items-center gap-1 text-[14px] overflow-x-auto whitespace-nowrap">
           {NAV_LINKS.map(({ to, label, match }) => {
             const active = match(location.pathname);
-            const hiddenOnMobile = label === 'Billing';
             return (
               <Link
                 key={to}
@@ -79,7 +111,7 @@ export default function Layout() {
                   active
                     ? 'border-[var(--brand)] text-[var(--brand)]'
                     : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-                }${hiddenOnMobile ? ' hidden sm:inline-flex' : ''}`}
+                }`}
               >
                 {label}
                 {label === 'Handoffs' && pendingCount > 0 && (
@@ -89,6 +121,8 @@ export default function Layout() {
                       backgroundColor: 'rgba(240,192,64,0.15)',
                       color: 'var(--warning)',
                     }}
+                    role="status"
+                    aria-label={`${pendingCount} pending handoff${pendingCount === 1 ? '' : 's'}`}
                   >
                     {pendingCount}
                   </span>
@@ -99,7 +133,7 @@ export default function Layout() {
           {isAdmin && (
             <Link
               to="/admin"
-              className={`hidden sm:inline-flex px-3 pb-[14px] pt-[16px] border-b-2 transition-colors ${
+              className={`px-3 pb-[14px] pt-[16px] border-b-2 transition-colors ${
                 location.pathname === '/admin'
                   ? 'border-[var(--brand)] text-[var(--brand)]'
                   : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
@@ -139,25 +173,6 @@ export default function Layout() {
                   boxShadow: 'var(--shadow-md)',
                 }}
               >
-                {/* Mobile-only links for hidden nav items */}
-                <Link
-                  to="/settings/billing"
-                  onClick={() => setAvatarOpen(false)}
-                  className="block sm:hidden w-full text-left px-3 py-1.5 text-sm transition-colors hover:bg-[var(--surface-hover)]"
-                  style={{ color: 'var(--text-secondary)' }}
-                >
-                  Billing
-                </Link>
-                {isAdmin && (
-                  <Link
-                    to="/admin"
-                    onClick={() => setAvatarOpen(false)}
-                    className="block sm:hidden w-full text-left px-3 py-1.5 text-sm transition-colors hover:bg-[var(--surface-hover)]"
-                    style={{ color: 'var(--text-secondary)' }}
-                  >
-                    Admin
-                  </Link>
-                )}
                 <button
                   onClick={() => {
                     setAvatarOpen(false);
@@ -173,6 +188,84 @@ export default function Layout() {
           </div>
         </div>
       </header>
+
+      {/* Mobile navigation drawer */}
+      <div
+        className={`fixed inset-0 z-50 md:hidden ${drawerOpen ? '' : 'pointer-events-none'}`}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Navigation menu"
+      >
+        {/* Backdrop */}
+        <div
+          className={`absolute inset-0 bg-black transition-opacity duration-300 ${
+            drawerOpen ? 'opacity-50' : 'opacity-0'
+          }`}
+          onClick={() => setDrawerOpen(false)}
+        />
+        {/* Drawer panel */}
+        <nav
+          className={`absolute top-0 left-0 bottom-0 w-64 flex flex-col transition-transform duration-300 ease-in-out ${
+            drawerOpen ? 'translate-x-0' : '-translate-x-full'
+          }`}
+          style={{
+            backgroundColor: 'var(--bg-secondary)',
+            borderRight: '1px solid var(--border)',
+          }}
+        >
+          {/* Drawer header */}
+          <div className="flex items-center justify-between px-4" style={{ height: 56 }}>
+            <span className="text-[17px] tracking-tight">
+              <span className="text-[var(--text-primary)] font-bold">Session</span>
+              <span className="text-[var(--brand)] font-bold">FS</span>
+            </span>
+            <button
+              onClick={() => setDrawerOpen(false)}
+              className="flex items-center justify-center w-8 h-8 rounded-[var(--radius-md)] transition-colors hover:bg-[var(--surface-hover)]"
+              aria-label="Close navigation menu"
+            >
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                <line x1="4" y1="4" x2="14" y2="14" />
+                <line x1="14" y1="4" x2="4" y2="14" />
+              </svg>
+            </button>
+          </div>
+          <div style={{ borderTop: '1px solid var(--border)' }} />
+          {/* Drawer links */}
+          <div className="flex flex-col py-2 px-2 gap-0.5">
+            {allNavLinks.map(({ to, label, match }) => {
+              const active = match(location.pathname);
+              return (
+                <Link
+                  key={to}
+                  to={to}
+                  onClick={() => setDrawerOpen(false)}
+                  className={`flex items-center gap-2 px-3 py-2.5 rounded-[var(--radius-md)] text-[14px] transition-colors ${
+                    active
+                      ? 'bg-[var(--surface-hover)] text-[var(--brand)] font-medium'
+                      : 'text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]'
+                  }`}
+                >
+                  {label}
+                  {label === 'Handoffs' && pendingCount > 0 && (
+                    <span
+                      className="px-1.5 py-0.5 text-xs rounded-full font-medium"
+                      style={{
+                        backgroundColor: 'rgba(240,192,64,0.15)',
+                        color: 'var(--warning)',
+                      }}
+                      role="status"
+                      aria-label={`${pendingCount} pending handoff${pendingCount === 1 ? '' : 's'}`}
+                    >
+                      {pendingCount}
+                    </span>
+                  )}
+                </Link>
+              );
+            })}
+          </div>
+        </nav>
+      </div>
       <main className="flex-1 bg-[var(--bg-primary)]">
         <div key={location.pathname} className="page-enter flex flex-col flex-1 min-h-0">
           <Outlet />

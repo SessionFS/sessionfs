@@ -1,5 +1,6 @@
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
+import { formatBytes } from '../utils/format';
 
 const TIERS = [
   {
@@ -41,13 +42,6 @@ const TIERS = [
     features: ['Everything in Pro', 'Team management', 'Shared storage (1 GB/user)', 'Org settings'],
   },
 ];
-
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
-}
 
 export default function BillingPage() {
   const { auth } = useAuth();

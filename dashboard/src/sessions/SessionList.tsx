@@ -11,19 +11,7 @@ import BookmarkSidebar, { MobileNavChips } from '../components/BookmarkSidebar';
 import type { NavFilter } from '../components/BookmarkSidebar';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../auth/AuthContext';
-
-const TOOL_COLORS: Record<string, string> = {
-  'claude-code': 'var(--tool-claude)',
-  'cursor': 'var(--tool-cursor)',
-  'codex': 'var(--tool-codex)',
-  'gemini': 'var(--tool-gemini)',
-  'gemini-cli': 'var(--tool-gemini)',
-  'copilot': 'var(--tool-copilot)',
-  'copilot-cli': 'var(--tool-copilot)',
-  'amp': 'var(--tool-amp)',
-  'cline': 'var(--tool-cline)',
-  'roo-code': 'var(--tool-roo)',
-};
+import { TOOL_COLORS } from '../utils/tools';
 
 const CAPTURE_ONLY_TOOLS = new Set(['cursor', 'cline', 'roo-code', 'amp']);
 
@@ -394,22 +382,19 @@ export default function SessionList() {
           onSelectFolder={(id) => { setSelectedFolderId(id); setPage(1); }}
         />
 
-        {/* ── Hero: Resume where you left off ── */}
+        {/* ── Hero: Best next action ── */}
         {!isLoading && mostRecent && (
-          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-5 mb-5 shadow-[var(--shadow-sm)]">
-            <div className="mb-1">
-              <span className="text-xs uppercase tracking-widest text-[var(--brand)] font-semibold">Resume Work</span>
-            </div>
-            <h2 className="text-3xl font-bold tracking-tight text-[var(--text-primary)] mb-1">Resume where you left off</h2>
-            <p className="text-base text-[var(--text-secondary)] max-w-xl mb-4">Pick up recent sessions, handoffs, and repo-specific work across tools.</p>
-
-            <div className="flex flex-col lg:flex-row gap-4">
-              {/* Left: Primary resume card (60%) */}
-              <div className="flex-[3] bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg p-4">
-                <h3 className="text-2xl font-semibold text-[var(--text-primary)] mb-2 truncate">
+          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl px-5 py-4 mb-5 shadow-[var(--shadow-sm)]">
+            <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+              {/* Left: session to resume */}
+              <div className="flex-1 min-w-0">
+                <h2
+                  className="text-xl font-semibold text-[var(--text-primary)] truncate cursor-pointer hover:text-[var(--brand)] transition-colors"
+                  onClick={() => navigate(`/sessions/${mostRecent.id}`)}
+                >
                   {mostRecent.title || 'Untitled session'}
-                </h3>
-                <div className="flex items-center gap-2 text-sm text-[var(--text-tertiary)] mb-3">
+                </h2>
+                <div className="flex items-center gap-2 mt-1 text-sm text-[var(--text-tertiary)]">
                   <span
                     className="w-2 h-2 rounded-full shrink-0"
                     style={{ backgroundColor: TOOL_COLORS[mostRecent.source_tool] || '#6B7280' }}
@@ -421,84 +406,46 @@ export default function SessionList() {
                       <span>{abbreviateModel(mostRecent.model_id)}</span>
                     </>
                   )}
-                </div>
-                <div className="flex items-center gap-2 text-sm text-[var(--text-tertiary)] mb-4">
-                  <span className="tabular-nums">{mostRecent.message_count} msgs</span>
-                  {(mostRecent.total_input_tokens + mostRecent.total_output_tokens) > 0 && (
-                    <>
-                      <span className="opacity-40">&middot;</span>
-                      <span className="tabular-nums">{formatTokens(mostRecent.total_input_tokens + mostRecent.total_output_tokens)} tokens</span>
-                    </>
-                  )}
                   <span className="opacity-40">&middot;</span>
                   <RelativeDate iso={mostRecent.updated_at} />
                 </div>
-                <div className="flex items-center gap-3">
+                <div className="mt-3 flex items-center gap-3">
                   <button
                     onClick={() => handleResume(mostRecent)}
-                    className="px-5 py-2.5 bg-[var(--brand)] text-white text-sm font-semibold rounded-lg hover:opacity-90 transition-opacity"
+                    className="px-4 py-2 bg-[var(--brand)] text-white text-sm font-semibold rounded-lg hover:opacity-90 transition-opacity"
                   >
                     {CAPTURE_ONLY_TOOLS.has(mostRecent.source_tool) ? 'Resume in Claude Code' : 'Resume'}
                   </button>
                   <button
                     onClick={() => navigate(`/sessions/${mostRecent.id}`)}
-                    className="px-5 py-2.5 border border-[var(--border)] text-sm font-semibold text-[var(--text-secondary)] rounded-lg hover:bg-[var(--surface-hover)] transition-colors"
+                    className="px-4 py-2 border border-[var(--border)] text-sm font-medium text-[var(--text-secondary)] rounded-lg hover:bg-[var(--surface-hover)] transition-colors"
                   >
-                    View Session
+                    View
                   </button>
                 </div>
               </div>
 
-              {/* Right: Stack of 2 cards (40%) */}
-              <div className="flex-[2] flex flex-col gap-3">
-                {/* Handoff card */}
-                <div className="flex-1 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg p-4 flex flex-col justify-between">
-                  {latestHandoff ? (
-                    <>
-                      <div>
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="text-lg font-semibold">Handoff from {latestHandoff.sender_email.split('@')[0]}</span>
-                        </div>
-                        <p className="text-sm text-[var(--text-secondary)] truncate mb-1">
-                          {latestHandoff.message || latestHandoff.session_title || 'No message'}
-                        </p>
-                        <div className="text-xs text-[var(--text-tertiary)]">
-                          {latestHandoff.session_message_count != null && (
-                            <span>{latestHandoff.session_message_count} msgs</span>
-                          )}
-                          <span className="opacity-40 mx-1">&middot;</span>
-                          <RelativeDate iso={latestHandoff.created_at} />
-                        </div>
-                      </div>
-                      <Link
-                        to={`/handoffs/${latestHandoff.id}`}
-                        className="mt-2 text-sm font-medium text-[var(--brand)] hover:underline inline-flex items-center gap-1"
-                      >
-                        Open Handoff <span aria-hidden="true">&rarr;</span>
-                      </Link>
-                    </>
-                  ) : (
-                    <div className="flex items-center justify-center h-full">
-                      <span className="text-sm text-[var(--text-tertiary)]">No pending handoffs</span>
-                    </div>
-                  )}
-                </div>
-
-                {/* Project context card */}
-                <div className="flex-1 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg p-4 flex flex-col justify-between">
-                  <div>
-                    <div className="text-lg font-semibold text-[var(--text-primary)] mb-1">Project Context</div>
-                    <p className="text-sm text-[var(--text-secondary)]">
-                      Share repo-level context across tools and team members.
-                    </p>
-                  </div>
+              {/* Right: compact status chips */}
+              <div className="flex sm:flex-col items-start gap-2 shrink-0">
+                {pendingHandoffs.length > 0 ? (
                   <Link
-                    to="/projects"
-                    className="mt-2 text-sm font-medium text-[var(--brand)] hover:underline inline-flex items-center gap-1"
+                    to={latestHandoff ? `/handoffs/${latestHandoff.id}` : '#'}
+                    className="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-[var(--brand)] bg-[var(--brand)]/10 rounded-lg hover:bg-[var(--brand)]/20 transition-colors"
                   >
-                    View Projects <span aria-hidden>&rarr;</span>
+                    <span className="w-2 h-2 rounded-full bg-[var(--brand)] animate-pulse" />
+                    {pendingHandoffs.length} pending handoff{pendingHandoffs.length !== 1 ? 's' : ''}
                   </Link>
-                </div>
+                ) : (
+                  <span className="inline-flex items-center gap-2 px-3 py-1.5 text-sm text-[var(--text-tertiary)]">
+                    No pending handoffs
+                  </span>
+                )}
+                <Link
+                  to="/projects"
+                  className="inline-flex items-center gap-1 px-3 py-1.5 text-sm text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors"
+                >
+                  Projects <span aria-hidden="true">&rarr;</span>
+                </Link>
               </div>
             </div>
           </div>
@@ -866,7 +813,7 @@ function SessionRow({
           />
         )}
         <span
-          className={`font-medium text-[var(--text-primary)] truncate flex-1 ${isChild ? 'text-[14px]' : 'text-[16px]'}`}
+          className={`font-semibold text-[var(--text-primary)] truncate flex-1 ${isChild ? 'text-[14px]' : 'text-base'}`}
           onClick={onNavigate ? (e) => { e.stopPropagation(); onNavigate(); } : undefined}
           style={onNavigate ? { cursor: 'pointer' } : undefined}
         >
@@ -877,19 +824,19 @@ function SessionRow({
           )}
         </span>
         <div className="ml-auto flex items-center gap-2 shrink-0">
-          {/* Hover actions */}
-          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          {/* Row actions */}
+          <div className="flex items-center gap-1.5">
             {onNavigate && (
               <button
                 onClick={(e) => { e.stopPropagation(); onNavigate(); }}
-                className="px-2 py-0.5 text-xs font-medium text-[var(--text-secondary)] bg-[var(--surface)] border border-[var(--border)] rounded hover:bg-[var(--surface-hover)] transition-colors"
+                className="px-2 py-0.5 text-xs font-medium text-[var(--text-secondary)] bg-[var(--surface)] border border-[var(--border)] rounded hover:bg-[var(--surface-hover)] transition-colors opacity-0 group-hover:opacity-100"
               >
                 View
               </button>
             )}
             <button
               onClick={(e) => { e.stopPropagation(); onResume(); }}
-              className="px-2 py-0.5 text-xs font-medium text-[var(--brand)] bg-[var(--brand)]/10 rounded hover:bg-[var(--brand)]/20 transition-colors"
+              className="px-2.5 py-1 text-xs font-semibold text-white bg-[var(--brand)] rounded-md hover:opacity-90 transition-opacity opacity-0 group-hover:opacity-100 group-focus:opacity-100"
             >
               Resume
             </button>
@@ -905,7 +852,7 @@ function SessionRow({
         </div>
       </div>
       {/* Line 2: Tool dot + tool name + metadata */}
-      <div className={`flex items-center gap-2 ${isChild ? 'text-[12px] text-[var(--text-tertiary)]' : 'text-[13px] text-[var(--text-tertiary)]'}`}>
+      <div className={`flex items-center gap-2 ${isChild ? 'text-[11px]' : 'text-[12px]'} text-[var(--text-tertiary)] opacity-70`}>
         <span
           className="w-2 h-2 rounded-full shrink-0"
           style={{ backgroundColor: TOOL_COLORS[s.source_tool] || '#6B7280' }}

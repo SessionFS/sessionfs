@@ -63,7 +63,7 @@ function ToastContainer({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id
   if (toasts.length === 0) return null;
 
   return (
-    <div className="fixed top-4 right-4 z-[100] flex flex-col gap-2 pointer-events-none">
+    <div className="fixed top-4 right-4 z-[100] flex flex-col gap-2 pointer-events-none" aria-live="polite" aria-relevant="additions removals">
       {toasts.map((toast) => (
         <ToastItem key={toast.id} toast={toast} onDismiss={onDismiss} />
       ))}
@@ -82,6 +82,7 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: string)
 
   return (
     <div
+      role="status"
       className={`pointer-events-auto bg-[var(--bg-elevated)] border border-[var(--border)] rounded-lg shadow-lg p-3 pr-8 border-l-[3px] ${BORDER_COLORS[toast.type]} transition-all duration-200 ease-out min-w-[250px] max-w-sm ${visible ? 'translate-x-0 opacity-100' : 'translate-x-full opacity-0'}`}
     >
       <p className="text-sm text-[var(--text-primary)]">{toast.message}</p>

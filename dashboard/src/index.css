@@ -1,5 +1,16 @@
 @import "tailwindcss";
 
+/* === Tab Panel Transitions === */
+
+@keyframes tabFadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.tab-panel-enter {
+  animation: tabFadeIn 200ms ease-out both;
+}
+
 /* === Design System Tokens === */
 
 :root, [data-theme="light"] {
@@ -12,15 +23,15 @@
   --surface-active: #e8eaee;    /* active/pressed state */
   --border: #c9cdd3;            /* noticeably darker borders */
   --border-strong: #a8aeb6;     /* strong borders for focus/emphasis */
-  --text-primary: #111318;      /* near-black for max contrast */
-  --text-secondary: #424750;    /* dark gray — clearly readable */
-  --text-tertiary: #6b7280;     /* medium gray — still visible */
+  --text-primary: #0d0f13;      /* near-black for max contrast */
+  --text-secondary: #3b404a;    /* dark gray — clearly readable */
+  --text-tertiary: #7a818c;     /* medium gray — well separated from secondary */
   --text-inverse: #ffffff;
   --shadow-sm: 0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06);
   --shadow-md: 0 4px 12px rgba(0,0,0,0.12), 0 2px 4px rgba(0,0,0,0.08);
   --shadow-lg: 0 8px 24px rgba(0,0,0,0.15), 0 4px 8px rgba(0,0,0,0.1);
-  --brand: #2563eb;              /* deeper blue for light backgrounds */
-  --brand-hover: #1d4ed8;
+  --brand: #1a73e8;              /* saturated blue for light backgrounds */
+  --brand-hover: #1557b0;
 }
 
 [data-theme="dark"] {
@@ -154,3 +165,17 @@ h3 { font-size: 16px; font-weight: 600; }
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+/* === Typography Scale === */
+
+.text-display { font-size: 2rem; line-height: 1.2; font-weight: 700; letter-spacing: -0.02em; }
+.text-headline { font-size: 1.5rem; line-height: 1.3; font-weight: 700; letter-spacing: -0.015em; }
+.text-title { font-size: 1.125rem; line-height: 1.4; font-weight: 600; }
+.text-body { font-size: 0.9375rem; line-height: 1.5; }
+.text-caption { font-size: 0.8125rem; line-height: 1.4; color: var(--text-tertiary); }
+.text-micro { font-size: 0.6875rem; line-height: 1.3; letter-spacing: 0.02em; }
+
+/* === Card Styles === */
+
+.card-elevated { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+.card-primary { background: var(--bg-primary); border: 1px solid var(--border); border-radius: var(--radius-lg); }
