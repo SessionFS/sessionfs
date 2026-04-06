@@ -81,6 +81,14 @@ async def create_checkout(
     if not price_id:
         raise HTTPException(400, f"Stripe price not configured for tier: {data.tier}")
 
+    # Org members cannot buy personal plans — they inherit from the org
+    if ctx.is_org_user and ctx.org:
+        if data.tier in ("starter", "pro"):
+            raise HTTPException(
+                400,
+                {"error": "org_member_restriction", "message": "Organization members cannot purchase individual plans. Your tier is managed by the organization admin."},
+            )
+
     # Prevent duplicate subscriptions — check both user and org
     if user.stripe_subscription_id:
         raise HTTPException(
