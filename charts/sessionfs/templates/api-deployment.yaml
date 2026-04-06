@@ -32,7 +32,15 @@ spec:
       {{- if .Values.license.key }}
       initContainers:
         - name: license-check
-          image: curlimages/curl:latest
+          image: curlimages/curl:8.12.1
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities:
+              drop:
+                - ALL
           command: ["sh", "-c"]
           args:
             - |

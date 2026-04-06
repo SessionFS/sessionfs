@@ -36,12 +36,25 @@ api:
   affinity: {}
   env: {}
   podSecurityContext:
-    runAsNonRoot: false
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
   containerSecurityContext:
     allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
     capabilities:
       drop:
         - ALL
+      add:
+        - NET_BIND_SERVICE
+    seccompProfile:
+      type: RuntimeDefault
   logLevel: "INFO"
   corsOrigins: ""
   rateLimitPerMinute: 120  # Requests per minute per API key. Set to 0 to disable.
@@ -51,12 +64,25 @@ mcp:
   enabled: true
   replicaCount: 1
   podSecurityContext:
-    runAsNonRoot: false
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
   containerSecurityContext:
     allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
     capabilities:
       drop:
         - ALL
+      add:
+        - NET_BIND_SERVICE
+    seccompProfile:
+      type: RuntimeDefault
   image:
     repository: sessionfs-mcp
     tag: ""
@@ -86,12 +112,25 @@ dashboard:
   enabled: true
   replicaCount: 1
   podSecurityContext:
-    runAsNonRoot: false
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
   containerSecurityContext:
     allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
     capabilities:
       drop:
         - ALL
+      add:
+        - NET_BIND_SERVICE
+    seccompProfile:
+      type: RuntimeDefault
   image:
     repository: sessionfs-dashboard
     tag: ""
@@ -238,12 +277,22 @@ migrations:
     tag: ""
   backoffLimit: 3
   podSecurityContext:
-    runAsNonRoot: false
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
   containerSecurityContext:
     allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
     capabilities:
       drop:
         - ALL
+    seccompProfile:
+      type: RuntimeDefault
 
 ## Monitoring
 monitoring:
