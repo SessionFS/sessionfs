@@ -203,6 +203,14 @@ export default function BillingPage() {
                   <span className="block text-center py-2 text-[var(--text-tertiary)] text-sm">Managed by org</span>
                 ) : isOrgMember && !isOrgAdmin && t.tier === 'team' ? (
                   <span className="block text-center py-2 text-[var(--text-tertiary)] text-sm">Admin only</span>
+                ) : hasSubscription ? (
+                  <button
+                    onClick={() => portalMutation.mutate()}
+                    disabled={portalMutation.isPending}
+                    className="w-full py-2.5 px-5 rounded-lg text-sm font-medium border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] transition-colors disabled:opacity-50"
+                  >
+                    {portalMutation.isPending ? 'Redirecting...' : 'Change plan'}
+                  </button>
                 ) : (
                   <button
                     onClick={() => checkoutMutation.mutate(t.tier)}
