@@ -53,6 +53,7 @@ export function useDeleteProject() {
     mutationFn: (id: string) => auth!.client.deleteProject(id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['projects'] });
+      void queryClient.invalidateQueries({ queryKey: ['project'] });
     },
   });
 }
@@ -91,6 +92,10 @@ export function useCompileProject(projectId: string | undefined) {
       void queryClient.invalidateQueries({ queryKey: ['knowledgeEntries', projectId] });
       void queryClient.invalidateQueries({ queryKey: ['compilations', projectId] });
       void queryClient.invalidateQueries({ queryKey: ['projects'] });
+      void queryClient.invalidateQueries({ queryKey: ['project'] });
+      void queryClient.invalidateQueries({ queryKey: ['wikiPages', projectId] });
+      void queryClient.invalidateQueries({ queryKey: ['wikiPage', projectId] });
+      void queryClient.invalidateQueries({ queryKey: ['projectHealth', projectId] });
     },
   });
 }
@@ -155,6 +160,7 @@ export function useDeleteWikiPage(projectId: string | undefined) {
     mutationFn: (slug: string) => auth!.client.deleteWikiPage(projectId!, slug),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['wikiPages', projectId] });
+      void queryClient.invalidateQueries({ queryKey: ['wikiPage', projectId] });
     },
   });
 }
@@ -179,6 +185,7 @@ export function useUpdateProjectSettings(projectId: string | undefined) {
       auth!.client.updateProjectSettings(projectId!, settings),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['projects'] });
+      void queryClient.invalidateQueries({ queryKey: ['project'] });
     },
   });
 }

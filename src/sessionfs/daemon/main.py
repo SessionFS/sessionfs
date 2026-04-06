@@ -140,6 +140,10 @@ class DaemonSyncer:
 
         client = self._get_client()
 
+        # Mark all as queued before starting
+        for session_id in session_ids:
+            await self._update_watch_status(session_id, "queued", client)
+
         for session_id in session_ids:
             session_dir = self.store.get_session_dir(session_id)
             if not session_dir:
@@ -165,6 +169,9 @@ class DaemonSyncer:
                     result.blob_size_bytes,
                 )
 
+                # Update watchlist status on server
+                await self._update_watch_status(session_id, "synced", client)
+
                 # Auto-audit after sync if configured
                 await self._maybe_auto_audit(session_id, client)
 
@@ -174,11 +181,14 @@ class DaemonSyncer:
                     session_id[:12],
                     exc.current_etag[:12],
                 )
-                # Update local etag to remote's so next push uses correct If-Match
+                # Update local etag to remote's so next push uses correct If-Match,
+                # but keep dirty=true so _collect_dirty_sessions re-queues it.
                 self._store_local_etag(session_id, exc.current_etag)
+                self._mark_session_dirty_flag(session_id)
 
             except SyncError as exc:
                 self._consecutive_failures += 1
+                await self._update_watch_status(session_id, "failed", client)
                 logger.warning(
                     "Sync failed for %s (failures=%d/%d): %s",
                     session_id[:12],
@@ -189,12 +199,25 @@ class DaemonSyncer:
 
             except Exception:
                 self._consecutive_failures += 1
+                await self._update_watch_status(session_id, "failed", client)
                 logger.exception("Unexpected sync error for %s", session_id[:12])
 
         try:
             await client.close()
         except Exception:
             pass
+
+    async def _update_watch_status(self, session_id: str, status: str, client) -> None:
+        """Update watchlist status on the server (non-critical)."""
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=5) as http:
+                await http.put(
+                    f"{client.api_url}/api/v1/sync/watch/{session_id}/{status}",
+                    headers={"Authorization": f"Bearer {client.api_key}"},
+                )
+        except Exception:
+            pass  # Non-critical — status is cosmetic
 
     async def _maybe_auto_audit(self, session_id: str, client) -> None:
         """Trigger audit after sync if user has audit_trigger=on_sync."""
@@ -248,6 +271,36 @@ class DaemonSyncer:
                     self.config.sync.auto = new_mode
                 self.config.sync.debounce = data.get("debounce_seconds", 30)
 
+            # Fetch remote watchlist for selective autosync — replace local
+            # set entirely so unwatches on other clients propagate.
+            if self.auto_mode == "selective":
+                try:
+                    wl_resp = await http.get(
+                        f"{client.api_url}/api/v1/sync/watchlist",
+                        headers={"Authorization": f"Bearer {client.api_key}"},
+                    )
+                    if wl_resp.status_code == 200:
+                        wl_data = wl_resp.json()
+                        # Server returns {"sessions": [{"session_id": ...}, ...]}
+                        entries = wl_data.get("sessions", [])
+                        remote_ids: set[str] = set()
+                        for entry in entries:
+                            sid = entry.get("session_id", "") if isinstance(entry, dict) else ""
+                            if sid:
+                                remote_ids.add(sid)
+                        # Purge unwatched sessions from debounce and pending
+                        removed = (self._watchlist - remote_ids)
+                        for sid in removed:
+                            self._debounce_timestamps.pop(sid, None)
+                            self._pending_sessions.discard(sid)
+                        # Detect newly added watches and queue dirty ones
+                        added = remote_ids - self._watchlist
+                        self._watchlist = remote_ids
+                        if added:
+                            self._enqueue_dirty_watched(added)
+                except Exception:
+                    pass  # Non-critical — keep using local watchlist
+
             resp2 = await http.get(
                 f"{client.api_url}/api/v1/settings/audit-trigger",
                 headers={"Authorization": f"Bearer {client.api_key}"},
@@ -280,6 +333,34 @@ class DaemonSyncer:
             __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
         )
         manifest["sync"]["dirty"] = False
+        manifest_path.write_text(json.dumps(manifest, indent=2))
+
+    def _enqueue_dirty_watched(self, session_ids: set[str]) -> None:
+        """Queue newly watchlisted sessions that are already dirty locally."""
+        for session_id in session_ids:
+            session_dir = self.store.get_session_dir(session_id)
+            if not session_dir:
+                continue
+            manifest_path = session_dir / "manifest.json"
+            if not manifest_path.exists():
+                continue
+            manifest = json.loads(manifest_path.read_text())
+            sync_state = manifest.get("sync", {})
+            if not sync_state.get("etag") or sync_state.get("dirty", True):
+                self._debounce_timestamps[session_id] = time.monotonic()
+
+    def _mark_session_dirty_flag(self, session_id: str) -> None:
+        """Set dirty=true in manifest so _collect_dirty_sessions re-queues it."""
+        session_dir = self.store.get_session_dir(session_id)
+        if not session_dir:
+            return
+        manifest_path = session_dir / "manifest.json"
+        if not manifest_path.exists():
+            return
+        manifest = json.loads(manifest_path.read_text())
+        if "sync" not in manifest:
+            manifest["sync"] = {}
+        manifest["sync"]["dirty"] = True
         manifest_path.write_text(json.dumps(manifest, indent=2))
 
     async def close(self) -> None:
@@ -530,6 +611,14 @@ class Daemon:
         # Start filesystem observers
         for watcher in self.watchers:
             watcher.start_watching()
+
+        # Fetch remote settings + watchlist before collecting dirty sessions
+        # so selective mode has the watchlist populated at startup.
+        if self._syncer.is_enabled:
+            try:
+                asyncio.run(self._syncer._fetch_remote_settings())
+            except Exception:
+                pass  # Offline — proceed with local state
 
         # Collect sessions that need initial sync
         self._collect_dirty_sessions()

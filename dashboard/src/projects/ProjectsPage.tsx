@@ -36,9 +36,10 @@ export default function ProjectsPage() {
           {projects.map((p) => (
             <div
               key={p.id}
+              role="button"
               onClick={() => navigate(`/projects/${encodeURIComponent(p.git_remote_normalized)}`)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') navigate(`/projects/${encodeURIComponent(p.git_remote_normalized)}`);
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate(`/projects/${encodeURIComponent(p.git_remote_normalized)}`); }
               }}
               tabIndex={0}
               className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl p-5 cursor-pointer hover:shadow-[var(--shadow-md)] transition-all focus:border-[var(--brand)] outline-none"

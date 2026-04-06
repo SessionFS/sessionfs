@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import require_admin
@@ -16,13 +16,14 @@ from sessionfs.server.db.models import (
     AdminAction,
     ApiKey,
     Handoff,
+    OrgMember,
     Session,
     User,
 )
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 
-VALID_TIERS = {"free", "pro", "team", "admin"}
+VALID_TIERS = {"free", "starter", "pro", "team", "enterprise", "admin"}
 
 
 async def _log_action(
@@ -169,6 +170,9 @@ async def change_user_tier(
     if new_tier not in VALID_TIERS:
         raise HTTPException(status_code=400, detail=f"Invalid tier. Must be one of: {', '.join(sorted(VALID_TIERS))}")
 
+    if user_id == admin.id and new_tier != "admin":
+        raise HTTPException(status_code=400, detail="Cannot demote your own admin account")
+
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if user is None:
@@ -225,6 +229,18 @@ async def delete_user(
     # Revoke all API keys
     await db.execute(
         update(ApiKey).where(ApiKey.user_id == user_id).values(is_active=False)
+    )
+
+    # Remove org memberships to free seats
+    await db.execute(
+        delete(OrgMember).where(OrgMember.user_id == user_id)
+    )
+
+    # Expire pending handoffs sent to this user
+    await db.execute(
+        update(Handoff)
+        .where(Handoff.recipient_email == user.email, Handoff.status == "pending")
+        .values(status="expired")
     )
 
     await _log_action(db, admin.id, "delete_user", "user", user_id, {

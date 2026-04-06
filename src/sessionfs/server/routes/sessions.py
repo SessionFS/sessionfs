@@ -17,7 +17,8 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
-from sqlalchemy import func, select
+from pydantic import BaseModel as _BaseModel
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import get_current_user, require_verified_user
@@ -970,13 +971,25 @@ async def sync_push(
         )
         any_existing = any_result.scalar_one_or_none()
         if any_existing is not None:
-            if any_existing.user_id != user.id and not any_existing.is_deleted:
-                # Active session owned by another user
+            if any_existing.user_id != user.id:
+                # Session ID belongs to another user (active or deleted) — reject
                 raise HTTPException(status_code=409, detail="Session ID already claimed by another user")
-            # Reuse the row: un-delete and update it
+            # Same user's soft-deleted session — un-delete and reuse.
+            # Expire old handoffs and revoke share links from the prior
+            # incarnation so they don't resolve against new content.
+            from sessionfs.server.db.models import Handoff, ShareLink
+            await db.execute(
+                update(Handoff)
+                .where(Handoff.session_id == session_id, Handoff.status == "pending")
+                .values(status="expired")
+            )
+            await db.execute(
+                update(ShareLink)
+                .where(ShareLink.session_id == session_id, ShareLink.is_revoked == False)  # noqa: E712
+                .values(is_revoked=True)
+            )
             any_existing.is_deleted = False
             any_existing.deleted_at = None
-            any_existing.user_id = user.id
             existing = any_existing
         else:
             # Truly new session -> create
@@ -1436,7 +1449,9 @@ async def create_share_link(
 
     password_hash = None
     if body.password:
-        password_hash = hashlib.sha256(body.password.encode()).hexdigest()
+        salt = secrets.token_hex(16)
+        dk = hashlib.pbkdf2_hmac("sha256", body.password.encode(), salt.encode(), 100_000)
+        password_hash = f"{salt}${dk.hex()}"
 
     share_link = ShareLink(
         id=link_id,
@@ -1451,7 +1466,7 @@ async def create_share_link(
 
     return ShareLinkResponse(
         link_id=link_id,
-        url=f"https://api.sessionfs.dev/api/v1/sessions/share/{token}",
+        url=f"{os.environ.get('SFS_API_URL', 'https://api.sessionfs.dev')}/api/v1/sessions/share/{token}",
         expires_at=expires_at,
         has_password=password_hash is not None,
     )
@@ -1465,11 +1480,12 @@ async def revoke_share_link(
     db: AsyncSession = Depends(get_db),
 ):
     """Revoke a share link."""
-    _validate_session_id(session_id)
+    _validate_session_id_or_alias(session_id)
+    session = await _get_user_session(db, user.id, session_id)
     result = await db.execute(
         select(ShareLink).where(
             ShareLink.id == link_id,
-            ShareLink.session_id == session_id,
+            ShareLink.session_id == session.id,
             ShareLink.user_id == user.id,
         )
     )
@@ -1481,14 +1497,10 @@ async def revoke_share_link(
     await db.commit()
 
 
-@router.get("/share/{token}")
-async def access_share_link(
-    token: str,
-    password: str | None = Query(None),
-    db: AsyncSession = Depends(get_db),
-    request: Request = None,
-):
-    """Access a shared session via share link token (public, no auth required)."""
+async def _access_share_link_impl(
+    token: str, password: str | None, db: AsyncSession, request: Request,
+) -> Response:
+    """Shared implementation for share link access (GET and POST)."""
     result = await db.execute(
         select(ShareLink).where(ShareLink.token == token)
     )
@@ -1505,8 +1517,19 @@ async def access_share_link(
     if link.password_hash is not None:
         if not password:
             raise HTTPException(status_code=401, detail="Password required")
-        if hashlib.sha256(password.encode()).hexdigest() != link.password_hash:
-            raise HTTPException(status_code=401, detail="Invalid password")
+        import hmac
+        stored = link.password_hash
+        if "$" in stored:
+            # PBKDF2 format: salt$hash
+            salt, expected_hex = stored.split("$", 1)
+            dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 100_000)
+            if not hmac.compare_digest(dk.hex(), expected_hex):
+                raise HTTPException(status_code=401, detail="Invalid password")
+        else:
+            # Legacy SHA-256 format (pre-migration)
+            provided = hashlib.sha256(password.encode()).hexdigest()
+            if not hmac.compare_digest(stored, provided):
+                raise HTTPException(status_code=401, detail="Invalid password")
 
     # Fetch session and blob
     result = await db.execute(
@@ -1529,6 +1552,31 @@ async def access_share_link(
         media_type="application/gzip",
         headers={"ETag": f'"{session.etag}"'},
     )
+
+
+class ShareAccessRequest(_BaseModel):
+    password: str | None = None
+
+
+@router.get("/share/{token}")
+async def access_share_link_get(
+    token: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Access a non-password-protected share link (public, no auth)."""
+    return await _access_share_link_impl(token, None, db, request)
+
+
+@router.post("/share/{token}")
+async def access_share_link_post(
+    token: str,
+    body: ShareAccessRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Access a password-protected share link via POST body (public, no auth)."""
+    return await _access_share_link_impl(token, body.password, db, request)
 
 
 _ALIAS_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{2,99}$")

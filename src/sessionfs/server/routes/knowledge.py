@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -55,6 +55,7 @@ class AddEntryRequest(BaseModel):
     entry_type: str = "discovery"
     session_id: str | None = None
     confidence: float = 1.0
+    source_context: str | None = None
 
 
 class DismissRequest(BaseModel):
@@ -167,6 +168,7 @@ async def add_entry(
         entry_type=body.entry_type,
         content=body.content,
         confidence=body.confidence,
+        source_context=body.source_context,
     )
     db.add(entry)
     await db.commit()
@@ -254,7 +256,15 @@ async def compile_context(
     )
 
     if not compilation:
-        raise HTTPException(404, "No pending entries to compile")
+        return CompilationResponse(
+            id=0,
+            project_id=project_id,
+            user_id=user.id,
+            entries_compiled=0,
+            context_before=None,
+            context_after=None,
+            compiled_at=datetime.now(timezone.utc),
+        )
 
     # Auto-generate concept pages after compilation
     try:

@@ -8,6 +8,7 @@ export interface SearchMatch {
 export interface SearchResult {
   session_id: string;
   title: string | null;
+  alias: string | null;
   source_tool: string;
   model_id: string | null;
   message_count: number;

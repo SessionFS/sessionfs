@@ -35,9 +35,8 @@ export default function SessionDetail() {
   const { data: session, isLoading, error, refetch } = useSession(id!);
   const { data: auditReport } = useAudit(id!);
 
-  // Fetch last page of messages for Quick Preview
-  const lastMsgPage = session ? Math.max(1, Math.ceil(session.message_count / 50)) : 1;
-  const { data: lastMessagesData } = useMessages(id!, lastMsgPage, 50);
+  // Fetch newest messages for Quick Preview (page 1 newest-first = most recent)
+  const { data: lastMessagesData } = useMessages(id!, 1, 50, 'newest');
   const { auth } = useAuth();
   const [showHandoff, setShowHandoff] = useState(false);
   const [showAuditModal, setShowAuditModal] = useState(false);
@@ -49,6 +48,8 @@ export default function SessionDetail() {
     const page = Math.floor(messageIndex / 50) + 1;
     setJumpToPage(page);
     setActiveTab('messages');
+    // Clear after a tick so ConversationView picks it up then resets
+    setTimeout(() => setJumpToPage(undefined), 100);
   }
   const [editingAlias, setEditingAlias] = useState(false);
   const [aliasInput, setAliasInput] = useState('');
@@ -116,7 +117,7 @@ export default function SessionDetail() {
   const previewData = (() => {
     const messages = lastMessagesData?.messages;
     if (!messages || messages.length === 0) return null;
-    const last3 = messages.slice(-3).map((m) => {
+    const last3 = messages.slice(0, 3).map((m) => {
       const role = String(m.role || 'unknown');
       let text = '';
       if (typeof m.content === 'string') {
@@ -413,7 +414,9 @@ function MoreMenu({
   onClose: () => void;
 }) {
   const [copied, setCopied] = useState(false);
-  const resumeCmd = `sfs resume ${sessionId} --in ${sourceTool}`;
+  const captureOnly = ['cursor', 'cline', 'roo-code', 'amp'].includes(sourceTool);
+  const resumeTool = captureOnly ? 'claude-code' : sourceTool;
+  const resumeCmd = `sfs resume ${sessionId} --in ${resumeTool}`;
 
   return (
     <>
@@ -429,7 +432,7 @@ function MoreMenu({
           }}
           className="w-full text-left px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] transition-colors"
         >
-          {copied ? 'Copied!' : `Resume in ${fullToolName(sourceTool)}`}
+          {copied ? 'Copied!' : `Resume in ${fullToolName(resumeTool)}`}
         </button>
         <button
           onClick={onRunAudit}

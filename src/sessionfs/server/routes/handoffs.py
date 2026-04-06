@@ -35,6 +35,17 @@ def _generate_handoff_id() -> str:
     return f"hnd_{secrets.token_hex(8)}"
 
 
+def _effective_status(handoff: Handoff) -> str:
+    """Derive status from stored status + expiry."""
+    if handoff.status == "claimed":
+        return "claimed"
+    if handoff.expires_at:
+        exp = handoff.expires_at.replace(tzinfo=timezone.utc) if handoff.expires_at.tzinfo is None else handoff.expires_at
+        if exp < datetime.now(timezone.utc):
+            return "expired"
+    return handoff.status
+
+
 def _handoff_to_response(
     handoff: Handoff,
     sender_email: str,
@@ -42,21 +53,28 @@ def _handoff_to_response(
     session_title: str | None = None,
     session_tool: str | None = None,
 ) -> HandoffResponse:
+    # Prefer snapshot fields (immune to session-ID reuse) over live session
+    snap_title = getattr(handoff, "snapshot_title", None)
+    snap_tool = getattr(handoff, "snapshot_tool", None)
+    snap_model = getattr(handoff, "snapshot_model_id", None)
+    snap_msgs = getattr(handoff, "snapshot_message_count", None)
+    snap_tokens = getattr(handoff, "snapshot_total_tokens", None)
+
     return HandoffResponse(
         id=handoff.id,
         session_id=handoff.session_id,
+        recipient_session_id=getattr(handoff, "recipient_session_id", None),
         sender_email=sender_email,
         recipient_email=handoff.recipient_email,
         message=handoff.message,
-        status=handoff.status,
-        session_title=session_title or (session.title if session else None),
-        session_tool=session_tool or (session.source_tool if session else None),
-        session_model_id=session.model_id if session else None,
-        session_message_count=session.message_count if session else None,
-        session_total_tokens=(
+        status=_effective_status(handoff),
+        session_title=session_title or snap_title or (session.title if session else None),
+        session_tool=session_tool or snap_tool or (session.source_tool if session else None),
+        session_model_id=snap_model or (session.model_id if session else None),
+        session_message_count=snap_msgs if snap_msgs is not None else (session.message_count if session else None),
+        session_total_tokens=snap_tokens if snap_tokens is not None else (
             (session.total_input_tokens or 0) + (session.total_output_tokens or 0)
-            if session
-            else None
+            if session else None
         ),
         created_at=handoff.created_at,
         claimed_at=handoff.claimed_at,
@@ -83,6 +101,7 @@ async def create_handoff(
         raise HTTPException(status_code=404, detail="Session not found")
 
     now = datetime.now(timezone.utc)
+    total_tokens = (session.total_input_tokens or 0) + (session.total_output_tokens or 0)
     handoff = Handoff(
         id=_generate_handoff_id(),
         session_id=body.session_id,
@@ -92,6 +111,12 @@ async def create_handoff(
         status="pending",
         created_at=now,
         expires_at=now + timedelta(days=HANDOFF_EXPIRY_DAYS),
+        # Snapshot metadata at creation — immune to session-ID reuse
+        snapshot_title=session.title,
+        snapshot_tool=session.source_tool,
+        snapshot_model_id=session.model_id,
+        snapshot_message_count=session.message_count,
+        snapshot_total_tokens=total_tokens or None,
     )
     db.add(handoff)
     await db.commit()
@@ -155,11 +180,12 @@ async def inbox(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List handoffs sent TO this user (matched by email)."""
-    datetime.now(timezone.utc)
+    """List handoffs sent TO this user (matched by email, case-insensitive)."""
+    from sqlalchemy import func as sa_func
+    user_email_lower = (user.email or "").strip().lower()
     result = await db.execute(
         select(Handoff)
-        .where(Handoff.recipient_email == user.email)
+        .where(sa_func.lower(Handoff.recipient_email) == user_email_lower)
         .order_by(Handoff.created_at.desc())
     )
     handoffs = list(result.scalars().all())
@@ -205,9 +231,13 @@ async def sent(
 @router.get("/{handoff_id}", response_model=HandoffResponse)
 async def get_handoff(
     handoff_id: str,
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get handoff details (public for recipient to view before claiming)."""
+    """Get handoff details (auth required).
+
+    Only the sender or intended recipient can view a handoff.
+    """
     result = await db.execute(select(Handoff).where(Handoff.id == handoff_id))
     handoff = result.scalar_one_or_none()
     if handoff is None:
@@ -217,6 +247,13 @@ async def get_handoff(
     exp = handoff.expires_at.replace(tzinfo=timezone.utc) if handoff.expires_at.tzinfo is None else handoff.expires_at
     if exp < datetime.now(timezone.utc):
         raise HTTPException(status_code=410, detail="Handoff has expired")
+
+    # Only sender or recipient can view
+    is_sender = user.id == handoff.sender_id
+    is_recipient = (handoff.recipient_email or "").strip().lower() == (user.email or "").strip().lower()
+    is_claimed_recipient = handoff.recipient_id is not None and user.id == handoff.recipient_id
+    if not (is_sender or is_recipient or is_claimed_recipient):
+        raise HTTPException(status_code=403, detail="Access denied")
 
     # Look up sender email and session info
     sender = await db.execute(select(User).where(User.id == handoff.sender_id))
@@ -252,6 +289,13 @@ async def claim_handoff(
 
     if handoff.status == "claimed":
         raise HTTPException(status_code=409, detail="Handoff already claimed")
+
+    # Verify claimant is the intended recipient (case-insensitive for legacy data)
+    if (handoff.recipient_email or "").strip().lower() != (user.email or "").strip().lower():
+        raise HTTPException(
+            status_code=403,
+            detail="This handoff was sent to a different recipient",
+        )
 
     # Look up source session
     session_result = await db.execute(select(Session).where(Session.id == handoff.session_id))
@@ -311,6 +355,7 @@ async def claim_handoff(
 
     # Update handoff
     handoff.recipient_id = user.id
+    handoff.recipient_session_id = new_session_id
     handoff.status = "claimed"
     handoff.claimed_at = now
     await db.commit()
@@ -337,6 +382,7 @@ async def claim_handoff(
 async def get_handoff_summary(
     handoff_id: str,
     request: Request,
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Get a deterministic summary of the handoff's session context."""
@@ -351,6 +397,20 @@ async def get_handoff_summary(
     handoff = result.scalar_one_or_none()
     if handoff is None:
         raise HTTPException(status_code=404, detail="Handoff not found")
+
+    # Enforce expiry, claimed status, and access control
+    exp = handoff.expires_at.replace(tzinfo=timezone.utc) if handoff.expires_at.tzinfo is None else handoff.expires_at
+    if exp < datetime.now(timezone.utc):
+        raise HTTPException(status_code=410, detail="Handoff has expired")
+    if handoff.status == "claimed":
+        raise HTTPException(status_code=410, detail="Handoff already claimed")
+
+    # Only sender or recipient can view summary
+    is_sender = user.id == handoff.sender_id
+    is_recipient = (handoff.recipient_email or "").strip().lower() == (user.email or "").strip().lower()
+    is_claimed_recipient = handoff.recipient_id is not None and user.id == handoff.recipient_id
+    if not (is_sender or is_recipient or is_claimed_recipient):
+        raise HTTPException(status_code=403, detail="Access denied")
 
     session_result = await db.execute(
         select(Session).where(Session.id == handoff.session_id)

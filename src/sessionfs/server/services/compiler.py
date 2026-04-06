@@ -233,7 +233,53 @@ def _simple_compile(
     marks low-confidence entries as (unverified), and adds a Recent Changes
     section at the bottom.
     """
-    lines = [context.rstrip()] if context.strip() else ["# Project Context"]
+    # Split context into: verified part, unverified bullets, and strip
+    # ## Recent Changes (rebuilt each compile from current batch).
+    verified_lines: list[str] = []
+    old_unverified: list[str] = []  # bare content (without marker) from old ## Unverified
+    current_section = "verified"
+    for line in (context or "").splitlines():
+        stripped = line.strip()
+        if stripped == "## Recent Changes":
+            current_section = "recent"
+            continue
+        if stripped == "## Unverified":
+            current_section = "unverified"
+            continue
+        if current_section != "verified" and stripped.startswith("## "):
+            current_section = "verified"
+        if current_section == "verified":
+            verified_lines.append(line)
+        elif current_section == "unverified" and stripped.startswith("- "):
+            fact = stripped[2:].strip()
+            if fact.lower().startswith("(unverified) "):
+                fact = fact[13:].strip()
+            old_unverified.append(fact)
+    verified_context = "\n".join(verified_lines).rstrip()
+
+    lines = [verified_context] if verified_context else ["# Project Context"]
+
+    # Seed dedup set from verified context only (NOT unverified), so that
+    # a newly verified fact can replace an older unverified marker.
+    verified_facts: set[str] = set()
+    for line in verified_context.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            verified_facts.add(stripped[2:].strip().lower())
+
+    # Build set of facts that are ONLY low-confidence in this batch.
+    # If the same fact appears at both low and high confidence, the
+    # high-confidence version wins and goes into the main section.
+    low_conf_content: set[str] = set()
+    high_conf_content: set[str] = set()
+    if entries:
+        for e in entries:
+            normalized = e.content.strip().lower()
+            if e.confidence >= 0.5:
+                high_conf_content.add(normalized)
+            else:
+                low_conf_content.add(normalized)
+        low_conf_content -= high_conf_content
 
     for entry_type, contents in sorted(grouped.items()):
         section_heading = SECTION_MAP.get(entry_type, f"## {entry_type.title()}")
@@ -241,21 +287,37 @@ def _simple_compile(
         if section_heading not in "\n".join(lines):
             lines.append(f"\n{section_heading}")
 
-        # Deduplicate similar entries (case-insensitive)
-        seen: set[str] = set()
+        # Deduplicate against verified context and current batch;
+        # skip low-confidence entries (they go to ## Unverified only)
         for c in contents:
             normalized = c.strip().lower()
-            if normalized not in seen:
-                seen.add(normalized)
+            if normalized in low_conf_content:
+                continue
+            if normalized not in verified_facts:
+                verified_facts.add(normalized)
                 lines.append(f"- {c}")
 
-    # Mark low-confidence entries if we have the raw entry objects
+    # Rebuild ## Unverified: keep old unverified facts that haven't been
+    # promoted to verified, and add new low-confidence entries.
+    all_unverified: list[str] = []
+    unverified_seen: set[str] = set()
+    # Carry forward old unverified facts not now verified
+    for fact in old_unverified:
+        normalized = fact.strip().lower()
+        if normalized not in verified_facts and normalized not in unverified_seen:
+            unverified_seen.add(normalized)
+            all_unverified.append(fact)
+    # Add new low-confidence entries
     if entries:
-        low_conf = [e for e in entries if e.confidence < 0.5]
-        if low_conf:
-            lines.append("\n## Unverified")
-            for e in low_conf:
-                lines.append(f"- (unverified) {e.content}")
+        for e in [e for e in entries if e.confidence < 0.5]:
+            normalized = e.content.strip().lower()
+            if normalized not in verified_facts and normalized not in unverified_seen:
+                unverified_seen.add(normalized)
+                all_unverified.append(e.content)
+    if all_unverified:
+        lines.append("\n## Unverified")
+        for fact in all_unverified:
+            lines.append(f"- (unverified) {fact}")
 
     # Add Recent Changes section with dated changelog
     if entries:

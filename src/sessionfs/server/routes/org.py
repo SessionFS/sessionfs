@@ -44,6 +44,11 @@ class InviteRequest(BaseModel):
     email: str
     role: str = "member"
 
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, v: str) -> str:
+        return v.strip().lower()
+
 
 class ChangeRoleRequest(BaseModel):
     role: str
@@ -132,6 +137,15 @@ async def create_organization(
         storage_limit_bytes=storage,
     )
     db.add(org)
+
+    # Transfer subscription ownership: clear user-level Stripe fields
+    # so they can't be confused with a personal subscription later.
+    if user.stripe_customer_id or user.stripe_subscription_id:
+        await db.execute(
+            update(User)
+            .where(User.id == user.id)
+            .values(stripe_customer_id=None, stripe_subscription_id=None)
+        )
 
     # Creator is admin
     member = OrgMember(
@@ -279,7 +293,7 @@ async def accept_invite(
         raise HTTPException(400, "Invite already accepted")
     if invite.expires_at < datetime.now(timezone.utc):
         raise HTTPException(400, "Invite has expired")
-    if invite.email != user.email:
+    if (invite.email or "").strip().lower() != (user.email or "").strip().lower():
         raise HTTPException(403, "This invite is for a different email address")
 
     # Check user isn't already in an org
@@ -288,6 +302,24 @@ async def accept_invite(
     )
     if existing.scalar_one_or_none():
         raise HTTPException(409, "You are already a member of an organization")
+
+    # Re-check seat capacity at acceptance time (not just invite creation)
+    org_result = await db.execute(
+        select(Organization).where(Organization.id == invite.org_id)
+    )
+    org = org_result.scalar_one_or_none()
+    if org:
+        member_count_result = await db.execute(
+            select(OrgMember).where(OrgMember.org_id == invite.org_id)
+        )
+        current_members = len(member_count_result.scalars().all())
+        if current_members >= org.seats_limit:
+            raise HTTPException(403, {
+                "error": "seat_limit",
+                "seats_used": current_members,
+                "seats_limit": org.seats_limit,
+                "message": "All seats are in use. Ask an admin to upgrade for more seats.",
+            })
 
     member = OrgMember(
         org_id=invite.org_id,

@@ -87,6 +87,7 @@ export default function SearchBar() {
           onChange={(e) => handleChange(e.target.value)}
           onFocus={() => { if (results.length > 0) setOpen(true); }}
           onKeyDown={handleKeyDown}
+          aria-label="Search sessions"
           placeholder="Search sessions..."
           className="w-full pl-8 pr-3 py-1.5 bg-bg-tertiary border border-border rounded-lg text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent transition-colors"
         />
@@ -102,7 +103,7 @@ export default function SearchBar() {
             >
               <div className="flex items-center gap-2 mb-0.5">
                 <span className="text-sm text-text-primary truncate flex-1">
-                  {r.title || 'Untitled session'}
+                  {r.title || r.alias || 'Untitled session'}
                 </span>
                 <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-accent/15 text-accent shrink-0">
                   {abbreviateTool(r.source_tool)}

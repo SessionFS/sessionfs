@@ -195,7 +195,9 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
             </div>
           ))}
           <p className="text-xs text-[var(--text-tertiary)] pt-2">
-            Showing {data.entries.length} of {data.total} entries
+            {data.total > data.entries.length
+              ? `Showing ${data.entries.length} of ${data.total} entries`
+              : `${data.entries.length} ${data.entries.length === 1 ? 'entry' : 'entries'}`}
           </p>
         </div>
       )}
@@ -807,10 +809,16 @@ export default function ProjectDetail() {
       {/* Delete confirmation modal */}
       {showDeleteConfirm && (
         <>
-          <div className="fixed inset-0 z-50 bg-black/50" onClick={() => setShowDeleteConfirm(false)} />
+          <div className="fixed inset-0 z-50 bg-black/50" onClick={() => setShowDeleteConfirm(false)} onKeyDown={(e) => { if (e.key === 'Escape') setShowDeleteConfirm(false); }} />
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
-            <div className="pointer-events-auto w-full max-w-sm bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-lg)] p-6">
-              <h3 className="text-base font-semibold text-[var(--text-primary)] mb-2">
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="delete-project-title"
+              onKeyDown={(e) => { if (e.key === 'Escape') setShowDeleteConfirm(false); }}
+              className="pointer-events-auto w-full max-w-sm bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-lg)] p-6"
+            >
+              <h3 id="delete-project-title" className="text-base font-semibold text-[var(--text-primary)] mb-2">
                 Delete project?
               </h3>
               <p className="text-sm text-[var(--text-tertiary)] mb-5">

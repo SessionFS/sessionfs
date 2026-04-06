@@ -251,7 +251,9 @@ export default function HandoffDetail() {
     mutationFn: () => auth!.client.claimHandoff(id!),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['handoff', id] });
+      void queryClient.invalidateQueries({ queryKey: ['handoff', id, 'summary'] });
       void queryClient.invalidateQueries({ queryKey: ['handoffs'] });
+      void queryClient.invalidateQueries({ queryKey: ['handoffs-inbox'] });
     },
   });
 
@@ -271,7 +273,8 @@ export default function HandoffDetail() {
   }
 
   const isRecipient = handoff.status === 'pending';
-  const pullCommand = `sfs pull ${handoff.session_id}`;
+  const effectiveSessionId = handoff.recipient_session_id || handoff.session_id;
+  const pullCommand = `sfs pull-handoff ${handoff.id}`;
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-6">
@@ -380,7 +383,7 @@ export default function HandoffDetail() {
       {/* Link to full session if claimed */}
       {handoff.status === 'claimed' && (
         <Link
-          to={`/sessions/${handoff.session_id}`}
+          to={`/sessions/${effectiveSessionId}`}
           className="text-[var(--brand)] text-sm hover:underline"
         >
           View full session &rarr;

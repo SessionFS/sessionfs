@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import get_current_user
@@ -166,6 +166,36 @@ async def unwatch_session(
     await db.execute(stmt)
     await db.commit()
     return {"status": "unwatched", "session_id": session_id}
+
+
+@router.put("/watch/{session_id}/{status}")
+async def update_watch_status(
+    session_id: str,
+    status: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Update watchlist entry status (called by daemon during sync lifecycle)."""
+    valid = {"pending", "queued", "synced", "failed"}
+    if status not in valid:
+        raise HTTPException(400, f"Status must be one of: {', '.join(sorted(valid))}")
+
+    values: dict = {"status": status}
+    if status == "synced":
+        values["last_synced_at"] = datetime.now(timezone.utc)
+
+    result = await db.execute(
+        update(SyncWatchlist)
+        .where(
+            SyncWatchlist.user_id == user.id,
+            SyncWatchlist.session_id == session_id,
+        )
+        .values(**values)
+    )
+    await db.commit()
+    if result.rowcount == 0:  # type: ignore[union-attr]
+        return {"status": "not_watched", "session_id": session_id}
+    return {"status": status, "session_id": session_id}
 
 
 # ---- Status ----

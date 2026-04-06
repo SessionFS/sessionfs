@@ -70,7 +70,14 @@ export default function BillingPage() {
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({ tier, seats: 1 }),
       });
-      if (!res.ok) throw new Error('Checkout failed');
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        const detail = body?.detail;
+        const msg = (typeof detail === 'object' && detail !== null ? detail.message : null)
+          || body?.message || (typeof detail === 'string' ? detail : null)
+          || `Checkout failed (${res.status})`;
+        throw new Error(msg);
+      }
       return res.json();
     },
     onSuccess: (data) => {
@@ -79,12 +86,20 @@ export default function BillingPage() {
   });
 
   const portalMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (scope: string | undefined = undefined) => {
       const res = await fetch(`${apiBase}/api/v1/billing/portal`, {
         method: 'POST',
-        headers,
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope: scope || 'auto' }),
       });
-      if (!res.ok) throw new Error('Portal failed');
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        const detail = body?.detail;
+        const msg = (typeof detail === 'object' && detail !== null ? detail.message : null)
+          || body?.message || (typeof detail === 'string' ? detail : null)
+          || `Portal failed (${res.status})`;
+        throw new Error(msg);
+      }
       return res.json();
     },
     onSuccess: (data) => {
@@ -98,6 +113,7 @@ export default function BillingPage() {
 
   const currentTier = billing?.tier || 'free';
   const hasSubscription = billing?.has_subscription;
+  const hasPersonalSub = billing?.has_personal_subscription ?? false;
   const isBeta = billing?.is_beta ?? isError; // Server determines if Stripe is configured
   const isOrgMember = billing?.is_org_member ?? false;
   const isOrgAdmin = billing?.org_role === 'admin';
@@ -145,20 +161,50 @@ export default function BillingPage() {
           )}
         </div>
 
-        {hasSubscription && (
+        {hasSubscription && (!isOrgMember || isOrgAdmin) && (
           <div className="mt-5 pt-4 border-t border-[var(--border)] flex gap-3">
             <button
-              onClick={() => portalMutation.mutate()}
-              className="bg-[var(--brand)] text-white rounded-lg px-5 py-2.5 text-sm font-semibold hover:bg-[var(--brand-hover)] transition-colors"
+              onClick={() => portalMutation.mutate(undefined)}
+              disabled={portalMutation.isPending}
+              className="bg-[var(--brand)] text-white rounded-lg px-5 py-2.5 text-sm font-semibold hover:bg-[var(--brand-hover)] transition-colors disabled:opacity-50"
             >
-              Manage Subscription
+              {portalMutation.isPending ? 'Redirecting...' : 'Manage Subscription'}
             </button>
             <button
-              onClick={() => portalMutation.mutate()}
-              className="px-5 py-2.5 text-sm font-medium border border-[var(--border)] text-[var(--text-secondary)] rounded-lg hover:bg-[var(--surface-hover)] transition-colors"
+              onClick={() => portalMutation.mutate(undefined)}
+              disabled={portalMutation.isPending}
+              className="px-5 py-2.5 text-sm font-medium border border-[var(--border)] text-[var(--text-secondary)] rounded-lg hover:bg-[var(--surface-hover)] transition-colors disabled:opacity-50"
             >
-              View Invoices
+              {portalMutation.isPending ? 'Redirecting...' : 'View Invoices'}
             </button>
+            {portalMutation.isError && (
+              <p className="text-red-500 text-sm self-center">{String(portalMutation.error)}</p>
+            )}
+          </div>
+        )}
+        {hasSubscription && isOrgMember && !isOrgAdmin && !hasPersonalSub && (
+          <p className="mt-4 text-sm text-[var(--text-tertiary)]">
+            Subscription is managed by your organization admin.
+          </p>
+        )}
+        {isOrgMember && hasPersonalSub && (
+          <div className="mt-4 p-4 rounded-lg border border-yellow-500/30 bg-yellow-500/5">
+            <p className="text-sm text-yellow-600 font-medium mb-2">
+              You have a personal subscription that is still active
+            </p>
+            <p className="text-xs text-[var(--text-tertiary)] mb-3">
+              Your organization provides your plan. Cancel your personal subscription to avoid duplicate charges.
+            </p>
+            <button
+              onClick={() => portalMutation.mutate('personal')}
+              disabled={portalMutation.isPending}
+              className="px-4 py-2 text-sm font-medium border border-yellow-500/30 text-yellow-600 rounded-lg hover:bg-yellow-500/10 transition-colors disabled:opacity-50"
+            >
+              {portalMutation.isPending ? 'Redirecting...' : 'Manage Personal Subscription'}
+            </button>
+            {portalMutation.isError && (
+              <p className="text-red-500 text-xs mt-2">{String(portalMutation.error)}</p>
+            )}
           </div>
         )}
       </div>
@@ -205,7 +251,7 @@ export default function BillingPage() {
                   <span className="block text-center py-2 text-[var(--text-tertiary)] text-sm">Coming soon</span>
                 ) : hasSubscription ? (
                   <button
-                    onClick={() => portalMutation.mutate()}
+                    onClick={() => portalMutation.mutate(undefined)}
                     disabled={portalMutation.isPending}
                     className="w-full py-2.5 px-5 rounded-lg text-sm font-medium border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] transition-colors disabled:opacity-50"
                   >
@@ -229,6 +275,12 @@ export default function BillingPage() {
           );
         })}
       </div>
+
+      {(checkoutMutation.isError || portalMutation.isError) && (
+        <p className="text-center text-sm text-red-500 mt-4">
+          {String(checkoutMutation.error || portalMutation.error)}
+        </p>
+      )}
 
       <p className="text-center text-sm text-[var(--text-tertiary)] mt-8">
         Need Enterprise? <a href="mailto:enterprise@sessionfs.dev" className="text-[var(--brand)] hover:underline">Contact sales</a>

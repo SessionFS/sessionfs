@@ -383,3 +383,183 @@ async def test_compilation_creates_recent_changes_section(
     assert "## Recent Changes" in context_after
     assert "## Key Decisions" in context_after
     assert "Switched from Flask to FastAPI" in context_after
+
+
+@pytest.mark.asyncio
+async def test_repeated_compile_no_duplicate_sections(
+    db_session: AsyncSession, test_user: User, test_project: Project,
+):
+    """Repeated compiles must not duplicate ## Recent Changes or ## Unverified."""
+    from sessionfs.server.services.compiler import compile_project_context
+
+    # First compile: one low-confidence entry
+    entry1 = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_dup1",
+        user_id=test_user.id,
+        entry_type="bug",
+        content="Possible race in queue handler",
+        confidence=0.4,
+    )
+    db_session.add(entry1)
+    await db_session.commit()
+
+    c1 = await compile_project_context(
+        project_id=test_project.id, user_id=test_user.id, db=db_session,
+    )
+    assert c1 is not None
+    assert c1.context_after.count("## Recent Changes") == 1
+    assert c1.context_after.count("## Unverified") == 1
+    assert "(unverified) Possible race in queue handler" in c1.context_after
+
+    # Second compile: new entry, same project
+    entry2 = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_dup2",
+        user_id=test_user.id,
+        entry_type="decision",
+        content="Use Redis for job queue",
+        confidence=0.9,
+    )
+    db_session.add(entry2)
+    await db_session.commit()
+
+    c2 = await compile_project_context(
+        project_id=test_project.id, user_id=test_user.id, db=db_session,
+    )
+    assert c2 is not None
+    # Exactly one of each ephemeral section
+    assert c2.context_after.count("## Recent Changes") == 1
+    assert c2.context_after.count("## Unverified") == 1
+    # Old unverified fact preserved
+    assert "(unverified) Possible race in queue handler" in c2.context_after
+    # New verified fact present
+    assert "Use Redis for job queue" in c2.context_after
+
+
+@pytest.mark.asyncio
+async def test_unverified_promoted_to_verified_on_later_compile(
+    db_session: AsyncSession, test_user: User, test_project: Project,
+):
+    """A fact that starts unverified should be promoted when a verified version arrives."""
+    from sessionfs.server.services.compiler import compile_project_context
+
+    # First compile: low-confidence entry
+    entry1 = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_promo1",
+        user_id=test_user.id,
+        entry_type="pattern",
+        content="All converters use streaming JSON",
+        confidence=0.3,
+    )
+    db_session.add(entry1)
+    await db_session.commit()
+
+    c1 = await compile_project_context(
+        project_id=test_project.id, user_id=test_user.id, db=db_session,
+    )
+    assert c1 is not None
+    assert "(unverified) All converters use streaming JSON" in c1.context_after
+
+    # Second compile: same fact, now high-confidence
+    entry2 = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_promo2",
+        user_id=test_user.id,
+        entry_type="pattern",
+        content="All converters use streaming JSON",
+        confidence=0.9,
+    )
+    db_session.add(entry2)
+    await db_session.commit()
+
+    c2 = await compile_project_context(
+        project_id=test_project.id, user_id=test_user.id, db=db_session,
+    )
+    assert c2 is not None
+    # Verified bullet exists in main section (not under Unverified)
+    assert "- All converters use streaming JSON" in c2.context_after
+    # Unverified marker is gone — promoted to verified
+    assert "(unverified) All converters use streaming JSON" not in c2.context_after
+
+
+@pytest.mark.asyncio
+async def test_compile_dedup_same_fact_across_batches(
+    db_session: AsyncSession, test_user: User, test_project: Project,
+):
+    """Same fact compiled in two batches should not produce duplicate bullets."""
+    from sessionfs.server.services.compiler import compile_project_context
+
+    entry1 = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_dedup1",
+        user_id=test_user.id,
+        entry_type="decision",
+        content="Use PostgreSQL for prod",
+        confidence=0.9,
+    )
+    db_session.add(entry1)
+    await db_session.commit()
+
+    c1 = await compile_project_context(
+        project_id=test_project.id, user_id=test_user.id, db=db_session,
+    )
+    assert c1 is not None
+    assert c1.context_after.count("Use PostgreSQL for prod") == 2  # main + Recent Changes
+
+    # Second compile: identical fact from a different session
+    entry2 = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_dedup2",
+        user_id=test_user.id,
+        entry_type="decision",
+        content="Use PostgreSQL for prod",
+        confidence=0.9,
+    )
+    db_session.add(entry2)
+    await db_session.commit()
+
+    c2 = await compile_project_context(
+        project_id=test_project.id, user_id=test_user.id, db=db_session,
+    )
+    assert c2 is not None
+    # Main section should still have only one bullet for this fact
+    main_section = c2.context_after.split("## Recent Changes")[0]
+    assert main_section.count("Use PostgreSQL for prod") == 1
+
+
+@pytest.mark.asyncio
+async def test_mixed_confidence_same_batch_verified_wins(
+    db_session: AsyncSession, test_user: User, test_project: Project,
+):
+    """Same fact at low and high confidence in one batch: verified wins."""
+    from sessionfs.server.services.compiler import compile_project_context
+
+    low = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_mix1",
+        user_id=test_user.id,
+        entry_type="pattern",
+        content="Always use UTC timestamps",
+        confidence=0.3,
+    )
+    high = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_mix2",
+        user_id=test_user.id,
+        entry_type="pattern",
+        content="Always use UTC timestamps",
+        confidence=0.9,
+    )
+    db_session.add_all([low, high])
+    await db_session.commit()
+
+    c = await compile_project_context(
+        project_id=test_project.id, user_id=test_user.id, db=db_session,
+    )
+    assert c is not None
+    # Verified bullet in main section
+    assert "- Always use UTC timestamps" in c.context_after
+    # NOT under Unverified
+    assert "(unverified) Always use UTC timestamps" not in c.context_after

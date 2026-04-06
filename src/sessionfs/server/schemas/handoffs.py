@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class CreateHandoffRequest(BaseModel):
@@ -12,10 +12,16 @@ class CreateHandoffRequest(BaseModel):
     recipient_email: str = Field(..., max_length=255)
     message: str | None = Field(None, max_length=2000)
 
+    @field_validator("recipient_email")
+    @classmethod
+    def normalize_email(cls, v: str) -> str:
+        return v.strip().lower()
+
 
 class HandoffResponse(BaseModel):
     id: str
     session_id: str
+    recipient_session_id: str | None = None
     sender_email: str
     recipient_email: str
     message: str | None

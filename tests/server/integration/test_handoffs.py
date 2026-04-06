@@ -84,8 +84,8 @@ async def test_get_handoff(
     )
     handoff_id = create_resp.json()["id"]
 
-    # Get details (no auth required)
-    resp = await client.get(f"/api/v1/handoffs/{handoff_id}")
+    # Get details (auth required — sender can view)
+    resp = await client.get(f"/api/v1/handoffs/{handoff_id}", headers=auth_headers)
     assert resp.status_code == 200
     data = resp.json()
     assert data["id"] == handoff_id
@@ -93,9 +93,9 @@ async def test_get_handoff(
 
 
 @pytest.mark.asyncio
-async def test_get_handoff_not_found(client: AsyncClient):
+async def test_get_handoff_not_found(client: AsyncClient, auth_headers: dict):
     """Get nonexistent handoff -> 404."""
-    resp = await client.get("/api/v1/handoffs/hnd_nonexistent12345")
+    resp = await client.get("/api/v1/handoffs/hnd_nonexistent12345", headers=auth_headers)
     assert resp.status_code == 404
 
 
@@ -210,7 +210,7 @@ async def test_expired_handoff_get(
     handoff.expires_at = datetime.now(timezone.utc) - timedelta(hours=1)
     await db_session.commit()
 
-    resp = await client.get(f"/api/v1/handoffs/{handoff_id}")
+    resp = await client.get(f"/api/v1/handoffs/{handoff_id}", headers=auth_headers)
     assert resp.status_code == 410
 
 
@@ -239,4 +239,34 @@ async def test_expired_handoff_claim(
     await db_session.commit()
 
     resp = await client.post(f"/api/v1/handoffs/{handoff_id}/claim", headers=auth_headers)
+    assert resp.status_code == 410
+
+
+@pytest.mark.asyncio
+async def test_claimed_handoff_summary_returns_410(
+    client: AsyncClient, auth_headers: dict, pushed_session: str,
+):
+    """Summary of a claimed handoff -> 410."""
+    create_resp = await client.post(
+        "/api/v1/handoffs",
+        headers=auth_headers,
+        json={
+            "session_id": pushed_session,
+            "recipient_email": "test@example.com",
+        },
+    )
+    handoff_id = create_resp.json()["id"]
+
+    # Claim it
+    claim_resp = await client.post(
+        f"/api/v1/handoffs/{handoff_id}/claim",
+        headers=auth_headers,
+    )
+    assert claim_resp.status_code == 200
+
+    # Summary should now be blocked
+    resp = await client.get(
+        f"/api/v1/handoffs/{handoff_id}/summary",
+        headers=auth_headers,
+    )
     assert resp.status_code == 410

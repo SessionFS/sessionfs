@@ -136,7 +136,7 @@ export default function SearchResults() {
               >
                 <div className="flex items-center gap-2 mb-1">
                   <span className="text-sm font-medium text-text-primary truncate flex-1">
-                    {r.title || 'Untitled session'}
+                    {r.title || r.alias || 'Untitled session'}
                   </span>
                   <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-accent/15 text-accent shrink-0">
                     {abbreviateTool(r.source_tool)}

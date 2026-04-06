@@ -67,6 +67,11 @@ def unpack_session(archive_data: bytes, target_dir: Path) -> None:
     # M7: Full validation before extraction
     validate_tar_archive(archive_data)
 
+    # Clear existing contents so stale files from a previous version
+    # don't survive when the remote archive no longer includes them.
+    if target_dir.exists():
+        import shutil
+        shutil.rmtree(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
     buf = io.BytesIO(archive_data)
     with tarfile.open(fileobj=buf, mode="r:gz") as tar:

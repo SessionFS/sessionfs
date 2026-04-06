@@ -193,7 +193,7 @@ export default function SessionList() {
 
   // Handoffs inbox query
   const { data: handoffsData } = useQuery<HandoffListResponse>({
-    queryKey: ['handoffs-inbox'],
+    queryKey: ['handoffs', 'inbox'],
     queryFn: () => auth!.client.listInbox(),
     enabled: !!auth,
     staleTime: 60_000,
@@ -848,8 +848,9 @@ function SessionRow({
 }) {
   return (
     <div
+      role="button"
       onClick={onClick}
-      onKeyDown={onKeyDown}
+      onKeyDown={(e) => { if (e.key === ' ') { e.preventDefault(); onClick(); } else { onKeyDown(e); } }}
       tabIndex={0}
       className={`group bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg cursor-pointer hover:bg-[var(--surface-hover)] hover:shadow-[var(--shadow-sm)] transition-all duration-150 focus:bg-[var(--surface-hover)] outline-none focus:ring-1 focus:ring-[var(--brand)] ${isChild ? 'px-3 py-3' : 'px-4 py-4'} ${hasChildren ? 'border-l-[3px] border-l-[var(--brand)]/40' : ''} ${selected ? 'ring-1 ring-[var(--brand)] bg-[var(--brand)]/5' : ''}`}
     >

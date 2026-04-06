@@ -49,13 +49,20 @@ async def extract_knowledge_entries(
 ) -> list[KnowledgeEntry]:
     """Extract knowledge entries from a session summary.
 
-    Extraction rules:
-    - Files created -> "pattern" entries (confidence 0.5)
-    - Tests failing -> "bug" entries (confidence 0.7)
-    - Packages installed -> "dependency" entries (confidence 0.9)
-    - key_decisions from narrative -> "decision" entries (confidence 0.8)
-    - open_issues from narrative -> "bug" entries (confidence 0.7)
+    Uses content-level dedup so re-syncs of long-running sessions can
+    add new decisions/files/bugs without duplicating existing entries.
     """
+    from sqlalchemy import select as sa_select
+
+    # Fetch existing entry contents for this session to dedup at content level
+    existing_result = await db.execute(
+        sa_select(KnowledgeEntry.content).where(
+            KnowledgeEntry.session_id == session_id,
+            KnowledgeEntry.project_id == project_id,
+        )
+    )
+    existing_contents: set[str] = {row[0] for row in existing_result.all()}
+
     entries: list[KnowledgeEntry] = []
 
     # Files modified -> pattern entries
@@ -126,19 +133,25 @@ async def extract_knowledge_entries(
             )
             entries.append(entry)
 
-    # Persist all entries
-    if entries:
-        for entry in entries:
+    # Persist only entries whose content is new (dedup against DB and intra-batch)
+    new_entries: list[KnowledgeEntry] = []
+    for e in entries:
+        if e.content not in existing_contents:
+            existing_contents.add(e.content)
+            new_entries.append(e)
+    if new_entries:
+        for entry in new_entries:
             db.add(entry)
         await db.commit()
         logger.info(
-            "Extracted %d knowledge entries from session %s for project %s",
-            len(entries),
+            "Extracted %d new knowledge entries from session %s for project %s (skipped %d existing)",
+            len(new_entries),
             session_id,
             project_id,
+            len(entries) - len(new_entries),
         )
 
-    return entries
+    return new_entries
 
 
 async def extract_knowledge_with_llm(
@@ -154,10 +167,25 @@ async def extract_knowledge_with_llm(
 ) -> list[KnowledgeEntry]:
     """Extract high-quality knowledge entries from session messages using LLM.
 
+    Uses content-level dedup so re-syncs of long-running sessions can
+    discover new patterns without duplicating existing LLM entries.
     This catches patterns, decisions, and discoveries that deterministic
     extraction misses. Runs automatically on sync when auto_narrative is
     enabled and the user has LLM configured.
     """
+    # Fetch existing LLM-extracted content for content-level dedup
+    existing_contents: set[str] = set()
+    if db:
+        from sqlalchemy import select as sa_select
+        existing_result = await db.execute(
+            sa_select(KnowledgeEntry.content).where(
+                KnowledgeEntry.session_id == session_id,
+                KnowledgeEntry.project_id == project_id,
+                KnowledgeEntry.source_context.like("LLM-extracted%"),
+            )
+        )
+        existing_contents = {row[0] for row in existing_result.all()}
+
     # Extract text from last 30 assistant messages
     assistant_texts: list[str] = []
     for msg in reversed(messages):
@@ -222,17 +250,24 @@ async def extract_knowledge_with_llm(
                 source_context=f"LLM-extracted from session {session_id}",
             ))
 
-        if entries and db:
-            for entry in entries:
+        # Content-level dedup: against DB and intra-batch
+        new_entries: list[KnowledgeEntry] = []
+        for e in entries:
+            if e.content not in existing_contents:
+                existing_contents.add(e.content)
+                new_entries.append(e)
+        if new_entries and db:
+            for entry in new_entries:
                 db.add(entry)
             await db.commit()
             logger.info(
-                "LLM extracted %d knowledge entries from session %s",
-                len(entries),
+                "LLM extracted %d new knowledge entries from session %s (skipped %d existing)",
+                len(new_entries),
                 session_id,
+                len(entries) - len(new_entries),
             )
 
-        return entries
+        return new_entries
 
     except Exception:
         logger.warning("LLM knowledge extraction failed for %s", session_id, exc_info=True)

@@ -415,9 +415,16 @@ def sync_all() -> None:
         conflicts = 0
 
         try:
-            # Get remote session list
-            remote_result = await client.list_remote_sessions(page=1, page_size=100)
-            remote_by_id = {s.id: s for s in remote_result.sessions}
+            # Get all remote sessions (paginate through all pages)
+            remote_by_id: dict = {}
+            page = 1
+            while True:
+                remote_result = await client.list_remote_sessions(page=page, page_size=100)
+                for s in remote_result.sessions:
+                    remote_by_id[s.id] = s
+                if not remote_result.has_more:
+                    break
+                page += 1
 
             # Get local sessions
             local_sessions = store.list_sessions()
@@ -606,6 +613,14 @@ def pull_handoff(
             console.print("[dim]Handoff already claimed — continuing with pull.[/dim]")
         elif claim_resp.status_code not in (200, 201):
             err_console.print(f"[yellow]Warning: could not claim handoff: {claim_resp.text}[/yellow]")
+
+        # Use recipient's copied session ID (persisted on handoff record)
+        recipient_sid = handoff_data.get("recipient_session_id")
+        if claim_resp.status_code in (200, 201):
+            claim_data = claim_resp.json()
+            recipient_sid = claim_data.get("recipient_session_id") or recipient_sid
+        if recipient_sid:
+            session_id = recipient_sid
 
         # Pull the session
         client = _get_sync_client()

@@ -124,6 +124,13 @@ class Handoff(Base):
     )
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    recipient_session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Snapshot of session metadata at creation time — immune to session-ID reuse
+    snapshot_title: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    snapshot_tool: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    snapshot_model_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    snapshot_message_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    snapshot_total_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
 class UserJudgeSettings(Base):
@@ -201,7 +208,7 @@ class ShareLink(Base):
     )
     token: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    password_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    password_hash: Mapped[str | None] = mapped_column(String(200), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -212,11 +219,11 @@ class GitHubInstallation(Base):
     __tablename__ = "github_installations"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)  # GitHub's installation ID
-    user_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("users.id"), nullable=False
+    user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id"), nullable=True
     )
-    account_login: Mapped[str] = mapped_column(String(255), nullable=False)
-    account_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    account_login: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    account_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
     auto_comment: Mapped[bool] = mapped_column(Boolean, default=True)
     include_trust_score: Mapped[bool] = mapped_column(Boolean, default=True)
     include_session_links: Mapped[bool] = mapped_column(Boolean, default=True)

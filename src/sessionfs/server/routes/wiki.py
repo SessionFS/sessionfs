@@ -129,7 +129,7 @@ async def list_pages(
     ]
 
 
-@router.get("/{project_id}/pages/{slug}", response_model=PageDetail)
+@router.get("/{project_id}/pages/{slug:path}", response_model=PageDetail)
 async def get_page(
     project_id: str,
     slug: str,
@@ -184,7 +184,7 @@ async def get_page(
     )
 
 
-@router.put("/{project_id}/pages/{slug}", response_model=PageDetail)
+@router.put("/{project_id}/pages/{slug:path}", response_model=PageDetail)
 async def create_or_update_page(
     project_id: str,
     slug: str,
@@ -249,7 +249,7 @@ async def create_or_update_page(
     )
 
 
-@router.delete("/{project_id}/pages/{slug}")
+@router.delete("/{project_id}/pages/{slug:path}")
 async def delete_page(
     project_id: str,
     slug: str,

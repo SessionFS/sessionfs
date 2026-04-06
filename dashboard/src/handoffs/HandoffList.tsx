@@ -82,8 +82,9 @@ export default function HandoffList() {
           {handoffs.map((h) => (
             <div
               key={h.id}
+              role="button"
               onClick={() => navigate(`/handoffs/${h.id}`)}
-              onKeyDown={(e) => { if (e.key === 'Enter') navigate(`/handoffs/${h.id}`); }}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate(`/handoffs/${h.id}`); } }}
               tabIndex={0}
               className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl p-4 cursor-pointer hover:border-[var(--border-strong)] transition-colors focus:border-[var(--brand)] outline-none"
             >

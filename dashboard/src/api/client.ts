@@ -46,6 +46,7 @@ export interface MessagesResponse {
 export interface HandoffSummary {
   id: string;
   session_id: string;
+  recipient_session_id: string | null;
   session_title: string | null;
   session_tool: string | null;
   session_model_id: string | null;
@@ -134,10 +135,11 @@ export interface JudgeSettings {
 }
 
 export interface AdminUser {
-  user_id: string;
+  id: string;
   email: string;
   tier: string;
   email_verified: boolean;
+  is_active: boolean;
   created_at: string;
   session_count: number;
 }
@@ -155,10 +157,12 @@ export interface AdminUserListResponse {
 
 export interface AdminActionLog {
   id: string;
-  admin_email: string;
+  admin_id: string;
   action: string;
-  target: string;
-  timestamp: string;
+  target_type: string;
+  target_id: string;
+  details: Record<string, unknown> | null;
+  created_at: string;
 }
 
 export interface GitHubInstallationResponse {
@@ -370,6 +374,7 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         results: {
           session_id: string;
           title: string | null;
+          alias: string | null;
           source_tool: string;
           model_id: string | null;
           message_count: number;
@@ -460,11 +465,11 @@ export function createApiClient(baseUrl: string, apiKey: string) {
     },
 
     // Admin endpoints
-    adminListUsers: (params: { page?: number; page_size?: number; email?: string } = {}) => {
+    adminListUsers: (params: { page?: number; page_size?: number; search?: string } = {}) => {
       const sp = new URLSearchParams();
       if (params.page) sp.set('page', String(params.page));
       if (params.page_size) sp.set('page_size', String(params.page_size));
-      if (params.email) sp.set('email', params.email);
+      if (params.search) sp.set('search', params.search);
       return request<AdminUserListResponse>(`/api/v1/admin/users?${sp}`);
     },
 
@@ -507,7 +512,7 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       const sp = new URLSearchParams();
       if (params.page) sp.set('page', String(params.page));
       if (params.page_size) sp.set('page_size', String(params.page_size));
-      return request<{ actions: AdminActionLog[]; total: number }>(`/api/v1/admin/actions?${sp}`);
+      return request<{ actions: AdminActionLog[]; total: number }>(`/api/v1/admin/audit-log?${sp}`);
     },
 
     adminListLicenses: (status?: string) =>

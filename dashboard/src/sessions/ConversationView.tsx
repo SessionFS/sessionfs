@@ -15,7 +15,7 @@ export default function ConversationView({ sessionId, initialPage }: Props) {
 
   // Jump to page when initialPage changes (from audit "Jump to message")
   useEffect(() => {
-    if (initialPage && initialPage !== page) {
+    if (initialPage) {
       setPage(initialPage);
       setOrder('oldest'); // Jump to message uses oldest-first indexing
     }
@@ -28,6 +28,7 @@ export default function ConversationView({ sessionId, initialPage }: Props) {
   useEffect(() => {
     if (sessionId !== prevSessionId.current) {
       setPage(1);
+      setOrder('newest');
       prevSessionId.current = sessionId;
     }
   }, [sessionId]);

@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.db.engine import get_db
-from sessionfs.server.db.models import GitHubInstallation, User, UserJudgeSettings
+from sessionfs.server.db.models import GitHubInstallation, GitLabSettings, User, UserJudgeSettings
 
 logger = logging.getLogger("sessionfs.server.routes.settings")
 
@@ -298,13 +298,22 @@ async def update_github_installation(
     inst = result.scalar_one_or_none()
 
     if inst is None:
-        return GitHubInstallationResponse(
-            account_login=None,
-            account_type=None,
-            auto_comment=True,
-            include_trust_score=True,
-            include_session_links=True,
+        # Try to claim an unclaimed installation (created by webhook, no user yet)
+        unclaimed_result = await db.execute(
+            select(GitHubInstallation).where(GitHubInstallation.user_id.is_(None)).limit(1)
         )
+        inst = unclaimed_result.scalar_one_or_none()
+        if inst:
+            inst.user_id = user.id
+        else:
+            # No installation available — return defaults
+            return GitHubInstallationResponse(
+                account_login=None,
+                account_type=None,
+                auto_comment=body.auto_comment if body.auto_comment is not None else True,
+                include_trust_score=body.include_trust_score if body.include_trust_score is not None else True,
+                include_session_links=body.include_session_links if body.include_session_links is not None else True,
+            )
 
     if body.auto_comment is not None:
         inst.auto_comment = body.auto_comment
@@ -323,3 +332,101 @@ async def update_github_installation(
         include_trust_score=inst.include_trust_score,
         include_session_links=inst.include_session_links,
     )
+
+
+# --- GitLab integration settings ---
+
+
+class GitLabSettingsResponse(BaseModel):
+    instance_url: str
+    has_token: bool
+    webhook_secret: str | None
+
+
+class GitLabSettingsRequest(BaseModel):
+    instance_url: str = "https://gitlab.com"
+    access_token: str
+    webhook_secret: str | None = None
+
+
+@router.get("/gitlab", response_model=GitLabSettingsResponse)
+async def get_gitlab_settings(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> GitLabSettingsResponse:
+    """Return GitLab integration settings for the current user."""
+    result = await db.execute(
+        select(GitLabSettings).where(GitLabSettings.user_id == user.id)
+    )
+    settings = result.scalar_one_or_none()
+    if settings is None:
+        return GitLabSettingsResponse(
+            instance_url="https://gitlab.com",
+            has_token=False,
+            webhook_secret=None,
+        )
+    return GitLabSettingsResponse(
+        instance_url=settings.instance_url,
+        has_token=bool(settings.encrypted_access_token),
+        webhook_secret=settings.webhook_secret,
+    )
+
+
+@router.put("/gitlab", response_model=GitLabSettingsResponse)
+async def update_gitlab_settings(
+    body: GitLabSettingsRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> GitLabSettingsResponse:
+    """Create or update GitLab integration settings."""
+    import base64
+    import hashlib as _hashlib
+    import secrets as _secrets
+
+    from cryptography.fernet import Fernet
+
+    secret = os.environ.get("SFS_VERIFICATION_SECRET", "dev-secret")
+    key = base64.urlsafe_b64encode(_hashlib.sha256(secret.encode()).digest())
+    fernet = Fernet(key)
+    encrypted = fernet.encrypt(body.access_token.encode()).decode()
+
+    result = await db.execute(
+        select(GitLabSettings).where(GitLabSettings.user_id == user.id)
+    )
+    settings = result.scalar_one_or_none()
+    webhook_secret = body.webhook_secret or _secrets.token_hex(16)
+
+    if settings is None:
+        settings = GitLabSettings(
+            user_id=user.id,
+            instance_url=body.instance_url,
+            encrypted_access_token=encrypted,
+            webhook_secret=webhook_secret,
+        )
+        db.add(settings)
+    else:
+        settings.instance_url = body.instance_url
+        settings.encrypted_access_token = encrypted
+        if body.webhook_secret:
+            settings.webhook_secret = body.webhook_secret
+
+    await db.commit()
+    await db.refresh(settings)
+
+    return GitLabSettingsResponse(
+        instance_url=settings.instance_url,
+        has_token=True,
+        webhook_secret=settings.webhook_secret,
+    )
+
+
+@router.delete("/gitlab", status_code=204)
+async def delete_gitlab_settings(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove GitLab integration settings."""
+    await db.execute(
+        delete(GitLabSettings).where(GitLabSettings.user_id == user.id)
+    )
+    await db.commit()

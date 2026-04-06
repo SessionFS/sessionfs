@@ -28,8 +28,10 @@ router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
 def _verify_signature(body: bytes, signature: str | None) -> None:
     """Verify GitHub webhook HMAC-SHA256 signature."""
-    if not GITHUB_WEBHOOK_SECRET or not signature:
-        return  # Skip in dev
+    if not GITHUB_WEBHOOK_SECRET:
+        return  # No secret configured — dev mode
+    if not signature:
+        raise HTTPException(status_code=401, detail="Missing webhook signature")
     expected = "sha256=" + hmac.new(
         GITHUB_WEBHOOK_SECRET.encode(), body, hashlib.sha256
     ).hexdigest()
@@ -55,16 +57,43 @@ async def github_webhook(request: Request):
 
     elif event == "installation":
         action = payload.get("action")
-        if action == "created":
-            logger.info(
-                "GitHub App installed: %s",
-                payload["installation"]["account"]["login"],
-            )
-        elif action == "deleted":
-            logger.info(
-                "GitHub App uninstalled: %s",
-                payload["installation"]["account"]["login"],
-            )
+        installation_data = payload.get("installation", {})
+        installation_id = installation_data.get("id")
+        account = installation_data.get("account", {})
+
+        if action == "created" and installation_id:
+            logger.info("GitHub App installed: %s (id=%s)", account.get("login"), installation_id)
+            from sessionfs.server.db.engine import _session_factory
+            if _session_factory:
+                try:
+                    async with _session_factory() as db:
+                        existing = await db.execute(
+                            select(GitHubInstallation).where(GitHubInstallation.id == installation_id)
+                        )
+                        if not existing.scalar_one_or_none():
+                            db.add(GitHubInstallation(
+                                id=installation_id,
+                                account_login=account.get("login"),
+                                account_type=account.get("type"),
+                                # user_id left null — claimed when user links via settings
+                            ))
+                            await db.commit()
+                except Exception:
+                    logger.warning("Failed to persist GitHub installation %s", installation_id, exc_info=True)
+
+        elif action == "deleted" and installation_id:
+            logger.info("GitHub App uninstalled: %s (id=%s)", account.get("login"), installation_id)
+            from sessionfs.server.db.engine import _session_factory
+            if _session_factory:
+                try:
+                    async with _session_factory() as db:
+                        from sqlalchemy import delete as sa_delete
+                        await db.execute(
+                            sa_delete(GitHubInstallation).where(GitHubInstallation.id == installation_id)
+                        )
+                        await db.commit()
+                except Exception:
+                    logger.warning("Failed to remove GitHub installation %s", installation_id, exc_info=True)
 
     return {"status": "ok"}
 
@@ -125,14 +154,23 @@ async def _handle_pr_event(payload: dict) -> None:
             # Auto-audit on PR if configured
             for s in sessions:
                 try:
-                    from sessionfs.server.db.models import User
+                    from sessionfs.server.db.models import User, UserJudgeSettings
                     user_result = await db.execute(select(User).where(User.id == s.user_id))
                     session_owner = user_result.scalar_one_or_none()
                     if session_owner and getattr(session_owner, "audit_trigger", "manual") == "on_pr":
-                        # Trigger audit via internal import (not HTTP)
-                        logger.info("Auto-audit on PR for session %s", s.id)
+                        judge_result = await db.execute(
+                            select(UserJudgeSettings).where(UserJudgeSettings.user_id == s.user_id)
+                        )
+                        judge_settings = judge_result.scalar_one_or_none()
+                        if judge_settings and judge_settings.encrypted_api_key:
+                                # TODO(v0.9.8): Wire blob store access into background
+                            # task so audit can actually run. For now, mark as pending.
+                            logger.info(
+                                "Auto-audit on PR requested for session %s (user %s has on_pr trigger + judge key)",
+                                s.id, s.user_id,
+                            )
                 except Exception:
-                    pass
+                    logger.debug("Auto-audit check failed for session %s", s.id, exc_info=True)
 
             # Build session data for comment
             session_data = []
@@ -154,11 +192,12 @@ async def _handle_pr_event(payload: dict) -> None:
             # Get installation token
             token = await get_installation_token(installation_id)
 
-            # Check for existing comment
+            # Check for existing comment (scoped to this GitHub installation)
             existing = await db.execute(
                 select(PRComment).where(
                     PRComment.repo_full_name == repo,
                     PRComment.pr_number == pr_number,
+                    PRComment.installation_id == installation_id,
                 )
             )
             pr_comment = existing.scalar_one_or_none()
@@ -209,14 +248,31 @@ async def _handle_pr_event(payload: dict) -> None:
 # ---- GitLab Webhooks ----
 
 
-@router.post("/webhooks/gitlab")
+@router.post("/gitlab")
 async def gitlab_webhook(request: Request):
     """Handle GitLab webhook events (merge request)."""
-    # Verify webhook token
+    # Verify webhook token against global secret OR any user's per-user secret
     token = request.headers.get("X-Gitlab-Token", "")
-    expected = os.environ.get("SFS_GITLAB_WEBHOOK_SECRET", "")
-    if not expected or not hmac.compare_digest(token, expected):
-        raise HTTPException(401, "Invalid webhook token")
+    if not token:
+        raise HTTPException(401, "Missing webhook token")
+
+    global_secret = os.environ.get("SFS_GITLAB_WEBHOOK_SECRET", "")
+    if global_secret and hmac.compare_digest(token, global_secret):
+        pass  # Global secret matches
+    else:
+        # Check per-user webhook secrets
+        from sessionfs.server.db.engine import _session_factory
+        matched = False
+        if _session_factory:
+            async with _session_factory() as db:
+                from sessionfs.server.db.models import GitLabSettings as _GLS
+                result = await db.execute(
+                    select(_GLS).where(_GLS.webhook_secret == token)
+                )
+                if result.scalar_one_or_none():
+                    matched = True
+        if not matched:
+            raise HTTPException(401, "Invalid webhook token")
 
     payload = await request.json()
     event_type = payload.get("object_kind")
@@ -307,11 +363,42 @@ async def _handle_gitlab_mr(payload: dict, request: Request):
             fernet = Fernet(key)
             access_token = fernet.decrypt(gitlab_settings.encrypted_access_token.encode()).decode()
 
-            # Post comment
+            # Post or update comment (avoid duplicates on MR updates)
             from sessionfs.server.gitlab_client import GitLabClient
 
             client = GitLabClient(gitlab_settings.instance_url, access_token)
-            await client.post_mr_comment(project_id, mr_iid, comment_body)
+
+            # Check for existing comment tracking (scoped to GitLab via installation_id=0)
+            existing_comment = await db.execute(
+                select(PRComment).where(
+                    PRComment.repo_full_name == normalized,
+                    PRComment.pr_number == mr_iid,
+                    PRComment.installation_id == 0,
+                )
+            )
+            mr_comment = existing_comment.scalar_one_or_none()
+
+            if mr_comment and mr_comment.comment_id:
+                await client.update_mr_comment(project_id, mr_iid, mr_comment.comment_id, comment_body)
+                mr_comment.session_ids = json.dumps([s.id for s in sessions])
+                mr_comment.updated_at = datetime.now(timezone.utc)
+            else:
+                note_resp = await client.post_mr_comment(project_id, mr_iid, comment_body)
+                note_id = note_resp.get("id")
+                if mr_comment:
+                    mr_comment.comment_id = note_id
+                    mr_comment.session_ids = json.dumps([s.id for s in sessions])
+                    mr_comment.updated_at = datetime.now(timezone.utc)
+                else:
+                    db.add(PRComment(
+                        id=str(uuid.uuid4()),
+                        installation_id=0,
+                        repo_full_name=normalized,
+                        pr_number=mr_iid,
+                        comment_id=note_id,
+                        session_ids=json.dumps([s.id for s in sessions]),
+                    ))
+            await db.commit()
 
             logger.info("Posted AI Context comment on GitLab MR %s!%d (%d sessions)", normalized, mr_iid, len(sessions))
 

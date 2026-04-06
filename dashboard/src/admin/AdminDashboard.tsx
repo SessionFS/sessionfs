@@ -16,12 +16,14 @@ type AdminTab = 'users' | 'licenses' | 'activity';
 
 const TIER_COLORS: Record<string, string> = {
   free: 'bg-gray-500/15 text-gray-500',
+  starter: 'bg-green-500/15 text-green-500',
   pro: 'bg-blue-500/15 text-blue-500',
   team: 'bg-purple-500/15 text-purple-500',
+  enterprise: 'bg-amber-500/15 text-amber-500',
   admin: 'bg-red-500/15 text-red-500',
 };
 
-const TIERS = ['free', 'pro', 'team', 'admin'] as const;
+const TIERS = ['free', 'starter', 'pro', 'team', 'enterprise', 'admin'] as const;
 
 const AVATAR_COLORS = [
   'bg-blue-500/20 text-blue-500',
@@ -57,7 +59,7 @@ export default function AdminDashboard() {
   const { data: stats, isLoading: statsLoading } = useAdminStats();
   const { data: usersData, isLoading: usersLoading, error: usersError } = useAdminUsers({
     page_size: 100,
-    email: emailSearch || undefined,
+    search: emailSearch || undefined,
   });
   const { data: actionsData } = useAdminActionLog({ page_size: 20 });
 
@@ -87,7 +89,7 @@ export default function AdminDashboard() {
 
   const handleDeleteConfirm = useCallback(() => {
     if (!confirmDelete) return;
-    deleteUser.mutate({ userId: confirmDelete.user_id });
+    deleteUser.mutate({ userId: confirmDelete.id });
     setConfirmDelete(null);
     setExpandedUserId(null);
   }, [confirmDelete, deleteUser]);
@@ -225,11 +227,11 @@ export default function AdminDashboard() {
                 <tbody>
                   {actionsData.actions.map((action) => (
                     <tr key={action.id} className="border-t border-[var(--border)] hover:bg-[var(--surface-hover)] transition-colors">
-                      <td className="px-4 py-3 text-[var(--text-secondary)]">{action.admin_email}</td>
+                      <td className="px-4 py-3 text-[var(--text-secondary)] font-mono text-xs">{action.admin_id.slice(0, 8)}</td>
                       <td className="px-4 py-3 text-[var(--text-primary)]">{action.action}</td>
-                      <td className="px-4 py-3 text-[var(--text-tertiary)] font-mono text-xs">{action.target}</td>
+                      <td className="px-4 py-3 text-[var(--text-tertiary)] font-mono text-xs">{action.target_type}:{action.target_id.slice(0, 12)}</td>
                       <td className="px-4 py-3 text-[var(--text-tertiary)] text-xs">
-                        <RelativeDate iso={action.timestamp} />
+                        <RelativeDate iso={action.created_at} />
                       </td>
                     </tr>
                   ))}
@@ -281,16 +283,16 @@ export default function AdminDashboard() {
                 <tbody>
                   {usersData.users.map((user) => (
                     <UserRow
-                      key={user.user_id}
+                      key={user.id}
                       user={user}
-                      expanded={expandedUserId === user.user_id}
-                      pendingTier={pendingTier[user.user_id]}
-                      onToggle={() => handleToggleExpand(user.user_id)}
+                      expanded={expandedUserId === user.id}
+                      pendingTier={pendingTier[user.id]}
+                      onToggle={() => handleToggleExpand(user.id)}
                       onPendingTierChange={(tier) =>
-                        setPendingTier((prev) => ({ ...prev, [user.user_id]: tier }))
+                        setPendingTier((prev) => ({ ...prev, [user.id]: tier }))
                       }
-                      onSaveTier={() => handleChangeTier(user.user_id)}
-                      onVerify={() => handleVerify(user.user_id)}
+                      onSaveTier={() => handleChangeTier(user.id)}
+                      onVerify={() => handleVerify(user.id)}
                       onDelete={() => setConfirmDelete(user)}
                       isSavingTier={changeTier.isPending}
                       isVerifying={verifyUser.isPending}
@@ -319,7 +321,7 @@ export default function AdminDashboard() {
         title="Delete User"
         message={
           confirmDelete
-            ? `Are you sure you want to delete ${confirmDelete.email}? This will permanently remove the user and all their data. This action cannot be undone.`
+            ? `Are you sure you want to deactivate ${confirmDelete.email}? This will revoke API keys, remove org memberships, and disable the account.`
             : ''
         }
         confirmLabel="Delete User"
@@ -494,7 +496,7 @@ function UserRow({
               </div>
 
               <span className="text-xs text-[var(--text-tertiary)] ml-auto font-mono">
-                ID: {user.user_id}
+                ID: {user.id}
               </span>
             </div>
           </td>

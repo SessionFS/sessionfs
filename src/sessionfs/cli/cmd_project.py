@@ -556,8 +556,8 @@ def ask_project(
         qa_content = f"Q: {question}"
         if answer_parts:
             qa_content += f"\nA: {'; '.join(answer_parts)}"
-        asyncio.run(_api_request(
-            "POST", f"/api/v1/projects/{project_id}/entries",
+        save_result = asyncio.run(_api_request(
+            "POST", f"/api/v1/projects/{project_id}/entries/add",
             api_url, api_key,
             json_data={
                 "entry_type": "discovery",
@@ -567,7 +567,10 @@ def ask_project(
                 "source_context": f"Answered from {len(answer_parts)} knowledge entries via sfs project ask",
             },
         ))
-        console.print("[green]Q&A saved to knowledge base.[/green]")
+        if save_result.get("id"):
+            console.print("[green]Q&A saved to knowledge base.[/green]")
+        else:
+            err_console.print("[red]Failed to save Q&A entry.[/red]")
 
 
 @project_app.command("dismiss")
@@ -701,7 +704,11 @@ def project_page(
         console.print()
         console.print("[bold]Backlinks:[/bold]")
         for bl in backlinks:
-            console.print(f"  {bl.get('title') or bl.get('slug', '')}")
+            label = f"{bl.get('source_type', 'unknown')}:{bl.get('source_id', '?')}"
+            link_type = bl.get("link_type", "")
+            if link_type:
+                label += f" [dim]({link_type})[/dim]"
+            console.print(f"  {label}")
 
 
 @project_app.command("regenerate")

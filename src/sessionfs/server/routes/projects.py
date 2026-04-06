@@ -5,7 +5,9 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+import logging
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -135,9 +137,91 @@ async def list_projects(
     ]
 
 
+logger = logging.getLogger("sessionfs.api")
+
+
+async def _backfill_knowledge_for_project(
+    project_id: str, git_remote: str, user_id: str, blob_store: object,
+) -> None:
+    """Backfill knowledge entries from already-synced sessions for a new project.
+
+    Reads blob archives to run the real summarizer, producing actual
+    files_modified, key_decisions, errors, and packages for extraction.
+    """
+    import io
+    import json
+    import tarfile
+
+    from sessionfs.server.db.engine import get_db as _get_db_gen
+    from sessionfs.server.services.knowledge import extract_knowledge_entries
+    from sessionfs.server.services.summarizer import summarize_session
+
+    try:
+        async for db in _get_db_gen():
+            result = await db.execute(
+                select(Session).where(
+                    Session.git_remote_normalized == git_remote,
+                    Session.is_deleted == False,  # noqa: E712
+                ).order_by(Session.created_at.desc()).limit(20)
+            )
+            sessions = result.scalars().all()
+            if not sessions:
+                return
+
+            extracted = 0
+            for session in sessions:
+                try:
+                    if not session.blob_key:
+                        continue
+                    data = await blob_store.get(session.blob_key)
+                    if not data:
+                        continue
+
+                    messages: list[dict] = []
+                    manifest: dict = {}
+                    workspace: dict = {}
+                    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+                        for member in tar.getmembers():
+                            f = tar.extractfile(member)
+                            if not f:
+                                continue
+                            content = f.read().decode("utf-8", errors="replace")
+                            if member.name.endswith("messages.jsonl"):
+                                for line in content.splitlines():
+                                    line = line.strip()
+                                    if line:
+                                        messages.append(json.loads(line))
+                            elif member.name.endswith("manifest.json"):
+                                manifest = json.loads(content)
+                            elif member.name.endswith("workspace.json"):
+                                workspace = json.loads(content)
+
+                    if not messages:
+                        continue
+
+                    summary = summarize_session(messages, manifest, workspace)
+                    entries = await extract_knowledge_entries(
+                        session.id, summary, project_id, session.user_id, db,
+                    )
+                    if entries:
+                        extracted += len(entries)
+                except Exception:
+                    continue  # Best-effort per session
+
+            if extracted:
+                logger.info(
+                    "Backfilled %d knowledge entries from %d sessions for project %s",
+                    extracted, len(sessions), project_id,
+                )
+    except Exception:
+        logger.warning("Knowledge backfill failed for project %s", project_id, exc_info=True)
+
+
 @router.post("/", response_model=ProjectResponse, status_code=201)
 async def create_project(
     body: CreateProjectRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
@@ -161,6 +245,17 @@ async def create_project(
     db.add(project)
     await db.commit()
     await db.refresh(project)
+
+    # Backfill knowledge from sessions already synced before this project was created
+    blob_store = getattr(request.app.state, "blob_store", None)
+    if blob_store:
+        background_tasks.add_task(
+            _backfill_knowledge_for_project,
+            project.id,
+            body.git_remote_normalized,
+            user.id,
+            blob_store,
+        )
 
     return ProjectResponse(
         id=project.id,

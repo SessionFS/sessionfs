@@ -53,12 +53,16 @@ export default function CreateProjectModal({ onClose, onCreated }: Props) {
   return (
     <>
       {/* Backdrop */}
-      <div className="fixed inset-0 z-50 bg-black/50" onClick={onClose} />
+      <div className="fixed inset-0 z-50 bg-black/50" onClick={onClose} onKeyDown={(e) => { if (e.key === 'Escape') onClose(); }} />
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="create-project-title"
+          onKeyDown={(e) => { if (e.key === 'Escape') onClose(); }}
           className="pointer-events-auto w-full max-w-md bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-lg)] p-6"
         >
-          <h2 className="text-lg font-semibold text-[var(--text-primary)] mb-4">New Project</h2>
+          <h2 id="create-project-title" className="text-lg font-semibold text-[var(--text-primary)] mb-4">New Project</h2>
           <form onSubmit={handleSubmit}>
             <label className="block text-sm text-[var(--text-secondary)] mb-1">
               Git Remote URL

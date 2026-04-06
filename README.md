@@ -197,7 +197,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
-**v0.9.7 — Public Beta.** 993 tests passing.
+**v0.9.7.1 — Public Beta.** 1009 tests passing.
 
 What works today:
 - Eight-tool session capture (Claude Code, Codex, Gemini, Cursor, Copilot CLI, Amp, Cline, Roo Code)

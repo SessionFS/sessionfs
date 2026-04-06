@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.7.1] - 2026-04-06
+
+### Added
+- **GitLab settings CRUD** — `GET/PUT/DELETE /api/v1/settings/gitlab` for bootstrapping GitLab MR integration.
+- **Watchlist status API** — `PUT /sync/watch/{session_id}/{status}` for daemon sync lifecycle tracking.
+- **Handoff metadata snapshots** — session title/tool/model/tokens frozen at handoff creation (migration 021).
+- **Knowledge backfill** — creating a project backfills knowledge from already-synced sessions via blob archives.
+- 5 new compiler integration tests (repeated compile dedup, unverified promotion, mixed confidence, cross-batch).
+
+### Fixed
+- **Billing isolation** — org Team checkout creates separate Stripe customer; webhook handlers use org-first branching; personal-vs-org subscription detection throughout portal/status/checkout.
+- **Handoff security** — recipient verification on claim, auth required on detail/summary, claimed summary blocked, recipient session ID persisted and returned from all routes.
+- **Knowledge compiler** — content-level dedup (not session-level bail), verified/unverified promotion across compiles, ephemeral section rebuild, low-confidence entries only in Unverified, intra-batch dedup.
+- **Sync engine** — conflict re-dirtying, selective watchlist fetched from server, pagination for remote session list, cross-user session-ID reuse blocked, stale file cleanup on pull.
+- **Admin dashboard** — user_id→id contract fix, activity tab endpoint/fields, self-demotion guard, search param, enterprise/starter tiers, org membership cleanup on delete.
+- **MCP install** — stale registration repair, malformed config handling, timeout isolation, UnicodeDecodeError handling.
+- **Share links** — passwords moved from GET query to POST body, PBKDF2 hashing with salt, configurable API URL, alias-aware revoke.
+- **Webhooks** — GitHub signature enforcement when secret configured, GitLab route path fix (`/webhooks/gitlab` → `/gitlab`), GitLab MR comment dedup tracking, per-user webhook secret verification.
+- **Dashboard** — compile refreshes all project/wiki queries, search shows aliases, quick preview uses newest-first, jump-to-message always forces oldest-first, message order resets on session change, mobile nav for Billing/Admin, accessible dialogs, keyboard support, billing error display.
+- **Org management** — seat capacity re-checked on invite acceptance, invite email normalization, signup email normalization.
+- Database migrations 020–023.
+
+### Security
+- Share-link passwords no longer exposed in URLs (moved to POST body).
+- Share-link password storage upgraded from SHA-256 to PBKDF2-HMAC-SHA256 with random salt.
+- GitHub webhooks reject missing signature when secret is configured.
+- Handoff detail/summary endpoints require authentication; restrict access to sender/recipient.
+- Claimed handoff summaries return 410 (no data leakage after claim).
+- Cross-user session-ID reuse blocked on sync push.
+- Same-user session-ID reuse expires pending handoffs and revokes share links.
+- Org non-admin members cannot access org Stripe portal.
+
 ## [0.9.7] - 2026-04-04
 
 ### Added

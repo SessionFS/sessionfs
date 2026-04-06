@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
 
-export function useAdminUsers(params: { page?: number; page_size?: number; email?: string } = {}) {
+export function useAdminUsers(params: { page?: number; page_size?: number; search?: string } = {}) {
   const { auth } = useAuth();
   return useQuery({
     queryKey: ['admin', 'users', params],

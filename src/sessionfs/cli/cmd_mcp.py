@@ -136,7 +136,11 @@ def install(
     _install_mcp_for_tool(tool)
 
     if not skip_instructions:
-        inject_agent_instructions(tool)
+        try:
+            inject_agent_instructions(tool)
+        except Exception as e:
+            err_console.print(f"[yellow]Warning: could not write agent instructions: {e}[/yellow]")
+            err_console.print("[dim]MCP server was registered. Instructions will be served at runtime.[/dim]")
 
 
 def _install_mcp_for_tool(tool: str) -> None:
@@ -208,7 +212,10 @@ def uninstall(
         uninstall_ok = False
 
     if uninstall_ok:
-        remove_agent_instructions(tool)
+        try:
+            remove_agent_instructions(tool)
+        except Exception as e:
+            err_console.print(f"[yellow]Warning: could not remove agent instructions: {e}[/yellow]")
 
 
 # ---------------------------------------------------------------------------
@@ -224,12 +231,19 @@ def _uninstall_json_config(config_path: Path, display_name: str) -> None:
 
     try:
         data = json.loads(config_path.read_text())
-    except (json.JSONDecodeError, OSError) as e:
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
         console.print(f"[yellow]Could not parse {config_path}: {e}. Skipping.[/yellow]")
         raise RuntimeError(f"Cannot parse {config_path}") from e
 
-    servers = data.get("mcpServers", {})
-    if "sessionfs" not in servers:
+    if not isinstance(data, dict):
+        console.print(f"[yellow]{config_path} is not a JSON object. Skipping.[/yellow]")
+        raise RuntimeError(f"{config_path} is not a JSON object")
+
+    servers = data.get("mcpServers")
+    if servers is not None and not isinstance(servers, dict):
+        console.print(f"[yellow]{config_path}: mcpServers is not a JSON object. Cannot safely uninstall.[/yellow]")
+        raise RuntimeError(f"{config_path}: mcpServers is not a dict")
+    if not isinstance(servers, dict) or "sessionfs" not in servers:
         console.print(f"[dim]SessionFS not found in {display_name} config. Nothing to remove.[/dim]")
         return
 
@@ -324,33 +338,56 @@ def _uninstall_vscode_extension(tool: str = "cline") -> None:
 # ---------------------------------------------------------------------------
 
 
-def _install_claude_code(mcp_config: dict) -> None:
-    """Add SessionFS to Claude Code's MCP config."""
-    config_path = Path.home() / ".claude.json"
+def _install_json_config(
+    config_path: Path, mcp_config: dict, display_name: str,
+) -> None:
+    """Shared installer for JSON-based MCP configs.
+
+    Handles: malformed JSON, non-dict root, null mcpServers, stale registrations.
+    """
+    config_path.parent.mkdir(parents=True, exist_ok=True)
 
     data: dict = {}
     if config_path.exists():
         try:
             data = json.loads(config_path.read_text())
-        except json.JSONDecodeError:
-            err_console.print(f"[red]Cannot parse {config_path} — fix the JSON manually before installing.[/red]")
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            err_console.print(f"[red]Cannot parse {config_path} — fix the file manually before installing.[/red]")
             raise SystemExit(1)
         except OSError as e:
             err_console.print(f"[red]Cannot read {config_path}: {e}[/red]")
             raise SystemExit(1)
 
-    servers = data.setdefault("mcpServers", {})
+    if not isinstance(data, dict):
+        err_console.print(f"[red]{config_path} is not a JSON object — fix it manually before installing.[/red]")
+        raise SystemExit(1)
 
-    if "sessionfs" in servers:
-        console.print("[dim]SessionFS MCP server already configured in Claude Code.[/dim]")
+    servers = data.get("mcpServers")
+    if servers is None:
+        data["mcpServers"] = {}
+        servers = data["mcpServers"]
+    elif not isinstance(servers, dict):
+        err_console.print(f"[red]{config_path}: mcpServers is not a JSON object — fix it manually before installing.[/red]")
+        raise SystemExit(1)
+
+    existing = servers.get("sessionfs")
+    if existing == mcp_config:
+        console.print(f"[dim]SessionFS MCP server already configured in {display_name}.[/dim]")
         return
 
+    action = "Updated" if existing else "Added"
     servers["sessionfs"] = mcp_config
     config_path.write_text(json.dumps(data, indent=2))
 
-    console.print("[green]SessionFS MCP server added to Claude Code.[/green]")
+    console.print(f"[green]{action} SessionFS MCP server in {display_name}.[/green]")
     console.print(f"  Config: {config_path}")
-    console.print("  Restart Claude Code to activate.")
+    console.print(f"  Restart {display_name} to activate.")
+
+
+def _install_claude_code(mcp_config: dict) -> None:
+    """Add SessionFS to Claude Code's MCP config."""
+    config_path = Path.home() / ".claude.json"
+    _install_json_config(config_path, mcp_config, "Claude Code")
     console.print()
     console.print("Your AI agent can now search past sessions:")
     console.print('  "Has anyone on the team seen this error before?"')
@@ -360,81 +397,57 @@ def _install_claude_code(mcp_config: dict) -> None:
 def _install_cursor(mcp_config: dict) -> None:
     """Add SessionFS to Cursor's MCP config."""
     config_path = Path.home() / ".cursor" / "mcp.json"
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-
-    data: dict = {}
-    if config_path.exists():
-        try:
-            data = json.loads(config_path.read_text())
-        except json.JSONDecodeError:
-            err_console.print("[red]Cannot parse config file — fix the JSON manually before installing.[/red]")
-            raise SystemExit(1)
-        except OSError as e:
-            err_console.print(f"[red]Cannot read config: {e}[/red]")
-            raise SystemExit(1)
-
-    servers = data.setdefault("mcpServers", {})
-
-    if "sessionfs" in servers:
-        console.print("[dim]SessionFS MCP server already configured in Cursor.[/dim]")
-        return
-
-    servers["sessionfs"] = mcp_config
-    config_path.write_text(json.dumps(data, indent=2))
-
-    console.print("[green]SessionFS MCP server added to Cursor.[/green]")
-    console.print(f"  Config: {config_path}")
-    console.print("  Restart Cursor to activate.")
+    _install_json_config(config_path, mcp_config, "Cursor")
 
 
 def _install_copilot(mcp_config: dict) -> None:
     """Add SessionFS to Copilot CLI's MCP config."""
     config_path = Path.home() / ".copilot" / "config.json"
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-
-    data: dict = {}
-    if config_path.exists():
-        try:
-            data = json.loads(config_path.read_text())
-        except json.JSONDecodeError:
-            err_console.print("[red]Cannot parse config file — fix the JSON manually before installing.[/red]")
-            raise SystemExit(1)
-        except OSError as e:
-            err_console.print(f"[red]Cannot read config: {e}[/red]")
-            raise SystemExit(1)
-
-    servers = data.setdefault("mcpServers", {})
-
-    if "sessionfs" in servers:
-        console.print("[dim]SessionFS MCP server already configured in Copilot CLI.[/dim]")
-        return
-
-    servers["sessionfs"] = mcp_config
-    config_path.write_text(json.dumps(data, indent=2))
-
-    console.print("[green]SessionFS MCP server added to Copilot CLI.[/green]")
-    console.print(f"  Config: {config_path}")
-    console.print("  Restart Copilot CLI to activate.")
+    _install_json_config(config_path, mcp_config, "Copilot CLI")
 
 
 def _install_codex(mcp_config: dict) -> None:
     """Add SessionFS to Codex CLI via `codex mcp add`."""
     import subprocess
 
-    # Check if already registered
+    sfs_path = mcp_config["command"]
+    expected_args = f"{sfs_path} mcp serve"
+
+    # Check if already registered with correct command + args
+    needs_remove = False
     try:
         result = subprocess.run(
             ["codex", "mcp", "get", "sessionfs"],
             capture_output=True, text=True, timeout=5,
         )
         if result.returncode == 0:
-            console.print("[dim]SessionFS MCP server already configured in Codex.[/dim]")
-            return
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
+            if expected_args in result.stdout:
+                console.print("[dim]SessionFS MCP server already configured in Codex.[/dim]")
+                return
+            needs_remove = True
+    except FileNotFoundError:
+        err_console.print("[red]'codex' command not found. Install Codex CLI first.[/red]")
+        raise SystemExit(1)
+    except subprocess.TimeoutExpired:
+        err_console.print("[yellow]Timed out checking Codex config. Proceeding with install.[/yellow]")
+
+    # Remove stale registration in a separate step
+    if needs_remove:
+        try:
+            rm = subprocess.run(
+                ["codex", "mcp", "remove", "sessionfs"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if rm.returncode != 0:
+                err_console.print(f"[red]Failed to remove stale Codex registration: {rm.stderr.strip()}[/red]")
+                console.print("  Try manually: codex mcp remove sessionfs && codex mcp add sessionfs -- sfs mcp serve")
+                raise SystemExit(1)
+        except subprocess.TimeoutExpired:
+            err_console.print("[red]Timed out removing stale Codex registration.[/red]")
+            console.print("  Try manually: codex mcp remove sessionfs && codex mcp add sessionfs -- sfs mcp serve")
+            raise SystemExit(1)
 
     # Register via codex mcp add
-    sfs_path = mcp_config["command"]
     try:
         result = subprocess.run(
             ["codex", "mcp", "add", "sessionfs", "--", sfs_path, "mcp", "serve"],
@@ -451,26 +464,54 @@ def _install_codex(mcp_config: dict) -> None:
     except FileNotFoundError:
         err_console.print("[red]'codex' command not found. Install Codex CLI first.[/red]")
         raise SystemExit(1)
+    except subprocess.TimeoutExpired:
+        err_console.print("[red]Timed out registering with Codex.[/red]")
+        console.print("  Try manually: codex mcp add sessionfs -- sfs mcp serve")
+        raise SystemExit(1)
 
 
 def _install_gemini(mcp_config: dict) -> None:
     """Add SessionFS to Gemini CLI via `gemini mcp add`."""
     import subprocess
 
-    # Check if already registered
+    sfs_path = mcp_config["command"]
+    expected_args = f"{sfs_path} mcp serve"
+
+    # Check if already registered with correct command + args
+    needs_remove = False
     try:
         result = subprocess.run(
             ["gemini", "mcp", "list"],
             capture_output=True, text=True, timeout=5,
         )
         if "sessionfs" in result.stdout:
-            console.print("[dim]SessionFS MCP server already configured in Gemini CLI.[/dim]")
-            return
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
+            if expected_args in result.stdout:
+                console.print("[dim]SessionFS MCP server already configured in Gemini CLI.[/dim]")
+                return
+            needs_remove = True
+    except FileNotFoundError:
+        err_console.print("[red]'gemini' command not found. Install Gemini CLI first.[/red]")
+        raise SystemExit(1)
+    except subprocess.TimeoutExpired:
+        err_console.print("[yellow]Timed out checking Gemini config. Proceeding with install.[/yellow]")
+
+    # Remove stale registration in a separate step
+    if needs_remove:
+        try:
+            rm = subprocess.run(
+                ["gemini", "mcp", "remove", "sessionfs"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if rm.returncode != 0:
+                err_console.print(f"[red]Failed to remove stale Gemini registration: {rm.stderr.strip()}[/red]")
+                console.print("  Try manually: gemini mcp remove sessionfs && gemini mcp add sessionfs sfs mcp serve")
+                raise SystemExit(1)
+        except subprocess.TimeoutExpired:
+            err_console.print("[red]Timed out removing stale Gemini registration.[/red]")
+            console.print("  Try manually: gemini mcp remove sessionfs && gemini mcp add sessionfs sfs mcp serve")
+            raise SystemExit(1)
 
     # Register via gemini mcp add
-    sfs_path = mcp_config["command"]
     try:
         result = subprocess.run(
             ["gemini", "mcp", "add", "sessionfs", sfs_path, "mcp", "serve"],
@@ -487,36 +528,16 @@ def _install_gemini(mcp_config: dict) -> None:
     except FileNotFoundError:
         err_console.print("[red]'gemini' command not found. Install Gemini CLI first.[/red]")
         raise SystemExit(1)
+    except subprocess.TimeoutExpired:
+        err_console.print("[red]Timed out registering with Gemini CLI.[/red]")
+        console.print("  Try manually: gemini mcp add sessionfs sfs mcp serve")
+        raise SystemExit(1)
 
 
 def _install_amp(mcp_config: dict) -> None:
     """Add SessionFS to Amp's MCP config."""
     config_path = Path.home() / ".amp" / "config.json"
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-
-    data: dict = {}
-    if config_path.exists():
-        try:
-            data = json.loads(config_path.read_text())
-        except json.JSONDecodeError:
-            err_console.print("[red]Cannot parse config file — fix the JSON manually before installing.[/red]")
-            raise SystemExit(1)
-        except OSError as e:
-            err_console.print(f"[red]Cannot read config: {e}[/red]")
-            raise SystemExit(1)
-
-    servers = data.setdefault("mcpServers", {})
-
-    if "sessionfs" in servers:
-        console.print("[dim]SessionFS MCP server already configured in Amp.[/dim]")
-        return
-
-    servers["sessionfs"] = mcp_config
-    config_path.write_text(json.dumps(data, indent=2))
-
-    console.print("[green]SessionFS MCP server added to Amp.[/green]")
-    console.print(f"  Config: {config_path}")
-    console.print("  Restart Amp to activate.")
+    _install_json_config(config_path, mcp_config, "Amp")
 
 
 def _install_vscode_extension(mcp_config: dict, tool: str = "cline") -> None:
@@ -546,29 +567,7 @@ def _install_vscode_extension(mcp_config: dict, tool: str = "cline") -> None:
         err_console.print(f"Make sure {display} is installed in VS Code first.")
         raise SystemExit(1)
 
-    data: dict = {}
-    if config_path.exists():
-        try:
-            data = json.loads(config_path.read_text())
-        except json.JSONDecodeError:
-            err_console.print("[red]Cannot parse config file — fix the JSON manually before installing.[/red]")
-            raise SystemExit(1)
-        except OSError as e:
-            err_console.print(f"[red]Cannot read config: {e}[/red]")
-            raise SystemExit(1)
-
-    servers = data.setdefault("mcpServers", {})
-
-    if "sessionfs" in servers:
-        console.print(f"[dim]SessionFS MCP server already configured in {display}.[/dim]")
-        return
-
-    servers["sessionfs"] = mcp_config
-    config_path.write_text(json.dumps(data, indent=2))
-
-    console.print(f"[green]SessionFS MCP server added to {display}.[/green]")
-    console.print(f"  Config: {config_path}")
-    console.print("  Restart VS Code to activate.")
+    _install_json_config(config_path, mcp_config, display)
 
 
 @mcp_app.command("index")
