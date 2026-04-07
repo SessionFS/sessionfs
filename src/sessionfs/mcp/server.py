@@ -220,6 +220,7 @@ _TOOLS = [
                     "description": "Filter: decision, pattern, discovery, convention, bug, dependency",
                 },
                 "limit": {"type": "number", "description": "Max results (default 10)"},
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
             },
             "required": ["query"],
         },
@@ -237,6 +238,7 @@ _TOOLS = [
                     "type": "string",
                     "description": "Question about the project",
                 },
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
             },
             "required": ["question"],
         },
@@ -267,6 +269,7 @@ _TOOLS = [
                     "type": "number",
                     "description": "Confidence score 0.0–1.0 (default: 1.0)",
                 },
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
             },
             "required": ["content", "entry_type"],
         },
@@ -292,6 +295,7 @@ _TOOLS = [
                     "type": "string",
                     "description": "Page title (optional, derived from slug if omitted)",
                 },
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
             },
             "required": ["slug", "content"],
         },
@@ -304,7 +308,9 @@ _TOOLS = [
         ),
         inputSchema={
             "type": "object",
-            "properties": {},
+            "properties": {
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
         },
     ),
 ]
@@ -729,11 +735,13 @@ async def _handle_search_knowledge(args: dict) -> str:
     query = args.get("query", "")
     entry_type = args.get("entry_type")
     limit = int(args.get("limit", 10))
-
-    git_remote = await _resolve_workspace_git_remote()
+    git_remote = args.get("git_remote", "")
 
     if not git_remote:
-        return "No git repository detected. Cannot search knowledge base."
+        git_remote = await _resolve_workspace_git_remote()
+
+    if not git_remote:
+        return "No git repository detected. Pass git_remote explicitly or ensure workspace roots are available."
 
     from sessionfs.server.github_app import normalize_git_remote
     normalized = normalize_git_remote(git_remote)
@@ -808,12 +816,13 @@ async def _handle_search_knowledge(args: dict) -> str:
         return f"Knowledge search failed: {exc}"
 
 
-async def _resolve_project_id() -> tuple[str, str, str]:
+async def _resolve_project_id(git_remote: str = "") -> tuple[str, str, str]:
     """Detect git remote, authenticate, and return (api_url, api_key, project_id).
 
     Raises Exception with a user-friendly message on failure.
     """
-    git_remote = await _resolve_workspace_git_remote()
+    if not git_remote:
+        git_remote = await _resolve_workspace_git_remote()
 
     if not git_remote:
         raise Exception("No git repository detected. Pass git_remote explicitly or ensure workspace roots are available.")
@@ -848,12 +857,13 @@ async def _handle_add_knowledge(args: dict) -> str:
     entry_type = args.get("entry_type", "discovery")
     session_id = args.get("session_id")
     confidence = float(args.get("confidence", 1.0))
+    git_remote = args.get("git_remote", "")
 
     if not content:
         return "Content is required."
 
     try:
-        api_url, api_key, project_id = await _resolve_project_id()
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
 
         import httpx
         payload: dict = {
@@ -884,12 +894,13 @@ async def _handle_update_wiki_page(args: dict) -> str:
     slug = args.get("slug", "")
     content = args.get("content", "")
     title = args.get("title")
+    git_remote = args.get("git_remote", "")
 
     if not slug or not content:
         return "slug and content are required."
 
     try:
-        api_url, api_key, project_id = await _resolve_project_id()
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
 
         import httpx
         payload: dict = {"content": content}
@@ -913,8 +924,9 @@ async def _handle_update_wiki_page(args: dict) -> str:
 
 async def _handle_list_wiki_pages(args: dict) -> str:
     """List wiki pages via the cloud API."""
+    git_remote = args.get("git_remote", "")
     try:
-        api_url, api_key, project_id = await _resolve_project_id()
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
 
         import httpx
         async with httpx.AsyncClient(timeout=15) as client:
@@ -945,16 +957,17 @@ async def _handle_list_wiki_pages(args: dict) -> str:
 async def _handle_ask_project(args: dict) -> str:
     """Research a question using project context and knowledge entries."""
     question = args.get("question", "")
+    git_remote = args.get("git_remote", "")
     if not question:
         return "Please provide a question."
 
-    # Get project context
-    context_result = await _handle_get_project_context({})
+    # Get project context (pass through git_remote)
+    context_result = await _handle_get_project_context({"git_remote": git_remote})
     if not isinstance(context_result, str):
         context_result = json.dumps(context_result, indent=2, default=str)
 
     # Search knowledge entries for the question
-    search_result = await _handle_search_knowledge({"query": question, "limit": 15})
+    search_result = await _handle_search_knowledge({"query": question, "limit": 15, "git_remote": git_remote})
     if not isinstance(search_result, str):
         search_result = json.dumps(search_result, indent=2, default=str)
 
