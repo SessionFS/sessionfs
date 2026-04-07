@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.7.4] - 2026-04-07
+
+### Fixed
+- **MCP workspace detection** — all 6 project-scoped tools now use MCP `roots/list` protocol to detect workspace directory from the AI tool client, with CWD fallback.
+- **MCP explicit git_remote** — `search_project_knowledge`, `ask_project`, `add_knowledge`, `update_wiki_page`, and `list_wiki_pages` now accept an optional `git_remote` parameter, matching `get_project_context`. Fixes "No git repository detected" when roots protocol is unavailable.
+- **0-byte index.db recovery** — truncated index files are now detected and deleted on startup, triggering automatic rebuild from .sfs files.
+- **Auto-reindex on empty index** — if index has 0 sessions after schema creation, flags for full reindex.
+
 ## [0.9.7.3] - 2026-04-06
 
 ### Added
