@@ -493,13 +493,35 @@ def ask_project(
     context_doc = result.get("context_document", "")
 
     # 2. Search knowledge entries for the question
-    search_params = f"?search={question}&limit=10"
-    entries_result = asyncio.run(_api_request(
-        "GET", f"/api/v1/projects/{project_id}/entries{search_params}",
-        api_url, api_key,
-    ))
+    # Extract keywords from the question (drop stop words, URL-encode)
+    from urllib.parse import quote
+    stop_words = {"what", "whats", "is", "the", "a", "an", "how", "does", "do", "explain", "tell", "me", "about", "can", "you", "are", "was", "were", "this", "that", "it", "of", "in", "to", "for", "with", "on", "at", "by"}
+    keywords = [w for w in question.lower().split() if w.strip("?.,!") not in stop_words and len(w) > 1]
 
-    entries = entries_result if isinstance(entries_result, list) else entries_result.get("entries", [])
+    entries: list[dict] = []
+    # Search with each keyword to get broader matches
+    seen_ids: set[int] = set()
+    for kw in keywords[:5]:
+        search_params = f"?search={quote(kw)}&limit=10"
+        kw_result = asyncio.run(_api_request(
+            "GET", f"/api/v1/projects/{project_id}/entries{search_params}",
+            api_url, api_key,
+        ))
+        kw_entries = kw_result if isinstance(kw_result, list) else kw_result.get("entries", [])
+        for e in kw_entries:
+            eid = e.get("id")
+            if eid and eid not in seen_ids:
+                seen_ids.add(eid)
+                entries.append(e)
+
+    # If keyword search found nothing, try the full question as a phrase
+    if not entries and question.strip():
+        search_params = f"?search={quote(question)}&limit=10"
+        entries_result = asyncio.run(_api_request(
+            "GET", f"/api/v1/projects/{project_id}/entries{search_params}",
+            api_url, api_key,
+        ))
+        entries = entries_result if isinstance(entries_result, list) else entries_result.get("entries", [])
 
     # 3. Format context
     console.print(Panel(f"[bold]Question:[/bold] {question}", border_style="blue"))
