@@ -1,0 +1,119 @@
+---
+title: "Billing & Tiers"
+description: "Subscription tiers, pricing, Stripe integration, and storage limits."
+---
+
+SessionFS uses a five-tier model. The free tier is permanent — capture, resume, and local search work without an account.
+
+## Tiers
+
+| Tier | Price | Key features |
+|------|-------|-------------|
+| **Free** | $0 | Capture, resume, local search, local MCP |
+| **Starter** | $4.99/mo | Cloud sync, dashboard, bookmarks, manual judge, deterministic summaries |
+| **Pro** | $14.99/mo | Autosync, remote MCP, handoff, PR/MR comments, project context, narrative summaries, DLP secrets, auto-audit |
+| **Team** | $14.99/user/mo | Everything in Pro + org management, shared storage pool, org settings |
+| **Enterprise** | Contact sales | Everything in Team + HIPAA DLP, SAML SSO, compliance exports, security dashboard, policy engine, 6-year audit retention |
+
+## Storage limits
+
+| Tier | Cloud storage |
+|------|--------------|
+| Free | 50 MB sync limit |
+| Starter | 500 MB |
+| Pro | 500 MB |
+| Team | 1 GB per seat (pooled) |
+| Enterprise | Unlimited |
+
+Storage is checked on every sync upload. If you exceed your limit, the server rejects the upload with a clear error and your current tier's limit.
+
+## Beta mode
+
+When Stripe is not fully configured (missing secret key or price IDs), the server runs in **beta mode**. In beta mode, all features are available regardless of tier. The `GET /api/v1/billing/status` response includes `is_beta: true` so the dashboard can display a beta badge.
+
+Beta mode is the default for self-hosted deployments that have not connected Stripe.
+
+## Stripe integration
+
+Billing is handled entirely through Stripe. SessionFS uses three integration points:
+
+### Checkout
+
+```
+POST /api/v1/billing/checkout
+```
+
+```json
+{
+  "tier": "pro",
+  "seats": 1
+}
+```
+
+Creates a Stripe Checkout session and returns a `checkout_url`. The `seats` field only applies to the Team tier. After successful payment, Stripe fires a `checkout.session.completed` webhook that updates the user's tier.
+
+Valid tiers for checkout: `starter`, `pro`, `team`.
+
+### Customer Portal
+
+```
+POST /api/v1/billing/portal
+```
+
+Returns a `portal_url` for the Stripe Customer Portal where users manage payment methods, view invoices, upgrade, downgrade, or cancel.
+
+The `scope` field controls which subscription the portal opens:
+
+- `"auto"` (default) — org portal for admins, personal portal for individuals
+- `"org"` — explicitly open the org subscription portal (admin only)
+- `"personal"` — open a personal subscription portal (if one exists alongside an org membership)
+
+### Webhooks
+
+The server listens at `POST /webhooks/stripe` for these events:
+
+| Event | Action |
+|-------|--------|
+| `checkout.session.completed` | Activate subscription, set tier |
+| `customer.subscription.updated` | Handle upgrades, downgrades, renewals |
+| `customer.subscription.deleted` | Downgrade to free |
+| `invoice.payment_failed` | Log warning (Stripe handles retry) |
+
+All webhook events are idempotently recorded. Duplicate deliveries are ignored.
+
+## Billing status
+
+```
+GET /api/v1/billing/status
+```
+
+Returns current tier, storage usage, Stripe customer info, and whether the user is in an org. Org members see org-level billing state. The response also flags `has_personal_subscription` if a member had a personal plan before joining an org.
+
+## Organization billing
+
+Org billing is separate from personal billing. When an org is created, the creator's Stripe customer transfers to the org. From that point:
+
+- The org has its own Stripe customer ID and subscription
+- Only admins can create checkout sessions for team/enterprise plans
+- Members cannot purchase individual plans — their tier comes from the org
+- Subscription changes (upgrades, cancellations) via webhooks update the org directly
+
+See [Organizations](/docs/organizations/) for full details.
+
+## CLI
+
+There are no billing commands in the CLI. All subscription management happens through the web dashboard at **Settings > Billing**, which redirects to Stripe for payment operations.
+
+## Self-hosted deployments
+
+Tier gating applies to self-hosted instances. The Helm chart requires a license key that determines the available tier. Without a license, the instance runs in free-tier mode. Licenses are validated at startup and periodically thereafter.
+
+To connect Stripe to a self-hosted instance, set these environment variables:
+
+- `SFS_STRIPE_SECRET_KEY` — Stripe secret key
+- `SFS_STRIPE_WEBHOOK_SECRET` — Webhook signing secret
+- `SFS_STRIPE_PRICE_STARTER` — Price ID for Starter tier
+- `SFS_STRIPE_PRICE_PRO` — Price ID for Pro tier
+- `SFS_STRIPE_PRICE_TEAM` — Price ID for Team tier
+
+Without all five variables, the instance runs in beta mode with all features unlocked.

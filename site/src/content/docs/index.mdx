@@ -1,9 +1,9 @@
 ---
 title: SessionFS Documentation
-description: Capture, sync, and resume AI coding sessions across 8 tools.
+description: The memory layer for AI coding agents. Capture, search, verify, and resume sessions across 8 tools.
 template: splash
 hero:
-  tagline: Capture, sync, and resume AI coding sessions across Claude Code, Codex, Gemini, Copilot, Cursor, Amp, Cline, and Roo Code.
+  tagline: The memory layer for AI coding agents. Capture every session, build organizational knowledge, and give your next AI agent everything the last one learned.
   actions:
     - text: Get Started
       link: /docs/quickstart/
@@ -21,16 +21,24 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
     Install SessionFS and capture your first session in under 2 minutes.
     [Get started &rarr;](/docs/quickstart/)
   </Card>
+  <Card title="Knowledge Base" icon="open-book">
+    Sessions auto-extract decisions, patterns, and bugs into a living wiki.
+    [Learn more &rarr;](/docs/knowledge-base/)
+  </Card>
   <Card title="CLI Reference" icon="setting">
-    35+ commands for managing sessions, audits, sync, and more.
+    60+ commands for sessions, knowledge, audits, sync, and more.
     [See all commands &rarr;](/docs/cli/)
   </Card>
+  <Card title="MCP Server" icon="puzzle">
+    12 MCP tools — agents read AND write project knowledge.
+    [Learn more &rarr;](/docs/mcp/)
+  </Card>
   <Card title="LLM Judge" icon="approve-check-circle">
-    Severity-classified findings with actual tool output evidence.
+    Verify every AI claim with confidence scores and CWE mapping.
     [Learn more &rarr;](/docs/judge/)
   </Card>
-  <Card title="Self-Hosted" icon="server">
-    Deploy to any Kubernetes cluster with the official Helm chart.
-    [Deploy guide &rarr;](/docs/self-hosted/)
+  <Card title="Dashboard" icon="laptop">
+    Resume sessions, manage knowledge, review audits — all from the web.
+    [User guide &rarr;](/docs/dashboard/)
   </Card>
 </CardGrid>

@@ -1,0 +1,161 @@
+---
+title: "Web Dashboard"
+---
+
+The SessionFS dashboard is a management interface for browsing sessions, organizing projects, handling team handoffs, and configuring sync. It is not a chat UI — you interact with your AI tools natively and use the dashboard to review, resume, and share the resulting sessions.
+
+## Accessing the Dashboard
+
+The hosted dashboard is at [app.sessionfs.dev](https://app.sessionfs.dev). Self-hosted deployments serve the dashboard from their own domain (see [Self-Hosted](/docs/self-hosted)).
+
+Log in with your API key. You can generate one with `sfs auth login` or from the Settings page if you already have an account. After login, the dashboard remembers your session until you explicitly log out.
+
+---
+
+## Sessions
+
+The home page (`/`) lists all synced sessions grouped by date. Each card shows the tool badge, title or first message, model, message count, token usage, and relative timestamp.
+
+### Resume Hero
+
+At the top of the list, the most recent session from each tool is highlighted with a one-click resume command you can copy to your terminal. This is the fastest way to pick up where you left off.
+
+### Lineage Grouping
+
+Forked and resumed sessions are grouped under their root session. Expanding a lineage group shows the full chain of parent and child sessions so you can trace how a conversation evolved.
+
+### Filters and Sorting
+
+- **Tool filter** — narrow to a single tool: Claude Code, Codex, Gemini CLI, Copilot, Cursor, Amp, Cline, or Roo Code.
+- **Date range** — Last 24 hours, 7 days, 30 days, or all time.
+- **Sort** — by date, message count, token count, or title.
+
+### Bulk Select and Find Duplicates
+
+Check the box on multiple sessions to delete them in bulk. The **Find Duplicates** button scans for sessions with identical content (common when the same session is imported by multiple watchers) and lets you remove extras.
+
+### Bookmarks and Folders
+
+The left sidebar shows bookmark folders. Drag a session onto a folder or use the bookmark button on any session card to organize your work. Folders are user-level — they do not affect the underlying `.sfs` data.
+
+---
+
+## Session Detail
+
+Click a session to open its detail view (`/sessions/:id`). The header shows the tool, model, alias, cost estimate, and token counts.
+
+### Messages Tab
+
+The default tab displays the conversation transcript with paginated messages (50 per page). Use the order toggle to switch between oldest-first and newest-first. Sidechain and empty messages can be filtered out for readability. Click a page number or use the jump control to navigate long sessions.
+
+### Summary Tab
+
+Shows the deterministic summary (key decisions, files touched, commands run) and, if available, the narrative LLM summary generated during sync.
+
+### Audit Tab
+
+Displays the LLM Judge trust score (0--100), individual findings with CWE mapping and confidence levels, and linked evidence from the conversation. Each finding can be dismissed or confirmed. Use the **Export** button to download the audit report as JSON.
+
+### Actions
+
+- **Resume** — copies the `sfs resume` command for this session to your clipboard.
+- **Handoff** — opens the handoff modal to send the session to a teammate.
+- **Alias** — click the alias field to set a short memorable name (e.g., `auth-refactor`). Aliases are unique per user and can be used in place of session IDs in the CLI.
+- **Bookmark** — add the session to a folder from the more menu.
+
+---
+
+## Search
+
+Press **Cmd+K** (or Ctrl+K) from any page to open the command palette. Type to search sessions by title, alias, or message content. Arrow keys navigate results; Enter opens the selected session; Escape closes the palette.
+
+The full search page (`/search`) adds tool and date-range filters on top of the text query. Results show matching snippets with the search term highlighted.
+
+---
+
+## Projects
+
+The Projects page (`/projects`) lists all project contexts linked to your repositories. Each card shows the project name (or normalized git remote), session count, and a preview of the context document.
+
+### Creating a Project
+
+Click **New Project** to create one. Provide a name and optionally link a git remote. The project is the container for shared context, knowledge entries, and wiki pages.
+
+### Project Detail
+
+Inside a project you will find:
+
+- **Context Editor** — a markdown editor for the project's context document. This document is injected into sessions via MCP or `--append-system-prompt-file`.
+- **Knowledge Entries** — structured facts (decisions, patterns, bugs, conventions, dependencies, discoveries) captured with `add_knowledge`. Each entry shows its type, text, and creation date.
+- **Compile** — generates a compiled context document from all knowledge entries, organized by type.
+- **Wiki Pages** — longer-form articles with backlinks. Use these for architecture guides, onboarding docs, or deep dives.
+- **Health** — shows sync status and entry counts.
+
+---
+
+## Handoffs
+
+The Handoffs page (`/handoffs`) has two tabs: **Inbox** (handoffs sent to you) and **Sent** (handoffs you created).
+
+### Claim Flow
+
+When you receive a handoff, its status is **pending**. Click it to see the session context card — a summary of the session being handed off, including tool, model, message count, and the sender's note. Click **Claim** to accept. The session is copied to your account and the status moves to **claimed**. Unclaimed handoffs expire after the configured TTL.
+
+### Status Stepper
+
+Each handoff shows a three-step progress indicator: **Created**, **Claimed**, **Completed**. This makes it easy to see at a glance where things stand across your team.
+
+---
+
+## Settings
+
+The Settings page (`/settings`) controls your account and sync preferences.
+
+- **Sync Mode** — choose between `off` (local only), `all` (sync every session), or `selective` (sync only sessions matching your watchlist patterns).
+- **LLM Judge** — enable or disable automatic audit on sync, set the confidence threshold, and choose which model to use for judge calls.
+- **GitHub Integration** — connect a GitHub App installation to enable PR-linked sessions and the GitHub Checks integration.
+- **GitLab Integration** — connect a GitLab project for MR-linked sessions.
+
+---
+
+## Billing
+
+The Billing page (`/settings/billing`) shows your current tier and usage.
+
+- **Tier display** — shows your plan (Free, Pro, Team, Enterprise, or Admin) and the features included.
+- **Upgrade** — select a higher tier and complete checkout via Stripe.
+- **Manage subscription** — opens the Stripe customer portal where you can update payment methods, view invoices, or cancel.
+- **Organization billing** — if you belong to an org, billing is managed at the org level. The effective tier is resolved from the org, not your individual account.
+
+---
+
+## Organization
+
+The Organization page (`/settings/organization`) lets org admins manage members, invite new users, and set the org-wide tier. Members inherit the org tier for all sync and feature limits.
+
+---
+
+## Admin
+
+The Admin page (`/admin`) is only visible to users with the **admin** tier.
+
+- **User Management** — view all users, their tiers, last activity, and client versions. Adjust tiers or disable accounts.
+- **Activity Log** — chronological feed of key events (syncs, handoffs, audits, logins).
+- **Licenses** — manage self-hosted license keys, view activation status, and handle grace periods.
+
+---
+
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| `Cmd+K` / `Ctrl+K` | Open command palette (search) |
+| `Escape` | Close any open modal or palette |
+| `Arrow Up` / `Arrow Down` | Navigate search results |
+| `Enter` | Open selected search result |
+
+---
+
+## Light and Dark Mode
+
+The dashboard supports both light and dark themes. It follows your system preference by default. You can override the theme from the layout header.

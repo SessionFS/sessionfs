@@ -1,0 +1,259 @@
+---
+title: "Living Knowledge Base"
+description: "Automatically capture, compile, and surface project knowledge across AI coding sessions."
+---
+
+Every AI coding session generates insights — architecture decisions, bug workarounds, dependency quirks — that get lost when the session ends. The Living Knowledge Base captures these into structured entries, compiles them into a project wiki, and feeds them back into future sessions.
+
+## The Knowledge Loop
+
+```
+Sessions → Extract → Entries → Compile → Wiki → Agents read & write back
+```
+
+1. AI agents discover facts during coding sessions
+2. Facts are saved as **knowledge entries** (via MCP tools or CLI)
+3. **Compilation** merges pending entries into the project context document
+4. **Section pages** and **concept articles** are auto-generated in the wiki
+5. Future agents read the wiki via `get_project_context` and contribute back
+
+The loop is self-reinforcing: the more sessions you run, the richer the knowledge base becomes.
+
+## Getting Started
+
+```bash
+# Initialize a project (auto-detects git remote)
+sfs project init
+
+# Add initial context in your editor
+sfs project edit
+
+# Enable auto-narrative (generates summaries on sync)
+sfs project set --auto-narrative
+
+# Run your first compilation
+sfs project compile
+```
+
+After `init`, the project is linked to your git remote. Every team member with access sees the same knowledge base.
+
+## Knowledge Entries
+
+Each entry has a **type**, **content**, **confidence score** (0.0-1.0), and an optional link to the session that created it.
+
+### Entry Types
+
+| Type | Use For | Example |
+|------|---------|---------|
+| `decision` | Architecture and design choices | "WebSockets rejected in favor of HTTP + ETags" |
+| `pattern` | Code patterns and conventions | "All converters follow parse → canonical → write" |
+| `bug` | Known issues and workarounds | "SQLite WAL mode can corrupt on power loss" |
+| `convention` | Coding standards | "All API routes use async handlers" |
+| `dependency` | External library notes | "react-markdown renders project context, not a custom parser" |
+| `discovery` | General findings | "The auth middleware resolves tier from org, not user" |
+
+### Entry Lifecycle
+
+Entries start as **pending**. After compilation, they become **compiled**. Irrelevant entries can be **dismissed**:
+
+```bash
+# List all entries
+sfs project entries
+
+# Filter by type or status
+sfs project entries --type decision
+sfs project entries --pending
+
+# Dismiss a noisy entry
+sfs project dismiss 42
+```
+
+Entries with confidence below 0.5 are marked as *(unverified)* in the compiled output.
+
+## Compilation
+
+Compilation merges pending entries into the project context document and generates section wiki pages.
+
+### Deterministic Compile (Default)
+
+When no LLM API key is provided, compilation uses a rule-based approach:
+- Groups entries by type under structured section headings (`## Key Decisions`, `## Patterns & Conventions`, etc.)
+- Appends new entries to the appropriate section
+- Marks low-confidence entries as unverified
+- Adds a `## Recent Changes` section from the current batch
+
+### LLM Compile
+
+When an LLM API key is available, the compiler sends the current context plus grouped entries to the model. The LLM deduplicates, reorganizes, and produces a cleaner merged document. Falls back to deterministic compile on failure.
+
+### What Happens During Compilation
+
+1. Fetches all pending (not dismissed, not yet compiled) entries
+2. Groups them by entry type
+3. Merges into the existing context document
+4. Marks all processed entries as compiled
+5. Saves a before/after snapshot in the compilation history
+6. Creates or updates **section pages** in the wiki (one per entry type)
+7. Auto-generates **concept articles** for recurring topics
+
+```bash
+sfs project compile
+# Compiling pending entries...
+# Project context updated. 12 entries compiled.
+```
+
+### Section Pages
+
+Each entry type gets its own wiki page, auto-generated from all non-dismissed entries of that type:
+
+| Entry Type | Wiki Page Slug |
+|-----------|---------------|
+| decision | `key-decisions` |
+| pattern | `patterns` |
+| convention | `coding-conventions` |
+| bug | `known-issues` |
+| dependency | `dependencies` |
+| discovery | `discoveries` |
+
+## Wiki Pages
+
+The wiki is a collection of markdown pages organized by slug. Pages can be manually written or auto-generated from knowledge entries.
+
+### Browsing
+
+```bash
+# List all wiki pages
+sfs project pages
+# Slug            Title                  Type      Words  Entries  Auto
+# key-decisions   Key Decisions          section     340       18  yes
+# patterns        Patterns               section     210       12  yes
+# architecture    Architecture Overview  section     890        0  no
+
+# Read a specific page
+sfs project page key-decisions
+```
+
+### Concept Auto-Generation
+
+After compilation, the system identifies recurring topics across entries and generates concept articles. These are standalone wiki pages that synthesize related entries into a coherent narrative.
+
+### Regeneration
+
+Auto-generated pages can be regenerated from the latest entries:
+
+```bash
+sfs project regenerate key-decisions
+# Article regenerated (340 words from 18 entries).
+```
+
+Only auto-generated pages support regeneration. Manually written pages are left untouched.
+
+### Backlinks
+
+Pages track which entries and other pages reference them. View backlinks at the bottom of any page:
+
+```bash
+sfs project page architecture
+# [content rendered in panel]
+#
+# Backlinks:
+#   entry:42 (references)
+#   entry:67 (references)
+```
+
+## CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `sfs project init` | Initialize project context for the current repo |
+| `sfs project compile` | Compile pending entries into the context document |
+| `sfs project entries` | List knowledge entries (supports `--pending`, `--type`, `--limit`) |
+| `sfs project ask "question"` | Search the knowledge base and show matching entries |
+| `sfs project pages` | List all wiki pages |
+| `sfs project page <slug>` | View a wiki page with backlinks |
+| `sfs project health` | Run health checks — pending count, staleness, score |
+| `sfs project regenerate <slug>` | Regenerate an auto-generated concept page |
+| `sfs project set --auto-narrative` | Enable auto-narrative summaries on sync |
+| `sfs project dismiss <id>` | Dismiss an irrelevant entry |
+| `sfs project edit` | Edit the context document in `$EDITOR` |
+| `sfs project show` | Display the current context document |
+
+### Health Checks
+
+The `health` command scores your knowledge base and flags issues:
+
+```bash
+sfs project health
+# Project Health: my-project
+#
+#   ✓  Context document exists (1200 words, 8 sections)
+#   ✓  45 knowledge entries (38 compiled, 2 dismissed)
+#   ⚠  5 entries pending compilation
+#   ✓  Last compiled: 2026-04-01
+#   ✓  Context appears up to date
+#
+# Health Score: 90%
+```
+
+## MCP Integration
+
+The SessionFS MCP server exposes five knowledge-related tools that AI agents call during sessions.
+
+### Write Tools
+
+| Tool | Description |
+|------|-------------|
+| `add_knowledge(content, entry_type)` | Add a knowledge entry. Optional: `session_id`, `confidence` (0.0-1.0) |
+| `update_wiki_page(slug, content)` | Create or update a wiki page. Optional: `title` |
+| `list_wiki_pages()` | List all wiki pages with slugs, titles, and word counts |
+
+### Read Tools
+
+| Tool | Description |
+|------|-------------|
+| `search_project_knowledge(query)` | Search entries by content. Optional: `entry_type`, `limit` |
+| `ask_project(question)` | Research a question across context, entries, and local sessions |
+
+### How Agents Contribute
+
+When an agent calls `get_project_context`, the response includes contribution instructions. Agents are expected to call `add_knowledge()` when they discover something significant:
+
+```
+# Example: agent discovers a pattern during a session
+add_knowledge("All CLI commands use the @handle_errors decorator for consistent error handling", "pattern")
+```
+
+The entry is stored as pending until the next compilation cycle.
+
+## API Endpoints
+
+All endpoints are under `/api/v1/projects/{project_id}` and require authentication.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/entries` | List entries. Query params: `type`, `pending`, `search`, `limit` |
+| POST | `/entries/add` | Add a single entry. Body: `content`, `entry_type`, `confidence`, `session_id` |
+| PUT | `/entries/{entry_id}` | Dismiss or un-dismiss an entry |
+| POST | `/compile` | Compile pending entries. Optional body: `llm_api_key`, `model`, `provider` |
+| GET | `/compilations` | List compilation history |
+| GET | `/health` | Health status: entry counts, staleness, word count, score inputs |
+| GET | `/pages` | List wiki pages |
+| GET | `/pages/{slug}` | Get page content with backlinks |
+| PUT | `/pages/{slug}` | Create or update a page. Body: `content`, `title` |
+| DELETE | `/pages/{slug}` | Delete a wiki page |
+| POST | `/pages/{slug}/regenerate` | Regenerate an auto-generated page |
+| PUT | `/settings` | Update project settings (e.g., `auto_narrative`) |
+
+## Best Practices
+
+**When to compile.** Run `sfs project compile` after batches of sessions, not after every single entry. A good cadence is weekly or after a feature sprint. The health command tells you when pending entries are piling up.
+
+**Seed the knowledge base early.** Before your first AI session, add a few decision and convention entries manually via the API or MCP tools. This gives agents immediate context and sets the tone for the kind of knowledge you want captured.
+
+**Dismiss noise aggressively.** Not every discovery is worth keeping. Dismiss trivial entries (`sfs project dismiss <id>`) so they don't clutter compiled output. The confidence score helps — entries below 0.5 are flagged as unverified.
+
+**Use wiki pages for depth.** Knowledge entries are single facts. For topics that need explanation — architecture, deployment, onboarding — create wiki pages via `update_wiki_page()` or the dashboard editor.
+
+**Monitor health regularly.** A healthy project has a score above 80%, no stale context, and fewer than 10 pending entries. Run `sfs project health` in CI or as a periodic check.
+
+**Let auto-narrative do its job.** With `--auto-narrative` enabled, session summaries are extracted on sync and stored as entries automatically. This is the lowest-effort way to build the knowledge base — just use your AI tools normally.

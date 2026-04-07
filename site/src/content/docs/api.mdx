@@ -21,80 +21,127 @@ Authorization: Bearer sk_sfs_...
 
 ### Auth
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/v1/auth/signup` | Create account |
-| GET | `/api/v1/auth/me` | Current user profile |
-| POST | `/api/v1/auth/keys` | Create API key |
-| GET | `/api/v1/auth/keys` | List API keys |
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/api/v1/auth/signup` | None | Create account |
+| GET | `/api/v1/auth/me` | Bearer | Current user profile |
+| POST | `/api/v1/auth/keys` | Bearer | Create API key |
+| GET | `/api/v1/auth/keys` | Bearer | List API keys |
 
 ### Sessions
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/v1/sessions` | List sessions (paginated) |
-| GET | `/api/v1/sessions/{id}` | Get session detail |
-| PUT | `/api/v1/sessions/{id}/sync` | Push session (upload archive) |
-| GET | `/api/v1/sessions/{id}/sync` | Pull session (download archive) |
-| GET | `/api/v1/sessions/{id}/messages` | Get paginated messages |
-| GET | `/api/v1/sessions/{id}/summary` | Get session summary |
-| POST | `/api/v1/sessions/{id}/summary` | Generate session summary |
-| GET | `/api/v1/sessions/search` | Full-text search |
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/v1/sessions` | Bearer | List sessions (paginated) |
+| GET | `/api/v1/sessions/{id}` | Bearer | Get session detail |
+| PUT | `/api/v1/sessions/{id}/sync` | Bearer | Push session (upload archive) |
+| GET | `/api/v1/sessions/{id}/sync` | Bearer | Pull session (download archive) |
+| GET | `/api/v1/sessions/{id}/messages` | Bearer | Get paginated messages |
+| GET | `/api/v1/sessions/{id}/summary` | Bearer | Get session summary |
+| POST | `/api/v1/sessions/{id}/summary` | Bearer | Generate session summary |
+| GET | `/api/v1/sessions/search` | Bearer | Full-text search |
 
 ### Audit
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/v1/sessions/{id}/audit` | Run LLM Judge audit |
-| GET | `/api/v1/sessions/{id}/audit` | Get latest audit report |
-| GET | `/api/v1/sessions/{id}/audits` | Audit history |
-| GET | `/api/v1/sessions/{id}/audit/status` | Check background audit status |
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/api/v1/sessions/{id}/audit` | Bearer | Run LLM Judge audit |
+| GET | `/api/v1/sessions/{id}/audit` | Bearer | Get latest audit report |
+| GET | `/api/v1/sessions/{id}/audits` | Bearer | Audit history |
+| GET | `/api/v1/sessions/{id}/audit/status` | Bearer | Check background audit status |
 
 ### Handoffs
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/v1/handoffs` | Create handoff |
-| GET | `/api/v1/handoffs/{id}` | Get handoff details |
-| POST | `/api/v1/handoffs/{id}/claim` | Claim handoff (copies session) |
-| GET | `/api/v1/handoffs/inbox` | Handoffs received |
-| GET | `/api/v1/handoffs/sent` | Handoffs sent |
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/api/v1/handoffs` | Bearer | Create handoff |
+| GET | `/api/v1/handoffs/{id}` | Bearer | Get handoff details |
+| POST | `/api/v1/handoffs/{id}/claim` | Bearer | Claim handoff (copies session) |
+| GET | `/api/v1/handoffs/inbox` | Bearer | Handoffs received |
+| GET | `/api/v1/handoffs/sent` | Bearer | Handoffs sent |
 
 ### Sync
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/v1/sync/settings` | Get autosync settings |
-| PUT | `/api/v1/sync/settings` | Update autosync mode |
-| GET | `/api/v1/sync/watchlist` | Get watchlist |
-| POST | `/api/v1/sync/watch/{id}` | Add to watchlist |
-| DELETE | `/api/v1/sync/watch/{id}` | Remove from watchlist |
-| GET | `/api/v1/sync/status` | Sync status |
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/v1/sync/settings` | Bearer | Get autosync settings |
+| PUT | `/api/v1/sync/settings` | Bearer | Update autosync mode (requires `autosync` feature if not "off") |
+| GET | `/api/v1/sync/watchlist` | Bearer | Get watched sessions |
+| POST | `/api/v1/sync/watch/{id}` | Bearer | Add session to watchlist |
+| DELETE | `/api/v1/sync/watch/{id}` | Bearer | Remove session from watchlist |
+| PUT | `/api/v1/sync/watch/{id}/{status}` | Bearer | Update watch status (pending/queued/synced/failed) |
+| GET | `/api/v1/sync/status` | Bearer | Sync status overview (counts, storage usage) |
 
 ### Settings
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/v1/settings/judge` | Get judge settings |
-| PUT | `/api/v1/settings/judge` | Save judge settings |
-| DELETE | `/api/v1/settings/judge` | Clear judge settings |
-| GET | `/api/v1/settings/judge/models` | Discover models from custom endpoint |
-| GET | `/api/v1/settings/audit-trigger` | Get auto-audit trigger |
-| PUT | `/api/v1/settings/audit-trigger` | Set auto-audit trigger |
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/v1/settings/judge` | Bearer | Get judge settings |
+| PUT | `/api/v1/settings/judge` | Bearer | Save judge settings |
+| DELETE | `/api/v1/settings/judge` | Bearer | Clear judge settings |
+| GET | `/api/v1/settings/judge/models` | Bearer | Discover models from custom endpoint |
+| GET | `/api/v1/settings/audit-trigger` | Bearer | Get auto-audit trigger |
+| PUT | `/api/v1/settings/audit-trigger` | Bearer | Set auto-audit trigger |
 
 ### Projects
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/v1/projects/` | Create project context |
-| GET | `/api/v1/projects/{remote}` | Get project context |
-| PUT | `/api/v1/projects/{remote}/context` | Update context document |
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/v1/projects/` | Bearer | List projects the user has access to |
+| POST | `/api/v1/projects/` | Bearer | Create project context (requires `project_context` feature) |
+| GET | `/api/v1/projects/{remote}` | Bearer | Get project context by git remote |
+| PUT | `/api/v1/projects/{remote}/context` | Bearer | Update context document |
+| DELETE | `/api/v1/projects/{project_id}` | Bearer | Delete project (owner or admin only) |
+
+### Knowledge Base
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/v1/projects/{id}/entries` | Bearer | List knowledge entries. Query params: `type`, `pending`, `search`, `limit` |
+| POST | `/api/v1/projects/{id}/entries/add` | Bearer | Create a knowledge entry (types: decision, pattern, discovery, convention, bug, dependency) |
+| PUT | `/api/v1/projects/{id}/entries/{entry_id}` | Bearer | Dismiss or un-dismiss a knowledge entry |
+| POST | `/api/v1/projects/{id}/compile` | Bearer | Compile pending entries into project context (optional LLM config in body) |
+| GET | `/api/v1/projects/{id}/compilations` | Bearer | List compilation history. Query param: `limit` |
+| GET | `/api/v1/projects/{id}/health` | Bearer | Knowledge health stats (total/pending/compiled/dismissed entries, staleness) |
+
+### Wiki
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/v1/projects/{id}/pages` | Bearer | List all wiki pages for a project |
+| GET | `/api/v1/projects/{id}/pages/{slug}` | Bearer | Get a wiki page with backlinks |
+| PUT | `/api/v1/projects/{id}/pages/{slug}` | Bearer | Create or update a wiki page (requires `project_context` feature) |
+| DELETE | `/api/v1/projects/{id}/pages/{slug}` | Bearer | Delete a wiki page (requires `project_context` feature) |
+| POST | `/api/v1/projects/{id}/pages/{slug}/regenerate` | Bearer | Regenerate an auto-generated concept page from latest entries |
+| GET | `/api/v1/projects/{id}/links/{target_type}/{target_id}` | Bearer | Get backlinks for a target |
+| PUT | `/api/v1/projects/{id}/settings` | Bearer | Update project settings (e.g. `auto_narrative` toggle) |
+
+### Organizations
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/api/v1/org` | Bearer | Create organization (Team tier or above required) |
+| GET | `/api/v1/org` | Bearer | Get org info, member list, and current user role |
+| POST | `/api/v1/org/invite` | Bearer | Invite a member by email (admin only) |
+| POST | `/api/v1/org/invite/{invite_id}/accept` | Bearer | Accept an org invite |
+| GET | `/api/v1/org/invites` | Bearer | List pending invites (admin only) |
+| DELETE | `/api/v1/org/invites/{invite_id}` | Bearer | Revoke a pending invite (admin only) |
+| PUT | `/api/v1/org/members/{user_id}/role` | Bearer | Change a member's role (admin only) |
+| DELETE | `/api/v1/org/members/{user_id}` | Bearer | Remove a member from the org (admin only) |
+
+### Billing
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/v1/billing/status` | Bearer | Current subscription status, tier, storage usage |
+| POST | `/api/v1/billing/checkout` | Bearer | Create a Stripe Checkout session (body: `tier`, `seats`) |
+| POST | `/api/v1/billing/portal` | Bearer | Create a Stripe Customer Portal session for self-service management |
 
 ### Health
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/health` | Health check |
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/health` | None | Health check |
 
 ## OpenAPI
 

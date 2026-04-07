@@ -59,12 +59,21 @@ export default defineConfig({
         {
           label: 'Features',
           items: [
+            { label: 'Knowledge Base', slug: 'knowledge-base' },
             { label: 'LLM Judge', slug: 'judge' },
             { label: 'Team Handoff', slug: 'handoff' },
             { label: 'Session Summary', slug: 'summary' },
             { label: 'MCP Server', slug: 'mcp' },
             { label: 'Git Integration', slug: 'git-integration' },
             { label: 'Project Context', slug: 'project-context' },
+          ],
+        },
+        {
+          label: 'Platform',
+          items: [
+            { label: 'Dashboard', slug: 'dashboard' },
+            { label: 'Organizations', slug: 'organizations' },
+            { label: 'Billing & Tiers', slug: 'billing' },
           ],
         },
         {

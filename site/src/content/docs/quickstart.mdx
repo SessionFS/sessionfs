@@ -13,7 +13,15 @@ pip install sessionfs
 
 This installs two commands: `sfs` (CLI) and `sfsd` (daemon).
 
-## 2. Start the Daemon
+## 2. Initialize
+
+```bash
+sfs init
+```
+
+The interactive wizard auto-detects which AI tools you have installed, sets up the daemon, and optionally configures cloud sync. You can also skip this and configure manually.
+
+## 3. Start the Daemon
 
 ```bash
 sfs daemon start
@@ -32,11 +40,11 @@ It automatically detects and captures sessions from all eight supported tools:
 - Cline
 - Roo Code
 
-## 3. Use Your Tools Normally
+## 4. Use Your Tools Normally
 
 No behavior change required. Just use your AI coding tools the way you always do. SessionFS captures sessions silently in the background.
 
-## 4. Browse Your Sessions
+## 5. Browse Your Sessions
 
 ```bash
 sfs list
@@ -61,7 +69,7 @@ sfs list --since 24h
 sfs list --tool claude-code --sort tokens
 ```
 
-## 5. Resume a Session
+## 6. Resume a Session
 
 Resume in the same tool or a different one:
 
@@ -81,6 +89,14 @@ Four tools support resume: Claude Code, Codex, Gemini CLI, and Copilot CLI. Sess
 ---
 
 ## Troubleshooting
+
+**Run the health check first:**
+
+```bash
+sfs doctor
+```
+
+This runs 8 diagnostic checks and auto-repairs common issues (broken indexes, stale locks, permission problems).
 
 **"No sessions found" after `sfs list`**
 
@@ -130,19 +146,20 @@ sfs summary ses_abc
 # Audit a session for hallucinations
 sfs audit ses_abc --model gpt-4o
 
+# Set up project knowledge base and wiki
+sfs project init
+sfs project edit
+
+# Install MCP server (12 tools) so AI agents
+# can search sessions, query the knowledge base, and read wiki pages
+sfs mcp install --for claude-code
+
 # Enable automatic cloud sync
 sfs auth login
 sfs sync auto --mode all
 
-# Share project context with your team
-sfs project init
-sfs project edit
-
 # Hand off a session to a teammate
 sfs handoff ses_abc --to colleague@company.com
-
-# Install MCP so AI agents remember past sessions
-sfs mcp install --for claude-code
 ```
 
 See the full [CLI Reference](/cli/) for all commands and options.

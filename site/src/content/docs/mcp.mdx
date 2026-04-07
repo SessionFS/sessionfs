@@ -2,52 +2,185 @@
 title: "MCP Server"
 ---
 
-The SessionFS MCP server lets AI agents search your past sessions and read project context during conversations. Runs on stdio transport for local use, or HTTP/SSE for remote access.
+The SessionFS MCP server gives AI coding agents access to your session history and project knowledge base during conversations. Agents can search past sessions, read project context, and contribute knowledge back — building a shared memory that persists across tools and teammates.
 
-## Install for Claude Code
+Transports: **stdio** for local use (agent launches `sfs mcp serve` as a subprocess) and **HTTP/SSE** for remote use (cloud-hosted agents like claude.ai).
 
-```bash
-sfs mcp install --for claude-code
-```
+## Installation
 
-This adds SessionFS to your Claude Code MCP configuration automatically.
+Run `sfs mcp install --for <tool>` to register the MCP server with your AI tool. This registers the server in the tool's MCP configuration and injects knowledge-contribution instructions into the tool's project config file (e.g., `CLAUDE.md`, `.cursorrules`).
 
-## Install for Cursor
+Supported tools:
 
 ```bash
-sfs mcp install --for cursor
+sfs mcp install --for claude-code   # ~/.claude.json
+sfs mcp install --for cursor        # ~/.cursor/mcp.json
+sfs mcp install --for codex         # via codex mcp add
+sfs mcp install --for gemini        # via gemini mcp add
+sfs mcp install --for copilot       # ~/.copilot/config.json
+sfs mcp install --for amp           # ~/.amp/config.json
+sfs mcp install --for cline         # VS Code globalStorage
+sfs mcp install --for roo-code      # VS Code globalStorage
 ```
 
-## Available tools
+To skip the instruction injection (server registration only):
 
-The MCP server exposes 12 tools:
+```bash
+sfs mcp install --for claude-code --skip-instructions
+```
 
-| Tool | Description |
-|------|-------------|
-| `search_sessions` | Search past sessions by keyword, error message, or file path |
-| `get_session_context` | Get full conversation context from a specific session |
-| `list_recent_sessions` | List recent sessions with filtering |
-| `find_related_sessions` | Find sessions related to specific files or errors |
-| `get_project_context` | Get shared project context document for a repository (includes wiki pages, pending entries, contribution instructions) |
-| `get_session_summary` | Get the deterministic or narrative summary for a session |
-| `get_audit_report` | Get the LLM Judge audit report for a session |
-| `add_knowledge` | Add a knowledge entry to the project (6 types: decision, convention, pattern, dependency, issue, note) |
-| `update_wiki_page` | Create or update a wiki page in the project knowledge base |
-| `list_wiki_pages` | List all wiki pages for a project |
-| `search_project_knowledge` | Search across knowledge entries and wiki pages |
-| `ask_project` | Ask a question about the project using compiled knowledge |
+## Tools
 
-## How agents use it
+The MCP server exposes 12 tools in three categories.
 
-When connected, AI agents can:
-- Search for past solutions: "Have we solved this auth error before?"
-- Load full session context: "Show me the session where we debugged the migration"
-- Read project conventions: "What are the team's coding standards?"
+### Session Tools
 
-## Manual start
+#### `search_sessions`
+
+Search past AI coding sessions by keyword, error message, or file path.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `query` | string | yes | Keywords, error messages, or file paths to search for |
+| `tool_filter` | string | no | Filter by source tool (`claude-code`, `codex`, `gemini`, `cursor`, `copilot`, `amp`, `cline`, `roo-code`) |
+| `max_results` | number | no | Maximum results to return (default: 5) |
+
+#### `get_session_context`
+
+Retrieve the full conversation from a specific session. Use after `search_sessions` finds a relevant hit.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `session_id` | string | yes | Session ID in `ses_...` format |
+| `max_messages` | number | no | Limit messages returned (default: 50) |
+| `summary_only` | boolean | no | Return metadata only, no messages (default: false) |
+
+#### `list_recent_sessions`
+
+List recent sessions with optional filtering.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `limit` | number | no | Max sessions to return (default: 10) |
+| `tool_filter` | string | no | Filter by source tool |
+| `project_filter` | string | no | Filter by project/workspace path substring |
+
+#### `find_related_sessions`
+
+Find sessions that touched a specific file or encountered a similar error. Provide `file_path` or `error_text` (at least one).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `file_path` | string | no | Find sessions that modified this file |
+| `error_text` | string | no | Find sessions with similar errors |
+| `limit` | number | no | Max results (default: 5) |
+
+#### `get_session_summary`
+
+Get a structured summary — files modified, commands run, tests executed, errors encountered, packages installed.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `session_id` | string | yes | Session ID in `ses_...` format |
+
+#### `get_audit_report`
+
+Get the LLM Judge trust audit — verifiable claims, verdicts (verified/unverified/hallucination), confidence scores, CWE mappings.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `session_id` | string | yes | Session ID in `ses_...` format |
+
+### Knowledge Read
+
+#### `get_project_context`
+
+Get the shared project context document — architecture decisions, conventions, wiki pages, and recent knowledge entries. Call early in a session to understand the project.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `git_remote` | string | no | Git remote URL (auto-detected from working directory if omitted) |
+
+#### `search_project_knowledge`
+
+Search across knowledge entries and wiki pages by keyword.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `query` | string | yes | What to search for |
+| `entry_type` | string | no | Filter by type: `decision`, `pattern`, `discovery`, `convention`, `bug`, `dependency` |
+| `limit` | number | no | Maximum results (default: 10) |
+
+#### `ask_project`
+
+Ask a question about the project. Gathers project context, searches the knowledge base, and finds related local sessions to assemble research material.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `question` | string | yes | A question about the project |
+
+### Knowledge Write
+
+#### `add_knowledge`
+
+Add a knowledge entry to the project knowledge base. Use when you discover patterns, decisions, conventions, bugs, or dependencies.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `content` | string | yes | The knowledge entry text |
+| `entry_type` | string | yes | One of: `decision`, `pattern`, `discovery`, `convention`, `bug`, `dependency` |
+| `session_id` | string | no | Link this entry to a specific session |
+| `confidence` | number | no | Confidence score 0.0--1.0 (default: 1.0) |
+
+#### `update_wiki_page`
+
+Create or update a wiki page in the project knowledge base. Use for longer-form documentation of architecture, conventions, or concepts.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `slug` | string | yes | URL-safe page identifier (e.g., `architecture`) |
+| `content` | string | yes | Full page content in markdown |
+| `title` | string | no | Page title (derived from slug if omitted) |
+
+#### `list_wiki_pages`
+
+List all wiki pages for the project. Returns page slugs, titles, word counts, and entry counts. No parameters required.
+
+## Agent Knowledge Contribution
+
+When `sfs mcp install` runs, it injects a `MANDATORY` instructions block into the tool's project config file (e.g., `CLAUDE.md`, `.cursorrules`). These instructions tell the agent it must call `add_knowledge()` when discovering architecture decisions, code patterns, bugs, dependencies, or conventions — and must not end a session without contributing if it learned something new.
+
+This creates a **knowledge loop**: each session reads project context at the start and writes back discoveries at the end. Tools that support project-level instructions: Claude Code (`CLAUDE.md`), Codex (`codex.md`), Gemini (`GEMINI.md`), Cursor (`.cursorrules`). For other tools, instructions are served at runtime via `get_project_context`.
+
+## Remote MCP (HTTP/SSE)
+
+For cloud-hosted agents (e.g., claude.ai) that cannot launch local processes, SessionFS supports HTTP/SSE transport with OAuth authentication. The remote server is deployed alongside the SessionFS API — agents connect via the SSE endpoint and authenticate using the same API key from `sfs auth login`. No separate service required.
+
+## Configuration
+
+| Variable | Description |
+|----------|-------------|
+| `SFS_API_URL` | SessionFS cloud API URL (for knowledge tools) |
+| `SFS_API_KEY` | API key for cloud authentication |
 
 ```bash
 sfs mcp serve
 ```
 
-Runs on stdio transport. Connect from any MCP-aware tool.
+Runs the MCP server on stdio transport. Connect from any MCP-compatible client.
+
+**Rebuild the search index:**
+
+```bash
+sfs mcp index
+```
+
+Re-indexes all local sessions into the full-text search database.
+
+**Uninstall:**
+
+```bash
+sfs mcp uninstall --for claude-code
+```
+
+Removes the MCP server registration and cleans up injected knowledge instructions from the project config file. Supported tools are the same as for `install`.

@@ -2,7 +2,15 @@
 title: "Shared Project Context"
 ---
 
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="tip">
+Project context is one part of the **Living Knowledge Base**. Entries accumulate from sessions, get compiled into this document, and generate wiki pages. See [Living Knowledge Base](/docs/knowledge-base) for the full loop.
+</Aside>
+
 Share a single source-of-truth document with every AI agent working on your codebase. Any teammate, on any device, using any AI tool with the SessionFS MCP server, gets the same project context.
+
+As of v0.9.7, the context document is **auto-compiled** from knowledge entries — not just manually edited. You can still edit it directly, but the recommended workflow is to let entries accumulate from sessions and compile them into the document periodically.
 
 ## Quick Start
 
@@ -19,8 +27,21 @@ sfs project show
 
 1. **One document per repository** — matched by git remote URL (SSH and HTTPS both work)
 2. **Shared across the team** — anyone with sessions in the repo can read and edit
-3. **Accessible via MCP** — AI agents call `get_project_context` to read the document
-4. **Free-form markdown** — write whatever your team needs
+3. **Accessible via MCP** — AI agents call `get_project_context` to read the document and `add_knowledge` to contribute back
+4. **Auto-compiled from entries** — knowledge entries from sessions are merged into the document during compilation
+5. **Free-form markdown** — you can still edit directly; compiled content and manual edits coexist
+
+### The Compile Workflow
+
+```
+Sessions sync → entries extracted → entries accumulate (pending)
+                                          ↓
+                              sfs project compile
+                                          ↓
+                        context document updated + wiki pages generated
+```
+
+Knowledge entries build up as **pending** until you run `sfs project compile`. Compilation merges them into the context document and generates wiki section pages. You control the cadence — compile after a sprint, weekly, or whenever `sfs project health` tells you entries are piling up.
 
 ## CLI Commands
 
@@ -83,11 +104,56 @@ Output raw markdown to stdout (useful for piping).
 sfs project get-context > local-copy.md
 ```
 
+### `sfs project compile`
+
+Compile pending knowledge entries into the context document and generate wiki pages. Uses deterministic merging by default; pass an LLM API key for smarter deduplication and reorganization.
+
+```bash
+sfs project compile
+# Compiling pending entries...
+# Project context updated. 12 entries compiled.
+```
+
+### `sfs project health`
+
+Check the health of your project's knowledge base — pending entry count, staleness, document size, and an overall score.
+
+```bash
+sfs project health
+# Project Health: my-project
+#
+#   ✓  Context document exists (1200 words, 8 sections)
+#   ✓  45 knowledge entries (38 compiled, 2 dismissed)
+#   ⚠  5 entries pending compilation
+#   ✓  Last compiled: 2026-04-01
+#
+# Health Score: 90%
+```
+
+## Auto-Narrative
+
+Enable auto-narrative to have session summaries extracted as knowledge entries automatically on sync. This is the lowest-effort way to keep the context document current — just use your AI tools normally and let entries accumulate.
+
+```bash
+sfs project set --auto-narrative
+```
+
+When enabled, each synced session is analyzed for decisions, patterns, bugs, and other notable facts. Extracted entries are stored as pending until compilation. Requires an LLM API key (client-side — SessionFS never stores your key).
+
 ## MCP Integration
 
-When connected to the SessionFS MCP server, AI agents can call `get_project_context` to read the shared document. This works with any MCP-aware tool (Claude Code, Cursor, etc.).
+The SessionFS MCP server exposes 12 tools, including several for project context and knowledge. When connected, AI agents can read the shared document, contribute knowledge entries, and update wiki pages. This works with any MCP-aware tool (Claude Code, Cursor, etc.).
 
-The tool auto-detects the git remote from the current working directory when using the local MCP server. For the remote MCP server, pass the git remote as an argument.
+| Tool | Description |
+|------|-------------|
+| `get_project_context` | Read the compiled context document |
+| `add_knowledge(content, type)` | Contribute a knowledge entry |
+| `update_wiki_page(slug, content)` | Create or update a wiki page |
+| `list_wiki_pages()` | List all wiki pages |
+| `search_project_knowledge(query)` | Search entries by content |
+| `ask_project(question)` | Research a question across context, entries, and sessions |
+
+The tools auto-detect the git remote from the current working directory when using the local MCP server. For the remote MCP server, pass the git remote as an argument.
 
 ## What to Include
 

@@ -1,0 +1,127 @@
+---
+title: "Organizations"
+description: "Create and manage teams with shared billing, seat-based access, and role-based permissions."
+---
+
+Organizations group team members under a shared billing account with centralized administration. Each member inherits the organization's tier, storage pool, and feature set.
+
+## What is an organization?
+
+An organization is a billing and access boundary. When you create one, your personal subscription transfers to the org level. Members you invite share the org's tier — they do not need individual subscriptions.
+
+Organizations are available on the **Team** ($14.99/user/month) and **Enterprise** (contact sales) tiers.
+
+## Creating an organization
+
+You need a Team or Enterprise subscription before creating an org.
+
+```
+POST /api/v1/org
+```
+
+```json
+{
+  "name": "Acme Engineering",
+  "slug": "acme-eng"
+}
+```
+
+Slugs must be lowercase alphanumeric with hyphens, at least 3 characters, and unique across all orgs. The creator automatically becomes an admin.
+
+When the org is created, your Stripe customer and subscription are transferred to the org. This prevents billing confusion between personal and org subscriptions.
+
+Seat count is derived from your Stripe subscription quantity. Defaults: 5 seats for Team, 25 for Enterprise.
+
+A user can only belong to one organization at a time.
+
+## Roles
+
+Organizations have two roles:
+
+| Role | Capabilities |
+|------|-------------|
+| **admin** | Invite/remove members, change roles, manage billing via Stripe portal, view all org settings |
+| **member** | Use all features included in the org tier, view org info |
+
+Admins cannot change their own role. This prevents accidental last-admin lockout.
+
+## Inviting members
+
+Only admins can send invites.
+
+```
+POST /api/v1/org/invite
+```
+
+```json
+{
+  "email": "dev@company.com",
+  "role": "member"
+}
+```
+
+Invites expire after **7 days**. The server checks seat capacity at invite time and again at acceptance time. If all seats are in use, the invite or acceptance is rejected with a `seat_limit` error.
+
+You cannot invite someone who is already a member, and duplicate pending invites to the same email are blocked.
+
+### Listing and revoking invites
+
+```
+GET  /api/v1/org/invites        # List pending invites (admin only)
+DELETE /api/v1/org/invites/{id}  # Revoke a pending invite (admin only)
+```
+
+## Accepting an invite
+
+```
+POST /api/v1/org/invite/{invite_id}/accept
+```
+
+The authenticated user's email must match the invite email. Users already in an organization cannot accept a new invite — they must leave their current org first.
+
+Seat capacity is rechecked at acceptance time. If the org filled up between invite and acceptance, the request is rejected.
+
+## Managing members
+
+Admins can change roles and remove members:
+
+```
+PUT    /api/v1/org/members/{user_id}/role   # Change role (admin only)
+DELETE /api/v1/org/members/{user_id}         # Remove member (admin only)
+```
+
+Role must be `admin` or `member`. Admins cannot change their own role or remove themselves.
+
+## Viewing org info
+
+```
+GET /api/v1/org
+```
+
+Returns the org details, full member list, and the current user's role. Non-org users get an empty response. The response includes:
+
+- Org name, slug, tier
+- Seat usage (used vs. limit)
+- Storage usage (used bytes vs. limit)
+- Each member's email, display name, role, and join date
+
+## Org billing
+
+The organization has its own Stripe customer, separate from any member's personal billing. When an admin creates a checkout session for a Team or Enterprise plan, the charge goes to the org's Stripe customer.
+
+- **Admins** access the Stripe Customer Portal to manage the org subscription (upgrade seats, change payment method, cancel).
+- **Members** cannot purchase individual plans while in an org. Their tier is determined entirely by the org.
+- If a member had a personal subscription before joining, it remains accessible via the portal with `scope: "personal"`.
+
+## Storage
+
+| Tier | Storage |
+|------|---------|
+| Team | 1 GB per seat (e.g., 5 seats = 5 GB pool) |
+| Enterprise | Unlimited |
+
+Storage is pooled across all org members. The `GET /api/v1/org` response includes `storage_used_bytes` and `storage_limit_bytes` so admins can monitor usage.
+
+## Dashboard
+
+Org settings are in **Settings > Organization** in the web dashboard. From there, admins can view members, send invites, and access the billing portal. Members see the org info and their role but cannot modify settings.

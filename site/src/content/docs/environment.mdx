@@ -86,9 +86,19 @@ All SessionFS server environment variables use the `SFS_` prefix.
 |----------|-------------|---------|
 | `SFS_GITLAB_WEBHOOK_SECRET` | GitLab webhook token for MR events | — |
 
+## URLs
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `SFS_APP_URL` | Dashboard URL for billing redirects | `https://app.sessionfs.dev` |
+| `SFS_API_URL` | API URL for share links and internal references | `https://api.sessionfs.dev` |
+
 ## Defaults
 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `SFS_DEFAULT_SYNC_MODE` | Default autosync mode for new users: `off`, `all`, `selective` | `off` |
 | `SFS_DEFAULT_AUDIT_TRIGGER` | Default auto-audit trigger for new users: `manual`, `on_sync`, `on_pr` | `manual` |
+| `SFS_MAX_SYNC_BYTES_FREE` | Storage limit for free tier | `52428800` (50 MB) |
+| `SFS_MAX_SYNC_BYTES_PAID` | Storage limit for paid tiers | `314572800` (300 MB) |
+| `SFS_RETENTION_DAYS_FREE` | Session retention for free tier | `14` |

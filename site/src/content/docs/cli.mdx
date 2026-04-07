@@ -674,6 +674,226 @@ Output raw project context markdown to stdout.
 sfs project get-context
 ```
 
+### `sfs project compile`
+
+Compile pending knowledge entries into the project context document.
+
+```
+sfs project compile
+```
+
+**Example:**
+
+```bash
+$ sfs project compile
+
+Compiling pending entries...
+Project context updated. 12 entries compiled.
+```
+
+### `sfs project entries`
+
+List knowledge entries for this project.
+
+```
+sfs project entries [OPTIONS]
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--pending` | flag | `false` | Show only pending (uncompiled) entries |
+| `--type` | string | — | Filter by type: `decision`, `pattern`, `discovery`, `convention`, `bug`, `dependency` |
+| `--limit` | int | `20` | Max entries to show |
+
+**Example:**
+
+```bash
+$ sfs project entries --type decision --limit 5
+
+┌────┬──────────┬────────────────────────────────────────┬──────────┬──────────────────┬──────────┐
+│ ID │ Type     │ Content                                │ Age      │ Session          │ Status   │
+├────┼──────────┼────────────────────────────────────────┼──────────┼──────────────────┼──────────┤
+│ 42 │ decision │ HTTP + ETags only, no WebSockets       │ 3d ago   │ ses_a1b2c3d4e5.. │ compiled │
+│ 38 │ decision │ Sessions are append-only                │ 5d ago   │ ses_f6e5d4c3b2.. │ pending  │
+└────┴──────────┴────────────────────────────────────────┴──────────┴──────────────────┴──────────┘
+Showing 2 of 2 entries
+```
+
+### `sfs project ask`
+
+Ask a question about the project using the knowledge base.
+
+```
+sfs project ask QUESTION
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `QUESTION` | yes | Question about the project |
+
+Searches knowledge entries and project context for relevant answers. Optionally saves the Q&A back to the knowledge base.
+
+**Example:**
+
+```bash
+$ sfs project ask "How does session conflict resolution work?"
+
+╭─ Question: How does session conflict resolution work? ─╮
+╰────────────────────────────────────────────────────────╯
+
+Matching Knowledge Entries (2):
+  [decision] Sessions are append-only — conflict resolution appends both sides
+    Session: ses_a1b2 | 2026-03-15 | confidence: 95%
+  [pattern] Merge strategy: append both sides rather than 3-way merge
+    Session: ses_c3d4 | 2026-03-10 | confidence: 90%
+
+Related Sessions:
+  sfs show ses_a1b2
+  sfs show ses_c3d4
+
+Save this Q&A to the knowledge base? [y/N]:
+```
+
+### `sfs project pages`
+
+List wiki pages for this project.
+
+```
+sfs project pages
+```
+
+**Example:**
+
+```bash
+$ sfs project pages
+
+┌──────────────────┬──────────────────────────┬──────────┬───────┬─────────┬──────┐
+│ Slug             │ Title                    │ Type     │ Words │ Entries │ Auto │
+├──────────────────┼──────────────────────────┼──────────┼───────┼─────────┼──────┤
+│ session-format   │ Session Format (.sfs)    │ concept  │   420 │       8 │ yes  │
+│ conflict-resolve │ Conflict Resolution      │ concept  │   310 │       5 │ yes  │
+│ daemon-arch      │ Daemon Architecture      │ manual   │   850 │       0 │ no   │
+└──────────────────┴──────────────────────────┴──────────┴───────┴─────────┴──────┘
+3 pages
+```
+
+### `sfs project page`
+
+View a wiki page by slug.
+
+```
+sfs project page SLUG
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `SLUG` | yes | Page slug |
+
+**Example:**
+
+```bash
+$ sfs project page session-format
+
+╭──────────── Session Format (.sfs) ────────────╮
+│ A .sfs session is a directory containing:     │
+│ manifest.json, messages.jsonl, workspace.json, │
+│ tools.json. All file paths within are relative │
+│ to workspace root.                             │
+│ ...                                            │
+╰──────────── session-format (auto-generated) ──╯
+
+Backlinks:
+  entry:42 (references)
+  entry:38 (defines)
+```
+
+### `sfs project health`
+
+Run health checks on the project knowledge base.
+
+```
+sfs project health
+```
+
+Reports entry counts, compilation status, staleness, and a health score.
+
+**Example:**
+
+```bash
+$ sfs project health
+
+Project Health: sessionfs
+
+  ✓  Context document exists (2400 words, 8 sections)
+  ✓  45 knowledge entries (38 compiled, 2 dismissed)
+  ⚠  5 entries pending compilation
+  ✓  Last compiled: 2026-03-28
+  ✓  Context appears up to date
+
+Health Score: 90%
+```
+
+### `sfs project regenerate`
+
+Regenerate an auto-generated concept article from the latest knowledge entries.
+
+```
+sfs project regenerate SLUG
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `SLUG` | yes | Page slug to regenerate |
+
+**Example:**
+
+```bash
+$ sfs project regenerate session-format
+
+Regenerating page 'session-format'...
+Article regenerated (420 words from 8 entries).
+```
+
+### `sfs project set`
+
+Update project settings.
+
+```
+sfs project set [OPTIONS]
+```
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `--auto-narrative` / `--no-auto-narrative` | flag | Enable or disable auto-narrative generation on sync |
+
+**Example:**
+
+```bash
+$ sfs project set --auto-narrative
+
+auto_narrative = True
+```
+
+### `sfs project dismiss`
+
+Dismiss an irrelevant knowledge entry so it is excluded from future compilations.
+
+```
+sfs project dismiss ENTRY_ID
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `ENTRY_ID` | yes | Numeric entry ID |
+
+**Example:**
+
+```bash
+$ sfs project dismiss 38
+
+Entry 38 dismissed.
+```
+
 ---
 
 ## `sfs storage`
@@ -790,21 +1010,210 @@ Start the MCP server on stdio transport.
 sfs mcp serve
 ```
 
-Tools exposed: `search_sessions`, `get_session_context`, `list_recent_sessions`, `find_related_sessions`, `get_project_context`.
+Tools exposed: `search_sessions`, `get_session_context`, `list_recent_sessions`, `find_related_sessions`, `get_project_context`, `add_knowledge`, `update_wiki_page`, `list_wiki_pages`, `search_project_knowledge`, `ask_project`, `get_session_summary`, `get_audit_report`.
 
 ---
 
 ## `sfs mcp install`
 
-Auto-configure MCP for an AI tool.
+Auto-configure SessionFS as an MCP server for an AI tool. Also injects knowledge-contribution instructions into the tool's project config file.
 
 ```
-sfs mcp install --for TOOL
+sfs mcp install --for TOOL [OPTIONS]
 ```
 
 | Option | Type | Description |
 |--------|------|-------------|
-| `--for` | string | Target tool: `claude-code`, `cursor`, `copilot` |
+| `--for` | string | Target tool: `claude-code`, `codex`, `gemini`, `cursor`, `copilot`, `amp`, `cline`, `roo-code` |
+| `--skip-instructions` | flag | Skip injecting knowledge-contribution instructions into project config |
+
+**Example:**
+
+```bash
+$ sfs mcp install --for claude-code
+
+Added SessionFS MCP server in Claude Code.
+  Config: /Users/me/.claude.json
+  Restart Claude Code to activate.
+
+Appended knowledge instructions to CLAUDE.md
+
+Your AI agent can now search past sessions:
+  "Has anyone on the team seen this error before?"
+  "What was the fix for the auth middleware bug?"
+```
+
+---
+
+## `sfs mcp uninstall`
+
+Remove SessionFS MCP server registration and knowledge instructions from an AI tool.
+
+```
+sfs mcp uninstall --for TOOL
+```
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `--for` | string | Target tool: `claude-code`, `codex`, `gemini`, `cursor`, `copilot`, `amp`, `cline`, `roo-code` |
+
+**Example:**
+
+```bash
+$ sfs mcp uninstall --for cursor
+
+Removed SessionFS MCP server from Cursor.
+  Restart Cursor to apply.
+Removed knowledge instructions from .cursorrules
+```
+
+---
+
+## `sfs mcp index`
+
+Rebuild the full-text search index from all local sessions.
+
+```
+sfs mcp index
+```
+
+**Example:**
+
+```bash
+$ sfs mcp index
+
+Search index rebuilt: 47 sessions indexed.
+```
+
+---
+
+## `sfs init`
+
+Interactive setup wizard for SessionFS. Detects installed AI coding tools, writes configuration, optionally sets up cloud sync, and starts the daemon.
+
+```
+sfs init
+```
+
+Detects: Claude Code, Cursor, Codex, Gemini CLI, Copilot, Amp, Cline, Roo Code.
+
+**Example:**
+
+```bash
+$ sfs init
+
+SessionFS Setup
+
+Scanning for AI coding tools...
+  ✓ Claude Code detected (~/.claude)
+  ✓ Cursor detected (~/Library/Application Support/Cursor)
+  ✓ Gemini CLI detected (~/.gemini)
+  ✗ Codex not found
+
+Found 3 tools. Track all? [Y/n]: y
+
+Cloud sync lets you access sessions from any machine and share with teammates.
+
+Set up cloud sync now? [y/N]: n
+
+Start the SessionFS daemon now? [Y/n]: y
+
+✓ Daemon started! Watching 3 tools.
+  Sessions stored in: /Users/me/.sessionfs/sessions
+
+Next steps:
+  sfs list              — View captured sessions
+  sfs show <id>         — Inspect a session
+  sfs resume <id>       — Resume in any tool
+  sfs search "query"    — Search past sessions
+```
+
+---
+
+## `sfs doctor`
+
+Run 8 health checks with auto-repair. Checks store directory, session count, index integrity, index freshness, daemon status, API reachability, authentication, and config permissions. Automatically repairs corrupted indexes.
+
+```
+sfs doctor
+```
+
+**Example:**
+
+```bash
+$ sfs doctor
+
+              SessionFS Health Check
+┌─────────────────────┬────────┬──────────────────────────┐
+│ Check               │ Status │ Detail                   │
+├─────────────────────┼────────┼──────────────────────────┤
+│ Store directory      │ ✓      │ /Users/me/.sessionfs     │
+│ Sessions directory   │ ✓      │ 47 session(s) on disk    │
+│ Session index        │ ✓      │ 47 indexed               │
+│ Index freshness      │ ✓      │ in sync                  │
+│ Daemon               │ ✓      │ running (PID 12345)      │
+│ API server           │ ✓      │ reachable (https://...)  │
+│ Authentication       │ ✓      │ me@example.com (team)    │
+│ Config permissions   │ ✓      │ permissions OK (0o600)   │
+└─────────────────────┴────────┴──────────────────────────┘
+```
+
+---
+
+## `sfs security scan`
+
+Run local security checks: config file permissions, API key exposure in shell configs, dependency vulnerabilities (via pip-audit), and stale sessions.
+
+```
+sfs security scan
+```
+
+**Example:**
+
+```bash
+$ sfs security scan
+
+Security Scan Results
+────────────────────────────────────────
+✓ Config permissions: OK (0o600)
+✓ API key exposure: No keys found in shell configs
+✓ Dependencies: No vulnerabilities found
+✓ Stale sessions: No stale sessions
+
+All checks passed.
+```
+
+---
+
+## `sfs security fix`
+
+Auto-fix security issues where safe to do so. Fixes config permissions, upgrades vulnerable packages (with confirmation), and warns about issues requiring manual action.
+
+```
+sfs security fix [OPTIONS]
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--yes`, `-y` | flag | `false` | Skip confirmation prompts |
+
+**Example:**
+
+```bash
+$ sfs security fix
+
+Security Fix
+────────────────────────────────────────
+✓ Fixed config permissions: 0o644 -> 0o600
+
+Vulnerable packages with available fixes:
+  - cryptography>=44.0.0
+
+Upgrade these packages? [y/N]: y
+✓ Upgraded 1 packages
+
+Fixed 2 issue(s).
+```
 
 ---
 
