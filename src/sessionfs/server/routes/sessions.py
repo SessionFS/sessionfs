@@ -964,10 +964,10 @@ async def sync_push(
         if dlp_policy and dlp_policy.get("enabled"):
             from sessionfs.security.secrets import scan_dlp
 
-            # Scan ALL text content from the archive (not just messages)
+            # Scan ALL .json/.jsonl files from the archive directly
             import io as _io
             import tarfile as _tarfile
-            scan_text_parts = [messages_text]
+            scan_text_parts: list[str] = []
             try:
                 with _tarfile.open(fileobj=_io.BytesIO(data), mode="r:gz") as _tar:
                     for _member in _tar.getmembers():
@@ -976,7 +976,9 @@ async def sync_push(
                             if _f:
                                 scan_text_parts.append(_f.read().decode("utf-8", errors="replace"))
             except Exception:
-                pass  # If extraction fails, still scan what we have
+                # Fallback to pre-extracted messages_text if tar reading fails
+                if not scan_text_parts:
+                    scan_text_parts.append(messages_text)
             full_scan_text = "\n".join(scan_text_parts)
 
             findings = scan_dlp(

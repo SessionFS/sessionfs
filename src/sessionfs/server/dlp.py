@@ -171,11 +171,9 @@ def redact_and_repack(tar_data: bytes, findings: list[DLPFinding]) -> bytes:
     except tarfile.TarError as e:
         raise ValueError(f"Invalid tar.gz archive: {e}") from e
 
-    # Phase 2: redact ALL text-based archive files
-    text_files = {"messages.jsonl", "workspace.json", "tools.json", "manifest.json"}
+    # Phase 2: redact ALL .json/.jsonl files in the archive
     for key in list(members_data.keys()):
-        basename = key.rsplit("/", 1)[-1] if "/" in key else key
-        if basename in text_files:
+        if key.endswith(".json") or key.endswith(".jsonl"):
             original_text = members_data[key].decode("utf-8", errors="replace")
             redacted_text = redact_text(original_text, findings)
             members_data[key] = redacted_text.encode("utf-8")
