@@ -105,12 +105,22 @@ sfs resume SESSION_ID [OPTIONS]
 |--------|------|---------|-------------|
 | `--project` | path | — | Target project path (overrides workspace) |
 | `--in` | string | `claude-code` | Target tool: `claude-code`, `codex`, `copilot`, or `gemini` |
+| `--model`, `-m` | string | — | Model to use in target tool (e.g. `gpt-4.1`, `claude-sonnet-4`, `gemini-2.5-pro`) |
 
 Converts the session to the target tool's native format and injects it into that tool's session storage. Cursor, Cline, Roo Code, and Amp are capture-only — `--in cursor` (and the others) is rejected with an error. Use `--in` with one of the four supported resume targets instead.
 
-**Example:**
+**`--model` support per tool:**
+- **Claude Code**: passed as `--model` to the `claude` binary
+- **Codex**: used in session injection and `codex resume --model`
+- **Gemini**: passed as `--model` to the `gemini` binary
+- **Copilot**: not supported (warns, uses Copilot's default)
+
+If omitted, each tool uses its own default model.
+
+**Examples:**
 
 ```bash
+$ sfs resume a1b2 --in codex --model gpt-4.1
 $ sfs resume a1b2 --project /Users/me/myproject
 
 Session resumed successfully.
