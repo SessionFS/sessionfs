@@ -10,8 +10,12 @@ All SessionFS server environment variables use the `SFS_` prefix.
 |----------|-------------|---------|
 | `SFS_DATABASE_URL` | PostgreSQL connection URL | `sqlite+aiosqlite:///./sessionfs.db` |
 | `SFS_DATABASE_ECHO` | Log all SQL queries | `false` |
+| `SFS_DATABASE_POOL_SIZE` | Connection pool size | `20` |
+| `SFS_DATABASE_MAX_OVERFLOW` | Extra connections beyond pool_size | `40` |
+| `SFS_DATABASE_POOL_TIMEOUT` | Seconds to wait for a connection | `60` |
+| `SFS_DATABASE_POOL_RECYCLE` | Recycle connections after N seconds | `1800` |
 
-**Note:** For asyncpg connections, use the `postgresql+asyncpg://` driver prefix. If you pass `postgresql://`, SessionFS will auto-convert it. SSL parameters like `?sslmode=require` are handled internally — asyncpg uses a proper SSL context instead of URL parameters.
+**Note:** Pool settings are ignored for SQLite. For asyncpg connections, use the `postgresql+asyncpg://` driver prefix. If you pass `postgresql://`, SessionFS will auto-convert it. SSL parameters like `?sslmode=require` are handled internally — asyncpg uses a proper SSL context instead of URL parameters.
 
 ## Email
 

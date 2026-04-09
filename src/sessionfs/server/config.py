@@ -12,6 +12,10 @@ class ServerConfig(BaseSettings):
 
     database_url: str = "sqlite+aiosqlite:///./sessionfs.db"
     database_echo: bool = False
+    database_pool_size: int = 20
+    database_max_overflow: int = 40
+    database_pool_timeout: int = 60
+    database_pool_recycle: int = 1800  # Recycle connections after 30 min
 
     blob_store_type: str = "local"  # "local", "s3", or "gcs"
     blob_store_local_path: str = "./data/blobs"

@@ -37,7 +37,14 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # Startup
-        init_engine(config.database_url, echo=config.database_echo)
+        init_engine(
+            config.database_url,
+            echo=config.database_echo,
+            pool_size=config.database_pool_size,
+            max_overflow=config.database_max_overflow,
+            pool_timeout=config.database_pool_timeout,
+            pool_recycle=config.database_pool_recycle,
+        )
 
         if config.blob_store_type == "s3":
             from sessionfs.server.storage.s3 import S3BlobStore

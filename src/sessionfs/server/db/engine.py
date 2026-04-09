@@ -56,13 +56,33 @@ def _prepare_url(database_url: str) -> tuple[str, dict]:
     return clean_url, connect_args
 
 
-def init_engine(database_url: str, echo: bool = False) -> AsyncEngine:
+def init_engine(
+    database_url: str,
+    echo: bool = False,
+    pool_size: int = 20,
+    max_overflow: int = 40,
+    pool_timeout: int = 60,
+    pool_recycle: int = 1800,
+) -> AsyncEngine:
     """Create the async engine and session factory."""
     global _engine, _session_factory
 
     clean_url, connect_args = _prepare_url(database_url)
 
-    _engine = create_async_engine(clean_url, echo=echo, connect_args=connect_args)
+    # SQLite doesn't support connection pooling params
+    pool_kwargs: dict = {}
+    if not database_url.startswith("sqlite"):
+        pool_kwargs = {
+            "pool_size": pool_size,
+            "max_overflow": max_overflow,
+            "pool_timeout": pool_timeout,
+            "pool_recycle": pool_recycle,
+            "pool_pre_ping": True,  # Verify connections before use
+        }
+
+    _engine = create_async_engine(
+        clean_url, echo=echo, connect_args=connect_args, **pool_kwargs,
+    )
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
     return _engine
 
