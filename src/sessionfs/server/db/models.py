@@ -315,6 +315,7 @@ class Project(Base):
     )
     auto_narrative: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     kb_retention_days: Mapped[int] = mapped_column(Integer, default=180, server_default="180")
+    kb_max_context_words: Mapped[int] = mapped_column(Integer, default=8000, server_default="8000")
     kb_section_page_limit: Mapped[int] = mapped_column(Integer, default=30, server_default="30")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

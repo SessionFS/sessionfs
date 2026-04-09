@@ -132,6 +132,10 @@ async def compile_project_context(
         logger.info("No pending entries for project %s", project_id)
         return None
 
+    # Sort by confidence DESC so high-priority entries appear first in each
+    # section — _trim_to_budget removes from the bottom (lowest priority).
+    pending.sort(key=lambda e: (e.confidence, e.created_at.timestamp()), reverse=True)
+
     # 3. Group by type
     grouped: dict[str, list[str]] = defaultdict(list)
     for entry in pending:
@@ -140,9 +144,11 @@ async def compile_project_context(
     # 4. Call LLM to merge
     context_before = project.context_document or ""
 
+    max_context_words = getattr(project, "kb_max_context_words", 8000) or 8000
+
     if not api_key:
         # Without an API key, do a simple append-based compilation
-        context_after = _simple_compile(context_before, grouped, entries=pending)
+        context_after = _simple_compile(context_before, grouped, entries=pending, max_context_words=max_context_words)
     else:
         from sessionfs.judge.providers import call_llm
 
@@ -159,16 +165,17 @@ async def compile_project_context(
             context_after = context_after.strip()
         except Exception:
             logger.warning("LLM compilation failed, falling back to simple compile", exc_info=True)
-            context_after = _simple_compile(context_before, grouped, entries=pending)
+            context_after = _simple_compile(context_before, grouped, entries=pending, max_context_words=max_context_words)
 
     # 5. Save updated context
     now = datetime.now(timezone.utc)
     project.context_document = context_after
     project.updated_at = now
 
-    # 6. Mark entries as compiled
+    # 6. Mark entries as compiled and update relevance
     for entry in pending:
         entry.compiled_at = now
+        entry.last_relevant_at = now
 
     # 7. Save compilation record
     compilation = ContextCompilation(
@@ -217,7 +224,8 @@ async def compile_project_context(
 
         # Cap section pages: keep most recent + highest confidence
         section_limit = getattr(project, "kb_section_page_limit", 30) or 30
-        if len(type_entries) > section_limit:
+        original_count = len(type_entries)
+        if original_count > section_limit:
             type_entries.sort(
                 key=lambda e: (e.confidence, e.created_at.timestamp()),
                 reverse=True,
@@ -228,6 +236,10 @@ async def compile_project_context(
         for e in type_entries:
             conf = " *(unverified)*" if e.confidence < 0.5 else ""
             page_content += f"- {e.content}{conf}\n"
+
+        if original_count > section_limit:
+            dropped = original_count - section_limit
+            page_content += f"\n---\n*{dropped} older/lower-confidence entries not shown.*\n"
 
         # Upsert the section page
         existing_page = await db.execute(
@@ -265,6 +277,7 @@ def _simple_compile(
     context: str,
     grouped: dict[str, list[str]],
     entries: list | None = None,
+    max_context_words: int = 8000,
 ) -> str:
     """Simple append-based compilation without LLM.
 
@@ -373,11 +386,10 @@ def _simple_compile(
                     lines.append(f"- {item}")
 
     # Budget enforcement: trim to max_context_words
-    max_words = 8000
     full_text = "\n".join(lines) + "\n"
     word_count = len(full_text.split())
-    if word_count > max_words:
-        lines = _trim_to_budget(lines, max_words)
+    if word_count > max_context_words:
+        lines = _trim_to_budget(lines, max_context_words)
 
     return "\n".join(lines) + "\n"
 

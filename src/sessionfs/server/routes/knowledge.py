@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import get_current_user
@@ -74,6 +74,10 @@ class HealthResponse(BaseModel):
     section_count: int = 0
     last_compiled: datetime | None = None
     potentially_stale: bool = False
+    recommendations: list[str] = []
+    stale_entry_count: int = 0
+    low_confidence_count: int = 0
+    decayed_count: int = 0
 
 
 def _word_overlap(a: str, b: str) -> float:
@@ -137,6 +141,19 @@ async def list_entries(
     stmt = stmt.order_by(KnowledgeEntry.created_at.desc()).limit(limit)
     result = await db.execute(stmt)
     entries = list(result.scalars().all())
+
+    # Track relevance when entries are returned via search
+    if search and entries:
+        entry_ids = [e.id for e in entries]
+        await db.execute(
+            update(KnowledgeEntry)
+            .where(KnowledgeEntry.id.in_(entry_ids))
+            .values(
+                last_relevant_at=datetime.now(timezone.utc),
+                reference_count=KnowledgeEntry.reference_count + 1,
+            )
+        )
+        await db.commit()
 
     return [
         KnowledgeEntryResponse(
@@ -456,6 +473,61 @@ async def project_health(
                 potentially_stale = True
                 break
 
+    # Actionable metrics
+    ninety_days_ago = datetime.now(timezone.utc) - timedelta(days=90)
+
+    stale_result = await db.execute(
+        select(func.count(KnowledgeEntry.id)).where(
+            KnowledgeEntry.project_id == project_id,
+            KnowledgeEntry.last_relevant_at.is_(None),
+            KnowledgeEntry.created_at < ninety_days_ago,
+        )
+    )
+    stale_entry_count = stale_result.scalar() or 0
+
+    low_conf_result = await db.execute(
+        select(func.count(KnowledgeEntry.id)).where(
+            KnowledgeEntry.project_id == project_id,
+            KnowledgeEntry.dismissed == False,  # noqa: E712
+            KnowledgeEntry.confidence < 0.3,
+        )
+    )
+    low_confidence_count = low_conf_result.scalar() or 0
+
+    decayed_result = await db.execute(
+        select(func.count(KnowledgeEntry.id)).where(
+            KnowledgeEntry.project_id == project_id,
+            KnowledgeEntry.dismissed == False,  # noqa: E712
+            KnowledgeEntry.confidence >= 0.1,
+            KnowledgeEntry.confidence <= 0.5,
+            KnowledgeEntry.created_at < ninety_days_ago,
+        )
+    )
+    decayed_count = decayed_result.scalar() or 0
+
+    # Build recommendations
+    recommendations: list[str] = []
+    if stale_entry_count > 10:
+        recommendations.append(
+            f"Consider compiling to trigger decay on {stale_entry_count} stale entries"
+        )
+    if low_confidence_count > 5:
+        recommendations.append(
+            f"{low_confidence_count} low-confidence entries may be auto-dismissed on next compile"
+        )
+    if pending_entries > 20:
+        recommendations.append(
+            f"Run compile to process {pending_entries} pending entries"
+        )
+    if word_count > 6000:
+        recommendations.append(
+            f"Context document is {word_count} words — approaching 8,000 word budget"
+        )
+    if total_entries > 0 and total_compilations == 0:
+        recommendations.append(
+            "No compilations yet — run compile to build context"
+        )
+
     return HealthResponse(
         project_id=project_id,
         total_entries=total_entries,
@@ -468,4 +540,8 @@ async def project_health(
         section_count=section_count,
         last_compiled=last_compilation_at,
         potentially_stale=potentially_stale,
+        recommendations=recommendations,
+        stale_entry_count=stale_entry_count,
+        low_confidence_count=low_confidence_count,
+        decayed_count=decayed_count,
     )
