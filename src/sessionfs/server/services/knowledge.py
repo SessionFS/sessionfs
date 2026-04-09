@@ -73,7 +73,7 @@ async def extract_knowledge_entries(
             user_id=user_id,
             entry_type="pattern",
             content=f"File created/modified: {file_path}",
-            confidence=0.5,
+            confidence=0.3,
             source_context=f"Session {session_id} modified {file_path}",
         )
         entries.append(entry)

@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import get_current_user
@@ -74,6 +74,20 @@ class HealthResponse(BaseModel):
     section_count: int = 0
     last_compiled: datetime | None = None
     potentially_stale: bool = False
+    recommendations: list[str] = []
+    stale_entry_count: int = 0
+    low_confidence_count: int = 0
+    decayed_count: int = 0
+
+
+def _word_overlap(a: str, b: str) -> float:
+    """Compute word overlap ratio between two strings."""
+    words_a = set(a.lower().split())
+    words_b = set(b.lower().split())
+    if not words_a or not words_b:
+        return 0.0
+    intersection = words_a & words_b
+    return len(intersection) / min(len(words_a), len(words_b))
 
 
 async def _get_project_or_404(project_id: str, db: AsyncSession, user_id: str | None = None) -> Project:
@@ -128,6 +142,19 @@ async def list_entries(
     result = await db.execute(stmt)
     entries = list(result.scalars().all())
 
+    # Track relevance when entries are returned via search
+    if search and entries:
+        entry_ids = [e.id for e in entries]
+        await db.execute(
+            update(KnowledgeEntry)
+            .where(KnowledgeEntry.id.in_(entry_ids))
+            .values(
+                last_relevant_at=datetime.now(timezone.utc),
+                reference_count=KnowledgeEntry.reference_count + 1,
+            )
+        )
+        await db.commit()
+
     return [
         KnowledgeEntryResponse(
             id=e.id,
@@ -161,13 +188,51 @@ async def add_entry(
         from fastapi import HTTPException as _HTTPException
         raise _HTTPException(422, f"Invalid entry_type. Must be one of: {', '.join(sorted(valid_types))}")
 
+    # Gate 1: Minimum content length
+    if len(body.content) < 20:
+        raise HTTPException(422, "Content too short — minimum 20 characters required")
+
+    session_id = body.session_id or "manual"
+
+    # Gate 2: Rate limit — max 20 entries per session_id+project in the last hour
+    one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
+    rate_result = await db.execute(
+        select(func.count(KnowledgeEntry.id)).where(
+            KnowledgeEntry.project_id == project_id,
+            KnowledgeEntry.session_id == session_id,
+            KnowledgeEntry.created_at >= one_hour_ago,
+        )
+    )
+    recent_count = rate_result.scalar() or 0
+    if recent_count >= 20:
+        raise HTTPException(429, "Rate limit exceeded — max 20 entries per session per hour")
+
+    # Gate 3: Similarity check against recent non-dismissed entries
+    recent_result = await db.execute(
+        select(KnowledgeEntry.content)
+        .where(
+            KnowledgeEntry.project_id == project_id,
+            KnowledgeEntry.dismissed == False,  # noqa: E712
+        )
+        .order_by(KnowledgeEntry.created_at.desc())
+        .limit(50)
+    )
+    for (existing_content,) in recent_result.all():
+        if _word_overlap(body.content, existing_content) > 0.85:
+            raise HTTPException(409, "Similar entry already exists")
+
+    # Gate 4: Lower confidence for cli-ask/manual sources
+    confidence = body.confidence
+    if session_id in ("cli-ask", "manual"):
+        confidence = min(confidence, 0.7)
+
     entry = KnowledgeEntry(
         project_id=project_id,
-        session_id=body.session_id or "manual",
+        session_id=session_id,
         user_id=user.id,
         entry_type=body.entry_type,
         content=body.content,
-        confidence=body.confidence,
+        confidence=confidence,
         source_context=body.source_context,
     )
     db.add(entry)
@@ -408,6 +473,62 @@ async def project_health(
                 potentially_stale = True
                 break
 
+    # Actionable metrics
+    ninety_days_ago = datetime.now(timezone.utc) - timedelta(days=90)
+
+    stale_result = await db.execute(
+        select(func.count(KnowledgeEntry.id)).where(
+            KnowledgeEntry.project_id == project_id,
+            KnowledgeEntry.last_relevant_at.is_(None),
+            KnowledgeEntry.created_at < ninety_days_ago,
+        )
+    )
+    stale_entry_count = stale_result.scalar() or 0
+
+    low_conf_result = await db.execute(
+        select(func.count(KnowledgeEntry.id)).where(
+            KnowledgeEntry.project_id == project_id,
+            KnowledgeEntry.dismissed == False,  # noqa: E712
+            KnowledgeEntry.confidence < 0.3,
+        )
+    )
+    low_confidence_count = low_conf_result.scalar() or 0
+
+    decayed_result = await db.execute(
+        select(func.count(KnowledgeEntry.id)).where(
+            KnowledgeEntry.project_id == project_id,
+            KnowledgeEntry.dismissed == False,  # noqa: E712
+            KnowledgeEntry.confidence >= 0.1,
+            KnowledgeEntry.confidence <= 0.5,
+            KnowledgeEntry.created_at < ninety_days_ago,
+        )
+    )
+    decayed_count = decayed_result.scalar() or 0
+
+    # Build recommendations
+    recommendations: list[str] = []
+    if stale_entry_count > 10:
+        recommendations.append(
+            f"Consider compiling to trigger decay on {stale_entry_count} stale entries"
+        )
+    if low_confidence_count > 5:
+        recommendations.append(
+            f"{low_confidence_count} low-confidence entries may be auto-dismissed on next compile"
+        )
+    if pending_entries > 20:
+        recommendations.append(
+            f"Run compile to process {pending_entries} pending entries"
+        )
+    max_budget = getattr(project, "kb_max_context_words", 8000) or 8000
+    if word_count > int(max_budget * 0.75):
+        recommendations.append(
+            f"Context document is {word_count} words — approaching {max_budget:,} word budget"
+        )
+    if total_entries > 0 and total_compilations == 0:
+        recommendations.append(
+            "No compilations yet — run compile to build context"
+        )
+
     return HealthResponse(
         project_id=project_id,
         total_entries=total_entries,
@@ -420,4 +541,8 @@ async def project_health(
         section_count=section_count,
         last_compiled=last_compilation_at,
         potentially_stale=potentially_stale,
+        recommendations=recommendations,
+        stale_entry_count=stale_entry_count,
+        low_confidence_count=low_confidence_count,
+        decayed_count=decayed_count,
     )

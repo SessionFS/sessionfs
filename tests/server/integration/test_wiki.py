@@ -58,7 +58,7 @@ async def test_add_entry_via_api(
     data = resp.json()
     assert data["content"] == "Always use UTC timestamps"
     assert data["entry_type"] == "convention"
-    assert data["confidence"] == 0.95
+    assert data["confidence"] == 0.7  # capped for session_id="manual"
     assert data["session_id"] == "manual"
     assert data["project_id"] == test_project.id
 

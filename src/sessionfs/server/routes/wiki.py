@@ -67,6 +67,9 @@ class PageWriteRequest(BaseModel):
 
 class ProjectSettingsRequest(BaseModel):
     auto_narrative: bool
+    kb_retention_days: int | None = None
+    kb_max_context_words: int | None = None
+    kb_section_page_limit: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -432,12 +435,24 @@ async def update_project_settings(
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Update project settings (auto_narrative)."""
+    """Update project settings (auto_narrative, lifecycle settings)."""
     check_feature(ctx, "project_context")
     project = await _get_project_or_404(project_id, db, user.id)
 
     project.auto_narrative = body.auto_narrative
+    if body.kb_retention_days is not None:
+        project.kb_retention_days = body.kb_retention_days
+    if body.kb_max_context_words is not None:
+        project.kb_max_context_words = body.kb_max_context_words
+    if body.kb_section_page_limit is not None:
+        project.kb_section_page_limit = body.kb_section_page_limit
     project.updated_at = datetime.now(timezone.utc)
     await db.commit()
 
-    return {"status": "updated", "auto_narrative": body.auto_narrative}
+    return {
+        "status": "updated",
+        "auto_narrative": body.auto_narrative,
+        "kb_retention_days": project.kb_retention_days,
+        "kb_max_context_words": project.kb_max_context_words,
+        "kb_section_page_limit": project.kb_section_page_limit,
+    }

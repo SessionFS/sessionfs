@@ -61,6 +61,9 @@ class ProjectResponse(BaseModel):
     updated_at: datetime
     session_count: int = 0
     auto_narrative: bool = False
+    kb_retention_days: int = 180
+    kb_max_context_words: int = 8000
+    kb_section_page_limit: int = 30
 
 
 async def _check_repo_access(db: AsyncSession, user_id: str, git_remote: str) -> bool:
@@ -132,6 +135,9 @@ async def list_projects(
             updated_at=p.updated_at,
             session_count=session_counts.get(p.git_remote_normalized, 0),
             auto_narrative=getattr(p, "auto_narrative", False),
+            kb_retention_days=getattr(p, "kb_retention_days", 180),
+            kb_max_context_words=getattr(p, "kb_max_context_words", 8000),
+            kb_section_page_limit=getattr(p, "kb_section_page_limit", 30),
         )
         for p in projects
     ]
@@ -266,6 +272,9 @@ async def create_project(
         created_at=project.created_at,
         updated_at=project.updated_at,
         auto_narrative=getattr(project, "auto_narrative", False),
+        kb_retention_days=getattr(project, "kb_retention_days", 180),
+        kb_max_context_words=getattr(project, "kb_max_context_words", 8000),
+        kb_section_page_limit=getattr(project, "kb_section_page_limit", 30),
     )
 
 
@@ -301,6 +310,9 @@ async def get_project(
         created_at=project.created_at,
         updated_at=project.updated_at,
         auto_narrative=getattr(project, "auto_narrative", False),
+        kb_retention_days=getattr(project, "kb_retention_days", 180),
+        kb_max_context_words=getattr(project, "kb_max_context_words", 8000),
+        kb_section_page_limit=getattr(project, "kb_section_page_limit", 30),
     )
 
 
