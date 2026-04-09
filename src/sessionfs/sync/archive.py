@@ -10,6 +10,9 @@ from pathlib import Path
 def pack_session(session_dir: Path) -> bytes:
     """Pack an .sfs session directory into a tar.gz archive.
 
+    Snapshots file contents into memory first to handle active sessions
+    where the daemon may be writing concurrently.
+
     Args:
         session_dir: Path to the .sfs directory (e.g. ~/.sessionfs/sessions/{id}.sfs/)
 
@@ -21,7 +24,13 @@ def pack_session(session_dir: Path) -> bytes:
         for file_path in sorted(session_dir.rglob("*")):
             if file_path.is_file():
                 arcname = file_path.relative_to(session_dir).as_posix()
-                tar.add(str(file_path), arcname=arcname)
+                # Snapshot file content to avoid "unexpected end of data"
+                # when the daemon writes to the file during packing
+                file_data = file_path.read_bytes()
+                info = tarfile.TarInfo(name=arcname)
+                info.size = len(file_data)
+                info.mtime = int(file_path.stat().st_mtime)
+                tar.addfile(info, io.BytesIO(file_data))
     return buf.getvalue()
 
 
