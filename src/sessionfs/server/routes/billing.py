@@ -353,16 +353,18 @@ async def _sync_billing_to_org(
     if not org:
         return
 
-    # Guard: only sync if we can confirm the subscription belongs to this org.
+    # Guard: only sync if the subscription belongs to this org.
     # A personal subscription must NEVER touch org state.
     #
-    # Positive match required: customer_id must be present AND match the org's.
-    # If customer_id is None or org has no customer yet, refuse to sync —
-    # org billing is only set via the org-specific checkout path (which has org_id
-    # in metadata and updates the org directly, never through _sync_billing_to_org).
+    # Check 1: customer_id must match the org's
     if not customer_id or not org.stripe_customer_id:
         return
     if customer_id != org.stripe_customer_id:
+        return
+    # Check 2: if the org already has a subscription, the incoming subscription
+    # must match it. This prevents the legacy same-customer case where a personal
+    # subscription shares the customer_id but has a different subscription_id.
+    if subscription_id and org.stripe_subscription_id and subscription_id != org.stripe_subscription_id:
         return
 
     # Orgs only support team/enterprise/free — if Stripe sends starter/pro, treat as downgrade
