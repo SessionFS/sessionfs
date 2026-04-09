@@ -125,8 +125,7 @@ def dlp_policy() -> None:
         err_console.print(f"[red]Failed to fetch org settings: {resp.text}[/red]")
         raise SystemExit(1)
 
-    data = resp.json()
-    dlp = data.get("dlp")
+    dlp = resp.json()
 
     if not dlp or not dlp.get("enabled"):
         console.print("[dim]DLP is not enabled for your organization.[/dim]")

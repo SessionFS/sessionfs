@@ -171,17 +171,14 @@ def redact_and_repack(tar_data: bytes, findings: list[DLPFinding]) -> bytes:
     except tarfile.TarError as e:
         raise ValueError(f"Invalid tar.gz archive: {e}") from e
 
-    # Phase 2: redact messages.jsonl content
-    messages_key = None
-    for key in members_data:
-        if key == "messages.jsonl" or key.endswith("/messages.jsonl"):
-            messages_key = key
-            break
-
-    if messages_key is not None:
-        original_text = members_data[messages_key].decode("utf-8", errors="replace")
-        redacted_text = redact_text(original_text, findings)
-        members_data[messages_key] = redacted_text.encode("utf-8")
+    # Phase 2: redact ALL text-based archive files
+    text_files = {"messages.jsonl", "workspace.json", "tools.json", "manifest.json"}
+    for key in list(members_data.keys()):
+        basename = key.rsplit("/", 1)[-1] if "/" in key else key
+        if basename in text_files:
+            original_text = members_data[key].decode("utf-8", errors="replace")
+            redacted_text = redact_text(original_text, findings)
+            members_data[key] = redacted_text.encode("utf-8")
 
     # Phase 3: repack
     buf = io.BytesIO()
@@ -252,8 +249,23 @@ def validate_dlp_policy(policy: dict) -> dict:
     if not isinstance(enabled, bool):
         raise ValueError("'enabled' must be a boolean")
 
-    return {
+    result: dict = {
         "enabled": enabled,
         "mode": mode,
         "categories": sorted(set(categories)),
     }
+
+    # Preserve custom_patterns and allowlist if provided
+    custom_patterns = policy.get("custom_patterns")
+    if custom_patterns is not None:
+        if not isinstance(custom_patterns, list):
+            raise ValueError("custom_patterns must be a list")
+        result["custom_patterns"] = custom_patterns
+
+    allowlist = policy.get("allowlist")
+    if allowlist is not None:
+        if not isinstance(allowlist, list):
+            raise ValueError("allowlist must be a list")
+        result["allowlist"] = allowlist
+
+    return result

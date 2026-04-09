@@ -41,6 +41,8 @@ class DLPPolicyResponse(BaseModel):
     enabled: bool
     mode: str
     categories: list[str]
+    custom_patterns: list[dict] = []
+    allowlist: list[str] = []
 
 
 class DLPPolicyUpdate(BaseModel):
@@ -144,11 +146,13 @@ async def update_dlp_policy(
     ctx.org.settings = json.dumps(settings)
     await db.commit()
 
-    return DLPPolicyResponse(**{
-        "enabled": validated.get("enabled", False),
-        "mode": validated.get("mode", "warn"),
-        "categories": validated.get("categories", ["secrets"]),
-    })
+    return DLPPolicyResponse(
+        enabled=validated.get("enabled", False),
+        mode=validated.get("mode", "warn"),
+        categories=validated.get("categories", ["secrets"]),
+        custom_patterns=validated.get("custom_patterns", []),
+        allowlist=validated.get("allowlist", []),
+    )
 
 
 # ---------------------------------------------------------------------------

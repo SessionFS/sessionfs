@@ -500,24 +500,14 @@ function BookmarksSection({ sessionId }: { sessionId: string }) {
   );
 }
 
-interface DLPFinding {
-  severity: string;
-  category: string;
-  detector?: string;
-}
-
 interface DLPScanResult {
-  findings: DLPFinding[];
-  action: string;
+  findings_count: number;
+  finding_types: string[];
+  action_taken: string;
+  mode: string;
   scanned_at: string;
+  categories_scanned?: string[];
 }
-
-const SEVERITY_STYLES: Record<string, { bg: string; text: string }> = {
-  critical: { bg: 'bg-red-500/10', text: 'text-red-500' },
-  high: { bg: 'bg-orange-500/10', text: 'text-orange-500' },
-  medium: { bg: 'bg-yellow-500/10', text: 'text-yellow-500' },
-  low: { bg: 'bg-gray-500/10', text: 'text-gray-400' },
-};
 
 function DLPScanSection({ session }: { session: object }) {
   const raw = (session as { dlp_scan_results?: string | DLPScanResult | null }).dlp_scan_results;
@@ -530,12 +520,13 @@ function DLPScanSection({ session }: { session: object }) {
     return null;
   }
 
-  if (!scanResult.findings || scanResult.findings.length === 0) return null;
+  if (!scanResult.findings_count || scanResult.findings_count === 0) return null;
 
   const actionLabel =
-    scanResult.action === 'redacted' ? 'Redacted'
-    : scanResult.action === 'blocked' ? 'Blocked'
-    : 'Warned';
+    scanResult.action_taken === 'redact' ? 'Redacted'
+    : scanResult.action_taken === 'block' ? 'Blocked'
+    : scanResult.action_taken === 'warn' ? 'Warned'
+    : 'Scanned';
 
   const timeAgo = scanResult.scanned_at
     ? (() => {
@@ -557,25 +548,16 @@ function DLPScanSection({ session }: { session: object }) {
           <span className="text-sm font-semibold text-[var(--text-primary)]">DLP Scan</span>
         </div>
         <div className="text-xs text-[var(--text-tertiary)] mb-2">
-          {scanResult.findings.length} finding{scanResult.findings.length !== 1 ? 's' : ''}
+          {scanResult.findings_count} finding{scanResult.findings_count !== 1 ? 's' : ''}
           {' \u00b7 '}{actionLabel}
           {timeAgo && <>{' \u00b7 '}Scanned {timeAgo}</>}
         </div>
-        <div className="space-y-1">
-          {scanResult.findings.map((f, i) => {
-            const sev = (f.severity || 'low').toLowerCase();
-            const styles = SEVERITY_STYLES[sev] || SEVERITY_STYLES.low;
-            return (
-              <div key={i} className="flex items-center gap-2">
-                <span className={`px-1.5 py-0.5 text-[10px] font-bold uppercase rounded ${styles.bg} ${styles.text}`}>
-                  {sev}
-                </span>
-                <span className="text-sm font-mono text-[var(--text-secondary)]">
-                  {f.detector || f.category}
-                </span>
-              </div>
-            );
-          })}
+        <div className="flex flex-wrap gap-1.5">
+          {scanResult.finding_types.map((type) => (
+            <span key={type} className="px-2 py-0.5 text-xs font-mono bg-red-500/10 text-red-500 rounded">
+              {type}
+            </span>
+          ))}
         </div>
       </div>
     </div>
