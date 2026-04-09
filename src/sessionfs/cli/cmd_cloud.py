@@ -242,6 +242,31 @@ def push(
         full_id = resolve_session_id(store, session_id)
         session_dir = get_session_dir_or_exit(store, full_id)
 
+        # DLP pre-scan: check for secrets before pushing
+        messages_path = session_dir / "messages.jsonl"
+        if messages_path.is_file():
+            from sessionfs.security.secrets import scan_dlp, DLPFinding
+
+            text = messages_path.read_text(encoding="utf-8", errors="replace")
+            findings: list[DLPFinding] = scan_dlp(text, categories=["secrets"])
+            if findings:
+                console.print(
+                    f"\n[yellow]DLP scan found {len(findings)} potential secret(s):[/yellow]"
+                )
+                by_severity: dict[str, int] = {}
+                for f in findings:
+                    by_severity[f.severity] = by_severity.get(f.severity, 0) + 1
+                for sev in ("critical", "high", "medium", "low"):
+                    count = by_severity.get(sev, 0)
+                    if count:
+                        console.print(f"  {sev}: {count}")
+
+                if not typer.confirm(
+                    "Continue pushing with these findings?", default=False
+                ):
+                    console.print("[dim]Push cancelled.[/dim]")
+                    return
+
         console.print(f"Packing session {full_id[:12]}...")
         archive_data = pack_session(session_dir)
 

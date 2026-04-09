@@ -811,6 +811,16 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         method: 'PUT',
         body: JSON.stringify(settings),
       }),
+
+    // DLP policy
+    getDLPPolicy: () =>
+      request<{ enabled: boolean; mode: string; categories: string[] }>('/api/v1/dlp/policy'),
+
+    updateDLPPolicy: (policy: { enabled?: boolean; mode?: string; categories?: string[] }) =>
+      request<{ enabled: boolean; mode: string; categories: string[] }>('/api/v1/dlp/policy', {
+        method: 'PUT',
+        body: JSON.stringify(policy),
+      }),
   };
 }
 

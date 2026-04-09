@@ -13,7 +13,7 @@ from sessionfs.server.config import ServerConfig
 from sessionfs.server.db.engine import close_engine, init_engine
 from sessionfs.server.errors import register_exception_handlers
 from sessionfs.server.middleware import RequestLoggingMiddleware
-from sessionfs.server.routes import admin, admin_licenses, audit, auth, billing, bookmarks, handoffs, health, helm, knowledge, org, projects, sessions, settings, summaries, sync, telemetry, webhooks, wiki
+from sessionfs.server.routes import admin, admin_licenses, audit, auth, billing, bookmarks, dlp, handoffs, health, helm, knowledge, org, projects, sessions, settings, summaries, sync, telemetry, webhooks, wiki
 from sessionfs.server.storage.local import LocalBlobStore
 
 
@@ -113,6 +113,7 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     app.include_router(helm.router)
     app.include_router(admin_licenses.router)
     app.include_router(telemetry.router)
+    app.include_router(dlp.router)
 
     # Serve dashboard static files if the dist directory exists.
     # The dashboard is a React SPA — all non-API routes serve index.html.

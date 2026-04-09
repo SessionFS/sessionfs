@@ -1,8 +1,9 @@
-"""M10: Secret detection scanner.
+"""M10: Secret detection and DLP scanner.
 
 Scans session content for potential secrets (API keys, passwords, private keys,
-connection strings). Used by daemon (warn on capture), CLI (gate export/sync),
-and server (metadata annotation).
+connection strings) and PHI (protected health information). Used by daemon
+(warn on capture), CLI (gate export/sync), server (metadata annotation),
+and DLP pipeline (block/redact before sync).
 
 IMPORTANT: Never log or display the actual secret value. Only log the pattern
 name and a masked context snippet.
@@ -120,10 +121,97 @@ SEVERITY_MAP: dict[str, str] = {
     "slack_webhook": "medium",
 }
 
+# ---------------------------------------------------------------------------
+# PHI (Protected Health Information) patterns — toggle independently of secrets
+# ---------------------------------------------------------------------------
+
+PHI_PATTERNS: dict[str, tuple[re.Pattern[str], str]] = {
+    # (pattern_name -> (compiled regex, severity))
+    "ssn": (
+        re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
+        "critical",
+    ),
+    "mrn": (
+        re.compile(r"\b(?:MRN|mrn)[:\s#]*\d{4,12}\b"),
+        "critical",
+    ),
+    "dob": (
+        re.compile(
+            r"\b(?:DOB|dob|date\s*of\s*birth)[:\s]*"
+            r"(?:0?[1-9]|1[0-2])[/\-](?:0?[1-9]|[12]\d|3[01])[/\-](?:\d{2}|\d{4})\b"
+        ),
+        "high",
+    ),
+    "npi_dea_license": (
+        re.compile(r"\b(?:DEA|NPI|license)\s*(?:#|number|:)\s*[\w-]{6,15}\b"),
+        "high",
+    ),
+    "health_plan_id": (
+        re.compile(
+            r"\b(?:health\s*plan|member)\s*(?:id|#|number)[:\s]*[\w-]{6,20}\b",
+            re.IGNORECASE,
+        ),
+        "high",
+    ),
+    "patient_name": (
+        re.compile(r"\b(?:patient|pt)\s*(?:name|:)\s*[A-Z][a-z]+\s+[A-Z][a-z]+\b", re.IGNORECASE),
+        "high",
+    ),
+    "patient_phone": (
+        re.compile(
+            r"\b(?:patient|emergency)\s*(?:phone|contact|tel)[:\s]*[\d\s\-\(\)]{10,}\b"
+        ),
+        "medium",
+    ),
+    "fax_number": (
+        re.compile(r"\b(?:fax)[:\s]*[\d\s\-\(\)]{10,}\b"),
+        "medium",
+    ),
+    "vin": (
+        re.compile(r"\bVIN[:\s]*[A-HJ-NPR-Z0-9]{17}\b"),
+        "medium",
+    ),
+    "device_id": (
+        re.compile(r"\b(?:device|serial)\s*(?:id|#|number)[:\s]*[\w-]{6,20}\b"),
+        "medium",
+    ),
+    "biometric_id": (
+        re.compile(r"\b(?:biometric|fingerprint|retina)\s*(?:id|#|scan)[:\s]*[\w-]+\b"),
+        "high",
+    ),
+    "phi_url": (
+        re.compile(r"https?://[^\s]*\b(?:patient|mrn|ssn|dob)\b[^\s]*"),
+        "critical",
+    ),
+    "medical_email": (
+        re.compile(
+            r"\b(?:patient|medical)\s*(?:email|e-mail)[:\s]*[\w.+-]+@[\w-]+\.[\w.-]+\b"
+        ),
+        "medium",
+    ),
+    "medical_age_90_plus": (
+        re.compile(r"\b(?:age|aged?)\s*[:\s]*(?:[89]\d|[1-9]\d{2,})\b"),
+        "low",
+    ),
+}
+
 
 # ---------------------------------------------------------------------------
-# Finding dataclass
+# Finding dataclasses
 # ---------------------------------------------------------------------------
+
+@dataclass
+class DLPFinding:
+    """A detected DLP violation (secret or PHI)."""
+
+    pattern_name: str       # e.g. "AWS_ACCESS_KEY", "SSN"
+    category: str           # "secret" or "phi"
+    severity: str           # "critical", "high", "medium", "low"
+    line_number: int
+    match_text: str         # The matched text (for redaction)
+    context: str            # ~50 chars surrounding match
+    message_index: int = 0
+
 
 @dataclass
 class SecretFinding:
@@ -221,3 +309,124 @@ def summarize_findings(findings: list[SecretFinding]) -> dict[str, int]:
     for f in findings:
         summary[f.pattern_name] = summary.get(f.pattern_name, 0) + 1
     return summary
+
+
+# ---------------------------------------------------------------------------
+# DLP scanner — unified secrets + PHI scanning
+# ---------------------------------------------------------------------------
+
+def _is_dlp_allowlisted(text: str, extra_allowlist: list[str] | None = None) -> bool:
+    """Check if text matches the built-in allowlist or a caller-supplied list."""
+    if _is_allowlisted(text):
+        return True
+    if extra_allowlist:
+        for entry in extra_allowlist:
+            if entry in text:
+                return True
+    return False
+
+
+def _build_context(text: str, match: re.Match[str], width: int = 25) -> str:
+    """Return ~50 chars of context around a match, masking the matched value."""
+    start = max(0, match.start() - width)
+    end = min(len(text), match.end() + width)
+    snippet = text[start:end]
+    # Mask the matched portion within the snippet
+    m_start = match.start() - start
+    m_end = match.end() - start
+    matched = snippet[m_start:m_end]
+    if len(matched) <= 8:
+        masked = "****"
+    else:
+        masked = matched[:4] + "****" + matched[-4:]
+    return snippet[:m_start] + masked + snippet[m_end:]
+
+
+def scan_dlp(
+    text: str,
+    categories: list[str] | None = None,
+    custom_patterns: list[dict] | None = None,
+    allowlist: list[str] | None = None,
+) -> list[DLPFinding]:
+    """Scan *text* for secrets and/or PHI, returning unified DLPFinding list.
+
+    Parameters
+    ----------
+    text:
+        Multi-line text to scan (e.g. full messages.jsonl content).
+    categories:
+        Which pattern sets to enable. Accepts ``["secrets"]``,
+        ``["phi"]``, or ``["secrets", "phi"]``.  Defaults to both.
+    custom_patterns:
+        Optional extra patterns from org config. Each dict must contain
+        ``name`` (str), ``regex`` (str), ``category`` (str), and
+        ``severity`` (str).
+    allowlist:
+        Extra literal strings to skip (on top of built-in ALLOWLIST).
+    """
+    if categories is None:
+        categories = ["secrets", "phi"]
+
+    findings: list[DLPFinding] = []
+    lines = text.splitlines()
+
+    # Pre-compile custom patterns once
+    compiled_custom: list[tuple[str, re.Pattern[str], str, str]] = []
+    if custom_patterns:
+        for cp in custom_patterns:
+            compiled_custom.append((
+                cp["name"],
+                re.compile(cp["regex"]),
+                cp["category"],
+                cp["severity"],
+            ))
+
+    for line_idx, line in enumerate(lines, start=1):
+        # --- Secret patterns ---
+        if "secrets" in categories:
+            for pattern_name, pattern in SECRET_PATTERNS.items():
+                for match in pattern.finditer(line):
+                    matched_text = match.group(0)
+                    if _is_dlp_allowlisted(matched_text, allowlist):
+                        continue
+                    findings.append(DLPFinding(
+                        pattern_name=pattern_name,
+                        category="secret",
+                        severity=SEVERITY_MAP.get(pattern_name, "medium"),
+                        line_number=line_idx,
+                        match_text=matched_text,
+                        context=_build_context(line, match),
+                    ))
+
+        # --- PHI patterns ---
+        if "phi" in categories:
+            for pattern_name, (pattern, severity) in PHI_PATTERNS.items():
+                for match in pattern.finditer(line):
+                    matched_text = match.group(0)
+                    if _is_dlp_allowlisted(matched_text, allowlist):
+                        continue
+                    findings.append(DLPFinding(
+                        pattern_name=pattern_name,
+                        category="phi",
+                        severity=severity,
+                        line_number=line_idx,
+                        match_text=matched_text,
+                        context=_build_context(line, match),
+                    ))
+
+        # --- Custom patterns ---
+        for cp_name, cp_regex, cp_category, cp_severity in compiled_custom:
+            for match in cp_regex.finditer(line):
+                matched_text = match.group(0)
+                if _is_dlp_allowlisted(matched_text, allowlist):
+                    continue
+                findings.append(DLPFinding(
+                    pattern_name=cp_name,
+                    category=cp_category,
+                    severity=cp_severity,
+                    line_number=line_idx,
+                    match_text=matched_text,
+                    context=_build_context(line, match),
+                ))
+
+    return findings

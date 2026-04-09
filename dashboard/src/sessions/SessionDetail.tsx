@@ -316,6 +316,9 @@ export default function SessionDetail() {
           </div>
         )}
 
+        {/* DLP Scan Results */}
+        <DLPScanSection session={session} />
+
         {/* Quick preview */}
         {previewData && previewData.length > 0 && (
           <div className="px-5 mt-3 pb-1">
@@ -493,6 +496,88 @@ function BookmarksSection({ sessionId }: { sessionId: string }) {
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+interface DLPFinding {
+  severity: string;
+  category: string;
+  detector?: string;
+}
+
+interface DLPScanResult {
+  findings: DLPFinding[];
+  action: string;
+  scanned_at: string;
+}
+
+const SEVERITY_STYLES: Record<string, { bg: string; text: string }> = {
+  critical: { bg: 'bg-red-500/10', text: 'text-red-500' },
+  high: { bg: 'bg-orange-500/10', text: 'text-orange-500' },
+  medium: { bg: 'bg-yellow-500/10', text: 'text-yellow-500' },
+  low: { bg: 'bg-gray-500/10', text: 'text-gray-400' },
+};
+
+function DLPScanSection({ session }: { session: object }) {
+  const raw = (session as { dlp_scan_results?: string | DLPScanResult | null }).dlp_scan_results;
+  if (!raw) return null;
+
+  let scanResult: DLPScanResult;
+  try {
+    scanResult = typeof raw === 'string' ? JSON.parse(raw) : raw as DLPScanResult;
+  } catch {
+    return null;
+  }
+
+  if (!scanResult.findings || scanResult.findings.length === 0) return null;
+
+  const actionLabel =
+    scanResult.action === 'redacted' ? 'Redacted'
+    : scanResult.action === 'blocked' ? 'Blocked'
+    : 'Warned';
+
+  const timeAgo = scanResult.scanned_at
+    ? (() => {
+        const diff = Date.now() - new Date(scanResult.scanned_at).getTime();
+        if (diff < 60000) return 'just now';
+        if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+        if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+        return `${Math.floor(diff / 86400000)}d ago`;
+      })()
+    : null;
+
+  return (
+    <div className="px-5 mt-3">
+      <div className="border border-red-500/20 bg-red-500/5 rounded-lg p-3">
+        <div className="flex items-center gap-2 mb-2">
+          <svg className="w-4 h-4 text-red-500 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+          </svg>
+          <span className="text-sm font-semibold text-[var(--text-primary)]">DLP Scan</span>
+        </div>
+        <div className="text-xs text-[var(--text-tertiary)] mb-2">
+          {scanResult.findings.length} finding{scanResult.findings.length !== 1 ? 's' : ''}
+          {' \u00b7 '}{actionLabel}
+          {timeAgo && <>{' \u00b7 '}Scanned {timeAgo}</>}
+        </div>
+        <div className="space-y-1">
+          {scanResult.findings.map((f, i) => {
+            const sev = (f.severity || 'low').toLowerCase();
+            const styles = SEVERITY_STYLES[sev] || SEVERITY_STYLES.low;
+            return (
+              <div key={i} className="flex items-center gap-2">
+                <span className={`px-1.5 py-0.5 text-[10px] font-bold uppercase rounded ${styles.bg} ${styles.text}`}>
+                  {sev}
+                </span>
+                <span className="text-sm font-mono text-[var(--text-secondary)]">
+                  {f.detector || f.category}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }

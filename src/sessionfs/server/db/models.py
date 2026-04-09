@@ -95,6 +95,7 @@ class Session(Base):
     git_remote_normalized: Mapped[str | None] = mapped_column(String(255), nullable=True)
     git_branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
     git_commit: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    dlp_scan_results: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class Handoff(Base):

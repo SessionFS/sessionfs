@@ -37,6 +37,7 @@ from sessionfs.cli.cmd_sync import sync_app
 from sessionfs.cli.cmd_summary import summary_app
 from sessionfs.cli.cmd_org import org_app
 from sessionfs.cli.cmd_security import security_app
+from sessionfs.cli.cmd_dlp import dlp_app
 
 app.add_typer(daemon_app, name="daemon")
 app.add_typer(config_app, name="config")
@@ -51,6 +52,7 @@ app.add_typer(sync_app, name="sync")
 app.add_typer(summary_app, name="summary")
 app.add_typer(org_app, name="org")
 app.add_typer(security_app, name="security")
+app.add_typer(dlp_app, name="dlp")
 
 # Register top-level commands (wrapped with handle_errors for resilient error reporting)
 from sessionfs.cli.common import handle_errors

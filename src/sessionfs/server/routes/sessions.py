@@ -953,6 +953,52 @@ async def sync_push(
     meta = _extract_manifest_metadata(data)
     messages_text = _extract_messages_text(data)
 
+    # DLP scan (after messages_text extraction, before blob storage)
+    dlp_scan_results = None
+    if ctx.is_org_user and ctx.org:
+        from sessionfs.server.dlp import get_org_dlp_policy, redact_and_repack
+
+        dlp_policy = get_org_dlp_policy(ctx.org)
+        if dlp_policy and dlp_policy.get("enabled"):
+            from sessionfs.security.secrets import scan_dlp
+
+            findings = scan_dlp(
+                messages_text,
+                categories=dlp_policy.get("categories", ["secrets"]),
+                custom_patterns=dlp_policy.get("custom_patterns"),
+                allowlist=dlp_policy.get("allowlist"),
+            )
+            if findings:
+                mode = dlp_policy.get("mode", "warn")
+                dlp_scan_results = {
+                    "scanned_at": datetime.now(timezone.utc).isoformat(),
+                    "findings_count": len(findings),
+                    "mode": mode,
+                    "finding_types": list({f.pattern_name for f in findings}),
+                    "action_taken": mode,
+                }
+
+                if mode == "block":
+                    raise HTTPException(
+                        status_code=403,
+                        detail={
+                            "error": "dlp_blocked",
+                            "message": f"DLP policy blocked sync: {len(findings)} finding(s)",
+                            "findings": [
+                                {
+                                    "pattern": f.pattern_name,
+                                    "category": f.category,
+                                    "severity": f.severity,
+                                    "line": f.line_number,
+                                }
+                                for f in findings
+                            ],
+                        },
+                    )
+                elif mode == "redact":
+                    data = redact_and_repack(data, findings)
+                    messages_text = _extract_messages_text(data)  # re-extract after redaction
+
     # Extract git metadata for PR matching
     workspace_data = _extract_workspace_from_archive(data)
     git_remote_normalized = ""
@@ -1022,6 +1068,8 @@ async def sync_push(
                 git_branch=git_branch,
                 git_commit=git_commit,
             )
+            if dlp_scan_results and hasattr(session, "dlp_scan_results"):
+                session.dlp_scan_results = json.dumps(dlp_scan_results)
             db.add(session)
             await db.commit()
             await db.refresh(session)
@@ -1078,6 +1126,8 @@ async def sync_push(
     existing.git_remote_normalized = git_remote_normalized
     existing.git_branch = git_branch
     existing.git_commit = git_commit
+    if dlp_scan_results and hasattr(existing, "dlp_scan_results"):
+        existing.dlp_scan_results = json.dumps(dlp_scan_results)
     await db.commit()
     await db.refresh(existing)
 
