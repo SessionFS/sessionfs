@@ -437,27 +437,42 @@ async def _handle_checkout_completed(event, db: AsyncSession) -> None:
     await db.commit()
 
 
-async def _find_user_or_org_by_customer(customer_id: str, db: AsyncSession):
+async def _find_user_or_org_by_customer(
+    customer_id: str, db: AsyncSession, subscription_id: str | None = None,
+):
     """Find User and/or Org by stripe_customer_id.
 
-    Orgs are checked first — if an org owns the customer, the org path wins
-    even if a user still has the same customer_id (legacy data before the
-    ownership-transfer fix). This prevents org subscription state from
-    leaking back onto user rows.
+    Uses subscription_id to disambiguate when the same customer has both
+    a personal and an org subscription (legacy same-customer data).
     """
     from sessionfs.server.db.models import Organization
 
-    # Check org first — org ownership takes precedence
+    # Check org
     org_result = await db.execute(
         select(Organization).where(Organization.stripe_customer_id == customer_id)
     )
     org = org_result.scalar_one_or_none()
+
+    # Check user
+    user_result = await db.execute(
+        select(User).where(User.stripe_customer_id == customer_id)
+    )
+    user = user_result.scalar_one_or_none()
+
+    if org and user and subscription_id:
+        # Same customer on both — use subscription_id to disambiguate.
+        # If the subscription matches the org's, it's an org event.
+        # If it matches the user's personal sub, it's a user event.
+        if org.stripe_subscription_id == subscription_id:
+            return None, org
+        if user.stripe_subscription_id == subscription_id:
+            return user, None
+        # Unknown subscription — default to org (safer for new subs)
+        return None, org
+
     if org:
         # Clean up legacy user rows that carry the org's subscription ID
-        # (from before the ownership-transfer fix). Only clear fields when
-        # the user's subscription matches the org's — preserve genuinely
-        # personal subscriptions even if they share the same customer.
-        if org.stripe_subscription_id:
+        if org.stripe_subscription_id and user and user.stripe_subscription_id == org.stripe_subscription_id:
             await db.execute(
                 update(User)
                 .where(
@@ -468,11 +483,6 @@ async def _find_user_or_org_by_customer(customer_id: str, db: AsyncSession):
             )
         return None, org
 
-    # No org — try user
-    result = await db.execute(
-        select(User).where(User.stripe_customer_id == customer_id)
-    )
-    user = result.scalar_one_or_none()
     return user, None
 
 
@@ -481,7 +491,7 @@ async def _handle_subscription_updated(event, db: AsyncSession) -> None:
     subscription = event.data.object
     customer_id = subscription.customer
 
-    user, org = await _find_user_or_org_by_customer(customer_id, db)
+    user, org = await _find_user_or_org_by_customer(customer_id, db, subscription_id=subscription.id)
     if not user and not org:
         logger.warning("Webhook: no user or org found for customer %s", customer_id)
         return
@@ -572,7 +582,7 @@ async def _handle_subscription_deleted(event, db: AsyncSession) -> None:
     subscription = event.data.object
     customer_id = subscription.customer
 
-    user, org = await _find_user_or_org_by_customer(customer_id, db)
+    user, org = await _find_user_or_org_by_customer(customer_id, db, subscription_id=subscription.id)
     if not user and not org:
         logger.warning("Webhook: no user or org found for customer %s (subscription deleted)", customer_id)
         return
