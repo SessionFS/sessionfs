@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.8.2] - 2026-04-09
+
+### Fixed
+- **Database pool exhaustion** — API pods were using SQLAlchemy defaults (pool_size=5, max_overflow=10) causing 500 errors under load. Now configurable via `SFS_DATABASE_POOL_SIZE` (default 20), `SFS_DATABASE_MAX_OVERFLOW` (default 40), `SFS_DATABASE_POOL_TIMEOUT` (default 60s), `SFS_DATABASE_POOL_RECYCLE` (default 1800s). Connections verified with `pool_pre_ping=True`.
+
 ## [0.9.8.1] - 2026-04-09
 
 ### Added
