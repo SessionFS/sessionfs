@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.8.1] - 2026-04-09
+
+### Added
+- **Knowledge base lifecycle** — entry decay (0.8x confidence after 90 days unreferenced), auto-dismiss past retention period, configurable per-project settings (`kb_retention_days`, `kb_max_context_words`, `kb_section_page_limit`).
+- **Quality gates on knowledge entries** — minimum 20 char content, 20/hr rate limit per session, 85% similarity rejection, lower confidence cap for manual/CLI entries.
+- **Context document budget** — 8,000 word default cap with priority-aware trimming (high-confidence entries kept first).
+- **Section page caps** — 30 items default, "N older entries not shown" footer.
+- **Concept page auto-refresh** — regenerate when cluster grows 50%+, auto-delete when all entries dismissed.
+- **Actionable health endpoint** — returns recommendations, stale/low-confidence/decayed entry counts.
+- **`sfs resume --model`** — specify model for target tool (Claude Code, Codex, Gemini supported; Copilot warns).
+- **Concept auto-generation fix** — stop word filtering, meaningful phrase extraction, trigrams for better topic names.
+- Database migration 025: lifecycle fields on knowledge_entries + project settings.
+
+### Fixed
+- Billing webhook: `_sync_billing_to_org` requires positive match on both customer_id AND subscription_id. Personal subscription events cannot mutate org state.
+- Billing webhook: `_find_user_or_org_by_customer` uses subscription_id to disambiguate legacy same-customer data.
+- Billing webhook: non-active downgrade clears `stripe_subscription_id`.
+- DLP pre-scan only runs when org policy is enabled (not unconditionally).
+- `pack_session()` snapshots files into memory before tarring (fixes active session push).
+- Session list sorts by `updated_at` (not `created_at`).
+- Concept auto-generation filters stop words — no more "From The" or "Instead Of" concepts.
+- Dashboard billing page uses typed `BillingStatus` interface.
+- `SessionDetail` type includes `dlp_scan_results`.
+
 ## [0.9.8] - 2026-04-09
 
 ### Added
