@@ -332,7 +332,11 @@ async def _sync_billing_to_org(
     user_id: str, tier: str, subscription_id: str | None, db: AsyncSession,
     seats: int | None = None, customer_id: str | None = None,
 ) -> None:
-    """Sync billing state to the user's organization if they're in one."""
+    """Sync billing state to the user's organization if they're in one.
+
+    Only syncs if the subscription's customer matches the org's customer.
+    A personal subscription (different Stripe customer) must NOT affect org state.
+    """
     from sessionfs.server.db.models import OrgMember, Organization
 
     result = await db.execute(
@@ -347,6 +351,11 @@ async def _sync_billing_to_org(
     )
     org = org_result.scalar_one_or_none()
     if not org:
+        return
+
+    # Guard: only sync if the customer belongs to this org.
+    # A personal subscription (different Stripe customer) must not touch the org.
+    if customer_id and org.stripe_customer_id and customer_id != org.stripe_customer_id:
         return
 
     # Orgs only support team/enterprise/free — if Stripe sends starter/pro, treat as downgrade
