@@ -27,6 +27,10 @@ def resume(
         "claude-code", "--in",
         help="Target tool: claude-code, codex, copilot, gemini, cursor, cline, roo-code",
     ),
+    model: str | None = typer.Option(
+        None, "--model", "-m",
+        help="Model to use in target tool (e.g. gpt-4.1, claude-sonnet-4, gemini-2.5-pro)",
+    ),
 ) -> None:
     """Resume a session in an AI tool."""
     store = open_store()
@@ -55,11 +59,11 @@ def resume(
             console.print(f"Resuming in current directory: [bold]{target_path}[/bold]\n")
 
         if tool == "codex":
-            _resume_in_codex(session_dir, manifest, target_path, full_id)
+            _resume_in_codex(session_dir, manifest, target_path, full_id, model=model)
         elif tool == "copilot":
-            _resume_in_copilot(session_dir, manifest, target_path, full_id)
+            _resume_in_copilot(session_dir, manifest, target_path, full_id, model=model)
         elif tool == "gemini":
-            _resume_in_gemini(session_dir, manifest, target_path, full_id)
+            _resume_in_gemini(session_dir, manifest, target_path, full_id, model=model)
         elif tool == "cursor":
             err_console.print(
                 "[yellow]Cursor is capture-only: content-addressed hashing prevents session injection.[/yellow]\n"
@@ -105,13 +109,14 @@ def resume(
             )
             raise SystemExit(1)
         else:
-            _resume_in_claude_code(session_dir, manifest, target_path)
+            _resume_in_claude_code(session_dir, manifest, target_path, model=model)
     finally:
         store.close()
 
 
 def _resume_in_claude_code(
     session_dir: Path, manifest: dict, target_path: str | None,
+    model: str | None = None,
 ) -> None:
     if not target_path:
         err_console.print("[red]No project path found. Use --project to specify one.[/red]")
@@ -216,11 +221,15 @@ def _resume_in_claude_code(
     # Launch Claude Code with full conversation transcript
     claude_bin = shutil.which("claude")
     if claude_bin:
-        console.print("Launching [bold]Claude Code[/bold] with full session context...")
+        model_label = f" with model [bold]{model}[/bold]" if model else ""
+        console.print(f"Launching [bold]Claude Code[/bold]{model_label} with full session context...")
         # Try --append-system-prompt-file first, fall back to inline
         try:
+            cmd = [claude_bin, "--append-system-prompt-file", transcript_file.name]
+            if model:
+                cmd.extend(["--model", model])
             result = subprocess.run(
-                [claude_bin, "--append-system-prompt-file", transcript_file.name],
+                cmd,
                 cwd=target_path,
             )
         except Exception:
@@ -238,6 +247,7 @@ def _resume_in_claude_code(
 
 def _resume_in_codex(
     session_dir: Path, manifest: dict, target_path: str | None, sfs_id: str,
+    model: str | None = None,
 ) -> None:
     from sessionfs.converters.sfs_to_codex import convert_sfs_to_codex
     from sessionfs.converters.codex_injector import inject_session
@@ -249,13 +259,13 @@ def _resume_in_codex(
 
     # Inject into Codex storage
     title = manifest.get("title") or sfs_id
-    model = (manifest.get("model") or {}).get("model_id", "gpt-4.1")
+    codex_model = model or (manifest.get("model") or {}).get("model_id", "gpt-4.1")
     inject_result = inject_session(
         codex_jsonl=Path(result["jsonl_path"]),
         codex_session_id=result["codex_session_id"],
         cwd=cwd,
         title=title,
-        model=model,
+        model=codex_model,
     )
 
     console.print("[green]Session resumed in Codex CLI.[/green]")
@@ -268,14 +278,18 @@ def _resume_in_codex(
     # Launch Codex resume directly
     codex_bin = shutil.which("codex")
     if codex_bin:
+        cmd = [codex_bin, "resume", result["codex_session_id"]]
+        if model:
+            cmd.extend(["--model", model])
         console.print(f"Launching [bold]codex resume {result['codex_session_id'][:12]}...[/bold]")
-        subprocess.run([codex_bin, "resume", result["codex_session_id"]])
+        subprocess.run(cmd)
     else:
         console.print(f"Run [bold]codex resume {result['codex_session_id']}[/bold] to continue.")
 
 
 def _resume_in_copilot(
     session_dir: Path, manifest: dict, target_path: str | None, sfs_id: str,
+    model: str | None = None,
 ) -> None:
     from sessionfs.converters.sfs_to_copilot import convert_sfs_to_copilot
     from sessionfs.converters.copilot_injector import inject_session as copilot_inject
@@ -304,6 +318,7 @@ def _resume_in_copilot(
 
 def _resume_in_gemini(
     session_dir: Path, manifest: dict, target_path: str | None, sfs_id: str,
+    model: str | None = None,
 ) -> None:
     from sessionfs.converters.sfs_to_gemini import convert_sfs_to_gemini
     from sessionfs.converters.gemini_injector import inject_session
@@ -326,8 +341,12 @@ def _resume_in_gemini(
     # Launch Gemini resume directly
     gemini_bin = shutil.which("gemini")
     if gemini_bin:
-        console.print("Launching [bold]gemini --resume latest[/bold]...")
-        subprocess.run([gemini_bin, "--resume", "latest"], cwd=project)
+        cmd = [gemini_bin]
+        if model:
+            cmd.extend(["--model", model])
+        cmd.extend(["--resume", "latest"])
+        console.print(f"Launching [bold]gemini{' --model ' + model if model else ''} --resume latest[/bold]...")
+        subprocess.run(cmd, cwd=project)
     else:
         console.print(f"Open Gemini CLI in [bold]{project}[/bold] to continue.")
 
