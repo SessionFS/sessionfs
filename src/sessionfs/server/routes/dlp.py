@@ -11,7 +11,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.db.engine import get_db
@@ -44,9 +44,11 @@ class DLPPolicyResponse(BaseModel):
 
 
 class DLPPolicyUpdate(BaseModel):
-    enabled: bool = True
-    mode: str = "warn"
-    categories: list[str] = ["secrets"]
+    enabled: bool | None = None
+    mode: str | None = None
+    categories: list[str] | None = None
+    custom_patterns: list[dict] | None = None
+    allowlist: list[str] | None = None
 
 
 class DLPScanRequest(BaseModel):
@@ -116,26 +118,37 @@ async def update_dlp_policy(
     if not ctx.org:
         raise HTTPException(400, "DLP policy requires an organization")
 
-    # Validate the policy
-    try:
-        validated = validate_dlp_policy(body.model_dump())
-    except ValueError as e:
-        raise HTTPException(422, str(e))
-
-    # Update org.settings with the new DLP policy
+    # Merge updates into existing policy (don't overwrite unset fields)
     try:
         settings = json.loads(ctx.org.settings) if isinstance(ctx.org.settings, str) else ctx.org.settings
     except (json.JSONDecodeError, TypeError):
         settings = {}
-
     if not isinstance(settings, dict):
         settings = {}
+
+    existing_dlp = settings.get("dlp", {})
+    if not isinstance(existing_dlp, dict):
+        existing_dlp = {}
+
+    # Only update fields that were explicitly provided
+    updates = body.model_dump(exclude_none=True)
+    merged = {**existing_dlp, **updates}
+
+    # Validate the merged result
+    try:
+        validated = validate_dlp_policy(merged)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
 
     settings["dlp"] = validated
     ctx.org.settings = json.dumps(settings)
     await db.commit()
 
-    return DLPPolicyResponse(**validated)
+    return DLPPolicyResponse(**{
+        "enabled": validated.get("enabled", False),
+        "mode": validated.get("mode", "warn"),
+        "categories": validated.get("categories", ["secrets"]),
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -184,12 +197,7 @@ async def get_dlp_stats(
     if not ctx.org:
         return DLPStatsResponse(total_scanned=0, by_action={})
 
-    # Count sessions belonging to org members that have dlp_scan_results
-    # Since dlp_scan_results isn't a column yet, we use the sessions table
-    # and check for any sessions owned by org members. In future, a dedicated
-    # dlp_scans table will track per-session results.
-    #
-    # For now, return aggregate counts from the org's sessions.
+    # Count sessions with actual DLP scan results
     from sessionfs.server.db.models import OrgMember
 
     member_ids_stmt = select(OrgMember.user_id).where(OrgMember.org_id == ctx.org.id)
@@ -199,15 +207,26 @@ async def get_dlp_stats(
     if not member_ids:
         return DLPStatsResponse(total_scanned=0, by_action={})
 
-    total_result = await db.execute(
-        select(func.count()).select_from(Session).where(
+    # Get all sessions with DLP results
+    scanned_result = await db.execute(
+        select(Session.dlp_scan_results).where(
             Session.user_id.in_(member_ids),
             Session.is_deleted == False,  # noqa: E712
+            Session.dlp_scan_results.isnot(None),
         )
     )
-    total = total_result.scalar() or 0
+    rows = scanned_result.all()
+
+    by_action: dict[str, int] = {}
+    for (raw,) in rows:
+        try:
+            data = json.loads(raw) if isinstance(raw, str) else raw
+            action = data.get("action_taken", "unknown") if isinstance(data, dict) else "unknown"
+        except (json.JSONDecodeError, TypeError):
+            action = "unknown"
+        by_action[action] = by_action.get(action, 0) + 1
 
     return DLPStatsResponse(
-        total_scanned=total,
-        by_action={"none": total},
+        total_scanned=len(rows),
+        by_action=by_action,
     )

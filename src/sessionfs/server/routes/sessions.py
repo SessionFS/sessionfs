@@ -202,6 +202,7 @@ def _session_to_detail(s: Session) -> SessionDetail:
         created_at=s.created_at,
         updated_at=s.updated_at,
         uploaded_at=s.uploaded_at,
+        dlp_scan_results=getattr(s, "dlp_scan_results", None),
     )
 
 
@@ -953,7 +954,8 @@ async def sync_push(
     meta = _extract_manifest_metadata(data)
     messages_text = _extract_messages_text(data)
 
-    # DLP scan (after messages_text extraction, before blob storage)
+    # DLP scan (after extraction, before blob storage)
+    # Scan ALL archive text: messages + workspace + tools + manifest
     dlp_scan_results = None
     if ctx.is_org_user and ctx.org:
         from sessionfs.server.dlp import get_org_dlp_policy, redact_and_repack
@@ -962,22 +964,32 @@ async def sync_push(
         if dlp_policy and dlp_policy.get("enabled"):
             from sessionfs.security.secrets import scan_dlp
 
+            # Build full text from all archive files
+            scan_text_parts = [messages_text]
+            workspace_data = _extract_workspace_from_archive(data)
+            if workspace_data:
+                scan_text_parts.append(json.dumps(workspace_data))
+            # Manifest and tools may contain sensitive strings too
+            scan_text_parts.append(json.dumps(meta))
+            full_scan_text = "\n".join(scan_text_parts)
+
             findings = scan_dlp(
-                messages_text,
+                full_scan_text,
                 categories=dlp_policy.get("categories", ["secrets"]),
                 custom_patterns=dlp_policy.get("custom_patterns"),
                 allowlist=dlp_policy.get("allowlist"),
             )
+            # Always record scan results (even 0 findings clears stale data)
+            mode = dlp_policy.get("mode", "warn")
+            dlp_scan_results = {
+                "scanned_at": datetime.now(timezone.utc).isoformat(),
+                "findings_count": len(findings),
+                "mode": mode,
+                "finding_types": list({f.pattern_name for f in findings}),
+                "action_taken": mode if findings else "clean",
+                "categories_scanned": dlp_policy.get("categories", ["secrets"]),
+            }
             if findings:
-                mode = dlp_policy.get("mode", "warn")
-                dlp_scan_results = {
-                    "scanned_at": datetime.now(timezone.utc).isoformat(),
-                    "findings_count": len(findings),
-                    "mode": mode,
-                    "finding_types": list({f.pattern_name for f in findings}),
-                    "action_taken": mode,
-                }
-
                 if mode == "block":
                     raise HTTPException(
                         status_code=403,

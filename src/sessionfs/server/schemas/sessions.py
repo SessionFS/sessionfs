@@ -34,6 +34,7 @@ class SessionDetail(SessionSummary):
     duration_ms: int | None = None
     parent_session_id: str | None = None
     uploaded_at: datetime
+    dlp_scan_results: str | None = None
 
 
 class SessionListResponse(BaseModel):

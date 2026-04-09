@@ -106,7 +106,7 @@ def dlp_policy() -> None:
 
     try:
         resp = httpx.get(
-            f"{cfg['api_url']}/api/v1/org/settings",
+            f"{cfg['api_url']}/api/v1/dlp/policy",
             headers={"Authorization": f"Bearer {cfg['api_key']}"},
             timeout=15.0,
         )
