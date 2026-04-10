@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.8.3] - 2026-04-09
+
+### Fixed
+- **Connection pool exhaustion** — client-side `asyncio.Semaphore(5)` limits concurrent uploads; server-side per-user semaphore (max 3) with 429+Retry-After; sync client retries 429 with backoff.
+- **sync_push connection lifecycle** — split into 3 phases: DB reads → release connection → blob upload (no DB) → fresh session for writes. Connection held ~70ms instead of ~5s.
+- **Sync race condition** — blob uploaded to temp key, row committed with temp key first (PK constraint for creates, FOR UPDATE for updates), blob promoted only after commit. Temp blob preserved on any post-commit failure.
+- **Pool health endpoint** — `GET /health/pool` returns pool utilization metrics.
+- **Sync summary** — shows error count alongside pushed/pulled/conflicts.
+
 ## [0.9.8.2] - 2026-04-09
 
 ### Fixed
