@@ -1089,11 +1089,10 @@ async def sync_push(
                 async with _sf() as db2:
                     return await _do_phase3_writes(db2)
             else:
-                # Fallback for test environments where engine isn't initialized
-                # but get_db is overridden via dependency injection
                 from sessionfs.server.db.engine import get_db as _get_db_gen
                 async for db2 in _get_db_gen():
                     return await _do_phase3_writes(db2)
+            raise RuntimeError("No database session available for Phase 3")
 
         async def _cleanup_temp_blob():
             """Best-effort cleanup of temp blob on any exit path."""
