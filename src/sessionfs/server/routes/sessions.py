@@ -1112,18 +1112,9 @@ async def sync_push(
         async def _do_phase3_writes(db2: AsyncSession) -> Response | SyncPushResponse:
           try:
             if existing is None and not is_undelete:
-                # Lock-based create check: SELECT FOR UPDATE SKIP LOCKED
-                # prevents two concurrent creates from both passing
-                existing_check = await db2.execute(
-                    select(Session).where(Session.id == session_id).with_for_update(skip_locked=True)
-                )
-                if existing_check.scalar_one_or_none() is not None:
-                    await _cleanup_temp_blob()
-                    raise HTTPException(409, "Session created by another request during upload")
-
-                await _promote_blob()
-
-                # Truly new session -> create
+                # Create: insert with temp blob key first, use PK constraint
+                # as the concurrency guard. If another request already created
+                # the session, the INSERT fails and we clean up.
                 session = Session(
                     id=session_id,
                     user_id=user_id,
@@ -1142,7 +1133,7 @@ async def sync_push(
                     total_output_tokens=meta["total_output_tokens"],
                     duration_ms=meta["duration_ms"],
                     messages_text=messages_text,
-                    blob_key=key,
+                    blob_key=temp_blob_key,  # temp key until commit succeeds
                     blob_size_bytes=len(data),
                     etag=new_etag,
                     created_at=now,
@@ -1155,8 +1146,18 @@ async def sync_push(
                 if dlp_scan_results and hasattr(session, "dlp_scan_results"):
                     session.dlp_scan_results = json.dumps(dlp_scan_results)
                 db2.add(session)
-                await db2.commit()
+                try:
+                    await db2.commit()
+                except Exception:
+                    # PK violation = another request created the session first
+                    await _cleanup_temp_blob()
+                    raise HTTPException(409, "Session created by another request during upload")
                 await db2.refresh(session)
+
+                # Commit succeeded — we own the row. Now promote blob.
+                await _promote_blob()
+                session.blob_key = key
+                await db2.commit()
 
                 if meta["message_count"] >= 5 and git_remote_normalized:
                     background_tasks.add_task(
@@ -1221,10 +1222,8 @@ async def sync_push(
                         },
                     )
 
-            # Promote blob (update/undelete path — after FOR UPDATE lock + ETag check)
-            await _promote_blob()
-
-            # Update metadata on existing session
+            # Update metadata with temp blob key first, commit under lock,
+            # then promote blob after commit succeeds.
             sess.title = meta["title"]
             sess.tags = meta["tags"]
             sess.source_tool = meta["source_tool"]
@@ -1240,6 +1239,7 @@ async def sync_push(
             sess.total_output_tokens = meta["total_output_tokens"]
             sess.duration_ms = meta["duration_ms"]
             sess.messages_text = messages_text
+            sess.blob_key = temp_blob_key  # temp key until blob promoted
             sess.blob_size_bytes = len(data)
             sess.etag = new_etag
             sess.updated_at = now
@@ -1248,6 +1248,11 @@ async def sync_push(
             sess.git_commit = git_commit
             if dlp_scan_results and hasattr(sess, "dlp_scan_results"):
                 sess.dlp_scan_results = json.dumps(dlp_scan_results)
+            await db2.commit()
+
+            # Commit succeeded (FOR UPDATE lock released). Now promote blob.
+            await _promote_blob()
+            sess.blob_key = key
             await db2.commit()
             await db2.refresh(sess)
 
