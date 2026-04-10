@@ -1111,6 +1111,7 @@ async def sync_push(
             await blob_store.put(key, temp_data)
 
         async def _do_phase3_writes(db2: AsyncSession) -> Response | SyncPushResponse:
+          _row_committed = False
           try:
             if existing is None and not is_undelete:
                 # Create: insert with temp blob key first, use PK constraint
@@ -1153,6 +1154,7 @@ async def sync_push(
                     # PK violation = another request created the session first
                     await _cleanup_temp_blob()
                     raise HTTPException(409, "Session created by another request during upload")
+                _row_committed = True
                 await db2.refresh(session)
 
                 # Commit succeeded — we own the row. Now promote blob.
@@ -1252,6 +1254,7 @@ async def sync_push(
             if dlp_scan_results and hasattr(sess, "dlp_scan_results"):
                 sess.dlp_scan_results = json.dumps(dlp_scan_results)
             await db2.commit()
+            _row_committed = True
 
             # Commit succeeded (FOR UPDATE lock released). Now promote blob.
             await _promote_blob()
@@ -1273,11 +1276,15 @@ async def sync_push(
                 synced_at=now,
             )
           except HTTPException:
-            # Clean up temp blob on validation failure, then re-raise
-            await _cleanup_temp_blob()
+            # Only clean up temp blob if the row was NOT yet committed
+            # (i.e., validation failed before first commit). After first
+            # commit, the temp blob IS the live data — do not delete it.
+            if not _row_committed:
+                await _cleanup_temp_blob()
             raise
           except Exception:
-            await _cleanup_temp_blob()
+            if not _row_committed:
+                await _cleanup_temp_blob()
             raise
 
         return await _phase3_writes()
