@@ -510,6 +510,7 @@ def sync_all() -> None:
 
             pushed = sum(1 for v in push_results.values() if v == "pushed")
             conflicts = sum(1 for v in push_results.values() if v == "conflict")
+            push_errors = sum(1 for v in push_results.values() if v == "error")
 
             # Pull remote sessions not present locally (also concurrency-limited)
             pull_sem = asyncio.Semaphore(5)
@@ -538,17 +539,22 @@ def sync_all() -> None:
             ]
             pull_results = await asyncio.gather(*pull_tasks)
             pulled = sum(1 for r in pull_results if r)
+            pull_errors = sum(1 for r in pull_results if not r) - sum(1 for sid in remote_by_id if sid in local_by_id)
+            pull_errors = max(0, pull_errors)  # Don't count skipped sessions as errors
+            total_errors = push_errors + pull_errors
 
-            return pushed, pulled, conflicts
+            return pushed, pulled, conflicts, total_errors
         finally:
             await client.close()
 
     try:
         console.print("Fetching remote sessions...")
-        pushed, pulled, conflicts = asyncio.run(_sync())
-        console.print(
-            f"[green]Sync complete: {pushed} pushed, {pulled} pulled, {conflicts} conflicts[/green]"
-        )
+        pushed, pulled, conflicts, errors = asyncio.run(_sync())
+        color = "green" if errors == 0 else "yellow"
+        summary = f"Sync complete: {pushed} pushed, {pulled} pulled, {conflicts} conflicts"
+        if errors > 0:
+            summary += f", {errors} failed"
+        console.print(f"[{color}]{summary}[/{color}]")
     finally:
         store.close()
 

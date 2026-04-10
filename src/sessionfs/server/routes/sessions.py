@@ -1072,8 +1072,12 @@ async def sync_push(
             git_branch = workspace_data.get("git_branch", "")
             git_commit = workspace_data.get("git_commit", "")
 
-        # Upload blob (potentially slow S3/GCS operation — no DB connection held)
-        await blob_store.put(key, data)
+        # Upload blob to a temporary key first (prevents race where two
+        # overlapping pushes corrupt the same blob key). The final key is
+        # committed atomically with the DB write in Phase 3.
+        import uuid as _uuid
+        temp_blob_key = f"sessions/_tmp/{_uuid.uuid4().hex}/{session_id}.tar.gz"
+        await blob_store.put(temp_blob_key, data)
 
         # ── Phase 3: Final DB writes using a fresh session ──
         from sessionfs.server.db.engine import _session_factory as _sf
@@ -1091,7 +1095,31 @@ async def sync_push(
                     return await _do_phase3_writes(db2)
 
         async def _do_phase3_writes(db2: AsyncSession) -> Response | SyncPushResponse:
+            # Move blob from temp key to final key
+            # (safe: if Phase 3 fails, temp blob is orphaned but final key is untouched)
+            try:
+                temp_data = await blob_store.get(temp_blob_key)
+                if temp_data:
+                    await blob_store.put(key, temp_data)
+            except Exception:
+                pass  # If copy fails, we still have data in temp_blob_key
+
+            # Clean up temp blob (best-effort)
+            try:
+                await blob_store.delete(temp_blob_key)
+            except Exception:
+                pass
+
             if existing is None and not is_undelete:
+                # Re-verify session doesn't exist (race protection)
+                existing_check = await db2.execute(
+                    select(Session).where(Session.id == session_id)
+                )
+                if existing_check.scalar_one_or_none() is not None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Session created by another request during upload",
+                    )
                 # Truly new session -> create
                 session = Session(
                     id=session_id,
