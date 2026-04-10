@@ -84,6 +84,10 @@ async def pipeline_env(tmp_path: Path):
     app.dependency_overrides[get_db] = override_get_db
     app.state.blob_store = blob_store
 
+    # Set module-level _session_factory so sync_push Phase 3 can create fresh sessions
+    import sessionfs.server.db.engine as _engine_mod
+    _engine_mod._session_factory = factory
+
     transport = ASGITransport(app=app)
     http_client = AsyncClient(
         transport=transport,
@@ -116,6 +120,8 @@ async def pipeline_env(tmp_path: Path):
     store_b.close()
     await http_client.aclose()
     await engine.dispose()
+    # Reset module-level _session_factory to avoid polluting other tests
+    _engine_mod._session_factory = None
 
 
 def _create_sample_sfs_session(store: LocalStore, session_id: str) -> Path:

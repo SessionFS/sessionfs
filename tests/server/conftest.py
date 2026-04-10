@@ -111,9 +111,16 @@ async def client(db_engine, blob_store, test_user, test_api_key):
     app.dependency_overrides[get_db] = override_get_db
     app.state.blob_store = blob_store
 
+    # Set module-level _session_factory so sync_push Phase 3 can create fresh sessions
+    import sessionfs.server.db.engine as _engine_mod
+    _engine_mod._session_factory = factory
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
+
+    # Reset to avoid polluting other tests
+    _engine_mod._session_factory = None
 
 
 @pytest.fixture

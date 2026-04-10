@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import json
@@ -12,13 +13,14 @@ import secrets
 import tarfile
 import threading
 import uuid
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel as _BaseModel
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import get_current_user, require_verified_user
@@ -50,6 +52,11 @@ router = APIRouter(prefix="/api/v1/sessions", tags=["sessions"])
 
 SFS_MAX_SYNC_BYTES_FREE = int(os.environ.get("SFS_MAX_SYNC_BYTES_FREE", str(50 * 1024 * 1024)))
 SFS_MAX_SYNC_BYTES_PAID = int(os.environ.get("SFS_MAX_SYNC_BYTES_PAID", str(300 * 1024 * 1024)))
+
+# Per-user concurrency limit for sync_push (max 3 concurrent syncs per user)
+_user_sync_semaphores: dict[str, asyncio.Semaphore] = defaultdict(
+    lambda: asyncio.Semaphore(3)
+)
 
 def _sync_limit_for_user(user) -> int:
     """Return sync byte limit based on user tier."""
@@ -878,291 +885,411 @@ async def sync_push(
     request: Request = None,
 ):
     """Push session data with ETag-based conflict detection."""
-    check_feature(ctx, "cloud_sync")
-    _validate_session_id(session_id)
-    blob_store = _get_blob_store(request)
-
-    # Track client version and device info from headers
-    _client_version = request.headers.get("X-Client-Version", "")
-    _client_platform = request.headers.get("X-Client-Platform", "")
-    _client_device = request.headers.get("X-Client-Device", "")
-    if not _client_version:
-        ua = request.headers.get("User-Agent", "")
-        if ua.startswith("sessionfs-cli/"):
-            _client_version = ua.split("/", 1)[1].split(" ", 1)[0]
-    if _client_version or _client_platform:
-        user.last_client_version = _client_version[:20] if _client_version else None
-        user.last_client_platform = _client_platform[:50] if _client_platform else None
-        user.last_client_device = _client_device[:100] if _client_device else None
-        user.last_sync_at = datetime.now(timezone.utc)
-
-    # Tier-based sync limit
-    sync_limit = _sync_limit_for_user(user)
-    limit_str = _sync_limit_human(sync_limit)
-
-    # Check content-length against sync limit
-    content_length = request.headers.get("content-length")
-    if content_length and int(content_length) > sync_limit:
-        raise HTTPException(
-            status_code=413,
-            detail={
-                "code": "PAYLOAD_TOO_LARGE",
-                "message": (
-                    f"Session exceeds {limit_str} cloud limit for your tier. "
-                    "Run sfs compact to reduce size, or upgrade your plan."
-                ),
-            },
-        )
-
-    # M3: Upload size limit
-    data = await _read_upload(file, max_bytes=sync_limit)
-
-    # Enforce sync byte limit on actual data
-    if len(data) > sync_limit:
-        raise HTTPException(
-            status_code=413,
-            detail={
-                "code": "PAYLOAD_TOO_LARGE",
-                "message": (
-                    f"Session exceeds {limit_str} cloud limit for your tier. "
-                    "Run sfs compact to reduce size, or upgrade your plan."
-                ),
-            },
-        )
-
-    # M7: Tar archive validation
+    # Per-user concurrency limit
+    semaphore = _user_sync_semaphores[user.id]
     try:
-        _validate_tar_gz(data)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    new_etag = hashlib.sha256(data).hexdigest()
-    key = _blob_key(user.id, session_id)
-    now = datetime.now(timezone.utc)
-
-    # Check if session exists
-    result = await db.execute(
-        select(Session).where(
-            Session.id == session_id,
-            Session.user_id == user.id,
-            Session.is_deleted == False,  # noqa: E712
+        await asyncio.wait_for(semaphore.acquire(), timeout=30)
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            429,
+            detail={"error": "sync_rate_limit", "message": "Too many concurrent syncs. Please wait."},
+            headers={"Retry-After": "5"},
         )
-    )
-    existing = result.scalar_one_or_none()
 
-    # Extract metadata from the archive's manifest.json
-    meta = _extract_manifest_metadata(data)
-    messages_text = _extract_messages_text(data)
+    try:
+        check_feature(ctx, "cloud_sync")
+        _validate_session_id(session_id)
+        blob_store = _get_blob_store(request)
 
-    # DLP scan (after extraction, before blob storage)
-    # Scan ALL archive text: messages + workspace + tools + manifest
-    dlp_scan_results = None
-    if ctx.is_org_user and ctx.org:
-        from sessionfs.server.dlp import get_org_dlp_policy, redact_and_repack
+        # Track client version and device info from headers
+        _client_version = request.headers.get("X-Client-Version", "")
+        _client_platform = request.headers.get("X-Client-Platform", "")
+        _client_device = request.headers.get("X-Client-Device", "")
+        if not _client_version:
+            ua = request.headers.get("User-Agent", "")
+            if ua.startswith("sessionfs-cli/"):
+                _client_version = ua.split("/", 1)[1].split(" ", 1)[0]
 
-        dlp_policy = get_org_dlp_policy(ctx.org)
-        if dlp_policy and dlp_policy.get("enabled"):
-            from sessionfs.security.secrets import scan_dlp
+        # ── Phase 1: DB reads (user, session, features, storage, DLP policy) ──
+        user_id = user.id
+        if _client_version or _client_platform:
+            user.last_client_version = _client_version[:20] if _client_version else None
+            user.last_client_platform = _client_platform[:50] if _client_platform else None
+            user.last_client_device = _client_device[:100] if _client_device else None
+            user.last_sync_at = datetime.now(timezone.utc)
 
-            # Scan ALL .json/.jsonl files from the archive directly
-            import io as _io
-            import tarfile as _tarfile
-            scan_text_parts: list[str] = []
+        # Tier-based sync limit
+        sync_limit = _sync_limit_for_user(user)
+        limit_str = _sync_limit_human(sync_limit)
+
+        # Check content-length against sync limit
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > sync_limit:
+            raise HTTPException(
+                status_code=413,
+                detail={
+                    "code": "PAYLOAD_TOO_LARGE",
+                    "message": (
+                        f"Session exceeds {limit_str} cloud limit for your tier. "
+                        "Run sfs compact to reduce size, or upgrade your plan."
+                    ),
+                },
+            )
+
+        # M3: Upload size limit
+        data = await _read_upload(file, max_bytes=sync_limit)
+
+        # Enforce sync byte limit on actual data
+        if len(data) > sync_limit:
+            raise HTTPException(
+                status_code=413,
+                detail={
+                    "code": "PAYLOAD_TOO_LARGE",
+                    "message": (
+                        f"Session exceeds {limit_str} cloud limit for your tier. "
+                        "Run sfs compact to reduce size, or upgrade your plan."
+                    ),
+                },
+            )
+
+        # Check if session exists
+        result = await db.execute(
+            select(Session).where(
+                Session.id == session_id,
+                Session.user_id == user_id,
+                Session.is_deleted == False,  # noqa: E712
+            )
+        )
+        existing = result.scalar_one_or_none()
+
+        # Check for soft-deleted or other-user conflict
+        is_undelete = False
+        if existing is None:
+            any_result = await db.execute(
+                select(Session).where(Session.id == session_id)
+            )
+            any_existing = any_result.scalar_one_or_none()
+            if any_existing is not None:
+                if any_existing.user_id != user_id:
+                    raise HTTPException(status_code=409, detail="Session ID already claimed by another user")
+                # Same user's soft-deleted session — mark for un-delete
+                is_undelete = True
+
+        # Capture DLP policy info while we still have DB context
+        is_org_user = ctx.is_org_user
+        org = ctx.org
+
+        # Flush client version tracking updates before releasing connection
+        await db.commit()
+
+        # ── Release DB connection back to pool before CPU/IO-heavy work ──
+        await db.close()
+
+        # ── Phase 2: CPU work + blob upload (no DB connection held) ──
+
+        # M7: Tar archive validation
+        try:
+            _validate_tar_gz(data)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        new_etag = hashlib.sha256(data).hexdigest()
+        key = _blob_key(user_id, session_id)
+        now = datetime.now(timezone.utc)
+
+        # Extract metadata from the archive's manifest.json
+        meta = _extract_manifest_metadata(data)
+        messages_text = _extract_messages_text(data)
+
+        # DLP scan (after extraction, before blob storage)
+        dlp_scan_results = None
+        if is_org_user and org:
+            from sessionfs.server.dlp import get_org_dlp_policy, redact_and_repack
+
+            dlp_policy = get_org_dlp_policy(org)
+            if dlp_policy and dlp_policy.get("enabled"):
+                from sessionfs.security.secrets import scan_dlp
+
+                import io as _io
+                import tarfile as _tarfile
+                scan_text_parts: list[str] = []
+                try:
+                    with _tarfile.open(fileobj=_io.BytesIO(data), mode="r:gz") as _tar:
+                        for _member in _tar.getmembers():
+                            if _member.name.endswith((".json", ".jsonl")):
+                                _f = _tar.extractfile(_member)
+                                if _f:
+                                    scan_text_parts.append(_f.read().decode("utf-8", errors="replace"))
+                except Exception:
+                    if not scan_text_parts:
+                        scan_text_parts.append(messages_text)
+                full_scan_text = "\n".join(scan_text_parts)
+
+                findings = scan_dlp(
+                    full_scan_text,
+                    categories=dlp_policy.get("categories", ["secrets"]),
+                    custom_patterns=dlp_policy.get("custom_patterns"),
+                    allowlist=dlp_policy.get("allowlist"),
+                )
+                mode = dlp_policy.get("mode", "warn")
+                dlp_scan_results = {
+                    "scanned_at": datetime.now(timezone.utc).isoformat(),
+                    "findings_count": len(findings),
+                    "mode": mode,
+                    "finding_types": list({f.pattern_name for f in findings}),
+                    "action_taken": mode if findings else "clean",
+                    "categories_scanned": dlp_policy.get("categories", ["secrets"]),
+                }
+                if findings:
+                    if mode == "block":
+                        raise HTTPException(
+                            status_code=403,
+                            detail={
+                                "error": "dlp_blocked",
+                                "message": f"DLP policy blocked sync: {len(findings)} finding(s)",
+                                "findings": [
+                                    {
+                                        "pattern": f.pattern_name,
+                                        "category": f.category,
+                                        "severity": f.severity,
+                                        "line": f.line_number,
+                                    }
+                                    for f in findings
+                                ],
+                            },
+                        )
+                    elif mode == "redact":
+                        data = redact_and_repack(data, findings)
+                        messages_text = _extract_messages_text(data)
+
+        # Extract git metadata for PR matching
+        workspace_data = _extract_workspace_from_archive(data)
+        git_remote_normalized = ""
+        git_branch = ""
+        git_commit = ""
+        if workspace_data:
+            from sessionfs.server.github_app import normalize_git_remote
+            git_remote_normalized = normalize_git_remote(workspace_data.get("git_remote", ""))
+            git_branch = workspace_data.get("git_branch", "")
+            git_commit = workspace_data.get("git_commit", "")
+
+        # Upload blob to a temporary key first (prevents race where two
+        # overlapping pushes corrupt the same blob key). The final key is
+        # committed atomically with the DB write in Phase 3.
+        import uuid as _uuid
+        temp_blob_key = f"sessions/_tmp/{_uuid.uuid4().hex}/{session_id}.tar.gz"
+        await blob_store.put(temp_blob_key, data)
+
+        # ── Phase 3: Final DB writes using a fresh session ──
+        from sessionfs.server.db.engine import _session_factory as _sf
+
+        async def _phase3_writes() -> Response | SyncPushResponse:
+            """Execute final DB writes in a fresh session context."""
+            if _sf is not None:
+                async with _sf() as db2:
+                    return await _do_phase3_writes(db2)
+            else:
+                # Fallback for test environments where engine isn't initialized
+                # but get_db is overridden via dependency injection
+                from sessionfs.server.db.engine import get_db as _get_db_gen
+                async for db2 in _get_db_gen():
+                    return await _do_phase3_writes(db2)
+
+        async def _cleanup_temp_blob():
+            """Best-effort cleanup of temp blob on any exit path."""
             try:
-                with _tarfile.open(fileobj=_io.BytesIO(data), mode="r:gz") as _tar:
-                    for _member in _tar.getmembers():
-                        if _member.name.endswith((".json", ".jsonl")):
-                            _f = _tar.extractfile(_member)
-                            if _f:
-                                scan_text_parts.append(_f.read().decode("utf-8", errors="replace"))
+                await blob_store.delete(temp_blob_key)
             except Exception:
-                # Fallback to pre-extracted messages_text if tar reading fails
-                if not scan_text_parts:
-                    scan_text_parts.append(messages_text)
-            full_scan_text = "\n".join(scan_text_parts)
+                pass
 
-            findings = scan_dlp(
-                full_scan_text,
-                categories=dlp_policy.get("categories", ["secrets"]),
-                custom_patterns=dlp_policy.get("custom_patterns"),
-                allowlist=dlp_policy.get("allowlist"),
-            )
-            # Always record scan results (even 0 findings clears stale data)
-            mode = dlp_policy.get("mode", "warn")
-            dlp_scan_results = {
-                "scanned_at": datetime.now(timezone.utc).isoformat(),
-                "findings_count": len(findings),
-                "mode": mode,
-                "finding_types": list({f.pattern_name for f in findings}),
-                "action_taken": mode if findings else "clean",
-                "categories_scanned": dlp_policy.get("categories", ["secrets"]),
-            }
-            if findings:
-                if mode == "block":
-                    raise HTTPException(
-                        status_code=403,
-                        detail={
-                            "error": "dlp_blocked",
-                            "message": f"DLP policy blocked sync: {len(findings)} finding(s)",
-                            "findings": [
-                                {
-                                    "pattern": f.pattern_name,
-                                    "category": f.category,
-                                    "severity": f.severity,
-                                    "line": f.line_number,
-                                }
-                                for f in findings
-                            ],
-                        },
+        async def _promote_blob():
+            """Copy temp blob to final key. Does NOT delete temp — caller
+            must call _cleanup_temp_blob() after second commit succeeds."""
+            temp_data = await blob_store.get(temp_blob_key)
+            if not temp_data:
+                raise HTTPException(500, "Blob upload lost during sync — please retry")
+            await blob_store.put(key, temp_data)
+
+        async def _do_phase3_writes(db2: AsyncSession) -> Response | SyncPushResponse:
+          _row_committed = False
+          try:
+            if existing is None and not is_undelete:
+                # Create: insert with temp blob key first, use PK constraint
+                # as the concurrency guard. If another request already created
+                # the session, the INSERT fails and we clean up.
+                session = Session(
+                    id=session_id,
+                    user_id=user_id,
+                    title=meta["title"],
+                    tags=meta["tags"],
+                    source_tool=meta["source_tool"],
+                    source_tool_version=meta["source_tool_version"],
+                    original_session_id=meta["original_session_id"],
+                    parent_session_id=meta.get("parent_session_id"),
+                    model_provider=meta["model_provider"],
+                    model_id=meta["model_id"],
+                    message_count=meta["message_count"],
+                    turn_count=meta["turn_count"],
+                    tool_use_count=meta["tool_use_count"],
+                    total_input_tokens=meta["total_input_tokens"],
+                    total_output_tokens=meta["total_output_tokens"],
+                    duration_ms=meta["duration_ms"],
+                    messages_text=messages_text,
+                    blob_key=temp_blob_key,  # temp key until commit succeeds
+                    blob_size_bytes=len(data),
+                    etag=new_etag,
+                    created_at=now,
+                    updated_at=now,
+                    uploaded_at=now,
+                    git_remote_normalized=git_remote_normalized,
+                    git_branch=git_branch,
+                    git_commit=git_commit,
+                )
+                if dlp_scan_results and hasattr(session, "dlp_scan_results"):
+                    session.dlp_scan_results = json.dumps(dlp_scan_results)
+                db2.add(session)
+                try:
+                    await db2.commit()
+                except IntegrityError:
+                    # PK violation = another request created the session first
+                    await _cleanup_temp_blob()
+                    raise HTTPException(409, "Session created by another request during upload")
+                _row_committed = True
+                await db2.refresh(session)
+
+                # Commit succeeded — we own the row. Now promote blob.
+                await _promote_blob()
+                session.blob_key = key
+                await db2.commit()
+                # Both commits succeeded — safe to clean up temp blob
+                await _cleanup_temp_blob()
+
+                if meta["message_count"] >= 5 and git_remote_normalized:
+                    background_tasks.add_task(
+                        _auto_extract_knowledge, session.id, data, git_remote_normalized, user_id
                     )
-                elif mode == "redact":
-                    data = redact_and_repack(data, findings)
-                    messages_text = _extract_messages_text(data)  # re-extract after redaction
 
-    # Extract git metadata for PR matching
-    workspace_data = _extract_workspace_from_archive(data)
-    git_remote_normalized = ""
-    git_branch = ""
-    git_commit = ""
-    if workspace_data:
-        from sessionfs.server.github_app import normalize_git_remote
-        git_remote_normalized = normalize_git_remote(workspace_data.get("git_remote", ""))
-        git_branch = workspace_data.get("git_branch", "")
-        git_commit = workspace_data.get("git_commit", "")
-
-    if existing is None:
-        # Check if session ID exists at all (including soft-deleted)
-        any_result = await db.execute(
-            select(Session).where(Session.id == session_id)
-        )
-        any_existing = any_result.scalar_one_or_none()
-        if any_existing is not None:
-            if any_existing.user_id != user.id:
-                # Session ID belongs to another user (active or deleted) — reject
-                raise HTTPException(status_code=409, detail="Session ID already claimed by another user")
-            # Same user's soft-deleted session — un-delete and reuse.
-            # Expire old handoffs and revoke share links from the prior
-            # incarnation so they don't resolve against new content.
-            from sessionfs.server.db.models import Handoff, ShareLink
-            await db.execute(
-                update(Handoff)
-                .where(Handoff.session_id == session_id, Handoff.status == "pending")
-                .values(status="expired")
-            )
-            await db.execute(
-                update(ShareLink)
-                .where(ShareLink.session_id == session_id, ShareLink.is_revoked == False)  # noqa: E712
-                .values(is_revoked=True)
-            )
-            any_existing.is_deleted = False
-            any_existing.deleted_at = None
-            existing = any_existing
-        else:
-            # Truly new session -> create
-            await blob_store.put(key, data)
-            session = Session(
-                id=session_id,
-                user_id=user.id,
-                title=meta["title"],
-                tags=meta["tags"],
-                source_tool=meta["source_tool"],
-                source_tool_version=meta["source_tool_version"],
-                original_session_id=meta["original_session_id"],
-        parent_session_id=meta.get("parent_session_id"),
-                model_provider=meta["model_provider"],
-                model_id=meta["model_id"],
-                message_count=meta["message_count"],
-                turn_count=meta["turn_count"],
-                tool_use_count=meta["tool_use_count"],
-                total_input_tokens=meta["total_input_tokens"],
-                total_output_tokens=meta["total_output_tokens"],
-                duration_ms=meta["duration_ms"],
-                messages_text=messages_text,
-                blob_key=key,
-                blob_size_bytes=len(data),
-                etag=new_etag,
-                created_at=now,
-                updated_at=now,
-                uploaded_at=now,
-                git_remote_normalized=git_remote_normalized,
-                git_branch=git_branch,
-                git_commit=git_commit,
-            )
-            if dlp_scan_results and hasattr(session, "dlp_scan_results"):
-                session.dlp_scan_results = json.dumps(dlp_scan_results)
-            db.add(session)
-            await db.commit()
-            await db.refresh(session)
-
-            # Auto-summarize + knowledge extraction for sessions with enough messages
-            if meta["message_count"] >= 5 and git_remote_normalized:
-                background_tasks.add_task(
-                    _auto_extract_knowledge, session.id, data, git_remote_normalized, user.id
+                return Response(
+                    status_code=201,
+                    content=SyncPushResponse(
+                        session_id=session.id,
+                        etag=session.etag,
+                        blob_size_bytes=session.blob_size_bytes,
+                        synced_at=now,
+                    ).model_dump_json(),
+                    media_type="application/json",
                 )
 
-            return Response(
-                status_code=201,
-                content=SyncPushResponse(
-                    session_id=session.id,
-                    etag=session.etag,
-                    blob_size_bytes=session.blob_size_bytes,
-                    synced_at=now,
-                ).model_dump_json(),
-                media_type="application/json",
+            # Un-delete or update existing session (row locked via FOR UPDATE)
+            if is_undelete:
+                from sessionfs.server.db.models import Handoff, ShareLink
+                result2 = await db2.execute(
+                    select(Session).where(Session.id == session_id, Session.user_id == user_id).with_for_update()
+                )
+                sess = result2.scalar_one_or_none()
+                if sess is None:
+                    raise HTTPException(status_code=404, detail="Session not found")
+                # Expire old handoffs and revoke share links
+                await db2.execute(
+                    update(Handoff)
+                    .where(Handoff.session_id == session_id, Handoff.status == "pending")
+                    .values(status="expired")
+                )
+                await db2.execute(
+                    update(ShareLink)
+                    .where(ShareLink.session_id == session_id, ShareLink.is_revoked == False)  # noqa: E712
+                    .values(is_revoked=True)
+                )
+                sess.is_deleted = False
+                sess.deleted_at = None
+            else:
+                # Re-fetch with FOR UPDATE lock to prevent concurrent updates
+                result2 = await db2.execute(
+                    select(Session).where(
+                        Session.id == session_id,
+                        Session.user_id == user_id,
+                        Session.is_deleted == False,  # noqa: E712
+                    ).with_for_update()
+                )
+                sess = result2.scalar_one_or_none()
+                if sess is None:
+                    raise HTTPException(status_code=404, detail="Session not found")
+
+                # Re-check ETag against fresh data
+                if_match = request.headers.get("If-Match", "").strip('"')
+                if if_match and if_match != sess.etag:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "code": "etag_mismatch",
+                            "message": "ETag mismatch — session has been updated",
+                            "current_etag": sess.etag,
+                        },
+                    )
+
+            # Update metadata with temp blob key first, commit under lock,
+            # then promote blob after commit succeeds.
+            sess.title = meta["title"]
+            sess.tags = meta["tags"]
+            sess.source_tool = meta["source_tool"]
+            sess.source_tool_version = meta["source_tool_version"]
+            sess.original_session_id = meta["original_session_id"]
+            sess.parent_session_id = meta.get("parent_session_id")
+            sess.model_provider = meta["model_provider"]
+            sess.model_id = meta["model_id"]
+            sess.message_count = meta["message_count"]
+            sess.turn_count = meta["turn_count"]
+            sess.tool_use_count = meta["tool_use_count"]
+            sess.total_input_tokens = meta["total_input_tokens"]
+            sess.total_output_tokens = meta["total_output_tokens"]
+            sess.duration_ms = meta["duration_ms"]
+            sess.messages_text = messages_text
+            sess.blob_key = temp_blob_key  # temp key until blob promoted
+            sess.blob_size_bytes = len(data)
+            sess.etag = new_etag
+            sess.updated_at = now
+            sess.git_remote_normalized = git_remote_normalized
+            sess.git_branch = git_branch
+            sess.git_commit = git_commit
+            if dlp_scan_results and hasattr(sess, "dlp_scan_results"):
+                sess.dlp_scan_results = json.dumps(dlp_scan_results)
+            await db2.commit()
+            _row_committed = True
+
+            # Commit succeeded (FOR UPDATE lock released). Now promote blob.
+            await _promote_blob()
+            sess.blob_key = key
+            await db2.commit()
+            # Both commits succeeded — safe to clean up temp blob
+            await _cleanup_temp_blob()
+            await db2.refresh(sess)
+
+            if meta["message_count"] >= 5 and git_remote_normalized:
+                background_tasks.add_task(
+                    _auto_extract_knowledge, sess.id, data, git_remote_normalized, user_id
+                )
+
+            return SyncPushResponse(
+                session_id=sess.id,
+                etag=sess.etag,
+                blob_size_bytes=sess.blob_size_bytes,
+                synced_at=now,
             )
+          except HTTPException:
+            # Only clean up temp blob if the row was NOT yet committed
+            # (i.e., validation failed before first commit). After first
+            # commit, the temp blob IS the live data — do not delete it.
+            if not _row_committed:
+                await _cleanup_temp_blob()
+            raise
+          except Exception:
+            if not _row_committed:
+                await _cleanup_temp_blob()
+            raise
 
-    # Existing -> check If-Match (skip if no header — first-time overwrite)
-    if_match = request.headers.get("If-Match", "").strip('"')
-    if if_match and if_match != existing.etag:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "etag_mismatch",
-                "message": "ETag mismatch — session has been updated",
-                "current_etag": existing.etag,
-            },
-        )
-
-    # ETag matches -> replace blob and update metadata
-    await blob_store.put(key, data)
-    existing.title = meta["title"]
-    existing.tags = meta["tags"]
-    existing.source_tool = meta["source_tool"]
-    existing.source_tool_version = meta["source_tool_version"]
-    existing.original_session_id = meta["original_session_id"]
-    existing.parent_session_id = meta.get("parent_session_id")
-    existing.model_provider = meta["model_provider"]
-    existing.model_id = meta["model_id"]
-    existing.message_count = meta["message_count"]
-    existing.turn_count = meta["turn_count"]
-    existing.tool_use_count = meta["tool_use_count"]
-    existing.total_input_tokens = meta["total_input_tokens"]
-    existing.total_output_tokens = meta["total_output_tokens"]
-    existing.duration_ms = meta["duration_ms"]
-    existing.messages_text = messages_text
-    existing.blob_size_bytes = len(data)
-    existing.etag = new_etag
-    existing.updated_at = now
-    existing.git_remote_normalized = git_remote_normalized
-    existing.git_branch = git_branch
-    existing.git_commit = git_commit
-    if dlp_scan_results and hasattr(existing, "dlp_scan_results"):
-        existing.dlp_scan_results = json.dumps(dlp_scan_results)
-    await db.commit()
-    await db.refresh(existing)
-
-    # Auto-summarize + knowledge extraction for sessions with enough messages
-    if meta["message_count"] >= 5 and git_remote_normalized:
-        background_tasks.add_task(
-            _auto_extract_knowledge, existing.id, data, git_remote_normalized, user.id
-        )
-
-    return SyncPushResponse(
-        session_id=existing.id,
-        etag=existing.etag,
-        blob_size_bytes=existing.blob_size_bytes,
-        synced_at=now,
-    )
+        return await _phase3_writes()
+    finally:
+        semaphore.release()
 
 
 async def _auto_extract_knowledge(

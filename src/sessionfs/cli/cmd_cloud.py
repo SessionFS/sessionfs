@@ -455,6 +455,8 @@ def sync_all() -> None:
         pushed = 0
         pulled = 0
         conflicts = 0
+        # Limit concurrent uploads to avoid overwhelming the server
+        upload_sem = asyncio.Semaphore(5)
 
         try:
             # Get all remote sessions (paginate through all pages)
@@ -473,62 +475,86 @@ def sync_all() -> None:
             local_by_id = {s["session_id"]: s for s in local_sessions}
 
             # Push local sessions not on remote or with different etag
-            for sid, local in local_by_id.items():
+            push_results: dict[str, str] = {}  # sid -> "pushed" | "conflict" | "error"
+
+            async def _push_one(sid: str) -> None:
+                nonlocal pushed, conflicts
                 session_dir = store.get_session_dir(sid)
                 if not session_dir:
-                    continue
+                    return
 
                 manifest = store.get_session_manifest(sid)
                 local_etag = (manifest or {}).get("sync", {}).get("etag")
 
                 remote = remote_by_id.get(sid)
                 if remote and remote.etag == local_etag:
-                    continue  # Already in sync
+                    return  # Already in sync
 
-                try:
-                    archive_data = pack_session(session_dir)
-                    result = await client.push_session(sid, archive_data, etag=local_etag)
-                    _update_manifest_sync(session_dir, result.etag)
-                    pushed += 1
-                except SyncConflictError:
-                    conflicts += 1
-                    err_console.print(
-                        f"[yellow]Conflict: {sid[:12]} — pull first[/yellow]"
-                    )
-                except Exception as exc:
-                    err_console.print(f"[red]Push failed for {sid[:12]}: {exc}[/red]")
+                async with upload_sem:
+                    try:
+                        archive_data = pack_session(session_dir)
+                        result = await client.push_session(sid, archive_data, etag=local_etag)
+                        _update_manifest_sync(session_dir, result.etag)
+                        push_results[sid] = "pushed"
+                    except SyncConflictError:
+                        push_results[sid] = "conflict"
+                        err_console.print(
+                            f"[yellow]Conflict: {sid[:12]} — pull first[/yellow]"
+                        )
+                    except Exception as exc:
+                        push_results[sid] = "error"
+                        err_console.print(f"[red]Push failed for {sid[:12]}: {exc}[/red]")
 
-            # Pull remote sessions not present locally
-            for sid, remote in remote_by_id.items():
-                if sid in local_by_id:
-                    continue  # Already have it
+            push_tasks = [_push_one(sid) for sid in local_by_id]
+            await asyncio.gather(*push_tasks)
 
-                try:
-                    result = await client.pull_session(sid)
-                    if result.data:
-                        target_dir = store.allocate_session_dir(sid)
-                        unpack_session(result.data, target_dir)
+            pushed = sum(1 for v in push_results.values() if v == "pushed")
+            conflicts = sum(1 for v in push_results.values() if v == "conflict")
+            push_errors = sum(1 for v in push_results.values() if v == "error")
 
-                        manifest_path = target_dir / "manifest.json"
-                        if manifest_path.exists():
-                            manifest = json.loads(manifest_path.read_text())
-                            store.upsert_session_metadata(sid, manifest, str(target_dir))
+            # Pull remote sessions not present locally (also concurrency-limited)
+            pull_sem = asyncio.Semaphore(5)
 
-                        _update_manifest_sync(target_dir, result.etag)
-                        pulled += 1
-                except Exception as exc:
-                    err_console.print(f"[red]Pull failed for {sid[:12]}: {exc}[/red]")
+            async def _pull_one(sid: str) -> bool:
+                async with pull_sem:
+                    try:
+                        result = await client.pull_session(sid)
+                        if result.data:
+                            target_dir = store.allocate_session_dir(sid)
+                            unpack_session(result.data, target_dir)
 
-            return pushed, pulled, conflicts
+                            manifest_path = target_dir / "manifest.json"
+                            if manifest_path.exists():
+                                manifest = json.loads(manifest_path.read_text())
+                                store.upsert_session_metadata(sid, manifest, str(target_dir))
+
+                            _update_manifest_sync(target_dir, result.etag)
+                            return True
+                    except Exception as exc:
+                        err_console.print(f"[red]Pull failed for {sid[:12]}: {exc}[/red]")
+                return False
+
+            pull_tasks = [
+                _pull_one(sid) for sid in remote_by_id if sid not in local_by_id
+            ]
+            pull_results = await asyncio.gather(*pull_tasks)
+            pulled = sum(1 for r in pull_results if r)
+            pull_errors = sum(1 for r in pull_results if not r) - sum(1 for sid in remote_by_id if sid in local_by_id)
+            pull_errors = max(0, pull_errors)  # Don't count skipped sessions as errors
+            total_errors = push_errors + pull_errors
+
+            return pushed, pulled, conflicts, total_errors
         finally:
             await client.close()
 
     try:
         console.print("Fetching remote sessions...")
-        pushed, pulled, conflicts = asyncio.run(_sync())
-        console.print(
-            f"[green]Sync complete: {pushed} pushed, {pulled} pulled, {conflicts} conflicts[/green]"
-        )
+        pushed, pulled, conflicts, errors = asyncio.run(_sync())
+        color = "green" if errors == 0 else "yellow"
+        summary = f"Sync complete: {pushed} pushed, {pulled} pulled, {conflicts} conflicts"
+        if errors > 0:
+            summary += f", {errors} failed"
+        console.print(f"[{color}]{summary}[/{color}]")
     finally:
         store.close()
 

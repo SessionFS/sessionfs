@@ -20,7 +20,7 @@ logger = logging.getLogger("sessionfs.sync")
 # Retry config
 _MAX_RETRIES = 3
 _BACKOFF_BASE = 1.0  # seconds
-_RETRYABLE_STATUS = {502, 503, 504}
+_RETRYABLE_STATUS = {429, 502, 503, 504}
 
 # Timeouts
 _UPLOAD_TIMEOUT = 30.0
@@ -154,11 +154,19 @@ class SyncClient:
                 if resp.status_code not in _RETRYABLE_STATUS:
                     return resp
                 last_exc = SyncError(f"Server returned {resp.status_code}")
+                # Respect Retry-After header from 429 responses
+                retry_after = resp.headers.get("retry-after")
             except (httpx.ConnectError, httpx.TimeoutException, httpx.ReadError) as exc:
                 last_exc = exc
+                retry_after = None
 
             if attempt < _MAX_RETRIES - 1:
                 delay = _BACKOFF_BASE * (2**attempt)
+                if retry_after:
+                    try:
+                        delay = max(delay, float(retry_after))
+                    except (ValueError, TypeError):
+                        pass
                 logger.warning(
                     "Sync request failed (attempt %d/%d), retrying in %.1fs: %s",
                     attempt + 1,
