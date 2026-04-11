@@ -106,26 +106,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Secret scanning runs against the raw working tree so secrets in
-      # template files, env examples, etc. are still caught.
-      - name: Run Trivy secret scan (filesystem)
-        uses: aquasecurity/trivy-action@master
+      # Use setup-trivy + raw trivy binary instead of aquasecurity/trivy-action
+      # because the action's `severity:` input doesn't properly filter exit-code
+      # for the `config` scan type — it exits 1 on any finding regardless of
+      # severity. Running trivy directly honors --severity correctly.
+      - uses: aquasecurity/setup-trivy@v0.2.3
         with:
-          scan-type: fs
-          scan-ref: .
-          scanners: secret
-          severity: CRITICAL,HIGH
-          format: sarif
-          output: trivy-secrets.sarif
-          exit-code: 1
+          version: v0.56.2
 
-      # Trivy cannot evaluate Helm templates (`{{- with .Values... }}` is
-      # invisible to it), so we render the chart first and then run the
-      # misconfig scan against the rendered Kubernetes manifests plus the
-      # Dockerfiles. This eliminates Helm false positives while still
-      # catching real issues in the deployed manifests and images.
-      - name: Set up Helm
-        uses: azure/setup-helm@v4
+      # Render the Helm chart so the misconfig scan sees the actual rendered
+      # Kubernetes manifests instead of raw `{{- with .Values }}` templates
+      # (which Trivy cannot evaluate and which produce 40+ false positives).
+      - uses: azure/setup-helm@v4
         with:
           version: v3.16.1
 
@@ -136,17 +128,30 @@ jobs:
             --namespace sessionfs \
             > rendered/chart.yaml
 
-      - name: Run Trivy misconfig scan (rendered chart + Dockerfiles)
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: config
-          scan-ref: .
-          scanners: misconfig
-          severity: CRITICAL,HIGH
-          format: sarif
-          output: trivy-misconfig.sarif
-          exit-code: 1
-          skip-dirs: charts/sessionfs/templates
+      - name: Trivy secret scan (filesystem)
+        run: |
+          trivy fs . \
+            --scanners secret \
+            --severity CRITICAL,HIGH \
+            --exit-code 1 \
+            --format sarif \
+            --output trivy-secrets.sarif \
+            --skip-dirs node_modules \
+            --skip-dirs dashboard/node_modules \
+            --skip-dirs site/node_modules \
+            --skip-dirs .venv
+
+      - name: Trivy misconfig scan (rendered chart + Dockerfiles)
+        run: |
+          trivy config . \
+            --severity CRITICAL,HIGH \
+            --exit-code 1 \
+            --format sarif \
+            --output trivy-misconfig.sarif \
+            --skip-dirs charts/sessionfs/templates \
+            --skip-dirs node_modules \
+            --skip-dirs dashboard/node_modules \
+            --skip-dirs site/node_modules
 
       - name: Upload Trivy secret scan SARIF
         if: always()
