@@ -10,12 +10,20 @@ export default function LoginPage() {
   const { login } = useAuth();
   const navigate = useNavigate();
   const [mode, setMode] = useState<'login' | 'signup'>('login');
-  const [baseUrl, setBaseUrl] = useState(
-    import.meta.env.VITE_API_URL ||
-    (window.location.hostname === 'localhost'
-      ? 'http://localhost:8000'
-      : `${window.location.origin}`),
-  );
+  const [baseUrl, setBaseUrl] = useState(() => {
+    // 1. Build-time env var wins
+    if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL;
+    // 2. Local dev
+    if (window.location.hostname === 'localhost') return 'http://localhost:8000';
+    // 3. Production: app.<domain> → api.<domain> so signup never POSTs
+    //    to the static dashboard host (which returns 405)
+    const host = window.location.hostname;
+    if (host.startsWith('app.')) {
+      return `${window.location.protocol}//api.${host.slice(4)}`;
+    }
+    // 4. Last resort — same origin (kept for self-hosted single-host deploys)
+    return window.location.origin;
+  });
   const [apiKey, setApiKey] = useState('');
   const [email, setEmail] = useState('');
   const [error, setError] = useState('');
