@@ -110,9 +110,9 @@ jobs:
       # because the action's `severity:` input doesn't properly filter exit-code
       # for the `config` scan type — it exits 1 on any finding regardless of
       # severity. Running trivy directly honors --severity correctly.
-      - uses: aquasecurity/setup-trivy@v0.2.3
+      - uses: aquasecurity/setup-trivy@v0.2.6
         with:
-          version: v0.56.2
+          version: v0.69.3
 
       # Render the Helm chart so the misconfig scan sees the actual rendered
       # Kubernetes manifests instead of raw `{{- with .Values }}` templates
