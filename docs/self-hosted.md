@@ -19,6 +19,51 @@ SessionFS can be deployed to any Kubernetes cluster using the official Helm char
 - `kubectl` configured for your cluster
 - A PersistentVolume provisioner (most managed clusters include one)
 
+## Security Posture
+
+SessionFS ships with a hardened default security posture — no action required on your part. The Helm chart and container images meet CIS Kubernetes benchmark and Pod Security Standard **restricted** profile.
+
+### Container images
+
+Both `sessionfs-api` and `sessionfs-mcp` Docker images:
+
+- Run as **non-root user** (UID 10001, dedicated `sessionfs` system user)
+- Ship with no shell or package manager for the runtime user
+- Are scanned on every release via `trivy` (CRITICAL/HIGH findings block the pipeline)
+
+### Kubernetes SecurityContext
+
+Every pod declared by the chart — API, MCP, dashboard, PostgreSQL, and the `helm test` hook — runs with:
+
+| Setting | Value |
+|---------|-------|
+| `runAsNonRoot` | `true` |
+| `runAsUser` | `10001` (or `999` for PostgreSQL, matching upstream convention) |
+| `readOnlyRootFilesystem` | `true` |
+| `allowPrivilegeEscalation` | `false` |
+| `capabilities.drop` | `[ALL]` |
+| `seccompProfile.type` | `RuntimeDefault` |
+
+The PostgreSQL container mounts `emptyDir` volumes at `/tmp` and `/var/run/postgresql` so it can write its socket directory and temp files even with a read-only root filesystem. The persistent data volume (`/var/lib/postgresql/data`) uses a standard PVC.
+
+### Secrets
+
+All secrets (database credentials, verification secret, encryption key, SMTP credentials, Resend API key) live in Kubernetes Secret objects, never in ConfigMaps. See [Secrets Management](#secrets-management) below.
+
+### Verification
+
+You can verify the security posture of a rendered chart with `trivy`:
+
+```bash
+helm template sessionfs sessionfs/sessionfs \
+  --namespace sessionfs \
+  > /tmp/rendered.yaml
+
+trivy config /tmp/rendered.yaml --severity CRITICAL,HIGH
+```
+
+A clean scan should report zero CRITICAL or HIGH misconfigurations.
+
 ## Installation
 
 ### 1. Add the Helm Repository
