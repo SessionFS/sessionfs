@@ -8,6 +8,12 @@ metadata:
     "helm.sh/hook": test
     "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
 spec:
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
   containers:
     - name: curl
       image: curlimages/curl:8.5.0
@@ -19,4 +25,12 @@ spec:
         - '--max-time'
         - '10'
         - 'http://{{ include "sessionfs.fullname" . }}-api:{{ .Values.api.service.port }}/health'
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        runAsUser: 10001
+        capabilities:
+          drop:
+            - ALL
   restartPolicy: Never

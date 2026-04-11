@@ -75,9 +75,27 @@ spec:
             failureThreshold: 6
           resources:
             {{- toYaml .Values.postgresql.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 999
+            runAsGroup: 999
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
+            # Postgres needs writable /tmp and /var/run/postgresql (socket
+            # directory) even with a read-only root filesystem; mount emptyDir
+            # volumes so the container can start.
+            - name: tmp
+              mountPath: /tmp
+            - name: run
+              mountPath: /var/run/postgresql
       {{- with .Values.postgresql.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -90,6 +108,19 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      # Pod-level volumes: tmp + run always (required because the container
+      # runs with readOnlyRootFilesystem: true). `data` is only declared here
+      # when persistence is disabled — when enabled, it comes from
+      # volumeClaimTemplates below.
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: run
+          emptyDir: {}
+        {{- if not .Values.postgresql.persistence.enabled }}
+        - name: data
+          emptyDir: {}
+        {{- end }}
   {{- if .Values.postgresql.persistence.enabled }}
   volumeClaimTemplates:
     - metadata:
@@ -103,9 +134,5 @@ spec:
         resources:
           requests:
             storage: {{ .Values.postgresql.persistence.size }}
-  {{- else }}
-  volumes:
-    - name: data
-      emptyDir: {}
   {{- end }}
 {{- end }}
