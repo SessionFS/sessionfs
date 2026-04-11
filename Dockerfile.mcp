@@ -3,12 +3,20 @@
 
 FROM python:3.11-slim
 
+# Non-root user matching the Helm chart's runAsUser (10001).
+RUN groupadd --system --gid 10001 sessionfs \
+    && useradd --system --uid 10001 --gid sessionfs --no-create-home --shell /usr/sbin/nologin sessionfs
+
 WORKDIR /app
 
 # Install only MCP server dependencies (no database, no storage)
 COPY pyproject.toml README.md ./
 COPY src/ src/
 RUN pip install --no-cache-dir ".[server]"
+
+RUN chown -R sessionfs:sessionfs /app
+
+USER 10001
 
 EXPOSE 8080
 

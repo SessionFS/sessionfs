@@ -106,23 +106,61 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run Trivy filesystem scan
+      # Secret scanning runs against the raw working tree so secrets in
+      # template files, env examples, etc. are still caught.
+      - name: Run Trivy secret scan (filesystem)
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: fs
           scan-ref: .
-          scanners: secret,misconfig
-          severity: CRITICAL
+          scanners: secret
+          severity: CRITICAL,HIGH
           format: sarif
-          output: trivy-results.sarif
+          output: trivy-secrets.sarif
           exit-code: 1
 
-      - name: Upload Trivy SARIF to Security tab
+      # Trivy cannot evaluate Helm templates (`{{- with .Values... }}` is
+      # invisible to it), so we render the chart first and then run the
+      # misconfig scan against the rendered Kubernetes manifests plus the
+      # Dockerfiles. This eliminates Helm false positives while still
+      # catching real issues in the deployed manifests and images.
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.1
+
+      - name: Render Helm chart
+        run: |
+          mkdir -p rendered
+          helm template sessionfs charts/sessionfs \
+            --namespace sessionfs \
+            > rendered/chart.yaml
+
+      - name: Run Trivy misconfig scan (rendered chart + Dockerfiles)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: config
+          scan-ref: .
+          scanners: misconfig
+          severity: CRITICAL,HIGH
+          format: sarif
+          output: trivy-misconfig.sarif
+          exit-code: 1
+          skip-dirs: charts/sessionfs/templates
+
+      - name: Upload Trivy secret scan SARIF
         if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
-          sarif_file: trivy-results.sarif
-          category: trivy-filesystem
+          sarif_file: trivy-secrets.sarif
+          category: trivy-secrets
+
+      - name: Upload Trivy misconfig SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-misconfig.sarif
+          category: trivy-misconfig
 
   dependency-review:
     name: Dependency Review
