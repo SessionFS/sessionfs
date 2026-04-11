@@ -361,35 +361,49 @@ async def admin_create_org(
         )
 
     org_id = f"org_{_secrets.token_hex(8)}"
-    org = Organization(
-        id=org_id,
-        name=name,
-        slug=slug,
-        tier=tier,
-        seats_limit=seats_limit,
-        storage_limit_bytes=storage_limit_bytes,
-    )
-    db.add(org)
+    try:
+        org = Organization(
+            id=org_id,
+            name=name,
+            slug=slug,
+            tier=tier,
+            seats_limit=seats_limit,
+            storage_limit_bytes=storage_limit_bytes,
+        )
+        db.add(org)
 
-    member = OrgMember(org_id=org_id, user_id=owner_user_id, role="admin")
-    db.add(member)
+        member = OrgMember(org_id=org_id, user_id=owner_user_id, role="admin")
+        db.add(member)
 
-    await _log_action(
-        db,
-        admin.id,
-        "admin_create_org",
-        "org",
-        org_id,
-        {
-            "name": name,
-            "slug": slug,
-            "tier": tier,
-            "seats_limit": seats_limit,
-            "storage_limit_bytes": storage_limit_bytes,
-            "owner_user_id": owner_user_id,
-        },
-    )
-    await db.commit()
+        await _log_action(
+            db,
+            admin.id,
+            "admin_create_org",
+            "org",
+            org_id,
+            {
+                "name": name,
+                "slug": slug,
+                "tier": tier,
+                "seats_limit": seats_limit,
+                "storage_limit_bytes": storage_limit_bytes,
+                "owner_user_id": owner_user_id,
+            },
+        )
+        await db.commit()
+    except Exception as exc:
+        # Surface the underlying exception so we can debug — this admin
+        # endpoint should be robust enough to tell operators what broke.
+        import traceback
+        await db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": str(exc),
+                "type": type(exc).__name__,
+                "traceback": traceback.format_exc().splitlines()[-12:],
+            },
+        ) from exc
 
     return {
         "id": org_id,
