@@ -700,6 +700,7 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       auto_comment?: boolean;
       include_trust_score?: boolean;
       include_session_links?: boolean;
+      installation_id?: number;
     }) =>
       request<GitHubInstallationResponse>('/api/v1/settings/github', {
         method: 'PUT',

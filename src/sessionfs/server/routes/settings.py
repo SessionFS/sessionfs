@@ -6,10 +6,11 @@ import base64
 import hashlib
 import logging
 import os
+from datetime import datetime, timezone
 
 import httpx
 from cryptography.fernet import Fernet
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -256,6 +257,12 @@ class GitHubInstallationUpdate(BaseModel):
     auto_comment: bool | None = None
     include_trust_score: bool | None = None
     include_session_links: bool | None = None
+    # Required when claiming an installation for the first time. The user's
+    # browser receives this value as ?installation_id=... in the GitHub App
+    # Setup URL callback after the user authorizes the app. Without it, the
+    # server has no way to prove which installation the user owns, so blind
+    # "claim the first unclaimed row" IDOR is refused.
+    installation_id: int | None = None
 
 
 @router.get("/github", response_model=GitHubInstallationResponse)
@@ -298,15 +305,15 @@ async def update_github_installation(
     inst = result.scalar_one_or_none()
 
     if inst is None:
-        # Try to claim an unclaimed installation (created by webhook, no user yet)
-        unclaimed_result = await db.execute(
-            select(GitHubInstallation).where(GitHubInstallation.user_id.is_(None)).limit(1)
-        )
-        inst = unclaimed_result.scalar_one_or_none()
-        if inst:
-            inst.user_id = user.id
-        else:
-            # No installation available — return defaults
+        # Claim an installation the user just authorized via the GitHub App
+        # Setup URL callback. We require a specific installation_id from the
+        # client (parsed from GitHub's redirect query string) AND a recent
+        # webhook-created row — this closes the blind "first unclaimed wins"
+        # IDOR that previously let any authenticated user claim any pending
+        # installation.
+        if body.installation_id is None:
+            # Nothing to claim, and no specific installation specified.
+            # Return defaults so the dashboard can still render preferences.
             return GitHubInstallationResponse(
                 account_login=None,
                 account_type=None,
@@ -314,6 +321,49 @@ async def update_github_installation(
                 include_trust_score=body.include_trust_score if body.include_trust_score is not None else True,
                 include_session_links=body.include_session_links if body.include_session_links is not None else True,
             )
+
+        target_result = await db.execute(
+            select(GitHubInstallation).where(GitHubInstallation.id == body.installation_id)
+        )
+        target = target_result.scalar_one_or_none()
+
+        if target is None:
+            raise HTTPException(
+                404,
+                detail=(
+                    "Installation not found. Make sure the GitHub App is installed "
+                    "and the webhook has delivered the installation event to SessionFS."
+                ),
+            )
+
+        if target.user_id is not None and target.user_id != user.id:
+            # Already claimed by someone else. Don't reveal by whom.
+            raise HTTPException(403, detail="Installation already claimed")
+
+        if target.user_id == user.id:
+            # Idempotent: user is re-claiming their own installation.
+            inst = target
+        else:
+            # Only allow claims within a short window after the webhook
+            # created the row. GitHub installation IDs are predictable
+            # integers, so an unbounded claim window makes brute-force
+            # trivial even with a specific ID required.
+            from datetime import timedelta
+            now = datetime.now(timezone.utc)
+            created = target.created_at
+            if created is not None and created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            max_age = timedelta(minutes=15)
+            if created is None or (now - created) > max_age:
+                raise HTTPException(
+                    410,
+                    detail=(
+                        "Installation claim window expired. Re-install the "
+                        "GitHub App to generate a fresh claim."
+                    ),
+                )
+            target.user_id = user.id
+            inst = target
 
     if body.auto_comment is not None:
         inst.auto_comment = body.auto_comment

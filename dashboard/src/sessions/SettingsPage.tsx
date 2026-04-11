@@ -637,6 +637,7 @@ function AutosyncSection() {
 function GitHubIntegrationSection() {
   const { auth } = useAuth();
   const queryClient = useQueryClient();
+  const [claimError, setClaimError] = useState<string | null>(null);
 
   const { data: ghSettings, isLoading } = useQuery({
     queryKey: ['github-installation'],
@@ -645,10 +646,45 @@ function GitHubIntegrationSection() {
   });
 
   const updateSettings = useMutation({
-    mutationFn: (updates: { auto_comment?: boolean; include_trust_score?: boolean; include_session_links?: boolean }) =>
+    mutationFn: (updates: { auto_comment?: boolean; include_trust_score?: boolean; include_session_links?: boolean; installation_id?: number }) =>
       auth!.client.updateGitHubInstallation(updates),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['github-installation'] }),
   });
+
+  // Auto-claim on GitHub App Setup URL callback. When the user installs the
+  // app, GitHub redirects them back to this dashboard with
+  // ?installation_id=X&setup_action=install. Parse those params and claim
+  // the installation bound to THIS authenticated user, then strip the query
+  // string so a browser refresh doesn't retry.
+  useEffect(() => {
+    if (!auth) return;
+    const params = new URLSearchParams(window.location.search);
+    const idRaw = params.get('installation_id');
+    const setupAction = params.get('setup_action');
+    if (!idRaw || setupAction !== 'install') return;
+    const installationId = Number.parseInt(idRaw, 10);
+    if (!Number.isFinite(installationId)) return;
+
+    auth.client
+      .updateGitHubInstallation({ installation_id: installationId })
+      .then(() => {
+        queryClient.invalidateQueries({ queryKey: ['github-installation'] });
+        setClaimError(null);
+      })
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        setClaimError(`Couldn't link the GitHub App installation: ${msg}`);
+      })
+      .finally(() => {
+        // Strip query params so refresh doesn't retry the claim (which
+        // would succeed idempotently but pollutes audit logs).
+        const url = new URL(window.location.href);
+        url.searchParams.delete('installation_id');
+        url.searchParams.delete('setup_action');
+        url.searchParams.delete('installation_target');
+        window.history.replaceState({}, '', url.pathname + url.search);
+      });
+  }, [auth, queryClient]);
 
   const connected = ghSettings && ghSettings.account_login;
 
@@ -658,6 +694,12 @@ function GitHubIntegrationSection() {
       <p className="text-sm text-[var(--text-tertiary)] mb-4">
         Automatically post AI context comments on pull requests showing which sessions contributed to the code.
       </p>
+
+      {claimError && (
+        <div className="text-sm text-red-500 mb-3 bg-red-500/10 border border-red-500/30 rounded-md px-3 py-2">
+          {claimError}
+        </div>
+      )}
 
       {isLoading ? (
         <div className="text-sm text-[var(--text-tertiary)] py-2">Loading...</div>

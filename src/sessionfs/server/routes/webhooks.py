@@ -250,28 +250,44 @@ async def _handle_pr_event(payload: dict) -> None:
 
 @router.post("/gitlab")
 async def gitlab_webhook(request: Request):
-    """Handle GitLab webhook events (merge request)."""
-    # Verify webhook token against global secret OR any user's per-user secret
+    """Handle GitLab webhook events (merge request).
+
+    Authentication:
+      - Global secret from SFS_GITLAB_WEBHOOK_SECRET authorizes ALL sessions
+        (trusted deployment where the secret is a shared system-wide value).
+      - Per-user secret from GitLabSettings.webhook_secret authorizes ONLY
+        sessions belonging to that specific user. We bind the request to the
+        matching user's id so a forged payload for a repo belonging to a
+        different user cannot use another user's credentials.
+    """
     token = request.headers.get("X-Gitlab-Token", "")
     if not token:
         raise HTTPException(401, "Missing webhook token")
 
+    # auth_user_id == None means "global secret matched, trust sender";
+    # otherwise it is the id of the user whose per-user secret matched and all
+    # downstream session/credential lookups MUST be scoped to that user.
+    auth_user_id: str | None = None
+
     global_secret = os.environ.get("SFS_GITLAB_WEBHOOK_SECRET", "")
     if global_secret and hmac.compare_digest(token, global_secret):
-        pass  # Global secret matches
+        pass  # Global secret matches — auth_user_id stays None
     else:
-        # Check per-user webhook secrets
         from sessionfs.server.db.engine import _session_factory
-        matched = False
-        if _session_factory:
-            async with _session_factory() as db:
-                from sessionfs.server.db.models import GitLabSettings as _GLS
-                result = await db.execute(
-                    select(_GLS).where(_GLS.webhook_secret == token)
-                )
-                if result.scalar_one_or_none():
-                    matched = True
-        if not matched:
+        if _session_factory is None:
+            raise HTTPException(503, "Database not initialized")
+        async with _session_factory() as db:
+            from sessionfs.server.db.models import GitLabSettings as _GLS
+            # Compare all rows in constant time to avoid leaking which
+            # user's secret is being probed via response-time side channels.
+            rows = (
+                await db.execute(select(_GLS.user_id, _GLS.webhook_secret))
+            ).all()
+            for row_user_id, row_secret in rows:
+                if row_secret and hmac.compare_digest(token, row_secret):
+                    auth_user_id = row_user_id
+                    # Don't break — finish the loop so timing is constant.
+        if auth_user_id is None:
             raise HTTPException(401, "Invalid webhook token")
 
     payload = await request.json()
@@ -284,11 +300,15 @@ async def gitlab_webhook(request: Request):
     if action not in ("open", "update", "reopen"):
         return {"status": "ignored", "reason": f"Action not handled: {action}"}
 
-    asyncio.ensure_future(_handle_gitlab_mr(payload, request))
+    asyncio.ensure_future(_handle_gitlab_mr(payload, request, auth_user_id))
     return {"status": "processing"}
 
 
-async def _handle_gitlab_mr(payload: dict, request: Request):
+async def _handle_gitlab_mr(
+    payload: dict,
+    request: Request,
+    auth_user_id: str | None,
+):
     """Match MR to sessions and post comment."""
     try:
         from sessionfs.server.db.engine import _session_factory
@@ -315,12 +335,19 @@ async def _handle_gitlab_mr(payload: dict, request: Request):
             if not normalized:
                 return
 
-            # Find matching sessions
+            # Find matching sessions. When the webhook was authenticated via
+            # a per-user secret, scope to that user so a forged payload for
+            # a repo belonging to a DIFFERENT user can't use another user's
+            # credentials. Global-secret auth (auth_user_id is None) is
+            # trusted and can match across all users' sessions.
             stmt = select(Session).where(
                 Session.git_remote_normalized == normalized,
                 Session.git_branch == branch,
                 Session.is_deleted == False,  # noqa: E712
-            ).order_by(Session.created_at.desc()).limit(10)
+            )
+            if auth_user_id is not None:
+                stmt = stmt.where(Session.user_id == auth_user_id)
+            stmt = stmt.order_by(Session.created_at.desc()).limit(10)
 
             result = await db.execute(stmt)
             sessions = result.scalars().all()
@@ -342,8 +369,11 @@ async def _handle_gitlab_mr(payload: dict, request: Request):
 
             comment_body = build_pr_comment(session_data)
 
-            # Find GitLab token from the session owner
-            owner_id = sessions[0].user_id
+            # Find GitLab token. For per-user secret auth, use that user's
+            # settings directly (not sessions[0].user_id which could belong
+            # to another user if the session filter found more than one owner
+            # in global mode).
+            owner_id = auth_user_id if auth_user_id is not None else sessions[0].user_id
             gitlab_stmt = select(GitLabSettings).where(GitLabSettings.user_id == owner_id)
             gitlab_result = await db.execute(gitlab_stmt)
             gitlab_settings = gitlab_result.scalar_one_or_none()
