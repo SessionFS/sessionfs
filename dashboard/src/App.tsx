@@ -20,6 +20,7 @@ const BillingPage = React.lazy(() => import('./billing/BillingPage'));
 const OrgPage = React.lazy(() => import('./org/OrgPage'));
 const ProjectsPage = React.lazy(() => import('./projects/ProjectsPage'));
 const ProjectDetail = React.lazy(() => import('./projects/ProjectDetail'));
+const HelpPage = React.lazy(() => import('./help/HelpPage'));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -72,6 +73,7 @@ export default function App() {
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/settings/billing" element={<BillingPage />} />
               <Route path="/settings/organization" element={<OrgPage />} />
+              <Route path="/help" element={<HelpPage />} />
               <Route
                 path="/admin"
                 element={

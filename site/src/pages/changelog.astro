@@ -17,14 +17,143 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.9.7 -->
+      <!-- v0.9.8.4 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.9.8.4</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">April 10, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Dashboard Help Page, Signup Fix, Storage Hardening</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>New dashboard Help page — 8-tool MCP installer, agent prompt examples, curated CLI reference, full 12-tool MCP reference</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Signup fix — VITE_API_URL baked into production bundle; api.&lt;domain&gt; derived from app.&lt;domain&gt; in fallback chain</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Unguarded localStorage hardened across main.tsx, ThemeToggle, SettingsPage via new storage helper</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Help page resource links subscribe to theme changes via MutationObserver</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">1,052 backend tests + 22 dashboard UI tests passing</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.9.8.3 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.9.8.3</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">April 9, 2026</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Connection Pool Optimization, Sync Atomicity</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Client-side upload concurrency limiter and per-user server semaphore with 429+Retry-After</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>sync_push split into phases — DB connection held ~70ms instead of ~5s</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Commit-then-promote sync with temp blob preservation; PK constraint for creates, FOR UPDATE for updates</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>New /health/pool endpoint for pool utilization metrics</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Sync summary shows error count alongside pushed/pulled/conflicts</li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.9.8.2 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.9.8.2</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">April 9, 2026</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Database Pool Configuration</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Configurable SQLAlchemy pool via SFS_DATABASE_POOL_SIZE (20), SFS_DATABASE_MAX_OVERFLOW (40), SFS_DATABASE_POOL_TIMEOUT (60s), SFS_DATABASE_POOL_RECYCLE (1800s)</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>pool_pre_ping=True — stale connections detected before checkout</li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.9.8.1 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.9.8.1</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">April 9, 2026</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Knowledge Base Lifecycle, Billing Isolation</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Entry decay (0.8x confidence after 90 days unreferenced), auto-dismiss past retention period</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Quality gates — 20 char minimum, 20/hr rate limit per session, 85% similarity rejection</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Context document 8,000 word budget with priority-aware trimming; section page caps (30 items)</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Concept auto-refresh on 50% cluster growth; auto-delete when all entries dismissed</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Actionable health endpoint; sfs resume --model for target tool selection</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Billing webhook isolation — org state only mutates on positive customer_id AND subscription_id match</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Migration 025: lifecycle fields on knowledge_entries + project settings</li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.9.8 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.9.8</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">April 9, 2026</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">DLP / Secret Scrubbing</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Pre-sync content protection — 14 PHI patterns and 22 secret patterns</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Three enforcement modes: BLOCK, REDACT, WARN — server-side scan of all archive files</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Org policy via settings JSON; custom patterns and allowlist support</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>CLI: sfs dlp scan, sfs dlp policy; sfs push shows DLP preview</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Dashboard: Settings &gt; DLP tab for admins; session detail shows findings</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>DLP API feature-gated to Pro+; migration 024 (dlp_scan_results column)</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>43 new DLP tests</li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.9.7.1–v0.9.7.4 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.9.7.1 – v0.9.7.4</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">April 6–7, 2026</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Dashboard UX Overhaul, Docs Refresh, MCP Roots, Billing Isolation</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>MCP workspace detection via roots/list protocol; explicit git_remote parameter on all 6 project-scoped tools</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>0-byte index.db recovery — auto-rebuild on truncated files</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>New docs: knowledge base, dashboard guide, organizations, billing &amp; tiers</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>CLI reference updated with 15 missing commands; all 12 MCP tools documented</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Dashboard code splitting — main bundle 676KB → 262KB; 12 lazy route chunks</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Command palette search (Cmd+K), mobile nav drawer, focus trapping, ARIA live regions, Zod form validation</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Sessions hero redesign, project card health badges, typography polish, product identity sync</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Billing isolation — org Team checkout uses separate Stripe customer, webhooks org-first</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Handoff security — recipient verification on claim, claimed summaries blocked, session ID persisted</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Knowledge compiler content-level dedup across batches; backfill on project creation</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Share-link passwords moved to POST body with PBKDF2-HMAC-SHA256 hashing</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>GitHub webhook signature enforcement; GitLab MR comment dedup; per-user webhook secrets</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Migrations 020–023</li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.9.7 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
             <span class="text-brand font-semibold">v0.9.7</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">April 4, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Living Project Context, Wiki Pages, 12 MCP Tools, Self-Healing Index</h2>
         <ul class="space-y-2 text-base text-muted">

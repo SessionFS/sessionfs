@@ -6,6 +6,7 @@ import { useJudgeSettings, useSaveJudgeSettings, useClearJudgeSettings } from '.
 import { useToast } from '../hooks/useToast';
 import { judgeSettingsSchema, fieldErrorsFromZod, type FieldErrors } from '../utils/validation';
 import FieldError from '../components/FieldError';
+import { getItem as lsGet, setItem as lsSet, removeItem as lsRemove } from '../utils/storage';
 
 const PROVIDERS = [
   { value: 'openrouter', label: 'OpenRouter' },
@@ -46,7 +47,7 @@ const PROVIDER_MODELS: Record<string, { value: string; label: string }[]> = {
 type SettingsTab = 'account' | 'judge' | 'connection' | 'preferences' | 'dlp';
 
 function getInitialTheme(): 'light' | 'dark' | 'system' {
-  const stored = localStorage.getItem('sfs-theme');
+  const stored = lsGet('sfs-theme');
   if (stored === 'light' || stored === 'dark') return stored;
   return 'system';
 }
@@ -54,11 +55,14 @@ function getInitialTheme(): 'light' | 'dark' | 'system' {
 function applyTheme(choice: 'light' | 'dark' | 'system') {
   let resolved: 'light' | 'dark';
   if (choice === 'system') {
-    resolved = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-    localStorage.removeItem('sfs-theme');
+    const prefersDark = typeof window !== 'undefined'
+      && typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    resolved = prefersDark ? 'dark' : 'light';
+    lsRemove('sfs-theme');
   } else {
     resolved = choice;
-    localStorage.setItem('sfs-theme', choice);
+    lsSet('sfs-theme', choice);
   }
   document.documentElement.setAttribute('data-theme', resolved);
 }

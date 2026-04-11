@@ -1,9 +1,13 @@
 import { useEffect, useState } from 'react';
+import { getItem as lsGet, setItem as lsSet } from '../utils/storage';
 
 function getInitialTheme(): 'light' | 'dark' {
-  const stored = localStorage.getItem('sfs-theme');
+  const stored = lsGet('sfs-theme');
   if (stored === 'light' || stored === 'dark') return stored;
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  return 'dark';
 }
 
 export default function ThemeToggle() {
@@ -11,7 +15,7 @@ export default function ThemeToggle() {
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
-    localStorage.setItem('sfs-theme', theme);
+    lsSet('sfs-theme', theme);
   }, [theme]);
 
   const toggle = () => setTheme((t) => (t === 'dark' ? 'light' : 'dark'));

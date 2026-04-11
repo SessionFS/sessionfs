@@ -63,6 +63,7 @@ export default function Layout() {
   const allNavLinks = [
     ...NAV_LINKS,
     ...(isAdmin ? [{ to: '/admin', label: 'Admin', match: (p: string) => p === '/admin' }] : []),
+    { to: '/help', label: 'Help', match: (p: string) => p === '/help' },
   ];
 
   const tierLabel = me.data?.tier || 'free';
@@ -148,9 +149,20 @@ export default function Layout() {
           <SearchBar />
         </nav>
 
-        {/* Right: ThemeToggle + Avatar */}
+        {/* Right: ThemeToggle + Help + Avatar */}
         <div className="flex items-center gap-2 shrink-0">
           <ThemeToggle />
+          <Link
+            to="/help"
+            aria-label="Help"
+            className="flex items-center justify-center w-8 h-8 rounded-[var(--radius-md)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] transition-colors"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.8.4-1 .9-1 1.7" />
+              <line x1="12" y1="17" x2="12" y2="17.01" />
+            </svg>
+          </Link>
           <div className="relative" ref={avatarRef}>
             <button
               onClick={() => setAvatarOpen((v) => !v)}
@@ -288,7 +300,7 @@ export default function Layout() {
         <span className="mx-2 text-[var(--text-tertiary)]">·</span>
         Memory layer for AI coding agents
         <span className="mx-2 text-[var(--text-tertiary)]">·</span>
-        v0.9.8.1
+        v0.9.8.4
         <span className="mx-2 text-[var(--text-tertiary)]">·</span>
         <a href={siteHref('/quickstart/')} className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors">Docs</a> &middot;{' '}
         <a href={siteHref('/')} className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors">Status</a> &middot;{' '}
