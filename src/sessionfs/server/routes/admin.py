@@ -16,6 +16,7 @@ from sessionfs.server.db.models import (
     AdminAction,
     ApiKey,
     Handoff,
+    Organization,
     OrgMember,
     Session,
     User,
@@ -247,6 +248,200 @@ async def delete_user(
         "email": user.email,
     })
     await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Organization management (admin back-office)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/orgs")
+async def list_orgs(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all organizations with member counts."""
+    offset = (page - 1) * page_size
+    total = (await db.execute(select(func.count(Organization.id)))).scalar() or 0
+
+    result = await db.execute(
+        select(Organization)
+        .order_by(Organization.created_at.desc())
+        .offset(offset)
+        .limit(page_size)
+    )
+    orgs = result.scalars().all()
+
+    items = []
+    for org in orgs:
+        member_count = (
+            await db.execute(
+                select(func.count(OrgMember.user_id)).where(OrgMember.org_id == org.id)
+            )
+        ).scalar() or 0
+        items.append({
+            "id": org.id,
+            "name": org.name,
+            "slug": org.slug,
+            "tier": org.tier,
+            "seats_limit": org.seats_limit,
+            "storage_limit_bytes": org.storage_limit_bytes,
+            "member_count": member_count,
+            "created_at": org.created_at.isoformat() if org.created_at else None,
+        })
+
+    return {
+        "orgs": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+@router.post("/orgs", status_code=201)
+async def admin_create_org(
+    body: dict,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create an organization with arbitrary tier/seats/storage, bypassing the
+    normal Team+ subscription gate. Designed for back-office setup of the
+    SessionFS company org and for enterprise pre-sales provisioning.
+
+    Required body fields:
+      - name: human-readable org name
+      - slug: unique URL slug
+      - owner_user_id: user ID that becomes the org admin
+    Optional:
+      - tier: one of free/starter/pro/team/enterprise (default: enterprise)
+      - seats_limit: int (default: 100)
+      - storage_limit_bytes: int (default: 0 = unlimited)
+    """
+    import secrets as _secrets
+
+    name = (body.get("name") or "").strip()
+    slug = (body.get("slug") or "").strip()
+    owner_user_id = body.get("owner_user_id")
+    tier = body.get("tier", "enterprise")
+    seats_limit = int(body.get("seats_limit", 100))
+    storage_limit_bytes = int(body.get("storage_limit_bytes", 0))
+
+    if not name or not slug:
+        raise HTTPException(400, "name and slug are required")
+    if tier not in VALID_TIERS or tier == "admin":
+        raise HTTPException(
+            400, f"tier must be one of: {', '.join(sorted(VALID_TIERS - {'admin'}))}"
+        )
+    if not owner_user_id:
+        raise HTTPException(400, "owner_user_id is required")
+
+    # Verify owner exists
+    owner = (
+        await db.execute(select(User).where(User.id == owner_user_id))
+    ).scalar_one_or_none()
+    if owner is None:
+        raise HTTPException(404, f"User {owner_user_id} not found")
+
+    # Slug uniqueness
+    existing = (
+        await db.execute(select(Organization).where(Organization.slug == slug))
+    ).scalar_one_or_none()
+    if existing is not None:
+        raise HTTPException(409, f"Organization slug '{slug}' is already taken")
+
+    # Owner can't already be in an org
+    existing_member = (
+        await db.execute(select(OrgMember).where(OrgMember.user_id == owner_user_id))
+    ).scalar_one_or_none()
+    if existing_member is not None:
+        raise HTTPException(
+            409, f"User {owner_user_id} is already a member of an organization"
+        )
+
+    org_id = f"org_{_secrets.token_hex(8)}"
+    org = Organization(
+        id=org_id,
+        name=name,
+        slug=slug,
+        tier=tier,
+        seats_limit=seats_limit,
+        storage_limit_bytes=storage_limit_bytes,
+    )
+    db.add(org)
+
+    member = OrgMember(org_id=org_id, user_id=owner_user_id, role="admin")
+    db.add(member)
+
+    await _log_action(
+        db,
+        admin.id,
+        "admin_create_org",
+        "org",
+        org_id,
+        {
+            "name": name,
+            "slug": slug,
+            "tier": tier,
+            "seats_limit": seats_limit,
+            "storage_limit_bytes": storage_limit_bytes,
+            "owner_user_id": owner_user_id,
+        },
+    )
+    await db.commit()
+
+    return {
+        "id": org_id,
+        "name": name,
+        "slug": slug,
+        "tier": tier,
+        "seats_limit": seats_limit,
+        "storage_limit_bytes": storage_limit_bytes,
+        "owner_user_id": owner_user_id,
+    }
+
+
+@router.put("/orgs/{org_id}/tier")
+async def admin_change_org_tier(
+    org_id: str,
+    body: dict,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Change an organization's tier + seat/storage limits.
+
+    Body fields (all optional; only provided ones are updated):
+      - tier: one of free/starter/pro/team/enterprise
+      - seats_limit: int
+      - storage_limit_bytes: int (0 = unlimited)
+    """
+    org = (
+        await db.execute(select(Organization).where(Organization.id == org_id))
+    ).scalar_one_or_none()
+    if org is None:
+        raise HTTPException(404, "Organization not found")
+
+    changes: dict[str, object] = {}
+    if "tier" in body:
+        new_tier = body["tier"]
+        if new_tier not in VALID_TIERS or new_tier == "admin":
+            raise HTTPException(400, f"Invalid tier: {new_tier}")
+        changes["tier"] = new_tier
+    if "seats_limit" in body:
+        changes["seats_limit"] = int(body["seats_limit"])
+    if "storage_limit_bytes" in body:
+        changes["storage_limit_bytes"] = int(body["storage_limit_bytes"])
+
+    if not changes:
+        raise HTTPException(400, "No changes provided")
+
+    await db.execute(update(Organization).where(Organization.id == org_id).values(**changes))
+
+    await _log_action(db, admin.id, "admin_update_org", "org", org_id, changes)
+    await db.commit()
+
+    return {"org_id": org_id, "updated": changes}
 
 
 # ---------------------------------------------------------------------------
