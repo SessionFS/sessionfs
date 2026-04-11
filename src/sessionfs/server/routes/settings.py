@@ -322,39 +322,60 @@ async def update_github_installation(
                 include_session_links=body.include_session_links if body.include_session_links is not None else True,
             )
 
-        target_result = await db.execute(
-            select(GitHubInstallation).where(GitHubInstallation.id == body.installation_id)
-        )
-        target = target_result.scalar_one_or_none()
+        # Atomic conditional UPDATE so concurrent claims from two authenticated
+        # users for the same installation_id cannot both succeed. The WHERE
+        # clause bundles all three preconditions — right id, not yet claimed,
+        # inside the 15-minute window — so the DB enforces the race condition
+        # in a single statement. RETURNING gives us the row back on success.
+        from datetime import timedelta
+        from sqlalchemy import update as _update
 
-        if target is None:
-            raise HTTPException(
-                404,
-                detail=(
-                    "Installation not found. Make sure the GitHub App is installed "
-                    "and the webhook has delivered the installation event to SessionFS."
-                ),
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(minutes=15)
+
+        claim_stmt = (
+            _update(GitHubInstallation)
+            .where(
+                GitHubInstallation.id == body.installation_id,
+                GitHubInstallation.user_id.is_(None),
+                GitHubInstallation.created_at >= cutoff,
             )
+            .values(user_id=user.id)
+            .returning(GitHubInstallation)
+        )
+        claim_result = await db.execute(claim_stmt)
+        inst = claim_result.scalar_one_or_none()
 
-        if target.user_id is not None and target.user_id != user.id:
-            # Already claimed by someone else. Don't reveal by whom.
-            raise HTTPException(403, detail="Installation already claimed")
+        if inst is None:
+            # The UPDATE didn't match anything. Figure out why so we can
+            # return a useful error code.
+            target_result = await db.execute(
+                select(GitHubInstallation).where(
+                    GitHubInstallation.id == body.installation_id
+                )
+            )
+            target = target_result.scalar_one_or_none()
 
-        if target.user_id == user.id:
-            # Idempotent: user is re-claiming their own installation.
-            inst = target
-        else:
-            # Only allow claims within a short window after the webhook
-            # created the row. GitHub installation IDs are predictable
-            # integers, so an unbounded claim window makes brute-force
-            # trivial even with a specific ID required.
-            from datetime import timedelta
-            now = datetime.now(timezone.utc)
-            created = target.created_at
-            if created is not None and created.tzinfo is None:
-                created = created.replace(tzinfo=timezone.utc)
-            max_age = timedelta(minutes=15)
-            if created is None or (now - created) > max_age:
+            if target is None:
+                raise HTTPException(
+                    404,
+                    detail=(
+                        "Installation not found. Make sure the GitHub App is installed "
+                        "and the webhook has delivered the installation event to SessionFS."
+                    ),
+                )
+
+            if target.user_id == user.id:
+                # Idempotent: user is re-reading their own installation after
+                # a successful claim on an earlier request. Fall through to
+                # the settings update path using the fetched row.
+                inst = target
+            elif target.user_id is not None:
+                # Claimed by someone else (possibly moments ago by a concurrent
+                # request that won the race). Don't reveal by whom.
+                raise HTTPException(403, detail="Installation already claimed")
+            else:
+                # Unclaimed but outside the time window.
                 raise HTTPException(
                     410,
                     detail=(
@@ -362,8 +383,6 @@ async def update_github_installation(
                         "GitHub App to generate a fresh claim."
                     ),
                 )
-            target.user_id = user.id
-            inst = target
 
     if body.auto_comment is not None:
         inst.auto_comment = body.auto_comment
