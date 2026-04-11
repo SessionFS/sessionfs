@@ -9,11 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Dashboard Help page** — new `/help` route with MCP-first guidance, an 8-tool installer (Claude Code, Codex, Gemini, Cursor, Copilot, Amp, Cline, Roo Code) with live terminal preview and copy-to-clipboard, example agent prompts by use-case, a curated 10-command CLI quick-reference, the full 12-tool MCP reference, and external resource links. Help icon sits between ThemeToggle and the avatar; a Help entry also appears in the mobile drawer.
+- **Helm chart Security Posture documentation** — new "Security Posture" section in `docs/self-hosted` covering non-root UIDs, read-only root filesystems, dropped capabilities, RuntimeDefault seccomp, and how to verify with `trivy config` on a rendered chart.
 
 ### Fixed
 - **Dashboard signup broken on app.sessionfs.dev** — `VITE_API_URL` was not set at Vercel build time, so the LoginPage `baseUrl` defaulted to `window.location.origin`, making signups POST to the static Vercel host and return 405. Fixed three ways: (1) set `VITE_API_URL=https://api.sessionfs.dev` in Vercel for all three environments, (2) bake the URL into the new production bundle, (3) derive `api.<domain>` from `app.<domain>` in the fallback chain so this cannot silently break again.
 - **Unguarded localStorage across dashboard** — `main.tsx`, `ThemeToggle`, and `SettingsPage` assumed a full Storage interface. Now all call sites route through a new `src/utils/storage.ts` helper that guards against missing localStorage, plain-object localStorage (vitest 4 + jsdom), SecurityError on access, and QuotaExceededError on write. Shared vitest setup installs an in-memory stub so every test file gets a working localStorage.
 - **Help page theme query stale** — resource links now subscribe to `document.documentElement[data-theme]` via `MutationObserver` so sessionfs.dev links update live when the user toggles theme on the Help page.
+
+### Security (post-release hardening)
+- **Helm chart — postgres StatefulSet** — container now has a full `securityContext` with `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`, `runAsNonRoot: true`, `capabilities.drop: [ALL]`, and `seccompProfile.type: RuntimeDefault`. Added `emptyDir` mounts at `/tmp` and `/var/run/postgresql` so postgres can still write its socket directory with a read-only root filesystem. Also fixed a pre-existing bug where the fallback `emptyDir` volume (when `persistence.enabled=false`) was declared at the StatefulSet spec level instead of the pod spec level, making it ineffective.
+- **Helm chart — `helm test` hook** — the curl-based connection test pod now has pod and container `securityContext` with `runAsUser: 10001`, `readOnlyRootFilesystem: true`, dropped capabilities, and RuntimeDefault seccomp.
+- **Dockerfile + Dockerfile.mcp** — both now create a non-root `sessionfs` user (UID 10001) and set `USER 10001` before `CMD`. Cloud Run and Kubernetes already enforced non-root at the orchestration layer, but the image itself is now compliant for self-hosted users who don't override.
+- **Security Scan workflow rewrite** — replaced `aquasecurity/trivy-action` with raw `trivy` binary (via `setup-trivy@v0.2.6`, `trivy v0.69.3`) because the action's `severity:` input does not filter exit-code for `scan-type: config`. Now renders the Helm chart with `helm template` before running misconfig scan so Trivy evaluates real Kubernetes manifests instead of raw `{{- with .Values }}` templates (which produced 40+ false-positive findings on an already-hardened chart). Also enforces `--severity CRITICAL,HIGH` and excludes `node_modules` / `.venv` from the secret scan.
+- **vite 7.0.0–7.3.1 → 7.3.2** — fixes three CVEs in `site/package-lock.json`: CVE-2026-39364 (server.fs.deny bypass), CVE-2026-39363 (WebSocket arbitrary file read), CVE-2026-39365 (path traversal in optimized deps). Build-time only; site is statically generated.
+- **defu <=6.1.4 → 6.1.5** — fixes CVE-2026-35209 (prototype pollution via `__proto__` key in defaults argument). Transitive dep in the site build.
 
 ## [0.9.8.3] - 2026-04-09
 

@@ -26,12 +26,16 @@ import BaseLayout from '../layouts/BaseLayout.astro';
           <span class="text-sm text-muted-dim font-mono">April 10, 2026</span>
           <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
-        <h2 class="font-heading text-xl font-bold mb-4">Dashboard Help Page, Signup Fix, Storage Hardening</h2>
+        <h2 class="font-heading text-xl font-bold mb-4">Dashboard Help Page, Signup Fix, Security Hardening</h2>
         <ul class="space-y-2 text-base text-muted">
           <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>New dashboard Help page — 8-tool MCP installer, agent prompt examples, curated CLI reference, full 12-tool MCP reference</li>
           <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Signup fix — VITE_API_URL baked into production bundle; api.&lt;domain&gt; derived from app.&lt;domain&gt; in fallback chain</li>
           <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Unguarded localStorage hardened across main.tsx, ThemeToggle, SettingsPage via new storage helper</li>
           <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Help page resource links subscribe to theme changes via MutationObserver</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Helm chart hardening</strong> — postgres StatefulSet now runs with readOnlyRootFilesystem, dropped capabilities, RuntimeDefault seccomp + emptyDir mounts for /tmp and /var/run/postgresql. helm test hook pod hardened with matching securityContext.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Dockerfile hardening</strong> — Dockerfile and Dockerfile.mcp now create a non-root user (UID 10001) and set USER 10001 before CMD. Images are compliant for self-hosted Kubernetes users by default.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Security Scan workflow rewritten</strong> — renders Helm chart before misconfig scan so Trivy evaluates real manifests (not raw templates), uses raw trivy binary for proper --severity filtering</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>CVE patches</strong> — vite 7.0.0–7.3.1 → 7.3.2 (three CVEs: server.fs.deny bypass, WebSocket file read, path traversal); defu &lt;=6.1.4 → 6.1.5 (prototype pollution). Build-time only.</li>
           <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">1,052 backend tests + 22 dashboard UI tests passing</span></li>
         </ul>
       </article>
