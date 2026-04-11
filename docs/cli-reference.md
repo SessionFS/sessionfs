@@ -1194,6 +1194,77 @@ Set up cloud sync now? [y/N]:
 
 ---
 
+## `sfs dlp`
+
+Scan sessions for secrets and PHI, manage organization-wide DLP policy.
+
+SessionFS ships with 22 secret patterns (API keys, access tokens, private keys, database URLs) and 14 PHI patterns (SSN, phone, credit card, medical IDs) based on industry standards. Policies run in one of three modes — `warn`, `redact`, or `block`.
+
+### `sfs dlp scan`
+
+Scan one or more local sessions for secrets and PHI. Produces a JSON report with findings, positions, and severity.
+
+```
+sfs dlp scan [SESSION_ID ...] [--mode MODE] [--format FORMAT]
+```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--mode warn\|redact\|block` | Default action when a finding is detected (default: `warn`) |
+| `--format json\|text` | Output format (default: `text`) |
+| `--verbose` | Show matched substrings (redacted by default) |
+
+**Examples:**
+
+```bash
+# Scan the most recent session
+$ sfs dlp scan
+
+# Scan a specific session with JSON output
+$ sfs dlp scan ses_abc123 --format json
+
+# Scan all dirty sessions before syncing
+$ sfs dlp scan --dirty
+```
+
+### `sfs dlp policy`
+
+View or update the DLP policy. For organizations, this writes to the server-side org settings and applies to all members.
+
+```
+sfs dlp policy [--get|--set-mode MODE|--enable|--disable]
+```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--get` | Show the current DLP policy |
+| `--set-mode warn\|redact\|block` | Update the policy mode |
+| `--enable` | Enable DLP scanning on the org |
+| `--disable` | Disable DLP scanning on the org |
+
+**Examples:**
+
+```bash
+# View current policy
+$ sfs dlp policy --get
+{
+  "enabled": true,
+  "mode": "redact",
+  "redact_patterns": ["secret", "phi"]
+}
+
+# Switch to block mode (rejects uploads containing findings)
+$ sfs dlp policy --set-mode block
+```
+
+When org policy is set to `block`, any `sfs push` / `sfs sync` that contains a detected secret or PHI finding is rejected by the server with a `403` and a report of the offending patterns. When set to `redact`, the server automatically redacts the matches and stores the redacted archive.
+
+---
+
 ## `sfs security`
 
 Audit and fix security configuration.

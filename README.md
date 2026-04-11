@@ -197,50 +197,70 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
-**v0.9.8.4 — Public Beta.** 1052 backend tests + 22 dashboard tests passing.
+**v0.9.8.4 — Public Beta.** 1052 backend tests + 22 dashboard tests passing. 25 database migrations.
 
-What works today:
-- Eight-tool session capture (Claude Code, Codex, Gemini, Cursor, Copilot CLI, Amp, Cline, Roo Code)
-- Cross-tool resume between Claude Code, Codex, Gemini, and Copilot CLI (auto-launches native tool, full transcript via --append-system-prompt-file with 50-message trim)
-- Shared project context — one document per repo, shared across the team, readable via MCP, manageable from dashboard
-- Living Project Context — auto-summarize on sync, knowledge entries (6 types), wiki pages, structured compilation
-- Local storage management with configurable retention, pruning, and disk warnings
-- Full-text search across all sessions (CLI + dashboard + API)
-- Living Project Context — auto-summarize on sync, knowledge entries, wiki pages, structured compilation
-- MCP server with 12 tools — search, context, recent, related, project context, summary, audit report, add_knowledge, update_wiki_page, list_wiki_pages, search_project_knowledge, ask_project
-- MCP install for all 8 tools (codex mcp add, gemini mcp add)
-- Self-healing SQLite index with auto-rebuild
-- `sfs doctor` with 8 health checks and auto-repair
-- LLM-as-a-Judge with confidence scores (0-100), CWE mapping, evidence linking, dismiss/confirm findings
-- Narrative session summaries — LLM-powered what_happened, key_decisions, outcome, open_issues
-- GitHub PR App + GitLab MR integration — auto-comment AI session context on pull requests and merge requests
-- Team handoff with email notification, status stepper, session context card, and smart workspace resolution
-- Multi-provider email (Resend, SMTP, or disabled for air-gapped)
-- Browse, inspect, export, fork, and checkpoint sessions
-- Cloud sync with push/pull, email verification, and ETag conflict detection
-- FSL licensing with open-source core and enterprise extensions
-- Self-hosted license lifecycle with grace periods, admin CLI, and dashboard licenses tab
-- Server-side tier gating (5 tiers, 30+ gated features)
-- RBAC with admin and member roles
-- Stripe billing integration with subscription management
-- Organization management (`sfs org` commands)
-- Self-hosted deployment via Helm chart with license validation (EKS/GKE/AKS tested)
-- Web dashboard with light/dark mode, resume-first layout, date-grouped sessions, lineage grouping, skeleton loading
-- `sfs init` wizard with auto-detection of 8 tools and optional sync setup
-- `sfs security scan/fix` for config permissions, API key exposure, dependency audit
-- Security pipeline (GitHub Action with pip-audit, Trivy, Bandit), Dependabot, SECURITY.md
-- Multi-select bulk delete + Find Duplicates in dashboard
-- Skill/slash command detection across all converters
-- Self-healing SQLite index with auto-rebuild from .sfs files
-- `sfs doctor` with 8 health checks and auto-repair
-- `handle_errors` decorator on all CLI commands (no raw tracebacks)
-- Message pagination with newest-first default, order toggle, sidechain/empty filtering
-- Database migrations 001–019
+### Session capture, resume, and search
 
-On the roadmap:
-- Session similarity and duplicate detection
-- Cost analytics dashboard
+- **Eight-tool capture** — Claude Code, Codex, Gemini, Cursor, Copilot CLI, Amp, Cline, Roo Code
+- **Cross-tool resume** — start in Claude Code, resume in Codex (and vice-versa with Gemini / Copilot); auto-launches the native tool, full transcript via `--append-system-prompt-file` with 50-message trim, `sfs resume --model` to override the model
+- **Narrative session summaries** — LLM-powered `what_happened`, `key_decisions`, `outcome`, `open_issues`
+- **Full-text search** across all sessions (CLI, dashboard, API), tier-aware
+- **Session browsing** — inspect, export, fork, checkpoint, compare; multi-select bulk delete + Find Duplicates in dashboard
+- **Message pagination** — newest-first default, order toggle, sidechain/empty filtering
+
+### Project knowledge
+
+- **Shared project context** — one document per repo, shared across the team, readable via MCP, manageable from dashboard
+- **Living Project Context** — auto-summarize on sync, knowledge entries (6 types), wiki pages with backlinks, structured compilation, concept auto-generation
+- **Knowledge base lifecycle** — entry decay after 90 days unreferenced, auto-dismiss past retention, context-document budget, section page caps, concept auto-refresh, quality gates on contributions
+- **LLM Judge** — confidence scores (0-100), CWE mapping, evidence linking, dismiss/confirm workflow
+
+### Team and collaboration
+
+- **Team handoff** — email notification, status stepper, session context card, smart workspace resolution
+- **GitHub PR App** (signature enforcement) + **GitLab MR integration** (per-user webhook secrets, comment dedup) — auto-comment AI session context on pull requests and merge requests
+- **RBAC** with admin and member roles; seat enforcement on invite accept
+
+### Cloud, sync, and reliability
+
+- **Cloud sync** with push/pull, email verification, ETag conflict detection, bounded per-user concurrency (5 client-side, 3 server-side), 429 + Retry-After backoff
+- **Connection pool optimization** — configurable via `SFS_DATABASE_POOL_SIZE`/`MAX_OVERFLOW`/`POOL_TIMEOUT`/`POOL_RECYCLE`; sync_push splits into 3 phases so DB connections are held ~70ms (not ~5s)
+- **Sync atomicity** — commit-then-promote blob invariant; temp blob preserved until second commit succeeds
+- **Self-healing SQLite index** with auto-rebuild from `.sfs` files
+- **`sfs doctor`** with 8 health checks and auto-repair
+- **`handle_errors` decorator** on all CLI commands (no raw tracebacks)
+- **Multi-provider email** (Resend, SMTP, or disabled for air-gapped)
+
+### MCP and dashboard
+
+- **MCP server** (local + remote) with 12 tools — search, context, recent, related, project context, summary, audit report, add_knowledge, update_wiki_page, list_wiki_pages, search_project_knowledge, ask_project
+- **`sfs mcp install --for <tool>`** for all 8 tools (stale registration repair, malformed config handling)
+- **Web dashboard** with light/dark mode, resume-first layout, date-grouped sessions, lineage grouping, command palette (Cmd+K), mobile nav, accessibility (focus trapping, ARIA live regions), product identity
+- **`/help` page** — MCP-first guidance, 8-tool installer with live terminal + copy button, agent prompt examples, curated CLI quick-reference
+
+### Security, compliance, and billing
+
+- **DLP / Secret Scrubbing** — 14 PHI patterns + 22 secret patterns, BLOCK/REDACT/WARN modes, server-side scan of all archive files, `sfs dlp scan/policy`, dashboard settings tab
+- **`sfs init` wizard** with auto-detection of 8 tools and optional sync setup
+- **`sfs security scan/fix`** for config permissions, API key exposure, dependency audit
+- **Security pipeline** — pip-audit, Trivy (rendered Helm chart), Bandit, Dependabot, SECURITY.md; CRITICAL/HIGH blocks the pipeline
+- **FSL licensing** with open-source core and enterprise extensions
+- **Self-hosted license lifecycle** with grace periods, admin CLI, dashboard licenses tab
+- **Server-side tier gating** — 6 tiers (free, starter, pro, team, business, enterprise), 30+ gated features
+- **Stripe billing** with org-isolated checkout, org-first webhook handling, subscription_id disambiguation
+- **Organization management** (`sfs org` commands)
+
+### Self-hosted deployment
+
+- **Helm chart** (EKS / GKE / AKS tested) with license validation, single-ingress via nginx, seed job
+- **Hardened security posture** — all containers run as non-root (UID 10001) with `readOnlyRootFilesystem: true`, `allowPrivilegeEscalation: false`, all capabilities dropped, `seccompProfile: RuntimeDefault`; PostgreSQL container mounts `emptyDir` at `/tmp` and `/var/run/postgresql` so it works with read-only root; `helm test` hook pod matches the posture
+- See [self-hosted docs](docs/self-hosted.md) for the full Security Posture section
+
+### On the roadmap
+
+- Session similarity (related-sessions ranking)
 - VS Code extension
+- Cost analytics dashboard
 
 ## Contributing
 
