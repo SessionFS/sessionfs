@@ -215,8 +215,26 @@ async def compile_project_context(
         .execution_options(synchronize_session=False)
     )
 
-    # 2. Get pending entries — only active claims (claim_class='claim', not dismissed,
-    # freshness in current/aging, not superseded)
+    # 2a. Auto-promote eligible evidence to claims so the extraction pipeline
+    # feeds the compile path. Without this, synced sessions dead-end at
+    # claim_class='evidence' and never appear in compiled views.
+    # Criteria: confidence >= 0.5, content >= 30 chars, not dismissed.
+    # Deliberately looser than the manual writeback gate (0.8/50) because
+    # deterministic extraction already filters for meaningful content.
+    await db.execute(
+        update(KnowledgeEntry)
+        .where(
+            KnowledgeEntry.project_id == project_id,
+            KnowledgeEntry.claim_class == "evidence",
+            KnowledgeEntry.dismissed == False,  # noqa: E712
+            KnowledgeEntry.confidence >= 0.5,
+            func.length(KnowledgeEntry.content) >= 30,
+        )
+        .values(claim_class="claim")
+        .execution_options(synchronize_session=False)
+    )
+
+    # 2b. Get pending entries — only active claims
     result = await db.execute(
         select(KnowledgeEntry).where(
             KnowledgeEntry.project_id == project_id,

@@ -811,11 +811,11 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         method: 'POST',
       }),
 
-    undismissEntry: (projectId: string, entryId: number) =>
-      request<KnowledgeEntry>(`/api/v1/projects/${projectId}/entries/${entryId}`, {
-        method: 'PUT',
-        body: JSON.stringify({ dismissed: false }),
-      }),
+    refreshEntry: (projectId: string, entryId: number) =>
+      request<{ id: number; freshness_class: string; last_relevant_at: string }>(
+        `/api/v1/projects/${projectId}/entries/${entryId}/refresh`,
+        { method: 'PUT' },
+      ),
 
     // Wiki pages
     listWikiPages: async (projectId: string): Promise<WikiPageListResponse> => {

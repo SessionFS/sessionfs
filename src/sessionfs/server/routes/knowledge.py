@@ -145,6 +145,7 @@ async def list_entries(
     type: str | None = Query(None, description="Filter by entry type"),
     pending: bool | None = Query(None, description="Filter by pending status"),
     search: str | None = Query(None, description="Search content (case-insensitive substring)"),
+    used_in_answer: bool = Query(False, description="Mark matched entries as used in answer (strong signal — updates last_relevant_at)"),
     limit: int = Query(50, ge=1, le=200),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -170,16 +171,30 @@ async def list_entries(
     result = await db.execute(stmt)
     entries = list(result.scalars().all())
 
-    # Track retrieval when entries are returned via search (weak signal — no last_relevant_at update)
+    # Track retrieval when entries are returned via search
     if search and entries:
         entry_ids = [e.id for e in entries]
-        await db.execute(
-            update(KnowledgeEntry)
-            .where(KnowledgeEntry.id.in_(entry_ids))
-            .values(
-                retrieved_count=KnowledgeEntry.retrieved_count + 1,
+        if used_in_answer:
+            # Strong signal: entry was used to answer a question (ask_project flow).
+            # Update last_relevant_at to keep the entry fresh.
+            now = datetime.now(timezone.utc)
+            await db.execute(
+                update(KnowledgeEntry)
+                .where(KnowledgeEntry.id.in_(entry_ids))
+                .values(
+                    used_in_answer_count=KnowledgeEntry.used_in_answer_count + 1,
+                    last_relevant_at=now,
+                )
             )
-        )
+        else:
+            # Weak signal: mere search match. Do NOT update last_relevant_at.
+            await db.execute(
+                update(KnowledgeEntry)
+                .where(KnowledgeEntry.id.in_(entry_ids))
+                .values(
+                    retrieved_count=KnowledgeEntry.retrieved_count + 1,
+                )
+            )
         await db.commit()
 
     return [
@@ -296,6 +311,24 @@ async def add_entry(
         passes_quality = False
         quality_failures.append(f"content length {len(body.content)} < 50 chars")
 
+    # Specificity gate: reject vague content that lacks concrete identifiers.
+    # Claims should reference specific things (files, functions, packages,
+    # config keys, error codes, etc.), not just describe general behavior.
+    if passes_quality:
+        words = body.content.lower().split()
+        # Heuristic: content is specific if it contains at least one of:
+        # - a path-like token (contains / or .)
+        # - a code-like token (contains _ or starts with uppercase after first word)
+        # - a version-like token (contains digits + dots)
+        has_specific = any(
+            "/" in w or "." in w or "_" in w or
+            any(c.isdigit() for c in w)
+            for w in words
+        )
+        if not has_specific and len(words) < 15:
+            passes_quality = False
+            quality_failures.append("content lacks specific identifiers (files, functions, packages, versions)")
+
     # Check claim quota: max 5 claims per session per project
     if passes_quality:
         claim_count_result = await db.execute(
@@ -403,6 +436,42 @@ async def dismiss_entry(
         superseded_by=entry.superseded_by,
         supersession_reason=getattr(entry, "supersession_reason", None),
     )
+
+
+@router.put("/{project_id}/entries/{entry_id}/refresh")
+async def refresh_entry(
+    project_id: str,
+    entry_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Mark a stale entry as 'still valid': update last_relevant_at to now
+    and recompute freshness_class to 'current'. Used by the stale review
+    queue's "Still Valid" action.
+    """
+    await _get_project_or_404(project_id, db, user.id)
+
+    result = await db.execute(
+        select(KnowledgeEntry).where(
+            KnowledgeEntry.id == entry_id,
+            KnowledgeEntry.project_id == project_id,
+        )
+    )
+    entry = result.scalar_one_or_none()
+    if not entry:
+        raise HTTPException(404, "Entry not found")
+
+    now = datetime.now(timezone.utc)
+    entry.last_relevant_at = now
+    entry.freshness_class = "current"
+    await db.commit()
+    await db.refresh(entry)
+
+    return {
+        "id": entry.id,
+        "freshness_class": entry.freshness_class,
+        "last_relevant_at": entry.last_relevant_at.isoformat() if entry.last_relevant_at else None,
+    }
 
 
 @router.post("/{project_id}/entries/dismiss-stale")
@@ -920,9 +989,33 @@ async def rebuild_project(
 
     # Step 1: Refresh freshness
     freshness_updated = await refresh_freshness_classes(project_id, db)
+
+    # Step 2: Reset compiled_at on ALL active claims so the compiler treats
+    # them as pending. Without this, compile_project_context() exits early
+    # on settled projects because all claims already have compiled_at set.
+    # This is the key difference between compile (incremental) and rebuild
+    # (full recompute).
+    await db.execute(
+        update(KnowledgeEntry)
+        .where(
+            KnowledgeEntry.project_id == project_id,
+            KnowledgeEntry.claim_class == "claim",
+            KnowledgeEntry.dismissed == False,  # noqa: E712
+            KnowledgeEntry.superseded_by.is_(None),
+        )
+        .values(compiled_at=None)
+        .execution_options(synchronize_session=False)
+    )
     await db.commit()
 
-    # Step 2: Recompile (the compiler already filters by active claims now)
+    # Step 3: Also clear the existing context doc so compile writes fresh
+    project_reset = await db.execute(select(Project).where(Project.id == project_id))
+    proj = project_reset.scalar_one_or_none()
+    if proj:
+        proj.context_document = ""
+        await db.commit()
+
+    # Step 4: Recompile from all active claims (now all pending)
     body = body or CompileRequest()
     compilation = await compile_project_context(
         project_id=project_id,

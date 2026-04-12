@@ -802,6 +802,8 @@ async def _handle_search_knowledge(args: dict) -> str:
         params = f"?search={query}&limit={limit}"
         if entry_type:
             params += f"&type={entry_type}"
+        if args.get("_used_in_answer"):
+            params += "&used_in_answer=true"
 
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(
@@ -1023,8 +1025,10 @@ async def _handle_ask_project(args: dict) -> str:
     if not isinstance(context_result, str):
         context_result = json.dumps(context_result, indent=2, default=str)
 
-    # Search knowledge entries for the question
-    search_result = await _handle_search_knowledge({"query": question, "limit": 15, "git_remote": git_remote})
+    # Search knowledge entries for the question. Pass used_in_answer=true
+    # so the server increments used_in_answer_count + updates last_relevant_at
+    # on matched entries (strong relevance signal).
+    search_result = await _handle_search_knowledge({"query": question, "limit": 15, "git_remote": git_remote, "_used_in_answer": True})
     if not isinstance(search_result, str):
         search_result = json.dumps(search_result, indent=2, default=str)
 

@@ -43,7 +43,7 @@ const { hooks, mockAddToast } = vi.hoisted(() => ({
     usePromoteEntry: vi.fn(),
     useSupersedeEntry: vi.fn(),
     useRebuildProject: vi.fn(),
-    useUndismissEntry: vi.fn(),
+    useRefreshEntry: vi.fn(),
   },
   mockAddToast: vi.fn(),
 }));
@@ -124,7 +124,7 @@ describe('ProjectDetail', () => {
     hooks.usePromoteEntry.mockReturnValue(makeMutation());
     hooks.useSupersedeEntry.mockReturnValue(makeMutation());
     hooks.useRebuildProject.mockReturnValue(makeMutation());
-    hooks.useUndismissEntry.mockReturnValue(makeMutation());
+    hooks.useRefreshEntry.mockReturnValue(makeMutation());
   });
 
   it('shows loading state while the project fetches', () => {

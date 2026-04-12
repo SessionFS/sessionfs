@@ -21,7 +21,7 @@ import {
   usePromoteEntry,
   useSupersedeEntry,
   useRebuildProject,
-  useUndismissEntry,
+  useRefreshEntry,
 } from '../hooks/useProjects';
 import { useToast } from '../hooks/useToast';
 import RelativeDate from '../components/RelativeDate';
@@ -174,7 +174,7 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
   const rebuild = useRebuildProject(projectId);
   const promote = usePromoteEntry(projectId);
   const supersede = useSupersedeEntry(projectId);
-  const undismiss = useUndismissEntry(projectId);
+  const refreshEntry = useRefreshEntry(projectId);
   const { data: health } = useProjectHealth(projectId);
   const dismissStale = useDismissStaleEntries(projectId);
   const { addToast } = useToast();
@@ -228,7 +228,7 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
   }
 
   function handleStillValid(entry: KnowledgeEntry) {
-    undismiss.mutate(entry.id, {
+    refreshEntry.mutate(entry.id, {
       onSuccess: () => addToast('success', `Entry ${entry.id} marked as still valid.`),
       onError: (err) => addToast('error', `Update failed: ${String(err)}`),
     });
@@ -383,7 +383,7 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
                   <div className="flex items-center gap-1 shrink-0">
                     <button
                       onClick={() => handleStillValid(entry)}
-                      disabled={undismiss.isPending}
+                      disabled={refreshEntry.isPending}
                       className="text-xs text-[var(--brand)] hover:underline px-2 py-1"
                     >
                       Still Valid

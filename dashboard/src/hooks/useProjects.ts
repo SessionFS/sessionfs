@@ -230,12 +230,12 @@ export function useRebuildProject(projectId: string | undefined) {
   });
 }
 
-export function useUndismissEntry(projectId: string | undefined) {
+export function useRefreshEntry(projectId: string | undefined) {
   const { auth } = useAuth();
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (entryId: number) =>
-      auth!.client.undismissEntry(projectId!, entryId),
+      auth!.client.refreshEntry(projectId!, entryId),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['knowledgeEntries', projectId] });
       void queryClient.invalidateQueries({ queryKey: ['projectHealth', projectId] });

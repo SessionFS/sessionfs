@@ -62,7 +62,7 @@ class ProjectResponse(BaseModel):
     session_count: int = 0
     auto_narrative: bool = False
     kb_retention_days: int = 180
-    kb_max_context_words: int = 8000
+    kb_max_context_words: int = 2000
     kb_section_page_limit: int = 30
 
 
