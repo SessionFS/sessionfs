@@ -39,6 +39,7 @@ const { hooks, mockAddToast } = vi.hoisted(() => ({
     useRegenerateWikiPage: vi.fn(),
     useUpdateProjectSettings: vi.fn(),
     useProjectHealth: vi.fn(),
+    useDismissStaleEntries: vi.fn(),
   },
   mockAddToast: vi.fn(),
 }));
@@ -115,6 +116,7 @@ describe('ProjectDetail', () => {
     hooks.useRegenerateWikiPage.mockReturnValue(makeMutation());
     hooks.useUpdateProjectSettings.mockReturnValue(makeMutation());
     hooks.useProjectHealth.mockReturnValue({ data: null, isLoading: false });
+    hooks.useDismissStaleEntries.mockReturnValue(makeMutation());
   });
 
   it('shows loading state while the project fetches', () => {

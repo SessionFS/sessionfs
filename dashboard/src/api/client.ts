@@ -779,6 +779,12 @@ export function createApiClient(baseUrl: string, apiKey: string) {
     getProjectHealth: (projectId: string) =>
       request<ProjectHealthResponse>(`/api/v1/projects/${projectId}/health`),
 
+    dismissStaleEntries: (projectId: string) =>
+      request<{ dismissed_count: number }>(
+        `/api/v1/projects/${projectId}/entries/dismiss-stale`,
+        { method: 'POST' },
+      ),
+
     // Wiki pages
     listWikiPages: async (projectId: string): Promise<WikiPageListResponse> => {
       const resp = await request<WikiPageListResponse | WikiPage[]>(

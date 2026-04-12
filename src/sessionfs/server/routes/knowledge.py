@@ -287,6 +287,41 @@ async def dismiss_entry(
     )
 
 
+@router.post("/{project_id}/entries/dismiss-stale")
+async def dismiss_stale_entries(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Bulk-dismiss stale entries (> 90 days unreferenced + low confidence).
+
+    Returns the count of entries dismissed so the dashboard can update its
+    health banner without a full page refresh.
+    """
+    await _get_project_or_404(project_id, db, user.id)
+
+    from sqlalchemy import or_
+    ninety_days_ago = datetime.now(timezone.utc) - timedelta(days=90)
+
+    result = await db.execute(
+        update(KnowledgeEntry)
+        .where(
+            KnowledgeEntry.project_id == project_id,
+            KnowledgeEntry.dismissed == False,  # noqa: E712
+            or_(
+                KnowledgeEntry.last_relevant_at.is_(None) & (KnowledgeEntry.created_at < ninety_days_ago),
+                KnowledgeEntry.last_relevant_at < ninety_days_ago,
+            ),
+        )
+        .values(dismissed=True)
+        .execution_options(synchronize_session=False)
+    )
+    count = result.rowcount
+    await db.commit()
+
+    return {"dismissed_count": count}
+
+
 @router.post("/{project_id}/compile", response_model=CompilationResponse)
 async def compile_context(
     project_id: str,

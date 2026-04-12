@@ -17,6 +17,7 @@ import {
   useRegenerateWikiPage,
   useUpdateProjectSettings,
   useProjectHealth,
+  useDismissStaleEntries,
 } from '../hooks/useProjects';
 import { useToast } from '../hooks/useToast';
 import RelativeDate from '../components/RelativeDate';
@@ -67,6 +68,7 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
   const dismissEntry = useDismissEntry(projectId);
   const compile = useCompileProject(projectId);
   const { data: health } = useProjectHealth(projectId);
+  const dismissStale = useDismissStaleEntries(projectId);
   const { addToast } = useToast();
 
   function handleCompile() {
@@ -129,6 +131,19 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
                 </li>
               ))}
             </ul>
+          )}
+          {health.stale_entry_count > 0 && (
+            <button
+              onClick={() => dismissStale.mutate(undefined, {
+                onSuccess: (result) => addToast('success', `Dismissed ${result.dismissed_count} stale entries.`),
+                onError: (err) => addToast('error', `Failed to dismiss: ${String(err)}`),
+              })}
+              disabled={dismissStale.isPending}
+              className="mt-2 px-3 py-1.5 text-xs font-medium border rounded-md transition-colors hover:bg-[var(--surface-hover)]"
+              style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
+            >
+              {dismissStale.isPending ? 'Dismissing...' : `Dismiss ${health.stale_entry_count} stale`}
+            </button>
           )}
         </div>
       )}
