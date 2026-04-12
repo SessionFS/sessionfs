@@ -168,6 +168,17 @@ async def compile_project_context(
                 base_url=base_url,
             )
             context_after = context_after.strip()
+            # LLM may ignore the budget hint in the prompt and return an
+            # over-budget document. Enforce the hard cap here so the word
+            # budget matches what _simple_compile guarantees — reuse the
+            # same trim logic for consistency.
+            if len(context_after.split()) > max_context_words:
+                trimmed_lines = _trim_to_budget(
+                    context_after.splitlines(), max_context_words
+                )
+                context_after = "\n".join(trimmed_lines)
+                if not context_after.endswith("\n"):
+                    context_after += "\n"
         except Exception:
             logger.warning("LLM compilation failed, falling back to simple compile", exc_info=True)
             context_after = _simple_compile(context_before, grouped, entries=pending, max_context_words=max_context_words)
