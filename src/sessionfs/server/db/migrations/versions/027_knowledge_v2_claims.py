@@ -78,6 +78,16 @@ def upgrade() -> None:
         "UPDATE knowledge_entries SET claim_class = 'note' WHERE dismissed = true"
     )
 
+    # Backfill: existing projects still carry kb_max_context_words = 8000
+    # from migration 025. The v2 default is 2000 (active-truth-per-token
+    # principle — smaller budgets produce sharper context docs). Update
+    # projects that still have the old default so upgraded instances get
+    # the new behavior without manual per-project reconfiguration.
+    op.execute(
+        "UPDATE projects SET kb_max_context_words = 2000 "
+        "WHERE kb_max_context_words = 8000 OR kb_max_context_words IS NULL"
+    )
+
 
 def downgrade() -> None:
     op.drop_index("idx_ke_entity", table_name="knowledge_entries")

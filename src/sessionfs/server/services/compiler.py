@@ -10,7 +10,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 
 from sessionfs.server.db.models import (
     ContextCompilation,
@@ -407,6 +407,38 @@ async def compile_project_context(
                 auto_generated=True,
             ))
 
+    # 9. Delete section pages whose entry type has zero active claims.
+    # The loop above only upserts for types present in the current batch.
+    # If a type drops to zero active claims, its old section page lingers.
+    all_section_slugs = set(slug_map.values())
+    active_slugs = set(slug_map.get(t, t) for t in grouped.keys())
+    dead_slugs = all_section_slugs - active_slugs
+
+    if dead_slugs:
+        for slug in dead_slugs:
+            # Verify the type truly has zero active claims (not just zero pending)
+            active_check = await db.execute(
+                select(func.count(KnowledgeEntry.id)).where(
+                    KnowledgeEntry.project_id == project_id,
+                    KnowledgeEntry.entry_type == next(
+                        (k for k, v in slug_map.items() if v == slug), ""
+                    ),
+                    KnowledgeEntry.dismissed == False,  # noqa: E712
+                    KnowledgeEntry.claim_class == "claim",
+                    KnowledgeEntry.freshness_class.in_(["current", "aging"]),
+                    KnowledgeEntry.superseded_by.is_(None),
+                )
+            )
+            if (active_check.scalar() or 0) == 0:
+                await db.execute(
+                    delete(KnowledgePage).where(
+                        KnowledgePage.project_id == project_id,
+                        KnowledgePage.slug == slug,
+                        KnowledgePage.page_type == "section",
+                    )
+                )
+                logger.info("Removed empty section page %s for project %s", slug, project_id)
+
     await db.commit()
 
     return compilation
@@ -416,7 +448,7 @@ def _simple_compile(
     context: str,
     grouped: dict[str, list[str]],
     entries: list | None = None,
-    max_context_words: int = 8000,
+    max_context_words: int = 2000,
 ) -> str:
     """Simple append-based compilation without LLM.
 
