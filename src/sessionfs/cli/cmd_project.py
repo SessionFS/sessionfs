@@ -812,3 +812,46 @@ def project_set(
 
     for key, value in settings.items():
         console.print(f"[bold]{key}[/bold] = {value}")
+
+
+@project_app.command("rebuild")
+def project_rebuild() -> None:
+    """Rebuild project context from scratch using only active claims.
+
+    Refreshes freshness classes, recompiles the context document,
+    and regenerates section and concept pages.
+    """
+    git_remote = _get_git_remote()
+    if not git_remote:
+        err_console.print("[red]Not a git repository.[/red]")
+        raise typer.Exit(1)
+
+    normalized = _normalize_remote(git_remote)
+    api_url, api_key = _get_project_client()
+
+    result = asyncio.run(_api_request("GET", f"/api/v1/projects/{normalized}", api_url, api_key))
+    if result.get("_status") == 404:
+        err_console.print("[yellow]No project context found. Run 'sfs project init' first.[/yellow]")
+        raise typer.Exit(1)
+
+    project_id = result["id"]
+
+    console.print("[dim]Rebuilding project context...[/dim]")
+
+    rebuild_result = asyncio.run(_api_request(
+        "POST", f"/api/v1/projects/{project_id}/rebuild",
+        api_url, api_key,
+    ))
+
+    freshness = rebuild_result.get("freshness_updated", 0)
+    compiled = rebuild_result.get("entries_compiled", 0)
+    words = rebuild_result.get("context_words", 0)
+    sections = rebuild_result.get("section_pages_updated", 0)
+    concepts = rebuild_result.get("concept_pages_updated", 0)
+
+    console.print("Rebuild complete:")
+    console.print(f"  Freshness updated: {freshness} entries")
+    console.print(f"  Entries compiled: {compiled}")
+    console.print(f"  Context document: {words} words")
+    console.print(f"  Section pages: {sections}")
+    console.print(f"  Concept pages: {concepts}")

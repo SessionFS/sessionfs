@@ -198,8 +198,8 @@ class TestCompileRelevanceTracking:
         assert refreshed.last_relevant_at is not None, (
             "compile should stamp last_relevant_at on compiled entries"
         )
-        assert (refreshed.reference_count or 0) >= 1, (
-            "compile should increment reference_count"
+        assert (refreshed.compiled_count or 0) >= 1, (
+            "compile should increment compiled_count (v2 replaces reference_count)"
         )
 
 

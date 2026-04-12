@@ -478,6 +478,18 @@ class KnowledgeEntry(Base):
     reference_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     superseded_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # Knowledge Base v2 fields
+    claim_class: Mapped[str] = mapped_column(String(20), nullable=False, default="claim", server_default="claim")
+    entity_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    entity_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    freshness_class: Mapped[str] = mapped_column(String(20), nullable=False, default="current", server_default="current")
+    supersession_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    promoted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    promoted_by: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    retrieved_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    used_in_answer_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    compiled_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
 
 class ContextCompilation(Base):
     __tablename__ = "context_compilations"

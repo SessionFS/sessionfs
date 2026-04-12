@@ -40,6 +40,10 @@ const { hooks, mockAddToast } = vi.hoisted(() => ({
     useUpdateProjectSettings: vi.fn(),
     useProjectHealth: vi.fn(),
     useDismissStaleEntries: vi.fn(),
+    usePromoteEntry: vi.fn(),
+    useSupersedeEntry: vi.fn(),
+    useRebuildProject: vi.fn(),
+    useUndismissEntry: vi.fn(),
   },
   mockAddToast: vi.fn(),
 }));
@@ -117,6 +121,10 @@ describe('ProjectDetail', () => {
     hooks.useUpdateProjectSettings.mockReturnValue(makeMutation());
     hooks.useProjectHealth.mockReturnValue({ data: null, isLoading: false });
     hooks.useDismissStaleEntries.mockReturnValue(makeMutation());
+    hooks.usePromoteEntry.mockReturnValue(makeMutation());
+    hooks.useSupersedeEntry.mockReturnValue(makeMutation());
+    hooks.useRebuildProject.mockReturnValue(makeMutation());
+    hooks.useUndismissEntry.mockReturnValue(makeMutation());
   });
 
   it('shows loading state while the project fetches', () => {

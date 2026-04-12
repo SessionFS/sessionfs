@@ -128,7 +128,7 @@ async def extract_knowledge_entries(
 
     entries: list[KnowledgeEntry] = []
 
-    # Files modified -> pattern entries
+    # Files modified -> pattern entries (evidence — machine-extracted)
     for file_path in summary.files_modified:
         entry = KnowledgeEntry(
             project_id=project_id,
@@ -138,10 +138,11 @@ async def extract_knowledge_entries(
             content=f"File created/modified: {file_path}",
             confidence=0.3,
             source_context=f"Session {session_id} modified {file_path}",
+            claim_class="evidence",
         )
         entries.append(entry)
 
-    # Tests failing -> bug entries
+    # Tests failing -> bug entries (evidence — machine-extracted)
     if summary.tests_failed > 0:
         errors_text = "; ".join(summary.errors_encountered[:3]) if summary.errors_encountered else "unknown"
         entry = KnowledgeEntry(
@@ -152,10 +153,11 @@ async def extract_knowledge_entries(
             content=f"{summary.tests_failed} test(s) failing: {errors_text}",
             confidence=0.7,
             source_context=f"Session {session_id}: {summary.tests_run} tests run, {summary.tests_failed} failed",
+            claim_class="evidence",
         )
         entries.append(entry)
 
-    # Packages installed -> dependency entries
+    # Packages installed -> dependency entries (evidence — machine-extracted)
     for package in summary.packages_installed:
         entry = KnowledgeEntry(
             project_id=project_id,
@@ -165,10 +167,11 @@ async def extract_knowledge_entries(
             content=f"Package installed: {package}",
             confidence=0.9,
             source_context=f"Session {session_id} installed {package}",
+            claim_class="evidence",
         )
         entries.append(entry)
 
-    # key_decisions from narrative -> decision entries
+    # key_decisions from narrative -> decision entries (evidence — machine-extracted)
     if summary.key_decisions:
         for decision in summary.key_decisions:
             entry = KnowledgeEntry(
@@ -179,10 +182,11 @@ async def extract_knowledge_entries(
                 content=decision,
                 confidence=0.8,
                 source_context=f"Session {session_id} narrative key_decisions",
+                claim_class="evidence",
             )
             entries.append(entry)
 
-    # open_issues from narrative -> bug entries
+    # open_issues from narrative -> bug entries (evidence — machine-extracted)
     if summary.open_issues:
         for issue in summary.open_issues:
             entry = KnowledgeEntry(
@@ -193,6 +197,7 @@ async def extract_knowledge_entries(
                 content=issue,
                 confidence=0.7,
                 source_context=f"Session {session_id} narrative open_issues",
+                claim_class="evidence",
             )
             entries.append(entry)
 
@@ -326,6 +331,7 @@ async def extract_knowledge_with_llm(
                 content=content,
                 confidence=min(max(confidence, 0.0), 1.0),
                 source_context=f"LLM-extracted from session {session_id}",
+                claim_class="evidence",
             ))
 
         # Semantic dedup: exact-match for this session, word-overlap

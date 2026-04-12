@@ -31,6 +31,17 @@ class KnowledgeEntryResponse(BaseModel):
     created_at: datetime
     compiled_at: datetime | None = None
     dismissed: bool = False
+    claim_class: str = "claim"
+    entity_ref: str | None = None
+    entity_type: str | None = None
+    freshness_class: str = "current"
+    superseded_by: int | None = None
+    supersession_reason: str | None = None
+    promoted_at: datetime | None = None
+    promoted_by: str | None = None
+    retrieved_count: int = 0
+    used_in_answer_count: int = 0
+    compiled_count: int = 0
 
 
 class CompilationResponse(BaseModel):
@@ -56,6 +67,30 @@ class AddEntryRequest(BaseModel):
     session_id: str | None = None
     confidence: float = 1.0
     source_context: str | None = None
+    entity_ref: str | None = None
+    entity_type: str | None = None
+    force_claim: bool = False
+
+
+class AddEntryResponse(BaseModel):
+    """Extended response for add_entry with classification feedback."""
+    id: int
+    project_id: str
+    session_id: str
+    user_id: str
+    entry_type: str
+    content: str
+    confidence: float
+    source_context: str | None = None
+    created_at: datetime
+    compiled_at: datetime | None = None
+    dismissed: bool = False
+    claim_class: str = "note"
+    entity_ref: str | None = None
+    entity_type: str | None = None
+    freshness_class: str = "current"
+    classification_reason: str = ""
+    tip: str | None = None
 
 
 class DismissRequest(BaseModel):
@@ -135,15 +170,14 @@ async def list_entries(
     result = await db.execute(stmt)
     entries = list(result.scalars().all())
 
-    # Track relevance when entries are returned via search
+    # Track retrieval when entries are returned via search (weak signal — no last_relevant_at update)
     if search and entries:
         entry_ids = [e.id for e in entries]
         await db.execute(
             update(KnowledgeEntry)
             .where(KnowledgeEntry.id.in_(entry_ids))
             .values(
-                last_relevant_at=datetime.now(timezone.utc),
-                reference_count=KnowledgeEntry.reference_count + 1,
+                retrieved_count=KnowledgeEntry.retrieved_count + 1,
             )
         )
         await db.commit()
@@ -161,25 +195,45 @@ async def list_entries(
             created_at=e.created_at,
             compiled_at=e.compiled_at,
             dismissed=e.dismissed,
+            claim_class=getattr(e, "claim_class", "claim"),
+            entity_ref=getattr(e, "entity_ref", None),
+            entity_type=getattr(e, "entity_type", None),
+            freshness_class=getattr(e, "freshness_class", "current"),
+            superseded_by=e.superseded_by,
+            supersession_reason=getattr(e, "supersession_reason", None),
+            promoted_at=getattr(e, "promoted_at", None),
+            promoted_by=getattr(e, "promoted_by", None),
+            retrieved_count=getattr(e, "retrieved_count", 0),
+            used_in_answer_count=getattr(e, "used_in_answer_count", 0),
+            compiled_count=getattr(e, "compiled_count", 0),
         )
         for e in entries
     ]
 
 
-@router.post("/{project_id}/entries/add", response_model=KnowledgeEntryResponse, status_code=201)
+@router.post("/{project_id}/entries/add", response_model=AddEntryResponse, status_code=201)
 async def add_entry(
     project_id: str,
     body: AddEntryRequest,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> KnowledgeEntryResponse:
-    """Create a single knowledge entry (used by MCP tools and external clients)."""
+) -> AddEntryResponse:
+    """Create a single knowledge entry (used by MCP tools and external clients).
+
+    Entries default to claim_class='note'. Auto-promoted to 'claim' when ALL of:
+    - confidence >= 0.8
+    - content >= 50 chars
+    - passes near-duplicate check
+    - under claim quota (5 claims per session per project)
+    - under total quota (20 entries per session per project per hour)
+
+    Set force_claim=True to attempt claim classification (still enforces quality gates).
+    """
     await _get_project_or_404(project_id, db, user.id)
 
     valid_types = {"decision", "pattern", "discovery", "convention", "bug", "dependency"}
     if body.entry_type not in valid_types:
-        from fastapi import HTTPException as _HTTPException
-        raise _HTTPException(422, f"Invalid entry_type. Must be one of: {', '.join(sorted(valid_types))}")
+        raise HTTPException(422, f"Invalid entry_type. Must be one of: {', '.join(sorted(valid_types))}")
 
     # Gate 1: Minimum content length
     if len(body.content) < 20:
@@ -210,14 +264,63 @@ async def add_entry(
         .order_by(KnowledgeEntry.created_at.desc())
         .limit(50)
     )
-    for (existing_content,) in recent_result.all():
+    existing_contents = [row[0] for row in recent_result.all()]
+    is_duplicate = False
+    for existing_content in existing_contents:
         if _word_overlap(body.content, existing_content) > 0.85:
-            raise HTTPException(409, "Similar entry already exists")
+            is_duplicate = True
+            break
+
+    if is_duplicate:
+        raise HTTPException(409, "Similar entry already exists")
 
     # Gate 4: Lower confidence for cli-ask/manual sources
     confidence = body.confidence
     if session_id in ("cli-ask", "manual"):
         confidence = min(confidence, 0.7)
+
+    # Claim classification: default to 'note', promote to 'claim' if quality gates pass
+    claim_class = "note"
+    classification_reason = "Default classification as note"
+    tip: str | None = None
+
+    # Check claim promotion gates
+    passes_quality = True
+    quality_failures: list[str] = []
+
+    if confidence < 0.8:
+        passes_quality = False
+        quality_failures.append(f"confidence {confidence:.1f} < 0.8")
+
+    if len(body.content) < 50:
+        passes_quality = False
+        quality_failures.append(f"content length {len(body.content)} < 50 chars")
+
+    # Check claim quota: max 5 claims per session per project
+    if passes_quality:
+        claim_count_result = await db.execute(
+            select(func.count(KnowledgeEntry.id)).where(
+                KnowledgeEntry.project_id == project_id,
+                KnowledgeEntry.session_id == session_id,
+                KnowledgeEntry.claim_class == "claim",
+            )
+        )
+        claim_count = claim_count_result.scalar() or 0
+        if claim_count >= 5:
+            passes_quality = False
+            quality_failures.append(f"claim quota reached ({claim_count}/5 per session)")
+
+    if passes_quality:
+        claim_class = "claim"
+        classification_reason = "Auto-promoted: high confidence, sufficient content, unique"
+    else:
+        classification_reason = f"Classified as note: {'; '.join(quality_failures)}"
+        if body.force_claim:
+            tip = f"force_claim requested but quality gates not met: {'; '.join(quality_failures)}"
+        elif confidence >= 0.8 and len(body.content) < 50:
+            tip = "Expand content to 50+ characters to qualify as a claim"
+        elif len(body.content) >= 50 and confidence < 0.8:
+            tip = "Increase confidence to 0.8+ to qualify as a claim"
 
     entry = KnowledgeEntry(
         project_id=project_id,
@@ -227,12 +330,15 @@ async def add_entry(
         content=body.content,
         confidence=confidence,
         source_context=body.source_context,
+        claim_class=claim_class,
+        entity_ref=body.entity_ref,
+        entity_type=body.entity_type,
     )
     db.add(entry)
     await db.commit()
     await db.refresh(entry)
 
-    return KnowledgeEntryResponse(
+    return AddEntryResponse(
         id=entry.id,
         project_id=entry.project_id,
         session_id=entry.session_id,
@@ -244,6 +350,12 @@ async def add_entry(
         created_at=entry.created_at,
         compiled_at=entry.compiled_at,
         dismissed=entry.dismissed,
+        claim_class=entry.claim_class,
+        entity_ref=entry.entity_ref,
+        entity_type=entry.entity_type,
+        freshness_class=entry.freshness_class,
+        classification_reason=classification_reason,
+        tip=tip,
     )
 
 
@@ -284,6 +396,12 @@ async def dismiss_entry(
         created_at=entry.created_at,
         compiled_at=entry.compiled_at,
         dismissed=entry.dismissed,
+        claim_class=getattr(entry, "claim_class", "claim"),
+        entity_ref=getattr(entry, "entity_ref", None),
+        entity_type=getattr(entry, "entity_type", None),
+        freshness_class=getattr(entry, "freshness_class", "current"),
+        superseded_by=entry.superseded_by,
+        supersession_reason=getattr(entry, "supersession_reason", None),
     )
 
 
@@ -609,4 +727,251 @@ async def project_health(
         stale_entry_count=stale_entry_count,
         low_confidence_count=low_confidence_count,
         decayed_count=decayed_count,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Supersession
+# ---------------------------------------------------------------------------
+
+
+class SupersedeRequest(BaseModel):
+    superseding_id: int
+    reason: str
+
+
+@router.put("/{project_id}/entries/{entry_id}/supersede")
+async def supersede_entry(
+    project_id: str,
+    entry_id: int,
+    body: SupersedeRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Mark an entry as superseded by another entry."""
+    from sessionfs.server.db.models import KnowledgeLink
+
+    await _get_project_or_404(project_id, db, user.id)
+
+    # Validate old entry
+    old_result = await db.execute(
+        select(KnowledgeEntry).where(
+            KnowledgeEntry.id == entry_id,
+            KnowledgeEntry.project_id == project_id,
+        )
+    )
+    old_entry = old_result.scalar_one_or_none()
+    if not old_entry:
+        raise HTTPException(404, "Entry not found")
+
+    # Validate new entry
+    new_result = await db.execute(
+        select(KnowledgeEntry).where(
+            KnowledgeEntry.id == body.superseding_id,
+            KnowledgeEntry.project_id == project_id,
+        )
+    )
+    new_entry = new_result.scalar_one_or_none()
+    if not new_entry:
+        raise HTTPException(404, "Superseding entry not found")
+
+    if entry_id == body.superseding_id:
+        raise HTTPException(422, "An entry cannot supersede itself")
+
+    # Set supersession fields on old entry
+    old_entry.superseded_by = body.superseding_id
+    old_entry.supersession_reason = body.reason
+    old_entry.freshness_class = "superseded"
+
+    # Create a 'supersedes' link
+    link = KnowledgeLink(
+        project_id=project_id,
+        source_type="entry",
+        source_id=str(body.superseding_id),
+        target_type="entry",
+        target_id=str(entry_id),
+        link_type="supersedes",
+        confidence=1.0,
+    )
+    db.add(link)
+    await db.commit()
+
+    return {
+        "superseded_entry_id": entry_id,
+        "superseding_entry_id": body.superseding_id,
+        "reason": body.reason,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Promotion (note -> claim)
+# ---------------------------------------------------------------------------
+
+
+@router.put("/{project_id}/entries/{entry_id}/promote", response_model=KnowledgeEntryResponse)
+async def promote_entry(
+    project_id: str,
+    entry_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> KnowledgeEntryResponse:
+    """Promote a note to claim if quality gates pass."""
+    await _get_project_or_404(project_id, db, user.id)
+
+    result = await db.execute(
+        select(KnowledgeEntry).where(
+            KnowledgeEntry.id == entry_id,
+            KnowledgeEntry.project_id == project_id,
+        )
+    )
+    entry = result.scalar_one_or_none()
+    if not entry:
+        raise HTTPException(404, "Entry not found")
+
+    if getattr(entry, "claim_class", "note") == "claim":
+        raise HTTPException(409, "Entry is already a claim")
+
+    # Quality gates
+    failures: list[str] = []
+    if entry.confidence < 0.8:
+        failures.append(f"confidence {entry.confidence:.1f} < 0.8")
+    if len(entry.content) < 50:
+        failures.append(f"content length {len(entry.content)} < 50 chars")
+
+    # Near-duplicate check
+    recent_result = await db.execute(
+        select(KnowledgeEntry.content)
+        .where(
+            KnowledgeEntry.project_id == project_id,
+            KnowledgeEntry.claim_class == "claim",
+            KnowledgeEntry.dismissed == False,  # noqa: E712
+        )
+        .order_by(KnowledgeEntry.created_at.desc())
+        .limit(50)
+    )
+    for (existing_content,) in recent_result.all():
+        if _word_overlap(entry.content, existing_content) > 0.85:
+            failures.append("near-duplicate of existing claim")
+            break
+
+    if failures:
+        raise HTTPException(
+            422, f"Cannot promote: {'; '.join(failures)}"
+        )
+
+    now = datetime.now(timezone.utc)
+    entry.claim_class = "claim"
+    entry.promoted_at = now
+    entry.promoted_by = user.id
+    await db.commit()
+    await db.refresh(entry)
+
+    return KnowledgeEntryResponse(
+        id=entry.id,
+        project_id=entry.project_id,
+        session_id=entry.session_id,
+        user_id=entry.user_id,
+        entry_type=entry.entry_type,
+        content=entry.content,
+        confidence=entry.confidence,
+        source_context=entry.source_context,
+        created_at=entry.created_at,
+        compiled_at=entry.compiled_at,
+        dismissed=entry.dismissed,
+        claim_class=entry.claim_class,
+        entity_ref=getattr(entry, "entity_ref", None),
+        entity_type=getattr(entry, "entity_type", None),
+        freshness_class=getattr(entry, "freshness_class", "current"),
+        superseded_by=entry.superseded_by,
+        promoted_at=entry.promoted_at,
+        promoted_by=entry.promoted_by,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Rebuild
+# ---------------------------------------------------------------------------
+
+
+class RebuildResponse(BaseModel):
+    project_id: str
+    freshness_updated: int
+    entries_compiled: int
+    context_words: int
+    section_pages_updated: int
+    concept_pages_updated: int
+
+
+@router.post("/{project_id}/rebuild", response_model=RebuildResponse)
+async def rebuild_project(
+    project_id: str,
+    body: CompileRequest | None = None,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> RebuildResponse:
+    """Idempotent rebuild: refresh freshness, recompile context + pages from active claims."""
+    await _get_project_or_404(project_id, db, user.id)
+
+    from sessionfs.server.services.freshness import refresh_freshness_classes
+    from sessionfs.server.services.compiler import (
+        auto_generate_concepts,
+        compile_project_context,
+    )
+
+    # Step 1: Refresh freshness
+    freshness_updated = await refresh_freshness_classes(project_id, db)
+    await db.commit()
+
+    # Step 2: Recompile (the compiler already filters by active claims now)
+    body = body or CompileRequest()
+    compilation = await compile_project_context(
+        project_id=project_id,
+        user_id=user.id,
+        db=db,
+        api_key=body.llm_api_key,
+        model=body.model or "claude-sonnet-4",
+        provider=body.provider,
+        base_url=body.base_url,
+    )
+
+    entries_compiled = compilation.entries_compiled if compilation else 0
+
+    # Get updated context word count
+    project_result = await db.execute(select(Project).where(Project.id == project_id))
+    project = project_result.scalar_one_or_none()
+    context_words = len((project.context_document or "").split()) if project else 0
+
+    # Step 3: Regenerate concept pages
+    concept_count = 0
+    try:
+        concepts = await auto_generate_concepts(
+            project_id=project_id,
+            user_id=user.id,
+            db=db,
+            api_key=body.llm_api_key,
+            model=body.model or "claude-sonnet-4",
+            provider=body.provider,
+            base_url=body.base_url,
+        )
+        concept_count = len(concepts)
+    except Exception:
+        logger.warning("Concept generation during rebuild failed (non-fatal)", exc_info=True)
+
+    # Count section pages that were touched
+    from sessionfs.server.db.models import KnowledgePage
+    section_result = await db.execute(
+        select(func.count(KnowledgePage.id)).where(
+            KnowledgePage.project_id == project_id,
+            KnowledgePage.page_type == "section",
+        )
+    )
+    section_count = section_result.scalar() or 0
+
+    return RebuildResponse(
+        project_id=project_id,
+        freshness_updated=freshness_updated,
+        entries_compiled=entries_compiled,
+        context_words=context_words,
+        section_pages_updated=section_count,
+        concept_pages_updated=concept_count,
     )

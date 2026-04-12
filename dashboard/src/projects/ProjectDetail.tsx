@@ -18,6 +18,10 @@ import {
   useUpdateProjectSettings,
   useProjectHealth,
   useDismissStaleEntries,
+  usePromoteEntry,
+  useSupersedeEntry,
+  useRebuildProject,
+  useUndismissEntry,
 } from '../hooks/useProjects';
 import { useToast } from '../hooks/useToast';
 import RelativeDate from '../components/RelativeDate';
@@ -54,12 +58,112 @@ function EntryTypeBadge({ type }: { type: string }) {
   );
 }
 
+const CLAIM_CLASS_STYLES: Record<string, { bg: string; text: string; border: string; outline: boolean }> = {
+  claim: { bg: 'var(--brand)', text: '#fff', border: 'var(--brand)', outline: false },
+  note: { bg: 'transparent', text: 'var(--text-tertiary)', border: 'var(--border)', outline: true },
+  evidence: { bg: 'transparent', text: '#3b82f6', border: 'rgba(59,130,246,0.4)', outline: true },
+};
+
+function ClaimClassBadge({ claimClass }: { claimClass: string }) {
+  const style = CLAIM_CLASS_STYLES[claimClass] || CLAIM_CLASS_STYLES.note;
+  return (
+    <span
+      className="inline-block rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
+      style={{
+        backgroundColor: style.outline ? 'transparent' : style.bg,
+        color: style.text,
+        border: `1px solid ${style.border}`,
+      }}
+    >
+      {claimClass}
+    </span>
+  );
+}
+
+const FRESHNESS_DOT_COLORS: Record<string, string> = {
+  current: '#22c55e',
+  aging: '#eab308',
+  stale: '#ef4444',
+  superseded: 'var(--text-tertiary)',
+};
+
+function FreshnessDot({ freshnessClass }: { freshnessClass: string }) {
+  const color = FRESHNESS_DOT_COLORS[freshnessClass] || 'var(--text-tertiary)';
+  return (
+    <span
+      className="inline-block w-2 h-2 rounded-full shrink-0"
+      style={{ backgroundColor: color }}
+      title={freshnessClass}
+    />
+  );
+}
+
+function SupersedeDialog({
+  entryId,
+  onConfirm,
+  onCancel,
+  isPending,
+}: {
+  entryId: number;
+  onConfirm: (supersedingId: number, reason: string) => void;
+  onCancel: () => void;
+  isPending: boolean;
+}) {
+  const [supersedingId, setSupersedingId] = useState('');
+  const [reason, setReason] = useState('');
+  return (
+    <div className="mt-2 p-3 rounded-lg border border-[var(--border)] bg-[var(--bg-primary)]">
+      <p className="text-xs font-medium text-[var(--text-secondary)] mb-2">
+        Supersede entry #{entryId}
+      </p>
+      <div className="flex gap-2 mb-2">
+        <input
+          type="number"
+          value={supersedingId}
+          onChange={(e) => setSupersedingId(e.target.value)}
+          placeholder="Superseding entry ID"
+          className="flex-1 px-2 py-1 text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)] placeholder:text-[var(--text-tertiary)]"
+        />
+      </div>
+      <input
+        value={reason}
+        onChange={(e) => setReason(e.target.value)}
+        placeholder="Reason for supersession"
+        className="w-full px-2 py-1 text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)] placeholder:text-[var(--text-tertiary)] mb-2"
+      />
+      <div className="flex gap-2 justify-end">
+        <button
+          onClick={onCancel}
+          className="text-xs text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] px-2 py-1"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={() => {
+            const id = parseInt(supersedingId, 10);
+            if (!id || !reason.trim()) return;
+            onConfirm(id, reason.trim());
+          }}
+          disabled={isPending || !supersedingId || !reason.trim()}
+          className="text-xs font-medium text-white bg-[var(--brand)] px-3 py-1 rounded hover:bg-[var(--brand-hover)] transition-colors disabled:opacity-50"
+        >
+          {isPending ? 'Saving...' : 'Confirm'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ------------------------------------------------------------------
 // Knowledge Entries Tab
 // ------------------------------------------------------------------
 function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
   const [pendingOnly, setPendingOnly] = useState(false);
   const [typeFilter, setTypeFilter] = useState<string>('');
+  const [claimFilter, setClaimFilter] = useState<string>('');
+  const [freshnessFilter, setFreshnessFilter] = useState<string>('');
+  const [supersedeTarget, setSupersedeTarget] = useState<number | null>(null);
+  const [staleQueueOpen, setStaleQueueOpen] = useState(true);
   const { data, isLoading } = useKnowledgeEntries(projectId, {
     pending: pendingOnly || undefined,
     type: typeFilter || undefined,
@@ -67,6 +171,10 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
   });
   const dismissEntry = useDismissEntry(projectId);
   const compile = useCompileProject(projectId);
+  const rebuild = useRebuildProject(projectId);
+  const promote = usePromoteEntry(projectId);
+  const supersede = useSupersedeEntry(projectId);
+  const undismiss = useUndismissEntry(projectId);
   const { data: health } = useProjectHealth(projectId);
   const dismissStale = useDismissStaleEntries(projectId);
   const { addToast } = useToast();
@@ -85,6 +193,13 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
     });
   }
 
+  function handleRebuild() {
+    rebuild.mutate(undefined, {
+      onSuccess: () => addToast('success', 'Full rebuild completed.'),
+      onError: (err) => addToast('error', `Rebuild failed: ${String(err)}`),
+    });
+  }
+
   function handleDismiss(entry: KnowledgeEntry) {
     dismissEntry.mutate(entry.id, {
       onSuccess: () => addToast('success', `Entry ${entry.id} dismissed.`),
@@ -92,37 +207,131 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
     });
   }
 
+  function handlePromote(entry: KnowledgeEntry) {
+    promote.mutate(entry.id, {
+      onSuccess: () => addToast('success', `Entry ${entry.id} promoted to claim.`),
+      onError: (err) => addToast('error', `Promote failed: ${String(err)}`),
+    });
+  }
+
+  function handleSupersede(entryId: number, supersedingId: number, reason: string) {
+    supersede.mutate(
+      { entryId, superseding_id: supersedingId, reason },
+      {
+        onSuccess: () => {
+          addToast('success', `Entry ${entryId} marked as superseded.`);
+          setSupersedeTarget(null);
+        },
+        onError: (err) => addToast('error', `Supersede failed: ${String(err)}`),
+      },
+    );
+  }
+
+  function handleStillValid(entry: KnowledgeEntry) {
+    undismiss.mutate(entry.id, {
+      onSuccess: () => addToast('success', `Entry ${entry.id} marked as still valid.`),
+      onError: (err) => addToast('error', `Update failed: ${String(err)}`),
+    });
+  }
+
   const entryTypes = ['decision', 'pattern', 'discovery', 'convention', 'bug', 'dependency'];
+
+  // Filter entries by claim_class and freshness_class client-side
+  const filteredEntries = (data?.entries || []).filter((entry) => {
+    if (claimFilter && entry.claim_class !== claimFilter) return false;
+    if (freshnessFilter && entry.freshness_class !== freshnessFilter) return false;
+    return true;
+  });
+
+  // Stale claims for review queue
+  const staleClaims = (data?.entries || []).filter(
+    (e) => e.freshness_class === 'stale' && e.claim_class === 'claim' && !e.dismissed,
+  );
+
+  // Compute health distribution from entries
+  const allEntries = data?.entries || [];
+  const claimCount = allEntries.filter((e) => e.claim_class === 'claim').length;
+  const noteCount = allEntries.filter((e) => e.claim_class === 'note').length;
+  const evidenceCount = allEntries.filter((e) => e.claim_class === 'evidence').length;
+  const currentCount = allEntries.filter((e) => e.freshness_class === 'current').length;
+  const agingCount = allEntries.filter((e) => e.freshness_class === 'aging').length;
+  const staleCount = allEntries.filter((e) => e.freshness_class === 'stale').length;
+  const supersededCount = allEntries.filter((e) => e.freshness_class === 'superseded').length;
+  const activeClaimCount = allEntries.filter(
+    (e) => e.claim_class === 'claim' && (e.freshness_class === 'current' || e.freshness_class === 'aging'),
+  ).length;
 
   return (
     <div className="p-5">
-      {/* Health banner — surfaces stale/low-confidence/decayed entries
-          and actionable recommendations from the knowledge health endpoint */}
-      {health && (health.stale_entry_count > 0 || health.low_confidence_count > 0 || health.recommendations.length > 0) && (
+      {/* Health banner */}
+      {health && (
         <div
           className="mb-4 rounded-lg border p-4"
           style={{
-            backgroundColor: health.stale_entry_count > 10 ? 'rgba(239,68,68,0.06)' : 'rgba(250,204,21,0.06)',
-            borderColor: health.stale_entry_count > 10 ? 'rgba(239,68,68,0.2)' : 'rgba(250,204,21,0.2)',
+            backgroundColor: (health.stale_entry_count > 10) ? 'rgba(239,68,68,0.06)' : 'rgba(250,204,21,0.06)',
+            borderColor: (health.stale_entry_count > 10) ? 'rgba(239,68,68,0.2)' : 'rgba(250,204,21,0.2)',
           }}
         >
-          <div className="flex flex-wrap items-center gap-4 text-sm mb-2">
-            {health.stale_entry_count > 0 && (
-              <span style={{ color: 'var(--warning)' }}>
-                {health.stale_entry_count} stale {health.stale_entry_count === 1 ? 'entry' : 'entries'}
-              </span>
-            )}
-            {health.low_confidence_count > 0 && (
-              <span style={{ color: 'var(--text-tertiary)' }}>
-                {health.low_confidence_count} low-confidence
-              </span>
-            )}
-            {health.decayed_count > 0 && (
-              <span style={{ color: 'var(--text-tertiary)' }}>
-                {health.decayed_count} decayed
-              </span>
-            )}
+          {/* Summary counters */}
+          <div className="flex flex-wrap items-center gap-4 text-xs mb-2">
+            <span style={{ color: 'var(--text-secondary)' }}>
+              {health.total_entries} total
+            </span>
+            <span style={{ color: 'var(--brand)' }}>
+              {claimCount} claims
+            </span>
+            <span style={{ color: 'var(--text-tertiary)' }}>
+              {noteCount} notes
+            </span>
+            <span style={{ color: '#3b82f6' }}>
+              {evidenceCount} evidence
+            </span>
+            <span style={{ color: 'var(--text-secondary)' }}>
+              {activeClaimCount} active claims
+            </span>
           </div>
+
+          {/* Freshness distribution */}
+          <div className="flex flex-wrap items-center gap-3 text-xs mb-2">
+            <span className="flex items-center gap-1">
+              <FreshnessDot freshnessClass="current" />
+              <span style={{ color: 'var(--text-tertiary)' }}>{currentCount} current</span>
+            </span>
+            <span className="flex items-center gap-1">
+              <FreshnessDot freshnessClass="aging" />
+              <span style={{ color: 'var(--text-tertiary)' }}>{agingCount} aging</span>
+            </span>
+            <span className="flex items-center gap-1">
+              <FreshnessDot freshnessClass="stale" />
+              <span style={{ color: 'var(--text-tertiary)' }}>{staleCount} stale</span>
+            </span>
+            <span className="flex items-center gap-1">
+              <FreshnessDot freshnessClass="superseded" />
+              <span style={{ color: 'var(--text-tertiary)' }}>{supersededCount} superseded</span>
+            </span>
+          </div>
+
+          {/* Stale/low-confidence/decayed warnings */}
+          {(health.stale_entry_count > 0 || health.low_confidence_count > 0 || health.decayed_count > 0) && (
+            <div className="flex flex-wrap items-center gap-4 text-sm mb-2">
+              {health.stale_entry_count > 0 && (
+                <span style={{ color: 'var(--warning)' }}>
+                  {health.stale_entry_count} stale {health.stale_entry_count === 1 ? 'entry' : 'entries'}
+                </span>
+              )}
+              {health.low_confidence_count > 0 && (
+                <span style={{ color: 'var(--text-tertiary)' }}>
+                  {health.low_confidence_count} low-confidence
+                </span>
+              )}
+              {health.decayed_count > 0 && (
+                <span style={{ color: 'var(--text-tertiary)' }}>
+                  {health.decayed_count} decayed
+                </span>
+              )}
+            </div>
+          )}
+
           {health.recommendations.length > 0 && (
             <ul className="space-y-1">
               {health.recommendations.map((r, i) => (
@@ -148,9 +357,69 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
         </div>
       )}
 
+      {/* Stale review queue */}
+      {staleClaims.length > 0 && (
+        <div className="mb-4 rounded-lg border border-[var(--border)] bg-[var(--bg-primary)]">
+          <button
+            onClick={() => setStaleQueueOpen(!staleQueueOpen)}
+            className="w-full flex items-center justify-between px-4 py-2.5 text-sm font-medium text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] transition-colors"
+          >
+            <span>Stale Claims Review ({staleClaims.length})</span>
+            <span className="text-[10px]">{staleQueueOpen ? '\u25B2' : '\u25BC'}</span>
+          </button>
+          {staleQueueOpen && (
+            <div className="border-t border-[var(--border)] px-4 py-3 space-y-2">
+              {staleClaims.map((entry) => (
+                <div
+                  key={`stale-${entry.id}`}
+                  className="flex items-start gap-3 px-3 py-2 rounded border border-[var(--border)] bg-[var(--bg-elevated)]"
+                >
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm text-[var(--text-primary)]">{entry.content}</p>
+                    <p className="text-xs text-[var(--text-tertiary)] mt-0.5">
+                      #{entry.id} &middot; {entry.entry_type}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      onClick={() => handleStillValid(entry)}
+                      disabled={undismiss.isPending}
+                      className="text-xs text-[var(--brand)] hover:underline px-2 py-1"
+                    >
+                      Still Valid
+                    </button>
+                    <button
+                      onClick={() => setSupersedeTarget(entry.id)}
+                      className="text-xs text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] px-2 py-1"
+                    >
+                      Supersede
+                    </button>
+                    <button
+                      onClick={() => handleDismiss(entry)}
+                      disabled={dismissEntry.isPending}
+                      className="text-xs text-[var(--text-tertiary)] hover:text-red-400 px-2 py-1"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                  {supersedeTarget === entry.id && (
+                    <SupersedeDialog
+                      entryId={entry.id}
+                      onConfirm={(sid, reason) => handleSupersede(entry.id, sid, reason)}
+                      onCancel={() => setSupersedeTarget(null)}
+                      isPending={supersede.isPending}
+                    />
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Toolbar */}
       <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
           <label className="flex items-center gap-1.5 text-sm text-[var(--text-secondary)]">
             <input
               type="checkbox"
@@ -172,89 +441,180 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
               </option>
             ))}
           </select>
+          <select
+            value={claimFilter}
+            onChange={(e) => setClaimFilter(e.target.value)}
+            className="text-sm bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg px-2 py-1 text-[var(--text-secondary)]"
+          >
+            <option value="">All classes</option>
+            <option value="claim">Claim</option>
+            <option value="note">Note</option>
+            <option value="evidence">Evidence</option>
+          </select>
+          <select
+            value={freshnessFilter}
+            onChange={(e) => setFreshnessFilter(e.target.value)}
+            className="text-sm bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg px-2 py-1 text-[var(--text-secondary)]"
+          >
+            <option value="">All freshness</option>
+            <option value="current">Current</option>
+            <option value="aging">Aging</option>
+            <option value="stale">Stale</option>
+          </select>
         </div>
-        <button
-          onClick={handleCompile}
-          disabled={compile.isPending}
-          className="px-4 py-2 text-sm font-semibold bg-[var(--brand)] text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {compile.isPending ? 'Compiling...' : 'Compile Now'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleRebuild}
+            disabled={rebuild.isPending}
+            className="px-4 py-2 text-sm font-medium text-[var(--text-secondary)] border border-[var(--border)] rounded-lg hover:bg-[var(--surface-hover)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {rebuild.isPending ? 'Rebuilding...' : 'Rebuild'}
+          </button>
+          <button
+            onClick={handleCompile}
+            disabled={compile.isPending}
+            className="px-4 py-2 text-sm font-semibold bg-[var(--brand)] text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {compile.isPending ? 'Compiling...' : 'Compile Now'}
+          </button>
+        </div>
       </div>
 
       {/* Entries list */}
       {isLoading ? (
         <p className="text-[var(--text-tertiary)] text-sm py-4">Loading entries...</p>
-      ) : !data?.entries?.length ? (
+      ) : !filteredEntries.length ? (
         <p className="text-[var(--text-tertiary)] text-sm py-8 text-center">
           No knowledge entries found. Entries are auto-extracted from sessions.
         </p>
       ) : (
         <div className="space-y-2">
-          {data.entries.map((entry) => (
+          {filteredEntries.map((entry) => (
             <div
               key={entry.id}
-              className={`flex items-start gap-3 px-4 py-3 rounded-lg border transition-colors ${
-                entry.dismissed
-                  ? 'border-[var(--border)] bg-[var(--bg-primary)] opacity-60'
-                  : 'border-[var(--border)] bg-[var(--bg-elevated)]'
+              className={`px-4 py-3 rounded-lg border transition-colors ${
+                entry.freshness_class === 'superseded'
+                  ? 'border-[var(--border)] bg-[var(--bg-primary)] opacity-50'
+                  : entry.dismissed
+                    ? 'border-[var(--border)] bg-[var(--bg-primary)] opacity-60'
+                    : 'border-[var(--border)] bg-[var(--bg-elevated)]'
               }`}
             >
-              <div className="shrink-0 pt-0.5">
-                <EntryTypeBadge type={entry.entry_type} />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p
-                  className={`text-sm text-[var(--text-primary)] ${
-                    entry.dismissed ? 'line-through text-[var(--text-tertiary)]' : ''
-                  }`}
-                >
-                  {entry.content}
-                </p>
-                <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--text-tertiary)]">
-                  <span>
-                    <RelativeDate iso={entry.created_at} />
-                  </span>
-                  {entry.session_id && (
-                    <>
-                      <span>&middot;</span>
-                      <span className="font-mono">
-                        {entry.session_id.length > 14
-                          ? entry.session_id.slice(0, 14) + '..'
-                          : entry.session_id}
-                      </span>
-                    </>
+              <div className="flex items-start gap-3">
+                <div className="shrink-0 pt-0.5 flex items-center gap-1.5">
+                  <FreshnessDot freshnessClass={entry.freshness_class} />
+                  <EntryTypeBadge type={entry.entry_type} />
+                  <ClaimClassBadge claimClass={entry.claim_class} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p
+                    className={`text-sm text-[var(--text-primary)] ${
+                      entry.dismissed || entry.freshness_class === 'superseded'
+                        ? 'line-through text-[var(--text-tertiary)]'
+                        : ''
+                    }`}
+                  >
+                    {entry.content}
+                  </p>
+                  {/* Provenance block */}
+                  <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--text-tertiary)]">
+                    <span>
+                      <RelativeDate iso={entry.created_at} />
+                    </span>
+                    {entry.session_id && (
+                      <>
+                        <span>&middot;</span>
+                        <span className="font-mono">
+                          {entry.session_id.length > 14
+                            ? entry.session_id.slice(0, 14) + '..'
+                            : entry.session_id}
+                        </span>
+                      </>
+                    )}
+                    {entry.entity_ref && (
+                      <>
+                        <span>&middot;</span>
+                        <span className="font-mono">{entry.entity_type}: {entry.entity_ref}</span>
+                      </>
+                    )}
+                    {entry.compiled_at && (
+                      <>
+                        <span>&middot;</span>
+                        <span className="text-green-500">compiled</span>
+                      </>
+                    )}
+                    {entry.confidence !== undefined && entry.confidence < 1 && (
+                      <>
+                        <span>&middot;</span>
+                        <span>{Math.round(entry.confidence * 100)}% confidence</span>
+                      </>
+                    )}
+                    <span>&middot;</span>
+                    <span>
+                      retrieved: {entry.retrieved_count} / used: {entry.used_in_answer_count} / compiled: {entry.compiled_count}
+                    </span>
+                    {entry.superseded_by && (
+                      <>
+                        <span>&middot;</span>
+                        <span style={{ color: '#ef4444' }}>superseded by #{entry.superseded_by}</span>
+                      </>
+                    )}
+                    {entry.supersession_reason && (
+                      <>
+                        <span>&middot;</span>
+                        <span style={{ color: 'var(--text-tertiary)' }}>{entry.supersession_reason}</span>
+                      </>
+                    )}
+                  </div>
+                </div>
+                {/* Actions */}
+                <div className="flex items-center gap-1 shrink-0">
+                  {!entry.dismissed && entry.claim_class === 'note' && entry.freshness_class !== 'superseded' && (
+                    <button
+                      onClick={() => handlePromote(entry)}
+                      disabled={promote.isPending}
+                      className="text-xs text-[var(--brand)] hover:underline px-2 py-1"
+                      title="Promote to Claim"
+                    >
+                      Promote
+                    </button>
                   )}
-                  {entry.compiled_at && (
-                    <>
-                      <span>&middot;</span>
-                      <span className="text-green-500">compiled</span>
-                    </>
+                  {!entry.dismissed && entry.freshness_class !== 'superseded' && (
+                    <button
+                      onClick={() => setSupersedeTarget(supersedeTarget === entry.id ? null : entry.id)}
+                      className="text-xs text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] px-2 py-1"
+                      title="Mark Superseded"
+                    >
+                      Supersede
+                    </button>
                   )}
-                  {entry.confidence !== undefined && entry.confidence < 1 && (
-                    <>
-                      <span>&middot;</span>
-                      <span>{Math.round(entry.confidence * 100)}% confidence</span>
-                    </>
+                  {!entry.dismissed && !entry.compiled_at && entry.freshness_class !== 'superseded' && (
+                    <button
+                      onClick={() => handleDismiss(entry)}
+                      disabled={dismissEntry.isPending}
+                      className="shrink-0 text-xs text-[var(--text-tertiary)] hover:text-red-400 transition-colors px-2 py-1"
+                      title="Dismiss this entry"
+                    >
+                      Dismiss
+                    </button>
                   )}
                 </div>
               </div>
-              {!entry.dismissed && !entry.compiled_at && (
-                <button
-                  onClick={() => handleDismiss(entry)}
-                  disabled={dismissEntry.isPending}
-                  className="shrink-0 text-xs text-[var(--text-tertiary)] hover:text-red-400 transition-colors px-2 py-1"
-                  title="Dismiss this entry"
-                >
-                  Dismiss
-                </button>
+              {/* Supersede dialog inline */}
+              {supersedeTarget === entry.id && (
+                <SupersedeDialog
+                  entryId={entry.id}
+                  onConfirm={(sid, reason) => handleSupersede(entry.id, sid, reason)}
+                  onCancel={() => setSupersedeTarget(null)}
+                  isPending={supersede.isPending}
+                />
               )}
             </div>
           ))}
           <p className="text-xs text-[var(--text-tertiary)] pt-2">
-            {data.total > data.entries.length
-              ? `Showing ${data.entries.length} of ${data.total} entries`
-              : `${data.entries.length} ${data.entries.length === 1 ? 'entry' : 'entries'}`}
+            {data && data.total > filteredEntries.length
+              ? `Showing ${filteredEntries.length} of ${data.total} entries`
+              : `${filteredEntries.length} ${filteredEntries.length === 1 ? 'entry' : 'entries'}`}
           </p>
         </div>
       )}

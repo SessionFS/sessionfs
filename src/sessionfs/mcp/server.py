@@ -209,7 +209,8 @@ _TOOLS = [
         name="search_project_knowledge",
         description=(
             "Search the project knowledge base for specific information. "
-            "Returns matching knowledge entries filtered by query and type."
+            "Returns matching knowledge entries filtered by query and type. "
+            "By default returns only active claims; set include_stale=true for all."
         ),
         inputSchema={
             "type": "object",
@@ -220,6 +221,10 @@ _TOOLS = [
                     "description": "Filter: decision, pattern, discovery, convention, bug, dependency",
                 },
                 "limit": {"type": "number", "description": "Max results (default 10)"},
+                "include_stale": {
+                    "type": "boolean",
+                    "description": "Include stale and superseded entries (default: false)",
+                },
                 "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
             },
             "required": ["query"],
@@ -248,7 +253,9 @@ _TOOLS = [
         description=(
             "Add a knowledge entry to the project knowledge base. "
             "Use this when you discover important patterns, decisions, "
-            "conventions, bugs, or dependencies during a session."
+            "conventions, bugs, or dependencies during a session. "
+            "Entries default to 'note' class and auto-promote to 'claim' "
+            "when quality gates pass (confidence >= 0.8, content >= 50 chars)."
         ),
         inputSchema={
             "type": "object",
@@ -268,6 +275,18 @@ _TOOLS = [
                 "confidence": {
                     "type": "number",
                     "description": "Confidence score 0.0–1.0 (default: 1.0)",
+                },
+                "entity_ref": {
+                    "type": "string",
+                    "description": "Optional entity reference (e.g., 'src/foo.py', 'KnowledgeEntry')",
+                },
+                "entity_type": {
+                    "type": "string",
+                    "description": "Optional entity type (e.g., 'file', 'class', 'function', 'module')",
+                },
+                "force_claim": {
+                    "type": "boolean",
+                    "description": "Attempt claim classification (still enforces quality gates)",
                 },
                 "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
             },
@@ -623,7 +642,7 @@ async def _handle_get_project_context(args: dict) -> str:
         except Exception:
             pass  # Don't fail if wiki unavailable
 
-        # Enrich with recent knowledge entries
+        # Enrich with recent knowledge entries (active claims only)
         try:
             project_id = data.get("id", "")
             if project_id:
@@ -635,9 +654,17 @@ async def _handle_get_project_context(args: dict) -> str:
                 if entries_resp.status_code == 200:
                     resp_data = entries_resp.json()
                     entries = resp_data if isinstance(resp_data, list) else resp_data.get("entries", [])
+                    # Filter to active claims only
+                    entries = [
+                        e for e in entries
+                        if e.get("claim_class", "claim") == "claim"
+                        and e.get("freshness_class", "current") in ("current", "aging")
+                        and not e.get("superseded_by")
+                        and not e.get("dismissed", False)
+                    ]
                     if entries:
                         activity = "\n\n---\n## Recent Session Activity\n"
-                        activity += "*(Auto-extracted from recent sessions. Not yet compiled into the main document.)*\n\n"
+                        activity += "*(Active claims from recent sessions. Not yet compiled into the main document.)*\n\n"
                         for e in entries:
                             activity += f"- [{e['entry_type']}] {e['content']}\n"
                         context += activity
@@ -735,6 +762,7 @@ async def _handle_search_knowledge(args: dict) -> str:
     query = args.get("query", "")
     entry_type = args.get("entry_type")
     limit = int(args.get("limit", 10))
+    include_stale = args.get("include_stale", False)
     git_remote = args.get("git_remote", "")
 
     if not git_remote:
@@ -797,6 +825,16 @@ async def _handle_search_knowledge(args: dict) -> str:
             "dependency": "\U0001f4e6",
         }
 
+        # Filter to active claims by default unless include_stale
+        if not include_stale:
+            entries = [
+                e for e in entries
+                if e.get("claim_class", "claim") == "claim"
+                and e.get("freshness_class", "current") in ("current", "aging")
+                and not e.get("superseded_by")
+                and not e.get("dismissed", False)
+            ]
+
         lines = [f"# Knowledge Search: \"{query}\"", f"_{len(entries)} result(s)_\n"]
         for e in entries:
             etype = e.get("entry_type", "unknown")
@@ -804,8 +842,13 @@ async def _handle_search_knowledge(args: dict) -> str:
             confidence = e.get("confidence", 0)
             created = e.get("created_at", "")[:10]
             session_id = e.get("session_id", "unknown")
+            freshness = e.get("freshness_class", "current")
+            claim_class = e.get("claim_class", "claim")
 
-            lines.append(f"### {badge} [{etype.upper()}] (confidence: {confidence:.0%})")
+            freshness_tag = f" [{freshness}]" if freshness != "current" else ""
+            class_tag = f" ({claim_class})" if claim_class != "claim" else ""
+
+            lines.append(f"### {badge} [{etype.upper()}] (confidence: {confidence:.0%}){freshness_tag}{class_tag}")
             lines.append(f"{e.get('content', '')}")
             lines.append(f"_Source session: {session_id} | {created}_\n")
 
@@ -857,6 +900,9 @@ async def _handle_add_knowledge(args: dict) -> str:
     entry_type = args.get("entry_type", "discovery")
     session_id = args.get("session_id")
     confidence = float(args.get("confidence", 1.0))
+    entity_ref = args.get("entity_ref")
+    entity_type = args.get("entity_type")
+    force_claim = args.get("force_claim", False)
     git_remote = args.get("git_remote", "")
 
     if not content:
@@ -873,6 +919,12 @@ async def _handle_add_knowledge(args: dict) -> str:
         }
         if session_id:
             payload["session_id"] = session_id
+        if entity_ref:
+            payload["entity_ref"] = entity_ref
+        if entity_type:
+            payload["entity_type"] = entity_type
+        if force_claim:
+            payload["force_claim"] = True
 
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(
@@ -882,7 +934,12 @@ async def _handle_add_knowledge(args: dict) -> str:
             )
         if resp.status_code == 201:
             data = resp.json()
-            return f"Knowledge entry added (id: {data['id']}, type: {entry_type})."
+            claim_class = data.get("claim_class", "note")
+            tip = data.get("tip")
+            msg = f"Knowledge entry added (id: {data['id']}, type: {entry_type}, class: {claim_class})."
+            if tip:
+                msg += f"\nTip: {tip}"
+            return msg
         return f"Failed to add entry: {resp.status_code} — {resp.text}"
 
     except Exception as exc:

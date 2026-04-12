@@ -189,6 +189,60 @@ export function useRegenerateWikiPage(projectId: string | undefined) {
   });
 }
 
+export function usePromoteEntry(projectId: string | undefined) {
+  const { auth } = useAuth();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (entryId: number) =>
+      auth!.client.promoteEntry(projectId!, entryId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['knowledgeEntries', projectId] });
+      void queryClient.invalidateQueries({ queryKey: ['projectHealth', projectId] });
+    },
+  });
+}
+
+export function useSupersedeEntry(projectId: string | undefined) {
+  const { auth } = useAuth();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ entryId, superseding_id, reason }: { entryId: number; superseding_id: number; reason: string }) =>
+      auth!.client.supersedeEntry(projectId!, entryId, { superseding_id, reason }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['knowledgeEntries', projectId] });
+      void queryClient.invalidateQueries({ queryKey: ['projectHealth', projectId] });
+    },
+  });
+}
+
+export function useRebuildProject(projectId: string | undefined) {
+  const { auth } = useAuth();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => auth!.client.rebuildProject(projectId!),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['knowledgeEntries', projectId] });
+      void queryClient.invalidateQueries({ queryKey: ['projectHealth', projectId] });
+      void queryClient.invalidateQueries({ queryKey: ['compilations', projectId] });
+      void queryClient.invalidateQueries({ queryKey: ['projects'] });
+      void queryClient.invalidateQueries({ queryKey: ['project'] });
+    },
+  });
+}
+
+export function useUndismissEntry(projectId: string | undefined) {
+  const { auth } = useAuth();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (entryId: number) =>
+      auth!.client.undismissEntry(projectId!, entryId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['knowledgeEntries', projectId] });
+      void queryClient.invalidateQueries({ queryKey: ['projectHealth', projectId] });
+    },
+  });
+}
+
 export function useUpdateProjectSettings(projectId: string | undefined) {
   const { auth } = useAuth();
   const queryClient = useQueryClient();
