@@ -1170,6 +1170,48 @@ $ sfs doctor
 
 ---
 
+## `sfs dlp scan`
+
+Scan local sessions for secrets and PHI. SessionFS ships with 22 secret patterns (API keys, access tokens, private keys, database URLs) and 14 PHI patterns (SSN, phone, credit card, medical IDs).
+
+```
+sfs dlp scan [SESSION_ID ...] [--mode MODE] [--format FORMAT]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--mode warn\|redact\|block` | Action on findings (default: `warn`) |
+| `--format json\|text` | Output format (default: `text`) |
+| `--verbose` | Show matched substrings |
+
+```bash
+$ sfs dlp scan ses_abc123
+2 findings in ses_abc123:
+  [HIGH] AWS access key in messages.jsonl:142
+  [MEDIUM] Email address in messages.jsonl:89
+```
+
+---
+
+## `sfs dlp policy`
+
+View or update the organization DLP policy. Applies server-side to all org members on sync.
+
+```
+sfs dlp policy [--get|--set-mode MODE|--enable|--disable]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--get` | Show current policy |
+| `--set-mode warn\|redact\|block` | Update the policy mode |
+| `--enable` | Enable DLP scanning |
+| `--disable` | Disable DLP scanning |
+
+When set to `block`, uploads containing detected secrets/PHI are rejected. When set to `redact`, findings are automatically redacted before storage.
+
+---
+
 ## `sfs security scan`
 
 Run local security checks: config file permissions, API key exposure in shell configs, dependency vulnerabilities (via pip-audit), and stale sessions.
