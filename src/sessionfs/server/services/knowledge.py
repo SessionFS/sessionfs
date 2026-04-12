@@ -15,6 +15,60 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("sessionfs.knowledge")
 
+
+# -- Semantic dedup helpers ---------------------------------------------------
+
+
+def word_overlap(a: str, b: str) -> float:
+    """Compute Jaccard-min word overlap between two strings.
+
+    Returns 1.0 when either string is a subset of the other, 0.0 when they
+    share no words. Uses `min(|A|, |B|)` as the denominator so a short
+    query fully contained in a longer doc still scores as a match.
+    """
+    words_a = set(a.lower().split())
+    words_b = set(b.lower().split())
+    if not words_a or not words_b:
+        return 0.0
+    return len(words_a & words_b) / min(len(words_a), len(words_b))
+
+
+def is_near_duplicate(content: str, existing_contents: list[str], threshold: float = 0.85) -> bool:
+    """Return True if `content` is semantically near-duplicate of any of
+    `existing_contents` (word overlap > threshold).
+
+    `existing_contents` should be a pre-fetched list of recent non-dismissed
+    entry contents for the same project — per-call DB queries would be too
+    slow for batch extraction paths, so we ask callers to fetch once.
+    """
+    for existing in existing_contents:
+        if word_overlap(content, existing) > threshold:
+            return True
+    return False
+
+
+async def _fetch_recent_project_contents(
+    project_id: str,
+    db: AsyncSession,
+    limit: int = 100,
+) -> list[str]:
+    """Fetch content strings of the N most recent non-dismissed entries for
+    a project. Used by extraction paths to run semantic dedup in-memory
+    instead of doing one query per candidate.
+    """
+    from sqlalchemy import select as sa_select
+
+    result = await db.execute(
+        sa_select(KnowledgeEntry.content)
+        .where(
+            KnowledgeEntry.project_id == project_id,
+            KnowledgeEntry.dismissed == False,  # noqa: E712
+        )
+        .order_by(KnowledgeEntry.created_at.desc())
+        .limit(limit)
+    )
+    return [row[0] for row in result.all()]
+
 _EXTRACTION_PROMPT = """\
 You are analyzing an AI coding session to extract knowledge for a project wiki.
 
@@ -49,12 +103,16 @@ async def extract_knowledge_entries(
 ) -> list[KnowledgeEntry]:
     """Extract knowledge entries from a session summary.
 
-    Uses content-level dedup so re-syncs of long-running sessions can
-    add new decisions/files/bugs without duplicating existing entries.
+    Uses semantic dedup (word overlap > 0.85) against recent project entries
+    so re-syncs of long-running sessions add genuinely new knowledge and
+    near-duplicates — e.g., "File modified: src/foo.py" from yesterday vs
+    "File created/modified: src/foo.py" from today — don't accumulate.
     """
+    # Exact-content set for the same session (fast path — prevents the same
+    # extraction run from adding the same line twice in a batch) PLUS a
+    # broader project-wide set for semantic dedup across sessions.
     from sqlalchemy import select as sa_select
 
-    # Fetch existing entry contents for this session to dedup at content level
     existing_result = await db.execute(
         sa_select(KnowledgeEntry.content).where(
             KnowledgeEntry.session_id == session_id,
@@ -62,6 +120,11 @@ async def extract_knowledge_entries(
         )
     )
     existing_contents: set[str] = {row[0] for row in existing_result.all()}
+
+    # Broader project window for semantic dedup. 100 most recent entries is
+    # enough to catch near-duplicates at scale without slowing the extraction
+    # pass down to per-entry SQL.
+    project_window = await _fetch_recent_project_contents(project_id, db, limit=100)
 
     entries: list[KnowledgeEntry] = []
 
@@ -133,12 +196,23 @@ async def extract_knowledge_entries(
             )
             entries.append(entry)
 
-    # Persist only entries whose content is new (dedup against DB and intra-batch)
+    # Persist only genuinely new entries: (a) exact-match dedup against
+    # this session's prior extractions, (b) semantic dedup against the
+    # project window, (c) intra-batch dedup so the same run can't add two
+    # near-duplicates. The combined filter closes the "near-duplicates
+    # accumulate across sessions" gap from the pre-release review.
     new_entries: list[KnowledgeEntry] = []
+    batch_contents: list[str] = []
     for e in entries:
-        if e.content not in existing_contents:
-            existing_contents.add(e.content)
-            new_entries.append(e)
+        if e.content in existing_contents:
+            continue
+        if is_near_duplicate(e.content, project_window):
+            continue
+        if is_near_duplicate(e.content, batch_contents):
+            continue
+        existing_contents.add(e.content)
+        batch_contents.append(e.content)
+        new_entries.append(e)
     if new_entries:
         for entry in new_entries:
             db.add(entry)
@@ -173,8 +247,11 @@ async def extract_knowledge_with_llm(
     extraction misses. Runs automatically on sync when auto_narrative is
     enabled and the user has LLM configured.
     """
-    # Fetch existing LLM-extracted content for content-level dedup
+    # Exact-match dedup against prior LLM extractions for this same session
+    # PLUS semantic dedup against a broader project window. The two-layer
+    # check closes the "near-duplicates accumulate across sessions" gap.
     existing_contents: set[str] = set()
+    project_window: list[str] = []
     if db:
         from sqlalchemy import select as sa_select
         existing_result = await db.execute(
@@ -185,6 +262,7 @@ async def extract_knowledge_with_llm(
             )
         )
         existing_contents = {row[0] for row in existing_result.all()}
+        project_window = await _fetch_recent_project_contents(project_id, db, limit=100)
 
     # Extract text from last 30 assistant messages
     assistant_texts: list[str] = []
@@ -250,12 +328,21 @@ async def extract_knowledge_with_llm(
                 source_context=f"LLM-extracted from session {session_id}",
             ))
 
-        # Content-level dedup: against DB and intra-batch
+        # Semantic dedup: exact-match for this session, word-overlap
+        # against the project window, AND intra-batch dedup so the LLM
+        # can't sneak near-duplicates past us inside one response.
         new_entries: list[KnowledgeEntry] = []
+        batch_contents: list[str] = []
         for e in entries:
-            if e.content not in existing_contents:
-                existing_contents.add(e.content)
-                new_entries.append(e)
+            if e.content in existing_contents:
+                continue
+            if is_near_duplicate(e.content, project_window):
+                continue
+            if is_near_duplicate(e.content, batch_contents):
+                continue
+            existing_contents.add(e.content)
+            batch_contents.append(e.content)
+            new_entries.append(e)
         if new_entries and db:
             for entry in new_entries:
                 db.add(entry)

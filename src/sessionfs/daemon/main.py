@@ -604,6 +604,20 @@ class Daemon:
 
         logger.info("sfsd starting with %d watcher(s)", len(self.watchers))
 
+        # Fetch remote settings + watchlist FIRST so `auto_mode` is correct
+        # before we scan and mark anything dirty. Watcher full_scan() can take
+        # 90+ seconds on a large session store, and if it runs before this
+        # fetch, all the newly-indexed sessions get marked dirty with mode=off
+        # (the config.toml default) and then `mark_session_dirty` silently
+        # drops them. Doing the fetch first adds one HTTP round-trip (~300ms)
+        # but makes the first sync cycle fire immediately after full_scan
+        # instead of waiting for the 60s periodic settings refresh.
+        if self._syncer.is_enabled:
+            try:
+                asyncio.run(self._syncer._fetch_remote_settings())
+            except Exception:
+                pass  # Offline — proceed with local state
+
         # Initial full scan
         for watcher in self.watchers:
             watcher.full_scan()
@@ -612,15 +626,7 @@ class Daemon:
         for watcher in self.watchers:
             watcher.start_watching()
 
-        # Fetch remote settings + watchlist before collecting dirty sessions
-        # so selective mode has the watchlist populated at startup.
-        if self._syncer.is_enabled:
-            try:
-                asyncio.run(self._syncer._fetch_remote_settings())
-            except Exception:
-                pass  # Offline — proceed with local state
-
-        # Collect sessions that need initial sync
+        # Collect sessions that need initial sync (now with correct auto_mode)
         self._collect_dirty_sessions()
 
         self._running = True

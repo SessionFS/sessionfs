@@ -634,7 +634,7 @@ function AutosyncSection() {
 }
 
 
-function GitHubIntegrationSection() {
+export function GitHubIntegrationSection() {
   const { auth } = useAuth();
   const queryClient = useQueryClient();
   const [claimError, setClaimError] = useState<string | null>(null);

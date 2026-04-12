@@ -87,10 +87,29 @@ def start(
     console.print("[dim]  Sessions:  sfs list[/dim]")
 
 
+def _resolve_daemon_pid() -> int | None:
+    """Find the daemon PID, preferring sfsd.pid and falling back to
+    daemon.json. Both can become stale — we return whatever we find, leaving
+    liveness checks to the caller.
+
+    Falling back to daemon.json matters when a daemon exited uncleanly
+    (cleared sfsd.pid in its finally block) and a replacement got launched
+    that only updated daemon.json. Without the fallback, `sfs daemon stop`
+    says "No PID file found" while a live process keeps running.
+    """
+    pid = _read_pid()
+    if pid is not None:
+        return pid
+    status = read_status(_status_path())
+    if status and status.pid:
+        return status.pid
+    return None
+
+
 @daemon_app.command()
 def stop() -> None:
     """Stop the SessionFS daemon."""
-    pid = _read_pid()
+    pid = _resolve_daemon_pid()
     if pid is None:
         console.print("[yellow]No daemon PID file found.[/yellow]")
         return
@@ -98,19 +117,23 @@ def stop() -> None:
     if not _is_running(pid):
         console.print("[yellow]Daemon not running (stale PID file). Cleaning up.[/yellow]")
         _pid_path().unlink(missing_ok=True)
+        _status_path().unlink(missing_ok=True)
         return
 
     os.kill(pid, signal.SIGTERM)
     console.print(f"[green]Sent SIGTERM to daemon (PID {pid}).[/green]")
 
-    # Clean up PID file
+    # Clean up both PID file and status file so repeated `stop` calls
+    # don't keep hitting the same stale metadata, and `status` doesn't
+    # show dead daemon info after a successful stop.
     _pid_path().unlink(missing_ok=True)
+    _status_path().unlink(missing_ok=True)
 
 
 @daemon_app.command()
 def status() -> None:
     """Show daemon status."""
-    pid = _read_pid()
+    pid = _resolve_daemon_pid()
     running = pid is not None and _is_running(pid)
 
     daemon_status = read_status(_status_path())

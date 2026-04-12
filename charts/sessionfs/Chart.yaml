@@ -3,7 +3,7 @@ name: sessionfs
 description: Capture, sync, and resume AI coding sessions across 8 tools
 type: application
 version: 0.9.8
-appVersion: "0.9.8.4"
+appVersion: "0.9.8.5"
 keywords:
   - ai
   - sessions

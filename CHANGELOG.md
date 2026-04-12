@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.8.5] - 2026-04-12
+
+### Added
+- **Dashboard Help page** (`/help`) — MCP-first guidance with 8-tool installer (`sfs mcp install --for <tool>`), agent prompt examples, curated CLI reference, 12-tool MCP reference, external resource links.
+- **Admin org back-office endpoints** — `GET/POST /api/v1/admin/orgs` + `PUT /api/v1/admin/orgs/{id}/tier` for internal provisioning, bypassing the Team+ subscription gate.
+- **Bulk dismiss-stale endpoint** — `POST /api/v1/projects/{id}/entries/dismiss-stale` atomically dismisses old low-confidence entries (< 0.5 confidence + > 90 days unreferenced). Dashboard surfaces a "Dismiss N stale" button in the knowledge health banner.
+- **Dashboard health banner** — `ProjectDetail` Entries tab surfaces stale/low-confidence/decayed counts + actionable recommendations from the health API.
+- **Self-hosted Security Posture documentation** — new section in `docs/self-hosted.md` and `site/src/content/docs/self-hosted.mdx` covering non-root UIDs, read-only rootfs, capability drops, seccomp, and `trivy config` verification.
+- **`sfs dlp` CLI documentation** — `docs/cli-reference.md` now documents `sfs dlp scan` and `sfs dlp policy` subcommands.
+
+### Fixed
+- **Dashboard signup broken on app.sessionfs.dev** — `VITE_API_URL` unset at Vercel build time; `baseUrl` defaulted to `window.location.origin` (static host), returning 405 on POST. Fixed three ways: env var set in Vercel, URL baked into bundle, `app.*` → `api.*` fallback in code.
+- **Unguarded localStorage across dashboard** — `main.tsx`, `ThemeToggle`, `SettingsPage` assumed a full Storage interface. Now all call sites use `src/utils/storage.ts` helper with full guards.
+
+### Security
+- **GitLab webhook user binding** (HIGH) — webhook accepted any per-user secret match but discarded which user it belonged to, then loaded credentials from `sessions[0].user_id`. A forged MR payload could impersonate another user's GitLab token. Fixed: bind `auth_user_id` to the matching row, scope session lookup + credential load to that user.
+- **GitHub installation claim IDOR** (HIGH) — `PUT /settings/github` blindly claimed the first unclaimed installation. Fixed: require `installation_id` from the client, time-windowed claim (15 min), 403/410 on violations, atomic conditional `UPDATE ... WHERE user_id IS NULL` to prevent race conditions.
+- **Effective-tier leak** (MEDIUM) — `sync_push` upload limit and `/api/v1/sync/status` read `user.tier` directly instead of resolving the effective org tier. Enterprise org members with personal `free` tier got 50 MB limits. Fixed: both paths now use `get_effective_tier(user, db)`.
+- **`pr_comments` unique index scoped** (MEDIUM) — migration 026 widens the unique index from `(repo_full_name, pr_number)` to `(installation_id, repo_full_name, pr_number)` to match runtime query scoping.
+- **Security Scan workflow rebuilt** — replaced `aquasecurity/trivy-action` with raw `trivy` binary (`setup-trivy@v0.2.6`, `trivy v0.69.3`); renders Helm chart before misconfig scan; `--severity CRITICAL,HIGH` exit-code enforcement.
+- **Dockerfile hardening** — `Dockerfile` and `Dockerfile.mcp` now create a non-root `sessionfs` user (UID 10001) and set `USER 10001` before CMD.
+- **Helm chart hardening** — PostgreSQL StatefulSet + `helm test` hook pod now have full `securityContext` with `readOnlyRootFilesystem`, `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]`, `seccompProfile: RuntimeDefault`. Fixed pre-existing bug where fallback emptyDir volume was at StatefulSet spec level instead of pod spec level.
+- **4 CVE patches** — vite 7.0.0→7.3.2 (3 CVEs), defu ≤6.1.4→6.1.5 (prototype pollution) in `site/package-lock.json`.
+
+### Knowledge Base Lifecycle
+- **LLM compile budget enforcement** — `_trim_to_budget()` now applied after LLM response, not just on the simple-compile path.
+- **Semantic dedup on all extraction paths** — shared `word_overlap()` + `is_near_duplicate()` helpers; both deterministic and LLM extraction now run a 3-layer filter (exact-match, project-wide overlap, intra-batch).
+- **Concept page pruning** — new `_prune_dead_concept_pages()` runs unconditionally before candidate check; fixed `page_type` filter (`"auto"` → `"concept"`).
+- **Health stale-entry count** — includes entries with old `last_relevant_at`, not just `IS NULL`.
+- **Bulk dismiss confidence guard** — only dismisses entries with `confidence < 0.5`.
+
+### Daemon / Sync
+- **Codex watcher crash** — `payload.get("content", [])` returns `None` when key exists with explicit null. Fixed in 4 places with `payload.get("content") or []` pattern.
+- **Daemon startup delay** — `_fetch_remote_settings()` moved before watcher `full_scan()` so autosync mode is correct immediately (308 ms vs 96 s).
+- **`sfs daemon stop` fallback** — new `_resolve_daemon_pid()` prefers `sfsd.pid`, falls back to `daemon.json`. Both stop and status use it. Also clears `daemon.json` on stale-PID cleanup.
+- **DB pool config** — `SFS_DATABASE_POOL_SIZE`, `MAX_OVERFLOW`, `POOL_TIMEOUT`, `POOL_RECYCLE` env vars wired through `ServerConfig` → `init_engine()`.
+
+### Tests
+- Backend: 1052 → **1091** (+39 tests in 4 new files: billing webhooks, sync promotion failures, GitHub claim, knowledge lifecycle)
+- Dashboard: 22 → **76** (+54 tests in 7 new files: BillingPage, GitHubIntegrationSection, HandoffDetail, ProjectDetail, SessionDetail, AdminDashboard, OrgPage)
+- Codex null-content regression tests (2 new)
+
 ## [0.9.8.4] - 2026-04-10
 
 ### Added

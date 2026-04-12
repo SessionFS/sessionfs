@@ -17,25 +17,46 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.9.8.4 -->
+      <!-- v0.9.8.5 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.9.8.5</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">April 12, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Security Fixes, Lifecycle Hardening, Dashboard Help, 93 New Tests</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Security fixes</strong> — GitLab webhook user binding (HIGH), GitHub installation claim IDOR (HIGH), effective-tier leak (MEDIUM), pr_comments unique index scoped (MEDIUM)</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Dashboard Help page</strong> — MCP-first guidance, 8-tool installer, agent prompt examples, curated CLI reference, 12-tool MCP reference</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Admin org endpoints</strong> — GET/POST /api/v1/admin/orgs + PUT /api/v1/admin/orgs/:id/tier for internal provisioning</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Knowledge lifecycle hardening</strong> — LLM compile budget enforcement, semantic dedup on all extraction paths, concept page pruning, bulk dismiss-stale endpoint</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Daemon fixes</strong> — Codex watcher null-content crash, startup delay (308 ms vs 96 s), sfs daemon stop fallback with PID resolution</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Dashboard fixes</strong> — signup broken on app.sessionfs.dev, unguarded localStorage hardened via storage helper</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Helm + Dockerfile hardening</strong> — postgres StatefulSet securityContext, helm test hook pod, non-root UID 10001 in both Dockerfiles</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>CVE patches</strong> — vite 7.3.2 (3 CVEs), defu 6.1.5 (prototype pollution). Security Scan workflow rewritten with raw trivy binary.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Self-hosted Security Posture docs</strong> + sfs dlp CLI documentation</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">1,091 backend tests + 76 dashboard UI tests passing</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.9.8.4 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
             <span class="text-brand font-semibold">v0.9.8.4</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">April 10, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Dashboard Help Page, Signup Fix, Security Hardening</h2>
         <ul class="space-y-2 text-base text-muted">
           <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>New dashboard Help page — 8-tool MCP installer, agent prompt examples, curated CLI reference, full 12-tool MCP reference</li>
           <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Signup fix — VITE_API_URL baked into production bundle; api.&lt;domain&gt; derived from app.&lt;domain&gt; in fallback chain</li>
-          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Unguarded localStorage hardened across main.tsx, ThemeToggle, SettingsPage via new storage helper</li>
-          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Help page resource links subscribe to theme changes via MutationObserver</li>
-          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Helm chart hardening</strong> — postgres StatefulSet now runs with readOnlyRootFilesystem, dropped capabilities, RuntimeDefault seccomp + emptyDir mounts for /tmp and /var/run/postgresql. helm test hook pod hardened with matching securityContext.</li>
-          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Dockerfile hardening</strong> — Dockerfile and Dockerfile.mcp now create a non-root user (UID 10001) and set USER 10001 before CMD. Images are compliant for self-hosted Kubernetes users by default.</li>
-          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Security Scan workflow rewritten</strong> — renders Helm chart before misconfig scan so Trivy evaluates real manifests (not raw templates), uses raw trivy binary for proper --severity filtering</li>
-          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>CVE patches</strong> — vite 7.0.0–7.3.1 → 7.3.2 (three CVEs: server.fs.deny bypass, WebSocket file read, path traversal); defu &lt;=6.1.4 → 6.1.5 (prototype pollution). Build-time only.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Helm chart + Dockerfile hardening — postgres StatefulSet securityContext, non-root UID 10001</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>Security Scan workflow rewritten; 4 CVE patches (vite, defu)</li>
           <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">1,052 backend tests + 22 dashboard UI tests passing</span></li>
         </ul>
       </article>

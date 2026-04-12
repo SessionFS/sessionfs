@@ -50,3 +50,4 @@ packaging/
 DOGFOOD.md
 .gemini/
 sessionfs-infra
+.claude/scheduled_tasks.lock

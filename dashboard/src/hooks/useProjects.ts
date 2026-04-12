@@ -83,6 +83,18 @@ export function useDismissEntry(projectId: string | undefined) {
   });
 }
 
+export function useDismissStaleEntries(projectId: string | undefined) {
+  const { auth } = useAuth();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => auth!.client.dismissStaleEntries(projectId!),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['knowledgeEntries', projectId] });
+      void queryClient.invalidateQueries({ queryKey: ['projectHealth', projectId] });
+    },
+  });
+}
+
 export function useCompileProject(projectId: string | undefined) {
   const { auth } = useAuth();
   const queryClient = useQueryClient();

@@ -168,6 +168,17 @@ async def compile_project_context(
                 base_url=base_url,
             )
             context_after = context_after.strip()
+            # LLM may ignore the budget hint in the prompt and return an
+            # over-budget document. Enforce the hard cap here so the word
+            # budget matches what _simple_compile guarantees — reuse the
+            # same trim logic for consistency.
+            if len(context_after.split()) > max_context_words:
+                trimmed_lines = _trim_to_budget(
+                    context_after.splitlines(), max_context_words
+                )
+                context_after = "\n".join(trimmed_lines)
+                if not context_after.endswith("\n"):
+                    context_after += "\n"
         except Exception:
             logger.warning("LLM compilation failed, falling back to simple compile", exc_info=True)
             context_after = _simple_compile(context_before, grouped, entries=pending, max_context_words=max_context_words)
@@ -709,6 +720,67 @@ async def generate_concept_article(
     return "\n".join(lines)
 
 
+async def _prune_dead_concept_pages(project_id: str, db: AsyncSession) -> int:
+    """Delete concept pages whose linked entries have ALL been dismissed.
+
+    Returns the number of pages deleted. Called unconditionally from
+    auto_generate_concepts() so dead pages are cleaned up even when no new
+    concept candidates exist (e.g., project dropped below the 15-entry
+    clustering threshold).
+    """
+    result = await db.execute(
+        select(KnowledgePage).where(
+            KnowledgePage.project_id == project_id,
+            KnowledgePage.slug.like("concept/%"),
+            KnowledgePage.page_type == "concept",
+        )
+    )
+    concept_pages = list(result.scalars().all())
+    if not concept_pages:
+        return 0
+
+    deleted = 0
+    for page in concept_pages:
+        linked_result = await db.execute(
+            select(KnowledgeLink).where(
+                KnowledgeLink.project_id == project_id,
+                KnowledgeLink.target_id == page.id,
+                KnowledgeLink.target_type == "page",
+            )
+        )
+        links = list(linked_result.scalars().all())
+        if not links:
+            # No links at all — orphaned concept page, safe to delete
+            await db.delete(page)
+            deleted += 1
+            logger.info("Pruned orphaned concept page %s", page.slug)
+            continue
+
+        linked_entry_ids = [
+            int(lk.source_id) for lk in links if lk.source_type == "entry"
+        ]
+        if not linked_entry_ids:
+            continue
+
+        dismissed_check = await db.execute(
+            select(func.count(KnowledgeEntry.id)).where(
+                KnowledgeEntry.id.in_(linked_entry_ids),
+                KnowledgeEntry.dismissed == True,  # noqa: E712
+            )
+        )
+        dismissed_count = dismissed_check.scalar() or 0
+        if dismissed_count == len(linked_entry_ids):
+            for lk in links:
+                await db.delete(lk)
+            await db.delete(page)
+            deleted += 1
+            logger.info("Pruned concept page %s (all %d linked entries dismissed)", page.slug, dismissed_count)
+
+    if deleted:
+        await db.commit()
+    return deleted
+
+
 async def auto_generate_concepts(
     project_id: str,
     user_id: str,
@@ -722,6 +794,13 @@ async def auto_generate_concepts(
 
     Called after compilation. Returns list of created/refreshed concept summaries.
     """
+    # Always prune dead concept pages regardless of whether new candidates
+    # exist. A concept page whose linked entries have ALL been dismissed
+    # should be deleted even when the project drops below the 15-entry
+    # candidacy threshold. Without this, dead concept pages linger forever
+    # after the last candidate check returns empty.
+    await _prune_dead_concept_pages(project_id, db)
+
     candidates = await check_concept_candidates(
         project_id, user_id, db, api_key, model, provider, base_url,
     )

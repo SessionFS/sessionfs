@@ -16,6 +16,8 @@ import {
   useDeleteWikiPage,
   useRegenerateWikiPage,
   useUpdateProjectSettings,
+  useProjectHealth,
+  useDismissStaleEntries,
 } from '../hooks/useProjects';
 import { useToast } from '../hooks/useToast';
 import RelativeDate from '../components/RelativeDate';
@@ -65,6 +67,8 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
   });
   const dismissEntry = useDismissEntry(projectId);
   const compile = useCompileProject(projectId);
+  const { data: health } = useProjectHealth(projectId);
+  const dismissStale = useDismissStaleEntries(projectId);
   const { addToast } = useToast();
 
   function handleCompile() {
@@ -92,6 +96,58 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
 
   return (
     <div className="p-5">
+      {/* Health banner — surfaces stale/low-confidence/decayed entries
+          and actionable recommendations from the knowledge health endpoint */}
+      {health && (health.stale_entry_count > 0 || health.low_confidence_count > 0 || health.recommendations.length > 0) && (
+        <div
+          className="mb-4 rounded-lg border p-4"
+          style={{
+            backgroundColor: health.stale_entry_count > 10 ? 'rgba(239,68,68,0.06)' : 'rgba(250,204,21,0.06)',
+            borderColor: health.stale_entry_count > 10 ? 'rgba(239,68,68,0.2)' : 'rgba(250,204,21,0.2)',
+          }}
+        >
+          <div className="flex flex-wrap items-center gap-4 text-sm mb-2">
+            {health.stale_entry_count > 0 && (
+              <span style={{ color: 'var(--warning)' }}>
+                {health.stale_entry_count} stale {health.stale_entry_count === 1 ? 'entry' : 'entries'}
+              </span>
+            )}
+            {health.low_confidence_count > 0 && (
+              <span style={{ color: 'var(--text-tertiary)' }}>
+                {health.low_confidence_count} low-confidence
+              </span>
+            )}
+            {health.decayed_count > 0 && (
+              <span style={{ color: 'var(--text-tertiary)' }}>
+                {health.decayed_count} decayed
+              </span>
+            )}
+          </div>
+          {health.recommendations.length > 0 && (
+            <ul className="space-y-1">
+              {health.recommendations.map((r, i) => (
+                <li key={i} className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                  {r}
+                </li>
+              ))}
+            </ul>
+          )}
+          {health.stale_entry_count > 0 && (
+            <button
+              onClick={() => dismissStale.mutate(undefined, {
+                onSuccess: (result) => addToast('success', `Dismissed ${result.dismissed_count} stale entries.`),
+                onError: (err) => addToast('error', `Failed to dismiss: ${String(err)}`),
+              })}
+              disabled={dismissStale.isPending}
+              className="mt-2 px-3 py-1.5 text-xs font-medium border rounded-md transition-colors hover:bg-[var(--surface-hover)]"
+              style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
+            >
+              {dismissStale.isPending ? 'Dismissing...' : `Dismiss ${health.stale_entry_count} stale`}
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Toolbar */}
       <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
         <div className="flex items-center gap-3">

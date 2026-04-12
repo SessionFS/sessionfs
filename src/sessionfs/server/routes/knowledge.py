@@ -80,14 +80,7 @@ class HealthResponse(BaseModel):
     decayed_count: int = 0
 
 
-def _word_overlap(a: str, b: str) -> float:
-    """Compute word overlap ratio between two strings."""
-    words_a = set(a.lower().split())
-    words_b = set(b.lower().split())
-    if not words_a or not words_b:
-        return 0.0
-    intersection = words_a & words_b
-    return len(intersection) / min(len(words_a), len(words_b))
+from sessionfs.server.services.knowledge import word_overlap as _word_overlap  # noqa: E402
 
 
 async def _get_project_or_404(project_id: str, db: AsyncSession, user_id: str | None = None) -> Project:
@@ -294,6 +287,47 @@ async def dismiss_entry(
     )
 
 
+@router.post("/{project_id}/entries/dismiss-stale")
+async def dismiss_stale_entries(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Bulk-dismiss stale entries (> 90 days unreferenced + low confidence).
+
+    Returns the count of entries dismissed so the dashboard can update its
+    health banner without a full page refresh.
+    """
+    await _get_project_or_404(project_id, db, user.id)
+
+    from sqlalchemy import or_
+    ninety_days_ago = datetime.now(timezone.utc) - timedelta(days=90)
+
+    # Only dismiss entries that are BOTH stale (old/unreferenced) AND
+    # low-confidence (< 0.5). High-confidence stale entries are likely
+    # real decisions/patterns that just haven't been referenced recently
+    # — they should decay naturally via the compile-time 0.8x multiplier,
+    # not be bulk-dismissed.
+    result = await db.execute(
+        update(KnowledgeEntry)
+        .where(
+            KnowledgeEntry.project_id == project_id,
+            KnowledgeEntry.dismissed == False,  # noqa: E712
+            KnowledgeEntry.confidence < 0.5,
+            or_(
+                KnowledgeEntry.last_relevant_at.is_(None) & (KnowledgeEntry.created_at < ninety_days_ago),
+                KnowledgeEntry.last_relevant_at < ninety_days_ago,
+            ),
+        )
+        .values(dismissed=True)
+        .execution_options(synchronize_session=False)
+    )
+    count = result.rowcount
+    await db.commit()
+
+    return {"dismissed_count": count}
+
+
 @router.post("/{project_id}/compile", response_model=CompilationResponse)
 async def compile_context(
     project_id: str,
@@ -320,6 +354,26 @@ async def compile_context(
         base_url=body.base_url,
     )
 
+    # Always run concept page refresh — even when there were no pending
+    # entries to compile (compilation is None). Concept pages may need
+    # cleanup because entries were dismissed or clusters shrank below the
+    # threshold since the last compile. Previously, returning early when
+    # compilation is None skipped this entirely, leaving dead concept
+    # pages lingering until the next compile that happened to have real
+    # entries.
+    try:
+        await auto_generate_concepts(
+            project_id=project_id,
+            user_id=user.id,
+            db=db,
+            api_key=body.llm_api_key,
+            model=body.model or "claude-sonnet-4",
+            provider=body.provider,
+            base_url=body.base_url,
+        )
+    except Exception:
+        logger.warning("Concept auto-generation/cleanup failed (non-fatal)", exc_info=True)
+
     if not compilation:
         return CompilationResponse(
             id=0,
@@ -331,7 +385,8 @@ async def compile_context(
             compiled_at=datetime.now(timezone.utc),
         )
 
-    # Auto-generate concept pages after compilation
+    # (Legacy) concept generation also runs after real compilation
+    # for compatibility — the above call covers the cleanup-only path.
     try:
         await auto_generate_concepts(
             project_id=project_id,
@@ -476,11 +531,20 @@ async def project_health(
     # Actionable metrics
     ninety_days_ago = datetime.now(timezone.utc) - timedelta(days=90)
 
+    # Stale = never referenced AND created > 90 days ago, OR referenced but
+    # last_relevant_at is itself older than 90 days. This matches the decay
+    # logic in the compiler which decays both flavors. Previously only the
+    # first case (last_relevant_at IS NULL) was counted, underreporting
+    # entries that were referenced once and then forgotten.
+    from sqlalchemy import or_
     stale_result = await db.execute(
         select(func.count(KnowledgeEntry.id)).where(
             KnowledgeEntry.project_id == project_id,
-            KnowledgeEntry.last_relevant_at.is_(None),
-            KnowledgeEntry.created_at < ninety_days_ago,
+            KnowledgeEntry.dismissed == False,  # noqa: E712
+            or_(
+                KnowledgeEntry.last_relevant_at.is_(None) & (KnowledgeEntry.created_at < ninety_days_ago),
+                KnowledgeEntry.last_relevant_at < ninety_days_ago,
+            ),
         )
     )
     stale_entry_count = stale_result.scalar() or 0

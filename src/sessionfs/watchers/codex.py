@@ -152,7 +152,10 @@ def parse_codex_session(jsonl_path: Path) -> CodexParsedSession:
                 if ri_type == "message":
                     role = payload.get("role", "assistant")
                     sfs_role = "developer" if role == "developer" else role
-                    codex_content = payload.get("content", [])
+                    # Codex occasionally writes `"content": null` literally,
+                    # not a missing key — `.get("content", [])` would return
+                    # None and crash the for-loop. `... or []` covers both.
+                    codex_content = payload.get("content") or []
                     sfs_content = []
                     for item in codex_content:
                         if not isinstance(item, dict):
@@ -175,10 +178,10 @@ def parse_codex_session(jsonl_path: Path) -> CodexParsedSession:
 
                 elif ri_type == "reasoning":
                     text = ""
-                    for item in payload.get("content", []):
+                    for item in (payload.get("content") or []):
                         if isinstance(item, dict):
                             text += item.get("text", "")
-                    summary_parts = payload.get("summary", [])
+                    summary_parts = payload.get("summary") or []
                     summary = " ".join(
                         s.get("text", "") for s in summary_parts if isinstance(s, dict)
                     )
@@ -192,8 +195,8 @@ def parse_codex_session(jsonl_path: Path) -> CodexParsedSession:
                     })
 
                 elif ri_type == "local_shell_call":
-                    action = payload.get("action", {})
-                    cmd = action.get("command", [])
+                    action = payload.get("action") or {}
+                    cmd = action.get("command") or []
                     cmd_str = cmd[-1] if cmd else ""
                     call_id = payload.get("call_id", "")
                     sfs_messages.append({

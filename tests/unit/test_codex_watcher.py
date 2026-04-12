@@ -205,3 +205,125 @@ def test_discover_via_filesystem(codex_session_file: Path, tmp_path: Path):
     sessions = discover_codex_sessions(tmp_path)
     assert len(sessions) >= 1
     assert sessions[0]["session_id"] == "019d0a84-0c2f-7163-8491-0dd9ff93f4b8"
+
+
+# ---------- Regression test: explicit "content": null in JSONL ----------
+
+
+@pytest.fixture
+def codex_session_with_null_content(tmp_path: Path) -> Path:
+    """Codex JSONL where response_items have explicit "content": null.
+
+    This is the real-world pattern that crashed the parser before the fix:
+    some Codex response_items (especially reasoning and message types)
+    have `"content": null` literally in the JSON instead of omitting the
+    key. Python's dict.get("content", []) returns None (not []) because
+    the key EXISTS with value null, causing `for item in None` → TypeError.
+    """
+    sessions_dir = tmp_path / "sessions" / "2026" / "04" / "11"
+    sessions_dir.mkdir(parents=True)
+    path = sessions_dir / "rollout-2026-04-11T10-00-00-aaaabbbb-cccc-dddd-eeee-ffffffffffff.jsonl"
+
+    lines = [
+        {
+            "timestamp": "2026-04-11T10:00:00Z",
+            "type": "session_meta",
+            "payload": {
+                "id": "aaaabbbb-cccc-dddd-eeee-ffffffffffff",
+                "timestamp": "2026-04-11T10:00:00Z",
+                "cwd": "/tmp/null_test",
+                "originator": "codex_cli",
+                "cli_version": "0.120.0",
+                "source": "cli",
+                "model_provider": "openai",
+                "base_instructions": None,
+                "git": None,
+                "forked_from_id": None,
+            },
+        },
+        {
+            "timestamp": "2026-04-11T10:00:01Z",
+            "type": "turn_context",
+            "payload": {"turn_id": "turn-001", "cwd": "/tmp/null_test", "model": "gpt-4.1"},
+        },
+        # message with content: null
+        {
+            "timestamp": "2026-04-11T10:00:02Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "msg_null",
+                "role": "assistant",
+                "content": None,
+            },
+        },
+        # reasoning with content: null AND summary: null
+        {
+            "timestamp": "2026-04-11T10:00:03Z",
+            "type": "response_item",
+            "payload": {
+                "type": "reasoning",
+                "id": "rs_null",
+                "content": None,
+                "summary": None,
+            },
+        },
+        # local_shell_call with action: null
+        {
+            "timestamp": "2026-04-11T10:00:04Z",
+            "type": "response_item",
+            "payload": {
+                "type": "local_shell_call",
+                "id": "fc_null",
+                "call_id": "call_null",
+                "status": "completed",
+                "action": None,
+            },
+        },
+        # A valid message so the session isn't completely empty
+        {
+            "timestamp": "2026-04-11T10:00:05Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "msg_valid",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Hello!"}],
+            },
+        },
+    ]
+
+    with open(path, "w") as f:
+        for line in lines:
+            f.write(json.dumps(line) + "\n")
+
+    return path
+
+
+def test_parse_codex_session_with_null_content_fields(codex_session_with_null_content: Path):
+    """Parser must not crash on response_items with content: null.
+
+    Before the fix, this raised:
+      TypeError: 'NoneType' object is not iterable
+    at codex.py:178 in the `for item in payload.get("content", []):` line.
+    """
+    session = parse_codex_session(codex_session_with_null_content)
+    assert session is not None
+    assert session.session_id == "aaaabbbb-cccc-dddd-eeee-ffffffffffff"
+    # At least the valid message should have been parsed
+    assert session.message_count >= 1
+
+
+def test_convert_codex_session_with_null_content_to_sfs(
+    codex_session_with_null_content: Path, tmp_path: Path
+):
+    """End-to-end: parse → convert → manifest + messages exist."""
+    session = parse_codex_session(codex_session_with_null_content)
+    sfs_dir = tmp_path / "null_test_output.sfs"
+    convert_codex_to_sfs(session, sfs_dir)
+
+    assert (sfs_dir / "manifest.json").exists()
+    assert (sfs_dir / "messages.jsonl").exists()
+
+    manifest = json.loads((sfs_dir / "manifest.json").read_text())
+    assert manifest["source"]["tool"] == "codex"
