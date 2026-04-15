@@ -35,7 +35,7 @@ def upgrade() -> None:
             "include_knowledge",
             sa.Boolean,
             nullable=False,
-            server_default=sa.text("1"),
+            server_default=sa.text("true"),
         ),
         # JSON array of knowledge types to inject (defaults: convention, decision)
         sa.Column(
@@ -54,7 +54,7 @@ def upgrade() -> None:
             "include_context",
             sa.Boolean,
             nullable=False,
-            server_default=sa.text("1"),
+            server_default=sa.text("true"),
         ),
         # JSON array of section slugs (defaults: overview, architecture)
         sa.Column(

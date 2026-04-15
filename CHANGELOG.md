@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.9.1] - 2026-04-15
+
+### Fixed
+- **Migration 028 boolean defaults** — `server_default=sa.text("1")` on `project_rules.include_knowledge` and `include_context` worked on SQLite but PostgreSQL rejects `1` as a boolean literal. Changed to `sa.text("true")` to match the project's Postgres-compatible migration pattern. v0.9.9 prod API deploy failed the Alembic migration step; v0.9.9.1 clears it. No data impact — the broken migration never committed a transaction.
+
 ## [0.9.9] - 2026-04-14
 
 ### Added
