@@ -43,6 +43,20 @@ Capture-only sessions are fully functional in SessionFS. You can:
 
 The only thing you cannot do is inject the session back into the original capture-only tool.
 
+## Rules Compiler Coverage
+
+`sfs rules` compiles canonical project rules to five tool-specific files. The four bidirectional tools all have compilers; Cursor also has one even though it is capture-only (its rules file is still useful for the session it shapes).
+
+| Tool | Compiled filename |
+|------|-------------------|
+| Claude Code | `CLAUDE.md` |
+| Codex | `codex.md` |
+| Cursor | `.cursorrules` |
+| Copilot | `.github/copilot-instructions.md` |
+| Gemini | `GEMINI.md` |
+
+**Resume-time rules sync** (`sfs resume` with preflight) is wired only for the four bidirectional tools: claude-code, codex, copilot, gemini. Cursor resume is out of scope — it stays capture-only. Amp, Cline, and Roo Code do not have rules compilers yet (deferred to a future release).
+
 ## Cross-Tool Resume Examples
 
 ```bash

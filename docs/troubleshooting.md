@@ -180,3 +180,21 @@ The daemon and CLI share a SQLite index. If you see "database is locked", it usu
 3. In selective mode, sessions must be watched: `sfs sync watch ses_abc`
 4. The daemon polls for settings changes every 60 seconds — wait after changing mode in the dashboard
 5. Check daemon logs: `sfs daemon logs`
+
+### `sfs rules compile` refuses to overwrite
+
+`sfs rules compile` will refuse to overwrite a rule file it doesn't recognize as SessionFS-managed. This is intentional — it protects hand-maintained `CLAUDE.md` / `.cursorrules` / etc. from being silently replaced.
+
+**To opt in:** rerun with `--force` (for `sfs rules compile`) or `--force-rules` (for `sfs resume`). Once SessionFS writes managed content over the file, it embeds a managed marker and becomes SessionFS-managed going forward — subsequent compiles / resumes refresh it normally without `--force`.
+
+**Detection is only on the first 512 bytes** of the file. If you intentionally want SessionFS to stop managing a file, either delete the managed marker from the top of the file or remove the file entirely; the next compile will see it as unmanaged again.
+
+### Rules sync doesn't run during `sfs resume`
+
+`sfs resume` preflights the target tool's rules file before launch. It skips cleanly in any of these cases:
+
+1. Target tool isn't one of the four bidirectional tools (claude-code, codex, copilot, gemini). Cursor is capture-only; its rules file is managed only via `sfs rules compile`.
+2. `--no-rules-sync` was passed.
+3. You're not in a git-backed project directory.
+4. The project has no canonical SessionFS rules yet (no `enabled_tools`, no `static_rules`, no `tool_overrides`). Run `sfs rules init` first.
+5. Any rules sync failure is non-fatal by design — the resume still proceeds with exit 0. Check stderr for a warning.

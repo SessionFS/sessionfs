@@ -299,7 +299,7 @@ export default function HelpPage() {
   const siteHref = (path: string) => buildSiteHref(theme, path);
 
   const fakeOutput = `✓ MCP server registered
-✓ ${selectedTool.label} will now have access to 12 tools
+✓ ${selectedTool.label} will now have access to 14 tools
 
 Restart ${selectedTool.label} to activate.`;
 

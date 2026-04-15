@@ -31,7 +31,7 @@ sfs mcp install --for claude-code --skip-instructions
 
 ## Tools
 
-The MCP server exposes 12 tools in three categories.
+The MCP server exposes 14 tools in four categories.
 
 ### Session Tools
 
@@ -145,6 +145,25 @@ Create or update a wiki page in the project knowledge base. Use for longer-form 
 #### `list_wiki_pages`
 
 List all wiki pages for the project. Returns page slugs, titles, word counts, and entry counts. No parameters required.
+
+### Rules (Read-only)
+
+#### `get_rules`
+
+Returns the canonical project rules record plus compilation config for the current repo (static preferences, enabled tools, knowledge / context injection settings, tool overrides). Agents cannot modify rules through MCP — changes must go through `sfs rules edit` or the dashboard.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `git_remote` | string | no | Override auto-detected git remote |
+
+#### `get_compiled_rules`
+
+Returns the compiled rule text for a requested tool, or for the current tool if safely inferable. Useful when an agent needs to understand what behavior contract was materialized for its tool.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `tool` | string | no | Tool slug: `claude-code`, `codex`, `cursor`, `copilot`, `gemini` |
+| `git_remote` | string | no | Override auto-detected git remote |
 
 ## Agent Knowledge Contribution
 

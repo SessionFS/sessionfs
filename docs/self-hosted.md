@@ -64,6 +64,18 @@ trivy config /tmp/rendered.yaml --severity CRITICAL,HIGH
 
 A clean scan should report zero CRITICAL or HIGH misconfigurations.
 
+### Client-Side Privacy Toggle: Rules Provenance
+
+When developer clients capture sessions, SessionFS records instruction provenance in the session manifest — hashes of the rule files and agent instructions that shaped each run. Project-local files (`CLAUDE.md`, `.cursorrules`, etc.) are always hash-only by default; no content is uploaded.
+
+Global rule files (those in a user's home directory, e.g. `~/.claude/CLAUDE.md`) are also hash-only by default. To suppress global-rules hashing entirely for privacy-sensitive environments, set on the **client** (daemon / CLI host):
+
+```bash
+export SFS_CAPTURE_GLOBAL_RULES=off
+```
+
+This is a client-side env var — the SessionFS server never sees global rule file content either way. See [docs/environment-variables.md](./environment-variables.md#session-capture) for details.
+
 ## Installation
 
 ### 1. Add the Helm Repository
