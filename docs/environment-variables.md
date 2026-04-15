@@ -84,6 +84,12 @@ All SessionFS server environment variables use the `SFS_` prefix.
 |----------|-------------|---------|
 | `SFS_GITLAB_WEBHOOK_SECRET` | GitLab webhook token for MR events | — |
 
+## Session Capture
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `SFS_CAPTURE_GLOBAL_RULES` | Controls whether global instruction artifacts (rule files in user home directories, global agent files) are hashed into session provenance. Values: `on`, `off`. When `off`, SessionFS skips all artifacts with `scope: global` and never hashes personal conventions from a developer's home directory into shared session records. Project-scope artifacts are captured regardless. | `on` |
+
 ## Defaults
 
 | Variable | Description | Default |

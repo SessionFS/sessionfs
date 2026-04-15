@@ -135,3 +135,9 @@ Write whatever is useful for your team. Some ideas:
 | POST | `/api/v1/projects/` | Create a project context |
 | GET | `/api/v1/projects/{remote}` | Get project context by git remote |
 | PUT | `/api/v1/projects/{remote}/context` | Update the context document |
+
+## Related: Project Rules
+
+Project context and project rules are adjacent features. Context is the *descriptive* knowledge about your codebase (what the architecture is, how the data flows, what the team conventions are). Rules are the *prescriptive* instructions compiled into `CLAUDE.md`, `codex.md`, `.cursorrules`, and the other tool-specific files each AI agent reads.
+
+Selected sections of this project context document are injected into compiled rules by default (see `sfs rules compile`). See [Rules Portability](rules.md) for the full reference.

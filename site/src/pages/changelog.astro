@@ -17,14 +17,47 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.9.8.6 -->
+      <!-- v0.9.9 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.9.9</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">April 14, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Rules Portability — Canonical Project Rules, Five Tool Compilers, Resume-Time Sync</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Canonical rules per project</strong> — new project_rules + rules_versions tables (migration 028) with 4 new instruction-provenance columns on sessions. Managed via GET/PUT /projects/:id/rules and POST /projects/:id/rules/compile with ETag-based optimistic concurrency (SELECT FOR UPDATE row lock).</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Five tool compilers</strong> — deterministic, partial-compile-aware compilers for Claude Code (CLAUDE.md), Codex (codex.md), Cursor (.cursorrules), Copilot (.github/copilot-instructions.md), and Gemini (GEMINI.md). Each embeds a SessionFS managed marker at the top of the file.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Knowledge + context injection</strong> — compilers pull active claims (default convention + decision types) and project context sections (default overview + architecture) with per-tool token ceilings and progressive condensation.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>sfs rules CLI</strong> — init (auto-detects existing rule files + recent session-history tool usage), edit, show (in-sync state), compile (--tool, --dry-run, --force), push, pull. Default is shared-in-repo; --local-only adds compiled files to .gitignore.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Managed-file safety</strong> — sfs rules compile refuses to overwrite a user-maintained rule file unless --force is set. Detection reads only the first 512 bytes so markers buried in hand-written content don't trigger false positives.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Session instruction provenance</strong> — manifests now carry rules_version, rules_hash, rules_source (sessionfs/manual/mixed/none), and instruction_artifacts[]. SFS_CAPTURE_GLOBAL_RULES=off suppresses global hashing for privacy-sensitive environments.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Resume-time rules sync</strong> — sfs resume preflights the target tool's rule file from current canonical rules before launching the tool (claude-code, codex, copilot, gemini supported). New flags: --no-rules-sync skips preflight; --force-rules overwrites an unmanaged target as a one-time permission (file becomes SessionFS-managed afterward).</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Source-session provenance display</strong> — resume shows the rules version that shaped the original session vs current project rules (e.g. "Source session used rules v3 (sessionfs). Current project rules are v5. Synced codex.md from SessionFS rules v5.").</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Non-fatal semantics</strong> — rules sync failure never fails the resume itself. Warning to stderr, resume continues, exit 0. Partial compiles never bump canonical version history.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>MCP tools</strong> — read-only get_rules and get_compiled_rules for agents. No agent self-modification of rules.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Dashboard Rules tab</strong> — new RulesTab under ProjectDetail with version badge, static preferences editor, enabled-tools checklist, knowledge/context injection settings, per-tool compiled output viewer, version history, and compile action. ETag optimistic concurrency with 409 toast on stale saves.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Helm chart semver fix</strong> — 0.9.8.6 was an invalid four-segment chart version. v0.9.9 returns the chart to valid 3-segment semver matching the Python package.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Compile hash is marker-independent</strong> — content_hash is now the body hash only, so no-op detection doesn't break after a version bump (no more infinite-version-bump loops).</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Path traversal defense</strong> — _safe_target_path() in cli/cmd_rules.py used by both sfs rules compile and resume preflight; validates against canonical TOOL_FILES[tool] and confirms the resolved path stays inside git_root.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Concurrent compile + first-create safe</strong> — version-number contention retries idempotently; same-body-hash collision short-circuits to no-op; get_or_create_rules catches IntegrityError on first-time creation.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Knowledge-injection determinism</strong> — claim ordering priority (decision &gt; convention &gt; pattern &gt; dependency) moved into SQL ORDER BY so LIMIT respects it; deterministic id DESC tie-breaker.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Security</strong> — pytest bumped to &gt;=9.0.3,&lt;10.0 for CVE-2025-71176 (dev-only /tmp DoS).</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">1,171 backend tests + 89 dashboard UI tests passing &middot; 28 migrations</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.9.8.6 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
             <span class="text-brand font-semibold">v0.9.8.6</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">April 13, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Knowledge Base v2 — Three-Layer Claim Model, Per-Type Freshness, Writeback Gates</h2>
         <ul class="space-y-2 text-base text-muted">

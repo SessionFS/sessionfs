@@ -1,0 +1,49 @@
+# Files and directories that MUST NOT appear on the main (public) branch.
+# One entry per line. Directories end with /
+# This file is the single source of truth for release sanitization.
+# Referenced by: .claude/commands/release.md, .gitignore (safety nets)
+
+# Agent personas (internal strategy)
+.agents/
+
+# Research spikes (internal exploration)
+src/spikes/
+
+# Security docs (threat models, audit reports)
+docs/security/
+
+# Business strategy
+docs/positioning.md
+docs/pricing.md
+
+# Dogfood log
+DOGFOOD.md
+
+# Exported chat transcripts
+Claude-portablePortable chat agent sessions with network persistence.md
+
+# Brand assets (internal, served via CDN/README only)
+brand/
+
+# Landing page source (deployed to Vercel, exposes marketing strategy)
+landing/
+
+# Homebrew formula (incomplete, hardcoded version)
+packaging/
+
+# Claude Code internal commands (not useful to public contributors)
+.claude/commands/
+.claude/settings.local.json
+
+# Claude Code config (signals AI tooling, duplicates README)
+CLAUDE.md
+
+# GitHub App manifest (internal setup config)
+github-app-manifest.json
+
+# Release config itself (meta)
+.release/
+
+# Implementation briefs (internal scope docs)
+v0.9.9-implementation-brief
+v0.9.9-resume-rules-sync-brief

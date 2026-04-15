@@ -128,17 +128,21 @@ class CopilotWatcher:
             session_dir = self._store.allocate_session_dir(sfs_id)
             convert_copilot_to_sfs(native_path, session_dir, session_id=sfs_id)
 
-            manifest_path = session_dir / "manifest.json"
-            if manifest_path.exists():
-                manifest = json.loads(manifest_path.read_text())
-                self._store.upsert_session_metadata(sfs_id, manifest, str(session_dir))
-
             # Read cwd from workspace.yaml via the parsed session
             cwd = None
             workspace_path = session_dir / "workspace.json"
             if workspace_path.exists():
                 ws = json.loads(workspace_path.read_text())
                 cwd = ws.get("root_path")
+
+            # Migration 028: annotate with instruction provenance.
+            from sessionfs.watchers.provenance import annotate_manifest_with_provenance
+            annotate_manifest_with_provenance(session_dir, "copilot", cwd)
+
+            manifest_path = session_dir / "manifest.json"
+            if manifest_path.exists():
+                manifest = json.loads(manifest_path.read_text())
+                self._store.upsert_session_metadata(sfs_id, manifest, str(session_dir))
 
             ref = NativeSessionRef(
                 tool="copilot-cli",

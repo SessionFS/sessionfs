@@ -102,14 +102,23 @@ sfs resume SESSION_ID [OPTIONS]
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `--project` | path | — | Target project path (overrides workspace) |
-| `--in` | string | `claude-code` | Target tool: `claude-code`, `codex`, `gemini`, or `cursor` |
+| `--in` | string | `claude-code` | Target tool: `claude-code`, `codex`, `copilot`, or `gemini` |
+| `--no-rules-sync` | flag | `false` | Skip preflight of the target tool's project rules file. Per-invocation only. |
+| `--force-rules` | flag | `false` | Overwrite an unmanaged target-tool rules file with SessionFS-managed content. One-time permission — the file becomes SessionFS-managed afterward and subsequent resumes refresh it normally. |
 
 Converts the session to the target tool's native format and injects it into that tool's session storage. Cursor is capture-only — use `--in` with another tool to resume Cursor sessions.
+
+Before launching the target tool, `sfs resume` preflights the tool's project rules file from the current canonical SessionFS rules (applies to `claude-code`, `codex`, `copilot`, `gemini`). Missing files are written; SessionFS-managed files are refreshed; unmanaged files are left alone with a warning on stderr unless `--force-rules` is passed. Preflight failures are non-fatal — resume still exits `0`. See [Resume-Time Rules Sync](rules.md#resume-time-rules-sync) for the full policy.
 
 **Example:**
 
 ```bash
-$ sfs resume a1b2 --project /Users/me/myproject
+$ sfs resume ses_abc123 --in codex
+
+Source session used rules v3 (sessionfs).
+Current project rules are v5.
+Synced codex.md from SessionFS rules v5.
+Launching codex resume ...
 
 Session resumed successfully.
   CC Session ID: abc123-def456
@@ -117,6 +126,18 @@ Session resumed successfully.
   Messages: 23
 
 Open Claude Code in /Users/me/myproject to continue.
+```
+
+Skip preflight for a one-off resume:
+
+```bash
+$ sfs resume ses_abc123 --in codex --no-rules-sync
+```
+
+Take ownership of a hand-written `codex.md`:
+
+```bash
+$ sfs resume ses_abc123 --in codex --force-rules
 ```
 
 ---
@@ -679,6 +700,126 @@ Force a full rebuild of the project's compiled context document from all active 
 
 ```
 sfs project rebuild
+```
+
+---
+
+## `sfs rules`
+
+Manage canonical project rules and compile them into the tool-specific files each AI agent reads (`CLAUDE.md`, `codex.md`, `.cursorrules`, `.github/copilot-instructions.md`, `GEMINI.md`). See [Rules Portability](rules.md) for the full reference.
+
+### `sfs rules init`
+
+Seed canonical rules for the current project. Detects the git remote, preselects enabled tools from existing rule files + recent tool usage, and optionally imports a single unmanaged rule file as the canonical seed.
+
+```
+sfs rules init [--local-only]
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--local-only` | flag | `false` | Gitignore the compiled rule files instead of committing them |
+
+Only the five v0.9.9-supported tools are preselected: `claude-code`, `codex`, `cursor`, `copilot`, `gemini`. The picker shows the reason for each preselection (file present, recent usage, or manual pick).
+
+**Example:**
+
+```bash
+$ sfs rules init
+
+Detected rule files:
+  CLAUDE.md       (reason: file present)
+  .cursorrules    (reason: file present)
+
+Recent tool usage (last 90 days):
+  codex           (reason: recent usage)
+
+Enable these tools? [Y/n]
+Seeded canonical rules for myorg/my-project.
+Run 'sfs rules edit' to edit preferences, then 'sfs rules compile'.
+```
+
+### `sfs rules edit`
+
+Open the canonical `static_rules` document in `$EDITOR`.
+
+```
+sfs rules edit
+```
+
+### `sfs rules show`
+
+Show current canonical version, enabled tools, knowledge/context injection config, and whether compiled outputs are in sync.
+
+```
+sfs rules show
+```
+
+**Example:**
+
+```bash
+$ sfs rules show
+
+Project: myorg/my-project
+Canonical version: 4
+Enabled tools: claude-code, codex, cursor, gemini
+
+Knowledge injection: on
+  Types: convention, decision
+  Budget: 2000 tokens
+
+Context injection: on
+  Sections: overview, architecture
+  Budget: 2000 tokens
+
+Compiled outputs: in sync (last compile: 2026-04-12)
+```
+
+### `sfs rules compile`
+
+Compile canonical rules into tool-specific files. Deterministic — no new version is created unless a compiled output changes by hash.
+
+```
+sfs rules compile [--tool TOOL] [--dry-run] [--force]
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--tool` | string | — | Compile for a single tool only |
+| `--dry-run` | flag | `false` | Show what would be written without touching disk |
+| `--force` | flag | `false` | Overwrite files not managed by SessionFS |
+
+**Example:**
+
+```bash
+$ sfs rules compile
+
+Compiling canonical rules v4...
+  CLAUDE.md                               written  (sha256:9a1c…)
+  codex.md                                written  (sha256:4e2f…)
+  .cursorrules                            written  (sha256:b7d1…)
+  .github/copilot-instructions.md         written  (sha256:c3a8…)
+  GEMINI.md                               written  (sha256:5f90…)
+
+New rules version: 5
+```
+
+SessionFS refuses to overwrite a rule file that is not managed (no SessionFS marker and not created by `sfs rules init`). Use `sfs rules init` to import it, or pass `--force`.
+
+### `sfs rules push`
+
+Push the canonical record and latest compiled version to the SessionFS API. Uses optimistic concurrency — a stale write returns `409 Conflict`.
+
+```
+sfs rules push
+```
+
+### `sfs rules pull`
+
+Pull canonical rules from the SessionFS API. Run `sfs rules compile` afterwards to regenerate tool files.
+
+```
+sfs rules pull
 ```
 
 ---

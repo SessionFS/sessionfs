@@ -26,8 +26,9 @@ import {
 import { useToast } from '../hooks/useToast';
 import RelativeDate from '../components/RelativeDate';
 import type { KnowledgeEntry, WikiPage } from '../api/client';
+import RulesTab from './RulesTab';
 
-type ProjectTab = 'context' | 'pages' | 'entries' | 'history';
+type ProjectTab = 'context' | 'pages' | 'rules' | 'entries' | 'history';
 
 const ENTRY_TYPE_COLORS: Record<string, { bg: string; text: string; border: string }> = {
   decision: { bg: 'rgba(34,197,94,0.12)', text: '#22c55e', border: 'rgba(34,197,94,0.3)' },
@@ -1077,10 +1078,12 @@ export default function ProjectDetail() {
     );
   }
 
+  // Brief §Dashboard: place Rules between Pages and Entries.
   const tabs: { key: ProjectTab; label: string; step?: number }[] = [
     { key: 'entries', label: 'Entries', step: 1 },
     { key: 'context', label: 'Context', step: 2 },
     { key: 'pages', label: 'Pages', step: 3 },
+    { key: 'rules', label: 'Rules' },
     { key: 'history', label: 'History', step: 4 },
   ];
   function handleCompileFromContext() {
@@ -1335,6 +1338,12 @@ export default function ProjectDetail() {
       {activeTab === 'pages' && (
         <div key={`pages-${tabKey}`} className="mt-4 tab-panel-enter bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-sm)]">
           <PagesTab projectId={project.id} />
+        </div>
+      )}
+
+      {activeTab === 'rules' && (
+        <div key={`rules-${tabKey}`} className="mt-4 tab-panel-enter bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-sm)]">
+          <RulesTab projectId={project.id} />
         </div>
       )}
 

@@ -88,6 +88,8 @@ Sessions are indexed locally for fast browsing via the CLI. Cloud sync is opt-in
 | `sfs project get-context` | Output raw project context to stdout |
 | `sfs project compile\|entries\|health\|dismiss` | Living Project Context — compile, browse, and manage knowledge |
 | `sfs project ask\|pages\|page\|regenerate\|set` | Query knowledge, manage wiki pages, configure project |
+| `sfs rules init\|edit\|show\|compile` | Manage canonical project rules — compile once, drive every tool |
+| `sfs rules push\|pull` | Sync canonical rules through the SessionFS API |
 | `sfs doctor` | Run 8 health checks with auto-repair |
 | `sfs storage` | Show local disk usage and retention policy |
 | `sfs storage prune` | Prune old sessions to free disk space |
@@ -173,6 +175,18 @@ sfs project show
 
 AI agents connected via the MCP server can call `get_project_context` to read the document automatically. See [Project Context](docs/project-context.md) for details.
 
+## Rules Portability
+
+Maintain your project's AI instructions in one place. SessionFS compiles canonical rules into the tool-specific files each AI agent reads — `CLAUDE.md`, `codex.md`, `.cursorrules`, `.github/copilot-instructions.md`, `GEMINI.md` — so instructions stay consistent across every tool.
+
+```bash
+sfs rules init          # pick tools, seed canonical rules
+sfs rules edit          # edit project preferences in $EDITOR
+sfs rules compile       # write tool-specific files (commit them)
+```
+
+Compiled files are committed by default so fresh clones and teammates without SessionFS still get the same agent contract. Cross-tool resume preflights the target tool's rules file from current canonical rules (Case A/B/D write, Case C skip with warning). Each captured session records `rules_version`, `rules_hash`, and a full list of instruction artifacts so you always know what guided the agent. See [Rules Portability](docs/rules.md).
+
 ## Web Dashboard
 
 A browser-based interface for browsing and managing synced sessions. Accessible at `http://localhost:8000` when running the self-hosted server, or at `app.sessionfs.dev` for cloud accounts.
@@ -197,7 +211,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
-**v0.9.8.6 — Public Beta.** 1091 backend tests + 76 dashboard tests passing. 27 database migrations.
+**v0.9.9 — Public Beta.** 1171 backend tests + 89 dashboard tests passing. 28 database migrations.
 
 ### Session capture, resume, and search
 
@@ -212,6 +226,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 - **Shared project context** — one document per repo, shared across the team, readable via MCP, manageable from dashboard
 - **Living Project Context** — auto-summarize on sync, knowledge entries (6 types), wiki pages with backlinks, structured compilation, concept auto-generation
+- **Rules portability** — canonical project rules compiled into `CLAUDE.md`, `codex.md`, `.cursorrules`, `.github/copilot-instructions.md`, `GEMINI.md`; managed-file safety, deterministic output, optimistic-concurrency API; sessions persist `rules_version` + `rules_hash` + `instruction_artifacts` for full instruction provenance
 - **Knowledge base lifecycle** — entry decay after 90 days unreferenced, auto-dismiss past retention, context-document budget, section page caps, concept auto-refresh, quality gates on contributions
 - **LLM Judge** — confidence scores (0-100), CWE mapping, evidence linking, dismiss/confirm workflow
 

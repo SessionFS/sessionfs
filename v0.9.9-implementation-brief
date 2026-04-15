@@ -1,0 +1,649 @@
+# SessionFS v0.9.9 — Rules Portability + Session Instruction Provenance
+
+## Purpose
+
+SessionFS already captures sessions and project knowledge. `v0.9.9` should extend that system to capture and manage the **instruction context** that shaped those sessions.
+
+This release is **not** “universal rule sync for every tool forever.”
+
+This release **is**:
+- canonical project rules managed once in SessionFS
+- compilation of those rules into a small set of core tool formats
+- capture of the instruction artifacts that shaped each session
+- durable provenance linking sessions to the rules and artifacts active at the time
+
+Core principle:
+- SessionFS should preserve not just what happened in a session, but what **guided** the agent while it happened.
+
+Do not use “Dropbox for AI sessions” anywhere.
+
+---
+
+## Product Framing
+
+There are two project artifacts AI-heavy developers maintain constantly:
+- sessions
+- instructions
+
+Today, tool instructions drift across formats:
+- `CLAUDE.md`
+- `.cursorrules`
+- `.github/copilot-instructions.md`
+- `codex.md`
+- `GEMINI.md`
+- and several others
+
+SessionFS already solves session portability. `v0.9.9` should solve **project rule portability** and **session instruction provenance**.
+
+The outcome should be:
+
+```text
+canonical project rules
+    ->
+compiled tool-specific rules
+    ->
+agent session shaped by those rules
+    ->
+session captured with instruction provenance
+```
+
+This release should make it possible to answer:
+- What rules were active when this session happened?
+- Were those rules SessionFS-managed or manual?
+- Which local project files, agent files, skill files, or settings files shaped the run?
+
+---
+
+## Scope
+
+## Must ship in v0.9.9
+
+1. Canonical project rules per project
+2. Versioned compiled outputs
+3. Core tool compilers for:
+- `claude-code`
+- `codex`
+- `cursor`
+- `copilot`
+- `gemini`
+4. Rules CLI:
+- `sfs rules init`
+- `sfs rules edit`
+- `sfs rules show`
+- `sfs rules compile`
+- `sfs rules push`
+- `sfs rules pull`
+5. Rules API:
+- get/update rules
+- compile rules
+- list versions
+- fetch one version
+6. Session capture persists instruction provenance
+7. Rules tab in the dashboard
+8. Knowledge-claim injection into compiled rules
+9. Project-context injection into compiled rules
+10. Safe ownership model for generated files
+
+## Should ship if low-risk
+
+1. `sfs rules diff <session_id>`
+2. `sfs rules config`
+3. Simple one-source import flow
+4. MCP:
+- `get_rules`
+- `get_compiled_rules`
+
+## Explicitly defer
+
+1. Auto-write to disk
+2. Daemon auto-compile
+3. Long-tail tool compilers:
+- `windsurf`
+- `cline`
+- `roo-code`
+- `amp`
+4. Agent rule suggestions and review queue
+5. Dashboard diff/history UX beyond a simple version list
+6. Automatic merge of multiple unmanaged rule files
+7. Judge rule-compliance auditing
+
+---
+
+## Key Design Rules
+
+### 1. Project rules are managed; global rules are captured, not managed
+
+For `v0.9.9`, SessionFS manages **project rules only**.
+
+That means:
+- SessionFS can create and maintain project-local files like `CLAUDE.md`, `codex.md`, `.cursorrules`, etc.
+- SessionFS does **not** attempt to own or rewrite global user files in home directories
+
+However, session capture **must** still record the presence of global instruction artifacts when relevant.
+
+### 2. Session provenance is first-class
+
+`rules_version` and `rules_hash` are not enough by themselves.
+
+Each captured session must persist the instruction artifacts that shaped it.
+
+At minimum, capture:
+- `tool`
+- `rules_source`
+- `rules_version` if SessionFS-managed
+- `rules_hash`
+- `instruction_artifacts`
+
+Where `instruction_artifacts` is a list of objects like:
+
+```json
+{
+  "artifact_type": "rules_file",
+  "path": "CLAUDE.md",
+  "scope": "project",
+  "source": "sessionfs",
+  "hash": "sha256:..."
+}
+```
+
+Allowed `artifact_type` values:
+- `rules_file`
+- `agent`
+- `skill`
+- `settings`
+
+Allowed `scope` values:
+- `project`
+- `global`
+
+Allowed `source` values:
+- `sessionfs`
+- `manual`
+- `tool`
+
+For `v0.9.9`, content snapshots are optional for large/global files. Hash-based provenance is acceptable.
+
+### 3. Managed file safety is mandatory
+
+SessionFS may overwrite a project rules file only if it is SessionFS-managed.
+
+A file is SessionFS-managed if:
+- it was created by SessionFS, or
+- it contains a SessionFS managed marker, or
+- it was explicitly imported into SessionFS control
+
+If a recognized rules file already exists and is not managed by SessionFS:
+- `compile` must refuse to overwrite it by default
+- the CLI must instruct the user to `import` or use `--force`
+
+Do not silently overwrite user-maintained files.
+
+### 4. Canonical rules are the source of truth
+
+Compiled tool files are projections.
+
+The canonical source is the project’s SessionFS rules record:
+- static preferences
+- rules configuration
+- enabled tools
+- tool-specific overrides
+- version history
+
+### 5. Knowledge injection stays descriptive, not prescriptive
+
+Injected knowledge claims should be framed as project facts, not arbitrary commands.
+
+Good:
+- “Project fact: API routes live in `src/server/routes/`.”
+
+Bad:
+- “Always use `src/server/routes/` because the knowledge base says so.”
+
+Preferences are prescriptive.
+Knowledge is descriptive.
+
+### 6. No version bump when compiled output is unchanged
+
+Recompilation must only create a new version when at least one compiled output changes by hash.
+
+---
+
+## Data Model
+
+Use existing repository conventions.
+
+Do **not** assume Postgres-only types if the current stack/tests need SQLite compatibility.
+
+Prefer:
+- string IDs consistent with the rest of SessionFS
+- JSON arrays instead of SQL array types if needed
+- SQLAlchemy `JSON` over `JSONB` unless the current codebase already standardizes otherwise
+
+### `project_rules`
+
+One record per project.
+
+Fields:
+- `id`
+- `project_id`
+- `version`
+- `static_rules`
+- `include_knowledge`
+- `knowledge_types`
+- `knowledge_max_tokens`
+- `include_context`
+- `context_sections`
+- `context_max_tokens`
+- `tool_overrides`
+- `enabled_tools`
+- `created_by`
+- `updated_at`
+- `created_at`
+
+### `rules_versions`
+
+Immutable compiled history.
+
+Fields:
+- `id`
+- `rules_id`
+- `version`
+- `static_rules`
+- `compiled_outputs`
+- `knowledge_snapshot`
+- `context_snapshot`
+- `compiled_at`
+- `compiled_by`
+- `content_hash`
+
+### `rules_suggestions`
+
+Defer unless implementation remains low-risk. If added, keep minimal and optional.
+
+### Session additions
+
+Add to `sessions`:
+- `rules_version`
+- `rules_hash`
+- `rules_source`
+- `instruction_artifacts`
+
+`rules_source` values:
+- `sessionfs`
+- `manual`
+- `mixed`
+- `none`
+
+If both SessionFS-managed and manual/global artifacts shaped a session, use `mixed`.
+
+### Migration
+
+Use the **next available migration number**. Do not hardcode one in advance.
+
+---
+
+## Compilation Model
+
+Compiled rules are assembled from three inputs:
+
+1. `static_rules`
+2. selected project knowledge claims
+3. selected project context sections
+
+### Knowledge injection defaults
+
+Default enabled:
+- `convention`
+- `decision`
+
+Do not inject:
+- `bug`
+- `discovery`
+- `note`
+- stale claims
+- superseded claims
+
+Only inject active, durable knowledge:
+- `claim_class = 'claim'`
+- not dismissed
+- not superseded
+- freshness in active states
+
+### Context injection defaults
+
+Default sections:
+- `overview`
+- `architecture`
+
+### Compiler requirements
+
+Each tool compiler must:
+- know its filename
+- know its approximate token ceiling
+- produce deterministic output
+- include SessionFS provenance marker
+
+Each compiler should stay simple.
+This is text formatting, not a template engine.
+
+### Required compilers for v0.9.9
+
+1. Claude Code -> `CLAUDE.md`
+2. Codex -> `codex.md`
+3. Cursor -> `.cursorrules`
+4. Copilot -> `.github/copilot-instructions.md`
+5. Gemini -> `GEMINI.md`
+
+### Tool enablement
+
+Do **not** default to every possible tool.
+
+At `sfs rules init`, enabled tools should be:
+- explicitly selected by the user, or
+- inferred from known tool usage in the repo/session history
+
+Do not generate unused tool files by default.
+
+### Token budgeting
+
+Respect per-tool budgets.
+
+Required behavior:
+- large-budget tools can receive full preferences + knowledge + context
+- smaller-budget tools receive progressively condensed output
+- compilation must be deterministic
+
+No LLM is required for rules compilation in `v0.9.9`.
+
+---
+
+## CLI
+
+## Required commands
+
+### `sfs rules init`
+
+Creates canonical rules for the current project.
+
+Must:
+- detect git remote
+- detect obvious existing local rule files
+- ask the user which tool(s) to enable
+- optionally offer import if exactly one unmanaged recognized file exists
+
+If multiple unmanaged rule files exist:
+- do not auto-merge
+- require explicit source selection
+
+### `sfs rules edit`
+
+Edits canonical static preferences in `$EDITOR`.
+
+### `sfs rules show`
+
+Shows:
+- current version
+- enabled tools
+- knowledge/context injection config
+- whether compiled outputs are in sync
+
+### `sfs rules compile`
+
+Compiles current canonical rules into tool outputs.
+
+Must support:
+- all enabled tools
+- `--tool <tool>`
+- `--dry-run`
+- `--force` only for unmanaged overwrite if explicitly requested
+
+### `sfs rules push`
+
+Push canonical rules + latest compiled version to cloud.
+
+### `sfs rules pull`
+
+Pull canonical rules from cloud.
+
+## Optional if time permits
+
+### `sfs rules config`
+
+Update settings like:
+- knowledge types
+- token budgets
+- enabled tools
+
+### `sfs rules diff <session_id>`
+
+Show current rules vs the rules used by a session.
+
+### `sfs rules import`
+
+Import a single existing unmanaged rule file as the canonical seed.
+
+Keep this intentionally narrow for `v0.9.9`.
+
+---
+
+## API
+
+Required endpoints:
+
+- `GET /api/v1/projects/{id}/rules`
+- `PUT /api/v1/projects/{id}/rules`
+- `POST /api/v1/projects/{id}/rules/compile`
+- `GET /api/v1/projects/{id}/rules/versions`
+- `GET /api/v1/projects/{id}/rules/versions/{version}`
+
+If suggestions are implemented:
+- `POST /api/v1/projects/{id}/rules/suggest`
+- accept/reject endpoint
+
+### Conflict handling
+
+Rules updates must use optimistic concurrency.
+
+Do **not** use last-write-wins.
+
+Acceptable approaches:
+- version-based update
+- ETag / If-Match style
+
+If stale:
+- return `409`
+- require client to refresh and retry
+
+---
+
+## Session Capture Behavior
+
+When capturing a session, SessionFS must try to discover the instruction artifacts that likely shaped it.
+
+For `v0.9.9`, at minimum:
+
+1. locate the project rules file for the active tool, if any
+2. detect whether it is SessionFS-managed
+3. capture its hash
+4. record `rules_version` if embedded in the managed file
+5. record relevant project-local agent/skill/rules artifacts when present
+6. record relevant global artifacts by hash when discoverable and low-risk
+
+Examples:
+- `CLAUDE.md`
+- `codex.md`
+- `.cursorrules`
+- `.github/copilot-instructions.md`
+- `GEMINI.md`
+- repo-local agent files
+- repo-local skills
+
+This capture must be best-effort and non-fatal.
+
+If SessionFS cannot fully classify artifacts:
+- still record what it can
+- do not fail session capture
+
+---
+
+## MCP
+
+Required if low-risk:
+
+### `get_rules`
+
+Returns canonical rules and compilation config for the current repo.
+
+### `get_compiled_rules`
+
+Returns compiled rules for:
+- a requested tool, or
+- the current tool if it can be inferred safely
+
+Do not implement agent self-modification of rules in `v0.9.9`.
+
+If suggestions are included, they must be:
+- review-required
+- human-governed
+
+Agents must never auto-accept their own rule suggestions.
+
+---
+
+## Dashboard
+
+Add a Rules tab under Project Detail.
+
+Must show:
+- current rules version
+- static preferences
+- enabled tools
+- knowledge injection settings
+- context injection settings
+- compiled outputs with token counts
+- version list
+- compile action
+
+If time permits:
+- simple preview of one compiled output
+- basic version history list
+
+Defer:
+- rich diff viewer
+- suggestion moderation workflow
+- tool-override editor
+
+---
+
+## Managed File Format
+
+Compiled files must include a small managed marker.
+
+Example requirements:
+- generated by SessionFS
+- canonical source command
+- version number
+- content hash
+
+This marker is what allows SessionFS to know whether future overwrites are safe.
+
+Keep the marker lightweight and tool-compatible.
+
+---
+
+## Knowledge + Rules Interaction
+
+Knowledge injection is one-way in `v0.9.9`:
+- canonical rules can consume active project claims
+- sessions can record the rules version they used
+
+Do **not** build a full automatic rules-flywheel yet.
+
+Specifically defer:
+- automatic rule suggestion acceptance
+- automatic rewriting of canonical rules from KB changes
+- rules compliance judging
+
+The only allowed automatic behavior in `v0.9.9` is:
+- deterministic recompilation when the user explicitly triggers compile
+
+---
+
+## Import Rules
+
+If import is implemented:
+
+Rules:
+- import only one source at a time
+- do not auto-merge multiple unmanaged tool files
+- preserve original file until user confirms SessionFS ownership
+
+Good import flow:
+1. detect one unmanaged file
+2. offer import
+3. canonicalize into `static_rules`
+4. user reviews
+5. SessionFS-managed output created only after explicit compile/write
+
+---
+
+## Acceptance Criteria
+
+### Must-have
+
+- canonical project rules exist as a first-class project resource
+- rules are versioned
+- compile produces deterministic outputs for the five core tools
+- only SessionFS-managed files may be overwritten by default
+- sessions persist `rules_version`, `rules_hash`, `rules_source`, and `instruction_artifacts`
+- managed rules files embed a SessionFS marker and version/hash metadata
+- active knowledge claims can be injected into compiled rules
+- project context can be injected into compiled rules
+- rules update path uses optimistic concurrency, not silent overwrite
+- enabled tools are explicit, not “all tools by default”
+- `sfs rules init/edit/show/compile/push/pull` work
+- dashboard Rules tab works
+- tests cover:
+  - compile determinism
+  - overwrite safety
+  - version bump only on content change
+  - session provenance capture
+  - conflict handling
+
+### Should-have
+
+- one-source import flow
+- `rules diff` against a session
+- MCP `get_rules`
+- MCP `get_compiled_rules`
+- basic version list in dashboard
+
+### Must not
+
+- do not silently overwrite unmanaged files
+- do not manage global rules files in v0.9.9
+- do not require LLMs for rules compilation
+- do not auto-merge multiple unmanaged tool rule files
+- do not let agents directly edit canonical rules
+- do not regress existing session capture or resume behavior
+
+---
+
+## Open Questions To Resolve Before Build
+
+1. Should compiled project-local rule files be committed to git by default, or treated as local generated artifacts?
+2. Which existing tool signals should `sfs rules init` use to preselect enabled tools?
+3. What is the minimal acceptable `instruction_artifacts` snapshot for global files in privacy-sensitive environments?
+4. Should `rules diff` be in scope for `v0.9.9` or deferred?
+
+---
+
+## Practical Recommendation
+
+Build `v0.9.9` around this sentence:
+
+**SessionFS v0.9.9 manages canonical project rules and captures the full instruction provenance that shaped each session.**
+
+That is the smallest strong version of the product idea.
+
+It is enough to be differentiated, useful, and shippable without overreaching into a full multi-tool behavior platform in one release.

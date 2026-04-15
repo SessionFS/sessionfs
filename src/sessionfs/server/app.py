@@ -13,7 +13,7 @@ from sessionfs.server.config import ServerConfig
 from sessionfs.server.db.engine import close_engine, init_engine
 from sessionfs.server.errors import register_exception_handlers
 from sessionfs.server.middleware import RequestLoggingMiddleware
-from sessionfs.server.routes import admin, admin_licenses, audit, auth, billing, bookmarks, dlp, handoffs, health, helm, knowledge, org, projects, sessions, settings, summaries, sync, telemetry, webhooks, wiki
+from sessionfs.server.routes import admin, admin_licenses, audit, auth, billing, bookmarks, dlp, handoffs, health, helm, knowledge, org, projects, rules, sessions, settings, summaries, sync, telemetry, webhooks, wiki
 from sessionfs.server.storage.local import LocalBlobStore
 
 
@@ -109,6 +109,10 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     app.include_router(admin.router)
     app.include_router(knowledge.router)
     app.include_router(wiki.router)
+    # IMPORTANT: rules.router must precede projects.router because the latter
+    # uses a catch-all `/{git_remote_normalized:path}` pattern that would
+    # otherwise swallow `/{project_id}/rules` and sibling endpoints.
+    app.include_router(rules.router)
     app.include_router(projects.router)
     app.include_router(summaries.router)
     app.include_router(summaries.batch_router)

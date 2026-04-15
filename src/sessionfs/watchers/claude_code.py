@@ -529,6 +529,12 @@ class ClaudeCodeWatcher:
                 session_id=sfs_id, session_dir=session_dir,
             )
 
+            # Migration 028: annotate manifest with instruction provenance.
+            from sessionfs.watchers.provenance import annotate_manifest_with_provenance
+            annotate_manifest_with_provenance(
+                session_dir, "claude-code", cc_session.project_path
+            )
+
             # Read back manifest and index it (must happen before tracked
             # session upsert due to FK constraint)
             manifest_path = session_dir / "manifest.json"

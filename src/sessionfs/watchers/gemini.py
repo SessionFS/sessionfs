@@ -142,6 +142,10 @@ class GeminiWatcher:
             session_dir = self._store.allocate_session_dir(sfs_id)
             convert_gemini_to_sfs(gemini_session, session_dir, session_id=sfs_id)
 
+            # Migration 028: annotate with instruction provenance.
+            from sessionfs.watchers.provenance import annotate_manifest_with_provenance
+            annotate_manifest_with_provenance(session_dir, "gemini", project_path)
+
             manifest_path = session_dir / "manifest.json"
             if manifest_path.exists():
                 manifest = json.loads(manifest_path.read_text())

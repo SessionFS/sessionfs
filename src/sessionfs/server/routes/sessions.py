@@ -306,8 +306,33 @@ def _extract_manifest_metadata(data: bytes) -> dict:
         defaults["tags"] = json.dumps(manifest.get("tags", []))
         defaults["parent_session_id"] = manifest.get("parent_session_id") or manifest.get("_resume_parent_id")
 
+        # Rules provenance (migration 028) — embedded by the watchers when
+        # they capture a native session. Unknown clients leave this absent,
+        # which is fine (defaults to rules_source="none").
+        provenance = manifest.get("instruction_provenance") or {}
+        if isinstance(provenance, dict):
+            defaults["rules_source"] = provenance.get("rules_source") or "none"
+            defaults["rules_version"] = provenance.get("rules_version")
+            defaults["rules_hash"] = provenance.get("rules_hash")
+            arts = provenance.get("instruction_artifacts") or []
+            if isinstance(arts, list):
+                defaults["instruction_artifacts"] = json.dumps(arts)
+            else:
+                defaults["instruction_artifacts"] = "[]"
+        else:
+            defaults["rules_source"] = "none"
+            defaults["rules_version"] = None
+            defaults["rules_hash"] = None
+            defaults["instruction_artifacts"] = "[]"
+
     except Exception as exc:
         _logger.warning("Failed to extract manifest metadata: %s", exc)
+
+    # Provide safe defaults for provenance even if manifest was missing.
+    defaults.setdefault("rules_source", "none")
+    defaults.setdefault("rules_version", None)
+    defaults.setdefault("rules_hash", None)
+    defaults.setdefault("instruction_artifacts", "[]")
 
     return defaults
 
@@ -559,6 +584,10 @@ async def upload_session(
         git_remote_normalized=git_remote_normalized,
         git_branch=git_branch,
         git_commit=git_commit,
+        rules_source=meta.get("rules_source", "none"),
+        rules_version=meta.get("rules_version"),
+        rules_hash=meta.get("rules_hash"),
+        instruction_artifacts=meta.get("instruction_artifacts", "[]"),
     )
     db.add(session)
     await db.commit()
@@ -1154,6 +1183,10 @@ async def sync_push(
                     git_remote_normalized=git_remote_normalized,
                     git_branch=git_branch,
                     git_commit=git_commit,
+                    rules_source=meta.get("rules_source", "none"),
+                    rules_version=meta.get("rules_version"),
+                    rules_hash=meta.get("rules_hash"),
+                    instruction_artifacts=meta.get("instruction_artifacts", "[]"),
                 )
                 if dlp_scan_results and hasattr(session, "dlp_scan_results"):
                     session.dlp_scan_results = json.dumps(dlp_scan_results)
@@ -1261,6 +1294,10 @@ async def sync_push(
             sess.git_remote_normalized = git_remote_normalized
             sess.git_branch = git_branch
             sess.git_commit = git_commit
+            sess.rules_source = meta.get("rules_source", "none")
+            sess.rules_version = meta.get("rules_version")
+            sess.rules_hash = meta.get("rules_hash")
+            sess.instruction_artifacts = meta.get("instruction_artifacts", "[]")
             if dlp_scan_results and hasattr(sess, "dlp_scan_results"):
                 sess.dlp_scan_results = json.dumps(dlp_scan_results)
             await db2.commit()
@@ -1567,6 +1604,11 @@ async def reindex_sessions(
             session.total_output_tokens = meta["total_output_tokens"]
             session.duration_ms = meta["duration_ms"]
             session.messages_text = messages_text
+            # Migration 028: backfill rules provenance if present in manifest.
+            session.rules_source = meta.get("rules_source", "none")
+            session.rules_version = meta.get("rules_version")
+            session.rules_hash = meta.get("rules_hash")
+            session.instruction_artifacts = meta.get("instruction_artifacts", "[]")
 
             # Update git metadata for PR matching
             ws = _extract_workspace_from_archive(data)

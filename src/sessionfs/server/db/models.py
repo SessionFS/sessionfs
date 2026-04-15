@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, Index, Integer, String, Text, ForeignKey, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, Index, Integer, String, Text, ForeignKey, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -96,6 +96,15 @@ class Session(Base):
     git_branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
     git_commit: Mapped[str | None] = mapped_column(String(40), nullable=True)
     dlp_scan_results: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Rules portability (migration 028) — instruction provenance
+    rules_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rules_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    rules_source: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="none", server_default="none"
+    )
+    instruction_artifacts: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default="[]"
+    )
 
 
 class Handoff(Base):
@@ -541,6 +550,99 @@ class KnowledgePage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     auto_generated: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+
+
+class ProjectRules(Base):
+    """Canonical project rules (one per project)."""
+
+    __tablename__ = "project_rules"
+    __table_args__ = (
+        Index("idx_project_rules_project", "project_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    static_rules: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    include_knowledge: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="1"
+    )
+    knowledge_types: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        default='["convention", "decision"]',
+        server_default='["convention", "decision"]',
+    )
+    knowledge_max_tokens: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1500, server_default="1500"
+    )
+    include_context: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="1"
+    )
+    context_sections: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        default='["overview", "architecture"]',
+        server_default='["overview", "architecture"]',
+    )
+    context_max_tokens: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1500, server_default="1500"
+    )
+    tool_overrides: Mapped[str] = mapped_column(
+        Text, nullable=False, default="{}", server_default="{}"
+    )
+    enabled_tools: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default="[]"
+    )
+    created_by: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class RulesVersion(Base):
+    """Immutable snapshot of compiled rules outputs."""
+
+    __tablename__ = "rules_versions"
+    __table_args__ = (
+        Index("idx_rules_versions_rules_id", "rules_id", "version"),
+        UniqueConstraint("rules_id", "version", name="uq_rules_versions_rid_ver"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    rules_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("project_rules.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    static_rules: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    compiled_outputs: Mapped[str] = mapped_column(
+        Text, nullable=False, default="{}", server_default="{}"
+    )
+    knowledge_snapshot: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default="[]"
+    )
+    context_snapshot: Mapped[str] = mapped_column(
+        Text, nullable=False, default="{}", server_default="{}"
+    )
+    compiled_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    compiled_by: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id"), nullable=False
+    )
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
 class KnowledgeLink(Base):

@@ -316,6 +316,76 @@ export interface ProjectHealthResponse {
   decayed_count: number;
 }
 
+// ------------------------------------------------------------------
+// Rules (v0.9.9)
+// ------------------------------------------------------------------
+
+export type ToolName = 'claude-code' | 'codex' | 'cursor' | 'copilot' | 'gemini' | string;
+
+export interface ProjectRules {
+  static_rules: string;
+  include_knowledge: boolean;
+  knowledge_types: string[];
+  knowledge_max_tokens: number;
+  include_context: boolean;
+  context_sections: string[];
+  context_max_tokens: number;
+  tool_overrides: Record<string, unknown>;
+  enabled_tools: ToolName[];
+  version: number;
+  updated_at: string;
+}
+
+/** GET /rules returns rules plus the ETag used for optimistic concurrency. */
+export interface ProjectRulesResponse {
+  rules: ProjectRules;
+  etag: string;
+}
+
+export interface CompiledOutput {
+  /** Target filename on disk, e.g. CLAUDE.md, codex.md, .cursorrules */
+  filename: string;
+  /** Compiled text content */
+  content: string;
+  /** Approximate token count for the compiled file */
+  token_count: number;
+}
+
+export interface RulesVersionSummary {
+  version: number;
+  compiled_at: string;
+  content_hash: string;
+  compiled_by: string | null;
+}
+
+export interface RulesVersion extends RulesVersionSummary {
+  static_rules: string;
+  /** Map of tool name -> compiled output (filename/content/token_count) */
+  compiled_outputs: Record<string, CompiledOutput>;
+  knowledge_snapshot?: unknown;
+  context_snapshot?: unknown;
+}
+
+export interface RulesVersionListResponse {
+  versions: RulesVersionSummary[];
+}
+
+/** Per-tool entry in the POST /rules/compile response. */
+export interface CompileOutputEntry {
+  tool: string;
+  filename: string;
+  content: string;
+  hash: string;
+  token_count: number;
+}
+
+export interface CompileRulesResponse {
+  version: number;
+  created_new_version: boolean;
+  aggregate_hash: string;
+  outputs: CompileOutputEntry[];
+}
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -339,6 +409,31 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       throw new ApiError(resp.status, body);
     }
     return resp.json();
+  }
+
+  /**
+   * Variant of request() that also exposes response headers (needed for
+   * ETag-based optimistic concurrency on the Rules endpoints).
+   */
+  async function requestWithEtag<T>(
+    path: string,
+    init?: RequestInit,
+  ): Promise<{ data: T; etag: string }> {
+    const resp = await fetch(`${baseUrl}${path}`, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        ...init?.headers,
+      },
+    });
+    if (!resp.ok) {
+      const body = await resp.text();
+      throw new ApiError(resp.status, body);
+    }
+    const etag = resp.headers.get('ETag') || resp.headers.get('etag') || '';
+    const data = (await resp.json()) as T;
+    return { data, etag };
   }
 
   return {
@@ -854,6 +949,50 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         method: 'PUT',
         body: JSON.stringify(settings),
       }),
+
+    // ----------------------------------------------------------------
+    // Project rules (v0.9.9)
+    // ----------------------------------------------------------------
+    // Rules endpoints are keyed by the project UUID (same pattern as
+    // knowledge/wiki endpoints). Callers pass `project.id`, not the
+    // git remote — Starlette can't route encoded slashes inside a
+    // single path segment, which blocks URL-encoded remotes.
+    getProjectRules: (projectId: string) =>
+      requestWithEtag<ProjectRules>(
+        `/api/v1/projects/${projectId}/rules`,
+      ),
+
+    updateProjectRules: (projectId: string, rules: Partial<ProjectRules>, etag: string) =>
+      requestWithEtag<ProjectRules>(
+        `/api/v1/projects/${projectId}/rules`,
+        {
+          method: 'PUT',
+          headers: { 'If-Match': etag },
+          body: JSON.stringify(rules),
+        },
+      ),
+
+    compileRules: (projectId: string) =>
+      request<CompileRulesResponse>(
+        `/api/v1/projects/${projectId}/rules/compile`,
+        { method: 'POST' },
+      ),
+
+    listRulesVersions: async (projectId: string): Promise<RulesVersionListResponse> => {
+      const resp = await request<RulesVersionListResponse | RulesVersionSummary[]>(
+        `/api/v1/projects/${projectId}/rules/versions`,
+      );
+      // Server may return a bare list; normalise to wrapper shape.
+      if (Array.isArray(resp)) {
+        return { versions: resp };
+      }
+      return resp;
+    },
+
+    getRulesVersion: (projectId: string, version: number) =>
+      request<RulesVersion>(
+        `/api/v1/projects/${projectId}/rules/versions/${version}`,
+      ),
 
     // DLP policy
     getDLPPolicy: () =>

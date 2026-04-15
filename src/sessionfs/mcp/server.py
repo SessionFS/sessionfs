@@ -332,6 +332,37 @@ _TOOLS = [
             },
         },
     ),
+    Tool(
+        name="get_rules",
+        description=(
+            "Get canonical project rules and compilation config for this repo. "
+            "Read-only — agents never self-modify project rules."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+        },
+    ),
+    Tool(
+        name="get_compiled_rules",
+        description=(
+            "Get the compiled rule file content for a specific tool. "
+            "If `tool` is omitted, the active tool is inferred from the "
+            "caller's environment when possible."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "tool": {
+                    "type": "string",
+                    "description": "Tool slug: claude-code, codex, cursor, copilot, gemini",
+                },
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+        },
+    ),
 ]
 
 
@@ -372,6 +403,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(type="text", text=result if isinstance(result, str) else json.dumps(result, indent=2, default=str))]
         elif name == "list_wiki_pages":
             result = await _handle_list_wiki_pages(arguments)
+            return [TextContent(type="text", text=result if isinstance(result, str) else json.dumps(result, indent=2, default=str))]
+        elif name == "get_rules":
+            result = await _handle_get_rules(arguments)
+            return [TextContent(type="text", text=result if isinstance(result, str) else json.dumps(result, indent=2, default=str))]
+        elif name == "get_compiled_rules":
+            result = await _handle_get_compiled_rules(arguments)
             return [TextContent(type="text", text=result if isinstance(result, str) else json.dumps(result, indent=2, default=str))]
         else:
             result = {"error": f"Unknown tool: {name}"}
@@ -1070,6 +1107,61 @@ async def _handle_ask_project(args: dict) -> str:
     )
 
     return "\n".join(lines)
+
+
+async def _handle_get_rules(args: dict) -> dict:
+    """Return canonical rules + compilation config for the repo."""
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/projects/{project_id}/rules",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    data = resp.json()
+    # Strip the ETag header echo — not useful for agents.
+    data.pop("etag", None)
+    return data
+
+
+async def _handle_get_compiled_rules(args: dict) -> dict:
+    """Return the compiled output for a requested tool (or all tools)."""
+    git_remote = args.get("git_remote", "")
+    tool = args.get("tool")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    import httpx
+    payload: dict = {}
+    if tool:
+        payload["tools"] = [tool]
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{api_url}/api/v1/projects/{project_id}/rules/compile",
+            json=payload,
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    data = resp.json()
+    # Filter by tool if asked — compile may return all enabled outputs.
+    if tool:
+        filtered = [o for o in data.get("outputs", []) if o.get("tool") == tool]
+        return {
+            "version": data.get("version"),
+            "aggregate_hash": data.get("aggregate_hash"),
+            "outputs": filtered,
+        }
+    return data
 
 
 # ---------------------------------------------------------------------------

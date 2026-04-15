@@ -1,0 +1,518 @@
+# Rules Portability
+
+Manage your project's AI instructions in one place. SessionFS keeps a canonical rules record per project and compiles it into the tool-specific files each AI agent reads — `CLAUDE.md`, `codex.md`, `.cursorrules`, `.github/copilot-instructions.md`, and `GEMINI.md` — so instructions stay consistent across every tool your team uses.
+
+Every captured session also records the rules and instruction artifacts that shaped it, so you can always answer: *what was the agent told when this session happened?*
+
+## The Problem
+
+AI-heavy teams maintain the same project conventions in five different places:
+
+| Tool | Instruction File |
+|------|------------------|
+| Claude Code | `CLAUDE.md` |
+| Codex | `codex.md` |
+| Cursor | `.cursorrules` |
+| GitHub Copilot | `.github/copilot-instructions.md` |
+| Gemini CLI | `GEMINI.md` |
+
+Each format drifts. One file gets updated, the others don't. A developer who switches tools gets an agent that doesn't know the project's conventions, security rules, or architecture decisions. Sessions generated under different rule sets are impossible to compare after the fact.
+
+## Mental Model
+
+```
+canonical project rules (SessionFS)
+    +  active knowledge claims
+    +  project context sections
+           │
+           │  sfs rules compile
+           ▼
+  CLAUDE.md · codex.md · .cursorrules · copilot-instructions.md · GEMINI.md
+           │
+           ▼
+  agent sessions shaped by those rules
+           │
+           ▼
+  sessions captured with rules_version + rules_hash + instruction_artifacts
+```
+
+The canonical record is the source of truth. Compiled tool files are **projections** — they carry a SessionFS marker so future compiles know they are safe to overwrite.
+
+## Quick Start
+
+```bash
+# From inside your git repo
+sfs rules init           # pick tools, seed canonical rules
+sfs rules edit           # edit static preferences in $EDITOR
+sfs rules compile        # write CLAUDE.md / codex.md / etc.
+git add CLAUDE.md codex.md .cursorrules .github/copilot-instructions.md GEMINI.md
+git commit -m "Add project rules"
+```
+
+Teammates who clone the repo see the compiled files immediately. Even developers who don't have SessionFS installed get consistent agent behavior — the compiled rule files are just text, readable by every tool that natively supports them.
+
+## Shared vs Local-Only
+
+**By default, compiled rule files are committed to the repo.** This is deliberate:
+
+- Fresh clones get consistent agent behavior with zero setup
+- Developers who don't run SessionFS still see the project contract
+- Teammates can review rule changes in normal code review
+- Compiled files embed a SessionFS marker so future `sfs rules compile` knows they're safe to regenerate
+
+If you prefer compiled files to stay local (for example, when the canonical rules contain team-internal conventions you don't want in the shared repo), opt into local-only mode:
+
+```bash
+sfs rules init --local-only
+```
+
+This adds the compiled paths to `.gitignore` so each developer compiles locally against the canonical rules synced from the SessionFS API. The canonical record is still shared via `sfs rules push` / `sfs rules pull`.
+
+You can switch between modes later by editing `.gitignore` by hand.
+
+## `sfs rules init`
+
+Seeds canonical rules for the current project.
+
+```
+sfs rules init [--local-only]
+```
+
+At init time, SessionFS preselects enabled tools using this precedence:
+
+1. **Existing repo rule files** — if `CLAUDE.md`, `.cursorrules`, etc. are already present, the corresponding tools are preselected with the reason `file present`.
+2. **Recent captured tool usage** — tools with sessions captured in the last 90 days are preselected with the reason `recent usage`.
+3. **User picker** — if neither signal is present, SessionFS prompts you to pick tools interactively.
+
+Only the five supported tools are considered in v0.9.9: `claude-code`, `codex`, `cursor`, `copilot`, `gemini`. The picker shows a reason for each preselection so you can override.
+
+If exactly one unmanaged recognized rule file exists (for example, a hand-written `CLAUDE.md`), `sfs rules init` offers to import it as the canonical seed. **Multiple unmanaged files are never auto-merged** — you must pick one source explicitly.
+
+## `sfs rules edit`
+
+Opens the canonical `static_rules` document in `$EDITOR`.
+
+```
+sfs rules edit
+```
+
+This is the primary surface for editing project conventions. Save, exit, then run `sfs rules compile` to regenerate tool files.
+
+## `sfs rules show`
+
+```
+sfs rules show
+```
+
+Shows:
+
+- current canonical version
+- enabled tools
+- knowledge injection config (types, token budget)
+- context injection config (sections, token budget)
+- whether compiled outputs are in sync with the canonical record
+
+## `sfs rules compile`
+
+Compiles canonical rules into the tool-specific files.
+
+```
+sfs rules compile [--tool TOOL] [--dry-run] [--force]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--tool TOOL` | Compile for a single tool only (`claude-code`, `codex`, `cursor`, `copilot`, `gemini`) |
+| `--dry-run` | Show what would be written without touching disk |
+| `--force` | Overwrite unmanaged files (dangerous — see below) |
+
+Compilation is **deterministic** — the same inputs always produce the same outputs. A new `rules_versions` row is only created when at least one compiled output changes by hash. Recompiling with no input changes is a no-op.
+
+### Managed-File Safety
+
+SessionFS will only overwrite a rule file it considers **managed**. A file is managed if:
+
+- it was created by `sfs rules compile`, or
+- it contains the SessionFS managed marker, or
+- it was explicitly imported via `sfs rules init`
+
+If a target path already exists and is **not** managed, compilation refuses to overwrite it:
+
+```bash
+$ sfs rules compile
+ERROR  CLAUDE.md exists and is not managed by SessionFS.
+       Run 'sfs rules init' to import it, or re-run with --force.
+```
+
+`--force` is an escape hatch for when you are certain the file should be overwritten. Use it sparingly.
+
+### Managed Marker
+
+Every compiled file embeds a small marker that names SessionFS as the generator, records the canonical version, and stores the content hash:
+
+```
+<!-- sessionfs:managed version=4 hash=sha256:9a1c… -->
+<!-- Regenerate with: sfs rules compile -->
+```
+
+The marker is lightweight and tool-compatible. It is what allows future compiles to know the file is safe to overwrite.
+
+## `sfs rules push`
+
+Push the canonical record and the latest compiled version to the SessionFS API.
+
+```
+sfs rules push
+```
+
+Uses optimistic concurrency (see [API reference](#api-reference) below). If the remote is ahead, the push fails with `409 Conflict` and you must `sfs rules pull` and retry.
+
+## `sfs rules pull`
+
+Pull canonical rules from the SessionFS API into the local project.
+
+```
+sfs rules pull
+```
+
+Fetches the current canonical record and writes it into the local rules config. Run `sfs rules compile` afterwards to regenerate tool files from the pulled rules.
+
+## Compilation Model
+
+Compiled output is assembled from three inputs:
+
+1. **Static rules** — the canonical preferences you edit with `sfs rules edit`.
+2. **Project knowledge claims** — active, durable claims from your project's knowledge base.
+3. **Project context sections** — selected sections of the compiled project context document.
+
+### Knowledge Injection
+
+Enabled by default, knowledge claims are injected **descriptively** — as project facts, not as commands.
+
+| Default Types | Not Injected |
+|---------------|--------------|
+| `convention` | `bug` |
+| `decision` | `discovery` |
+|  | `note` |
+
+Only active, durable claims are injected. A claim is eligible when:
+
+- `claim_class = 'claim'` (not a hypothesis or raw observation)
+- not dismissed
+- not superseded
+- freshness is in an active state
+
+**Good — descriptive:**
+
+> Project fact: API routes live in `src/server/routes/`.
+
+**Bad — prescriptive:**
+
+> Always use `src/server/routes/` because the knowledge base says so.
+
+Preferences in `static_rules` are prescriptive (those are your team's rules). Knowledge is descriptive (those are project facts the agent should *know*).
+
+### Context Injection
+
+Selected project-context sections are appended to the compiled output. Defaults:
+
+- `overview`
+- `architecture`
+
+Configure which sections to include via `sfs rules config` (or by editing the canonical record directly).
+
+### Token Budgeting
+
+Each compiler knows its approximate token ceiling. Large-budget tools receive the full combined payload; smaller-budget tools get a progressively condensed form. Compilation remains deterministic — if the budget forces a trim, the trim is reproducible.
+
+No LLM is required for rules compilation in v0.9.9.
+
+### Enabled Tools, Not Default Tools
+
+`sfs rules init` does **not** enable every possible tool. Only explicitly selected or inferred tools are compiled. This avoids generating `CLAUDE.md` for a team that has never used Claude Code, or `.cursorrules` for a team that doesn't touch Cursor.
+
+## Resume-Time Rules Sync
+
+`sfs resume` preflights the target tool's project rules file from the **current** canonical SessionFS rules before launching the tool. The session transfer carries the conversation; resume-time sync makes sure the resumed agent reads the same project contract the rest of the team is using.
+
+### Resume Targets
+
+Rules sync runs for these four resume-capable tools:
+
+- `claude-code` — writes `CLAUDE.md`
+- `codex` — writes `codex.md`
+- `copilot` — writes `.github/copilot-instructions.md`
+- `gemini` — writes `GEMINI.md`
+
+Cursor, Cline, Roo Code, and Amp are capture-only — they are not resume targets, so resume-time sync does not apply.
+
+### Default Flow
+
+```bash
+sfs resume ses_abc123 --in codex
+```
+
+1. Resolve the source session and target project path.
+2. Read the source session's rules provenance from `manifest["instruction_provenance"]` (if present).
+3. Resolve the current project and its canonical rules.
+4. Compile **only the target tool** from current canonical rules and write the file (subject to the managed-file safety cases below).
+5. Launch the target tool's resume.
+
+Typical stderr output:
+
+```text
+Source session used rules v3 (sessionfs).
+Current project rules are v5.
+Synced codex.md from SessionFS rules v5.
+```
+
+The source session's historical rules are **informational only**. They are never applied by default. A future release will add `--rules-from-session` and `--rules-version N` for replaying historical rules; those flags are not in v0.9.9.
+
+### Write-Policy Cases
+
+| Case | State | Behavior |
+|------|-------|----------|
+| A | Target file missing | Compile and write |
+| B | Target file exists, SessionFS-managed | Overwrite (refresh) |
+| C | Target file exists, unmanaged | Do not overwrite; warn on stderr; resume continues |
+| D | Target file exists, unmanaged, `--force-rules` passed | Overwrite with SessionFS-managed content |
+
+A file is **managed** if it carries the SessionFS managed marker (see [Managed Marker](#managed-marker)), was created by `sfs rules compile`, or was explicitly imported via `sfs rules init`. This is the same ownership model used by `sfs rules compile` — resume does not implement a second policy.
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--no-rules-sync` | Skip the preflight entirely for this invocation. Per-invocation only — not persisted. |
+| `--force-rules` | Allow Case D: overwrite an unmanaged target-tool rules file with SessionFS-managed content. Applies only to the target tool file for this resume. |
+
+> **`--force-rules` takes ownership.** This is a one-time permission, not a temporary override. Once SessionFS writes managed content over an unmanaged file, the file is SessionFS-managed going forward — the managed marker is embedded, and the next `sfs resume` without `--force-rules` will refresh it (Case B), not refuse (Case C). That is intended: passing `--force-rules` opts the file into SessionFS ownership. If you want to stop SessionFS from refreshing the file later, delete the managed marker, remove the file, or skip preflight with `--no-rules-sync`.
+
+### Source Session Provenance Display
+
+When the source session's manifest includes `instruction_provenance`, resume prints a short summary:
+
+- `Source session used rules v3 (sessionfs).`
+- `Source session used manual rules (hash only).`
+- `Source session used mixed rule sources.`
+- `Source session had no recorded rules provenance.`
+
+When the manifest has no provenance entry (older captures, or the source tool never ran with a rules file), the line is omitted. Provenance display is informational only — it does not change what gets written.
+
+### When Preflight Is Skipped
+
+Rules sync is skipped silently when:
+
+- the target tool is not one of the four resume targets above
+- `--no-rules-sync` was passed
+- the target path does not resolve to a git-backed project SessionFS can map to a project record
+
+Rules sync is skipped with a short info message when canonical rules are **not meaningfully initialized** — `enabled_tools` is empty, no `rules_versions` rows exist, and `static_rules` is empty:
+
+```text
+No initialized SessionFS project rules found for this repo.
+Continuing resume without rules sync.
+Launching gemini --resume latest ...
+```
+
+### Target Tool Not in `enabled_tools`
+
+Resume-time sync compiles the target tool **even if it is not listed in the canonical `enabled_tools` set**. Rationale: the user explicitly chose to resume in that tool, and rules portability should carry behavior across tool switches without requiring pre-enabling every possible tool.
+
+The compile used by resume is **partial and non-versioning**:
+
+- it writes only the target tool's file
+- it does **not** create a new `rules_versions` history row
+- it does **not** mutate canonical `enabled_tools`
+
+If you want the tool added to `enabled_tools` permanently, run `sfs rules init` or edit the canonical record directly.
+
+### Failure Semantics
+
+Rules sync during resume is **best-effort and non-fatal**. If project lookup, compile, or file write fails, SessionFS prints a warning on stderr and continues the resume. `sfs resume` always exits `0` for rules-sync failures — the session transfer is more important than rules sync, and a rules preflight issue must not block cross-tool resume.
+
+### Preview
+
+There is no `--dry-run` flag on `sfs resume`. For a preview of what a target tool's file would look like under current canonical rules, use:
+
+```bash
+sfs rules compile --tool codex --dry-run
+```
+
+That command shows the exact content resume would write, without touching disk.
+
+## Session Instruction Provenance
+
+Every captured session records what guided the agent at the time. Four fields are persisted on the session row:
+
+| Field | Value |
+|-------|-------|
+| `rules_version` | Canonical version ID when SessionFS-managed, else `null` |
+| `rules_hash` | SHA-256 of the tool's rule file at capture time |
+| `rules_source` | `sessionfs`, `manual`, `mixed`, or `none` |
+| `instruction_artifacts` | List of artifact objects (see below) |
+
+`rules_source = mixed` means both SessionFS-managed and manual/global artifacts shaped the session (for example, a project `CLAUDE.md` managed by SessionFS alongside a hand-written global `~/.claude/CLAUDE.md`).
+
+### Instruction Artifacts
+
+Each artifact is a small JSON object:
+
+```json
+{
+  "artifact_type": "rules_file",
+  "path": "CLAUDE.md",
+  "scope": "project",
+  "source": "sessionfs",
+  "hash": "sha256:9a1c…"
+}
+```
+
+| Field | Values |
+|-------|--------|
+| `artifact_type` | `rules_file`, `agent`, `skill`, `settings` |
+| `scope` | `project`, `global` |
+| `source` | `sessionfs`, `manual`, `tool` |
+
+### What Gets Captured
+
+Scope differs by artifact type:
+
+- **Managed compiled rule files** (`source: sessionfs`) — version + hash only. Content is already stored immutably in `rules_versions`.
+- **Unmanaged project artifacts** — path + hash + source + scope. No content snapshot by default.
+- **Global artifacts** (user home directory rules, global agent files) — hash only, discovered best-effort. Content is never snapshotted.
+
+Capture is best-effort and non-fatal. If SessionFS cannot classify an artifact, it records what it can and moves on. Session capture never fails because of missing or malformed rule files.
+
+### Privacy: `SFS_CAPTURE_GLOBAL_RULES`
+
+Global rule files can leak personal conventions from a developer's home directory into shared session records. To suppress all global instruction artifact capture:
+
+```bash
+export SFS_CAPTURE_GLOBAL_RULES=off
+```
+
+When set, SessionFS skips hashing any artifact with `scope: global`. Project-scope artifacts continue to be captured normally. Default is `on`.
+
+### `sfs rules diff` (v0.9.10)
+
+A `sfs rules diff <session_id>` command that shows current canonical rules vs the rules a specific session used is **deferred to v0.9.10**. The underlying data (`rules_version` + `rules_hash` + `instruction_artifacts`) is persisted starting in v0.9.9, so the history is already there when the subcommand lands.
+
+## API Reference
+
+All endpoints require authentication.
+
+### `GET /api/v1/projects/{id}/rules`
+
+Returns the canonical rules record.
+
+**Response:**
+
+```json
+{
+  "id": "rls_a1b2",
+  "project_id": "prj_xyz",
+  "version": 4,
+  "static_rules": "…markdown…",
+  "include_knowledge": true,
+  "knowledge_types": ["convention", "decision"],
+  "knowledge_max_tokens": 2000,
+  "include_context": true,
+  "context_sections": ["overview", "architecture"],
+  "context_max_tokens": 2000,
+  "enabled_tools": ["claude-code", "codex", "cursor"],
+  "tool_overrides": {},
+  "updated_at": "2026-04-13T12:00:00Z"
+}
+```
+
+### `PUT /api/v1/projects/{id}/rules`
+
+Update the canonical rules record. **Uses optimistic concurrency** — send the current `version` you read, and the server will reject stale writes with `409 Conflict`.
+
+**Request:**
+
+```json
+{
+  "version": 4,
+  "static_rules": "…new markdown…",
+  "enabled_tools": ["claude-code", "codex", "cursor", "gemini"]
+}
+```
+
+**Responses:**
+
+- `200 OK` — update accepted, returns new record with incremented `version`
+- `409 Conflict` — your `version` is stale; fetch, merge, retry
+
+The server never does last-write-wins.
+
+### `POST /api/v1/projects/{id}/rules/compile`
+
+Trigger a server-side compile. Returns the compiled outputs and (if any output hash changed) creates a new `rules_versions` row.
+
+**Response:**
+
+```json
+{
+  "version": 5,
+  "changed": true,
+  "compiled_outputs": {
+    "claude-code": { "path": "CLAUDE.md", "content_hash": "sha256:…" },
+    "codex":       { "path": "codex.md",  "content_hash": "sha256:…" }
+  }
+}
+```
+
+If nothing changed, `changed: false` and no new version is created.
+
+### `GET /api/v1/projects/{id}/rules/versions`
+
+List the immutable compile history.
+
+### `GET /api/v1/projects/{id}/rules/versions/{version}`
+
+Fetch a specific compiled version, including `compiled_outputs`, `knowledge_snapshot`, `context_snapshot`, and `content_hash`.
+
+## MCP Tools
+
+When the SessionFS MCP server is connected, AI agents can read the canonical rules and their compiled projection directly.
+
+| Tool | Description |
+|------|-------------|
+| `get_rules` | Returns the canonical rules record and compilation config for the current repo |
+| `get_compiled_rules` | Returns the compiled rule text for a requested tool, or for the current tool if safely inferable |
+
+Neither tool allows the agent to **modify** rules. Agent rule suggestions and auto-accept are explicitly deferred; humans control the canonical record in v0.9.9.
+
+## Troubleshooting
+
+**`sfs rules compile` refuses to overwrite my existing `CLAUDE.md`**
+
+That file predates SessionFS and has no managed marker. Either run `sfs rules init` to import it as the canonical seed, or rerun with `--force` if you're sure you want to overwrite.
+
+**I ran `sfs rules compile` but the compiled file didn't change**
+
+Compilation is deterministic and idempotent. If no input changed (static rules, knowledge claims, context sections), the output won't change and no new version is created. This is by design.
+
+**`sfs rules push` returned 409 Conflict**
+
+Someone else updated the canonical rules on the server. Run `sfs rules pull`, re-apply your local changes, and push again.
+
+**Sessions aren't capturing `rules_hash`**
+
+Session capture is best-effort. Check `sfs daemon logs` for warnings. If the project has no recognized rule file for the active tool, `rules_hash` will be `null` and `rules_source` will be `none` — that's expected.
+
+**I don't want my global `~/.claude/CLAUDE.md` hashed into session records**
+
+```bash
+export SFS_CAPTURE_GLOBAL_RULES=off
+```
+
+Project-scope artifacts continue to be captured.
+
+## Related
+
+- [Project Context](project-context.md) — the content injected into compiled rules
+- [Environment Variables](environment-variables.md#session-capture) — `SFS_CAPTURE_GLOBAL_RULES`
+- [CLI Reference](cli-reference.md#sfs-rules) — full syntax for every subcommand

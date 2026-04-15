@@ -1,0 +1,429 @@
+# SessionFS v0.9.9 — Resume-Time Rules Sync
+
+## Goal
+
+Cross-tool resume should transfer not just the conversation, but the
+**current project behavior contract** for the target tool.
+
+Today:
+- `sfs resume` transfers session content into the target tool
+- the target tool then reads whatever local rules file happens to exist
+- if that file is missing, stale, or belongs to another workflow, behavior drifts
+
+For `v0.9.9`, add a focused rules preflight to `sfs resume`:
+
+- before launching the target tool
+- materialize the **target tool's** project rules file from the **current canonical SessionFS rules**
+- only when it is safe to do so
+
+This is intentionally narrow. It is **not** a second rules system.
+It is a small bridge between:
+- canonical project rules
+- cross-tool resume
+- session instruction provenance
+
+## Product Rule
+
+When resuming work now, the default should be:
+
+**use the current canonical project rules for the target tool, not the source session's historical rules version**
+
+The source session's rules provenance still matters and should be shown to the user,
+but it is informational by default.
+
+Future enhancement, **not in scope here**:
+- `sfs resume ... --rules-from-session`
+- `sfs resume ... --rules-version N`
+
+---
+
+## Scope
+
+### In scope for this brief
+
+- `sfs resume` preflights the target tool's project rules file
+- only the **target tool** file is considered
+- uses the existing canonical rules system
+- uses the existing partial-compile path
+- never creates canonical partial history versions
+- respects managed-file ownership rules
+- preserves source-session rules provenance in output messaging
+- project-scoped files only
+
+### Resume targets covered
+
+Only resume-capable tools that already have SessionFS compilers:
+
+- `claude-code`
+- `codex`
+- `copilot`
+- `gemini`
+
+### Explicitly out of scope
+
+- `cursor`, `cline`, `roo-code`, `amp`
+  - these remain capture-only
+- global rules files
+- auto-write for all tools
+- mutating canonical `enabled_tools` during resume
+- session-historical rules replay
+- dashboard changes
+
+---
+
+## User Experience
+
+### Desired default flow
+
+```bash
+sfs resume ses_abc123 --in codex
+```
+
+Expected behavior:
+
+1. Resolve the source session and target project path
+2. Read source session rules provenance if present
+3. Resolve the current project + canonical rules
+4. Preflight `codex.md` from **current** canonical rules
+5. Launch Codex resume
+
+Example output:
+
+```text
+Source session used rules v3 (sessionfs).
+Current project rules are v5.
+Synced codex.md from SessionFS rules v5.
+Launching codex resume ...
+```
+
+If unmanaged file exists:
+
+```text
+Source session used rules v3 (sessionfs).
+Current project rules are v5.
+Unmanaged codex.md detected; canonical rules not applied.
+Use --force-rules to replace it with a SessionFS-managed file.
+Launching codex resume ...
+```
+
+If no canonical rules are initialized:
+
+```text
+No initialized SessionFS project rules found for this repo.
+Continuing resume without rules sync.
+Launching gemini --resume latest ...
+```
+
+---
+
+## CLI Changes
+
+Extend `sfs resume` with:
+
+- `--no-rules-sync`
+  - skip rules preflight entirely
+
+- `--force-rules`
+  - allow overwrite of an unmanaged target tool rules file
+  - applies only to the target tool file for this resume operation
+
+Do **not** add historical-rules flags in this change.
+
+---
+
+## Core Behavior
+
+### 1. Determine whether rules sync is applicable
+
+Rules sync should run only if all are true:
+
+- target tool is one of:
+  - `claude-code`, `codex`, `copilot`, `gemini`
+- `--no-rules-sync` is not set
+- target path resolves to a git-backed project SessionFS can map to a project record
+- canonical rules have been meaningfully initialized for this project
+
+### 2. Define “meaningfully initialized”
+
+Because project rules are created on read, a blank default row does **not**
+mean the user intended rules sync.
+
+Treat rules as initialized if **any** of these are true:
+
+- `enabled_tools` is non-empty
+- at least one `rules_versions` row exists
+- `static_rules` is non-empty
+
+If none are true:
+- do not compile/write any target tool file
+- print a short informational message
+- continue resume normally
+
+### 3. Current canonical rules are the runtime default
+
+Resume-time sync must use:
+- the current canonical rules row
+- current KB-backed rules compilation inputs
+- current project context
+
+It must **not** default to the source session's historical rules version.
+
+Historical source-session rules should only be:
+- displayed to the user
+- preserved in provenance
+
+### 4. Compile only the target tool
+
+Resume-time rules sync must:
+- compile **only** the target tool
+- use the existing partial compile path
+- **not** create a new `rules_versions` canonical history entry
+
+This is a local materialization step, not a canonical version bump.
+
+### 5. Write policy for the target tool file
+
+Use the same managed-file safety model as `sfs rules compile`.
+
+Cases:
+
+#### Case A — file missing
+- write the compiled target tool file
+
+#### Case B — file exists and is SessionFS-managed
+- overwrite it
+
+#### Case C — file exists and is unmanaged
+- by default: do **not** overwrite
+- print warning
+- continue resume
+
+#### Case D — unmanaged file + `--force-rules`
+- overwrite it with SessionFS-managed content
+
+### 6. Never touch more than one file
+
+Resume-time sync must only ever touch:
+- the target tool's rule file
+
+It must **not**:
+- recompile/write all tools
+- mutate `.gitignore`
+- touch unrelated tool files
+- touch global config files
+
+---
+
+## Key Product Decision
+
+### What if the target tool is supported but not in `enabled_tools`?
+
+For resume, that should still work.
+
+Reason:
+- the user explicitly chose to resume in that tool
+- rules portability should carry behavior across tool switches
+- forcing the user to pre-enable every possible tool defeats the point
+
+Therefore:
+- resume-time sync **may compile the target tool even if it is not in canonical `enabled_tools`**
+- this must remain a **partial, non-versioning** compile
+- this must **not** mutate canonical `enabled_tools`
+
+This is a local materialization convenience, not a canonical rules-configuration change.
+
+---
+
+## Failure Semantics
+
+Rules sync during resume should be **best-effort but visible**.
+
+If rules preflight fails because of:
+- project lookup failure
+- API failure
+- compile failure
+- file write failure
+
+then:
+- print a warning
+- continue the resume flow
+
+Do **not** fail the resume unless the user explicitly asked for strict behavior
+(strict mode is not part of this change).
+
+The session transfer is more important than rules sync.
+
+---
+
+## Provenance Messaging
+
+If the source session manifest includes rules provenance, show it briefly.
+
+Examples:
+
+- `Source session used rules v3 (sessionfs).`
+- `Source session used manual rules (hash only).`
+- `Source session used mixed rule sources.`
+- `Source session had no recorded rules provenance.`
+
+If current canonical rules are being applied, show that too:
+
+- `Current project rules are v5.`
+- `Synced GEMINI.md from SessionFS rules v5.`
+
+This is important because the user should understand:
+- what shaped the original session
+- what will shape the resumed session now
+
+---
+
+## Implementation Guidance
+
+### Reuse existing pieces
+
+Do **not** shell out from `cmd_ops.py` to `sfs rules compile`.
+
+Instead, factor or reuse shared helpers from the rules CLI/API path:
+
+- project resolution
+- project/rules fetch
+- partial compile for one tool
+- managed-file safety detection
+- local file write helper
+
+The resume path should call shared logic directly.
+
+### Suggested shape
+
+Add a helper roughly like:
+
+```python
+def preflight_target_tool_rules(
+    *,
+    project_path: str,
+    target_tool: str,
+    force: bool = False,
+    skip: bool = False,
+) -> RulesSyncResult:
+    ...
+```
+
+Where `RulesSyncResult` includes enough for CLI messaging:
+
+- `applied: bool`
+- `skipped_reason: str | None`
+- `target_tool: str`
+- `filename: str | None`
+- `source_rules_version: int | None`
+- `source_rules_source: str | None`
+- `current_rules_version: int | None`
+- `used_force: bool`
+
+### Compile source
+
+Use the existing:
+- `POST /api/v1/projects/{id}/rules/compile`
+- with `tools=[target_tool]`
+
+That path already has the correct non-versioning semantics for partial compiles.
+
+### File ownership
+
+Use the same managed marker and ownership checks as `sfs rules compile`.
+
+Do not implement a second overwrite policy.
+
+---
+
+## Tests
+
+Add targeted tests for:
+
+### CLI / resume behavior
+
+1. managed target file missing
+- rules preflight writes the target tool file
+
+2. managed target file exists but stale
+- rules preflight overwrites it
+
+3. unmanaged target file exists
+- rules preflight warns and skips by default
+
+4. unmanaged target file + `--force-rules`
+- rules preflight overwrites it
+
+5. `--no-rules-sync`
+- no compile call
+- no file write
+
+6. no initialized canonical rules
+- resume continues
+- no file write
+- warning/info shown
+
+7. target tool not in canonical `enabled_tools`
+- compile still works for that target tool
+- no canonical version row is created
+- `enabled_tools` remains unchanged
+
+8. source session rules provenance displayed
+- when source session has `rules_version`, `rules_source`, `rules_hash`
+
+9. rules sync failure is non-fatal
+- compile or write failure warns
+- resume still proceeds
+
+### Regression / rules-history safety
+
+10. resume-time one-tool compile never versions canonical history
+
+11. resume-time write touches only the target tool file
+
+12. unmanaged-file detection in resume path matches `sfs rules compile`
+
+---
+
+## Acceptance Criteria
+
+### Must-have
+
+- `sfs resume` preflights target tool rules for supported resume targets
+- current canonical rules are used by default
+- source session rules provenance is displayed when present
+- only the target tool file is written
+- missing files are written
+- SessionFS-managed files are refreshed
+- unmanaged files are not overwritten unless `--force-rules`
+- `--no-rules-sync` skips the preflight
+- partial compile used by resume never creates canonical history versions
+- resume-time sync works even when the target tool is not in `enabled_tools`
+- resume still succeeds if rules sync fails
+- no global config files are modified
+
+### Must-not
+
+- do not overwrite unmanaged files silently
+- do not write all tool files during resume
+- do not mutate canonical `enabled_tools`
+- do not default to historical session rules
+- do not fail resume just because rules sync failed
+
+---
+
+## Not In Scope
+
+Defer these:
+
+- `--rules-from-session`
+- `--rules-version N`
+- syncing global rules files during resume
+- dashboard UX for resume-time rules selection
+- agent-specific rules branching during collab
+- strict mode that hard-fails resume on rules-sync failure
+
+---
+
+## Guiding Sentence
+
+**`sfs resume` should carry the conversation across tools and preflight the target tool's current canonical project rules, without ever silently taking ownership of a user-managed file.**

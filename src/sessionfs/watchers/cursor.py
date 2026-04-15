@@ -121,6 +121,14 @@ class CursorWatcher:
                     session_dir = self._store.allocate_session_dir(sfs_id)
                     convert_cursor_to_sfs(session, session_dir, session_id=sfs_id)
 
+                    # Migration 028: annotate with instruction provenance.
+                    from sessionfs.watchers.provenance import (
+                        annotate_manifest_with_provenance,
+                    )
+                    annotate_manifest_with_provenance(
+                        session_dir, "cursor", comp.workspace_folder
+                    )
+
                     manifest_path = session_dir / "manifest.json"
                     if manifest_path.exists():
                         manifest = json.loads(manifest_path.read_text())

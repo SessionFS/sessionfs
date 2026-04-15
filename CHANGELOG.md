@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.9] - 2026-04-14
+
+### Added
+
+#### Rules Portability — canonical project rules compiled to five tool formats
+- **Canonical rules per project** — new `project_rules` + `rules_versions` tables (migration 028) with 4 new columns on `sessions` for instruction provenance. Managed via `GET/PUT /api/v1/projects/{id}/rules`, compiled via `POST /api/v1/projects/{id}/rules/compile`.
+- **Five tool compilers** — deterministic partial-compile-aware compilers for Claude Code (`CLAUDE.md`), Codex (`codex.md`), Cursor (`.cursorrules`), Copilot (`.github/copilot-instructions.md`), and Gemini (`GEMINI.md`). Each embeds a SessionFS managed marker at the top of the file.
+- **Knowledge + context injection** — compilers pull active claims (default `convention` + `decision` types) and project context sections (default `overview` + `architecture`) with per-tool token ceilings and progressive condensation.
+- **`sfs rules` CLI** — `init` (auto-detects existing rule files + recent session-history tool usage, preselects from the 5 supported tools), `edit`, `show` (in-sync state), `compile` (with `--tool X`, `--dry-run`, `--force`), `push`, `pull`. `--local-only` at init adds compiled files to `.gitignore`; the default is shared-in-repo.
+- **Managed-file safety** — `sfs rules compile` refuses to overwrite a user-maintained rule file unless `--force` is set. Detection reads only the first 512 bytes so markers buried in hand-written content don't trigger false positives.
+- **Session instruction provenance** — session manifests now carry `rules_version`, `rules_hash`, `rules_source` (`sessionfs` / `manual` / `mixed` / `none`), and `instruction_artifacts[]`. Managed files record version + hash only (content lives in `rules_versions`); unmanaged / global artifacts store path + hash + source + scope. `SFS_CAPTURE_GLOBAL_RULES=off` suppresses global hashing for privacy-sensitive environments.
+- **MCP tools** — read-only `get_rules` and `get_compiled_rules` for agents. No agent self-modification of rules.
+- **Dashboard Rules tab** — new `RulesTab` under ProjectDetail with version badge, static preferences editor, enabled tools checklist, knowledge/context injection settings, per-tool compiled output viewer, version history list, and compile action. ETag-based optimistic concurrency with 409 toast on stale saves.
+
+#### Resume-Time Rules Sync — carry the behavior contract across tools
+- **Preflight during `sfs resume`** — before launching the target tool, partial-compile only that tool's rule file from current canonical rules and write it with managed-file safety (Case A write / Case B refresh / Case C warn-skip / Case D `--force-rules` overwrite). Supported resume targets: claude-code, codex, copilot, gemini.
+- **Source session provenance display** — shows what rules shaped the original session before launching the resumed session (e.g. `Source session used rules v3 (sessionfs). Current project rules are v5. Synced codex.md from SessionFS rules v5.`). Hash-based provenance survives environments where content snapshots were intentionally suppressed.
+- **New flags on `sfs resume`** — `--no-rules-sync` skips the preflight entirely; `--force-rules` overwrites an unmanaged target rule file with SessionFS-managed content. `--force-rules` is a one-time permission — the file becomes SessionFS-managed afterward and subsequent resumes refresh it normally.
+- **Meaningfully initialized** — preflight compiles and writes only when the project has curated content (`enabled_tools` non-empty, `static_rules` non-empty, or `tool_overrides` non-empty). Untouched default rules rows skip cleanly.
+- **Non-fatal semantics** — rules sync failure never fails the resume itself. Warning to stderr, resume continues, exit 0.
+- **Partial-compile guarantee** — any compile request with an explicit `tools` override is treated as partial and never bumps canonical history, regardless of whether the override matches `enabled_tools`.
+
+### Fixed
+- **Helm chart invalid semver** (`chart.metadata.version "0.9.8.6" is invalid`) — fixed by the v0.9.9 bump. Four-segment versions aren't valid semver; the chart now tracks the same 3-segment version as the Python package.
+- **Compile hash included managed marker** — regression fix: `content_hash` is now the body hash only (marker-independent), so no-op detection doesn't break after a version bump. No more infinite-version-bump loops.
+- **Atomic optimistic concurrency on PUT /rules** — `SELECT ... FOR UPDATE` row lock ensures two writers holding the same prior ETag can't both commit. Second one receives 409.
+- **Concurrent compile race** — version-number contention now retries idempotently; colliding with a same-body-hash winner short-circuits to no-op and aligns local `rules.version` to the winner.
+- **First-time rules creation race** — `get_or_create_rules` catches `IntegrityError` and returns the winner's row rather than raising 500.
+- **Knowledge injection determinism** — claim ordering priority (decision > convention > pattern > dependency) moved into SQL `ORDER BY` so LIMIT respects it; deterministic `id DESC` tie-breaker on identical timestamps.
+- **Path traversal defense** — added `_safe_target_path()` in `cli/cmd_rules.py` used by both `sfs rules compile` and resume preflight; validates target file against canonical `TOOL_FILES[tool]` and confirms the resolved path stays inside `git_root`.
+- **Provenance logging visibility** — `watchers/provenance.py` failures now log at `warning` level (was `debug`) so breakage is visible in normal daemon operation. Still non-fatal to session capture.
+- **Malformed compile payload hardening** — `preflight_target_tool_rules()` validates `outputs` is a list and `filename`/`content` are strings; returns structured `api-error` result instead of raising.
+
+### Security
+- **CVE-2025-71176** — pytest bumped from `>=8.0,<9.0` to `>=9.0.3,<10.0` (dev dependency only; /tmp DoS under certain test configurations).
+
 ## [0.9.8.6] - 2026-04-13
 
 ### Added

@@ -20,6 +20,38 @@ from sessionfs.cli.common import (
 )
 
 
+def _run_rules_preflight(
+    *,
+    project_path: str,
+    target_tool: str,
+    source_manifest: dict,
+    skip: bool,
+    force: bool,
+) -> None:
+    """Call the v0.9.9 rules preflight and emit ≤3 dim stderr lines.
+
+    Never raises. Any unexpected exception from the helper is caught and
+    surfaced as a single warning line — preflight must never fail resume.
+    """
+    try:
+        from sessionfs.cli.resume_rules_sync import (
+            format_messages,
+            preflight_target_tool_rules,
+        )
+
+        result = preflight_target_tool_rules(
+            project_path=project_path,
+            target_tool=target_tool,
+            source_manifest=source_manifest,
+            force=force,
+            skip=skip,
+        )
+        for line in format_messages(result):
+            err_console.print(f"[dim]{line}[/dim]")
+    except Exception as exc:  # pragma: no cover — defensive: never fail resume
+        err_console.print(f"[dim]Rules preflight skipped ({exc}).[/dim]")
+
+
 def resume(
     session_id: str = typer.Argument(help="Session ID or prefix."),
     project: str | None = typer.Option(None, help="Target project path (overrides workspace)."),
@@ -30,6 +62,20 @@ def resume(
     model: str | None = typer.Option(
         None, "--model", "-m",
         help="Model to use in target tool (e.g. gpt-4.1, claude-sonnet-4, gemini-2.5-pro)",
+    ),
+    no_rules_sync: bool = typer.Option(
+        False,
+        "--no-rules-sync",
+        help="Skip the target-tool rules preflight (per-invocation only).",
+    ),
+    force_rules: bool = typer.Option(
+        False,
+        "--force-rules",
+        help=(
+            "Allow overwrite of an unmanaged target-tool rules file. "
+            "One-time permission: once replaced with SessionFS-managed "
+            "content, subsequent resumes refresh it normally."
+        ),
     ),
 ) -> None:
     """Resume a session in an AI tool."""
@@ -57,6 +103,17 @@ def resume(
             console.print(f"[yellow]Original path {target_path} not found.[/yellow]")
             target_path = str(Path.cwd())
             console.print(f"Resuming in current directory: [bold]{target_path}[/bold]\n")
+
+        # v0.9.9: preflight the target tool's project rules file from
+        # current canonical SessionFS rules. Non-fatal — never fails resume.
+        if target_path and tool not in ("cursor", "cline", "roo-code", "amp"):
+            _run_rules_preflight(
+                project_path=target_path,
+                target_tool=tool,
+                source_manifest=manifest,
+                skip=no_rules_sync,
+                force=force_rules,
+            )
 
         if tool == "codex":
             _resume_in_codex(session_dir, manifest, target_path, full_id, model=model)

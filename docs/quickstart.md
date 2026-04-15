@@ -136,6 +136,10 @@ sfs sync auto --mode all
 sfs project init
 sfs project edit
 
+# Keep AI instructions consistent across tools (CLAUDE.md, codex.md, .cursorrules, …)
+sfs rules init
+sfs rules compile
+
 # Hand off a session to a teammate
 sfs handoff ses_abc --to colleague@company.com
 
