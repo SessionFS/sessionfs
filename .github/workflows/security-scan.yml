@@ -155,14 +155,14 @@ jobs:
 
       - name: Upload Trivy secret scan SARIF
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-secrets.sarif
           category: trivy-secrets
 
       - name: Upload Trivy misconfig SARIF
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-misconfig.sarif
           category: trivy-misconfig
