@@ -72,6 +72,16 @@ const USE_CASES: UseCase[] = [
       'List sessions from the last 7 days',
     ],
   },
+  {
+    icon: '📋',
+    title: 'Project Rules',
+    prompts: [
+      'What are the current project rules?',
+      'Show me the compiled rules for Codex',
+      'What preferences should I follow in this repo?',
+      'Which tools are enabled for canonical rules?',
+    ],
+  },
 ];
 
 type CliCommand = {
@@ -89,6 +99,9 @@ const CLI_COMMANDS: CliCommand[] = [
   { cmd: 'sfs handoff <id> <email>', desc: 'Hand off a session' },
   { cmd: 'sfs audit <id>', desc: 'Run LLM Judge audit' },
   { cmd: 'sfs project edit', desc: 'Edit project context for this repo' },
+  { cmd: 'sfs rules init', desc: 'Set up canonical project rules (enables per-tool compilers)' },
+  { cmd: 'sfs rules edit', desc: 'Edit canonical static preferences in $EDITOR' },
+  { cmd: 'sfs rules compile', desc: 'Compile canonical rules to tool files (CLAUDE.md, codex.md, …)' },
   { cmd: 'sfs dlp scan <id>', desc: 'Scan for secrets/PHI' },
 ];
 
@@ -116,6 +129,11 @@ const MCP_KNOWLEDGE_WRITE: McpTool[] = [
   { name: 'add_knowledge', desc: 'Add a discovery during a session' },
   { name: 'update_wiki_page', desc: 'Create or update a wiki page' },
   { name: 'list_wiki_pages', desc: 'Browse the wiki structure' },
+];
+
+const MCP_RULES: McpTool[] = [
+  { name: 'get_rules', desc: 'Canonical project rules + compilation config' },
+  { name: 'get_compiled_rules', desc: 'Compiled rule text for a tool (CLAUDE.md, codex.md, …)' },
 ];
 
 function getCurrentTheme(): 'light' | 'dark' {
@@ -299,7 +317,7 @@ export default function HelpPage() {
   const siteHref = (path: string) => buildSiteHref(theme, path);
 
   const fakeOutput = `✓ MCP server registered
-✓ ${selectedTool.label} will now have access to 12 tools
+✓ ${selectedTool.label} will now have access to 14 tools
 
 Restart ${selectedTool.label} to activate.`;
 
@@ -477,14 +495,15 @@ Restart ${selectedTool.label} to activate.`;
       <section className="mb-12 md:mb-16">
         <SectionHeading
           eyebrow="Reference"
-          title="MCP Tools (12)"
+          title="MCP Tools (14)"
           subtitle="The tools your agent gets when SessionFS is installed."
         />
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <McpToolGroup label="Session tools" tools={MCP_SESSION_TOOLS} />
           <McpToolGroup label="Knowledge (read)" tools={MCP_KNOWLEDGE_READ} />
           <McpToolGroup label="Knowledge (write)" tools={MCP_KNOWLEDGE_WRITE} />
+          <McpToolGroup label="Rules (read)" tools={MCP_RULES} />
         </div>
       </section>
 

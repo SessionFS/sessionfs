@@ -39,7 +39,7 @@ def test_extract_with_provenance():
     meta = _extract_manifest_metadata(_build_archive(manifest))
     assert meta["rules_source"] == "sessionfs"
     assert meta["rules_version"] == 5
-    assert meta["rules_hash"] == "sha256:cafe"
+    assert meta["rules_hash"] == "cafe"  # prefix stripped on extraction
     arts = json.loads(meta["instruction_artifacts"])
     assert len(arts) == 1
     assert arts[0]["path"] == "CLAUDE.md"

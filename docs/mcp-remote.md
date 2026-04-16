@@ -33,12 +33,41 @@ In any conversation, ask about your past sessions:
 
 ### Available tools
 
+The MCP server exposes 14 tools in four categories. Full parameter reference at [sessionfs.dev/docs/mcp/](https://sessionfs.dev/docs/mcp/).
+
+**Session tools**
+
 | Tool | What it does |
 |------|-------------|
 | `search_sessions` | Full-text search across all your sessions |
 | `get_session_context` | Retrieve the full conversation from a session |
 | `list_recent_sessions` | Browse your recent sessions |
 | `find_related_sessions` | Find sessions that touched a file or hit an error |
+| `get_session_summary` | Structured summary of a session |
+| `get_audit_report` | LLM Judge findings for a session |
+
+**Knowledge (read)**
+
+| Tool | What it does |
+|------|-------------|
+| `get_project_context` | Full compiled wiki: overview + pages + concepts |
+| `search_project_knowledge` | Search knowledge entries by query |
+| `ask_project` | Q&A against the knowledge base and recent sessions |
+
+**Knowledge (write)**
+
+| Tool | What it does |
+|------|-------------|
+| `add_knowledge` | Contribute a discovery during a session (claim / evidence / note) |
+| `update_wiki_page` | Create or update a wiki page |
+| `list_wiki_pages` | Browse the wiki structure |
+
+**Rules (read)**
+
+| Tool | What it does |
+|------|-------------|
+| `get_rules` | Canonical project rules and compilation config |
+| `get_compiled_rules` | Compiled rule text for a tool (CLAUDE.md / codex.md / .cursorrules / copilot-instructions.md / GEMINI.md) |
 
 ## Remote MCP (Claude.ai Web)
 

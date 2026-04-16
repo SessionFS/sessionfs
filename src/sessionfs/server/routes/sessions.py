@@ -313,7 +313,14 @@ def _extract_manifest_metadata(data: bytes) -> dict:
         if isinstance(provenance, dict):
             defaults["rules_source"] = provenance.get("rules_source") or "none"
             defaults["rules_version"] = provenance.get("rules_version")
-            defaults["rules_hash"] = provenance.get("rules_hash")
+            raw_hash = provenance.get("rules_hash") or ""
+            # Strip algorithm prefix (e.g. "sha256:") — the column is
+            # String(80) but older deployments may still have String(64)
+            # from migration 028 before 029 runs. The hex digest alone
+            # fits in 64 chars and is sufficient for identity matching.
+            if ":" in raw_hash:
+                raw_hash = raw_hash.split(":", 1)[1]
+            defaults["rules_hash"] = raw_hash or None
             arts = provenance.get("instruction_artifacts") or []
             if isinstance(arts, list):
                 defaults["instruction_artifacts"] = json.dumps(arts)

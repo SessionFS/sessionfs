@@ -162,7 +162,7 @@ def upgrade() -> None:
 
     # sessions additions — instruction provenance
     op.add_column("sessions", sa.Column("rules_version", sa.Integer, nullable=True))
-    op.add_column("sessions", sa.Column("rules_hash", sa.String(64), nullable=True))
+    op.add_column("sessions", sa.Column("rules_hash", sa.String(80), nullable=True))
     op.add_column(
         "sessions",
         sa.Column(

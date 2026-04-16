@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.9.2] - 2026-04-16
+
+### Fixed
+- **Session push 500 with instruction provenance** — `rules_hash` column was `String(64)` but captured hashes are `sha256:` + 64 hex = 71 chars. PostgreSQL enforced the length and raised on INSERT. Fix: strip the `sha256:` prefix before storing (hex digest alone is sufficient for identity matching) + migration 029 widens the column to `String(80)` for defense-in-depth.
+- **`sfs push --yes`** — new flag to skip the interactive DLP confirmation prompt. Findings are still displayed but don't block the push. Required for non-interactive environments (CI, scripts, daemon autosync).
+
 ## [0.9.9.1] - 2026-04-15
 
 ### Fixed

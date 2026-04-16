@@ -230,6 +230,11 @@ def auth_status() -> None:
 
 def push(
     session_id: str = typer.Argument(help="Session ID or prefix."),
+    yes: bool = typer.Option(
+        False,
+        "--yes", "-y",
+        help="Skip DLP confirmation prompt. Findings are still shown but don't block the push.",
+    ),
 ) -> None:
     """Push a local session to the server."""
     from sessionfs.sync.archive import pack_session
@@ -278,7 +283,11 @@ def push(
                         if count:
                             console.print(f"  {sev}: {count}")
 
-                    if not typer.confirm(
+                    if yes:
+                        console.print(
+                            "[dim]--yes: proceeding despite DLP findings.[/dim]"
+                        )
+                    elif not typer.confirm(
                         "Continue pushing with these findings?", default=False
                     ):
                         console.print("[dim]Push cancelled.[/dim]")

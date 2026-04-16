@@ -48,7 +48,7 @@ describe('HelpPage', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Codex' }));
     // Terminal should now show the Codex command and output
     expect(screen.getByText(/sfs mcp install --for codex/)).toBeInTheDocument();
-    expect(screen.getByText(/Codex will now have access to 12 tools/)).toBeInTheDocument();
+    expect(screen.getByText(/Codex will now have access to 14 tools/)).toBeInTheDocument();
     // Codex pill should be marked selected, Claude should not
     expect(screen.getByRole('tab', { name: 'Codex' })).toHaveAttribute(
       'aria-selected',

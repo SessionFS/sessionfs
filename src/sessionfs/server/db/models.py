@@ -98,7 +98,7 @@ class Session(Base):
     dlp_scan_results: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Rules portability (migration 028) — instruction provenance
     rules_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    rules_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    rules_hash: Mapped[str | None] = mapped_column(String(80), nullable=True)
     rules_source: Mapped[str] = mapped_column(
         String(16), nullable=False, default="none", server_default="none"
     )
