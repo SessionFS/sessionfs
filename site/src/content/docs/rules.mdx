@@ -267,7 +267,9 @@ Current project rules are v5.
 Synced codex.md from SessionFS rules v5.
 ```
 
-The source session's historical rules are **informational only**. They are never applied by default. A future release will add `--rules-from-session` and `--rules-version N` for replaying historical rules; those flags are not in v0.9.9.
+The default is always the project's **current** canonical rules, not the source session's historical version. Source session provenance is displayed on stderr for awareness, but it is never used as the runtime default. If you need to know what shaped the original session, check the provenance fields in the session manifest or the dashboard session detail view.
+
+Historical replay (`--rules-from-session` and `--rules-version N`) is deferred to v0.9.10. The underlying provenance data is persisted starting in v0.9.9.
 
 ### Write-Policy Cases
 
@@ -357,6 +359,21 @@ Every captured session records what guided the agent at the time. Four fields ar
 
 `rules_source = mixed` means both SessionFS-managed and manual/global artifacts shaped the session (for example, a project `CLAUDE.md` managed by SessionFS alongside a hand-written global `~/.claude/CLAUDE.md`).
 
+### Provenance Capture Summary
+
+Not all artifact types are equally reconstructable. SessionFS captures full content for managed rules only; everything else is recorded by hash for identity/change verification.
+
+| Artifact type | What's captured | Reconstructable? |
+|---|---|---|
+| SessionFS-managed project rules | version + hash; full text in `rules_versions` | Yes — any historical version |
+| Unmanaged project rules (e.g. hand-written `CLAUDE.md`) | path + hash + source + scope | No — hash only, no content stored |
+| Global rules/settings (e.g. `~/.claude/CLAUDE.md`) | path + hash (when `SFS_CAPTURE_GLOBAL_RULES=on`) | No — hash only |
+| Nested project agents/skills (`.agents/`, `.claude/commands/`, `.claude/skills/`, etc.) | path + hash per file (up to 30 per directory root) | No — hash only |
+
+<Aside type="caution" title="What is NOT reconstructable">
+SessionFS cannot reconstruct the exact text of unmanaged project rules, global rules, or nested agent/skill files. You can verify whether a file has changed since a session by comparing hashes, but you cannot display a text diff for these artifact types.
+</Aside>
+
 ### Instruction Artifacts
 
 Each artifact is a small JSON object:
@@ -381,9 +398,10 @@ Each artifact is a small JSON object:
 
 Scope differs by artifact type:
 
-- **Managed compiled rule files** (`source: sessionfs`) — version + hash only. Content is already stored immutably in `rules_versions`.
-- **Unmanaged project artifacts** — path + hash + source + scope. No content snapshot by default.
-- **Global artifacts** (user home directory rules, global agent files) — hash only, discovered best-effort. Content is never snapshotted.
+- **Managed compiled rule files** (`source: sessionfs`) — version + hash. Full text is stored immutably in `rules_versions`, so any historical version can be reconstructed.
+- **Unmanaged project artifacts** (e.g. a hand-written `CLAUDE.md`) — path + hash + source + scope only. Content is **not** stored. You can verify identity or detect changes by hash, but cannot reconstruct the original text.
+- **Global artifacts** (user home directory rules, global agent files) — hash only, discovered best-effort. Content is never stored. Suppressed entirely when `SFS_CAPTURE_GLOBAL_RULES=off`.
+- **Nested skills/agents** — project-local files under `.agents/`, `.claude/commands/`, `.claude/skills/`, and similar directories are discovered recursively. Capture is bounded at **30 files per directory root** and uses deterministic sorted order. Only path + hash are recorded; content is not stored.
 
 Capture is best-effort and non-fatal. If SessionFS cannot classify an artifact, it records what it can and moves on. Session capture never fails because of missing or malformed rule files.
 
