@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.9.3] - 2026-04-16
+
+### Added
+- **End-to-end resume smoke tests** — 3 tests exercising the actual `resume()` command wiring with real file writes, mocked API boundary, and stubbed tool launch. Proves: missing target file gets created before launch, unmanaged file is skipped without `--force-rules`, preflight failure does not abort resume.
+- **Recursive nested skills/agents provenance** — `instruction_provenance` capture now discovers files recursively under `.agents/`, `.claude/commands/`, `.claude/skills/`, etc. (was flat-only). Uses `os.walk` with deterministic sorted traversal, symlink skipping, and a 30-file-per-root bound.
+
+### Fixed
+- **Provenance docs misstatements** — docs said the source-provenance line is "omitted" when absent (it actually prints a fallback message), and said "meaningfully initialized" checks `rules_versions` rows (it only checks `enabled_tools` / `static_rules` / `tool_overrides`). Both corrected in `docs/rules.md` and `site/.../rules.mdx`.
+- **Provenance capture summary table** — added to docs: 4-row table (managed / unmanaged / global / nested) showing what's captured and whether it's reconstructable.
+
+### Documentation
+- **Provenance reconstruction semantics** — docs now explicitly state that unmanaged/global artifacts are hash-only (not reconstructable), and that resume uses current canonical rules by default (not historical session rules). Historical replay deferred to v0.9.10.
+
 ## [0.9.9.2] - 2026-04-16
 
 ### Fixed
