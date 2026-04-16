@@ -302,7 +302,7 @@ When the source session's manifest includes `instruction_provenance`, resume pri
 - `Source session used mixed rule sources.`
 - `Source session had no recorded rules provenance.`
 
-When the manifest has no provenance entry (older captures, or the source tool never ran with a rules file), the line is omitted. Provenance display is informational only — it does not change what gets written.
+When the manifest has no provenance entry (older captures, or the source tool never ran with a rules file), the output shows `Source session had no recorded rules provenance.` Provenance display is informational only — it does not change what gets written.
 
 ### When Preflight Is Skipped
 
@@ -312,7 +312,7 @@ Rules sync is skipped silently when:
 - `--no-rules-sync` was passed
 - the target path does not resolve to a git-backed project SessionFS can map to a project record
 
-Rules sync is skipped with a short info message when canonical rules are **not meaningfully initialized** — `enabled_tools` is empty, no `rules_versions` rows exist, and `static_rules` is empty:
+Rules sync is skipped with a short info message when canonical rules are **not meaningfully initialized** — `enabled_tools` is empty, `static_rules` is empty, and `tool_overrides` is empty:
 
 ```text
 No initialized SessionFS project rules found for this repo.
