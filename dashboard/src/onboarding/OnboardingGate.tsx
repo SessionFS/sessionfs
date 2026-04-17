@@ -49,10 +49,17 @@ export default function OnboardingGate({ children }: { children: React.ReactNode
   // Dismissed → immediate render, zero queries
   if (dismissed) return <>{children}</>;
 
-  // While loading, render children (SessionList will show its own loading
-  // state) instead of a blank screen. The gate only acts on the RESOLVED
-  // result — it never blocks rendering.
-  if (sessions.isLoading || projects.isLoading) return <>{children}</>;
+  // While loading, show a minimal placeholder — not null (blank screen)
+  // and not children (which mounts SessionList + fires extra queries).
+  // The placeholder is invisible for fast responses (<100ms) via a CSS
+  // animation delay, so returning users never see it.
+  if (sessions.isLoading || projects.isLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-[60vh] animate-[fadeIn_0.3s_ease-in_0.15s_both]">
+        <p className="text-sm text-[var(--text-tertiary)]">Loading...</p>
+      </div>
+    );
+  }
 
   // Errors → pass through (don't misroute existing users)
   if (sessions.isError || projects.isError) return <>{children}</>;
