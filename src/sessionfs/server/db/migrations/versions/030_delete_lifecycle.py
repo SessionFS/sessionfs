@@ -54,36 +54,46 @@ def upgrade() -> None:
     # Can't do date arithmetic portably in raw SQL across PG + SQLite,
     # so we read, compute in Python, and batch-update. Migration runs
     # once; the row count is small (single-digit for most deployments).
+    # Use SQLAlchemy Core for the remaining queries too — avoids the
+    # is_deleted = 1 vs = true portability issue across PG and SQLite.
     conn = op.get_bind()
     rows = conn.execute(
-        sa.text(
-            "SELECT id, deleted_at FROM sessions "
-            "WHERE is_deleted = 1 AND purge_after IS NULL AND deleted_at IS NOT NULL"
+        sa.select(sessions.c.id, sessions.c.deleted_at).where(
+            and_(
+                sessions.c.is_deleted == True,  # noqa: E712
+                sessions.c.purge_after.is_(None),
+                sessions.c.deleted_at.isnot(None),
+            )
         )
     ).fetchall()
     for row in rows:
-        sid, deleted_at = row[0], row[1]
-        if isinstance(deleted_at, str):
+        sid, deleted_at_val = row[0], row[1]
+        if isinstance(deleted_at_val, str):
             try:
-                deleted_at = datetime.fromisoformat(deleted_at)
+                deleted_at_val = datetime.fromisoformat(deleted_at_val)
             except ValueError:
                 continue
-        if deleted_at is not None:
-            purge = deleted_at + timedelta(days=30)
+        if deleted_at_val is not None:
+            purge = deleted_at_val + timedelta(days=30)
             conn.execute(
-                sa.text("UPDATE sessions SET purge_after = :pa WHERE id = :sid"),
-                {"pa": purge, "sid": sid},
+                update(sessions)
+                .where(sessions.c.id == sid)
+                .values(purge_after=purge)
             )
 
     # Handle legacy deletes with NULL deleted_at — set both to now + 30 days
     now = datetime.now(timezone.utc)
     purge_default = now + timedelta(days=30)
     conn.execute(
-        sa.text(
-            "UPDATE sessions SET deleted_at = :now, purge_after = :pa "
-            "WHERE is_deleted = 1 AND purge_after IS NULL AND deleted_at IS NULL"
-        ),
-        {"now": now, "pa": purge_default},
+        update(sessions)
+        .where(
+            and_(
+                sessions.c.is_deleted == True,  # noqa: E712
+                sessions.c.purge_after.is_(None),
+                sessions.c.deleted_at.is_(None),
+            )
+        )
+        .values(deleted_at=now, purge_after=purge_default)
     )
 
 
