@@ -10,6 +10,10 @@ const LEGACY_KEY = 'sfs-onboarding-dismissed';
 /**
  * Wraps the root "/" route. Redirects first-time users (0 sessions, 0 projects,
  * onboarding not dismissed) to /getting-started. Everyone else passes through.
+ *
+ * Performance: uses the SAME query key as SessionList ('sessions' with page 1,
+ * page_size 20) so React Query deduplicates the network request. No redundant
+ * fetch. When dismissed (most users), no queries fire at all.
  */
 export default function OnboardingGate({ children }: { children: React.ReactNode }) {
   const { auth } = useAuth();
@@ -17,18 +21,20 @@ export default function OnboardingGate({ children }: { children: React.ReactNode
   const scopedKey = onboardingDismissedKey(auth?.baseUrl, auth?.apiKey);
 
   // Migrate: if the old global key was set, copy to the scoped key and clear it.
-  // This prevents previously-dismissed users from seeing onboarding again.
   if (getItem(LEGACY_KEY) === '1') {
     setItem(scopedKey, '1');
     setItem(LEGACY_KEY, '');
   }
 
-  // If onboarding was dismissed (scoped to this user + server), skip all checks
+  // If onboarding was dismissed (most returning users), skip all queries.
+  // This path renders children immediately — zero network overhead.
   const dismissed = getItem(scopedKey) === '1';
 
+  // Use the same query key + page_size as SessionList so React Query shares
+  // the cache entry. The gate never fires a redundant request.
   const sessions = useQuery({
-    queryKey: ['sessions', { page: 1, page_size: 1 }],
-    queryFn: () => auth!.client.listSessions({ page: 1, page_size: 1 }),
+    queryKey: ['sessions', { page: 1, page_size: 20 }],
+    queryFn: () => auth!.client.listSessions({ page: 1, page_size: 20 }),
     enabled: !!auth && !dismissed,
     staleTime: 30_000,
   });
@@ -40,15 +46,15 @@ export default function OnboardingGate({ children }: { children: React.ReactNode
     staleTime: 30_000,
   });
 
-  // If dismissed, render children immediately
+  // Dismissed → immediate render, zero queries
   if (dismissed) return <>{children}</>;
 
-  // Wait for both queries to resolve before deciding
-  if (sessions.isLoading || projects.isLoading) return null;
+  // While loading, render children (SessionList will show its own loading
+  // state) instead of a blank screen. The gate only acts on the RESOLVED
+  // result — it never blocks rendering.
+  if (sessions.isLoading || projects.isLoading) return <>{children}</>;
 
-  // If either query errored, don't redirect — show the normal page
-  // (or its error state). Transient API failures must never misroute
-  // existing users into onboarding.
+  // Errors → pass through (don't misroute existing users)
   if (sessions.isError || projects.isError) return <>{children}</>;
 
   const hasSession = (sessions.data?.total ?? 0) > 0;

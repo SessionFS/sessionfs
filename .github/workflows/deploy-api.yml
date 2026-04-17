@@ -144,7 +144,8 @@ jobs:
         run: |
           gcloud run services update ${{ env.SERVICE }} \
             --image "${{ env.IMAGE }}:${{ needs.build.outputs.image_tag }}" \
-            --region ${{ env.REGION }}
+            --region ${{ env.REGION }} \
+            --min-instances 1
 
       - name: Verify deployment
         run: |
