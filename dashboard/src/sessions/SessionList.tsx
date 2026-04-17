@@ -623,13 +623,34 @@ export default function SessionList() {
         {/* Empty state */}
         {!isLoading && !showTrash && filteredSessions.length === 0 && !error && (
           <div className="text-center py-16">
-            <p className="text-[var(--text-secondary)] mb-2">No sessions found</p>
-            <p className="text-[var(--text-tertiary)] text-sm">
-              {selectedFolderId
-                ? 'No sessions bookmarked in this folder yet.'
-                : <>Push sessions from the CLI: <code className="bg-[var(--bg-secondary)] px-1.5 py-0.5 rounded">sfs push &lt;id&gt;</code></>
-              }
-            </p>
+            <p className="text-[var(--text-secondary)] text-base font-medium mb-2">No sessions yet</p>
+            {selectedFolderId ? (
+              <p className="text-[var(--text-tertiary)] text-sm">
+                No sessions bookmarked in this folder yet.
+              </p>
+            ) : (
+              <>
+                <p className="text-[var(--text-tertiary)] text-sm max-w-sm mx-auto mb-5">
+                  SessionFS captures sessions automatically from your AI tools.
+                  Get started by installing the MCP server for your tool.
+                </p>
+                <div className="flex items-center justify-center gap-3">
+                  <Link
+                    to="/getting-started"
+                    className="px-4 py-2 text-sm font-semibold bg-[var(--brand)] text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors"
+                  >
+                    Get Started
+                  </Link>
+                  <Link
+                    to="/help"
+                    className="px-4 py-2 text-sm font-medium text-[var(--text-secondary)] border rounded-lg hover:text-[var(--text-primary)] transition-colors"
+                    style={{ borderColor: 'var(--border)' }}
+                  >
+                    View Help
+                  </Link>
+                </div>
+              </>
+            )}
           </div>
         )}
 

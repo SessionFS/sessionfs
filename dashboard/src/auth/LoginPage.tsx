@@ -90,8 +90,10 @@ export default function LoginPage() {
     try {
       const signupResult = await signup(baseUrl, email);
       setSignupKey(signupResult.raw_key);
-      setApiKey(signupResult.raw_key);
-      setMode('login');
+      // Auto-login with the new key and navigate to onboarding
+      await login(baseUrl, signupResult.raw_key);
+      navigate('/getting-started');
+      return;
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
         setError('Email already registered. Use Login instead.');

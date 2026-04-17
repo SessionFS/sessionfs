@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useProjects } from '../hooks/useProjects';
 import type { ProjectContext } from '../api/client';
 import RelativeDate from '../components/RelativeDate';
@@ -162,6 +162,12 @@ export default function ProjectsPage() {
           </button>
           <p className="text-[var(--text-tertiary)] text-xs mt-4">
             Or from the terminal: <code className="font-mono bg-[var(--bg-tertiary)] px-1.5 py-0.5 rounded text-[var(--text-secondary)]">sfs project set &lt;git-remote&gt;</code>
+          </p>
+          <p className="text-[var(--text-tertiary)] text-xs mt-3">
+            New to SessionFS?{' '}
+            <Link to="/getting-started" className="text-[var(--accent)] hover:underline">
+              Start here
+            </Link>
           </p>
         </div>
       )}

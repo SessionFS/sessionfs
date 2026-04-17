@@ -21,6 +21,8 @@ const OrgPage = React.lazy(() => import('./org/OrgPage'));
 const ProjectsPage = React.lazy(() => import('./projects/ProjectsPage'));
 const ProjectDetail = React.lazy(() => import('./projects/ProjectDetail'));
 const HelpPage = React.lazy(() => import('./help/HelpPage'));
+const GettingStartedPage = React.lazy(() => import('./onboarding/GettingStartedPage'));
+const OnboardingGate = React.lazy(() => import('./onboarding/OnboardingGate'));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -63,7 +65,8 @@ export default function App() {
                 </ProtectedRoute>
               }
             >
-              <Route path="/" element={<SessionList />} />
+              <Route path="/getting-started" element={<GettingStartedPage />} />
+              <Route path="/" element={<OnboardingGate><SessionList /></OnboardingGate>} />
               <Route path="/search" element={<SearchResults />} />
               <Route path="/sessions/:id" element={<SessionDetail />} />
               <Route path="/projects" element={<ProjectsPage />} />
