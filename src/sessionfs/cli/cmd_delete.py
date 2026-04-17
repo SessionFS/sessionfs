@@ -64,19 +64,21 @@ def delete(
     else:
         scope = "everywhere"
 
-    # For local and everywhere scopes, resolve the local session ID
+    # Resolve prefix → full ID from local store when available.
+    # All scopes benefit from resolution (the server API requires the full
+    # session ID, not a prefix).
     store = None
     full_id = session_id
-    if scope in ("local", "everywhere"):
-        try:
-            store = open_store()
-            full_id = resolve_session_id(store, session_id)
-        except (SystemExit, Exception):
-            if scope == "local":
-                err_console.print(f"[red]Session {session_id} not found locally.[/red]")
-                raise SystemExit(1)
-            # For everywhere, session might only be on server
-            full_id = session_id
+    try:
+        store = open_store()
+        full_id = resolve_session_id(store, session_id)
+    except (SystemExit, Exception):
+        if scope == "local":
+            err_console.print(f"[red]Session {session_id} not found locally.[/red]")
+            raise SystemExit(1)
+        # For cloud/everywhere, session might only be on server —
+        # pass the raw ID through and let the API resolve or 404.
+        full_id = session_id
 
     # Confirmation prompt
     if not force:
@@ -226,12 +228,20 @@ def trash() -> None:
 
 
 def restore(
-    session_id: str = typer.Argument(help="Session ID to restore."),
+    session_id: str = typer.Argument(help="Session ID or prefix to restore."),
 ) -> None:
     """Restore a soft-deleted session."""
     from sessionfs.store.deleted import get_entry, remove_exclusion
 
     import httpx
+
+    # Resolve prefix → full ID from local store when available.
+    try:
+        store = open_store()
+        session_id = resolve_session_id(store, session_id)
+        store.close()
+    except Exception:
+        pass  # Use raw ID — server will resolve or 404
 
     cfg = _load_sync_config()
 
