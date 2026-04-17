@@ -129,10 +129,12 @@ def delete(
 
             # Remove from SQLite index
             try:
-                store.index._conn.execute(
-                    "DELETE FROM sessions WHERE session_id = ?", (full_id,)
-                )
-                store.index._conn.commit()
+                conn = store.index._conn
+                if conn is not None:
+                    conn.execute(
+                        "DELETE FROM sessions WHERE session_id = ?", (full_id,)
+                    )
+                    conn.commit()
             except Exception:
                 pass  # Index entry may not exist
 
