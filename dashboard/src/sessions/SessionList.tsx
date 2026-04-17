@@ -29,7 +29,8 @@ const DATE_RANGES = [
   { label: 'Last 30d', value: '30d' },
 ] as const;
 
-type SortKey = 'date' | 'messages' | 'tokens' | 'title';
+type SortKey = 'date' | 'messages' | 'tokens' | 'title' | 'tool';
+type SortDir = 'desc' | 'asc';
 
 interface LineageGroup {
   root: SessionSummary;
@@ -104,6 +105,43 @@ function isThisWeek(dateStr: string): boolean {
   return d >= weekAgo && !isToday(dateStr);
 }
 
+function compareByDate(a: SessionSummary, b: SessionSummary): number {
+  return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+}
+
+function compareByMessages(a: SessionSummary, b: SessionSummary): number {
+  return b.message_count - a.message_count;
+}
+
+function compareByTokens(a: SessionSummary, b: SessionSummary): number {
+  return (
+    b.total_input_tokens + b.total_output_tokens -
+    (a.total_input_tokens + a.total_output_tokens)
+  );
+}
+
+function compareByTitle(a: SessionSummary, b: SessionSummary): number {
+  const titleCmp = (a.title || '').localeCompare(b.title || '');
+  return titleCmp !== 0 ? titleCmp : compareByDate(a, b);
+}
+
+function compareByTool(a: SessionSummary, b: SessionSummary): number {
+  const toolCmp = fullToolName(a.source_tool).localeCompare(fullToolName(b.source_tool));
+  return toolCmp !== 0 ? toolCmp : compareByDate(a, b);
+}
+
+function sortSessions(list: SessionSummary[], sortBy: SortKey, sortDir: SortDir = 'desc'): SessionSummary[] {
+  const sorted = [...list];
+  if (sortBy === 'messages') sorted.sort(compareByMessages);
+  else if (sortBy === 'tokens') sorted.sort(compareByTokens);
+  else if (sortBy === 'title') sorted.sort(compareByTitle);
+  else if (sortBy === 'tool') sorted.sort(compareByTool);
+  else sorted.sort(compareByDate);
+  // Default comparators sort desc (most/newest first). Reverse for asc.
+  if (sortDir === 'asc') sorted.reverse();
+  return sorted;
+}
+
 export default function SessionList() {
   const navigate = useNavigate();
   const { auth } = useAuth();
@@ -113,6 +151,7 @@ export default function SessionList() {
   const [toolFilter, setToolFilter] = useState('all');
   const [dateRange, setDateRange] = useState('');
   const [sortBy, setSortBy] = useState<SortKey>('date');
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [navFilter, setNavFilter] = useState<NavFilter>('all');
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
@@ -214,17 +253,7 @@ export default function SessionList() {
         const ms = dateRange === '24h' ? 86400000 : dateRange === '7d' ? 604800000 : 2592000000;
         list = list.filter((s) => now - new Date(s.updated_at).getTime() < ms);
       }
-      const sorted = [...list];
-      if (sortBy === 'messages') sorted.sort((a, b) => b.message_count - a.message_count);
-      else if (sortBy === 'tokens')
-        sorted.sort(
-          (a, b) =>
-            b.total_input_tokens + b.total_output_tokens -
-            (a.total_input_tokens + a.total_output_tokens),
-        );
-      else if (sortBy === 'title')
-        sorted.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
-      return sorted;
+      return sortSessions(list, sortBy, sortDir);
     }
 
     if (!data?.sessions) return [];
@@ -238,24 +267,13 @@ export default function SessionList() {
     }
 
     // Sort (client-side on current page -- server sorts by date by default)
-    const sorted = [...list];
-    if (sortBy === 'messages') sorted.sort((a, b) => b.message_count - a.message_count);
-    else if (sortBy === 'tokens')
-      sorted.sort(
-        (a, b) =>
-          b.total_input_tokens + b.total_output_tokens -
-          (a.total_input_tokens + a.total_output_tokens),
-      );
-    else if (sortBy === 'title')
-      sorted.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
-
-    return sorted;
-  }, [data, dateRange, sortBy, selectedFolderId, folderSessionsData]);
+    return sortSessions(list, sortBy);
+  }, [data, dateRange, sortBy, sortDir, selectedFolderId, folderSessionsData]);
 
   // Clear selection when filters change
   useEffect(() => {
     setSelectedIds(new Set());
-  }, [toolFilter, dateRange, sortBy, selectedFolderId, navFilter, page]);
+  }, [toolFilter, dateRange, sortBy, sortDir, selectedFolderId, navFilter, page]);
 
   // Most recent session (for hero + repo detection)
   const mostRecent = useMemo(() => {
@@ -289,8 +307,25 @@ export default function SessionList() {
 
   const filteredSessions = sessions;
 
-  // Date grouping
+  // Grouping: default is date buckets, but "Sort: Tool" switches to tool buckets.
   const grouped = useMemo(() => {
+    if (sortBy === 'tool') {
+      const toolGroups = new Map<string, SessionSummary[]>();
+      for (const s of filteredSessions) {
+        const label = fullToolName(s.source_tool);
+        if (!toolGroups.has(label)) toolGroups.set(label, []);
+        toolGroups.get(label)!.push(s);
+      }
+
+      return {
+        mode: 'tool' as const,
+        toolGroups: Array.from(toolGroups.entries()).map(([label, sessions]) => ({ label, sessions })),
+        today: [] as SessionSummary[],
+        thisWeek: [] as SessionSummary[],
+        earlier: [] as SessionSummary[],
+      };
+    }
+
     const today: SessionSummary[] = [];
     const thisWeek: SessionSummary[] = [];
     const earlier: SessionSummary[] = [];
@@ -301,8 +336,14 @@ export default function SessionList() {
       else earlier.push(s);
     }
 
-    return { today, thisWeek, earlier };
-  }, [filteredSessions]);
+    return {
+      mode: 'date' as const,
+      toolGroups: [] as Array<{ label: string; sessions: SessionSummary[] }>,
+      today,
+      thisWeek,
+      earlier,
+    };
+  }, [filteredSessions, sortBy]);
 
   const hasMore = selectedFolderId ? false : (data?.has_more ?? false);
   // totalSessions for analytics = current view count
@@ -498,6 +539,7 @@ export default function SessionList() {
               className="appearance-none bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 pr-8 text-[14px] font-medium text-[var(--text-secondary)] focus:outline-none focus:border-[var(--brand)] cursor-pointer transition-colors"
             >
               <option value="date">Sort: Date</option>
+              <option value="tool">Sort: Tool</option>
               <option value="messages">Sort: Messages</option>
               <option value="tokens">Sort: Tokens</option>
               <option value="title">Sort: Title</option>
@@ -506,6 +548,20 @@ export default function SessionList() {
               <polyline points="6 9 12 15 18 9" />
             </svg>
           </div>
+          <button
+            onClick={() => setSortDir(d => d === 'desc' ? 'asc' : 'desc')}
+            className="p-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+            title={sortDir === 'desc' ? 'Showing most first — click for least first' : 'Showing least first — click for most first'}
+            aria-label={`Sort direction: ${sortDir === 'desc' ? 'descending' : 'ascending'}`}
+          >
+            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              {sortDir === 'desc' ? (
+                <path d="M12 5v14M5 12l7 7 7-7" />
+              ) : (
+                <path d="M12 19V5M5 12l7-7 7 7" />
+              )}
+            </svg>
+          </button>
           <button
             onClick={() => { if (selectMode) clearSelection(); else setSelectMode(true); }}
             className="text-[13px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] px-3 py-2 border border-[var(--border)] rounded-lg"
@@ -576,12 +632,34 @@ export default function SessionList() {
           </div>
         )}
 
-        {/* ── Session list with date grouping ── */}
+        {/* ── Session list ── */}
         {!isLoading && !showTrash && filteredSessions.length > 0 && (
           <>
-            <DateGroup label="Today" sessions={grouped.today} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} isFirst selectMode={selectMode} selectedIds={selectedIds} onToggleSelect={toggleSelect} isInFolder={!!selectedFolderId} />
-            <DateGroup label="This Week" sessions={grouped.thisWeek} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} selectMode={selectMode} selectedIds={selectedIds} onToggleSelect={toggleSelect} isInFolder={!!selectedFolderId} />
-            <DateGroup label="Earlier" sessions={grouped.earlier} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} selectMode={selectMode} selectedIds={selectedIds} onToggleSelect={toggleSelect} isInFolder={!!selectedFolderId} />
+            {grouped.mode === 'tool' ? (
+              grouped.toolGroups.map((group, index) => (
+                <DateGroup
+                  key={group.label}
+                  label={group.label}
+                  sessions={group.sessions}
+                  onRowClick={handleRowClick}
+                  onRowKeyDown={handleRowKeyDown}
+                  onResume={handleResume}
+                  expandedGroups={expandedGroups}
+                  onToggleGroup={toggleGroup}
+                  isFirst={index === 0}
+                  selectMode={selectMode}
+                  selectedIds={selectedIds}
+                  onToggleSelect={toggleSelect}
+                  isInFolder={!!selectedFolderId}
+                />
+              ))
+            ) : (
+              <>
+                <DateGroup label="Today" sessions={grouped.today} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} isFirst selectMode={selectMode} selectedIds={selectedIds} onToggleSelect={toggleSelect} isInFolder={!!selectedFolderId} />
+                <DateGroup label="This Week" sessions={grouped.thisWeek} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} selectMode={selectMode} selectedIds={selectedIds} onToggleSelect={toggleSelect} isInFolder={!!selectedFolderId} />
+                <DateGroup label="Earlier" sessions={grouped.earlier} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} selectMode={selectMode} selectedIds={selectedIds} onToggleSelect={toggleSelect} isInFolder={!!selectedFolderId} />
+              </>
+            )}
 
             {/* Pagination */}
             <div className="flex items-center justify-between mt-4 text-sm text-[var(--text-tertiary)]">

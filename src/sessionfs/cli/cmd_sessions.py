@@ -194,7 +194,10 @@ def list_sessions(
     tool: str | None = typer.Option(None, help="Filter by source tool."),
     since: str | None = typer.Option(None, help="Show sessions since (7d, 24h, ISO date)."),
     tag: str | None = typer.Option(None, help="Filter by tag."),
-    sort: str = typer.Option("recent", help="Sort order: recent, oldest, messages, tokens."),
+    sort: str = typer.Option(
+        "recent",
+        help="Sort order: recent, oldest, messages, messages-asc, tokens, tokens-asc.",
+    ),
     output_json: bool = typer.Option(False, "--json", help="Output as JSON."),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Only print session IDs."),
     show_all: bool = typer.Option(False, "--all", "-a", help="Show all sessions including empty."),
@@ -241,10 +244,16 @@ def list_sessions(
             sessions.sort(key=lambda s: s.get("created_at", ""))
         elif sort == "messages":
             sessions.sort(key=lambda s: s.get("message_count", 0), reverse=True)
+        elif sort == "messages-asc":
+            sessions.sort(key=lambda s: s.get("message_count", 0))
         elif sort == "tokens":
             sessions.sort(
                 key=lambda s: s.get("total_input_tokens", 0) + s.get("total_output_tokens", 0),
                 reverse=True,
+            )
+        elif sort == "tokens-asc":
+            sessions.sort(
+                key=lambda s: s.get("total_input_tokens", 0) + s.get("total_output_tokens", 0),
             )
         # 'recent' is default from list_sessions (already DESC)
 
