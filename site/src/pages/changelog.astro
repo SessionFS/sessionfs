@@ -17,14 +17,43 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.9.9 -->
+      <!-- v0.9.9.4 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.9.9.4</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">April 16, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Session Delete Lifecycle — Three-Scope Delete, Trash/Restore, Admin Purge</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Three-scope session delete</strong> — sfs delete &lt;id&gt; with --cloud (server only, keep local), --local (device only, keep cloud), or --everywhere (both). No default scope — explicit choice required. Confirmation prompt with --force bypass for automation.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Sync-aware deletes</strong> — autosync respects intentional deletes via ~/.sessionfs/deleted.json exclusion list. Push and pull skip excluded sessions. Un-delete path gated behind X-SessionFS-Undelete header with ETag conflict check — autosync can never reverse a delete.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>sfs trash</strong> — lists soft-deleted sessions in the 30-day retention window with scope badges and purge dates.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>sfs restore &lt;id&gt;</strong> — reverses a soft-delete on the server, clears local tombstone, prints sfs pull guidance when local copy was removed.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Dashboard delete dialog</strong> — replaces the single confirm() with a two-choice dialog: "Remove from cloud" or "Delete everywhere". One-line explanation per option.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Dashboard Trash view</strong> — filter toggle on the session list showing soft-deleted sessions with scope badges, purge dates, restore buttons, and scope-aware restore guidance toast.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Admin purge endpoint</strong> — POST /admin/purge-deleted hard-deletes expired soft-deleted sessions and their blobs. Single-session or bulk. Returns purge count and bytes reclaimed.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Restore response guidance</strong> — POST /sessions/:id/restore returns restored_from_scope and local_copy_may_be_missing so clients show accurate recovery guidance.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>DELETE endpoint breaking change</strong> — now requires ?scope=cloud|everywhere query parameter (was parameterless). Returns 200 with session record including purge_after (was 204). Old clients without ?scope= get 400.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Storage quota fix</strong> — soft-deleted sessions excluded from used-bytes calculation.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Share links for deleted sessions</strong> — return 410 Gone (was 404).</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Autosync un-delete bug fix</strong> — original soft-delete was immediately reversed by autosync pushing the local copy. Now gated by explicit intent header + ETag check.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Security</strong> — CVE-2026-40347 (python-multipart DoS via crafted multipart preamble/epilogue) + purge endpoint hardening (session_id format validation + atomic audit logging).</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">1,203 backend tests + 98 dashboard UI tests passing &middot; 30 migrations</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.9.9 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
             <span class="text-brand font-semibold">v0.9.9</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">April 14, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Rules Portability — Canonical Project Rules, Five Tool Compilers, Resume-Time Sync</h2>
         <ul class="space-y-2 text-base text-muted">

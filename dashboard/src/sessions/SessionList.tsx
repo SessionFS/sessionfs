@@ -1,9 +1,11 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useSessions } from '../hooks/useSessions';
+import { useSessions, useDeletedSessions, useRestoreSession } from '../hooks/useSessions';
 import { useFolders, useAddBookmark, useFolderSessions } from '../hooks/useBookmarks';
-import type { SessionSummary, HandoffListResponse } from '../api/client';
+import type { SessionSummary, SessionDetail, HandoffListResponse } from '../api/client';
+import DeleteScopeDialog from './DeleteScopeDialog';
+import type { DeleteScope } from './DeleteScopeDialog';
 import { abbreviateModel, fullToolName } from '../utils/models';
 import { formatTokens } from '../utils/tokens';
 import RelativeDate from '../components/RelativeDate';
@@ -116,6 +118,9 @@ export default function SessionList() {
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [selectMode, setSelectMode] = useState(false);
+  const [showTrash, setShowTrash] = useState(false);
+  const [showBulkDeleteDialog, setShowBulkDeleteDialog] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
   function toggleSelect(id: string) {
     setSelectedIds(prev => {
@@ -135,12 +140,15 @@ export default function SessionList() {
     setSelectMode(false);
   }
 
-  async function handleBulkDelete() {
-    if (!confirm(`Delete ${selectedIds.size} session(s)? This cannot be undone.`)) return;
+  function handleBulkDelete() {
+    setShowBulkDeleteDialog(true);
+  }
 
+  async function executeBulkDelete(scope: DeleteScope) {
+    setBulkDeleting(true);
     const results = await Promise.all(
       Array.from(selectedIds).map(id =>
-        auth!.client.deleteSession(id).then(() => true).catch(() => false)
+        auth!.client.deleteSession(id, scope).then(() => true).catch(() => false)
       )
     );
 
@@ -155,6 +163,8 @@ export default function SessionList() {
       addToast('warning', `${succeeded} deleted, ${failed} failed`);
     }
 
+    setBulkDeleting(false);
+    setShowBulkDeleteDialog(false);
     clearSelection();
     queryClient.invalidateQueries({ queryKey: ['sessions'] });
   }
@@ -383,7 +393,7 @@ export default function SessionList() {
         />
 
         {/* ── Hero: Best next action ── */}
-        {!isLoading && mostRecent && (
+        {!isLoading && !showTrash && mostRecent && (
           <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl px-5 py-4 mb-5 shadow-[var(--shadow-sm)]">
             <div className="flex flex-col sm:flex-row sm:items-center gap-4">
               {/* Left: session to resume */}
@@ -526,6 +536,16 @@ export default function SessionList() {
           >
             Find Duplicates
           </button>
+          <button
+            onClick={() => { setShowTrash(!showTrash); clearSelection(); }}
+            className={`text-[13px] px-3 py-2 border rounded-lg transition-colors ${
+              showTrash
+                ? 'text-[var(--text-primary)] border-[var(--brand)] bg-[var(--brand)]/10'
+                : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)] border-[var(--border)]'
+            }`}
+          >
+            {showTrash ? 'Active' : 'Trash'}
+          </button>
         </div>
 
         {/* Error */}
@@ -557,7 +577,7 @@ export default function SessionList() {
         )}
 
         {/* ── Session list with date grouping ── */}
-        {!isLoading && filteredSessions.length > 0 && (
+        {!isLoading && !showTrash && filteredSessions.length > 0 && (
           <>
             <DateGroup label="Today" sessions={grouped.today} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} isFirst selectMode={selectMode} selectedIds={selectedIds} onToggleSelect={toggleSelect} isInFolder={!!selectedFolderId} />
             <DateGroup label="This Week" sessions={grouped.thisWeek} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} selectMode={selectMode} selectedIds={selectedIds} onToggleSelect={toggleSelect} isInFolder={!!selectedFolderId} />
@@ -601,7 +621,7 @@ export default function SessionList() {
         )}
 
         {/* Empty state */}
-        {!isLoading && filteredSessions.length === 0 && !error && (
+        {!isLoading && !showTrash && filteredSessions.length === 0 && !error && (
           <div className="text-center py-16">
             <p className="text-[var(--text-secondary)] mb-2">No sessions found</p>
             <p className="text-[var(--text-tertiary)] text-sm">
@@ -612,6 +632,9 @@ export default function SessionList() {
             </p>
           </div>
         )}
+
+        {/* Trash view */}
+        {showTrash && <TrashView />}
       </div>
 
       {/* ── Bulk selection toolbar ── */}
@@ -634,6 +657,125 @@ export default function SessionList() {
           </button>
         </div>
       )}
+
+      {/* Bulk delete scope dialog */}
+      {showBulkDeleteDialog && (
+        <DeleteScopeDialog
+          count={selectedIds.size}
+          isPending={bulkDeleting}
+          onCancel={() => setShowBulkDeleteDialog(false)}
+          onConfirm={executeBulkDelete}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ── Trash view ── */
+
+function TrashView() {
+  const { data, isLoading, error } = useDeletedSessions();
+  const restoreSession = useRestoreSession();
+  const { addToast } = useToast();
+
+  if (isLoading) {
+    return (
+      <div className="py-8 text-center text-[var(--text-tertiary)]">
+        Loading deleted sessions...
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 text-sm">
+        Failed to load trash: {String(error)}
+      </div>
+    );
+  }
+
+  const deletedSessions = data?.sessions ?? [];
+
+  if (deletedSessions.length === 0) {
+    return (
+      <div className="text-center py-16">
+        <p className="text-[var(--text-secondary)] mb-2">Trash is empty</p>
+        <p className="text-[var(--text-tertiary)] text-sm">
+          Deleted sessions appear here for 30 days before being permanently removed.
+        </p>
+      </div>
+    );
+  }
+
+  function handleRestore(id: string) {
+    restoreSession.mutate(id, {
+      onSuccess: (data) => {
+        if (data?.local_copy_may_be_missing) {
+          addToast(
+            'success',
+            'Session restored on server. If this device deleted the local copy, run: sfs pull ' + id.slice(0, 12),
+          );
+        } else {
+          addToast('success', 'Session restored');
+        }
+      },
+      onError: (err) => addToast('error', `Restore failed: ${String(err)}`),
+    });
+  }
+
+  return (
+    <div className="space-y-2">
+      <p className="text-xs text-[var(--text-tertiary)] mb-3">
+        {deletedSessions.length} deleted session{deletedSessions.length !== 1 ? 's' : ''}. Sessions are permanently removed after 30 days.
+      </p>
+      {deletedSessions.map((s: SessionSummary) => {
+        const sd = s as unknown as SessionDetail;
+        const scopeLabel = sd.delete_scope === 'both' ? 'everywhere' : (sd.delete_scope || 'cloud');
+        return (
+          <div
+            key={s.id}
+            className="bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg px-4 py-3 flex items-center gap-3 opacity-75 hover:opacity-100 transition-opacity"
+          >
+            <span
+              className="w-2 h-2 rounded-full shrink-0"
+              style={{ backgroundColor: TOOL_COLORS[s.source_tool] || '#6B7280' }}
+            />
+            <div className="flex-1 min-w-0">
+              <span
+                className="text-sm font-medium text-[var(--text-secondary)] truncate block"
+                title="Restore to view session details"
+              >
+                {s.title || 'Untitled session'}
+              </span>
+              <div className="flex items-center gap-2 text-[11px] text-[var(--text-tertiary)] mt-0.5">
+                <span>{fullToolName(s.source_tool)}</span>
+                <span className="opacity-40">&middot;</span>
+                <span>Deleted <RelativeDate iso={sd.deleted_at} /></span>
+                {sd.purge_after && (
+                  <>
+                    <span className="opacity-40">&middot;</span>
+                    <span>Purges <RelativeDate iso={sd.purge_after} /></span>
+                  </>
+                )}
+              </div>
+            </div>
+            <span className={`px-2 py-0.5 text-[10px] font-medium rounded-full ${
+              scopeLabel === 'everywhere'
+                ? 'bg-red-500/10 text-red-400'
+                : 'bg-yellow-500/10 text-yellow-400'
+            }`}>
+              {scopeLabel}
+            </span>
+            <button
+              onClick={() => handleRestore(s.id)}
+              disabled={restoreSession.isPending}
+              className="px-3 py-1.5 text-xs font-medium text-[var(--brand)] border border-[var(--brand)]/30 rounded-lg hover:bg-[var(--brand)]/10 transition-colors disabled:opacity-50"
+            >
+              Restore
+            </button>
+          </div>
+        );
+      })}
     </div>
   );
 }

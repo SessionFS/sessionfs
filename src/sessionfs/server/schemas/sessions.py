@@ -25,6 +25,11 @@ class SessionSummary(BaseModel):
     parent_session_id: str | None = None
     created_at: datetime
     updated_at: datetime
+    is_deleted: bool = False
+    deleted_at: datetime | None = None
+    deleted_by: str | None = None
+    delete_scope: str | None = None
+    purge_after: datetime | None = None
 
 
 class SessionDetail(SessionSummary):
@@ -35,6 +40,13 @@ class SessionDetail(SessionSummary):
     parent_session_id: str | None = None
     uploaded_at: datetime
     dlp_scan_results: str | None = None
+
+
+class RestoreResponse(SessionDetail):
+    """Response for session restore, includes prior delete scope guidance."""
+
+    restored_from_scope: str | None = None
+    local_copy_may_be_missing: bool = False
 
 
 class SessionListResponse(BaseModel):

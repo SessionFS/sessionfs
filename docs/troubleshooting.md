@@ -181,6 +181,38 @@ The daemon and CLI share a SQLite index. If you see "database is locked", it usu
 4. The daemon polls for settings changes every 60 seconds — wait after changing mode in the dashboard
 5. Check daemon logs: `sfs daemon logs`
 
+### Deleted session keeps reappearing after sync
+
+This was a known bug before v0.9.9. The old behavior: deleting a session from the dashboard triggered a server soft-delete, but autosync would re-push the local copy and silently un-delete it.
+
+**Fix (v0.9.9+):** Deletes are now sync-aware. When you delete a session, the ID is added to `~/.sessionfs/deleted.json` and autosync skips it in both directions. Upgrade to v0.9.9 or later and the problem goes away.
+
+If you are already on v0.9.9+ and still see this, check whether the session was manually re-pushed with `sfs push <id>` (explicit pushes override the exclusion).
+
+### How to permanently delete a session
+
+Soft-deleted sessions are retained for 30 days. After that, an admin can purge them:
+
+```bash
+curl -X POST https://api.sessionfs.dev/api/v1/admin/purge-deleted \
+  -H "Authorization: Bearer $SFS_API_KEY"
+```
+
+This hard-deletes all expired sessions (blob + database row). To purge a specific session before the 30-day window:
+
+```bash
+curl -X POST https://api.sessionfs.dev/api/v1/admin/purge-deleted \
+  -H "Authorization: Bearer $SFS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"session_id": "ses_abc123"}'
+```
+
+Both require admin role.
+
+### Deleted session still counts against storage
+
+Soft-deleted sessions are excluded from storage quota calculations. If you see stale numbers after deleting sessions, the API may be serving a cached response. Wait a few minutes and check again, or run `sfs sync status` to get a fresh count. If the issue persists, contact support.
+
 ### `sfs rules compile` refuses to overwrite
 
 `sfs rules compile` will refuse to overwrite a rule file it doesn't recognize as SessionFS-managed. This is intentional — it protects hand-maintained `CLAUDE.md` / `.cursorrules` / etc. from being silently replaced.

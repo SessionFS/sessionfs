@@ -6,7 +6,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -648,3 +648,77 @@ async def get_audit_log(
         })
 
     return {"total": total, "page": page, "page_size": page_size, "actions": items}
+
+
+@router.post("/purge-deleted")
+async def purge_deleted(
+    body: dict | None = None,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+    request: Request = None,
+):
+    """Purge soft-deleted sessions past their retention window.
+
+    Optional body: {"session_id": "ses_abc"} for single-session purge.
+    No body: purge all expired sessions (purge_after < now()).
+    """
+    now = datetime.now(timezone.utc)
+    purged = 0
+    bytes_reclaimed = 0
+
+    # Get blob store from app state
+    blob_store = request.app.state.blob_store
+
+    if body and body.get("session_id"):
+        # Single session purge — validate session_id format
+        session_id = body["session_id"]
+        if not isinstance(session_id, str) or len(session_id) > 50:
+            raise HTTPException(status_code=400, detail="Invalid session_id format")
+        result = await db.execute(
+            select(Session).where(
+                Session.id == session_id,
+                Session.is_deleted == True,  # noqa: E712
+            )
+        )
+        session = result.scalar_one_or_none()
+        if session is None:
+            raise HTTPException(status_code=404, detail="Deleted session not found")
+        # Delete blob
+        try:
+            await blob_store.delete(session.blob_key)
+        except Exception:
+            pass  # Blob may already be gone
+        bytes_reclaimed = session.blob_size_bytes or 0
+        await db.execute(delete(Session).where(Session.id == session_id))
+        purged = 1
+    else:
+        # Bulk purge: all expired
+        result = await db.execute(
+            select(Session).where(
+                Session.is_deleted == True,  # noqa: E712
+                Session.purge_after != None,  # noqa: E711
+                Session.purge_after < now,
+            )
+        )
+        sessions = result.scalars().all()
+        for session in sessions:
+            try:
+                await blob_store.delete(session.blob_key)
+            except Exception:
+                pass
+            bytes_reclaimed += session.blob_size_bytes or 0
+            await db.execute(delete(Session).where(Session.id == session.id))
+            purged += 1
+
+    # Log audit action before commit so both purge and audit are atomic
+    await _log_action(
+        db,
+        admin.id,
+        "purge_deleted",
+        "sessions",
+        body.get("session_id", "bulk") if body else "bulk",
+        {"purged": purged, "bytes_reclaimed": bytes_reclaimed},
+    )
+    await db.commit()
+
+    return {"purged": purged, "bytes_reclaimed": bytes_reclaimed}

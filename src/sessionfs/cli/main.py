@@ -62,6 +62,7 @@ from sessionfs.cli.cmd_sessions import list_sessions, show_session
 from sessionfs.cli.cmd_ops import resume, checkpoint, fork, alias
 from sessionfs.cli.cmd_io import import_sessions, export_session
 from sessionfs.cli.cmd_cloud import push, pull, pull_handoff, list_remote, handoff
+from sessionfs.cli.cmd_delete import delete as delete_session_cmd, trash as trash_cmd, restore as restore_cmd
 from sessionfs.cli.cmd_search import search
 from sessionfs.cli.cmd_audit import audit
 from sessionfs.cli.cmd_init import init_cmd
@@ -84,6 +85,9 @@ app.command("search")(handle_errors(search))
 app.command("audit")(handle_errors(audit))
 app.command("init")(handle_errors(init_cmd))
 app.command("doctor")(handle_errors(doctor))
+app.command("delete")(handle_errors(delete_session_cmd))
+app.command("trash")(handle_errors(trash_cmd))
+app.command("restore")(handle_errors(restore_cmd))
 
 
 def cli_main() -> None:

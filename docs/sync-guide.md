@@ -79,6 +79,10 @@ Sessions are append-only. When the same session is modified on two machines:
 
 This means you never lose data. Duplicate messages may appear in rare cases but the conversation history is always complete.
 
+## Sync-Aware Deletes
+
+Sessions you delete stay deleted — autosync respects your intent. When you run `sfs delete`, the session is added to a local exclusion list (`~/.sessionfs/deleted.json`) and autosync skips it in both push and pull directions. See [Delete Lifecycle](delete-lifecycle.md) for the full model.
+
 ## Selective Sync
 
 By default, all sessions are synced. To sync only specific sessions:

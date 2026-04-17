@@ -15,6 +15,10 @@ import AuditTab from './AuditTab';
 import AuditModal from './AuditModal';
 import SummaryTab from './SummaryTab';
 import HandoffModal from '../handoffs/HandoffModal';
+import DeleteScopeDialog from './DeleteScopeDialog';
+import type { DeleteScope } from './DeleteScopeDialog';
+import { useDeleteSession } from '../hooks/useSessions';
+import { useToast } from '../hooks/useToast';
 import { TOOL_COLORS } from '../utils/tools';
 
 type Tab = 'messages' | 'summary' | 'audit';
@@ -30,9 +34,12 @@ export default function SessionDetail() {
   const { auth } = useAuth();
   const [showHandoff, setShowHandoff] = useState(false);
   const [showAuditModal, setShowAuditModal] = useState(false);
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>('messages');
   const [jumpToPage, setJumpToPage] = useState<number | undefined>(undefined);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const deleteSession = useDeleteSession();
+  const { addToast } = useToast();
 
   function handleJumpToMessage(messageIndex: number) {
     const page = Math.floor(messageIndex / 50) + 1;
@@ -184,9 +191,7 @@ export default function SessionDetail() {
                   onEditAlias={() => { setShowMoreMenu(false); handleAliasEdit(); }}
                   onDelete={() => {
                     setShowMoreMenu(false);
-                    if (confirm('Delete this session? This cannot be undone.')) {
-                      auth!.client.deleteSession(session.id).then(() => navigate('/'));
-                    }
+                    setShowDeleteDialog(true);
                   }}
                   onClose={() => setShowMoreMenu(false)}
                 />
@@ -385,6 +390,28 @@ export default function SessionDetail() {
           messageCount={session.message_count}
           onClose={() => setShowAuditModal(false)}
           onComplete={() => setShowAuditModal(false)}
+        />
+      )}
+      {showDeleteDialog && (
+        <DeleteScopeDialog
+          count={1}
+          isPending={deleteSession.isPending}
+          onCancel={() => setShowDeleteDialog(false)}
+          onConfirm={(scope: DeleteScope) => {
+            deleteSession.mutate(
+              { id: session.id, scope },
+              {
+                onSuccess: () => {
+                  addToast('success', 'Session deleted');
+                  navigate('/');
+                },
+                onError: (err) => {
+                  addToast('error', `Delete failed: ${String(err)}`);
+                  setShowDeleteDialog(false);
+                },
+              },
+            );
+          }}
         />
       )}
     </div>

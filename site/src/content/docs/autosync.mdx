@@ -33,6 +33,10 @@ sfs sync watchlist                # Show watched sessions
 sfs sync status
 ```
 
+## Sync-aware deletes
+
+Sessions you delete stay deleted -- autosync respects your intent. When you run `sfs delete`, the session is added to a local exclusion list and autosync skips it in both push and pull directions. See [Delete Lifecycle](/docs/delete-lifecycle/) for the full model.
+
 ## How it works
 
 1. Daemon detects session changes via filesystem events

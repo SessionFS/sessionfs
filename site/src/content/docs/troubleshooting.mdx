@@ -170,5 +170,19 @@ The daemon and CLI share a SQLite index. If you see "database is locked", it usu
 1. Check mode: `sfs sync status`
 2. Ensure authenticated: `sfs auth status`
 3. In selective mode, sessions must be watched: `sfs sync watch ses_abc`
-4. The daemon polls for settings changes every 60 seconds — wait after changing mode in the dashboard
+4. The daemon polls for settings changes every 60 seconds -- wait after changing mode in the dashboard
 5. Check daemon logs: `sfs daemon logs`
+
+### Deleted session keeps reappearing after sync
+
+This was a known bug before v0.9.9. The old behavior: deleting a session from the dashboard triggered a server soft-delete, but autosync would re-push the local copy and silently un-delete it.
+
+**Fix (v0.9.9+):** Deletes are now sync-aware. When you delete a session, the ID is added to `~/.sessionfs/deleted.json` and autosync skips it in both directions. Upgrade to v0.9.9 or later and the problem goes away.
+
+### How to permanently delete a session
+
+Soft-deleted sessions are retained for 30 days. After that, an admin can purge them via `POST /api/v1/admin/purge-deleted`. This hard-deletes all expired sessions (blob + database row). Requires admin role.
+
+### Deleted session still counts against storage
+
+Soft-deleted sessions are excluded from storage quota calculations. If you see stale numbers after deleting sessions, the API may be serving a cached response. Wait a few minutes and check again, or run `sfs sync status` to get a fresh count.

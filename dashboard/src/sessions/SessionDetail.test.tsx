@@ -25,6 +25,7 @@ const { hooks, mockAuth } = vi.hoisted(() => ({
     useAudit: vi.fn(),
     useFolders: vi.fn(),
     useAddBookmark: vi.fn(),
+    useDeleteSession: vi.fn(),
   },
   mockAuth: vi.fn(),
 }));
@@ -36,8 +37,14 @@ vi.mock('../hooks/useBookmarks', () => ({
   useFolders: hooks.useFolders,
   useAddBookmark: hooks.useAddBookmark,
 }));
+vi.mock('../hooks/useSessions', () => ({
+  useDeleteSession: hooks.useDeleteSession,
+}));
 vi.mock('../auth/AuthContext', () => ({
   useAuth: () => mockAuth(),
+}));
+vi.mock('../hooks/useToast', () => ({
+  useToast: () => ({ addToast: vi.fn(), removeToast: vi.fn(), toasts: [] }),
 }));
 
 // Stub heavy sub-components so we can focus on the main flow without
@@ -117,6 +124,7 @@ describe('SessionDetail', () => {
     hooks.useAudit.mockReturnValue({ data: null, isLoading: false });
     hooks.useFolders.mockReturnValue({ data: [], isLoading: false });
     hooks.useAddBookmark.mockReturnValue({ mutate: vi.fn(), isPending: false });
+    hooks.useDeleteSession.mockReturnValue({ mutate: vi.fn(), isPending: false });
 
     mockAuth.mockReturnValue({
       auth: {

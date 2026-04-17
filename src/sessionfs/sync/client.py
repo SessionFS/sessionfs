@@ -190,7 +190,8 @@ class SyncClient:
         return resp.json()
 
     async def push_session(
-        self, session_id: str, archive_data: bytes, etag: str | None = None
+        self, session_id: str, archive_data: bytes, etag: str | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> SyncResult:
         """Push a session archive to the server.
 
@@ -200,6 +201,8 @@ class SyncClient:
         headers: dict[str, str] = {}
         if etag:
             headers["If-Match"] = f'"{etag}"'
+        if extra_headers:
+            headers.update(extra_headers)
 
         resp = await self._request_with_retry(
             "PUT",

@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.9.4] - 2026-04-16
+
+### Added
+- **Three-scope session delete** — `sfs delete <id>` with `--cloud` (server only, keep local), `--local` (device only, keep cloud), or `--everywhere` (both). No default — explicit choice required. Confirmation prompt with `--force` bypass for automation.
+- **Sync-aware deletes** — autosync respects intentional deletes via `~/.sessionfs/deleted.json` exclusion list. Push and pull skip excluded sessions. `sync_push` un-delete path is gated behind `X-SessionFS-Undelete: true` header with ETag conflict check — autosync can never reverse a delete.
+- **`sfs trash`** — lists soft-deleted sessions in the 30-day retention window with scope badges and purge dates.
+- **`sfs restore <id>`** — reverses a soft-delete on the server, clears local tombstone, prints `sfs pull` guidance when local copy was removed.
+- **Dashboard delete dialog** — replaces the single `confirm()` with a two-choice dialog: "Remove from cloud" or "Delete everywhere". One-line explanation per option.
+- **Dashboard Trash view** — filter toggle on the session list showing soft-deleted sessions with scope badges, purge dates, restore buttons, and scope-aware restore guidance toast.
+- **Admin purge endpoint** — `POST /api/v1/admin/purge-deleted` hard-deletes expired soft-deleted sessions and their blobs. Single-session or bulk. Returns purge count and bytes reclaimed.
+- **Restore response guidance** — `POST /sessions/{id}/restore` returns `restored_from_scope` and `local_copy_may_be_missing` so clients can show accurate recovery guidance.
+- **Migration 030** — `deleted_by`, `delete_scope`, `purge_after` columns on sessions table.
+
+### Changed
+- **DELETE endpoint** — now requires `?scope=cloud|everywhere` query parameter (was parameterless). Returns 200 with session record including `purge_after` (was 204). Old clients without `?scope=` get 400.
+- **Storage quota** — soft-deleted sessions excluded from used-bytes calculation.
+- **Share links** — return 410 Gone for deleted sessions (was 404).
+
+### Fixed
+- **Autosync un-delete bug** — the original soft-delete was immediately reversed by autosync pushing the local copy. Now gated by explicit intent header + ETag check.
+- **Purge audit atomicity** — purge and audit log now committed in a single transaction (was two separate commits).
+
+### Security
+- **CVE-2026-40347** — python-multipart bumped from `>=0.0.9` to `>=0.0.26` (DoS via crafted multipart preamble/epilogue).
+- **Purge endpoint hardening** — session_id format validation + atomic audit logging.
+
 ## [0.9.9.3] - 2026-04-16
 
 ### Added

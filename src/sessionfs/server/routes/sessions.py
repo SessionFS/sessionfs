@@ -30,6 +30,7 @@ from sessionfs.server.tier_gate import UserContext, check_feature, get_user_cont
 from sessionfs.server.schemas.sessions import (
     CreateShareLinkRequest,
     MessagesResponse,
+    RestoreResponse,
     SearchMatch,
     SearchResponse,
     SearchResult,
@@ -191,6 +192,11 @@ def _session_to_summary(s: Session) -> SessionSummary:
         parent_session_id=s.parent_session_id,
         created_at=s.created_at,
         updated_at=s.updated_at,
+        is_deleted=s.is_deleted,
+        deleted_at=s.deleted_at,
+        deleted_by=getattr(s, "deleted_by", None),
+        delete_scope=getattr(s, "delete_scope", None),
+        purge_after=getattr(s, "purge_after", None),
     )
 
 
@@ -218,6 +224,11 @@ def _session_to_detail(s: Session) -> SessionDetail:
         updated_at=s.updated_at,
         uploaded_at=s.uploaded_at,
         dlp_scan_results=getattr(s, "dlp_scan_results", None),
+        is_deleted=s.is_deleted,
+        deleted_at=s.deleted_at,
+        deleted_by=getattr(s, "deleted_by", None),
+        delete_scope=getattr(s, "delete_scope", None),
+        purge_after=getattr(s, "purge_after", None),
     )
 
 
@@ -614,17 +625,24 @@ async def list_sessions(
     page_size: int = Query(20, ge=1, le=100),
     source_tool: str | None = Query(None),
     tag: str | None = Query(None),
+    deleted: bool = Query(False),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """List sessions with pagination and optional filters."""
+    if deleted:
+        # Trash view: show only soft-deleted sessions
+        deleted_filter = Session.is_deleted == True  # noqa: E712
+    else:
+        deleted_filter = Session.is_deleted == False  # noqa: E712
+
     query = select(Session).where(
         Session.user_id == user.id,
-        Session.is_deleted == False,  # noqa: E712
+        deleted_filter,
     )
     count_query = select(func.count()).select_from(Session).where(
         Session.user_id == user.id,
-        Session.is_deleted == False,  # noqa: E712
+        deleted_filter,
     )
 
     if source_tool:
@@ -904,18 +922,99 @@ async def clear_alias(
     return _session_to_detail(session)
 
 
-@router.delete("/{session_id}", status_code=204)
+@router.delete("/{session_id}", status_code=200, response_model=SessionDetail)
 async def delete_session(
+    session_id: str,
+    scope: str | None = Query(None),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Soft delete a session with explicit scope."""
+    if scope not in ("cloud", "everywhere"):
+        raise HTTPException(status_code=400, detail="scope query parameter required: 'cloud' or 'everywhere'")
+    _validate_session_id_or_alias(session_id)
+
+    # Look up session including already-deleted ones for proper 410 handling
+    result = await db.execute(
+        select(Session).where(
+            Session.id == session_id,
+            Session.user_id == user.id,
+        )
+    )
+    session = result.scalar_one_or_none()
+    if session is None:
+        # Try alias
+        result = await db.execute(
+            select(Session).where(
+                Session.alias == session_id,
+                Session.user_id == user.id,
+            )
+        )
+        session = result.scalar_one_or_none()
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.is_deleted:
+        raise HTTPException(status_code=410, detail="Session already deleted")
+
+    now = datetime.now(timezone.utc)
+    session.is_deleted = True
+    session.deleted_at = now
+    session.deleted_by = user.id
+    session.delete_scope = "both" if scope == "everywhere" else "cloud"
+    session.purge_after = now + timedelta(days=30)
+    await db.commit()
+    await db.refresh(session)
+    return _session_to_detail(session)
+
+
+@router.post("/{session_id}/restore", status_code=200, response_model=RestoreResponse)
+async def restore_session(
     session_id: str,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Soft delete a session."""
+    """Restore a soft-deleted session."""
     _validate_session_id_or_alias(session_id)
-    session = await _get_user_session(db, user.id, session_id)
-    session.is_deleted = True
-    session.deleted_at = datetime.now(timezone.utc)
+
+    # Look up including deleted sessions
+    result = await db.execute(
+        select(Session).where(
+            Session.id == session_id,
+            Session.user_id == user.id,
+        )
+    )
+    session = result.scalar_one_or_none()
+    if session is None:
+        # Try alias
+        result = await db.execute(
+            select(Session).where(
+                Session.alias == session_id,
+                Session.user_id == user.id,
+            )
+        )
+        session = result.scalar_one_or_none()
+    if session is None:
+        raise HTTPException(status_code=410, detail="Session not found or already purged")
+    if not session.is_deleted:
+        raise HTTPException(status_code=409, detail="Session is not deleted")
+
+    # Capture prior delete scope before clearing
+    previous_scope = session.delete_scope
+
+    session.is_deleted = False
+    session.deleted_at = None
+    session.deleted_by = None
+    session.delete_scope = None
+    session.purge_after = None
     await db.commit()
+    await db.refresh(session)
+
+    detail = _session_to_detail(session)
+    return RestoreResponse(
+        **detail.model_dump(),
+        restored_from_scope=previous_scope,
+        local_copy_may_be_missing=previous_scope == "both",
+    )
 
 
 @router.put("/{session_id}/sync", status_code=200)
@@ -1019,8 +1118,16 @@ async def sync_push(
             if any_existing is not None:
                 if any_existing.user_id != user_id:
                     raise HTTPException(status_code=409, detail="Session ID already claimed by another user")
-                # Same user's soft-deleted session — mark for un-delete
-                is_undelete = True
+                # Only un-delete when client explicitly requests it via header.
+                # Autosync never sends this header, so deleted sessions stay deleted.
+                undelete_header = request.headers.get("X-SessionFS-Undelete", "").lower()
+                if undelete_header == "true":
+                    is_undelete = True
+                else:
+                    raise HTTPException(
+                        status_code=410,
+                        detail="Session is deleted. Send X-SessionFS-Undelete: true to restore.",
+                    )
 
         # Capture DLP policy info while we still have DB context
         is_org_user = ctx.is_org_user
@@ -1239,6 +1346,22 @@ async def sync_push(
                 sess = result2.scalar_one_or_none()
                 if sess is None:
                     raise HTTPException(status_code=404, detail="Session not found")
+
+                # ETag conflict check — undelete must NOT bypass this.
+                # A stale local copy could otherwise overwrite the server
+                # session content without the user realising the server
+                # state diverged before the soft-delete.
+                if_match = request.headers.get("If-Match", "").strip('"')
+                if if_match and if_match != sess.etag:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "code": "etag_mismatch",
+                            "message": "ETag mismatch — session was modified before deletion",
+                            "current_etag": sess.etag,
+                        },
+                    )
+
                 # Expire old handoffs and revoke share links
                 await db2.execute(
                     update(Handoff)
@@ -1252,6 +1375,9 @@ async def sync_push(
                 )
                 sess.is_deleted = False
                 sess.deleted_at = None
+                sess.deleted_by = None
+                sess.delete_scope = None
+                sess.purge_after = None
             else:
                 # Re-fetch with FOR UPDATE lock to prevent concurrent updates
                 result2 = await db2.execute(
@@ -1789,14 +1915,13 @@ async def _access_share_link_impl(
 
     # Fetch session and blob
     result = await db.execute(
-        select(Session).where(
-            Session.id == link.session_id,
-            Session.is_deleted == False,  # noqa: E712
-        )
+        select(Session).where(Session.id == link.session_id)
     )
     session = result.scalar_one_or_none()
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
+    if session.is_deleted:
+        raise HTTPException(status_code=410, detail="Session has been deleted")
 
     blob_store = _get_blob_store(request)
     data = await blob_store.get(session.blob_key)

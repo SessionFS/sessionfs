@@ -233,7 +233,7 @@ def push(
     yes: bool = typer.Option(
         False,
         "--yes", "-y",
-        help="Skip DLP confirmation prompt. Findings are still shown but don't block the push.",
+        help="Skip interactive confirmations (DLP findings, cloud-undelete). Findings are still shown but don't block the push.",
     ),
 ) -> None:
     """Push a local session to the server."""
@@ -293,6 +293,22 @@ def push(
                         console.print("[dim]Push cancelled.[/dim]")
                         return
 
+        # Check if session is in the local exclusion list (deleted from cloud)
+        from sessionfs.store.deleted import is_excluded, get_entry, remove_exclusion
+
+        extra_headers: dict[str, str] = {}
+        if is_excluded(full_id):
+            entry = get_entry(full_id)
+            scope = entry.get("scope", "?") if entry else "?"
+            if not yes:
+                if not typer.confirm(
+                    f"This session was deleted from the cloud (scope={scope}). Push anyway?",
+                    default=False,
+                ):
+                    console.print("[dim]Push cancelled.[/dim]")
+                    return
+            extra_headers["X-SessionFS-Undelete"] = "true"
+
         console.print(f"Packing session {full_id[:12]}...")
         archive_data = pack_session(session_dir)
 
@@ -302,12 +318,19 @@ def push(
 
         async def _push():
             try:
-                return await client.push_session(full_id, archive_data, etag=local_etag)
+                return await client.push_session(
+                    full_id, archive_data, etag=local_etag,
+                    extra_headers=extra_headers if extra_headers else None,
+                )
             finally:
                 await client.close()
 
         console.print(f"Pushing ({len(archive_data):,} bytes)...")
         result = asyncio.run(_push())
+
+        # On successful push of a previously deleted session, clear exclusion
+        if is_excluded(full_id):
+            remove_exclusion(full_id)
 
         # Update local manifest with new etag
         _update_manifest_sync(session_dir, result.etag)
@@ -383,6 +406,11 @@ def pull(
 
         # Store etag
         _update_manifest_sync(target_dir, result.etag)
+
+        # Explicit pull overrides exclusion — remove from deleted.json
+        from sessionfs.store.deleted import is_excluded, remove_exclusion
+        if is_excluded(session_id):
+            remove_exclusion(session_id)
 
         console.print(
             f"[green]Pulled session {session_id}[/green]\n"
@@ -488,6 +516,12 @@ def sync_all() -> None:
 
             async def _push_one(sid: str) -> None:
                 nonlocal pushed, conflicts
+
+                # Skip sessions in the local exclusion list
+                from sessionfs.store.deleted import is_excluded
+                if is_excluded(sid):
+                    return
+
                 session_dir = store.get_session_dir(sid)
                 if not session_dir:
                     return
@@ -525,6 +559,11 @@ def sync_all() -> None:
             pull_sem = asyncio.Semaphore(5)
 
             async def _pull_one(sid: str) -> bool:
+                # Skip sessions in the local exclusion list
+                from sessionfs.store.deleted import is_excluded
+                if is_excluded(sid):
+                    return False
+
                 async with pull_sem:
                     try:
                         result = await client.pull_session(sid)

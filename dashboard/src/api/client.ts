@@ -26,6 +26,12 @@ export interface SessionDetail extends SessionSummary {
   uploaded_at: string;
   git_remote_normalized?: string;
   dlp_scan_results?: string | null;
+  /** Present on soft-deleted sessions */
+  deleted_by?: string | null;
+  delete_scope?: 'cloud' | 'both' | null;
+  purge_after?: string | null;
+  is_deleted?: boolean;
+  deleted_at?: string | null;
 }
 
 export interface SessionListResponse {
@@ -386,6 +392,11 @@ export interface CompileRulesResponse {
   outputs: CompileOutputEntry[];
 }
 
+export interface RestoreResponse extends SessionDetail {
+  restored_from_scope?: 'cloud' | 'both' | null;
+  local_copy_may_be_missing?: boolean;
+}
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -470,8 +481,20 @@ export function createApiClient(baseUrl: string, apiKey: string) {
     getSession: (id: string) =>
       request<SessionDetail>(`/api/v1/sessions/${id}`),
 
-    deleteSession: (id: string) =>
-      request<void>(`/api/v1/sessions/${id}`, { method: 'DELETE' }),
+    deleteSession: (id: string, scope: 'cloud' | 'everywhere' = 'cloud') =>
+      request<SessionDetail>(`/api/v1/sessions/${id}?scope=${scope}`, { method: 'DELETE' }),
+
+    listDeletedSessions: () =>
+      request<SessionListResponse>('/api/v1/sessions?deleted=true'),
+
+    restoreSession: (id: string) =>
+      request<RestoreResponse>(`/api/v1/sessions/${id}/restore`, { method: 'POST' }),
+
+    adminPurgeDeleted: (sessionId?: string) =>
+      request<{ purged: number; bytes_reclaimed: number }>('/api/v1/admin/purge-deleted', {
+        method: 'POST',
+        body: sessionId ? JSON.stringify({ session_id: sessionId }) : undefined,
+      }),
 
     getMessages: (id: string, page = 1, pageSize = 50, order: 'oldest' | 'newest' = 'oldest') =>
       request<MessagesResponse>(

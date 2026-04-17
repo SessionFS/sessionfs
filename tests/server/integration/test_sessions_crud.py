@@ -146,8 +146,12 @@ async def test_delete_session(client: AsyncClient, auth_headers: dict, sample_sf
     )
     session_id = upload.json()["session_id"]
 
-    resp = await client.delete(f"/api/v1/sessions/{session_id}", headers=auth_headers)
-    assert resp.status_code == 204
+    resp = await client.delete(
+        f"/api/v1/sessions/{session_id}",
+        headers=auth_headers,
+        params={"scope": "cloud"},
+    )
+    assert resp.status_code == 200
 
     # Should be 404 after soft delete
     resp = await client.get(f"/api/v1/sessions/{session_id}", headers=auth_headers)

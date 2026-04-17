@@ -529,6 +529,95 @@ HIGH      file_existence msg #12  "Created validator.py" -> No Write call
 
 ---
 
+## `sfs delete`
+
+Delete a session from the cloud, the local device, or both. Requires an explicit scope flag -- there is no default.
+
+```
+sfs delete SESSION_ID [OPTIONS]
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `SESSION_ID` | yes | Session ID or prefix |
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--cloud` | flag | -- | Delete from server, keep local copy |
+| `--local` | flag | -- | Remove local copy, keep cloud copy |
+| `--everywhere` | flag | -- | Delete from both server and local |
+| `--force` | flag | `false` | Skip confirmation prompt |
+
+If no scope flag is provided, the command prints an error and exits.
+
+**Examples:**
+
+```bash
+# Remove from cloud only (local copy stays)
+$ sfs delete ses_abc123 --cloud
+Delete ses_abc123 from cloud? Local copy will be kept. [y/N] y
+Deleted from cloud. Recoverable for 30 days.
+
+# Remove from this device only
+$ sfs delete ses_abc123 --local
+Delete ses_abc123 from this device? Cloud copy is unaffected. [y/N] y
+Removed local copy.
+
+# Delete everywhere (recoverable for 30 days)
+$ sfs delete ses_abc123 --everywhere --force
+Deleted from cloud and local device. Recoverable for 30 days.
+```
+
+See [Delete Lifecycle](/docs/delete-lifecycle/) for full details on retention, recovery, and sync behavior.
+
+---
+
+## `sfs trash`
+
+List soft-deleted sessions in the retention window.
+
+```
+sfs trash
+```
+
+**Example:**
+
+```bash
+$ sfs trash
+
+Trash (3 sessions -- purge after 30 days)
+
+ID           Deleted       Scope        Purge after
+ses_abc123   2 days ago    cloud        2026-05-14
+ses_def456   5 days ago    everywhere   2026-05-11
+ses_ghi789   12 days ago   everywhere   2026-04-28
+```
+
+---
+
+## `sfs restore`
+
+Undo a soft-delete. Clears the server-side deletion flag and removes the session from the local exclusion list.
+
+```
+sfs restore SESSION_ID
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `SESSION_ID` | yes | Session ID or prefix |
+
+If the local copy was also removed (scope was `everywhere`), run `sfs pull <id>` afterward to re-download it.
+
+**Example:**
+
+```bash
+$ sfs restore ses_abc123
+Session restored. Run 'sfs pull ses_abc123' to re-download locally.
+```
+
+---
+
 ## `sfs push`
 
 Push a session to the cloud.
