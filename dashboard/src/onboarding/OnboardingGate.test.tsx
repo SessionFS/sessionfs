@@ -15,6 +15,7 @@ vi.mock('@tanstack/react-query', () => ({
 
 vi.mock('../utils/storage', () => ({
   getItem: (...args: unknown[]) => mockGetItem(...args),
+  setItem: vi.fn(),
 }));
 
 vi.mock('../auth/AuthContext', () => ({

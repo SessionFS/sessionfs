@@ -6,17 +6,23 @@ import { setItem } from '../utils/storage';
 import Wordmark from '../components/Wordmark';
 
 /**
- * Scope the dismissal flag to (baseUrl, apiKey-prefix) so different accounts
+ * Scope the dismissal flag to (baseUrl, apiKey-hash) so different accounts
  * on the same browser (or self-hosted vs cloud) each get their own flag.
+ *
+ * Uses a simple hash of the full API key (not a prefix) to avoid collisions
+ * between users on the same server. Key rotation gives a new hash, which
+ * means the user sees onboarding once on the new key — acceptable trade-off
+ * vs leaking key material into localStorage.
  */
 export function onboardingDismissedKey(baseUrl?: string, apiKey?: string): string {
   const server = (baseUrl || 'default').replace(/[^a-z0-9]/gi, '_').slice(0, 30);
-  const user = (apiKey || '').slice(0, 8) || 'anon';
+  // Simple djb2 hash of the full key → 8 hex chars. No crypto needed —
+  // this is a UI preference key, not a security boundary.
+  let h = 5381;
+  for (const ch of apiKey || '') h = ((h << 5) + h + ch.charCodeAt(0)) >>> 0;
+  const user = h.toString(16).padStart(8, '0');
   return `sfs-onboarding-dismissed-${server}-${user}`;
 }
-
-/** @deprecated Use onboardingDismissedKey() — kept for backward compat migration */
-export const ONBOARDING_DISMISSED_KEY = 'sfs-onboarding-dismissed';
 
 const TOOLS = [
   { id: 'claude-code', label: 'Claude Code', command: 'sfs mcp install --for claude-code' },
