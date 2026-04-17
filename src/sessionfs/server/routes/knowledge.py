@@ -647,12 +647,16 @@ async def project_health(
     )
     total_entries = total_result.scalar() or 0
 
-    # Pending entries
+    # Pending entries — only count claims (not notes/evidence).
+    # Notes are intentionally never compiled, so counting them as
+    # "pending" gives a permanently inflated number and a misleading
+    # "Run compile" recommendation that does nothing.
     pending_result = await db.execute(
         select(func.count(KnowledgeEntry.id)).where(
             KnowledgeEntry.project_id == project_id,
             KnowledgeEntry.compiled_at.is_(None),
             KnowledgeEntry.dismissed == False,  # noqa: E712
+            KnowledgeEntry.claim_class == "claim",
         )
     )
     pending_entries = pending_result.scalar() or 0
