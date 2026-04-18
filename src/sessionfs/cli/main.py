@@ -67,6 +67,7 @@ from sessionfs.cli.cmd_search import search
 from sessionfs.cli.cmd_audit import audit
 from sessionfs.cli.cmd_init import init_cmd
 from sessionfs.cli.cmd_doctor import doctor
+from sessionfs.cli.cmd_recapture import recapture
 
 app.command("list")(handle_errors(list_sessions))
 app.command("show")(handle_errors(show_session))
@@ -85,6 +86,7 @@ app.command("search")(handle_errors(search))
 app.command("audit")(handle_errors(audit))
 app.command("init")(handle_errors(init_cmd))
 app.command("doctor")(handle_errors(doctor))
+app.command("recapture")(handle_errors(recapture))
 app.command("delete")(handle_errors(delete_session_cmd))
 app.command("trash")(handle_errors(trash_cmd))
 app.command("restore")(handle_errors(restore_cmd))

@@ -140,6 +140,10 @@ class LocalStore:
         """Look up a tracked session by native ID."""
         return self.index.get_tracked_session(native_session_id)
 
+    def get_tracked_session_by_sfs_id(self, sfs_session_id: str) -> NativeSessionRef | None:
+        """Look up a tracked session by .sfs session ID."""
+        return self.index.get_tracked_session_by_sfs_id(sfs_session_id)
+
     def upsert_tracked_session(self, ref: NativeSessionRef) -> None:
         """Insert or update a tracked session record.
 

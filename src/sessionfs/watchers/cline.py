@@ -150,6 +150,22 @@ class ClineWatcher:
                 return  # Skip empty/trivial sessions
 
             sfs_id = session_id_from_native(native_id)
+
+            # Guard against compression data loss
+            from sessionfs.watchers.capture_guard import should_recapture
+            if not should_recapture(self._store, sfs_id, cline_session.message_count, self._tool):
+                ref = NativeSessionRef(
+                    tool=self._tool,
+                    native_session_id=native_id,
+                    native_path=str(task_path),
+                    sfs_session_id=sfs_id,
+                    last_mtime=mtime,
+                    last_size=size,
+                )
+                self._store.upsert_tracked_session(ref)
+                self._tracked[native_id] = ref
+                return
+
             session_dir = self._store.allocate_session_dir(sfs_id)
             convert_cline_to_sfs(cline_session, session_dir, session_id=sfs_id)
 

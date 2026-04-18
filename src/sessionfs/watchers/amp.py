@@ -125,9 +125,25 @@ class AmpWatcher:
                 convert_amp_to_sfs,
             )
 
-            parse_amp_session(native_path)
+            amp_session = parse_amp_session(native_path)
 
             sfs_id = session_id_from_native(native_id)
+
+            # Guard against compression data loss
+            from sessionfs.watchers.capture_guard import should_recapture
+            if not should_recapture(self._store, sfs_id, amp_session.message_count, "amp"):
+                ref = NativeSessionRef(
+                    tool="amp",
+                    native_session_id=native_id,
+                    native_path=str(native_path),
+                    sfs_session_id=sfs_id,
+                    last_mtime=mtime,
+                    last_size=size,
+                )
+                self._store.upsert_tracked_session(ref)
+                self._tracked[native_id] = ref
+                return
+
             session_dir = self._store.allocate_session_dir(sfs_id)
             convert_amp_to_sfs(native_path, session_dir, session_id=sfs_id)
 

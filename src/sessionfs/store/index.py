@@ -214,6 +214,27 @@ class SessionIndex:
             project_path=row["project_path"],
         )
 
+    def get_tracked_session_by_sfs_id(self, sfs_session_id: str) -> NativeSessionRef | None:
+        """Look up a tracked session by .sfs session ID."""
+        row = self.conn.execute(
+            "SELECT * FROM tracked_sessions WHERE sfs_session_id = ?",
+            (sfs_session_id,),
+        ).fetchone()
+
+        if not row:
+            return None
+
+        return NativeSessionRef(
+            tool=row["tool"],
+            native_session_id=row["native_session_id"],
+            native_path=row["native_path"],
+            sfs_session_id=row["sfs_session_id"],
+            last_mtime=row["last_mtime"],
+            last_size=row["last_size"],
+            last_captured_at=row["last_captured_at"],
+            project_path=row["project_path"],
+        )
+
     def upsert_tracked_session(self, ref: NativeSessionRef) -> None:
         """Insert or update a tracked session mapping."""
         self.conn.execute(
