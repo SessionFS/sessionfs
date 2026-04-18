@@ -523,6 +523,45 @@ class ClaudeCodeWatcher:
 
             # Generate a spec-compliant ses_ prefixed ID from the native UUID
             sfs_id = session_id_from_native(native_id)
+
+            # Guard against compression data loss: if the session was
+            # previously captured with MORE messages than the current
+            # JSONL contains (because Claude Code compressed/compacted
+            # the conversation), skip the re-capture to preserve the
+            # fuller version. The compressed JSONL has fewer lines but
+            # the same mtime — without this guard, re-capture overwrites
+            # the .sfs with the shorter version, losing messages.
+            existing_dir = self._store.get_session_dir(sfs_id)
+            if existing_dir and existing_dir.is_dir():
+                existing_manifest_path = existing_dir / "manifest.json"
+                if existing_manifest_path.exists():
+                    try:
+                        existing_manifest = json.loads(existing_manifest_path.read_text())
+                        existing_count = existing_manifest.get("stats", {}).get(
+                            "message_count", 0
+                        )
+                        new_count = cc_session.message_count
+                        if new_count < existing_count:
+                            logger.info(
+                                "Skipping re-capture of %s: source compressed "
+                                "(%d messages → %d). Keeping existing %d-message capture.",
+                                sfs_id[:12], existing_count, new_count, existing_count,
+                            )
+                            # Still update tracking so we don't re-check on next scan
+                            ref = NativeSessionRef(
+                                tool="claude-code",
+                                native_session_id=native_id,
+                                native_path=str(native_path),
+                                sfs_session_id=sfs_id,
+                                last_mtime=mtime,
+                                last_size=size,
+                            )
+                            self._store.upsert_tracked_session(ref)
+                            self._tracked[native_id] = ref
+                            return
+                    except (json.JSONDecodeError, OSError):
+                        pass  # Can't read existing manifest — proceed with capture
+
             session_dir = self._store.allocate_session_dir(sfs_id)
             convert_session(
                 cc_session, session_dir.parent,
