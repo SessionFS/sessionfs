@@ -117,11 +117,17 @@ const MCP_SESSION_TOOLS: McpTool[] = [
   { name: 'find_related_sessions', desc: 'Sessions touching same files or errors' },
   { name: 'get_session_summary', desc: 'Structured summary of a session' },
   { name: 'get_audit_report', desc: 'Judge findings for a session' },
+  { name: 'get_session_provenance', desc: 'Which rules version instructed a session' },
 ];
 
 const MCP_KNOWLEDGE_READ: McpTool[] = [
   { name: 'get_project_context', desc: 'Full wiki: overview + pages + concepts' },
+  { name: 'get_context_section', desc: 'One section of the context doc' },
+  { name: 'get_wiki_page', desc: 'One wiki page in full with backlinks' },
   { name: 'search_project_knowledge', desc: 'Search knowledge entries by query' },
+  { name: 'list_knowledge_entries', desc: 'Filter by type / class / freshness / session' },
+  { name: 'get_knowledge_entry', desc: 'One entry\u2019s full record' },
+  { name: 'get_knowledge_health', desc: 'Pending / compiled counts + recommendations' },
   { name: 'ask_project', desc: 'Q&A against knowledge base + sessions' },
 ];
 
@@ -129,6 +135,7 @@ const MCP_KNOWLEDGE_WRITE: McpTool[] = [
   { name: 'add_knowledge', desc: 'Add a discovery during a session' },
   { name: 'update_wiki_page', desc: 'Create or update a wiki page' },
   { name: 'list_wiki_pages', desc: 'Browse the wiki structure' },
+  { name: 'compile_knowledge_base', desc: 'Trigger a compile pass (heavy, mutating)' },
 ];
 
 const MCP_RULES: McpTool[] = [

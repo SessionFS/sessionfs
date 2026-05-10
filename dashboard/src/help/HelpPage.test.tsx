@@ -151,21 +151,34 @@ describe('HelpPage', () => {
     expect(screen.getByText('sfs project edit')).toBeInTheDocument();
   });
 
-  it('lists all 12 MCP tools', () => {
+  it('lists all 21 MCP tools', () => {
     renderPage();
     const expected = [
+      // Session tools (7)
       'search_sessions',
       'get_session_context',
       'list_recent_sessions',
       'find_related_sessions',
       'get_session_summary',
       'get_audit_report',
+      'get_session_provenance',
+      // Knowledge read (8)
       'get_project_context',
+      'get_context_section',
+      'get_wiki_page',
       'search_project_knowledge',
+      'list_knowledge_entries',
+      'get_knowledge_entry',
+      'get_knowledge_health',
       'ask_project',
+      // Knowledge write (4)
       'add_knowledge',
       'update_wiki_page',
       'list_wiki_pages',
+      'compile_knowledge_base',
+      // Rules (2)
+      'get_rules',
+      'get_compiled_rules',
     ];
     for (const name of expected) {
       expect(screen.getByText(name)).toBeInTheDocument();

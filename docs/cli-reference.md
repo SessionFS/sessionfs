@@ -739,6 +739,46 @@ sfs sync status
 
 ---
 
+## `sfs recapture`
+
+Manually re-run the watcher capture for a session, even if `.sfs` already
+exists locally. Useful when a tool's native log file got compressed or
+trimmed and the existing `.sfs` is now stale relative to it.
+
+```
+sfs recapture SESSION_ID [OPTIONS]
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `SESSION_ID` | yes | Session ID or prefix |
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--force` | flag | `false` | Re-capture even when the source has fewer messages than the existing `.sfs` (the compression-safe guard normally blocks this). |
+
+**Behaviour:**
+- Refuses to write a smaller `.sfs` over a larger one unless `--force`. The
+  shared `should_recapture()` guard prevents accidental data loss when a
+  source log has been compressed or trimmed.
+- Refuses to recapture sessions on the deleted-sessions exclusion list — a
+  re-captured session must not silently re-appear after a deliberate delete.
+- Cursor-specific: raises `CursorComposerPurgedError` when the source
+  composer has been purged, with guidance to use `--force` only if you
+  understand the resulting `.sfs` will be empty.
+
+**Examples:**
+
+```bash
+# Standard recapture — guard active
+$ sfs recapture ses_abc123
+
+# Force recapture (smaller source allowed)
+$ sfs recapture ses_abc123 --force
+```
+
+---
+
 ## `sfs project`
 
 Manage shared project context — a single document shared across the team via MCP.
