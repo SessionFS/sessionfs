@@ -31,6 +31,34 @@ MANAGED_TAG = "sessionfs-managed"
 CANONICAL_SOURCE = "sfs rules edit"
 
 
+_SESSIONFS_MCP_GUIDANCE = """## SessionFS Integration
+
+MCP tools are installed for this project. For ALL SessionFS operations,
+use MCP tools — not CLI commands. Do not run `sfs` commands in the
+terminal for these operations.
+
+Knowledge operations:
+  add_knowledge — save a discovery, decision, pattern, or convention
+  update_wiki_page — create or update a wiki page
+  search_project_knowledge — search existing knowledge
+  ask_project — Q&A against the knowledge base
+  list_wiki_pages — browse wiki structure
+
+Session operations:
+  search_sessions — search across sessions
+  get_session_context — get full session content
+  list_recent_sessions — recent sessions for this repo
+  find_related_sessions — sessions touching same files
+  get_session_summary — structured summary
+  get_audit_report — Judge findings
+
+Knowledge contribution guidelines:
+  - Only add genuinely novel project knowledge.
+  - Most entries default to 'note' class, not 'claim'.
+  - Max 5 contributions per session.
+  - Ask: "Would a new team member need to know this?" If no, skip it."""
+
+
 @dataclass
 class KnowledgeClaim:
     """A knowledge entry as seen by compilers — only the fields we inject."""
@@ -268,6 +296,12 @@ class _BaseCompiler:
             parts.append("")
             parts.append(override)
             parts.append("")
+        # SessionFS MCP guidance — instructs the agent to prefer MCP tools
+        # over `sfs` CLI commands. Without this, agents default to bash
+        # because bash is their hammer, hitting CLI rate limits and auth
+        # edge cases that the direct API tools avoid.
+        parts.append(_SESSIONFS_MCP_GUIDANCE)
+        parts.append("")
         if knowledge_block:
             parts.append(knowledge_block)
         if context_block:

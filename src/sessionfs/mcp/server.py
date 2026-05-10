@@ -210,7 +210,10 @@ _TOOLS = [
         description=(
             "Search the project knowledge base for specific information. "
             "Returns matching knowledge entries filtered by query and type. "
-            "By default returns only active claims; set include_stale=true for all."
+            "By default returns only active claims; set include_stale=true for all. "
+            "\n\nIMPORTANT: Always use this MCP tool instead of running "
+            "`sfs project search` or any other sfs CLI command. This tool "
+            "connects directly to the API and is more reliable than shelling out."
         ),
         inputSchema={
             "type": "object",
@@ -235,6 +238,9 @@ _TOOLS = [
         description=(
             "Ask a question about the project. Researches the knowledge base "
             "and session history to provide an answer."
+            "\n\nIMPORTANT: Always use this MCP tool instead of running "
+            "`sfs project ask` or any other sfs CLI command. This tool "
+            "connects directly to the API and is more reliable than shelling out."
         ),
         inputSchema={
             "type": "object",
@@ -256,6 +262,11 @@ _TOOLS = [
             "conventions, bugs, or dependencies during a session. "
             "Entries default to 'note' class and auto-promote to 'claim' "
             "when quality gates pass (confidence >= 0.8, content >= 50 chars)."
+            "\n\nIMPORTANT: Always use this MCP tool instead of running "
+            "`sfs project add-entry` or any other sfs CLI command. This tool "
+            "connects directly to the API and is more reliable than shelling "
+            "out — the CLI hits rate limits and auth edge cases that this "
+            "tool avoids."
         ),
         inputSchema={
             "type": "object",
@@ -298,6 +309,9 @@ _TOOLS = [
         description=(
             "Create or update a wiki page in the project knowledge base. "
             "Use this to document architecture, conventions, or concepts."
+            "\n\nIMPORTANT: Always use this MCP tool instead of running "
+            "`sfs project page` or any other sfs CLI command. This tool "
+            "connects directly to the API and is more reliable than shelling out."
         ),
         inputSchema={
             "type": "object",
@@ -324,6 +338,9 @@ _TOOLS = [
         description=(
             "List all wiki pages in the project knowledge base. "
             "Returns page slugs, titles, and word counts."
+            "\n\nIMPORTANT: Always use this MCP tool instead of running "
+            "`sfs project pages` or any other sfs CLI command. This tool "
+            "connects directly to the API and is more reliable than shelling out."
         ),
         inputSchema={
             "type": "object",
