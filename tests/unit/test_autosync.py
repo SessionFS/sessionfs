@@ -320,3 +320,68 @@ class TestHandoffOversizeHandling:
         # exclusive subclasses), but all three must be present.
         assert deleted_idx >= 0 and conflict_idx >= 0
         assert too_large_idx >= 0
+
+    def test_handoff_local_oversize_exits_before_push(self, tmp_path, monkeypatch, capsys):
+        """Behavioral: invoke handoff() with an oversized session and verify
+        it exits 1 BEFORE calling push_session, with the friendly message.
+
+        Builds a real .tar.gz with a 10MB+ member, monkeypatches:
+        - resolve_session_id → return the session id verbatim
+        - get_session_dir_or_exit → return tmp_path
+        - pack_session → return our oversized archive
+        - _get_sync_client → MagicMock so an accidental push fails the test loudly
+        """
+        import io as _io
+        import tarfile as _tarfile
+        from unittest.mock import MagicMock
+
+        from sessionfs.cli import cmd_cloud
+        from sessionfs.cli.cmd_cloud import MAX_MEMBER_SIZE
+
+        # Build an oversized tar.gz.
+        buf = _io.BytesIO()
+        with _tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            payload = b"x" * (MAX_MEMBER_SIZE + 4096)
+            info = _tarfile.TarInfo(name="messages.jsonl")
+            info.size = len(payload)
+            tar.addfile(info, _io.BytesIO(payload))
+        oversized_archive = buf.getvalue()
+
+        # Mock client that explodes if push_session is called — proves we
+        # exit BEFORE the network call (the whole point of the local check).
+        mock_client = MagicMock()
+        mock_client.push_session.side_effect = AssertionError(
+            "push_session must NOT be called when archive has oversize members"
+        )
+
+        # Mock store.
+        mock_store = MagicMock()
+        mock_store.get_session_manifest.return_value = {"sync": {"etag": "abc"}}
+        mock_store.close.return_value = None
+
+        monkeypatch.setattr(cmd_cloud, "open_store", lambda: mock_store)
+        monkeypatch.setattr(cmd_cloud, "_get_sync_client", lambda: mock_client)
+        monkeypatch.setattr(cmd_cloud, "resolve_session_id", lambda s, sid: sid)
+        monkeypatch.setattr(cmd_cloud, "get_session_dir_or_exit", lambda s, sid: tmp_path)
+        # pack_session is imported inside handoff(); patch the import target.
+        monkeypatch.setattr("sessionfs.sync.archive.pack_session", lambda d: oversized_archive)
+
+        with pytest.raises(SystemExit) as exit_info:
+            cmd_cloud.handoff(
+                session_id="ses_oversize_test01",
+                to="recipient@example.com",
+                message="",
+            )
+
+        assert exit_info.value.code == 1, "handoff must exit with code 1 on oversize"
+
+        # Friendly message must mention the file, the size limit, and the
+        # /clear or /compact suggestion.
+        captured = capsys.readouterr()
+        out = (captured.out + captured.err).lower()
+        assert "messages.jsonl" in out, f"output missing filename: {captured.err}"
+        assert "10mb limit" in out or "10mb" in out, f"output missing size: {captured.err}"
+        assert "/clear" in out or "/compact" in out, f"output missing suggestion: {captured.err}"
+
+        # Confirm push was never attempted.
+        mock_client.push_session.assert_not_called()
