@@ -1181,7 +1181,10 @@ export default function ProjectDetail() {
           </div>
         </div>
 
-        {/* Workflow hint */}
+        {/* Workflow hint — pending entries don't compile themselves; the
+            user (or an agent acting on their behalf) has to trigger a
+            compile pass. The banner now carries an inline CTA so users
+            don't have to navigate to the Entries tab to act. */}
         {!workflowHintDismissed && pendingCount > 0 && (
           <div className="mx-5 mt-3 flex items-center gap-2 px-3 py-2 rounded-lg bg-[rgba(26,115,232,0.06)] border border-[rgba(26,115,232,0.15)]">
             <div className="flex items-center gap-1 text-xs text-[var(--text-tertiary)]">
@@ -1198,11 +1201,19 @@ export default function ProjectDetail() {
               ))}
             </div>
             <span className="text-xs text-[var(--brand)] font-medium ml-1">
-              {pendingCount} pending {pendingCount === 1 ? 'entry' : 'entries'}
+              {pendingCount} pending {pendingCount === 1 ? 'entry' : 'entries'} — not yet in context
             </span>
             <button
+              onClick={handleCompileFromContext}
+              disabled={compile.isPending}
+              className="ml-2 px-2.5 py-1 text-xs font-semibold rounded bg-[var(--brand)] text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Run a compile pass — promotes pending claims into the project context document"
+            >
+              {compile.isPending ? 'Compiling…' : 'Compile now'}
+            </button>
+            <button
               onClick={dismissWorkflowHint}
-              className="ml-auto text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] text-xs px-1"
+              className="ml-1 text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] text-xs px-1"
               title="Dismiss"
             >
               &times;

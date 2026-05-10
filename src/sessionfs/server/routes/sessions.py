@@ -882,6 +882,68 @@ async def get_session(
     return _session_to_detail(session)
 
 
+class SessionProvenanceResponse(_BaseModel):
+    """Instruction provenance for a session — which canonical rules version
+    governed the agent at session capture time, and what artifacts were
+    actually injected into the prompt context.
+
+    Fields default to None when the session was captured before rules
+    portability landed (migration 028) or when the watcher chose not to
+    record provenance (`SFS_CAPTURE_GLOBAL_RULES=0`).
+    """
+
+    session_id: str
+    rules_version: int | None = None
+    rules_hash: str | None = None
+    rules_source: str | None = None
+    instruction_artifacts: list = []
+
+
+@router.get("/{session_id}/provenance", response_model=SessionProvenanceResponse)
+async def get_session_provenance(
+    session_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the instruction provenance fields for a session.
+
+    Provenance answers: "which rules instructed this session?" — useful for
+    debugging stale-rule regressions or replaying a session under the same
+    governance state. Returns 200 with all-null fields if the session
+    exists but has no provenance recorded; 404 if the session doesn't
+    exist.
+
+    Provenance is read-only and lives in a separate endpoint (rather than
+    expanding SessionDetail) so the common session detail call stays lean.
+    """
+    _validate_session_id_or_alias(session_id)
+    session = await _get_user_session(db, user.id, session_id)
+
+    artifacts: list = []
+    raw = getattr(session, "instruction_artifacts", "[]") or "[]"
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            artifacts = parsed
+    except (ValueError, TypeError):
+        artifacts = []
+
+    rules_source = getattr(session, "rules_source", None)
+    # The DB default is the literal string "none"; surface that as None to
+    # the API caller to keep "no provenance" semantics consistent across
+    # pre-migration and post-migration sessions.
+    if rules_source == "none":
+        rules_source = None
+
+    return SessionProvenanceResponse(
+        session_id=session.id,
+        rules_version=getattr(session, "rules_version", None),
+        rules_hash=getattr(session, "rules_hash", None),
+        rules_source=rules_source,
+        instruction_artifacts=artifacts,
+    )
+
+
 @router.get("/{session_id}/download")
 async def download_session(
     session_id: str,

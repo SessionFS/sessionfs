@@ -164,9 +164,15 @@ async def compile_project_context(
     6. Mark entries as compiled
     7. Save compilation record (before/after snapshots)
     """
-    # 1. Get current project context
+    # 1. Get current project context under a row lock so concurrent
+    # compile callers serialize. Without this, two callers can read the
+    # same pending claims, both mark them compiled, both write a new
+    # context_document, and both insert a ContextCompilation row —
+    # last-writer-wins on the document with double LLM cost. The lock
+    # is released on commit at step 7. SQLite ignores FOR UPDATE
+    # (single-writer semantics already serialise writes there).
     result = await db.execute(
-        select(Project).where(Project.id == project_id)
+        select(Project).where(Project.id == project_id).with_for_update()
     )
     project = result.scalar_one_or_none()
     if not project:
@@ -937,6 +943,22 @@ async def auto_generate_concepts(
 
     Called after compilation. Returns list of created/refreshed concept summaries.
     """
+    # Acquire a row-level lock on the project for the duration of this
+    # function. Without this, two route callers can pass through
+    # compile_project_context() (which releases its own lock at commit)
+    # and then race on the read-then-create pattern below — two concept
+    # pages with the same slug, two sets of links, etc. SQLite ignores
+    # FOR UPDATE; PG serialises overlapping callers. The lock is
+    # released when this function's eventual commit (in the caller or
+    # at flush) runs, since SQLAlchemy's row lock is transaction-scoped.
+    locked = await db.execute(
+        select(Project).where(Project.id == project_id).with_for_update()
+    )
+    if locked.scalar_one_or_none() is None:
+        # Project was deleted between compile and concept refresh — bail
+        # gracefully rather than throwing.
+        return []
+
     # Always prune dead concept pages regardless of whether new candidates
     # exist. A concept page whose linked entries have ALL been dismissed
     # should be deleted even when the project drops below the 15-entry

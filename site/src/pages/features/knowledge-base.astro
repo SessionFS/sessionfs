@@ -18,7 +18,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
         <p class="text-muted text-lg mb-4 leading-relaxed">Every session your team runs is automatically distilled into knowledge entries — architecture decisions, debugging patterns, API contracts, environment quirks. Your codebase builds its own documentation over time.</p>
         <p class="text-muted text-lg mb-6 leading-relaxed">AI agents don't just read the knowledge base — they write back. Discoveries, fixes, and patterns flow in automatically. The next agent picks them up.</p>
         <div class="flex flex-wrap gap-2 mb-8">
-          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-3 py-1 text-sm font-mono text-muted">14 MCP tools</span>
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-3 py-1 text-sm font-mono text-muted">21 MCP tools</span>
           <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-3 py-1 text-sm font-mono text-muted">Auto-summarize</span>
           <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-3 py-1 text-sm font-mono text-muted">Agent write-back</span>
         </div>
@@ -163,13 +163,13 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
   <!-- 12 MCP Tools -->
   <section class="relative py-20 sm:py-28 px-5 noise">
     <div class="max-w-5xl mx-auto">
-      <h2 class="fade-up font-heading text-3xl font-bold text-center mb-4">14 MCP tools. Four categories.</h2>
+      <h2 class="fade-up font-heading text-3xl font-bold text-center mb-4">21 MCP tools. Four categories.</h2>
       <p class="fade-up text-muted text-center mb-14 max-w-lg mx-auto leading-relaxed">Everything your AI agents need to read, search, and contribute to your team's knowledge.</p>
       <div class="grid md:grid-cols-3 gap-5">
 
         <div class="glass fade-up p-6">
           <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#4f9cf7" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 00-1.883 2.542l.857 6a2.25 2.25 0 002.227 1.932H19.05a2.25 2.25 0 002.227-1.932l.857-6a2.25 2.25 0 00-1.883-2.542m-16.5 0V6A2.25 2.25 0 016 3.75h3.879a1.5 1.5 0 011.06.44l2.122 2.12a1.5 1.5 0 001.06.44H18A2.25 2.25 0 0120.25 9v.776"/></svg></div>
-          <h3 class="font-heading font-semibold mb-3">Session Tools <span class="text-muted-dim text-sm font-normal">(6)</span></h3>
+          <h3 class="font-heading font-semibold mb-3">Session Tools <span class="text-muted-dim text-sm font-normal">(7)</span></h3>
           <ul class="space-y-2 text-base text-muted">
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">list_recent_sessions</span></li>
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">get_session_context</span></li>
@@ -177,26 +177,33 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">search_sessions</span></li>
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">find_related_sessions</span></li>
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">get_audit_report</span></li>
+            <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">get_session_provenance</span></li>
           </ul>
         </div>
 
         <div class="glass fade-up p-6">
           <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#3ddc84" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25"/></svg></div>
-          <h3 class="font-heading font-semibold mb-3">Knowledge Read <span class="text-muted-dim text-sm font-normal">(3)</span></h3>
+          <h3 class="font-heading font-semibold mb-3">Knowledge Read <span class="text-muted-dim text-sm font-normal">(8)</span></h3>
           <ul class="space-y-2 text-base text-muted">
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">get_project_context</span></li>
+            <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">get_context_section</span></li>
+            <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">get_wiki_page</span></li>
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">search_project_knowledge</span></li>
+            <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">list_knowledge_entries</span></li>
+            <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">get_knowledge_entry</span></li>
+            <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">get_knowledge_health</span></li>
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">ask_project</span></li>
           </ul>
         </div>
 
         <div class="glass fade-up p-6">
           <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#3ddc84" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10"/></svg></div>
-          <h3 class="font-heading font-semibold mb-3">Knowledge Write <span class="text-muted-dim text-sm font-normal">(3)</span></h3>
+          <h3 class="font-heading font-semibold mb-3">Knowledge Write <span class="text-muted-dim text-sm font-normal">(4)</span></h3>
           <ul class="space-y-2 text-base text-muted">
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">add_knowledge</span></li>
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">update_wiki_page</span></li>
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">list_wiki_pages</span></li>
+            <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">compile_knowledge_base</span></li>
           </ul>
         </div>
 

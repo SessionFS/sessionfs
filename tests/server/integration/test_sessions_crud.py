@@ -180,3 +180,102 @@ async def test_delete_session(client: AsyncClient, auth_headers: dict, sample_sf
 async def test_download_404(client: AsyncClient, auth_headers: dict):
     resp = await client.get("/api/v1/sessions/ses_nope12345678ab/download", headers=auth_headers)
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_session_provenance(
+    client: AsyncClient, auth_headers: dict, sample_sfs_tar: bytes
+):
+    """GET /api/v1/sessions/{id}/provenance returns the 4 provenance
+    fields. Sessions captured before migration 028 (or with provenance
+    capture disabled) return all-null fields rather than 404 — only
+    nonexistent sessions 404."""
+    upload = await client.post(
+        "/api/v1/sessions",
+        headers=auth_headers,
+        params={"source_tool": "claude-code"},
+        files={"file": ("session.tar.gz", io.BytesIO(sample_sfs_tar), "application/gzip")},
+    )
+    assert upload.status_code == 201
+    session_id = upload.json()["session_id"]
+
+    # Existing session, no provenance recorded (uploaded fresh) — should
+    # return 200 with all-null fields and an empty artifacts list.
+    resp = await client.get(
+        f"/api/v1/sessions/{session_id}/provenance",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["session_id"] == session_id
+    assert data["rules_version"] is None
+    assert data["rules_hash"] is None
+    # rules_source defaults to DB literal "none" — surface as None
+    assert data["rules_source"] is None
+    assert data["instruction_artifacts"] == []
+
+    # Nonexistent session → 404
+    nf = await client.get(
+        "/api/v1/sessions/ses_nonexistent12ab/provenance",
+        headers=auth_headers,
+    )
+    assert nf.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_session_provenance_cross_user_404(
+    client: AsyncClient,
+    auth_headers: dict,
+    sample_sfs_tar: bytes,
+    db_session,
+):
+    """A user must not be able to read another user's session provenance.
+    _get_user_session() filters by ownership and returns 404 (not 403) so
+    the route does not leak the existence of sessions across user
+    boundaries. Tier A added this endpoint, so we lock the behaviour in."""
+    import uuid as _uuid
+    from datetime import datetime as _dt, timezone as _tz
+
+    from sessionfs.server.auth.keys import (
+        generate_api_key as _gen_key,
+        hash_api_key as _hash_key,
+    )
+    from sessionfs.server.db.models import ApiKey as _ApiKey, User as _User
+
+    upload = await client.post(
+        "/api/v1/sessions",
+        headers=auth_headers,
+        params={"source_tool": "claude-code"},
+        files={"file": ("session.tar.gz", io.BytesIO(sample_sfs_tar), "application/gzip")},
+    )
+    assert upload.status_code == 201
+    owned_session_id = upload.json()["session_id"]
+
+    outsider = _User(
+        id=str(_uuid.uuid4()),
+        email=f"outsider_{_uuid.uuid4().hex[:8]}@example.com",
+        tier="pro",
+        email_verified=True,
+        created_at=_dt.now(_tz.utc),
+    )
+    db_session.add(outsider)
+    await db_session.commit()
+    raw = _gen_key()
+    db_session.add(_ApiKey(
+        id=str(_uuid.uuid4()),
+        user_id=outsider.id,
+        key_hash=_hash_key(raw),
+        name="outsider-key",
+        created_at=_dt.now(_tz.utc),
+    ))
+    await db_session.commit()
+    outsider_headers = {"Authorization": f"Bearer {raw}"}
+
+    resp = await client.get(
+        f"/api/v1/sessions/{owned_session_id}/provenance",
+        headers=outsider_headers,
+    )
+    assert resp.status_code == 404, (
+        f"Cross-user provenance must 404 (not leak existence), got "
+        f"{resp.status_code}: {resp.text[:200]}"
+    )

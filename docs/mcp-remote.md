@@ -33,7 +33,7 @@ In any conversation, ask about your past sessions:
 
 ### Available tools
 
-The MCP server exposes 14 tools in four categories. Full parameter reference at [sessionfs.dev/docs/mcp/](https://sessionfs.dev/docs/mcp/).
+The MCP server exposes 21 tools in four categories. Full parameter reference at [sessionfs.dev/docs/mcp/](https://sessionfs.dev/docs/mcp/).
 
 **Session tools**
 
@@ -45,13 +45,19 @@ The MCP server exposes 14 tools in four categories. Full parameter reference at 
 | `find_related_sessions` | Find sessions that touched a file or hit an error |
 | `get_session_summary` | Structured summary of a session |
 | `get_audit_report` | LLM Judge findings for a session |
+| `get_session_provenance` | Rules version, hash, source, and instruction artifacts that shaped a session |
 
 **Knowledge (read)**
 
 | Tool | What it does |
 |------|-------------|
 | `get_project_context` | Full compiled wiki: overview + pages + concepts |
+| `get_context_section` | One section of the project context document (cheaper than the full doc) |
+| `get_wiki_page` | One wiki page's content plus backlinks |
 | `search_project_knowledge` | Search knowledge entries by query |
+| `list_knowledge_entries` | Filtered list of entries (type, claim class, freshness, session, dismissed) with pagination |
+| `get_knowledge_entry` | One entry's full record, including `last_relevant_at` |
+| `get_knowledge_health` | Pending / compiled / dismissed counts, stale and low-confidence flags, recommendations |
 | `ask_project` | Q&A against the knowledge base and recent sessions |
 
 **Knowledge (write)**
@@ -61,6 +67,7 @@ The MCP server exposes 14 tools in four categories. Full parameter reference at 
 | `add_knowledge` | Contribute a discovery during a session (claim / evidence / note) |
 | `update_wiki_page` | Create or update a wiki page |
 | `list_wiki_pages` | Browse the wiki structure |
+| `compile_knowledge_base` | Trigger a compile pass; returns counts of entries compiled and pages updated |
 
 **Rules (read)**
 

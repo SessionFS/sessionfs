@@ -17,14 +17,46 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.9.9.5 -->
+      <!-- v0.9.9.6 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.9.9.6</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">May 10, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">MCP Tier A Read Surface, Tier-Aware Knowledge Rate Limits, Compile Race Fix</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>MCP Tier A read surface</strong> — 7 new tools (get_knowledge_entry, list_knowledge_entries, get_wiki_page, get_knowledge_health, get_context_section, get_session_provenance, compile_knowledge_base). Total MCP tool count goes 14 to 21. All tools enforce existing project membership / session ownership checks.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>list_knowledge_entries rich filters</strong> — claim_class, freshness_class, dismissed, session_id query params plus three sort modes (created_at_desc, last_relevant_at_desc, confidence_desc) with stable id tiebreak so identical sort-key values can't reorder.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Keyset cursor pagination</strong> — opt-in ?cursor=&lt;id&gt; on list_entries (default sort). Snapshot-stable across concurrent inserts/deletes — no skipped or duplicated rows. Server emits X-Next-Cursor on every default-sort page so callers can bootstrap iteration from page 1.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Per-user tier-aware knowledge rate limits</strong> — free=20, starter=50, pro=100, team=100, enterprise=200, admin=500 requests/hour on POST /entries/add. Bucket key is user_id (not session_id) so MCP manual callers don't share buckets. Admin tier promoted before effective-tier resolution.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Project-row lock on compile + concept generation</strong> — compile_project_context and auto_generate_concepts both SELECT FOR UPDATE the project row before reading pending claims / creating concept pages. Eliminates duplicate-context-document and duplicate-concept-page races.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>413 graceful failure</strong> — sfs push / handoff / sync pre-scan archives for oversized members (10MB limit) and surface SyncTooLargeError with actionable guidance instead of an opaque server 413.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Compression-safe capture guard</strong> — shared should_recapture() helper consulted by all 7 watchers before re-write. Checks deleted-sessions exclusion list FIRST, then compares source JSONL message count against existing .sfs to prevent re-capturing a compressed session as empty.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>sfs recapture command</strong> — manual re-capture flow with CursorComposerPurgedError guard for purged-composer cases.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Cross-tool MCP-over-CLI nudge</strong> — three-layer fix so agents prefer MCP tools over sfs shell commands: tool descriptions instruct "use MCP instead of sfs", a guidance block is injected into every compiled rules file, and sfs hooks install writes a SessionStart hook for Claude Code that emits the cached compiled output before the first message.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Dashboard "Compile now" CTA</strong> — workflow hint banner now carries an inline button. Server-side health recommendations fire at any pending count &gt; 0 (was &gt; 20).</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Pre-upgrade Helm migration Job</strong> — runs Alembic upgrade head before the API rolls out, so a self-hosted upgrade that drops a new migration cannot serve traffic against an unmigrated DB.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Dashboard manualChunks split</strong> — explicit vite.config.ts chunk naming. Main bundle drops from 212 KB to 30 KB (8x smaller); vendors cache separately across deploys.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>/api/v1/health alias</strong> — added alongside /health for self-hosted ingress paths that scope readiness to /api/v1/*.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Settings.json fcntl locking</strong> — sfs hooks install/uninstall and rules emitter use fcntl.flock on a .sfs-lock file so concurrent invocations can't corrupt the JSON.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>KB health pending count fix</strong> — only counts claims (excludes notes). Notes don't compile, so they shouldn't drive the pending banner.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Daemon transient errors no longer exclude sessions</strong> — only SyncTooLargeError (413) counts toward the exclusion threshold; transient SyncError failures are retried instead of permanently excluded.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">1,279 backend tests + 109 dashboard UI tests passing &middot; 30 migrations &middot; 21 MCP tools</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.9.9.5 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
             <span class="text-brand font-semibold">v0.9.9.5</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">April 17, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">First-Run Onboarding, Unified Delete Propagation, Sort &amp; Filter Improvements</h2>
         <ul class="space-y-2 text-base text-muted">

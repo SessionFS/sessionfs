@@ -380,6 +380,208 @@ _TOOLS = [
             },
         },
     ),
+    Tool(
+        name="get_knowledge_entry",
+        description=(
+            "Get a single knowledge entry's full record by integer ID. "
+            "Includes `last_relevant_at` so you can see when the entry "
+            "was last referenced as authoritative."
+            "\n\nIMPORTANT: Always use this MCP tool instead of running "
+            "`sfs project entries get` or any other sfs CLI command. This tool "
+            "connects directly to the API and is more reliable than shelling out."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "integer",
+                    "description": "Knowledge entry ID",
+                },
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+            "required": ["id"],
+        },
+    ),
+    Tool(
+        name="list_knowledge_entries",
+        description=(
+            "List knowledge entries for the project with rich filters, "
+            "sort, and pagination. Filters: entry_type, claim_class "
+            "(evidence|claim|note), freshness_class (current|aging|stale|"
+            "superseded), dismissed, session_id. Sort: created_at_desc "
+            "(default), last_relevant_at_desc, confidence_desc."
+            "\n\nPagination: pass `page` for OFFSET-style fetching "
+            "(simple but may skip/duplicate rows under concurrent "
+            "writes), or pass `cursor` (the `id` of the last entry from "
+            "the previous response) for snapshot-stable keyset "
+            "pagination. Cursor is only valid with the default sort. "
+            "Response includes `next_cursor` when more results are "
+            "available via cursor pagination."
+            "\n\nIMPORTANT: Always use this MCP tool instead of running "
+            "`sfs project entries` or any other sfs CLI command. This tool "
+            "connects directly to the API and is more reliable than shelling out."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "entry_type": {
+                    "type": "string",
+                    "description": "Filter by type: decision, pattern, discovery, convention, bug, dependency",
+                },
+                "claim_class": {
+                    "type": "string",
+                    "description": "Filter by claim_class: evidence, claim, note",
+                },
+                "freshness_class": {
+                    "type": "string",
+                    "description": "Filter by freshness_class: current, aging, stale, superseded",
+                },
+                "dismissed": {
+                    "type": "boolean",
+                    "description": "Filter by dismissed status",
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Filter to entries created in a specific session",
+                },
+                "sort": {
+                    "type": "string",
+                    "description": "Sort order: created_at_desc (default), last_relevant_at_desc, confidence_desc",
+                },
+                "page": {
+                    "type": "integer",
+                    "description": "Page number, 1-indexed (default 1). Ignored when `cursor` is set.",
+                },
+                "cursor": {
+                    "type": "integer",
+                    "description": "Keyset pagination cursor — pass the `id` of the last entry from the previous response. Snapshot-stable. Default sort only.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Page size (default 50, max 200)",
+                },
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+        },
+    ),
+    Tool(
+        name="get_wiki_page",
+        description=(
+            "Get a single wiki page by slug, including its content and "
+            "backlinks. Use after `list_wiki_pages` to read a page in full."
+            "\n\nIMPORTANT: Always use this MCP tool instead of running "
+            "`sfs project page get` or any other sfs CLI command. This tool "
+            "connects directly to the API and is more reliable than shelling out."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "slug": {
+                    "type": "string",
+                    "description": "Page slug (e.g. 'architecture', 'concept/auth-flow')",
+                },
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+            "required": ["slug"],
+        },
+    ),
+    Tool(
+        name="get_knowledge_health",
+        description=(
+            "Get the project's knowledge base health record: pending, "
+            "compiled, dismissed counts; word count; stale and "
+            "low-confidence counts; and prioritised recommendations."
+            "\n\nIMPORTANT: Always use this MCP tool instead of running "
+            "`sfs project health` or any other sfs CLI command. This tool "
+            "connects directly to the API and is more reliable than shelling out."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+        },
+    ),
+    Tool(
+        name="get_context_section",
+        description=(
+            "Return one section of the project context document by slug "
+            "instead of fetching the full document. Slugs match the "
+            "lowercase, non-alphanumeric-collapsed form of `## Heading` "
+            "titles. On miss, the error includes available_slugs."
+            "\n\nIMPORTANT: Always use this MCP tool instead of running "
+            "`sfs project context section` or any other sfs CLI command. This "
+            "tool connects directly to the API and is more reliable than "
+            "shelling out."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "slug": {
+                    "type": "string",
+                    "description": "Section slug (e.g. 'architecture', 'team_workflow')",
+                },
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+            "required": ["slug"],
+        },
+    ),
+    Tool(
+        name="get_session_provenance",
+        description=(
+            "Return the instruction provenance for a session: which rules "
+            "version governed it (rules_version, rules_hash, rules_source) "
+            "and which artifacts were injected into prompt context "
+            "(instruction_artifacts). Useful for debugging stale-rule "
+            "regressions or replaying a session under the same governance "
+            "state."
+            "\n\nIMPORTANT: Always use this MCP tool instead of running "
+            "`sfs session provenance` or any other sfs CLI command. This tool "
+            "connects directly to the API and is more reliable than shelling out."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "The session ID (ses_... format)",
+                },
+            },
+            "required": ["session_id"],
+        },
+    ),
+    Tool(
+        name="compile_knowledge_base",
+        description=(
+            "Trigger a compile pass for the project's knowledge base. "
+            "HEAVY + MUTATING: this promotes pending claims into the "
+            "project context document, runs decay + retention + "
+            "auto-supersession passes, regenerates section pages, "
+            "refreshes concept pages, and may invoke an LLM if one is "
+            "configured. Concurrent calls are serialized with a "
+            "row-level lock on the project. Returns a compact summary: "
+            "entries_compiled, context_words_before, context_words_after, "
+            "section_pages_updated, concept_pages_updated, compiled_at. "
+            "Full context_before/context_after diff is omitted from the "
+            "MCP response to keep agent context small — fetch via "
+            "GET /api/v1/projects/{id}/compilations (the most recent "
+            "entry carries the full before/after) if you need it."
+            "\n\nCall sparingly. The dashboard's compile button is the "
+            "primary trigger; an MCP-side compile is for after a "
+            "deliberate writeback when a human isn't watching the UI. "
+            "There is no automatic background scheduler — pending "
+            "claims wait until somebody compiles."
+            "\n\nIMPORTANT: Always use this MCP tool instead of running "
+            "`sfs project compile` or any other sfs CLI command. This tool "
+            "connects directly to the API and is more reliable than shelling out."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+        },
+    ),
 ]
 
 
@@ -427,6 +629,20 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         elif name == "get_compiled_rules":
             result = await _handle_get_compiled_rules(arguments)
             return [TextContent(type="text", text=result if isinstance(result, str) else json.dumps(result, indent=2, default=str))]
+        elif name == "get_knowledge_entry":
+            result = await _handle_get_knowledge_entry(arguments)
+        elif name == "list_knowledge_entries":
+            result = await _handle_list_knowledge_entries(arguments)
+        elif name == "get_wiki_page":
+            result = await _handle_get_wiki_page(arguments)
+        elif name == "get_knowledge_health":
+            result = await _handle_get_knowledge_health(arguments)
+        elif name == "get_context_section":
+            result = await _handle_get_context_section(arguments)
+        elif name == "get_session_provenance":
+            result = await _handle_get_session_provenance(arguments)
+        elif name == "compile_knowledge_base":
+            result = await _handle_compile_knowledge_base(arguments)
         else:
             result = {"error": f"Unknown tool: {name}"}
     except Exception as exc:
@@ -1179,6 +1395,251 @@ async def _handle_get_compiled_rules(args: dict) -> dict:
             "outputs": filtered,
         }
     return data
+
+
+# ---------------------------------------------------------------------------
+# Tier A read-side handlers (v0.9.9.6)
+# ---------------------------------------------------------------------------
+
+
+async def _handle_get_knowledge_entry(args: dict) -> dict:
+    """Wrap GET /api/v1/projects/{project_id}/entries/{entry_id}."""
+    entry_id = args.get("id")
+    if entry_id is None:
+        return {"error": "id is required"}
+    try:
+        entry_id = int(entry_id)
+    except (TypeError, ValueError):
+        return {"error": "id must be an integer"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/projects/{project_id}/entries/{entry_id}",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code == 404:
+        return {"error": f"Entry {entry_id} not found"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_list_knowledge_entries(args: dict) -> dict:
+    """Wrap GET /api/v1/projects/{project_id}/entries with rich filters."""
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    # Build query params — only forward what the caller actually set so we
+    # don't pin defaults the API would otherwise pick.
+    params: dict[str, str] = {}
+    if args.get("entry_type"):
+        params["type"] = str(args["entry_type"])
+    if args.get("claim_class"):
+        params["claim_class"] = str(args["claim_class"])
+    if args.get("freshness_class"):
+        params["freshness_class"] = str(args["freshness_class"])
+    if args.get("dismissed") is not None:
+        params["dismissed"] = "true" if args["dismissed"] else "false"
+    if args.get("session_id"):
+        params["session_id"] = str(args["session_id"])
+    if args.get("sort"):
+        params["sort"] = str(args["sort"])
+    if args.get("page") is not None:
+        params["page"] = str(int(args["page"]))
+    if args.get("cursor") is not None:
+        params["cursor"] = str(int(args["cursor"]))
+    if args.get("limit") is not None:
+        params["limit"] = str(int(args["limit"]))
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/projects/{project_id}/entries",
+            params=params,
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    entries = resp.json()
+    # Surface the keyset cursor so callers don't have to read response
+    # headers themselves. Empty when no more results are available or
+    # when OFFSET pagination was used.
+    next_cursor_hdr = resp.headers.get("X-Next-Cursor")
+    payload: dict = {
+        "entries": entries,
+        "count": len(entries) if isinstance(entries, list) else 0,
+        "filters": {
+            k: v
+            for k, v in params.items()
+            if k not in ("page", "limit", "sort", "cursor")
+        },
+        "page": int(args.get("page", 1)),
+        "limit": int(args.get("limit", 50)),
+        "sort": args.get("sort", "created_at_desc"),
+    }
+    if next_cursor_hdr:
+        try:
+            payload["next_cursor"] = int(next_cursor_hdr)
+        except ValueError:
+            pass
+    return payload
+
+
+async def _handle_get_wiki_page(args: dict) -> dict:
+    """Wrap GET /api/v1/projects/{project_id}/pages/{slug}."""
+    slug = args.get("slug", "")
+    if not slug:
+        return {"error": "slug is required"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/projects/{project_id}/pages/{slug}",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code == 404:
+        return {"error": f"Page '{slug}' not found"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_get_knowledge_health(args: dict) -> dict:
+    """Wrap GET /api/v1/projects/{project_id}/health."""
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/projects/{project_id}/health",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_get_context_section(args: dict) -> dict:
+    """Wrap GET /api/v1/projects/{project_id}/context/sections/{slug}."""
+    slug = args.get("slug", "")
+    if not slug:
+        return {"error": "slug is required"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/projects/{project_id}/context/sections/{slug}",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code == 404:
+        # Surface the available slugs so the agent can recover without a
+        # second round-trip to list_wiki_pages or get_project_context.
+        # The server wraps HTTPException detail dicts in a global error
+        # envelope: {"error": {"code", "message", "details": {...}}}.
+        # Older deployments (or direct 404s) use plain {"detail": {...}}.
+        try:
+            body = resp.json()
+        except ValueError:
+            body = {}
+        detail: dict = {}
+        if isinstance(body, dict):
+            err = body.get("error")
+            if isinstance(err, dict) and isinstance(err.get("details"), dict):
+                detail = err["details"]
+            elif isinstance(body.get("detail"), dict):
+                detail = body["detail"]
+        return {
+            "error": detail.get("error", f"Section '{slug}' not found"),
+            "available_slugs": detail.get("available_slugs", []),
+        }
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_get_session_provenance(args: dict) -> dict:
+    """Wrap GET /api/v1/sessions/{session_id}/provenance."""
+    session_id = args.get("session_id", "")
+    if not session_id:
+        return {"error": "session_id is required"}
+
+    config = load_config()
+    if not config.sync.api_key:
+        return {"error": "Not authenticated. Run 'sfs auth login' first."}
+
+    import httpx
+    api_url = config.sync.api_url.rstrip("/")
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/sessions/{session_id}/provenance",
+            headers={"Authorization": f"Bearer {config.sync.api_key}"},
+        )
+    if resp.status_code == 404:
+        return {"error": f"Session {session_id} not found"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_compile_knowledge_base(args: dict) -> dict:
+    """Wrap POST /api/v1/projects/{project_id}/compile.
+
+    Triggers a compile pass — promotes pending claims into the project
+    context document and refreshes section + concept pages. Returns the
+    structured CompilationResponse so the agent can surface a "what
+    changed" diff to the user.
+    """
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    import httpx
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.post(
+            f"{api_url}/api/v1/projects/{project_id}/compile",
+            json={},
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    # Strip the full context_before/context_after diff from the MCP
+    # response. The structured counters are sufficient for agent
+    # decision-making and the full doc bodies (often thousands of
+    # words) bloat agent context. Dashboard callers hit the route
+    # directly and still receive the full payload.
+    payload = resp.json()
+    if isinstance(payload, dict):
+        payload.pop("context_before", None)
+        payload.pop("context_after", None)
+    return payload
 
 
 # ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@ import logging
 import os
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -60,6 +60,7 @@ class KnowledgeEntryResponse(BaseModel):
     retrieved_count: int = 0
     used_in_answer_count: int = 0
     compiled_count: int = 0
+    last_relevant_at: datetime | None = None
 
 
 class CompilationResponse(BaseModel):
@@ -70,6 +71,21 @@ class CompilationResponse(BaseModel):
     context_before: str | None = None
     context_after: str | None = None
     compiled_at: datetime
+    # Structured fields surfaced for compile_knowledge_base MCP tool callers.
+    # context_words_before / context_words_after are derived from
+    # context_before / context_after; section_pages_updated and
+    # concept_pages_updated are computed live from KnowledgePage state.
+    context_words_before: int = 0
+    context_words_after: int = 0
+    section_pages_updated: int = 0
+    concept_pages_updated: int = 0
+
+
+class ContextSectionResponse(BaseModel):
+    """A single section of a project's context document."""
+    slug: str
+    title: str
+    content: str
 
 
 class CompileRequest(BaseModel):
@@ -134,6 +150,7 @@ class HealthResponse(BaseModel):
 
 
 from sessionfs.server.services.knowledge import word_overlap as _word_overlap  # noqa: E402
+from sessionfs.server.services.rules import split_context_sections as _split_context_sections  # noqa: E402
 
 
 async def _get_project_or_404(project_id: str, db: AsyncSession, user_id: str | None = None) -> Project:
@@ -157,21 +174,97 @@ async def _get_project_or_404(project_id: str, db: AsyncSession, user_id: str | 
     return project
 
 
+_VALID_CLAIM_CLASSES = {"evidence", "claim", "note"}
+_VALID_FRESHNESS_CLASSES = {"current", "aging", "stale", "superseded"}
+_VALID_SORTS = {
+    "created_at_desc",
+    "last_relevant_at_desc",
+    "confidence_desc",
+}
+
+
 @router.get("/{project_id}/entries", response_model=list[KnowledgeEntryResponse])
 async def list_entries(
     project_id: str,
+    response: Response,
     type: str | None = Query(None, description="Filter by entry type"),
     pending: bool | None = Query(None, description="Filter by pending status"),
     search: str | None = Query(None, description="Search content (case-insensitive substring)"),
+    claim_class: str | None = Query(None, description="Filter by claim class (evidence|claim|note)"),
+    freshness_class: str | None = Query(None, description="Filter by freshness class (current|aging|stale|superseded)"),
+    dismissed: bool | None = Query(None, description="Filter by dismissed status"),
+    session_id: str | None = Query(None, description="Filter to entries created in this session"),
+    sort: str = Query("created_at_desc", description="Sort order: created_at_desc | last_relevant_at_desc | confidence_desc"),
+    page: int = Query(1, ge=1, description="Page number (1-indexed). Ignored when `cursor` is set."),
+    cursor: int | None = Query(
+        None,
+        ge=1,
+        description=(
+            "Keyset pagination cursor — pass the last `id` from the previous "
+            "response to fetch the next page. Snapshot-stable across "
+            "concurrent inserts/deletes (no skipped or duplicated rows). "
+            "Only valid when sort=created_at_desc; other sort modes return 422. "
+            "Mutually exclusive with `page` (page is ignored when cursor is set). "
+            "When more results are available, the response includes header "
+            "`X-Next-Cursor: <last_id>`."
+        ),
+    ),
     used_in_answer: bool = Query(False, description="Mark matched entries as used in answer (strong signal — updates last_relevant_at)"),
     limit: int = Query(50, ge=1, le=200),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[KnowledgeEntryResponse]:
-    """List knowledge entries for a project."""
+    """List knowledge entries for a project.
+
+    Two pagination modes:
+    - `page` + `limit` (OFFSET): simple, but drifts under concurrent
+      inserts/deletes — rows can be skipped or duplicated across page
+      boundaries. Use this for dashboard-style lookups where the user
+      controls the dataset.
+    - `cursor` + `limit` (keyset, default sort only): snapshot-stable
+      across concurrent writes. Use this when iterating from an agent
+      that may run alongside writers. The response header
+      `X-Next-Cursor` carries the cursor for the next page.
+
+    Supports filtering by type, claim_class, freshness_class, dismissed,
+    session_id, and pending status. Default sort is `created_at_desc`
+    (matches the pre-v0.9.9.6 behavior so existing callers don't shift).
+    """
     await _get_project_or_404(project_id, db, user.id)
 
+    if claim_class is not None and claim_class not in _VALID_CLAIM_CLASSES:
+        raise HTTPException(
+            422,
+            f"Invalid claim_class. Must be one of: {', '.join(sorted(_VALID_CLAIM_CLASSES))}",
+        )
+    if freshness_class is not None and freshness_class not in _VALID_FRESHNESS_CLASSES:
+        raise HTTPException(
+            422,
+            f"Invalid freshness_class. Must be one of: {', '.join(sorted(_VALID_FRESHNESS_CLASSES))}",
+        )
+    if sort not in _VALID_SORTS:
+        raise HTTPException(
+            422,
+            f"Invalid sort. Must be one of: {', '.join(sorted(_VALID_SORTS))}",
+        )
+    if cursor is not None and sort != "created_at_desc":
+        raise HTTPException(
+            422,
+            "cursor pagination is only supported with sort=created_at_desc; "
+            "other sort modes drift under concurrent writes and require a "
+            "different cursor encoding (planned for a later release).",
+        )
+
     stmt = select(KnowledgeEntry).where(KnowledgeEntry.project_id == project_id)
+    # Keyset cursor: include only rows strictly older than the cursor id
+    # under created_at_desc + id desc ordering. Because id is a stable
+    # monotonic integer, `id < cursor` is equivalent to "below the cursor
+    # in the canonical sort order" and is unaffected by inserts that
+    # happen at smaller ids (none, since id is monotonic) or deletes
+    # elsewhere. This delivers the snapshot-stable iteration the OFFSET
+    # path can't provide.
+    if cursor is not None:
+        stmt = stmt.where(KnowledgeEntry.id < cursor)
 
     if search is not None:
         stmt = stmt.where(KnowledgeEntry.content.ilike(f"%{search}%"))
@@ -184,10 +277,71 @@ async def list_entries(
         )
     elif pending is False:
         stmt = stmt.where(KnowledgeEntry.compiled_at.isnot(None))
+    if claim_class is not None:
+        stmt = stmt.where(KnowledgeEntry.claim_class == claim_class)
+    if freshness_class is not None:
+        stmt = stmt.where(KnowledgeEntry.freshness_class == freshness_class)
+    if dismissed is True:
+        stmt = stmt.where(KnowledgeEntry.dismissed == True)  # noqa: E712
+    elif dismissed is False:
+        stmt = stmt.where(KnowledgeEntry.dismissed == False)  # noqa: E712
+    if session_id is not None:
+        stmt = stmt.where(KnowledgeEntry.session_id == session_id)
 
-    stmt = stmt.order_by(KnowledgeEntry.created_at.desc()).limit(limit)
+    # KnowledgeEntry.id.desc() is the absolute final tiebreak in every
+    # sort mode. Without it, entries with identical sort-key values can
+    # reorder arbitrarily across pages even on a static dataset, which
+    # breaks OFFSET/LIMIT pagination consumers. OFFSET pagination still
+    # drifts under concurrent inserts/deletes (rows can be skipped or
+    # duplicated across page boundaries) — for snapshot-stable iteration
+    # under writers, use the `cursor` query param instead, which performs
+    # keyset pagination on (id < cursor).
+    if sort == "last_relevant_at_desc":
+        # NULLs LAST — entries with last_relevant_at set are more relevant
+        # than those that never got a strong signal.
+        stmt = stmt.order_by(
+            KnowledgeEntry.last_relevant_at.desc().nullslast(),
+            KnowledgeEntry.created_at.desc(),
+            KnowledgeEntry.id.desc(),
+        )
+    elif sort == "confidence_desc":
+        stmt = stmt.order_by(
+            KnowledgeEntry.confidence.desc(),
+            KnowledgeEntry.created_at.desc(),
+            KnowledgeEntry.id.desc(),
+        )
+    else:  # created_at_desc — default
+        stmt = stmt.order_by(
+            KnowledgeEntry.created_at.desc(),
+            KnowledgeEntry.id.desc(),
+        )
+
+    if cursor is not None:
+        # Keyset path — no offset. Already filtered by id < cursor above.
+        stmt = stmt.limit(limit)
+    else:
+        offset = (page - 1) * limit
+        stmt = stmt.offset(offset).limit(limit)
     result = await db.execute(stmt)
     entries = list(result.scalars().all())
+
+    # Emit X-Next-Cursor whenever a likely-stable continuation exists
+    # under the default sort. We emit in BOTH OFFSET and keyset modes
+    # so a caller can bootstrap keyset iteration from the very first
+    # page without inventing a sentinel cursor value: just call without
+    # `cursor`, read the header, then pass it back as `cursor=` for
+    # subsequent snapshot-stable pages. We treat "len == limit" as
+    # "more results probably available" — a tighter test would require
+    # an extra fetch (limit+1) on every page, which we avoid. Other
+    # sort modes don't get the header because their cursor encoding
+    # would need (sort_key, id) and we only support the id-only form
+    # in v0.9.9.6.
+    if (
+        sort == "created_at_desc"
+        and entries
+        and len(entries) == limit
+    ):
+        response.headers["X-Next-Cursor"] = str(entries[-1].id)
 
     # Track retrieval when entries are returned via search
     if search and entries:
@@ -239,9 +393,61 @@ async def list_entries(
             retrieved_count=getattr(e, "retrieved_count", 0),
             used_in_answer_count=getattr(e, "used_in_answer_count", 0),
             compiled_count=getattr(e, "compiled_count", 0),
+            last_relevant_at=getattr(e, "last_relevant_at", None),
         )
         for e in entries
     ]
+
+
+@router.get("/{project_id}/entries/{entry_id}", response_model=KnowledgeEntryResponse)
+async def get_entry(
+    project_id: str,
+    entry_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> KnowledgeEntryResponse:
+    """Get a single knowledge entry's full record by ID.
+
+    Includes `last_relevant_at` so callers can decide whether to refresh
+    a stale entry without a separate query.
+    """
+    await _get_project_or_404(project_id, db, user.id)
+
+    result = await db.execute(
+        select(KnowledgeEntry).where(
+            KnowledgeEntry.id == entry_id,
+            KnowledgeEntry.project_id == project_id,
+        )
+    )
+    entry = result.scalar_one_or_none()
+    if not entry:
+        raise HTTPException(404, "Entry not found")
+
+    return KnowledgeEntryResponse(
+        id=entry.id,
+        project_id=entry.project_id,
+        session_id=entry.session_id,
+        user_id=entry.user_id,
+        entry_type=entry.entry_type,
+        content=entry.content,
+        confidence=entry.confidence,
+        source_context=entry.source_context,
+        created_at=entry.created_at,
+        compiled_at=entry.compiled_at,
+        dismissed=entry.dismissed,
+        claim_class=getattr(entry, "claim_class", "claim"),
+        entity_ref=getattr(entry, "entity_ref", None),
+        entity_type=getattr(entry, "entity_type", None),
+        freshness_class=getattr(entry, "freshness_class", "current"),
+        superseded_by=entry.superseded_by,
+        supersession_reason=getattr(entry, "supersession_reason", None),
+        promoted_at=getattr(entry, "promoted_at", None),
+        promoted_by=getattr(entry, "promoted_by", None),
+        retrieved_count=getattr(entry, "retrieved_count", 0),
+        used_in_answer_count=getattr(entry, "used_in_answer_count", 0),
+        compiled_count=getattr(entry, "compiled_count", 0),
+        last_relevant_at=getattr(entry, "last_relevant_at", None),
+    )
 
 
 @router.post("/{project_id}/entries/add", response_model=AddEntryResponse, status_code=201)
@@ -608,6 +814,22 @@ async def compile_context(
     except Exception:
         logger.warning("Concept auto-generation/cleanup failed (non-fatal)", exc_info=True)
 
+    # Helper: count current section + concept pages so the structured
+    # response gives the MCP caller a useful "what changed" footprint.
+    from sessionfs.server.db.models import KnowledgePage as _KnowledgePage
+
+    async def _count_pages(page_type: str) -> int:
+        res = await db.execute(
+            select(func.count(_KnowledgePage.id)).where(
+                _KnowledgePage.project_id == project_id,
+                _KnowledgePage.page_type == page_type,
+            )
+        )
+        return res.scalar() or 0
+
+    section_pages = await _count_pages("section")
+    concept_pages = await _count_pages("concept")
+
     if not compilation:
         return CompilationResponse(
             id=0,
@@ -617,6 +839,10 @@ async def compile_context(
             context_before=None,
             context_after=None,
             compiled_at=datetime.now(timezone.utc),
+            context_words_before=0,
+            context_words_after=0,
+            section_pages_updated=section_pages,
+            concept_pages_updated=concept_pages,
         )
 
     # (Legacy) concept generation also runs after real compilation
@@ -634,6 +860,12 @@ async def compile_context(
     except Exception:
         logger.warning("Concept auto-generation failed (non-fatal)", exc_info=True)
 
+    # Recount concept pages after the second auto_generate_concepts pass.
+    concept_pages = await _count_pages("concept")
+
+    words_before = len((compilation.context_before or "").split())
+    words_after = len((compilation.context_after or "").split())
+
     return CompilationResponse(
         id=compilation.id,
         project_id=compilation.project_id,
@@ -642,6 +874,10 @@ async def compile_context(
         context_before=compilation.context_before,
         context_after=compilation.context_after,
         compiled_at=compilation.compiled_at,
+        context_words_before=words_before,
+        context_words_after=words_after,
+        section_pages_updated=section_pages,
+        concept_pages_updated=concept_pages,
     )
 
 
@@ -675,6 +911,42 @@ async def list_compilations(
         )
         for c in compilations
     ]
+
+
+@router.get(
+    "/{project_id}/context/sections/{slug}",
+    response_model=ContextSectionResponse,
+)
+async def get_context_section(
+    project_id: str,
+    slug: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ContextSectionResponse:
+    """Return one section of the project context document by slug.
+
+    Slugs match what `split_context_sections()` produces: lowercase heading
+    text with non-alphanumerics collapsed to `_`. On miss returns 404 with
+    `available_slugs` in the error detail so the caller can recover.
+    """
+    project = await _get_project_or_404(project_id, db, user.id)
+
+    sections = _split_context_sections(project.context_document or "")
+    if slug not in sections:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": f"Section '{slug}' not found",
+                "available_slugs": sorted(sections.keys()),
+            },
+        )
+
+    body = sections[slug]
+    # Recover a human-readable title from the slug. We don't keep the raw
+    # heading text after splitting, so we reverse-derive a Title-cased name.
+    title = slug.replace("_", " ").strip().title()
+
+    return ContextSectionResponse(slug=slug, title=title, content=body)
 
 
 @router.get("/{project_id}/health", response_model=HealthResponse)
@@ -817,9 +1089,20 @@ async def project_health(
         recommendations.append(
             f"{low_confidence_count} low-confidence entries may be auto-dismissed on next compile"
         )
+    # Compile is a human-driven action — there is no scheduler. Surface
+    # a recommendation as soon as there are pending claims, not just when
+    # the queue is large, so the dashboard / agent can prompt the user
+    # before the working set drifts from the compiled context. The
+    # message intensifies for larger queues.
     if pending_entries > 20:
         recommendations.append(
             f"Run compile to process {pending_entries} pending entries"
+        )
+    elif pending_entries > 0:
+        plural = "entry" if pending_entries == 1 else "entries"
+        recommendations.append(
+            f"{pending_entries} pending {plural} — run compile to fold "
+            f"them into the project context"
         )
     max_budget = getattr(project, "kb_max_context_words", 8000) or 8000
     if word_count > int(max_budget * 0.75):

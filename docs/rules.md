@@ -572,7 +572,11 @@ Fetch a specific compiled version, including `compiled_outputs`, `knowledge_snap
 
 ## MCP Tools
 
-When the SessionFS MCP server is connected, AI agents can read the canonical rules and their compiled projection directly.
+When the SessionFS MCP server is connected, AI agents can read the canonical rules and their compiled projection directly. They can also reach the rest of SessionFS — sessions, knowledge, and provenance — through the same surface, so there is no need to shell out to `sfs` or `curl` from inside an agent.
+
+`sfs rules compile` injects a guidance block into compiled tool files (`CLAUDE.md`, `codex.md`, etc.) telling the agent: **for SessionFS operations, use MCP tools — not CLI commands.** The block lists the tools below by category. Both surfaces stay in sync.
+
+### Rules (read-only)
 
 | Tool | Description |
 |------|-------------|
@@ -580,6 +584,48 @@ When the SessionFS MCP server is connected, AI agents can read the canonical rul
 | `get_compiled_rules` | Returns the compiled rule text for a requested tool, or for the current tool if safely inferable |
 
 Neither tool allows the agent to **modify** rules. Agent rule suggestions and auto-accept are explicitly deferred; humans control the canonical record in v0.9.9.
+
+### Knowledge (read)
+
+| Tool | Description |
+|------|-------------|
+| `get_project_context` | Full compiled wiki: overview + pages + concepts |
+| `get_context_section` | One section of the context doc by slug (cheaper than the full doc) |
+| `get_wiki_page` | One wiki page's content plus backlinks |
+| `search_project_knowledge` | Search knowledge entries and wiki pages by query |
+| `list_knowledge_entries` | Filter entries by type, claim class, freshness, dismissed flag, or session, with pagination |
+| `get_knowledge_entry` | One entry's full record, including `last_relevant_at` |
+| `get_knowledge_health` | Pending / compiled / dismissed counts plus stale, low-confidence, and recommendation flags |
+| `ask_project` | Q&A against the knowledge base and recent sessions |
+
+### Knowledge (write)
+
+| Tool | Description |
+|------|-------------|
+| `add_knowledge` | Save a discovery, decision, pattern, or convention |
+| `update_wiki_page` | Create or update a wiki page |
+| `list_wiki_pages` | Browse the wiki structure |
+| `compile_knowledge_base` | Trigger a compile pass; returns counts of entries compiled and pages updated |
+
+### Sessions
+
+| Tool | Description |
+|------|-------------|
+| `search_sessions` | Search across sessions |
+| `get_session_context` | Full session content |
+| `list_recent_sessions` | Recent sessions for this repo |
+| `find_related_sessions` | Sessions touching the same files or with similar errors |
+| `get_session_summary` | Structured summary |
+| `get_audit_report` | LLM Judge findings |
+| `get_session_provenance` | Rules version, hash, source, and instruction artifacts that shaped the session |
+
+### When to use what
+
+A few common forks the agent should know about:
+
+- **Full context vs. one slice.** `get_project_context` returns everything — overview, all pages, all concepts. Use it once at session start. After that, use `get_context_section` for a single section by slug, or `get_wiki_page` for a single page. Both return less and cost less.
+- **Search vs. filter.** `search_project_knowledge` is query-driven — pass keywords. `list_knowledge_entries` is filter-driven — pass type, claim class, freshness, or session ID with no query at all. Use the one that matches what you actually have.
+- **Health in one call.** `get_knowledge_health` returns the dashboard's banner data — pending count, compiled count, stale flags, recommendations — in a single response. Don't reconstruct it from `list_knowledge_entries`.
 
 ## Troubleshooting
 

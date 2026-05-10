@@ -1250,7 +1250,14 @@ Start the MCP server on stdio transport.
 sfs mcp serve
 ```
 
-Tools exposed (12): `search_sessions`, `get_session_context`, `list_recent_sessions`, `find_related_sessions`, `get_project_context`, `get_session_summary`, `get_audit_report`, `add_knowledge`, `update_wiki_page`, `list_wiki_pages`, `search_project_knowledge`, `ask_project`.
+Tools exposed (21):
+
+- **Sessions:** `search_sessions`, `get_session_context`, `list_recent_sessions`, `find_related_sessions`, `get_session_summary`, `get_audit_report`, `get_session_provenance`
+- **Knowledge (read):** `get_project_context`, `get_context_section`, `get_wiki_page`, `search_project_knowledge`, `list_knowledge_entries`, `get_knowledge_entry`, `get_knowledge_health`, `ask_project`
+- **Knowledge (write):** `add_knowledge`, `update_wiki_page`, `list_wiki_pages`, `compile_knowledge_base`
+- **Rules (read-only):** `get_rules`, `get_compiled_rules`
+
+If you are an agent or have the MCP server installed, prefer the MCP tools over the CLI equivalents listed in this reference — they are faster, run in-process, and avoid hitting API rate limits.
 
 ---
 
