@@ -232,6 +232,86 @@ No LLM is required for rules compilation in v0.9.9.
 
 `sfs rules init` does **not** enable every possible tool. Only explicitly selected or inferred tools are compiled. This avoids generating `CLAUDE.md` for a team that has never used Claude Code, or `.cursorrules` for a team that doesn't touch Cursor.
 
+## Hook-based injection (Claude Code)
+
+<Aside type="note" title="Claude Code only">
+Hook-based injection requires native hook support in the AI tool. As of v0.9.9.6, Claude Code is the only supported tool with that capability. File-based compile remains the universal path for codex, cursor, copilot, and gemini.
+</Aside>
+
+SessionFS can inject compiled rules through Claude Code's `SessionStart` hook instead of (or alongside) a `CLAUDE.md` file. Every time Claude Code starts a session, the hook runs `sfs rules emit` and pipes the latest compiled rules into the system prompt.
+
+| | File-based compile | Hook-based injection |
+|---|---|---|
+| Tools | claude-code, codex, cursor, copilot, gemini | claude-code only |
+| Source of truth | `CLAUDE.md` on disk | local rule cache (`sfs rules compile` / `sfs rules pull`) |
+| Freshness | only as fresh as the last commit | refreshed every Claude Code startup |
+| File on disk | yes | no |
+| Commit required | yes (default) | no |
+
+The hook reads the **local** rule cache that `sfs rules compile` and `sfs rules pull` populate. It does **not** hit the network on Claude Code startup, so there is no latency cost and no offline failure mode. If the cache is empty, the hook emits an empty payload and exits cleanly — Claude Code starts normally.
+
+### Install
+
+```bash
+sfs hooks install --for claude-code
+```
+
+By default the hook is written to `~/.claude/settings.json` (`--user` scope) and applies to every Claude Code session on this machine. To install a project-scoped hook that ships with the repo, use `--project`:
+
+```bash
+sfs hooks install --for claude-code --project
+```
+
+That writes to `.claude/settings.json` in the current repo root, where it can be committed and shared with teammates. Project-scope hooks layer on top of user-scope hooks.
+
+Install is idempotent — running it twice does not duplicate the entry. The SessionFS-managed hook block carries an `"sfs:managed": true` sentinel so uninstall can find and remove it without touching other user-defined hooks.
+
+### Verify
+
+```bash
+sfs hooks status
+```
+
+Lists which scopes have the hook installed across all supported tools. Tools without native hook support are listed as `N/A`.
+
+### Uninstall
+
+```bash
+sfs hooks uninstall --for claude-code
+```
+
+Removes the SessionFS-managed entry from `settings.json` and leaves any other user-defined hooks untouched. Add `--project` to remove the project-scope hook, `--force` to skip the confirmation prompt.
+
+### Coexistence with `CLAUDE.md`
+
+<Aside type="caution" title="Hook is additive, not exclusive">
+If both a managed `CLAUDE.md` and the hook are present, both inject the same rules and Claude Code sees them twice. `sfs hooks install` warns when it detects this. Pick one mode unless you have a specific reason to layer them.
+</Aside>
+
+Two reasonable workflows:
+
+- **Hook only.** Delete the committed `CLAUDE.md` (or never compile one) and rely on the hook. Each developer's machine pulls rules with `sfs rules pull` and re-emits on every startup. No file management, no commits, always fresh — but only works for Claude Code users.
+- **File only.** Skip the hook entirely. Compile to `CLAUDE.md` / `codex.md` / `.cursorrules` / `copilot-instructions.md` / `GEMINI.md`, commit them, and let every tool read its native file. Works for every supported tool and every developer, regardless of whether they have SessionFS installed.
+
+A hybrid (committed `CLAUDE.md` for team baseline + the hook for personal freshness) is supported but produces duplicated context inside Claude Code.
+
+### What `sfs rules emit` prints
+
+`sfs rules emit --tool claude-code --format hook` prints JSON in Claude Code's hook output spec:
+
+```json
+{
+  "hookSpecificOutput": {
+    "hookEventName": "SessionStart",
+    "additionalContext": "<the compiled rules content>"
+  }
+}
+```
+
+`--format file` prints the plain compiled body — the same text that would land in `CLAUDE.md`. Use `--format file` when you want to pipe the compiled content into another tool or inspect it from the shell.
+
+The hook is offline by design. Run `sfs rules pull` (or `sfs rules compile`) when you want to refresh the cache.
+
 ## Resume-Time Rules Sync
 
 `sfs resume` preflights the target tool's project rules file from the **current** canonical SessionFS rules before launching the tool. The session transfer carries the conversation; resume-time sync makes sure the resumed agent reads the same project contract the rest of the team is using.

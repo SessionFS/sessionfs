@@ -7,6 +7,7 @@ Commands:
 - sfs rules compile  — compile rules into tool outputs on disk
 - sfs rules push     — upload canonical rules + latest version to cloud
 - sfs rules pull     — download canonical rules from cloud
+- sfs rules emit     — print compiled rules from local cache (for hooks)
 
 See `.agents/atlas-backend.md` + v0.9.9 implementation brief for details.
 """
@@ -14,6 +15,7 @@ See `.agents/atlas-backend.md` + v0.9.9 implementation brief for details.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -49,6 +51,80 @@ TOOL_ALIASES: dict[str, str] = {
     "codex": "codex",
     # Codex historically used AGENTS.md — still recognized for detection.
 }
+
+
+# ---------------------------------------------------------------------------
+# Local compiled-rules cache (read by `sfs rules emit` for hook injection)
+# ---------------------------------------------------------------------------
+#
+# Layout:
+#     <store_dir>/rules_cache/<remote_key>/<tool>.md
+#
+# `<remote_key>` is a stable, filesystem-safe digest of the normalized git
+# remote (lowercased "owner/repo"). We write this cache as a side effect of
+# `sfs rules compile` and `sfs rules pull` so `sfs rules emit` can run
+# offline — Claude Code's SessionStart hook fires at every startup and must
+# never block waiting on the network.
+
+
+def _remote_key(normalized_remote: str) -> str:
+    """Return a filesystem-safe key for a normalized git remote.
+
+    sha256(remote) → first 16 hex chars. We don't try to keep the human-readable
+    "owner/repo" form because owners can contain characters (e.g. dots, dashes
+    in unusual positions, capitalisation collisions on case-insensitive FS)
+    that complicate path handling. A short hex digest is opaque but stable.
+    """
+    return hashlib.sha256(normalized_remote.encode("utf-8")).hexdigest()[:16]
+
+
+def _cache_dir() -> Path:
+    """Resolve the on-disk cache root.
+
+    Falls back to ``~/.sessionfs/rules_cache`` if the daemon config can't be
+    read (e.g. the user has only ever run `sfs rules emit` and never
+    initialised SessionFS proper). The hook must remain non-fatal.
+    """
+    try:
+        return get_store_dir() / "rules_cache"
+    except Exception:
+        return Path.home() / ".sessionfs" / "rules_cache"
+
+
+def _cache_path(normalized_remote: str, tool: str) -> Path:
+    return _cache_dir() / _remote_key(normalized_remote) / f"{tool}.md"
+
+
+def _save_to_rules_cache(
+    normalized_remote: str, tool: str, content: str
+) -> None:
+    """Best-effort write of compiled rules to the local cache.
+
+    Failure is non-fatal — the cache is a hook convenience, not a source of
+    truth. Compile/pull continue normally even if disk is full or the cache
+    directory is unwritable.
+    """
+    if tool not in SUPPORTED_TOOLS:
+        return
+    path = _cache_path(normalized_remote, tool)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _load_from_rules_cache(normalized_remote: str, tool: str) -> str | None:
+    """Read cached compiled output for ``tool``, or ``None`` if absent/unreadable."""
+    if tool not in SUPPORTED_TOOLS:
+        return None
+    path = _cache_path(normalized_remote, tool)
+    if not path.is_file():
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -738,6 +814,10 @@ def rules_compile(
             console.print(f"wrote {filename}  ({out.get('token_count', 0)} tokens)")
         except OSError as exc:
             err_console.print(f"[red]Failed to write {filename}: {exc}[/red]")
+        # Mirror the compiled output into the local cache so `sfs rules emit`
+        # (used by the Claude Code SessionStart hook) can serve fresh rules
+        # without ever hitting the network. Best-effort — never fatal.
+        _save_to_rules_cache(normalized, out_tool, content)
 
     if skipped:
         console.print()
@@ -822,4 +902,153 @@ def rules_pull() -> None:
         },
         indent=2,
     ))
+
+    # Populate the local hook cache for every enabled tool so users who rely
+    # on `sfs hooks install --for claude-code` see fresh rules at next session
+    # start. We compile against the server but don't write any files —
+    # this is purely a cache-warming step, hence best-effort.
+    enabled = body.get("enabled_tools") or []
+    if isinstance(enabled, list) and enabled:
+        try:
+            comp_status, comp_body, _ = asyncio.run(
+                _api_request(
+                    "POST",
+                    f"/api/v1/projects/{project_id}/rules/compile",
+                    api_url, api_key,
+                    json_data={},
+                )
+            )
+            if comp_status < 400 and isinstance(comp_body, dict):
+                for out in comp_body.get("outputs", []) or []:
+                    if not isinstance(out, dict):
+                        continue
+                    out_tool = out.get("tool")
+                    out_content = out.get("content")
+                    if isinstance(out_tool, str) and isinstance(out_content, str):
+                        _save_to_rules_cache(normalized, out_tool, out_content)
+        except Exception:
+            # Pull is supposed to succeed even if cache priming fails.
+            pass
+
     console.print("\nRun `sfs rules compile` to materialize on disk.")
+
+
+# ---------------------------------------------------------------------------
+# `sfs rules emit` — print compiled rules from local cache (offline)
+# ---------------------------------------------------------------------------
+#
+# Designed to be the command run by Claude Code's SessionStart hook. Two
+# constraints shape the design:
+#
+# 1. **Never block on the network.** The hook fires at every Claude Code
+#    startup; an HTTP timeout would feel like Claude Code itself hanging.
+#    `emit` reads only the local cache.
+# 2. **Never break Claude Code startup.** A missing cache, an unknown remote,
+#    or a tool with no compiled output must produce a silent, well-formed
+#    JSON envelope (with empty `additionalContext`). Claude Code consumes
+#    stdout verbatim — exiting non-zero or printing a partial JSON would
+#    surface as a hook error to the user.
+
+
+def _resolve_cached_content(tool: str) -> str:
+    """Find the most appropriate cached content for ``tool``.
+
+    Strategy:
+
+    1. If we're inside a git repo with an `origin` remote, look for cached
+       content keyed by that remote. This is the common case: hooks installed
+       at `--user` scope still emit project-specific rules because Claude Code
+       launches from the project root, so cwd → git root → remote.
+    2. Otherwise, fall back to the on-disk tool file (e.g. CLAUDE.md) at
+       the repo root if it exists. This handles users who only ever ran
+       `sfs rules compile` without `pull`/`emit` priming the cache.
+    3. As a last resort, return an empty string. The hook still exits 0
+       with an empty `additionalContext`.
+    """
+    git_root = _get_git_root()
+    git_remote = _get_git_remote()
+    if git_remote:
+        normalized = _normalize_remote(git_remote)
+        if normalized:
+            cached = _load_from_rules_cache(normalized, tool)
+            if cached is not None:
+                return cached
+
+    # Fallback: read the compiled file from disk if it exists. This is
+    # equivalent in practice — `compile` writes the same content here.
+    if git_root is not None and tool in TOOL_FILES:
+        candidate = git_root / TOOL_FILES[tool]
+        if candidate.is_file():
+            try:
+                return candidate.read_text(encoding="utf-8")
+            except OSError:
+                return ""
+    return ""
+
+
+@rules_app.command("emit")
+def rules_emit(
+    tool: str = typer.Option(
+        ...,
+        "--tool",
+        help=f"Target tool. One of: {', '.join(SUPPORTED_TOOLS)}.",
+    ),
+    format: str = typer.Option(
+        "hook",
+        "--format",
+        help=(
+            "Output format. 'hook' emits Claude Code's SessionStart JSON "
+            "envelope (claude-code only). 'file' prints raw rule body."
+        ),
+    ),
+) -> None:
+    """Print compiled rules to stdout from the local cache (offline).
+
+    The Claude Code SessionStart hook runs this command. Output goes
+    straight to stdout — no Rich formatting, no log lines on stderr. An
+    empty cache yields an empty `additionalContext` and exit 0 so Claude
+    Code never reports a "hook failed" diagnostic during normal use.
+    """
+    if tool not in SUPPORTED_TOOLS:
+        err_console.print(
+            f"[red]Unknown tool: {tool!r}. "
+            f"Supported: {', '.join(SUPPORTED_TOOLS)}.[/red]"
+        )
+        raise typer.Exit(1)
+
+    fmt = format.lower()
+    if fmt not in ("hook", "file"):
+        err_console.print(
+            f"[red]Unknown format: {format!r}. Use 'hook' or 'file'.[/red]"
+        )
+        raise typer.Exit(1)
+
+    if fmt == "hook" and tool != "claude-code":
+        # No other supported tool has a Claude-Code-style hook envelope.
+        # Refuse explicitly so users don't paste this into a different
+        # tool and wonder why nothing happens.
+        err_console.print(
+            f"[red]--format hook is only valid for claude-code "
+            f"(got tool={tool}).[/red]"
+        )
+        raise typer.Exit(1)
+
+    content = _resolve_cached_content(tool)
+
+    if fmt == "file":
+        # Print the body as-is; no trailing newline manipulation. If the
+        # cache is empty we print nothing — caller can pipe / grep cleanly.
+        if content:
+            # `typer.echo` writes to stdout without Rich markup interpretation
+            # and adds exactly one newline, matching `cat` semantics.
+            typer.echo(content, nl=False)
+        return
+
+    # Hook envelope. Always valid JSON, even when content is empty.
+    envelope = {
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": content,
+        }
+    }
+    typer.echo(json.dumps(envelope))
