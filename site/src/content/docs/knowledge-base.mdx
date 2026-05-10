@@ -103,6 +103,21 @@ Entries with confidence below 0.5 are marked as *(unverified)* in the compiled o
 
 Compilation merges pending entries into the project context document and generates section wiki pages.
 
+**Compile is human-driven — there is no automatic background scheduler.**
+Pending claims sit in the queue until somebody compiles. Three places to
+trigger a compile pass:
+
+- **Dashboard.** A "Compile now" CTA appears in the project page workflow
+  hint banner whenever pending count > 0, plus the prominent buttons on
+  the Entries and Context tabs.
+- **Agent (MCP).** Agents are instructed to check `get_knowledge_health`
+  after writing knowledge, surface the pending count to the user, and
+  call `compile_knowledge_base` only on explicit consent.
+- **CLI.** `sfs project compile` from your terminal.
+
+Concurrent compile callers serialize on a project-row lock — duplicate
+context documents and duplicate concept pages can't be created by races.
+
 ### Deterministic Compile (Default)
 
 When no LLM API key is provided, compilation uses a rule-based approach:
