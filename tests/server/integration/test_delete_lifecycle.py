@@ -82,12 +82,14 @@ async def test_delete_scope_everywhere(
     assert data["purge_after"] is not None
 
 
-# ── Test 3: DELETE without scope returns 400 ──
+# ── Test 3: DELETE without scope is allowed for backward-compat (defaults to cloud) ──
 
 @pytest.mark.asyncio
-async def test_delete_without_scope_returns_400(
+async def test_delete_without_scope_defaults_to_cloud(
     client: AsyncClient, auth_headers: dict, sample_sfs_tar: bytes,
 ):
+    """Older CLIs (pre-v0.9.9.4) didn't pass scope. We default to 'cloud'
+    and emit X-Deprecation-Warning rather than 400."""
     resp = await client.post(
         "/api/v1/sessions",
         headers=auth_headers,
@@ -99,6 +101,30 @@ async def test_delete_without_scope_returns_400(
     resp = await client.delete(
         f"/api/v1/sessions/{session_id}",
         headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["delete_scope"] == "cloud"
+    assert "X-Deprecation-Warning" in resp.headers
+    assert "v1.0" in resp.headers["X-Deprecation-Warning"]
+
+
+@pytest.mark.asyncio
+async def test_delete_with_invalid_scope_returns_400(
+    client: AsyncClient, auth_headers: dict, sample_sfs_tar: bytes,
+):
+    """Invalid scope (anything other than cloud/everywhere) still rejects."""
+    resp = await client.post(
+        "/api/v1/sessions",
+        headers=auth_headers,
+        params={"source_tool": "claude-code"},
+        files={"file": ("session.tar.gz", io.BytesIO(sample_sfs_tar), "application/gzip")},
+    )
+    session_id = resp.json()["session_id"]
+
+    resp = await client.delete(
+        f"/api/v1/sessions/{session_id}",
+        headers=auth_headers,
+        params={"scope": "garbage"},
     )
     assert resp.status_code == 400
 

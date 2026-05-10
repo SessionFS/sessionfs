@@ -480,3 +480,351 @@ class TestBulkDismissStale:
         assert any("architecture decision" in c for c in active_contents), (
             "High-confidence stale entry should NOT be bulk-dismissed"
         )
+
+
+# ---------- Per-user, tier-aware rate limit on add_entry ----------
+
+
+def _entry_payload(suffix: str) -> dict:
+    """Build a unique add-entry payload that passes Gate 1 + the similarity gate.
+
+    Each entry is well over the 20-character minimum and contains a unique
+    token (suffix) so the 0.85 word-overlap dedupe in Gate 3 doesn't fire
+    when we hammer the endpoint to test rate limits.
+    """
+    return {
+        "content": (
+            f"Distinct rate-limit knowledge entry for suffix {suffix} "
+            f"covering some unique territory_{suffix}"
+        ),
+        "entry_type": "discovery",
+    }
+
+
+async def _own_project_for_user(db: AsyncSession, user_id: str) -> Project:
+    """Create a project owned by the given user — ensures _get_project_or_404 passes."""
+    pid = f"proj_{uuid.uuid4().hex[:8]}"
+    project = Project(
+        id=pid,
+        name="Rate Limit Test Project",
+        git_remote_normalized=f"github.com/example/{pid}",
+        owner_id=user_id,
+        context_document="# Rate Limit Test\n\n## Overview\nSeeded for rate limit tests.\n",
+    )
+    db.add(project)
+    await db.commit()
+    await db.refresh(project)
+    return project
+
+
+class TestKnowledgeRateLimit:
+    @pytest.mark.asyncio
+    async def test_free_user_capped_at_20(
+        self,
+        client,
+        db_session: AsyncSession,
+    ):
+        """Free-tier users hit the 20-per-hour cap and get a 429 with Retry-After."""
+        from sessionfs.server.auth.keys import generate_api_key, hash_api_key
+        from sessionfs.server.db.models import ApiKey, User
+
+        user = User(
+            id=str(uuid.uuid4()),
+            email=f"free_{uuid.uuid4().hex[:8]}@example.com",
+            tier="free",
+            email_verified=True,
+            created_at=datetime.now(timezone.utc),
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        raw_key = generate_api_key()
+        db_session.add(ApiKey(
+            id=str(uuid.uuid4()),
+            user_id=user.id,
+            key_hash=hash_api_key(raw_key),
+            name="free-rl",
+            created_at=datetime.now(timezone.utc),
+        ))
+        await db_session.commit()
+        headers = {"Authorization": f"Bearer {raw_key}"}
+
+        project = await _own_project_for_user(db_session, user.id)
+
+        # Send 20 — all should succeed.
+        for i in range(20):
+            resp = await client.post(
+                f"/api/v1/projects/{project.id}/entries/add",
+                headers=headers,
+                json=_entry_payload(f"free-{i}"),
+            )
+            assert resp.status_code == 201, (
+                f"Entry #{i} unexpectedly failed: {resp.status_code} {resp.text[:200]}"
+            )
+
+        # 21st must 429.
+        resp = await client.post(
+            f"/api/v1/projects/{project.id}/entries/add",
+            headers=headers,
+            json=_entry_payload("free-21"),
+        )
+        assert resp.status_code == 429, f"Expected 429, got {resp.status_code}: {resp.text[:200]}"
+        assert resp.headers.get("Retry-After") == "60"
+        assert "free" in resp.text.lower()
+
+    @pytest.mark.asyncio
+    async def test_two_users_have_separate_buckets(
+        self,
+        client,
+        auth_headers: dict,
+        db_session: AsyncSession,
+        test_user,
+    ):
+        """User A's entries must not consume User B's rate limit budget.
+
+        Previously the limit was per session_id, and since add_knowledge
+        defaults to session_id='manual', everyone shared a single bucket.
+        With per-user counting, each user gets their own.
+        """
+        from sessionfs.server.auth.keys import generate_api_key, hash_api_key
+        from sessionfs.server.db.models import ApiKey, User
+
+        # Build a second user (free tier so the cap is small + easy to assert).
+        user_b = User(
+            id=str(uuid.uuid4()),
+            email=f"userb_{uuid.uuid4().hex[:8]}@example.com",
+            tier="free",
+            email_verified=True,
+            created_at=datetime.now(timezone.utc),
+        )
+        db_session.add(user_b)
+        await db_session.commit()
+
+        raw_key_b = generate_api_key()
+        db_session.add(ApiKey(
+            id=str(uuid.uuid4()),
+            user_id=user_b.id,
+            key_hash=hash_api_key(raw_key_b),
+            name="user-b",
+            created_at=datetime.now(timezone.utc),
+        ))
+        await db_session.commit()
+        headers_b = {"Authorization": f"Bearer {raw_key_b}"}
+
+        # Project owned by test_user (pro tier), with user_b granted access via
+        # owning a session on the same git remote.
+        project = await _own_project_for_user(db_session, test_user.id)
+        from sessionfs.server.db.models import Session as SessionRow
+        db_session.add(SessionRow(
+            id=f"ses_{uuid.uuid4().hex[:16]}",
+            user_id=user_b.id,
+            title="seed",
+            tags="[]",
+            source_tool="claude-code",
+            blob_key="x",
+            blob_size_bytes=0,
+            etag="x",
+            git_remote_normalized=project.git_remote_normalized,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+            uploaded_at=datetime.now(timezone.utc),
+        ))
+        await db_session.commit()
+
+        # User A (test_user, pro tier — cap 100) sends 20.
+        for i in range(20):
+            resp = await client.post(
+                f"/api/v1/projects/{project.id}/entries/add",
+                headers=auth_headers,
+                json=_entry_payload(f"a-{i}"),
+            )
+            assert resp.status_code == 201, (
+                f"User A entry #{i} failed: {resp.status_code} {resp.text[:200]}"
+            )
+
+        # User B's first entry must still succeed — separate bucket.
+        resp = await client.post(
+            f"/api/v1/projects/{project.id}/entries/add",
+            headers=headers_b,
+            json=_entry_payload("b-first"),
+        )
+        assert resp.status_code == 201, (
+            f"User B should have a separate bucket, got {resp.status_code}: {resp.text[:200]}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_enterprise_user_capped_at_200(
+        self,
+        client,
+        db_session: AsyncSession,
+    ):
+        """Enterprise tier gets a 200/hr cap, not 20."""
+        from sessionfs.server.auth.keys import generate_api_key, hash_api_key
+        from sessionfs.server.db.models import ApiKey, User
+
+        user = User(
+            id=str(uuid.uuid4()),
+            email=f"ent_{uuid.uuid4().hex[:8]}@example.com",
+            tier="enterprise",
+            email_verified=True,
+            created_at=datetime.now(timezone.utc),
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        raw_key = generate_api_key()
+        db_session.add(ApiKey(
+            id=str(uuid.uuid4()),
+            user_id=user.id,
+            key_hash=hash_api_key(raw_key),
+            name="ent-rl",
+            created_at=datetime.now(timezone.utc),
+        ))
+        await db_session.commit()
+        headers = {"Authorization": f"Bearer {raw_key}"}
+
+        project = await _own_project_for_user(db_session, user.id)
+
+        # Confirm 21st entry (which would 429 a free user) is fine.
+        for i in range(21):
+            resp = await client.post(
+                f"/api/v1/projects/{project.id}/entries/add",
+                headers=headers,
+                json=_entry_payload(f"ent-{i}"),
+            )
+            assert resp.status_code == 201, (
+                f"Enterprise entry #{i} failed: {resp.status_code} {resp.text[:200]}"
+            )
+
+        # Now seed 179 directly via the DB to push the count to 200, then
+        # the next API call should 429. Seeding via DB is faster than 200
+        # API roundtrips and exercises the same query path.
+        for j in range(179):
+            db_session.add(KnowledgeEntry(
+                project_id=project.id,
+                session_id="manual",
+                user_id=user.id,
+                entry_type="discovery",
+                content=f"db-seeded entry {j} with enough text to satisfy gate one",
+                confidence=0.5,
+            ))
+        await db_session.commit()
+
+        resp = await client.post(
+            f"/api/v1/projects/{project.id}/entries/add",
+            headers=headers,
+            json=_entry_payload("ent-overflow"),
+        )
+        assert resp.status_code == 429, (
+            f"Expected 429 at enterprise cap, got {resp.status_code}: {resp.text[:200]}"
+        )
+        assert resp.headers.get("Retry-After") == "60"
+        assert "200" in resp.text
+        assert "enterprise" in resp.text.lower()
+
+    @pytest.mark.asyncio
+    async def test_env_var_override(
+        self,
+        client,
+        db_session: AsyncSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """SFS_KNOWLEDGE_RATE_LIMIT_PER_HOUR overrides per-tier defaults."""
+        monkeypatch.setenv("SFS_KNOWLEDGE_RATE_LIMIT_PER_HOUR", "3")
+
+        from sessionfs.server.auth.keys import generate_api_key, hash_api_key
+        from sessionfs.server.db.models import ApiKey, User
+
+        user = User(
+            id=str(uuid.uuid4()),
+            email=f"env_{uuid.uuid4().hex[:8]}@example.com",
+            tier="enterprise",  # would normally be 200
+            email_verified=True,
+            created_at=datetime.now(timezone.utc),
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        raw_key = generate_api_key()
+        db_session.add(ApiKey(
+            id=str(uuid.uuid4()),
+            user_id=user.id,
+            key_hash=hash_api_key(raw_key),
+            name="env-rl",
+            created_at=datetime.now(timezone.utc),
+        ))
+        await db_session.commit()
+        headers = {"Authorization": f"Bearer {raw_key}"}
+
+        project = await _own_project_for_user(db_session, user.id)
+
+        # 3 succeed, 4th 429s.
+        for i in range(3):
+            resp = await client.post(
+                f"/api/v1/projects/{project.id}/entries/add",
+                headers=headers,
+                json=_entry_payload(f"env-{i}"),
+            )
+            assert resp.status_code == 201
+
+        resp = await client.post(
+            f"/api/v1/projects/{project.id}/entries/add",
+            headers=headers,
+            json=_entry_payload("env-overflow"),
+        )
+        assert resp.status_code == 429
+        assert "3" in resp.text  # the override value, not 200
+        assert resp.headers.get("Retry-After") == "60"
+
+    @pytest.mark.asyncio
+    async def test_429_includes_retry_after_header(
+        self,
+        client,
+        db_session: AsyncSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """The 429 response must always include Retry-After: 60."""
+        monkeypatch.setenv("SFS_KNOWLEDGE_RATE_LIMIT_PER_HOUR", "1")
+
+        from sessionfs.server.auth.keys import generate_api_key, hash_api_key
+        from sessionfs.server.db.models import ApiKey, User
+
+        user = User(
+            id=str(uuid.uuid4()),
+            email=f"hdr_{uuid.uuid4().hex[:8]}@example.com",
+            tier="pro",
+            email_verified=True,
+            created_at=datetime.now(timezone.utc),
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        raw_key = generate_api_key()
+        db_session.add(ApiKey(
+            id=str(uuid.uuid4()),
+            user_id=user.id,
+            key_hash=hash_api_key(raw_key),
+            name="hdr-rl",
+            created_at=datetime.now(timezone.utc),
+        ))
+        await db_session.commit()
+        headers = {"Authorization": f"Bearer {raw_key}"}
+
+        project = await _own_project_for_user(db_session, user.id)
+
+        # Burn the 1-per-hour budget.
+        resp = await client.post(
+            f"/api/v1/projects/{project.id}/entries/add",
+            headers=headers,
+            json=_entry_payload("hdr-1"),
+        )
+        assert resp.status_code == 201
+
+        resp = await client.post(
+            f"/api/v1/projects/{project.id}/entries/add",
+            headers=headers,
+            json=_entry_payload("hdr-2"),
+        )
+        assert resp.status_code == 429
+        assert "Retry-After" in resp.headers
+        assert resp.headers["Retry-After"] == "60"

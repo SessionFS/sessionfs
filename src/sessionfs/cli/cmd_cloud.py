@@ -21,6 +21,28 @@ from sessionfs.cli.common import (
 auth_app = typer.Typer(name="auth", help="Authentication for cloud sync.")
 
 
+# Mirror the server-side cap (sessions.MAX_SYNC_MEMBER_SIZE). We check locally
+# first so a 57MB messages.jsonl doesn't waste an upload only to come back as
+# a 413 from the server.
+MAX_MEMBER_SIZE = 10 * 1024 * 1024
+
+
+def _find_oversized_member(archive_data: bytes) -> tuple[str, int] | None:
+    """Return (name, size) of the first archive member > MAX_MEMBER_SIZE, else None."""
+    import io as _io
+    import tarfile as _tarfile
+
+    try:
+        with _tarfile.open(fileobj=_io.BytesIO(archive_data), mode="r:gz") as tar:
+            for member in tar.getmembers():
+                if member.size > MAX_MEMBER_SIZE:
+                    return member.name, member.size
+    except _tarfile.TarError:
+        # Bad archive — let the server-side validation surface a clean error.
+        return None
+    return None
+
+
 def _load_sync_config() -> dict:
     """Load sync config from config.toml."""
     from sessionfs.daemon.config import load_config
@@ -311,6 +333,21 @@ def push(
 
         console.print(f"Packing session {full_id[:12]}...")
         archive_data = pack_session(session_dir)
+
+        # Local size check: don't waste an upload for a session the server
+        # will reject with 413. This typically means the user needs to
+        # /clear or /compact in their AI tool.
+        oversized = _find_oversized_member(archive_data)
+        if oversized is not None:
+            name, size = oversized
+            err_console.print(
+                f"[red]Session too large to push:[/red] '{name}' is "
+                f"{size // (1024 * 1024)}MB (limit "
+                f"{MAX_MEMBER_SIZE // (1024 * 1024)}MB).\n"
+                f"[yellow]Try /clear or /compact in your AI tool to shrink the session, "
+                f"then push again.[/yellow]"
+            )
+            raise SystemExit(1)
 
         # Read local etag
         manifest = store.get_session_manifest(full_id)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -13,10 +14,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import ContextCompilation, KnowledgeEntry, Project, User
+from sessionfs.server.tier_gate import get_effective_tier
 
 logger = logging.getLogger("sessionfs.api")
 
 router = APIRouter(prefix="/api/v1/projects", tags=["knowledge"])
+
+
+# Per-user, per-hour caps for add_knowledge / POST /entries/add. Tuned so that
+# a single agent on the free tier cannot starve a team on a shared project,
+# while still leaving enough headroom for enterprise agents that contribute
+# heavily to a knowledge base. The "admin" key handles the legacy admin tier
+# (see tier_gate.get_effective_tier) which collapses to ENTERPRISE for the
+# enum but should still get a higher cap when present.
+KNOWLEDGE_RATE_LIMITS: dict[str, int] = {
+    "free": 20,
+    "starter": 50,
+    "pro": 100,
+    "team": 100,
+    "enterprise": 200,
+    "admin": 500,
+}
 
 
 class KnowledgeEntryResponse(BaseModel):
@@ -256,18 +274,41 @@ async def add_entry(
 
     session_id = body.session_id or "manual"
 
-    # Gate 2: Rate limit — max 20 entries per session_id+project in the last hour
+    # Gate 2: Rate limit — per-user, tier-aware. Previously this counted by
+    # session_id, but every MCP add_knowledge call defaults to "manual",
+    # meaning every agent on a team shared a single rate limit bucket and
+    # one chatty agent could starve the rest. Counting by user.id gives each
+    # contributor their own bucket, and the cap scales with their effective
+    # tier. SFS_KNOWLEDGE_RATE_LIMIT_PER_HOUR overrides the per-tier value
+    # for ops scenarios (e.g. backfills, CI imports).
+    effective_tier = await get_effective_tier(user, db)
+    tier_value = effective_tier.value if hasattr(effective_tier, "value") else str(effective_tier)
+    default_limit = KNOWLEDGE_RATE_LIMITS.get(tier_value, 20)
+    try:
+        max_per_hour = int(
+            os.environ.get("SFS_KNOWLEDGE_RATE_LIMIT_PER_HOUR", str(default_limit))
+        )
+    except ValueError:
+        max_per_hour = default_limit
+
     one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
     rate_result = await db.execute(
         select(func.count(KnowledgeEntry.id)).where(
             KnowledgeEntry.project_id == project_id,
-            KnowledgeEntry.session_id == session_id,
+            KnowledgeEntry.user_id == user.id,
             KnowledgeEntry.created_at >= one_hour_ago,
         )
     )
     recent_count = rate_result.scalar() or 0
-    if recent_count >= 20:
-        raise HTTPException(429, "Rate limit exceeded — max 20 entries per session per hour")
+    if recent_count >= max_per_hour:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Rate limit exceeded — max {max_per_hour} entries per hour "
+                f"for {tier_value} tier"
+            ),
+            headers={"Retry-After": "60"},
+        )
 
     # Gate 3: Similarity check against recent non-dismissed entries
     recent_result = await db.execute(

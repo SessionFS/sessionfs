@@ -39,6 +39,14 @@ logger = logging.getLogger("sfsd")
 class DaemonSyncer:
     """Handles background sync of captured sessions to the server."""
 
+    # Per-session push failure threshold. After this many consecutive failed
+    # push attempts on the same session (e.g. session is too large for the
+    # server's per-file cap and returns 413), the daemon adds it to the local
+    # exclusion list so it stops re-trying every cycle. Users can clear the
+    # exclusion with `sfs restore <session_id>` once they've addressed the
+    # underlying issue (typically /clear or /compact in their AI tool).
+    SYNC_FAILURE_THRESHOLD = 3
+
     def __init__(self, config: DaemonConfig, store: LocalStore) -> None:
         self.config = config
         self.store = store
@@ -49,6 +57,8 @@ class DaemonSyncer:
         self._debounce_timestamps: dict[str, float] = {}
         self._watchlist: set[str] = set()
         self._last_settings_check = 0.0
+        # Per-session push failure counter. Resets to 0 on successful push.
+        self.sync_failures: dict[str, int] = {}
 
     @property
     def is_enabled(self) -> bool:
@@ -161,6 +171,8 @@ class DaemonSyncer:
                 self._store_local_etag(session_id, result.etag)
                 self._pending_sessions.discard(session_id)
                 self._consecutive_failures = 0
+                # Reset the per-session failure counter on success.
+                self.sync_failures.pop(session_id, None)
 
                 logger.info(
                     "Synced session %s (etag=%s, size=%d)",
@@ -207,16 +219,48 @@ class DaemonSyncer:
                     self.config.sync.retry_max,
                     exc,
                 )
+                self._record_session_failure(session_id, str(exc))
 
-            except Exception:
+            except Exception as exc:
                 self._consecutive_failures += 1
                 await self._update_watch_status(session_id, "failed", client)
                 logger.exception("Unexpected sync error for %s", session_id[:12])
+                self._record_session_failure(session_id, str(exc))
 
         try:
             await client.close()
         except Exception:
             pass
+
+    def _record_session_failure(self, session_id: str, error_msg: str) -> None:
+        """Increment the per-session failure counter and exclude after threshold.
+
+        Once a single session has failed SYNC_FAILURE_THRESHOLD times in a
+        row, mark it as locally excluded (scope=cloud, reason=too_large) so
+        the daemon stops re-trying every cycle. This is the last line of
+        defence for sessions that exceed the server's per-file 10MB cap —
+        without it the daemon would re-pack and re-upload the same 50MB
+        archive every push interval until the user noticed.
+        """
+        count = self.sync_failures.get(session_id, 0) + 1
+        self.sync_failures[session_id] = count
+        if count >= self.SYNC_FAILURE_THRESHOLD:
+            try:
+                from sessionfs.store.deleted import is_excluded, mark_deleted
+
+                if not is_excluded(session_id):
+                    mark_deleted(session_id, scope="cloud", reason="too_large")
+                    logger.warning(
+                        "Session %s excluded from autosync after %d failures: %s",
+                        session_id[:12],
+                        count,
+                        error_msg,
+                    )
+            except Exception:
+                logger.exception("Failed to mark session %s as excluded", session_id[:12])
+            # Stop pending re-tries even if mark_deleted failed.
+            self._pending_sessions.discard(session_id)
+            self._debounce_timestamps.pop(session_id, None)
 
     async def _update_watch_status(self, session_id: str, status: str, client) -> None:
         """Update watchlist status on the server (non-critical)."""

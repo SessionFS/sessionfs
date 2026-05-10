@@ -135,3 +135,101 @@ class TestMigration:
 
         migration = Path("src/sessionfs/server/db/migrations/versions/013_autosync.py")
         assert migration.exists()
+
+
+class TestSyncFailureExclusion:
+    """Per-session push-failure tracking + auto-exclusion on the daemon.
+
+    Regression for the Baptist Health 57MB session bug: if a single session
+    keeps failing to push (e.g. server returns 413), the daemon should
+    eventually stop re-trying it instead of looping forever.
+    """
+
+    def _make_syncer(self, tmp_path, monkeypatch):
+        from sessionfs.daemon.config import DaemonConfig
+        from sessionfs.daemon.main import DaemonSyncer
+
+        # Redirect ~/.sessionfs/deleted.json into tmp so the test doesn't
+        # touch the developer's actual exclusion list.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        # Reset the module-level path that store.deleted resolves at import time
+        import sessionfs.store.deleted as _deleted
+        _deleted._DEFAULT_DIR = tmp_path / ".sessionfs"
+        _deleted._DEFAULT_PATH = _deleted._DEFAULT_DIR / "deleted.json"
+
+        config = DaemonConfig(sync={"enabled": True, "api_key": "test", "auto": "all", "debounce": 1})
+        store = MagicMock()
+        return DaemonSyncer(config, store)
+
+    def test_failure_counter_increments(self, tmp_path, monkeypatch):
+        syncer = self._make_syncer(tmp_path, monkeypatch)
+        syncer._record_session_failure("ses_abc12345", "boom")
+        syncer._record_session_failure("ses_abc12345", "boom")
+        assert syncer.sync_failures["ses_abc12345"] == 2
+
+    def test_excludes_after_three_failures(self, tmp_path, monkeypatch):
+        from sessionfs.store.deleted import is_excluded, list_deleted
+
+        syncer = self._make_syncer(tmp_path, monkeypatch)
+        # 3 failures triggers the exclusion.
+        for _ in range(3):
+            syncer._record_session_failure("ses_huge12345678", "413: too large")
+
+        assert is_excluded("ses_huge12345678"), \
+            "Session should be in deleted.json after 3 push failures"
+        entries = list_deleted()
+        assert entries["ses_huge12345678"]["scope"] == "cloud"
+        assert entries["ses_huge12345678"]["reason"] == "too_large"
+
+    def test_success_resets_failure_count(self, tmp_path, monkeypatch):
+        syncer = self._make_syncer(tmp_path, monkeypatch)
+        syncer._record_session_failure("ses_intermittent01", "transient")
+        syncer._record_session_failure("ses_intermittent01", "transient")
+        assert syncer.sync_failures.get("ses_intermittent01") == 2
+
+        # Simulate the success path.
+        syncer.sync_failures.pop("ses_intermittent01", None)
+        assert "ses_intermittent01" not in syncer.sync_failures
+
+        # One more failure shouldn't trip the threshold.
+        syncer._record_session_failure("ses_intermittent01", "transient")
+        from sessionfs.store.deleted import is_excluded
+        assert not is_excluded("ses_intermittent01")
+
+
+class TestClientSideOversizedCheck:
+    """sfs push refuses to upload archives whose members exceed 10MB."""
+
+    def test_find_oversized_member_detects(self):
+        import io as _io
+        import tarfile as _tarfile
+
+        from sessionfs.cli.cmd_cloud import _find_oversized_member, MAX_MEMBER_SIZE
+
+        buf = _io.BytesIO()
+        with _tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            payload = b"x" * (MAX_MEMBER_SIZE + 1024)
+            info = _tarfile.TarInfo(name="messages.jsonl")
+            info.size = len(payload)
+            tar.addfile(info, _io.BytesIO(payload))
+
+        result = _find_oversized_member(buf.getvalue())
+        assert result is not None
+        name, size = result
+        assert name == "messages.jsonl"
+        assert size > MAX_MEMBER_SIZE
+
+    def test_find_oversized_member_passes_small(self):
+        import io as _io
+        import tarfile as _tarfile
+
+        from sessionfs.cli.cmd_cloud import _find_oversized_member
+
+        buf = _io.BytesIO()
+        with _tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            payload = b"x" * (5 * 1024 * 1024)  # 5MB — well under cap
+            info = _tarfile.TarInfo(name="messages.jsonl")
+            info.size = len(payload)
+            tar.addfile(info, _io.BytesIO(payload))
+
+        assert _find_oversized_member(buf.getvalue()) is None

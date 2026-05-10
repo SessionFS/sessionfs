@@ -6,14 +6,23 @@ metadata:
   labels:
     {{- include "sessionfs.componentLabels" (list . "migration") | nindent 4 }}
   annotations:
-    "helm.sh/hook": post-install,post-upgrade
+    # Pre-* hooks ensure schema is migrated BEFORE new pods start.
+    # Without this, rolling restarts launch new code against old schema and fail with
+    # "column X does not exist". The job blocks the rollout on failure.
+    "helm.sh/hook": pre-install,pre-upgrade
+    # Negative weight runs this before any other pre-* hooks (e.g. seed jobs).
     "helm.sh/hook-weight": "-5"
+    # before-hook-creation: deletes the prior Job before creating a new one (fixes the
+    # ArgoCD "job already exists" failure mode). hook-succeeded: cleans up after success
+    # so the namespace doesn't accumulate completed Jobs.
     "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
     {{- with .Values.commonAnnotations }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
 spec:
   backoffLimit: {{ .Values.migrations.backoffLimit }}
+  # Garbage-collect the Job 5 minutes after success so the namespace stays tidy.
+  ttlSecondsAfterFinished: {{ .Values.migrations.ttlSecondsAfterFinished | default 300 }}
   template:
     metadata:
       labels:
@@ -21,17 +30,22 @@ spec:
     spec:
       {{- include "sessionfs.imagePullSecrets" . | nindent 6 }}
       serviceAccountName: {{ include "sessionfs.serviceAccountName" . }}
-      restartPolicy: OnFailure
+      # Never: rely on backoffLimit at the Job level instead of in-pod restarts.
+      # This makes failures surface cleanly in `kubectl get jobs` and to ArgoCD.
+      restartPolicy: Never
       {{- with .Values.migrations.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
         - name: migrate
+          # Same image as the API deployment — guarantees the alembic revision matches
+          # the schema the new API code expects.
           image: {{ include "sessionfs.api.image" . }}
           imagePullPolicy: {{ .Values.api.image.pullPolicy | default .Values.global.imagePullPolicy }}
           command: ["alembic", "upgrade", "head"]
           env:
+            {{- /* Reuse the same DATABASE_URL the API uses */}}
             {{- include "sessionfs.databaseEnv" . | nindent 12 }}
             - name: SFS_DATABASE_URL
               value: {{ include "sessionfs.databaseUrl" . | quote }}
@@ -40,10 +54,5 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           resources:
-            requests:
-              cpu: 100m
-              memory: 128Mi
-            limits:
-              cpu: 250m
-              memory: 256Mi
+            {{- toYaml .Values.migrations.resources | nindent 12 }}
 {{- end }}

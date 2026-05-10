@@ -77,6 +77,7 @@ def mark_deleted(
     session_id: str,
     scope: str,
     base_dir: Path | None = None,
+    reason: str | None = None,
 ) -> None:
     """Add a session to the local exclusion list.
 
@@ -84,6 +85,10 @@ def mark_deleted(
         session_id: The session ID to mark as deleted.
         scope: One of 'cloud', 'local', 'everywhere'.
         base_dir: Override base directory (for testing).
+        reason: Optional free-form reason recorded with the entry (e.g.
+            "too_large" when the daemon excludes a session after repeated
+            413s). Surfaces in `sfs trash` so users can see why a session
+            stopped syncing.
     """
     path = _deleted_path(base_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -92,14 +97,22 @@ def mark_deleted(
         fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
         try:
             data = _read_deleted(path)
-            data[session_id] = {
+            entry: dict[str, Any] = {
                 "deleted_at": datetime.now(timezone.utc).isoformat(),
                 "scope": scope,
             }
+            if reason is not None:
+                entry["reason"] = reason
+            data[session_id] = entry
             _write_deleted(path, data)
         finally:
             fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
-    logger.info("Marked session %s as deleted (scope=%s)", session_id, scope)
+    logger.info(
+        "Marked session %s as deleted (scope=%s%s)",
+        session_id,
+        scope,
+        f", reason={reason}" if reason else "",
+    )
 
 
 def is_excluded(session_id: str, base_dir: Path | None = None) -> bool:
