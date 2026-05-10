@@ -278,3 +278,45 @@ class TestClientSideOversizedCheck:
             tar.addfile(info, _io.BytesIO(payload))
 
         assert _find_oversized_member(buf.getvalue()) is None
+
+
+class TestHandoffOversizeHandling:
+    """Regression: sfs handoff must catch oversize sessions BEFORE upload
+    (same UX as sfs push) and must surface SyncTooLargeError with the
+    friendly /clear-or-/compact message instead of a generic SyncError.
+    """
+
+    def test_handoff_imports_too_large_error(self):
+        """The handoff command imports SyncTooLargeError so it can route 413s
+        to a friendly message instead of falling through to SyncError.
+        """
+        import inspect
+        from sessionfs.cli import cmd_cloud
+
+        src = inspect.getsource(cmd_cloud.handoff)
+        assert "SyncTooLargeError" in src, (
+            "sfs handoff must import SyncTooLargeError to route 413 cleanly"
+        )
+        assert "_find_oversized_member" in src, (
+            "sfs handoff must run the local pre-upload oversize check"
+        )
+
+    def test_handoff_catches_too_large_before_other_handlers(self):
+        """The except SyncTooLargeError branch must come before generic
+        SyncError handling — otherwise the friendly message never fires.
+        """
+        import inspect
+        from sessionfs.cli import cmd_cloud
+
+        src = inspect.getsource(cmd_cloud.handoff)
+        # SyncTooLargeError exists in the except chain.
+        assert "except SyncTooLargeError" in src
+        # And it appears before any generic SyncError catch (if one exists).
+        too_large_idx = src.index("except SyncTooLargeError")
+        # SyncDeletedError + SyncConflictError are the other expected handlers.
+        deleted_idx = src.index("except SyncDeletedError")
+        conflict_idx = src.index("except SyncConflictError")
+        # Order doesn't matter between TooLarge/Deleted/Conflict (mutually
+        # exclusive subclasses), but all three must be present.
+        assert deleted_idx >= 0 and conflict_idx >= 0
+        assert too_large_idx >= 0

@@ -828,3 +828,76 @@ class TestKnowledgeRateLimit:
         assert resp.status_code == 429
         assert "Retry-After" in resp.headers
         assert resp.headers["Retry-After"] == "60"
+
+    @pytest.mark.asyncio
+    async def test_admin_tier_reaches_500_per_hour_bucket(
+        self,
+        client,
+        db_session: AsyncSession,
+    ):
+        """Regression: get_effective_tier collapses legacy admin → ENTERPRISE,
+        which would silently cap admins at 200/hr instead of 500/hr.
+
+        The route checks raw user.tier == "admin" first to honour the
+        advertised admin bucket. We don't actually push 500 entries; we set
+        the env override to a tiny number for the admin-mapped bucket and
+        verify the override applies (i.e. the admin path is exercised at all).
+        """
+        import os
+        from sessionfs.server.auth.keys import generate_api_key, hash_api_key
+        from sessionfs.server.db.models import ApiKey, User
+
+        admin = User(
+            id=str(uuid.uuid4()),
+            email=f"admin_{uuid.uuid4().hex[:8]}@example.com",
+            tier="admin",  # legacy admin tier — collapses to ENTERPRISE in get_effective_tier
+            email_verified=True,
+            created_at=datetime.now(timezone.utc),
+        )
+        db_session.add(admin)
+        await db_session.commit()
+
+        raw_key = generate_api_key()
+        db_session.add(ApiKey(
+            id=str(uuid.uuid4()),
+            user_id=admin.id,
+            key_hash=hash_api_key(raw_key),
+            name="admin-rl",
+            created_at=datetime.now(timezone.utc),
+        ))
+        await db_session.commit()
+        headers = {"Authorization": f"Bearer {raw_key}"}
+        project = await _own_project_for_user(db_session, admin.id)
+
+        # Verify the admin path is taken: with no env override, the cap should
+        # be the admin-tier value (500), not enterprise (200). We can't push
+        # 500 in a test, but we can verify the 201st entry from a free-tier
+        # user would 429 while an admin's 201st entry succeeds — both
+        # significantly above the enterprise 200 boundary would prove the
+        # path. Simpler: assert the 429 message identifies "admin", not
+        # "enterprise".
+        original = os.environ.pop("SFS_KNOWLEDGE_RATE_LIMIT_PER_HOUR", None)
+        os.environ["SFS_KNOWLEDGE_RATE_LIMIT_PER_HOUR"] = "1"
+        try:
+            resp = await client.post(
+                f"/api/v1/projects/{project.id}/entries/add",
+                headers=headers,
+                json=_entry_payload("admin-1"),
+            )
+            assert resp.status_code == 201
+            resp = await client.post(
+                f"/api/v1/projects/{project.id}/entries/add",
+                headers=headers,
+                json=_entry_payload("admin-2"),
+            )
+            assert resp.status_code == 429
+            # Message must say "admin" tier — proves we took the admin branch
+            # and didn't collapse to enterprise.
+            assert "admin" in resp.text.lower(), (
+                f"429 message must mention 'admin' tier, got: {resp.text[:200]}"
+            )
+        finally:
+            if original is not None:
+                os.environ["SFS_KNOWLEDGE_RATE_LIMIT_PER_HOUR"] = original
+            else:
+                os.environ.pop("SFS_KNOWLEDGE_RATE_LIMIT_PER_HOUR", None)
