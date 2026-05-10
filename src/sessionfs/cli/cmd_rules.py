@@ -974,11 +974,16 @@ def _resolve_cached_content(tool: str) -> str:
             if cached is not None:
                 return cached
 
-    # Fallback: read the compiled file from disk if it exists. This is
-    # equivalent in practice — `compile` writes the same content here.
+    # Fallback: read the compiled file from disk if it exists AND is
+    # SessionFS-managed. We refuse to inject unmanaged content (e.g. a
+    # hand-written CLAUDE.md) into the hook path — that would inject
+    # arbitrary local text under the SessionFS provenance umbrella,
+    # weakening the "what shaped this session" guarantee. If only an
+    # unmanaged file is present, return empty and let the user run
+    # `sfs rules compile` or `sfs rules pull` to populate the cache.
     if git_root is not None and tool in TOOL_FILES:
         candidate = git_root / TOOL_FILES[tool]
-        if candidate.is_file():
+        if candidate.is_file() and _is_managed(candidate):
             try:
                 return candidate.read_text(encoding="utf-8")
             except OSError:

@@ -27,7 +27,9 @@ overwriting user data.
 
 from __future__ import annotations
 
+import fcntl
 import json
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +45,50 @@ class MalformedSettingsError(Exception):
 # ---------------------------------------------------------------------------
 # Internals
 # ---------------------------------------------------------------------------
+
+
+_EXPECTED_COMMAND_PREFIX = "sfs rules emit "
+
+
+def _is_managed_entry(entry: Any) -> bool:
+    """True iff ``entry`` is a SessionFS-managed SessionStart matcher entry.
+
+    Verifies BOTH the sentinel marker AND that the embedded command is
+    actually ``sfs rules emit ...`` — protecting against unrelated entries
+    that happen to share the sentinel key.
+    """
+    if not isinstance(entry, dict) or entry.get(SFS_MANAGED_KEY) is not True:
+        return False
+    hooks = entry.get("hooks")
+    if not isinstance(hooks, list):
+        return False
+    for h in hooks:
+        if not isinstance(h, dict):
+            continue
+        cmd = h.get("command", "")
+        if isinstance(cmd, str) and cmd.startswith(_EXPECTED_COMMAND_PREFIX):
+            return True
+    return False
+
+
+@contextmanager
+def _locked(settings_path: Path):
+    """Hold an exclusive flock on a sibling lock file for the duration.
+
+    Prevents concurrent install/uninstall (or any other process using the
+    same lock convention) from clobbering each other's writes. Lock file
+    is at ``<settings_path>.sfs-lock`` and is created if missing. The lock
+    is advisory — external editors that don't honour it can still race,
+    but our own CLI invocations are race-safe against each other.
+    """
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = settings_path.with_suffix(settings_path.suffix + ".sfs-lock")
+    with open(lock_path, "a") as lf:
+        fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
 
 
 def _read_settings(settings_path: Path) -> dict[str, Any]:
@@ -101,11 +147,6 @@ def _matcher_entries_for_session_start(data: dict[str, Any]) -> list[dict[str, A
     return entries
 
 
-def _is_managed_entry(entry: Any) -> bool:
-    """True iff ``entry`` is a SessionFS-managed SessionStart matcher entry."""
-    return isinstance(entry, dict) and entry.get(SFS_MANAGED_KEY) is True
-
-
 def _build_managed_entry(command: str) -> dict[str, Any]:
     """Construct the SessionFS-managed matcher entry shape Claude Code expects."""
     return {
@@ -151,6 +192,11 @@ def install_session_start_hook(settings_path: Path, command: str) -> bool:
     use the return value to decide whether to print "installed" vs.
     "already installed".
     """
+    with _locked(settings_path):
+        return _install_locked(settings_path, command)
+
+
+def _install_locked(settings_path: Path, command: str) -> bool:
     data = _read_settings(settings_path)
     hooks = data.setdefault("hooks", {})
     if not isinstance(hooks, dict):
@@ -211,6 +257,11 @@ def uninstall_session_start_hook(settings_path: Path) -> bool:
 
     Returns ``True`` if the file was modified.
     """
+    with _locked(settings_path):
+        return _uninstall_locked(settings_path)
+
+
+def _uninstall_locked(settings_path: Path) -> bool:
     if not settings_path.exists():
         return False
     try:

@@ -205,3 +205,37 @@ def test_malformed_settings_raises_clear_error(tmp_path: Path):
 
     # is_hook_installed treats malformed as "not installed" rather than crashing.
     assert is_hook_installed(settings) is False
+
+
+def test_sentinel_alone_does_not_count_as_managed(tmp_path: Path):
+    """Defense against unrelated entries that happen to use the sentinel key.
+
+    Regression: previously _is_managed_entry checked only the sentinel field.
+    An unrelated tool that happens to use "sfs:managed": true (or a user
+    typo) could be removed by uninstall. We now also require the embedded
+    command to start with "sfs rules emit ".
+    """
+    import json
+    from sessionfs.sync.hooks_installer import (
+        is_hook_installed,
+        uninstall_session_start_hook,
+    )
+
+    settings = tmp_path / "settings.json"
+    # Sentinel present, but command is unrelated to SessionFS.
+    settings.write_text(json.dumps({
+        "hooks": {
+            "SessionStart": [
+                {
+                    "sfs:managed": True,
+                    "hooks": [{"type": "command", "command": "echo hello"}],
+                }
+            ]
+        }
+    }))
+    # Should NOT count as installed — command doesn't match.
+    assert is_hook_installed(settings) is False
+    # Uninstall should be a no-op — preserves the unrelated entry.
+    assert uninstall_session_start_hook(settings) is False
+    data = json.loads(settings.read_text())
+    assert data["hooks"]["SessionStart"][0]["hooks"][0]["command"] == "echo hello"

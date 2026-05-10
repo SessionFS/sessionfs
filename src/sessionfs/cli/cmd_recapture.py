@@ -60,7 +60,11 @@ def recapture(
         raise SystemExit(1)
 
     handler = globals()[handler_name]
-    handler(store, sfs_id, ref, native_path)
+    try:
+        handler(store, sfs_id, ref, native_path)
+    except CursorComposerPurgedError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise SystemExit(1)
 
     console.print(f"[green]Re-captured {sfs_id} from {ref.tool} source.[/green]")
 
@@ -108,10 +112,24 @@ def _recapture_cursor(
     from sessionfs.converters.cursor_to_sfs import parse_cursor_composer, convert_cursor_to_sfs
 
     session = parse_cursor_composer(ref.native_session_id, global_db=native_path)
+    # Cursor's native_path is the global DB itself, not a per-session file.
+    # If the user purged the composer rows, the DB still exists but the
+    # parse returns 0 messages. Refuse to overwrite a good capture with an
+    # empty one — surface an error so the user knows the source is gone.
+    if session.message_count == 0:
+        raise CursorComposerPurgedError(
+            f"Cursor composer {ref.native_session_id[:12]} has 0 messages "
+            f"in the global DB — the composer rows appear to have been purged. "
+            f"Refusing to overwrite the existing .sfs capture with empty content."
+        )
     session_dir = store.allocate_session_dir(sfs_id)
     convert_cursor_to_sfs(session, session_dir, session_id=sfs_id)
 
     _update_index_and_ref(store, sfs_id, session_dir, ref, native_path)
+
+
+class CursorComposerPurgedError(Exception):
+    """Raised when a Cursor composer's bubble rows are gone from the global DB."""
 
 
 def _recapture_copilot(

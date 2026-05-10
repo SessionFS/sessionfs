@@ -62,3 +62,37 @@ class TestShouldRecapture:
         session_dir = store.allocate_session_dir(sfs_id)
         (session_dir / "manifest.json").write_text("not valid json{{{")
         assert should_recapture(store, sfs_id, 10, "cursor") is True
+
+
+class TestExclusionListGuard:
+    """Watcher must skip captures for sessions in deleted.json.
+
+    Regression: without this check, after a 410 / sfs delete, native
+    watchers would re-discover the session from the still-present
+    native source and resurrect it on every machine.
+    """
+
+    def test_excluded_session_blocked_on_first_capture(self, store, tmp_path, monkeypatch):
+        from sessionfs.store import deleted as deleted_mod
+
+        monkeypatch.setattr(deleted_mod, "_DEFAULT_DIR", tmp_path)
+        monkeypatch.setattr(deleted_mod, "_DEFAULT_PATH", tmp_path / "deleted.json")
+        deleted_mod.mark_deleted("ses_excluded", "everywhere")
+        assert should_recapture(store, "ses_excluded", 50, "claude-code") is False
+
+    def test_excluded_session_blocked_on_recapture(self, store, tmp_path, monkeypatch):
+        from sessionfs.store import deleted as deleted_mod
+
+        monkeypatch.setattr(deleted_mod, "_DEFAULT_DIR", tmp_path)
+        monkeypatch.setattr(deleted_mod, "_DEFAULT_PATH", tmp_path / "deleted.json")
+        sfs_id = "ses_existing_then_deleted"
+        _create_existing_session(store, sfs_id, 10)
+        deleted_mod.mark_deleted(sfs_id, "cloud")
+        assert should_recapture(store, sfs_id, 100, "codex") is False
+
+    def test_non_excluded_session_allowed(self, store, tmp_path, monkeypatch):
+        from sessionfs.store import deleted as deleted_mod
+
+        monkeypatch.setattr(deleted_mod, "_DEFAULT_DIR", tmp_path)
+        monkeypatch.setattr(deleted_mod, "_DEFAULT_PATH", tmp_path / "deleted.json")
+        assert should_recapture(store, "ses_normal", 20, "gemini") is True
