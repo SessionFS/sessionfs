@@ -7,7 +7,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -61,6 +61,15 @@ class KnowledgeEntryResponse(BaseModel):
     used_in_answer_count: int = 0
     compiled_count: int = 0
     last_relevant_at: datetime | None = None
+    # Audit fields surfaced from migration 031. NULL on legacy entries that
+    # were dismissed before the audit columns existed; populated for any
+    # dismissal made via PUT /entries/{id} or the dismiss_knowledge_entry
+    # MCP tool from v0.9.9.7 onward. Agents and dashboards can use these
+    # to confirm an audit row landed and to surface "dismissed by X on Y
+    # because Z" review information.
+    dismissed_at: datetime | None = None
+    dismissed_by: str | None = None
+    dismissed_reason: str | None = None
 
 
 class CompilationResponse(BaseModel):
@@ -129,6 +138,25 @@ class AddEntryResponse(BaseModel):
 
 class DismissRequest(BaseModel):
     dismissed: bool = True
+    # Optional audit reason captured when dismissed=true. Persisted on the
+    # entry so reviewers can understand WHY it was dismissed (stale, wrong,
+    # superseded by external evidence, etc.). Length-capped to keep the
+    # column reasonable; longer rationale belongs in a wiki page.
+    reason: str | None = None
+
+    @field_validator("reason")
+    @classmethod
+    def _normalize_reason(cls, value: str | None) -> str | None:
+        # Whitespace-only reasons are useless for an audit trail and worse
+        # than no reason — they overwrite a real previous rationale on
+        # re-dismiss. Strip on the server so MCP clients, dashboards, and
+        # raw API callers all behave the same. None / empty / whitespace-
+        # only all collapse to None and let the route's "no reason"
+        # branch handle them.
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
 
 
 class HealthResponse(BaseModel):
@@ -394,6 +422,9 @@ async def list_entries(
             used_in_answer_count=getattr(e, "used_in_answer_count", 0),
             compiled_count=getattr(e, "compiled_count", 0),
             last_relevant_at=getattr(e, "last_relevant_at", None),
+            dismissed_at=getattr(e, "dismissed_at", None),
+            dismissed_by=getattr(e, "dismissed_by", None),
+            dismissed_reason=getattr(e, "dismissed_reason", None),
         )
         for e in entries
     ]
@@ -447,6 +478,9 @@ async def get_entry(
         used_in_answer_count=getattr(entry, "used_in_answer_count", 0),
         compiled_count=getattr(entry, "compiled_count", 0),
         last_relevant_at=getattr(entry, "last_relevant_at", None),
+        dismissed_at=getattr(entry, "dismissed_at", None),
+        dismissed_by=getattr(entry, "dismissed_by", None),
+        dismissed_reason=getattr(entry, "dismissed_reason", None),
     )
 
 
@@ -645,6 +679,9 @@ async def add_entry(
     )
 
 
+_DISMISS_REASON_MAX = 500
+
+
 @router.put("/{project_id}/entries/{entry_id}", response_model=KnowledgeEntryResponse)
 async def dismiss_entry(
     project_id: str,
@@ -653,20 +690,60 @@ async def dismiss_entry(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> KnowledgeEntryResponse:
-    """Dismiss or un-dismiss a knowledge entry."""
+    """Dismiss or un-dismiss a knowledge entry.
+
+    On dismiss (transitioning from undismissed → dismissed), records audit
+    fields: who dismissed, when, and an optional reason. On un-dismiss,
+    clears those fields so the audit trail reflects the entry's current
+    state, not its dismissal history. Idempotent: re-dismissing an already
+    dismissed entry is a no-op (returns 200 with the existing audit row).
+    """
     await _get_project_or_404(project_id, db, user.id)
 
+    if body.reason is not None and len(body.reason) > _DISMISS_REASON_MAX:
+        raise HTTPException(
+            422,
+            f"reason must be {_DISMISS_REASON_MAX} characters or fewer",
+        )
+
+    # Lock the row for the audit transition. Without this, two concurrent
+    # dismissals can both observe dismissed=False, both take the "first
+    # dismiss" path, and the second commit overwrites the first writer's
+    # timestamp + dismisser — violating the "preserve the original audit
+    # row" contract. SELECT FOR UPDATE serialises them on PostgreSQL;
+    # SQLite no-ops the lock but its single-writer model already serialises.
     result = await db.execute(
-        select(KnowledgeEntry).where(
+        select(KnowledgeEntry)
+        .where(
             KnowledgeEntry.id == entry_id,
             KnowledgeEntry.project_id == project_id,
         )
+        .with_for_update()
     )
     entry = result.scalar_one_or_none()
     if not entry:
         raise HTTPException(404, "Entry not found")
 
-    entry.dismissed = body.dismissed
+    # Capture audit fields only on the dismiss transition. We deliberately
+    # don't overwrite an existing dismissed_at when re-dismissing — the
+    # audit trail should record the FIRST dismissal, not the latest no-op.
+    if body.dismissed and not entry.dismissed:
+        entry.dismissed = True
+        entry.dismissed_at = datetime.now(timezone.utc)
+        entry.dismissed_by = user.id
+        entry.dismissed_reason = body.reason
+    elif not body.dismissed and entry.dismissed:
+        # Un-dismiss clears the audit row. The entry's state is "active
+        # again", and keeping a stale dismissed_by would mislead reviewers.
+        entry.dismissed = False
+        entry.dismissed_at = None
+        entry.dismissed_by = None
+        entry.dismissed_reason = None
+    elif body.dismissed and entry.dismissed and body.reason is not None:
+        # Re-dismiss with a NEW reason — update the reason but preserve
+        # original timestamp + dismisser. Useful for "I dismissed this
+        # earlier; here's why" workflows.
+        entry.dismissed_reason = body.reason
     await db.commit()
     await db.refresh(entry)
 
@@ -688,6 +765,9 @@ async def dismiss_entry(
         freshness_class=getattr(entry, "freshness_class", "current"),
         superseded_by=entry.superseded_by,
         supersession_reason=getattr(entry, "supersession_reason", None),
+        dismissed_at=getattr(entry, "dismissed_at", None),
+        dismissed_by=getattr(entry, "dismissed_by", None),
+        dismissed_reason=getattr(entry, "dismissed_reason", None),
     )
 
 
@@ -1288,6 +1368,9 @@ async def promote_entry(
         superseded_by=entry.superseded_by,
         promoted_at=entry.promoted_at,
         promoted_by=entry.promoted_by,
+        dismissed_at=getattr(entry, "dismissed_at", None),
+        dismissed_by=getattr(entry, "dismissed_by", None),
+        dismissed_reason=getattr(entry, "dismissed_reason", None),
     )
 
 

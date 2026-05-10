@@ -159,24 +159,61 @@ def _validate_tar_gz(data: bytes) -> None:
 
 # Per-file cap inside a session archive. The hard limit in _validate_tar_gz
 # is 100MB to prevent abuse, but in practice we want to reject huge sessions
-# much earlier with an actionable error so users know to /clear or /compact
-# their AI tool. 10MB is a comfortable upper bound for a single AI session
-# transcript (a 30+ minute Claude Code session typically lands around 1-3 MB).
-MAX_SYNC_MEMBER_SIZE = 10 * 1024 * 1024
+# much earlier with an actionable error so users know to /compact their AI
+# tool. The default for free tier (10 MB) is generous for short sessions but
+# rejects long Claude Code transcripts (8000+ messages → ~20-30 MB raw
+# messages.jsonl). Paid tiers get 50 MB to accommodate those transcripts
+# without forcing a /compact. Override via env vars on self-hosted.
+SFS_MAX_SYNC_MEMBER_BYTES_FREE = int(
+    os.environ.get("SFS_MAX_SYNC_MEMBER_BYTES_FREE", str(10 * 1024 * 1024))
+)
+SFS_MAX_SYNC_MEMBER_BYTES_PAID = int(
+    os.environ.get("SFS_MAX_SYNC_MEMBER_BYTES_PAID", str(50 * 1024 * 1024))
+)
 
 
-def _check_member_sizes(data: bytes) -> None:
-    """Reject archives with any single file exceeding MAX_SYNC_MEMBER_SIZE.
+def _member_size_limit_for_tier(tier) -> int:
+    """Return per-member size limit based on a resolved effective Tier value.
 
-    Raises HTTPException(413) with a structured detail body that the CLI
-    surfaces verbatim so users get a clean "your session is too big — try
-    /clear or /compact" message instead of a stack trace from deep inside
-    the DLP scanner.
+    Mirrors `_sync_limit_for_tier` — call `get_effective_tier(user, db)` to
+    resolve org tier inheritance before passing the result here.
     """
+    from sessionfs.server.tiers import Tier
+
+    if tier in (Tier.PRO, Tier.TEAM, Tier.ENTERPRISE):
+        return SFS_MAX_SYNC_MEMBER_BYTES_PAID
+    return SFS_MAX_SYNC_MEMBER_BYTES_FREE
+
+
+def _check_member_sizes(data: bytes, limit: int | None = None) -> None:
+    """Reject archives with any single file exceeding the per-member limit.
+
+    `limit` is the tier-aware byte cap. When None (e.g. unauthenticated
+    paths), falls back to the free-tier default. Raises HTTPException(413)
+    with a structured detail body that the CLI surfaces verbatim so users
+    get a clean "your session is too big" message instead of a stack trace
+    from deep inside the DLP scanner.
+    """
+    if limit is None:
+        limit = SFS_MAX_SYNC_MEMBER_BYTES_FREE
     try:
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
             for member in tar.getmembers():
-                if member.size > MAX_SYNC_MEMBER_SIZE:
+                if member.size > limit:
+                    # Suggestion text depends on whether they're already on a
+                    # paid tier — telling a paid user to "upgrade" is wrong;
+                    # telling a free user only to "/compact" misses the
+                    # cheaper path of bumping their plan.
+                    if limit >= SFS_MAX_SYNC_MEMBER_BYTES_PAID:
+                        suggestion = (
+                            "Try /compact in your AI tool to start a fresh "
+                            "session, or contact support for a larger limit."
+                        )
+                    else:
+                        suggestion = (
+                            "Try /compact in your AI tool, or upgrade to "
+                            "Pro/Team/Enterprise for a larger per-file limit."
+                        )
                     raise HTTPException(
                         status_code=413,
                         detail={
@@ -184,18 +221,23 @@ def _check_member_sizes(data: bytes) -> None:
                             "message": (
                                 f"Session file '{member.name}' is "
                                 f"{member.size // (1024 * 1024)}MB which exceeds the "
-                                f"{MAX_SYNC_MEMBER_SIZE // (1024 * 1024)}MB per-file limit."
+                                f"{limit // (1024 * 1024)}MB per-file limit for your tier."
                             ),
                             "file": member.name,
                             "size_bytes": member.size,
-                            "limit_bytes": MAX_SYNC_MEMBER_SIZE,
-                            "suggestion": "Try /clear or /compact in your AI tool",
+                            "limit_bytes": limit,
+                            "suggestion": suggestion,
                         },
                     )
     except tarfile.TarError:
         # Malformed archives are caught and reported by _validate_tar_gz —
         # don't double-report them here.
         return
+
+
+# Back-compat alias for callers/tests that imported the old constant.
+# Equal to the free-tier limit; tier-aware paths use the env-driven values.
+MAX_SYNC_MEMBER_SIZE = SFS_MAX_SYNC_MEMBER_BYTES_FREE
 
 
 def _sanitize_string(value: str) -> str:
@@ -612,8 +654,11 @@ async def upload_session(
         raise HTTPException(status_code=400, detail=str(e))
 
     # Same per-file size guard as sync_push so /sessions and /sessions/{id}/sync
-    # behave consistently when an AI tool produces a runaway transcript.
-    _check_member_sizes(data)
+    # behave consistently when an AI tool produces a runaway transcript. Tier
+    # is resolved here too so paid uploads get the larger per-member ceiling.
+    from sessionfs.server.tier_gate import get_effective_tier
+    member_limit = _member_size_limit_for_tier(await get_effective_tier(user, db))
+    _check_member_sizes(data, limit=member_limit)
 
     session_id = f"ses_{uuid.uuid4().hex[:16]}"
     etag = hashlib.sha256(data).hexdigest()
@@ -1298,7 +1343,9 @@ async def sync_push(
 
         # Reject oversized sessions early with a structured 413 — keeps DLP
         # and downstream code from blowing up on multi-hundred-MB transcripts.
-        _check_member_sizes(data)
+        # `effective_tier` was resolved earlier in this function for the
+        # archive-total cap; reuse it for the per-member cap.
+        _check_member_sizes(data, limit=_member_size_limit_for_tier(effective_tier))
 
         new_etag = hashlib.sha256(data).hexdigest()
         key = _blob_key(user_id, session_id)

@@ -31,7 +31,7 @@ sfs mcp install --for claude-code --skip-instructions
 
 ## Tools
 
-The MCP server exposes 21 tools in four categories.
+The MCP server exposes 22 tools in four categories.
 
 ### Session Tools
 
@@ -206,6 +206,15 @@ List all wiki pages for the project. Returns page slugs, titles, word counts, an
 Trigger a compile pass on the project's knowledge base. Promotes pending entries, refreshes section pages and concept pages, and rebuilds the compiled context document. Returns a structured result: `entries_compiled`, `context_words_before`, `context_words_after`, `section_pages_updated`, `concept_pages_updated`, `compiled_at`.
 
 No parameters required.
+
+#### `dismiss_knowledge_entry`
+
+Dismiss a knowledge entry that is stale, wrong, or no longer relevant. Idempotent — calling twice is a safe no-op. Writes a full audit triple (`dismissed_at`, `dismissed_by`, `dismissed_reason`) and the underlying `PUT /entries/{id}` is row-locked with `SELECT FOR UPDATE` so concurrent dismissals can't tear the audit record.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | number | yes | Knowledge entry ID |
+| `reason` | string | yes | Short justification (e.g., `"superseded by entry 412"` or `"wrong file path"`) |
 
 ### Rules (Read-only)
 

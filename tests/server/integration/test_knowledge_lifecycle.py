@@ -1646,3 +1646,367 @@ class TestCrossUserAccessDenied:
             f"Non-member should be denied with 403, got {resp.status_code}: "
             f"{resp.text[:200]}"
         )
+
+
+# ---------- v0.9.9.7 — dismiss audit (migration 031) ----------
+
+
+class TestDismissAudit:
+    """PUT /entries/{id} now records dismissed_at, dismissed_by, and
+    dismissed_reason on the dismiss transition; clears them on un-dismiss;
+    and is idempotent. Backed by migration 031.
+    """
+
+    # SQLAlchemy async sessions don't support db.expire_all() (MissingGreenlet
+    # — see project knowledge `concept/knowledge-base`). Use raw SQL via
+    # text() to bypass the identity map and read the audit columns fresh.
+    @staticmethod
+    async def _read_audit(db, entry_id: int) -> dict:
+        from sqlalchemy import text
+        row = (await db.execute(
+            text(
+                "SELECT dismissed, dismissed_at, dismissed_by, dismissed_reason "
+                "FROM knowledge_entries WHERE id = :id"
+            ),
+            {"id": entry_id},
+        )).one()
+        return {
+            "dismissed": bool(row.dismissed),
+            "dismissed_at": row.dismissed_at,
+            "dismissed_by": row.dismissed_by,
+            "dismissed_reason": row.dismissed_reason,
+        }
+
+    @pytest.mark.asyncio
+    async def test_dismiss_records_audit_triple(
+        self, client, auth_headers: dict, db_session: AsyncSession, test_user
+    ):
+        project = await _own_project_for_user(db_session, test_user.id)
+        entry = await _mk_entry(
+            db_session,
+            project_id=project.id,
+            content="Decision that turned out to be wrong",
+        )
+
+        resp = await client.put(
+            f"/api/v1/projects/{project.id}/entries/{entry.id}",
+            headers=auth_headers,
+            json={"dismissed": True, "reason": "Reverted in 2026-05-12 retro"},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["dismissed"] is True
+
+        audit = await self._read_audit(db_session, entry.id)
+        assert audit["dismissed"] is True
+        assert audit["dismissed_at"] is not None
+        assert audit["dismissed_by"] == test_user.id
+        assert audit["dismissed_reason"] == "Reverted in 2026-05-12 retro"
+
+    @pytest.mark.asyncio
+    async def test_dismiss_without_reason_works(
+        self, client, auth_headers: dict, db_session: AsyncSession, test_user
+    ):
+        """Reason is optional; absence is allowed but the audit timestamp
+        + dismisser must still be recorded so we know WHO and WHEN."""
+        project = await _own_project_for_user(db_session, test_user.id)
+        entry = await _mk_entry(db_session, project_id=project.id, content="x")
+
+        resp = await client.put(
+            f"/api/v1/projects/{project.id}/entries/{entry.id}",
+            headers=auth_headers,
+            json={"dismissed": True},
+        )
+        assert resp.status_code == 200
+
+        audit = await self._read_audit(db_session, entry.id)
+        assert audit["dismissed_at"] is not None
+        assert audit["dismissed_by"] == test_user.id
+        assert audit["dismissed_reason"] is None
+
+    @pytest.mark.asyncio
+    async def test_dismiss_is_idempotent_preserves_first_audit(
+        self, client, auth_headers: dict, db_session: AsyncSession, test_user
+    ):
+        """Re-dismissing an already-dismissed entry is a 200 no-op. The
+        FIRST dismissal's timestamp + dismisser are preserved — the audit
+        trail records when the entry was retired, not the latest no-op.
+        """
+        project = await _own_project_for_user(db_session, test_user.id)
+        entry = await _mk_entry(db_session, project_id=project.id, content="x")
+
+        first = await client.put(
+            f"/api/v1/projects/{project.id}/entries/{entry.id}",
+            headers=auth_headers,
+            json={"dismissed": True, "reason": "first reason"},
+        )
+        assert first.status_code == 200
+        first_audit = await self._read_audit(db_session, entry.id)
+
+        # Re-dismiss without changing anything — same row.
+        second = await client.put(
+            f"/api/v1/projects/{project.id}/entries/{entry.id}",
+            headers=auth_headers,
+            json={"dismissed": True},
+        )
+        assert second.status_code == 200
+        second_audit = await self._read_audit(db_session, entry.id)
+        assert second_audit["dismissed_at"] == first_audit["dismissed_at"], (
+            "second dismiss must preserve the original timestamp"
+        )
+        assert second_audit["dismissed_by"] == first_audit["dismissed_by"]
+        assert second_audit["dismissed_reason"] == "first reason"
+
+    @pytest.mark.asyncio
+    async def test_re_dismiss_with_new_reason_updates_reason_only(
+        self, client, auth_headers: dict, db_session: AsyncSession, test_user
+    ):
+        """If the caller provides a new reason on re-dismiss, the reason
+        updates but the timestamp + dismisser stay anchored to the first
+        dismissal."""
+        project = await _own_project_for_user(db_session, test_user.id)
+        entry = await _mk_entry(db_session, project_id=project.id, content="x")
+
+        await client.put(
+            f"/api/v1/projects/{project.id}/entries/{entry.id}",
+            headers=auth_headers,
+            json={"dismissed": True, "reason": "first"},
+        )
+        first_audit = await self._read_audit(db_session, entry.id)
+
+        await client.put(
+            f"/api/v1/projects/{project.id}/entries/{entry.id}",
+            headers=auth_headers,
+            json={"dismissed": True, "reason": "second — better rationale"},
+        )
+        audit = await self._read_audit(db_session, entry.id)
+        assert audit["dismissed_reason"] == "second — better rationale"
+        assert audit["dismissed_at"] == first_audit["dismissed_at"]
+
+    @pytest.mark.asyncio
+    async def test_undismiss_clears_audit(
+        self, client, auth_headers: dict, db_session: AsyncSession, test_user
+    ):
+        project = await _own_project_for_user(db_session, test_user.id)
+        entry = await _mk_entry(db_session, project_id=project.id, content="x")
+
+        await client.put(
+            f"/api/v1/projects/{project.id}/entries/{entry.id}",
+            headers=auth_headers,
+            json={"dismissed": True, "reason": "wrong"},
+        )
+        # Now un-dismiss.
+        resp = await client.put(
+            f"/api/v1/projects/{project.id}/entries/{entry.id}",
+            headers=auth_headers,
+            json={"dismissed": False},
+        )
+        assert resp.status_code == 200
+
+        audit = await self._read_audit(db_session, entry.id)
+        assert audit["dismissed"] is False
+        assert audit["dismissed_at"] is None
+        assert audit["dismissed_by"] is None
+        assert audit["dismissed_reason"] is None
+
+    @pytest.mark.asyncio
+    async def test_dismiss_reason_length_capped_at_500(
+        self, client, auth_headers: dict, db_session: AsyncSession, test_user
+    ):
+        project = await _own_project_for_user(db_session, test_user.id)
+        entry = await _mk_entry(db_session, project_id=project.id, content="x")
+
+        resp = await client.put(
+            f"/api/v1/projects/{project.id}/entries/{entry.id}",
+            headers=auth_headers,
+            json={"dismissed": True, "reason": "x" * 501},
+        )
+        assert resp.status_code == 422, resp.text
+
+    @pytest.mark.asyncio
+    async def test_dismiss_whitespace_reason_normalized_to_null(
+        self, client, auth_headers: dict, db_session: AsyncSession, test_user
+    ):
+        """Codex round 2 finding: server must normalize whitespace-only
+        reasons to None, not just the MCP client. A direct API caller
+        shouldn't be able to persist '   ' as dismissed_reason."""
+        project = await _own_project_for_user(db_session, test_user.id)
+        entry = await _mk_entry(db_session, project_id=project.id, content="x")
+
+        resp = await client.put(
+            f"/api/v1/projects/{project.id}/entries/{entry.id}",
+            headers=auth_headers,
+            json={"dismissed": True, "reason": "   \t\n  "},
+        )
+        assert resp.status_code == 200, resp.text
+
+        audit = await self._read_audit(db_session, entry.id)
+        assert audit["dismissed_reason"] is None, (
+            f"whitespace-only reason should normalize to NULL, got "
+            f"{audit['dismissed_reason']!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_re_dismiss_with_blank_reason_preserves_real_reason(
+        self, client, auth_headers: dict, db_session: AsyncSession, test_user
+    ):
+        """Critical Codex round 2 case: a re-dismiss with a whitespace
+        reason must NOT clobber a previously-recorded real reason. The
+        validator collapses '   ' to None, which falls into the no-op
+        re-dismiss branch (doesn't touch dismissed_reason)."""
+        project = await _own_project_for_user(db_session, test_user.id)
+        entry = await _mk_entry(db_session, project_id=project.id, content="x")
+
+        # First dismiss with a real reason
+        await client.put(
+            f"/api/v1/projects/{project.id}/entries/{entry.id}",
+            headers=auth_headers,
+            json={"dismissed": True, "reason": "Reverted in retro"},
+        )
+        # Second dismiss with whitespace — must not overwrite
+        resp = await client.put(
+            f"/api/v1/projects/{project.id}/entries/{entry.id}",
+            headers=auth_headers,
+            json={"dismissed": True, "reason": "   "},
+        )
+        assert resp.status_code == 200
+
+        audit = await self._read_audit(db_session, entry.id)
+        assert audit["dismissed_reason"] == "Reverted in retro", (
+            f"blank-reason re-dismiss must not clobber real rationale, "
+            f"got {audit['dismissed_reason']!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_dismiss_reason_leading_trailing_whitespace_stripped(
+        self, client, auth_headers: dict, db_session: AsyncSession, test_user
+    ):
+        """Reasons with leading/trailing whitespace land trimmed in the
+        DB. Saves reviewers from copy-paste artefacts."""
+        project = await _own_project_for_user(db_session, test_user.id)
+        entry = await _mk_entry(db_session, project_id=project.id, content="x")
+
+        await client.put(
+            f"/api/v1/projects/{project.id}/entries/{entry.id}",
+            headers=auth_headers,
+            json={"dismissed": True, "reason": "  Reverted in retro  "},
+        )
+        audit = await self._read_audit(db_session, entry.id)
+        assert audit["dismissed_reason"] == "Reverted in retro"
+
+    def test_dismiss_route_acquires_row_lock(self):
+        """Static contract check: the dismiss route must call
+        `.with_for_update()` on the KnowledgeEntry lookup. Codex round 1
+        flagged the audit-row race; this test pins the fix so a future
+        refactor that drops the lock fails CI even when running on
+        SQLite (where FOR UPDATE is a no-op behaviourally).
+
+        The behavioural test below proves serialised behaviour under
+        concurrent dispatch; this test proves the lock is wired so the
+        behaviour holds on PostgreSQL too.
+        """
+        import inspect
+
+        from sessionfs.server.routes import knowledge as knowledge_routes
+
+        src = inspect.getsource(knowledge_routes.dismiss_entry)
+        assert ".with_for_update()" in src, (
+            "dismiss_entry must SELECT FOR UPDATE the entry row before "
+            "branching on entry.dismissed — without the lock two "
+            "concurrent dismissals can both take the first-dismiss path "
+            "and the second commit overwrites the first audit row"
+        )
+        # The lock must come BEFORE the dismissed-state branch, otherwise
+        # we've read stale data and the lock is decorative.
+        lock_idx = src.index(".with_for_update()")
+        branch_idx = src.index("if body.dismissed and not entry.dismissed")
+        assert lock_idx < branch_idx, (
+            "with_for_update() must be acquired before reading "
+            "entry.dismissed — otherwise the lock guards the wrong scope"
+        )
+
+    @pytest.mark.asyncio
+    async def test_concurrent_dismiss_preserves_first_audit_row(
+        self, client, auth_headers: dict, db_session: AsyncSession, test_user
+    ):
+        """Behavioural: fire N concurrent dismisses at the same entry and
+        confirm the audit row is preserved. SQLite serialises writes via
+        the GIL + connection-level locking, so the FOR UPDATE clause is a
+        no-op here — but the contract still holds: only one of the
+        racing requests can win the first-dismiss branch, the others
+        must hit the no-op or new-reason-only branch.
+
+        On PostgreSQL the row lock provides true serialisation; this
+        test runs on the in-memory aiosqlite engine and is a smoke check
+        that the dispatch path doesn't crash under contention. The
+        static `test_dismiss_route_acquires_row_lock` test above is what
+        proves the PG-side guarantee.
+        """
+        import asyncio
+
+        project = await _own_project_for_user(db_session, test_user.id)
+        entry = await _mk_entry(db_session, project_id=project.id, content="x")
+
+        # Fire 5 concurrent dismisses, each with a different reason.
+        # All but one are expected to land in either the idempotent
+        # branch (preserving the first reason) or the new-reason-only
+        # branch (which preserves the first timestamp + dismisser).
+        async def _dismiss(reason: str):
+            return await client.put(
+                f"/api/v1/projects/{project.id}/entries/{entry.id}",
+                headers=auth_headers,
+                json={"dismissed": True, "reason": reason},
+            )
+
+        results = await asyncio.gather(
+            *(_dismiss(f"reason-{i}") for i in range(5)),
+            return_exceptions=True,
+        )
+        # All requests must return 200. Errors here would indicate the
+        # lock interacted badly with the async session pool.
+        for r in results:
+            assert not isinstance(r, Exception), f"concurrent dispatch raised: {r!r}"
+            assert r.status_code == 200, r.text
+
+        audit = await self._read_audit(db_session, entry.id)
+        assert audit["dismissed"] is True
+        assert audit["dismissed_at"] is not None
+        assert audit["dismissed_by"] == test_user.id
+        # The reason must be one of the 5 we sent — never NULL, never a
+        # half-written value. We don't pin which reason wins (the
+        # contract is "ONE of them", not "the first by wall-clock").
+        assert audit["dismissed_reason"] in {f"reason-{i}" for i in range(5)}, (
+            f"audit row corrupted under contention: {audit['dismissed_reason']!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_dismissed_entry_excluded_from_compile(
+        self, client, auth_headers: dict, db_session: AsyncSession, test_user
+    ):
+        """Dismissed entries must not appear in pending entries — confirms
+        dismiss actually removes the entry from the compile path."""
+        project = await _own_project_for_user(db_session, test_user.id)
+        entry = await _mk_entry(
+            db_session, project_id=project.id, content="will be dismissed"
+        )
+
+        # Verify it's pending first
+        pending_before = await client.get(
+            f"/api/v1/projects/{project.id}/entries?pending=true",
+            headers=auth_headers,
+        )
+        assert any(e["id"] == entry.id for e in pending_before.json())
+
+        # Dismiss
+        await client.put(
+            f"/api/v1/projects/{project.id}/entries/{entry.id}",
+            headers=auth_headers,
+            json={"dismissed": True, "reason": "stale"},
+        )
+
+        # Verify it's no longer pending
+        pending_after = await client.get(
+            f"/api/v1/projects/{project.id}/entries?pending=true",
+            headers=auth_headers,
+        )
+        assert not any(e["id"] == entry.id for e in pending_after.json())

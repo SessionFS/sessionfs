@@ -69,6 +69,8 @@ All SessionFS server environment variables use the `SFS_` prefix.
 |----------|-------------|---------|
 | `SFS_MAX_SYNC_BYTES_FREE` | Max sync payload for free tier | `52428800` (50 MB) |
 | `SFS_MAX_SYNC_BYTES_PAID` | Max sync payload for paid tier | `314572800` (300 MB) |
+| `SFS_MAX_SYNC_MEMBER_BYTES_FREE` | Per-file cap inside a session archive for free tier. Long AI sessions (8000+ messages) typically have a single `messages.jsonl` file at this scale | `10485760` (10 MB) |
+| `SFS_MAX_SYNC_MEMBER_BYTES_PAID` | Per-file cap inside a session archive for paid tiers (Pro/Team/Enterprise). The CLI also reads this env var to size its local pre-flight check | `52428800` (50 MB) |
 | `SFS_RETENTION_DAYS_FREE` | Cloud retention for free tier | `14` |
 
 ## GitHub App

@@ -119,13 +119,13 @@ class TestFindRelated:
 
 
 class TestToolRegistryV0996:
-    """The 7 new Tier A tools are registered with proper schemas and the
-    MCP-over-CLI guidance string. Tool count totals 21."""
+    """Tier A read tools (v0.9.9.6) + dismiss_knowledge_entry (v0.9.9.7).
+    Tool count totals 22."""
 
-    def test_tool_count_is_21(self):
+    def test_tool_count_is_22(self):
         from sessionfs.mcp.server import _TOOLS
-        assert len(_TOOLS) == 21, (
-            f"Expected 21 MCP tools after v0.9.9.6 Tier A, got {len(_TOOLS)}"
+        assert len(_TOOLS) == 22, (
+            f"Expected 22 MCP tools after v0.9.9.7 dismiss tool, got {len(_TOOLS)}"
         )
 
     def test_new_tools_registered(self):
@@ -133,6 +133,7 @@ class TestToolRegistryV0996:
 
         names = {t.name for t in _TOOLS}
         for new_tool in (
+            # v0.9.9.6 Tier A
             "get_knowledge_entry",
             "list_knowledge_entries",
             "get_wiki_page",
@@ -140,6 +141,8 @@ class TestToolRegistryV0996:
             "get_context_section",
             "get_session_provenance",
             "compile_knowledge_base",
+            # v0.9.9.7 audited write
+            "dismiss_knowledge_entry",
         ):
             assert new_tool in names, f"Missing MCP tool: {new_tool}"
 
@@ -156,6 +159,7 @@ class TestToolRegistryV0996:
             "get_context_section",
             "get_session_provenance",
             "compile_knowledge_base",
+            "dismiss_knowledge_entry",
         }
         for tool in _TOOLS:
             if tool.name in new_tool_names:
@@ -263,6 +267,28 @@ class TestNewToolDispatch:
                     "entries_compiled": 0, "compiled_at": "2026-05-10T00:00:00Z",
                     "context_words_before": 0, "context_words_after": 0,
                     "section_pages_updated": 0, "concept_pages_updated": 0,
+                })
+
+            async def put(self, url, *, json=None, headers=None):
+                captured["method"] = "PUT"
+                captured["url"] = url
+                captured["json"] = json
+                captured["headers"] = headers or {}
+                # Shape mirrors KnowledgeEntryResponse including the
+                # v0.9.9.7 audit triple.
+                return _FakeResponse(200, {
+                    "id": 42,
+                    "project_id": "proj_test",
+                    "session_id": "ses_x",
+                    "user_id": "u",
+                    "entry_type": "decision",
+                    "content": "...",
+                    "confidence": 0.8,
+                    "created_at": "2026-05-10T00:00:00Z",
+                    "dismissed": True,
+                    "dismissed_at": "2026-05-10T00:00:00Z",
+                    "dismissed_by": "u",
+                    "dismissed_reason": "stale",
                 })
 
         monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
@@ -379,3 +405,50 @@ class TestNewToolDispatch:
         assert "context_words_after" in result
         assert "section_pages_updated" in result
         assert "concept_pages_updated" in result
+
+    @pytest.mark.asyncio
+    async def test_dispatch_dismiss_knowledge_entry(self, fake_resolver, fake_httpx, captured):
+        result = await mcp_server._handle_dismiss_knowledge_entry({
+            "id": 42,
+            "reason": "stale",
+        })
+        assert captured["method"] == "PUT"
+        assert captured["url"] == "https://api.test/api/v1/projects/proj_test/entries/42"
+        assert captured["json"] == {"dismissed": True, "reason": "stale"}
+        # Audit triple is surfaced in the response so agents can confirm
+        # what was recorded — Codex round 1 finding (v0.9.9.7).
+        assert result["dismissed"] is True
+        assert result["dismissed_by"] == "u"
+        assert result["dismissed_reason"] == "stale"
+        assert result["dismissed_at"]
+
+    @pytest.mark.asyncio
+    async def test_dispatch_dismiss_knowledge_entry_undismiss(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        await mcp_server._handle_dismiss_knowledge_entry({
+            "id": 42,
+            "undismiss": True,
+        })
+        # When undismiss=True, body must send dismissed=False (no reason).
+        assert captured["json"] == {"dismissed": False}
+
+    @pytest.mark.asyncio
+    async def test_dispatch_dismiss_knowledge_entry_validates_id(
+        self, fake_resolver, fake_httpx
+    ):
+        result = await mcp_server._handle_dismiss_knowledge_entry({})
+        assert "error" in result
+        assert "positive integer" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_dispatch_dismiss_knowledge_entry_strips_blank_reason(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        """A whitespace-only reason should not land in the request body —
+        the audit field would be useless."""
+        await mcp_server._handle_dismiss_knowledge_entry({
+            "id": 42,
+            "reason": "   ",
+        })
+        assert "reason" not in captured["json"]

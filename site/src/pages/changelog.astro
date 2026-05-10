@@ -17,14 +17,38 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.9.9.6 -->
+      <!-- v0.9.9.7 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
-            <span class="text-brand font-semibold">v0.9.9.6</span>
+            <span class="text-brand font-semibold">v0.9.9.7</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">May 10, 2026</span>
           <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Tier-Aware Sync Caps, dismiss_knowledge_entry MCP Tool, KB Performance Indexes</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Tier-aware per-member sync size cap</strong> — free / starter capped at 10 MB per archive member, pro / team / enterprise at 50 MB. New env vars <span class="font-mono text-accent text-sm">SFS_MAX_SYNC_MEMBER_BYTES_FREE</span> and <span class="font-mono text-accent text-sm">SFS_MAX_SYNC_MEMBER_BYTES_PAID</span> for self-hosted overrides. Oversized members surface SyncTooLargeError with actionable guidance.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>dismiss_knowledge_entry MCP tool</strong> — 22nd MCP tool. Idempotent (calling twice is a safe no-op) with full audit triple: dismissed_at, dismissed_by, dismissed_reason. PUT /entries/&#123;id&#125; now SELECT FOR UPDATE locks the row so concurrent dismissals can't tear the audit record.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Concept compiler bulk prefetch</strong> — collapsed an N+1 (concept candidates &times; claims) into 1 + 1 + 1 queries. Compile times on knowledge-rich projects drop from seconds to milliseconds.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Handoff list batching + recipient_email_normalized index</strong> — migration 032. Inbox query plan no longer N+1 over recipients; large org inboxes load in a single round trip.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>KnowledgeEntry composite indexes</strong> — migration 033 adds covering indexes for the list / pending / cursor pagination paths. Default-sort list_entries with high-volume projects is now bounded-time.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Dismissal audit columns on knowledge_entries</strong> — migration 031 makes dismissed_at / dismissed_by / dismissed_reason first-class so dashboard and audit reports can show "who dismissed this and why" without recomputing from history.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Helm chart 3-segment SemVer fix</strong> — chart version goes 0.9.9.6 to 0.9.10 (4-segment chart versions are invalid SemVer in Helm). appVersion bumped to 0.9.9.7.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Security</strong> — pip-audit advisories cleared and dashboard postcss bumped (transitive npm advisory fix).</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">1,300 backend tests + 109 dashboard UI tests passing &middot; 33 migrations &middot; 22 MCP tools</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.9.9.6 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.9.9.6</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">May 10, 2026</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">MCP Tier A Read Surface, Tier-Aware Knowledge Rate Limits, Compile Race Fix</h2>
         <ul class="space-y-2 text-base text-muted">

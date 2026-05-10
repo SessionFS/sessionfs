@@ -136,6 +136,7 @@ const MCP_KNOWLEDGE_WRITE: McpTool[] = [
   { name: 'update_wiki_page', desc: 'Create or update a wiki page' },
   { name: 'list_wiki_pages', desc: 'Browse the wiki structure' },
   { name: 'compile_knowledge_base', desc: 'Trigger a compile pass (heavy, mutating)' },
+  { name: 'dismiss_knowledge_entry', desc: 'Retire a wrong/stale entry with audited reason' },
 ];
 
 const MCP_RULES: McpTool[] = [

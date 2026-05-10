@@ -151,7 +151,7 @@ describe('HelpPage', () => {
     expect(screen.getByText('sfs project edit')).toBeInTheDocument();
   });
 
-  it('lists all 21 MCP tools', () => {
+  it('lists all 22 MCP tools', () => {
     renderPage();
     const expected = [
       // Session tools (7)
@@ -171,11 +171,12 @@ describe('HelpPage', () => {
       'get_knowledge_entry',
       'get_knowledge_health',
       'ask_project',
-      // Knowledge write (4)
+      // Knowledge write (5)
       'add_knowledge',
       'update_wiki_page',
       'list_wiki_pages',
       'compile_knowledge_base',
+      'dismiss_knowledge_entry',
       // Rules (2)
       'get_rules',
       'get_compiled_rules',

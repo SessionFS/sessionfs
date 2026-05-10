@@ -211,7 +211,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
-**v0.9.9.6 — Public Beta.** 1279 backend tests + 109 dashboard tests passing. 30 database migrations.
+**v0.9.9.7 — Public Beta.** 1300 backend tests + 109 dashboard tests passing. 33 database migrations.
 
 ### Session capture, resume, and search
 
