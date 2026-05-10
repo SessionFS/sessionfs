@@ -632,7 +632,7 @@ def handoff(
 ) -> None:
     """Hand off a session to another user (push + email notification)."""
     from sessionfs.sync.archive import pack_session
-    from sessionfs.sync.client import SyncConflictError
+    from sessionfs.sync.client import SyncConflictError, SyncDeletedError
 
     store = open_store()
     client = _get_sync_client()
@@ -688,6 +688,15 @@ def handoff(
             err_console.print(f"[red]Handoff failed: {resp.text}[/red]")
             raise SystemExit(1)
 
+    except SyncDeletedError:
+        from sessionfs.sync.deleted_cleanup import cleanup_deleted_session
+        cleanup_deleted_session(full_id, session_dir, store)
+        err_console.print(
+            f"[yellow]Session {full_id[:12]} has been deleted on the server.[/yellow]\n"
+            f"Local copy cleaned up. Cannot hand off a deleted session.\n"
+            f"Restore with: sfs restore {full_id}"
+        )
+        raise SystemExit(1)
     except SyncConflictError:
         err_console.print("[red]Conflict pushing session. Pull latest first.[/red]")
         raise SystemExit(1)
