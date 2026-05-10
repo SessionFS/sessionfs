@@ -254,14 +254,29 @@ class SyncClient:
                 error = body.get("error", {})
                 message = error.get("message", resp.text) if isinstance(error, dict) else str(error)
             except Exception:
+                body = {}
                 message = resp.text
 
             if "Member too large" in message or resp.status_code == 413:
+                # Prefer the server's structured detail (which includes
+                # tier-aware suggestion text) when available — otherwise
+                # fall back to a generic message that matches the legacy
+                # contract. Server detail since v0.9.9.7 carries:
+                # detail.message, detail.suggestion, detail.limit_bytes.
+                detail = body.get("detail") if isinstance(body, dict) else None
+                if isinstance(detail, dict) and detail.get("message"):
+                    server_msg = detail["message"]
+                    suggestion = detail.get("suggestion") or (
+                        "Try /compact in your AI tool to start a fresh session."
+                    )
+                    raise SyncTooLargeError(
+                        session_id, f"{server_msg} {suggestion}"
+                    )
                 raise SyncTooLargeError(
                     session_id,
                     f"Session too large to sync ({len(archive_data) // (1024*1024)}MB). "
                     f"This session exceeds the upload limit. "
-                    f"Try: /clear or /compact in your AI tool to start a fresh session."
+                    f"Try /compact in your AI tool to start a fresh session."
                 )
 
             raise SyncError(f"Push failed ({resp.status_code}): {message}")

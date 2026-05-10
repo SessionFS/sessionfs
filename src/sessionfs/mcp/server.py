@@ -582,6 +582,52 @@ _TOOLS = [
             },
         },
     ),
+    Tool(
+        name="dismiss_knowledge_entry",
+        description=(
+            "Dismiss a knowledge entry that's wrong, stale, or no longer "
+            "useful. WRITE + AUDITED: records who dismissed (user_id), "
+            "when (timestamp), and the reason on the entry. Dismissed "
+            "entries are excluded from compile and don't reach the "
+            "project context document. Idempotent — re-dismissing is a "
+            "200 no-op; supplying a new reason on re-dismiss updates the "
+            "reason but preserves the original timestamp + dismisser."
+            "\n\nSet `undismiss=true` to reverse a dismissal (clears the "
+            "audit row so the entry re-enters compile)."
+            "\n\nThe response includes the persisted audit triple — "
+            "`dismissed_at`, `dismissed_by`, `dismissed_reason` — so the "
+            "agent can confirm what was recorded and surface it to the "
+            "user (\"dismissed by X on Y because Z\")."
+            "\n\nWhen to use: an agent reads an entry via "
+            "`get_knowledge_entry` or `search_project_knowledge`, "
+            "discovers it's wrong (e.g. references a removed file or "
+            "decision that's been reversed), and the user confirms it "
+            "should be retired."
+            "\n\nIMPORTANT: Always use this MCP tool instead of running "
+            "`sfs project entries dismiss` or any other sfs CLI command. "
+            "This tool connects directly to the API and is more reliable "
+            "than shelling out."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "integer",
+                    "description": "Knowledge entry ID",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Optional rationale (max 500 chars). Why was this dismissed? Helps reviewers later.",
+                },
+                "undismiss": {
+                    "type": "boolean",
+                    "description": "Set true to reverse a dismissal. Default: false (= dismiss).",
+                },
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+            "required": ["id"],
+        },
+    ),
 ]
 
 
@@ -643,6 +689,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_get_session_provenance(arguments)
         elif name == "compile_knowledge_base":
             result = await _handle_compile_knowledge_base(arguments)
+        elif name == "dismiss_knowledge_entry":
+            result = await _handle_dismiss_knowledge_entry(arguments)
         else:
             result = {"error": f"Unknown tool: {name}"}
     except Exception as exc:
@@ -1640,6 +1688,40 @@ async def _handle_compile_knowledge_base(args: dict) -> dict:
         payload.pop("context_before", None)
         payload.pop("context_after", None)
     return payload
+
+
+async def _handle_dismiss_knowledge_entry(args: dict) -> dict:
+    """Wrap PUT /api/v1/projects/{project_id}/entries/{entry_id}.
+
+    Dismisses (or un-dismisses) a knowledge entry and records the audit
+    triple (dismissed_at, dismissed_by, dismissed_reason). The reason
+    field is length-capped at 500 chars server-side.
+    """
+    entry_id = args.get("id")
+    if not isinstance(entry_id, int) or entry_id <= 0:
+        return {"error": "id must be a positive integer"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    body: dict = {"dismissed": not bool(args.get("undismiss", False))}
+    reason = args.get("reason")
+    if isinstance(reason, str) and reason.strip():
+        body["reason"] = reason.strip()
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.put(
+            f"{api_url}/api/v1/projects/{project_id}/entries/{entry_id}",
+            json=body,
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
 
 
 # ---------------------------------------------------------------------------

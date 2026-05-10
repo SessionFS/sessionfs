@@ -21,10 +21,17 @@ from sessionfs.cli.common import (
 auth_app = typer.Typer(name="auth", help="Authentication for cloud sync.")
 
 
-# Mirror the server-side cap (sessions.MAX_SYNC_MEMBER_SIZE). We check locally
-# first so a 57MB messages.jsonl doesn't waste an upload only to come back as
-# a 413 from the server.
-MAX_MEMBER_SIZE = 10 * 1024 * 1024
+# Mirror the server-side cap so we can fail fast and skip wasted uploads.
+# The CLI doesn't know the user's tier locally, so we pre-flight against the
+# more permissive paid-tier cap (50 MB by default). If the user is actually
+# on free tier, the server returns its own structured 413 and the CLI
+# surfaces the message verbatim — both error paths print the same actionable
+# guidance, so users on either tier get a useful response. Override with
+# SFS_MAX_SYNC_MEMBER_BYTES_PAID when the deployment uses a non-default cap.
+import os as _os
+MAX_MEMBER_SIZE = int(
+    _os.environ.get("SFS_MAX_SYNC_MEMBER_BYTES_PAID", str(50 * 1024 * 1024))
+)
 
 
 def _find_oversized_member(archive_data: bytes) -> tuple[str, int] | None:
@@ -342,10 +349,11 @@ def push(
             name, size = oversized
             err_console.print(
                 f"[red]Session too large to push:[/red] '{name}' is "
-                f"{size // (1024 * 1024)}MB (limit "
-                f"{MAX_MEMBER_SIZE // (1024 * 1024)}MB).\n"
-                f"[yellow]Try /clear or /compact in your AI tool to shrink the session, "
-                f"then push again.[/yellow]"
+                f"{size // (1024 * 1024)}MB (server hard cap "
+                f"{MAX_MEMBER_SIZE // (1024 * 1024)}MB per file).\n"
+                f"[yellow]Try /compact in your AI tool to start a fresh "
+                f"session, then push again. Free tier has a tighter "
+                f"{10}MB cap; Pro/Team/Enterprise get the full {MAX_MEMBER_SIZE // (1024 * 1024)}MB.[/yellow]"
             )
             raise SystemExit(1)
 
@@ -689,15 +697,16 @@ def handoff(
         archive_data = pack_session(session_dir)
 
         # Pre-upload oversize check — same gate as `sfs push` so we catch
-        # the 10MB-per-file cap locally and give the user an actionable
-        # message before wasting bandwidth on a guaranteed-413 upload.
+        # the per-file cap locally and give the user an actionable message
+        # before wasting bandwidth on a guaranteed-413 upload.
         oversized = _find_oversized_member(archive_data)
         if oversized is not None:
             name, size = oversized
             err_console.print(
-                f"[red]Session too large to hand off: {name} is "
-                f"{size // (1024 * 1024)}MB, exceeds {MAX_MEMBER_SIZE // (1024 * 1024)}MB limit.[/red]\n"
-                f"Try /clear or /compact in your AI tool to start a fresh session, "
+                f"[red]Session too large to hand off:[/red] '{name}' is "
+                f"{size // (1024 * 1024)}MB (server hard cap "
+                f"{MAX_MEMBER_SIZE // (1024 * 1024)}MB per file).\n"
+                f"Try /compact in your AI tool to start a fresh session, "
                 f"then re-run sfs handoff."
             )
             raise SystemExit(1)

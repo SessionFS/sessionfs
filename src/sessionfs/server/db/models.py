@@ -116,6 +116,11 @@ class Handoff(Base):
         Index("idx_handoffs_session_id", "session_id"),
         Index("idx_handoffs_sender_id", "sender_id"),
         Index("idx_handoffs_recipient_email", "recipient_email"),
+        # Inbox lookups filter by lower(recipient_email); the raw column
+        # index above won't be used by that predicate. The normalized
+        # column is populated at write time (route layer) and indexed so
+        # inbox queries hit it directly. See migration 032.
+        Index("idx_handoffs_recipient_email_normalized", "recipient_email_normalized"),
         Index("idx_handoffs_status", "status"),
     )
 
@@ -127,6 +132,13 @@ class Handoff(Base):
         String(36), ForeignKey("users.id"), nullable=False
     )
     recipient_email: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Lowercased copy of recipient_email used for case-insensitive lookups.
+    # Backfilled from existing rows by migration 032 and kept in sync at
+    # write time by the handoff create route. Nullable on legacy rows
+    # only; new rows always populate it.
+    recipient_email_normalized: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
     recipient_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("users.id"), nullable=True
     )
@@ -471,6 +483,32 @@ class KnowledgeEntry(Base):
         Index("idx_ke_project", "project_id"),
         Index("idx_ke_session", "session_id"),
         Index("idx_ke_type", "project_id", "entry_type"),
+        # v0.9.9.7 perf-3: list_entries filters and sorts on these columns
+        # but only project_id was indexed. Composites added by migration
+        # 033 cover the default listing path, the pending-compile path,
+        # and the keyset cursor scan order.
+        Index(
+            "idx_ke_listing",
+            "project_id",
+            "dismissed",
+            "claim_class",
+            "freshness_class",
+        ),
+        Index(
+            "idx_ke_pending",
+            "project_id",
+            "compiled_at",
+            "dismissed",
+        ),
+        # Cursor pagination path: WHERE project_id=? AND id < cursor ORDER BY
+        # created_at DESC, id DESC LIMIT N. The id-DESC tail is intrinsic
+        # since id is the primary key — leading with (project_id, created_at)
+        # is what the planner needs to skip the heap scan.
+        Index(
+            "idx_ke_cursor",
+            "project_id",
+            "created_at",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -486,6 +524,12 @@ class KnowledgeEntry(Base):
     )
     compiled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     dismissed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # Audit fields for dismissals (migration 031). Populated when an entry
+    # is dismissed via the dismiss endpoint or MCP tool. NULL on legacy
+    # rows that were dismissed before the audit fields existed.
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    dismissed_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    dismissed_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_relevant_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     reference_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     superseded_by: Mapped[int | None] = mapped_column(Integer, nullable=True)

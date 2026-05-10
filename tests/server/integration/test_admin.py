@@ -236,6 +236,97 @@ async def test_delete_user(client: AsyncClient, admin_headers: dict, extra_user:
 
 
 @pytest.mark.asyncio
+async def test_delete_user_expires_legacy_mixed_case_handoffs(
+    client: AsyncClient,
+    admin_headers: dict,
+    db_session: AsyncSession,
+):
+    """Codex perf-2 round 2 finding: delete_user must expire pending
+    handoffs whose recipient_email is mixed-case OR has surrounding
+    whitespace OR pre-dates migration 032 (NULL normalized column).
+    Pre-fix: filter was raw `recipient_email == user.email`, which
+    silently missed legacy rows.
+    """
+    from sessionfs.server.db.models import Handoff
+
+    # Recipient with whitespace + mixed case in the raw column. Migration
+    # 032 has NOT been "run" against this row in the test (we set
+    # recipient_email_normalized to NULL explicitly to simulate the
+    # legacy state).
+    recipient = User(
+        id=str(uuid.uuid4()),
+        email="legacy@example.com",
+        tier="free",
+        email_verified=True,
+        created_at=datetime.now(timezone.utc),
+    )
+    db_session.add(recipient)
+    sender = User(
+        id=str(uuid.uuid4()),
+        email="sender@example.com",
+        tier="pro",
+        email_verified=True,
+        created_at=datetime.now(timezone.utc),
+    )
+    db_session.add(sender)
+    await db_session.commit()
+
+    # Need a session for the handoff FK
+    import hashlib
+
+    session_row = Session(
+        id=f"ses_{uuid.uuid4().hex[:16]}",
+        user_id=sender.id,
+        title="t",
+        tags="[]",
+        source_tool="claude-code",
+        blob_key="x",
+        blob_size_bytes=0,
+        etag=hashlib.sha256(b"x").hexdigest(),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+        uploaded_at=datetime.now(timezone.utc),
+    )
+    db_session.add(session_row)
+    await db_session.commit()
+
+    legacy_handoff = Handoff(
+        id=f"hnd_{uuid.uuid4().hex[:8]}",
+        session_id=session_row.id,
+        sender_id=sender.id,
+        # Mixed case + leading whitespace + NULL normalized — simulate
+        # a pre-migration row.
+        recipient_email="  Legacy@Example.COM  ",
+        recipient_email_normalized=None,
+        message="hi",
+        status="pending",
+        created_at=datetime.now(timezone.utc),
+        expires_at=datetime.now(timezone.utc),
+    )
+    db_session.add(legacy_handoff)
+    await db_session.commit()
+
+    # Now delete the recipient via admin endpoint
+    resp = await client.delete(
+        f"/api/v1/admin/users/{recipient.id}",
+        headers=admin_headers,
+    )
+    assert resp.status_code == 204
+
+    # Verify handoff was expired despite the mixed-case + whitespace
+    from sqlalchemy import select as _select
+    refreshed = (await db_session.execute(
+        _select(Handoff).where(Handoff.id == legacy_handoff.id)
+    )).scalar_one()
+    # SQLAlchemy may have a cached entity; force a re-read
+    await db_session.refresh(refreshed)
+    assert refreshed.status == "expired", (
+        f"legacy mixed-case handoff still pending after user delete: "
+        f"status={refreshed.status!r}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_delete_self_rejected(client: AsyncClient, admin_headers: dict, admin_user: User):
     resp = await client.delete(
         f"/api/v1/admin/users/{admin_user.id}",

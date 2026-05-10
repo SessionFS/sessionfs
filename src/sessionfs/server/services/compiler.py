@@ -975,60 +975,93 @@ async def auto_generate_concepts(
     created = []
     now = datetime.now(timezone.utc)
 
+    # ── Bulk prefetch (perf-1: candidates × active_claims → 1 + 1 + 1) ──
+    # Fetch the active-claim set ONCE before the loop. Each candidate
+    # filters this set in-memory by topic keywords, which is cheap.
+    active_result = await db.execute(
+        select(KnowledgeEntry).where(
+            KnowledgeEntry.project_id == project_id,
+            KnowledgeEntry.dismissed == False,  # noqa: E712
+            KnowledgeEntry.claim_class == "claim",
+            KnowledgeEntry.freshness_class.in_(["current", "aging"]),
+            KnowledgeEntry.superseded_by.is_(None),
+        )
+    )
+    active_claims: list[KnowledgeEntry] = list(active_result.scalars().all())
+
+    # Prefetch ALL existing concept pages for the project, keyed by slug.
+    candidate_slugs = [f"concept/{c['slug']}" for c in candidates]
+    pages_by_slug: dict[str, KnowledgePage] = {}
+    if candidate_slugs:
+        pages_result = await db.execute(
+            select(KnowledgePage).where(
+                KnowledgePage.project_id == project_id,
+                KnowledgePage.slug.in_(candidate_slugs),
+            )
+        )
+        pages_by_slug = {p.slug: p for p in pages_result.scalars().all()}
+
+    # Bulk-load existing links targeting any of those pages in ONE query
+    # instead of N per-page lookups. Group by page_id for the loop.
+    existing_page_ids = [p.id for p in pages_by_slug.values()]
+    links_by_page: dict[str, list[KnowledgeLink]] = {pid: [] for pid in existing_page_ids}
+    if existing_page_ids:
+        links_result = await db.execute(
+            select(KnowledgeLink).where(
+                KnowledgeLink.project_id == project_id,
+                KnowledgeLink.target_type == "page",
+                KnowledgeLink.target_id.in_(existing_page_ids),
+            )
+        )
+        for lk in links_result.scalars().all():
+            links_by_page.setdefault(lk.target_id, []).append(lk)
+
+    # Bulk-resolve which of the linked-entry ids are dismissed (across
+    # all pages) so the per-page "all dismissed?" check is a dict lookup.
+    all_linked_entry_ids: set[int] = set()
+    for lks in links_by_page.values():
+        for lk in lks:
+            if lk.source_type == "entry":
+                try:
+                    all_linked_entry_ids.add(int(lk.source_id))
+                except (TypeError, ValueError):
+                    continue
+    dismissed_entry_ids: set[int] = set()
+    if all_linked_entry_ids:
+        dismissed_result = await db.execute(
+            select(KnowledgeEntry.id).where(
+                KnowledgeEntry.id.in_(all_linked_entry_ids),
+                KnowledgeEntry.dismissed == True,  # noqa: E712
+            )
+        )
+        dismissed_entry_ids = {row[0] for row in dismissed_result.all()}
+
     for candidate in candidates:
         concept_slug = f"concept/{candidate['slug']}"
 
-        # Get active claims for this concept (search by topic keywords)
+        # Filter the prefetched active-claim set by topic keywords.
         topic_words = candidate["topic"].lower().split()
-        result = await db.execute(
-            select(KnowledgeEntry).where(
-                KnowledgeEntry.project_id == project_id,
-                KnowledgeEntry.dismissed == False,  # noqa: E712
-                KnowledgeEntry.claim_class == "claim",
-                KnowledgeEntry.freshness_class.in_(["current", "aging"]),
-                KnowledgeEntry.superseded_by.is_(None),
-            )
-        )
-        all_entries = list(result.scalars().all())
-        # Filter entries containing topic words
         matched_entries = [
-            e for e in all_entries
+            e for e in active_claims
             if any(w in e.content.lower() for w in topic_words if len(w) > 3)
         ]
         if not matched_entries:
-            matched_entries = all_entries[:10]
+            matched_entries = active_claims[:10]
 
-        # Check if page already exists — refresh or delete as needed
-        existing = await db.execute(
-            select(KnowledgePage).where(
-                KnowledgePage.project_id == project_id,
-                KnowledgePage.slug == concept_slug,
-            )
-        )
-        existing_page = existing.scalar_one_or_none()
+        existing_page = pages_by_slug.get(concept_slug)
 
         if existing_page:
-            # If all linked entries are dismissed, delete the concept page
-            linked_result = await db.execute(
-                select(KnowledgeLink).where(
-                    KnowledgeLink.project_id == project_id,
-                    KnowledgeLink.target_id == existing_page.id,
-                    KnowledgeLink.target_type == "page",
-                )
-            )
-            linked = list(linked_result.scalars().all())
+            # Use the prefetched links + dismissed-id set to decide whether
+            # the page should be deleted (all linked entries dismissed).
+            linked = links_by_page.get(existing_page.id, [])
             if linked:
                 linked_entry_ids = [
                     int(lk.source_id) for lk in linked if lk.source_type == "entry"
                 ]
                 if linked_entry_ids:
-                    dismissed_check = await db.execute(
-                        select(func.count(KnowledgeEntry.id)).where(
-                            KnowledgeEntry.id.in_(linked_entry_ids),
-                            KnowledgeEntry.dismissed == True,  # noqa: E712
-                        )
+                    dismissed_count = sum(
+                        1 for eid in linked_entry_ids if eid in dismissed_entry_ids
                     )
-                    dismissed_count = dismissed_check.scalar() or 0
                     if dismissed_count == len(linked_entry_ids):
                         # All linked entries dismissed — delete page and links
                         for lk in linked:
@@ -1065,16 +1098,10 @@ async def auto_generate_concepts(
             existing_page.updated_at = now
             page_id = existing_page.id
 
-            # Remove old links and recreate
-            old_links = await db.execute(
-                select(KnowledgeLink).where(
-                    KnowledgeLink.project_id == project_id,
-                    KnowledgeLink.target_id == page_id,
-                    KnowledgeLink.target_type == "page",
-                )
-            )
-            for old_link in old_links.scalars().all():
+            # Remove old links using the prefetched list — no extra round-trip.
+            for old_link in links_by_page.get(page_id, []):
                 await db.delete(old_link)
+            links_by_page[page_id] = []
         else:
             # Create knowledge page
             page_id = f"page_{uuid.uuid4().hex[:16]}"

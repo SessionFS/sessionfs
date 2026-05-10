@@ -166,6 +166,82 @@ async def test_inbox(
 
 
 @pytest.mark.asyncio
+async def test_inbox_finds_legacy_mixed_case_row_via_fallback(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    test_user,
+    pushed_session: str,
+):
+    """Codex perf-2 round 2 finding: inbox must surface legacy rows
+    where recipient_email_normalized is NULL and the raw column has
+    surrounding whitespace + mixed case. The OR-fallback predicate is
+    what catches them.
+    """
+    legacy = Handoff(
+        id=f"hnd_{uuid.uuid4().hex[:8]}",
+        session_id=pushed_session,
+        sender_id=test_user.id,
+        # Mixed case + whitespace + NULL normalized — matches the
+        # pre-migration-032 state of an existing row.
+        recipient_email=f"  {test_user.email.upper()}  ",
+        recipient_email_normalized=None,
+        message="legacy",
+        status="pending",
+        created_at=datetime.now(timezone.utc),
+        expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+    )
+    db_session.add(legacy)
+    await db_session.commit()
+
+    resp = await client.get("/api/v1/handoffs/inbox", headers=auth_headers)
+    assert resp.status_code == 200
+    ids = {h["id"] for h in resp.json()["handoffs"]}
+    assert legacy.id in ids, (
+        "inbox must find legacy handoff with mixed-case + whitespace "
+        "raw recipient_email when normalized column is NULL"
+    )
+
+
+@pytest.mark.asyncio
+async def test_inbox_missing_sender_renders_unknown_not_viewer(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    test_user,
+    pushed_session: str,
+):
+    """Codex perf-2 round 2 finding: when the sender User row is gone,
+    inbox must render sender_email='unknown', NOT the recipient's own
+    email. The pre-perf-2 N+1 path returned 'unknown'; the batched path
+    initially regressed to viewer_email — caught here.
+    """
+    ghost_sender_id = str(uuid.uuid4())  # No User row inserted for this id
+    handoff = Handoff(
+        id=f"hnd_{uuid.uuid4().hex[:8]}",
+        session_id=pushed_session,
+        sender_id=ghost_sender_id,
+        recipient_email=test_user.email,
+        recipient_email_normalized=test_user.email.lower(),
+        message="from a ghost",
+        status="pending",
+        created_at=datetime.now(timezone.utc),
+        expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+    )
+    db_session.add(handoff)
+    await db_session.commit()
+
+    resp = await client.get("/api/v1/handoffs/inbox", headers=auth_headers)
+    assert resp.status_code == 200
+    matched = [h for h in resp.json()["handoffs"] if h["id"] == handoff.id]
+    assert matched, "ghost-sender handoff should still be listed"
+    assert matched[0]["sender_email"] == "unknown", (
+        f"inbox must NOT use viewer email as sender fallback; got "
+        f"{matched[0]['sender_email']!r} for ghost sender"
+    )
+
+
+@pytest.mark.asyncio
 async def test_sent(
     client: AsyncClient, auth_headers: dict, pushed_session: str,
 ):

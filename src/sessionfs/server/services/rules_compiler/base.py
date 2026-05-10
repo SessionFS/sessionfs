@@ -52,6 +52,7 @@ Knowledge operations (write):
   update_wiki_page — create or update a wiki page
   list_wiki_pages — browse wiki structure
   compile_knowledge_base — HEAVY + MUTATING; do not call routinely
+  dismiss_knowledge_entry — retire a wrong/stale entry (audited; record reason)
 
 Session operations:
   search_sessions, get_session_context, list_recent_sessions,

@@ -338,15 +338,17 @@ def _build_oversized_archive(member_size: int = 11 * 1024 * 1024) -> bytes:
 
 
 @pytest.mark.asyncio
-async def test_sync_push_oversized_member_returns_413(
+async def test_sync_push_oversized_member_returns_413_for_paid_tier(
     client: AsyncClient, auth_headers: dict
 ):
-    """Pushing an archive whose messages.jsonl exceeds 10MB returns a
-    structured 413 (not a 500 / ValueError from deep in DLP).
+    """Pushing an archive whose messages.jsonl exceeds the paid-tier 50 MB
+    cap returns a structured 413 (not a 500 / ValueError from deep in DLP).
 
-    Regression for the Baptist Health 57MB session bug.
+    The default test_user fixture is tier='pro', so the cap that applies
+    here is the paid one. Free-tier behaviour is covered by the test
+    below. Regression for the Baptist Health 57MB session bug.
     """
-    archive = _build_oversized_archive()
+    archive = _build_oversized_archive(member_size=51 * 1024 * 1024)
     resp = await client.put(
         "/api/v1/sessions/ses_huge1234abcdef0/sync",
         headers=auth_headers,
@@ -364,18 +366,74 @@ async def test_sync_push_oversized_member_returns_413(
     assert isinstance(detail, dict), f"Detail should be structured, got: {detail!r}"
     assert detail.get("error") == "session_too_large"
     assert detail.get("file") == "messages.jsonl"
-    assert detail.get("size_bytes") == 11 * 1024 * 1024
-    assert detail.get("limit_bytes") == 10 * 1024 * 1024
-    assert "compact" in detail.get("suggestion", "").lower() or \
-           "clear" in detail.get("suggestion", "").lower()
+    assert detail.get("size_bytes") == 51 * 1024 * 1024
+    assert detail.get("limit_bytes") == 50 * 1024 * 1024
+    assert "compact" in detail.get("suggestion", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_sync_push_starter_tier_caps_at_10mb(
+    client: AsyncClient, db_session
+):
+    """A starter-tier user must be rejected at 11 MB — the paid 50 MB cap
+    only applies to pro/team/enterprise. Free tier can't sync at all
+    (cloud_sync is starter+), so starter is the smallest tier that
+    actually exercises the small per-member bucket. Tier resolution runs
+    through get_effective_tier so org membership inheritance is honoured.
+    """
+    import uuid as _uuid
+    from datetime import datetime as _dt, timezone as _tz
+
+    from sessionfs.server.auth.keys import (
+        generate_api_key as _gen_key,
+        hash_api_key as _hash_key,
+    )
+    from sessionfs.server.db.models import ApiKey as _ApiKey, User as _User
+
+    starter_user = _User(
+        id=str(_uuid.uuid4()),
+        email=f"starter_{_uuid.uuid4().hex[:8]}@example.com",
+        tier="starter",
+        email_verified=True,
+        created_at=_dt.now(_tz.utc),
+    )
+    db_session.add(starter_user)
+    await db_session.commit()
+    raw = _gen_key()
+    db_session.add(_ApiKey(
+        id=str(_uuid.uuid4()),
+        user_id=starter_user.id,
+        key_hash=_hash_key(raw),
+        name="starter-key",
+        created_at=_dt.now(_tz.utc),
+    ))
+    await db_session.commit()
+    starter_headers = {"Authorization": f"Bearer {raw}"}
+
+    archive = _build_oversized_archive(member_size=11 * 1024 * 1024)
+    resp = await client.put(
+        "/api/v1/sessions/ses_startercap1234/sync",
+        headers=starter_headers,
+        files={"file": ("session.tar.gz", io.BytesIO(archive), "application/gzip")},
+    )
+    assert resp.status_code == 413, resp.text[:200]
+    body = resp.json()
+    detail = body.get("detail", body.get("error", {}).get("details", body.get("error", body)))
+    if isinstance(detail, dict) and "detail" in detail:
+        detail = detail["detail"]
+    assert detail.get("limit_bytes") == 10 * 1024 * 1024, (
+        f"Starter tier should still cap at 10MB, got {detail}"
+    )
+    # Suggestion should mention upgrade for non-paid-bucket users
+    assert "upgrade" in detail.get("suggestion", "").lower()
 
 
 @pytest.mark.asyncio
 async def test_sync_push_at_limit_succeeds(
     client: AsyncClient, auth_headers: dict
 ):
-    """A session with each member <= 10MB still goes through fine."""
-    # 5MB messages.jsonl — well under the 10MB cap.
+    """A session well under the cap still goes through fine."""
+    # 5MB messages.jsonl — well under both 10MB and 50MB caps.
     archive = _build_oversized_archive(member_size=5 * 1024 * 1024)
     resp = await client.put(
         "/api/v1/sessions/ses_atlimit1234abcd/sync",
@@ -384,4 +442,23 @@ async def test_sync_push_at_limit_succeeds(
     )
     assert resp.status_code in (200, 201), (
         f"Expected success at the limit, got {resp.status_code}: {resp.text[:200]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_sync_push_paid_tier_at_30mb_succeeds(
+    client: AsyncClient, auth_headers: dict
+):
+    """Pro tier should accept a 30 MB messages.jsonl — the new headroom
+    the v0.9.9.7 bump was designed to give long Claude Code sessions."""
+    # 30 MB messages.jsonl — comfortably above the old 10 MB cap, well
+    # under the new 50 MB paid cap.
+    archive = _build_oversized_archive(member_size=30 * 1024 * 1024)
+    resp = await client.put(
+        "/api/v1/sessions/ses_paid30mb1234abc/sync",
+        headers=auth_headers,
+        files={"file": ("session.tar.gz", io.BytesIO(archive), "application/gzip")},
+    )
+    assert resp.status_code in (200, 201), (
+        f"Pro tier should accept 30MB member, got {resp.status_code}: {resp.text[:200]}"
     )

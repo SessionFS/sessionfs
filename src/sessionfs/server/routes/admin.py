@@ -237,12 +237,31 @@ async def delete_user(
         delete(OrgMember).where(OrgMember.user_id == user_id)
     )
 
-    # Expire pending handoffs sent to this user
-    await db.execute(
-        update(Handoff)
-        .where(Handoff.recipient_email == user.email, Handoff.status == "pending")
-        .values(status="expired")
-    )
+    # Expire pending handoffs sent to this user. Mirror the inbox lookup
+    # path: prefer the indexed normalized column, fall back to a
+    # case+whitespace-tolerant match on the raw column for legacy rows
+    # that pre-date migration 032's backfill. Without this, mixed-case
+    # legacy handoffs stay pending forever after user deletion.
+    from sqlalchemy import func as sa_func, or_
+    from sessionfs.server.routes.handoffs import normalize_email
+
+    user_email_norm = normalize_email(user.email)
+    if user_email_norm:
+        await db.execute(
+            update(Handoff)
+            .where(
+                or_(
+                    Handoff.recipient_email_normalized == user_email_norm,
+                    (Handoff.recipient_email_normalized.is_(None))
+                    & (
+                        sa_func.lower(sa_func.trim(Handoff.recipient_email))
+                        == user_email_norm
+                    ),
+                ),
+                Handoff.status == "pending",
+            )
+            .values(status="expired")
+        )
 
     await _log_action(db, admin.id, "delete_user", "user", user_id, {
         "email": user.email,

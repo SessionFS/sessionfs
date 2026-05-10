@@ -30,6 +30,19 @@ router = APIRouter(prefix="/api/v1/handoffs", tags=["handoffs"])
 HANDOFF_EXPIRY_DAYS = 7
 
 
+def normalize_email(value: str | None) -> str:
+    """Strip + lowercase. Single source of truth for handoff email keys.
+
+    Used at write time (recipient_email_normalized column), at read time
+    in the inbox legacy fallback, in admin cleanup, and in migration 032
+    backfill. Anywhere we compare emails for equality, route them
+    through here so the on-disk column matches what queries look for.
+    Returns "" (not None) so callers can compare directly without a
+    None-guard.
+    """
+    return (value or "").strip().lower()
+
+
 def _generate_handoff_id() -> str:
     """Generate a handoff ID like hnd_xxxxxxxxxx."""
     return f"hnd_{secrets.token_hex(8)}"
@@ -107,6 +120,12 @@ async def create_handoff(
         session_id=body.session_id,
         sender_id=user.id,
         recipient_email=body.recipient_email,
+        # Lowercased + stripped copy used by inbox lookups via the
+        # dedicated index (migration 032). Keep raw `recipient_email`
+        # for display. Routed through the shared helper so the runtime
+        # write path, the migration backfill, and admin cleanup all
+        # produce byte-identical keys.
+        recipient_email_normalized=normalize_email(body.recipient_email) or None,
         message=body.message,
         status="pending",
         created_at=now,
@@ -180,28 +199,42 @@ async def inbox(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List handoffs sent TO this user (matched by email, case-insensitive)."""
-    from sqlalchemy import func as sa_func
-    user_email_lower = (user.email or "").strip().lower()
+    """List handoffs sent TO this user (matched by email, case-insensitive).
+
+    Filters on the indexed `recipient_email_normalized` column added in
+    migration 032 — the legacy `lower(recipient_email)` predicate didn't
+    use the raw-column index. Fallback OR clause keeps pre-migration
+    rows reachable until the backfill catches them.
+    """
+    from sqlalchemy import func as sa_func, or_
+
+    user_email_lower = normalize_email(user.email)
     result = await db.execute(
         select(Handoff)
-        .where(sa_func.lower(Handoff.recipient_email) == user_email_lower)
+        .where(
+            or_(
+                Handoff.recipient_email_normalized == user_email_lower,
+                # Safety net for pre-migration rows where the normalized
+                # column is NULL. Migration 032 backfills these but a
+                # self-hosted deploy may not have run it yet. Match the
+                # raw column with the SAME normalization the runtime
+                # write path uses (strip + lower) so a row with leading
+                # whitespace doesn't slip past both predicates.
+                (Handoff.recipient_email_normalized.is_(None))
+                & (
+                    sa_func.lower(sa_func.trim(Handoff.recipient_email))
+                    == user_email_lower
+                ),
+            )
+        )
         .order_by(Handoff.created_at.desc())
     )
     handoffs = list(result.scalars().all())
 
-    responses = []
-    for h in handoffs:
-        sender = await db.execute(select(User).where(User.id == h.sender_id))
-        sender_user = sender.scalar_one_or_none()
-        sender_email = sender_user.email if sender_user else "unknown"
-        session_result = await db.execute(select(Session).where(Session.id == h.session_id))
-        session = session_result.scalar_one_or_none()
-        responses.append(_handoff_to_response(
-            h, sender_email=sender_email, session=session,
-        ))
-
-    return HandoffListResponse(handoffs=responses, total=len(responses))
+    return HandoffListResponse(
+        handoffs=await _hydrate_handoffs(db, handoffs, missing_sender_email="unknown"),
+        total=len(handoffs),
+    )
 
 
 @router.get("/sent", response_model=HandoffListResponse)
@@ -209,7 +242,13 @@ async def sent(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List handoffs sent BY this user."""
+    """List handoffs sent BY this user.
+
+    Pre-perf-2 the inner loop set sender_email to user.email directly
+    without doing a sender lookup. We preserve that — /sent is always
+    the viewer's own handoffs, so falling back to viewer_email when the
+    User row is unreachable matches the legacy behavior.
+    """
     result = await db.execute(
         select(Handoff)
         .where(Handoff.sender_id == user.id)
@@ -217,15 +256,60 @@ async def sent(
     )
     handoffs = list(result.scalars().all())
 
-    responses = []
-    for h in handoffs:
-        session_result = await db.execute(select(Session).where(Session.id == h.session_id))
-        session = session_result.scalar_one_or_none()
-        responses.append(_handoff_to_response(
-            h, sender_email=user.email, session=session,
-        ))
+    return HandoffListResponse(
+        handoffs=await _hydrate_handoffs(
+            db, handoffs, missing_sender_email=user.email or "unknown"
+        ),
+        total=len(handoffs),
+    )
 
-    return HandoffListResponse(handoffs=responses, total=len(responses))
+
+async def _hydrate_handoffs(
+    db: AsyncSession,
+    handoffs: list[Handoff],
+    *,
+    missing_sender_email: str,
+) -> list[HandoffResponse]:
+    """Batch-load Senders + Sessions referenced by `handoffs` in one
+    query each, then assemble responses without the N+1 round-trips.
+
+    `missing_sender_email` is the fallback used when the User row for a
+    sender_id is not found. /inbox passes "unknown" (matching the
+    pre-perf-2 behavior so an inbox row never claims its OWN viewer is
+    the sender). /sent passes the viewer's email since /sent is always
+    the viewer's own handoffs.
+    """
+    if not handoffs:
+        return []
+
+    # Batch sender lookup. /sent always shares one sender (viewer); /inbox
+    # can have many. Keep it generic — empty fetch when set is empty.
+    sender_ids = {h.sender_id for h in handoffs}
+    senders_by_id: dict[str, User] = {}
+    if sender_ids:
+        sender_result = await db.execute(
+            select(User).where(User.id.in_(sender_ids))
+        )
+        senders_by_id = {s.id: s for s in sender_result.scalars().all()}
+
+    # Batch session lookup.
+    session_ids = {h.session_id for h in handoffs}
+    sessions_by_id: dict[str, Session] = {}
+    if session_ids:
+        sessions_result = await db.execute(
+            select(Session).where(Session.id.in_(session_ids))
+        )
+        sessions_by_id = {s.id: s for s in sessions_result.scalars().all()}
+
+    out: list[HandoffResponse] = []
+    for h in handoffs:
+        sender = senders_by_id.get(h.sender_id)
+        sender_email = sender.email if sender else missing_sender_email
+        session = sessions_by_id.get(h.session_id)
+        out.append(_handoff_to_response(
+            h, sender_email=sender_email, session=session,
+        ))
+    return out
 
 
 @router.get("/{handoff_id}", response_model=HandoffResponse)

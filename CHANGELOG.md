@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.9.7] - 2026-05-10
+
+### Added
+- **Tier-aware per-member sync size cap** — `messages.jsonl` and other archive members can now reach **50 MB** for Pro/Team/Enterprise (was 10 MB across the board). Free/Starter stay at 10 MB. Override via `SFS_MAX_SYNC_MEMBER_BYTES_FREE` / `SFS_MAX_SYNC_MEMBER_BYTES_PAID`. Hard 100 MB abuse cap unchanged. The CLI pre-flight check uses the larger paid default; the server enforces the actual tier-resolved cap and returns a structured 413 with tier-aware suggestion text.
+- **`dismiss_knowledge_entry` MCP tool (audited)** — write tool that records `dismissed_at`, `dismissed_by`, `dismissed_reason` on the entry. Idempotent (re-dismiss preserves the original timestamp + dismisser). Set `undismiss=true` to reverse a dismissal — clears the audit row. Length-capped at 500 chars; whitespace-only reasons normalize to NULL on the server. Audit triple is exposed on every entry-returning endpoint via `KnowledgeEntryResponse` so agents can confirm what was recorded.
+- **Migration 031** — `dismissed_at`, `dismissed_by`, `dismissed_reason` columns on `knowledge_entries`.
+- **Migration 032** — `recipient_email_normalized` column on `handoffs` plus a dedicated index for inbox lookups. Backfilled from existing rows via SQLAlchemy Core (cross-DB).
+- **Migration 033** — composite indexes on `knowledge_entries` for the Tier A list paths: `(project_id, dismissed, claim_class, freshness_class)`, `(project_id, compiled_at, dismissed)`, and `(project_id, created_at)` for keyset cursor pagination.
+
+### Changed
+- **Concept compiler query collapse** — `auto_generate_concepts` now prefetches the active-claim set, all candidate concept pages, and their links once before the candidate loop, then resolves dismissed-entry membership in one bulk query. Previously did `candidates × active_claims` plus per-slug page + link lookups; now O(candidates) in-memory.
+- **Handoff list batching** — `/api/v1/handoffs/inbox` and `/sent` batch-load referenced senders + sessions in two queries instead of N+1 per handoff. Inbox filters on `recipient_email_normalized` directly (raw-column index miss is fixed); a fallback OR clause keeps pre-migration rows reachable until backfill catches them.
+- **Server-side dismiss reason normalization** — `DismissRequest.reason` strips whitespace and collapses empty/whitespace-only to `None` via Pydantic `field_validator`. Direct API callers can no longer persist `"   "` as the audit reason or clobber a real prior reason with whitespace.
+- **`KnowledgeEntry` row lock on dismiss** — `PUT /entries/{id}` now `SELECT ... FOR UPDATE` the entry before branching on `entry.dismissed`, eliminating the audit-row race where two concurrent dismissals could both take the first-dismiss path. SQLite no-ops the lock; PostgreSQL serializes overlapping callers.
+
+### Known Performance Items
+The following items were identified during the v0.9.9.7 perf audit but
+deferred — they are not blocking and can land in a later patch:
+- Dashboard polling consolidation: `BackgroundTasks.tsx` and `useAudit.ts`
+  run independent `setInterval` loops against overlapping endpoints. Move
+  to a single query-driven path with backoff and visibility awareness.
+- `GettingStartedPage.tsx` polls every 10 s indefinitely; should stop
+  once `hasSession && hasProject`.
+- `SessionList.tsx` always loads folders + inbox handoffs; lazy-load
+  behind the folder/handoff UI or extend the stale window.
+- `sync status` does five separate aggregates and `admin.py` org listing
+  does per-org member-count queries; collapse into grouped aggregates.
+- KB content search still uses `ILIKE %…%`; trigram / FTS index is the
+  next scalability step once the composite indexes above bed in.
+
+### Fixed
+- **Sync error message uses server detail** — `SyncTooLargeError` prefers the structured detail body from the server (which carries tier-aware `suggestion` text) over the hardcoded message. Pre-v0.9.9.7 fallback text retained for older deployments.
+- **Pip-audit MEDIUM bumps** — `python-multipart>=0.0.27`, mako and pip refreshed in the dev environment.
+- **postcss XSS bump** — dashboard `postcss` 8.5.8 → 8.5.14 (dev-time tooling, not a production runtime exposure).
+
 ## [0.9.9.6] - 2026-05-10
 
 ### Added

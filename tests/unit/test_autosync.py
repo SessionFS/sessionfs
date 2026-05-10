@@ -375,13 +375,15 @@ class TestHandoffOversizeHandling:
 
         assert exit_info.value.code == 1, "handoff must exit with code 1 on oversize"
 
-        # Friendly message must mention the file, the size limit, and the
-        # /clear or /compact suggestion.
+        # Friendly message must mention the file, some size in MB, and the
+        # /compact suggestion. The CLI pre-flight uses MAX_MEMBER_SIZE which
+        # is now tier-aware (50 MB default, env-overridable), so we don't
+        # pin a specific MB number — just that it's reported.
         captured = capsys.readouterr()
         out = (captured.out + captured.err).lower()
         assert "messages.jsonl" in out, f"output missing filename: {captured.err}"
-        assert "10mb limit" in out or "10mb" in out, f"output missing size: {captured.err}"
-        assert "/clear" in out or "/compact" in out, f"output missing suggestion: {captured.err}"
+        assert "mb" in out, f"output missing size: {captured.err}"
+        assert "/compact" in out, f"output missing suggestion: {captured.err}"
 
         # Confirm push was never attempted.
         mock_client.push_session.assert_not_called()
