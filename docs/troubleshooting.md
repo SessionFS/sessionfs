@@ -230,3 +230,23 @@ Soft-deleted sessions are excluded from storage quota calculations. If you see s
 3. You're not in a git-backed project directory.
 4. The project has no canonical SessionFS rules yet (no `enabled_tools`, no `static_rules`, no `tool_overrides`). Run `sfs rules init` first.
 5. Any rules sync failure is non-fatal by design — the resume still proceeds with exit 0. Check stderr for a warning.
+
+### Hook installed but Claude Code doesn't seem to inject rules
+
+The `sfs rules emit` hook reads from the local rule cache, not the API. If the cache is empty, the hook returns an empty payload and Claude Code starts with no extra context.
+
+1. Confirm the hook is wired up: `sfs hooks status` should show `INSTALLED` for `claude-code`.
+2. Confirm the cache has content: `sfs rules show` should report a canonical version and a recent compile timestamp. If it doesn't, run `sfs rules pull` (when there is a remote) or `sfs rules compile` to populate it.
+3. Restart the Claude Code session — the hook only fires at `SessionStart`, so an already-running session won't pick up newly installed hooks or refreshed cache content.
+4. Inspect the raw payload: `sfs rules emit --tool claude-code --format hook` prints what Claude Code would receive. An empty `additionalContext` means the cache is empty; populate it and try again.
+
+### Both `CLAUDE.md` and the hook are active — am I getting duplicate rules?
+
+Yes, briefly. The hook is additive — it does not replace `CLAUDE.md`. When both are present, Claude Code reads the file **and** receives the same content again from the hook's `additionalContext`. The model usually deduplicates the conceptual content, but the duplication still costs tokens.
+
+Pick one mode unless you have a specific reason to layer them:
+
+- **Hook only:** delete the committed `CLAUDE.md` (and add it to `.gitignore` or run `sfs rules init --local-only`). Each developer pulls the canonical rules and the hook re-emits on every startup.
+- **File only:** run `sfs hooks uninstall --for claude-code`. Compiled `CLAUDE.md` continues to work for every supported tool, including developers who don't have SessionFS installed.
+
+The deliberate hybrid (committed file as team baseline + hook for personal freshness) is supported, but it duplicates context inside Claude Code. Most teams should pick one.

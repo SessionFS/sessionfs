@@ -231,6 +231,86 @@ No LLM is required for rules compilation in v0.9.9.
 
 `sfs rules init` does **not** enable every possible tool. Only explicitly selected or inferred tools are compiled. This avoids generating `CLAUDE.md` for a team that has never used Claude Code, or `.cursorrules` for a team that doesn't touch Cursor.
 
+## Hook-based injection (Claude Code)
+
+Claude Code is the only supported tool with a native hook system, so SessionFS can inject compiled rules through a `SessionStart` hook instead of (or alongside) a `CLAUDE.md` file. Every time Claude Code starts a session, the hook runs `sfs rules emit` and pipes the latest compiled rules into the system prompt.
+
+| | File-based compile | Hook-based injection |
+|---|---|---|
+| Tools | claude-code, codex, cursor, copilot, gemini | claude-code only |
+| Source of truth | `CLAUDE.md` on disk | local rule cache (`sfs rules compile` / `sfs rules pull`) |
+| Freshness | only as fresh as the last commit | refreshed every Claude Code startup |
+| File on disk | yes | no |
+| Commit required | yes (default) | no |
+
+The hook reads the **local** rule cache that `sfs rules compile` and `sfs rules pull` populate. It does **not** hit the network on Claude Code startup, so there is no latency cost and no offline failure mode. If the cache is empty, the hook emits an empty payload and exits cleanly — Claude Code starts normally.
+
+### Install
+
+```bash
+sfs hooks install --for claude-code
+```
+
+By default the hook is written to `~/.claude/settings.json` (`--user` scope) and applies to every Claude Code session on this machine. To install a project-scoped hook that ships with the repo, use `--project`:
+
+```bash
+sfs hooks install --for claude-code --project
+```
+
+That writes to `.claude/settings.json` in the current repo root, where it can be committed and shared with teammates. Project-scope hooks layer on top of user-scope hooks.
+
+Install is idempotent — running it twice does not duplicate the entry. The SessionFS-managed hook block carries an `"sfs:managed": true` sentinel so uninstall can find and remove it without touching other user-defined hooks.
+
+### Verify
+
+```bash
+sfs hooks status
+```
+
+Lists which scopes have the hook installed across all supported tools. Tools without native hook support are listed as `N/A`.
+
+### Uninstall
+
+```bash
+sfs hooks uninstall --for claude-code
+```
+
+Removes the SessionFS-managed entry from `settings.json` and leaves any other user-defined hooks untouched. Add `--project` to remove the project-scope hook, `--force` to skip the confirmation prompt.
+
+### Coexistence with `CLAUDE.md`
+
+The hook is **additive**. If both a managed `CLAUDE.md` and the hook are present, both inject the same rules and Claude Code sees them twice. `sfs hooks install` warns when it detects this:
+
+```text
+Found managed CLAUDE.md — both will inject the same rules.
+Recommended: delete CLAUDE.md to avoid duplication, OR
+keep both for team-baseline + personal-fresh hybrid.
+```
+
+Two reasonable workflows:
+
+- **Hook only.** Delete the committed `CLAUDE.md` (or never compile one) and rely on the hook. Each developer's machine pulls rules with `sfs rules pull` and re-emits on every startup. No file management, no commits, always fresh — but only works for Claude Code users.
+- **File only.** Skip the hook entirely. Compile to `CLAUDE.md` / `codex.md` / `.cursorrules` / `copilot-instructions.md` / `GEMINI.md`, commit them, and let every tool read its native file. Works for every supported tool and every developer, regardless of whether they have SessionFS installed.
+
+A hybrid (committed `CLAUDE.md` for team baseline + the hook for personal freshness) is supported but produces duplicated context inside Claude Code. Pick one mode unless you have a specific reason to layer them.
+
+### What `sfs rules emit` prints
+
+`sfs rules emit --tool claude-code --format hook` prints JSON in Claude Code's hook output spec:
+
+```json
+{
+  "hookSpecificOutput": {
+    "hookEventName": "SessionStart",
+    "additionalContext": "<the compiled rules content>"
+  }
+}
+```
+
+`--format file` prints the plain compiled body — the same text that would land in `CLAUDE.md`. Use `--format file` when you want to pipe the compiled content into another tool or inspect it from the shell.
+
+The hook is offline by design. Run `sfs rules pull` (or `sfs rules compile`) when you want to refresh the cache.
+
 ## Resume-Time Rules Sync
 
 `sfs resume` preflights the target tool's project rules file from the **current** canonical SessionFS rules before launching the tool. The session transfer carries the conversation; resume-time sync makes sure the resumed agent reads the same project contract the rest of the team is using.
@@ -492,7 +572,11 @@ Fetch a specific compiled version, including `compiled_outputs`, `knowledge_snap
 
 ## MCP Tools
 
-When the SessionFS MCP server is connected, AI agents can read the canonical rules and their compiled projection directly.
+When the SessionFS MCP server is connected, AI agents can read the canonical rules and their compiled projection directly. They can also reach the rest of SessionFS — sessions, knowledge, and provenance — through the same surface, so there is no need to shell out to `sfs` or `curl` from inside an agent.
+
+`sfs rules compile` injects a guidance block into compiled tool files (`CLAUDE.md`, `codex.md`, etc.) telling the agent: **for SessionFS operations, use MCP tools — not CLI commands.** The block lists the tools below by category. Both surfaces stay in sync.
+
+### Rules (read-only)
 
 | Tool | Description |
 |------|-------------|
@@ -500,6 +584,48 @@ When the SessionFS MCP server is connected, AI agents can read the canonical rul
 | `get_compiled_rules` | Returns the compiled rule text for a requested tool, or for the current tool if safely inferable |
 
 Neither tool allows the agent to **modify** rules. Agent rule suggestions and auto-accept are explicitly deferred; humans control the canonical record in v0.9.9.
+
+### Knowledge (read)
+
+| Tool | Description |
+|------|-------------|
+| `get_project_context` | Full compiled wiki: overview + pages + concepts |
+| `get_context_section` | One section of the context doc by slug (cheaper than the full doc) |
+| `get_wiki_page` | One wiki page's content plus backlinks |
+| `search_project_knowledge` | Search knowledge entries and wiki pages by query |
+| `list_knowledge_entries` | Filter entries by type, claim class, freshness, dismissed flag, or session, with pagination |
+| `get_knowledge_entry` | One entry's full record, including `last_relevant_at` |
+| `get_knowledge_health` | Pending / compiled / dismissed counts plus stale, low-confidence, and recommendation flags |
+| `ask_project` | Q&A against the knowledge base and recent sessions |
+
+### Knowledge (write)
+
+| Tool | Description |
+|------|-------------|
+| `add_knowledge` | Save a discovery, decision, pattern, or convention |
+| `update_wiki_page` | Create or update a wiki page |
+| `list_wiki_pages` | Browse the wiki structure |
+| `compile_knowledge_base` | Trigger a compile pass; returns counts of entries compiled and pages updated |
+
+### Sessions
+
+| Tool | Description |
+|------|-------------|
+| `search_sessions` | Search across sessions |
+| `get_session_context` | Full session content |
+| `list_recent_sessions` | Recent sessions for this repo |
+| `find_related_sessions` | Sessions touching the same files or with similar errors |
+| `get_session_summary` | Structured summary |
+| `get_audit_report` | LLM Judge findings |
+| `get_session_provenance` | Rules version, hash, source, and instruction artifacts that shaped the session |
+
+### When to use what
+
+A few common forks the agent should know about:
+
+- **Full context vs. one slice.** `get_project_context` returns everything — overview, all pages, all concepts. Use it once at session start. After that, use `get_context_section` for a single section by slug, or `get_wiki_page` for a single page. Both return less and cost less.
+- **Search vs. filter.** `search_project_knowledge` is query-driven — pass keywords. `list_knowledge_entries` is filter-driven — pass type, claim class, freshness, or session ID with no query at all. Use the one that matches what you actually have.
+- **Health in one call.** `get_knowledge_health` returns the dashboard's banner data — pending count, compiled count, stale flags, recommendations — in a single response. Don't reconstruct it from `list_knowledge_entries`.
 
 ## Troubleshooting
 

@@ -515,6 +515,7 @@ class ClaudeCodeWatcher:
         """Parse a CC session, convert to .sfs, write to store."""
         from sessionfs.session_id import session_id_from_native
         from sessionfs.spec.convert_cc import convert_session
+        from sessionfs.watchers.capture_guard import should_recapture
 
         logger.info("Capturing session %s (%d bytes)", native_id, size)
 
@@ -523,6 +524,21 @@ class ClaudeCodeWatcher:
 
             # Generate a spec-compliant ses_ prefixed ID from the native UUID
             sfs_id = session_id_from_native(native_id)
+
+            # Guard against compression data loss
+            if not should_recapture(self._store, sfs_id, cc_session.message_count, "claude-code"):
+                ref = NativeSessionRef(
+                    tool="claude-code",
+                    native_session_id=native_id,
+                    native_path=str(native_path),
+                    sfs_session_id=sfs_id,
+                    last_mtime=mtime,
+                    last_size=size,
+                )
+                self._store.upsert_tracked_session(ref)
+                self._tracked[native_id] = ref
+                return
+
             session_dir = self._store.allocate_session_dir(sfs_id)
             convert_session(
                 cc_session, session_dir.parent,

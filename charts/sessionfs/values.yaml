@@ -270,16 +270,29 @@ security:
     enforce: "baseline"
 
 ## Database Migrations
+# Runs `alembic upgrade head` as a pre-install / pre-upgrade Helm hook so that
+# new API pods never start against a stale schema. Image and security posture
+# mirror the API deployment.
 migrations:
   enabled: true
   image:
     repository: sessionfs-api
     tag: ""
   backoffLimit: 3
+  # Job is garbage-collected this many seconds after Completed.
+  ttlSecondsAfterFinished: 300
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
   podSecurityContext:
     runAsNonRoot: true
     runAsUser: 10001
     runAsGroup: 10001
+    fsGroup: 10001
     seccompProfile:
       type: RuntimeDefault
   containerSecurityContext:

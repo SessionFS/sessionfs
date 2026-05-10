@@ -118,6 +118,22 @@ class CursorWatcher:
                         ).isoformat()
 
                     sfs_id = session_id_from_native(native_id)
+
+                    # Guard against compression data loss
+                    from sessionfs.watchers.capture_guard import should_recapture
+                    if not should_recapture(self._store, sfs_id, session.message_count, "cursor"):
+                        ref = NativeSessionRef(
+                            tool="cursor",
+                            native_session_id=native_id,
+                            native_path=str(self._global_db),
+                            sfs_session_id=sfs_id,
+                            last_mtime=db_mtime,
+                            last_size=0,
+                        )
+                        self._store.upsert_tracked_session(ref)
+                        self._tracked[native_id] = ref
+                        continue
+
                     session_dir = self._store.allocate_session_dir(sfs_id)
                     convert_cursor_to_sfs(session, session_dir, session_id=sfs_id)
 

@@ -10,7 +10,15 @@ router = APIRouter()
 
 
 @router.get("/health")
+@router.get("/api/v1/health")
 async def health():
+    """Health check.
+
+    Exposed at both /health (the canonical path that pods inside the cluster
+    hit directly) and /api/v1/health (the path the AWS ALB / nginx ingress
+    rewrites incoming probes to). Both routes intentionally serve the
+    identical payload so external monitoring can use either.
+    """
     return {"status": "healthy", "version": __version__, "service": "sessionfs-api"}
 
 

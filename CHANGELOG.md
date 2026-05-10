@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.9.6] - 2026-05-10
+
+### Added
+- **MCP Tier A read surface (7 new tools)** — `get_knowledge_entry`, `list_knowledge_entries`, `get_wiki_page`, `get_knowledge_health`, `get_context_section`, `get_session_provenance`, `compile_knowledge_base`. Total MCP tool count goes 14 → 21. All tools enforce existing project membership / session ownership checks.
+- **`list_knowledge_entries` rich filters** — `claim_class`, `freshness_class`, `dismissed`, `session_id` query params on `GET /api/v1/projects/{id}/entries`, plus three sort modes (`created_at_desc`, `last_relevant_at_desc`, `confidence_desc`) with stable `id` tiebreak so identical sort-key values can't reorder.
+- **Keyset cursor pagination** — opt-in `?cursor=<id>` query param on `list_entries` (default sort only). Snapshot-stable across concurrent inserts/deletes — no skipped or duplicated rows. Server emits `X-Next-Cursor` response header on every default-sort page when more rows exist (works in both OFFSET and cursor modes), so callers can bootstrap keyset iteration from page 1 without inventing a sentinel.
+- **Per-user tier-aware knowledge rate limits** — `KNOWLEDGE_RATE_LIMITS = {free:20, starter:50, pro:100, team:100, enterprise:200, admin:500}` requests/hour on `POST /entries/add`. Bucket key is `user_id` (not session_id) so MCP `manual` callers don't share buckets. `SFS_KNOWLEDGE_RATE_LIMIT_PER_HOUR` env override. Admin tier promoted before effective-tier resolution.
+- **413 graceful failure** — `sfs push`/`sfs handoff`/`sfs sync` pre-scan archives for oversized members (10MB limit) and surface `SyncTooLargeError` with actionable guidance instead of an opaque server 413.
+- **Compression-safe capture guard** — shared `should_recapture()` helper consulted by all 7 watchers before re-write. Checks the deleted-sessions exclusion list FIRST, then compares source JSONL message count against existing `.sfs` to prevent re-capturing a compressed session as empty.
+- **`sfs recapture` command** — manual re-capture flow with `CursorComposerPurgedError` guard for purged-composer cases.
+- **Cross-tool MCP-over-CLI nudge** — three-layer fix so agents prefer MCP tools over `sfs` shell commands: (1) MCP tool descriptions say "Always use this MCP tool instead of running `sfs ...`"; (2) `_SESSIONFS_MCP_GUIDANCE` block injected into every compiled rules file (CLAUDE.md / codex.md / .cursorrules / GEMINI.md / copilot-instructions.md) lists all 21 tools; (3) `sfs hooks install` writes a SessionStart hook for Claude Code that emits the cached compiled output before the first message.
+- **Dashboard "Compile now" CTA** — workflow hint banner now carries an inline button so users don't navigate to the Entries tab to act. Server-side health recommendations fire at any pending count > 0 (was > 20).
+- **Compile workflow guidance in compiled rules** — agents are instructed to check `get_knowledge_health` after contributing knowledge, prompt the user, and only call `compile_knowledge_base` on explicit consent.
+- **Pre-upgrade Helm migration Job** — runs Alembic upgrade head before the API rolls out, so a self-hosted upgrade that drops a new migration cannot serve traffic against an unmigrated DB.
+
+### Changed
+- **Project-row lock on compile + concept generation** — `compile_project_context` and `auto_generate_concepts` both `SELECT … FOR UPDATE` the project row before reading pending claims / creating concept pages. Two compile callers serialize end-to-end on PostgreSQL; SQLite no-ops the lock harmlessly. Eliminates the duplicate-context-document and duplicate-concept-page races.
+- **Compile MCP response trimmed** — `compile_knowledge_base` strips `context_before` / `context_after` (often thousands of words) from the MCP JSON payload to keep agent context small. Dashboard direct-API calls still receive the full payload.
+- **Dashboard manualChunks** — explicit `vite.config.ts` chunk naming (`react-vendor`, `markdown`, `zod`, `react-router`, `react-query`). Main bundle drops from 212 KB to 30 KB (8× smaller); vendors cache separately across deploys.
+- **`/api/v1/health` alias** — added alongside `/health` for self-hosted ingress paths that scope readiness to `/api/v1/*`.
+- **DELETE `/sessions/{id}` backward-compat** — accepts `scope=` query param for older CLI clients.
+- **Settings.json fcntl locking** — `sfs hooks install/uninstall` and rules emitter use `fcntl.flock` on a `.sfs-lock` file so concurrent invocations can't corrupt the JSON. Hook entry detection now requires command prefix `sfs rules emit ` (not just sentinel match) before treating an entry as managed.
+
+### Fixed
+- **Stable pagination ordering** — `KnowledgeEntry.id.desc()` is the absolute final tiebreak in every sort mode on `list_entries`. Without it, identical sort-key values reordered arbitrarily across pages.
+- **Daemon transient errors no longer exclude sessions** — only `SyncTooLargeError` (413) counts toward the exclusion threshold; transient `SyncError` failures are retried instead of permanently excluded.
+- **Admin tier reaches its 500/hr knowledge bucket** — admin is checked from raw `user.tier` before effective-tier resolution (which collapses admin → enterprise). Previously admins were capped at 200/hr.
+- **`sfs handoff` 413 graceful path** — handoff now pre-checks oversized members and catches `SyncTooLargeError`, exiting with actionable guidance instead of an opaque server error.
+- **Compile description honesty** — `compile_knowledge_base` MCP description now flags "HEAVY + MUTATING", explains the project lock, and points to the real `GET /api/v1/projects/{id}/compilations` collection (not a non-existent per-id route). Removes the misleading "cron-driven pass" claim — there is no scheduler.
+- **Rules emit unmanaged-CLAUDE.md guard** — `sfs rules emit` no longer falls back to reading an unmanaged CLAUDE.md as if it were managed content.
+- **KB health pending count** — only counts claims (excludes notes). Notes don't compile, so they shouldn't drive the pending banner.
+
 ## [0.9.9.5] - 2026-04-17
 
 ### Added

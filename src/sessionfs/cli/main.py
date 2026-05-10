@@ -39,6 +39,7 @@ from sessionfs.cli.cmd_org import org_app
 from sessionfs.cli.cmd_security import security_app
 from sessionfs.cli.cmd_dlp import dlp_app
 from sessionfs.cli.cmd_rules import rules_app
+from sessionfs.cli.cmd_hooks import hooks_app
 
 app.add_typer(daemon_app, name="daemon")
 app.add_typer(config_app, name="config")
@@ -55,6 +56,7 @@ app.add_typer(org_app, name="org")
 app.add_typer(security_app, name="security")
 app.add_typer(dlp_app, name="dlp")
 app.add_typer(rules_app, name="rules")
+app.add_typer(hooks_app, name="hooks")
 
 # Register top-level commands (wrapped with handle_errors for resilient error reporting)
 from sessionfs.cli.common import handle_errors
@@ -67,6 +69,7 @@ from sessionfs.cli.cmd_search import search
 from sessionfs.cli.cmd_audit import audit
 from sessionfs.cli.cmd_init import init_cmd
 from sessionfs.cli.cmd_doctor import doctor
+from sessionfs.cli.cmd_recapture import recapture
 
 app.command("list")(handle_errors(list_sessions))
 app.command("show")(handle_errors(show_session))
@@ -85,6 +88,7 @@ app.command("search")(handle_errors(search))
 app.command("audit")(handle_errors(audit))
 app.command("init")(handle_errors(init_cmd))
 app.command("doctor")(handle_errors(doctor))
+app.command("recapture")(handle_errors(recapture))
 app.command("delete")(handle_errors(delete_session_cmd))
 app.command("trash")(handle_errors(trash_cmd))
 app.command("restore")(handle_errors(restore_cmd))

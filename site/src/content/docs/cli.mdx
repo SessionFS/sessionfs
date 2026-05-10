@@ -1147,6 +1147,99 @@ Pull canonical rules from the SessionFS API. Run `sfs rules compile` afterwards 
 sfs rules pull
 ```
 
+### `sfs rules emit`
+
+Print the latest compiled rules for a tool to stdout. Reads from the local rule cache populated by `sfs rules compile` and `sfs rules pull` — never hits the network.
+
+```
+sfs rules emit --tool TOOL [--format hook|file]
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--tool` | string | required | Target tool (`claude-code`, `codex`, `cursor`, `copilot`, `gemini`) |
+| `--format` | string | `hook` | `hook` for Claude Code's hook JSON spec, `file` for the plain compiled body |
+
+`--format hook` is the format the SessionStart hook installed by `sfs hooks install` consumes. `--format file` is useful for piping the compiled body into another tool or inspecting it from the shell. If the local cache is empty, the command prints an empty payload and exits `0` — it never breaks Claude Code startup.
+
+**Example:**
+
+```bash
+$ sfs rules emit --tool claude-code --format hook
+{
+  "hookSpecificOutput": {
+    "hookEventName": "SessionStart",
+    "additionalContext": "..."
+  }
+}
+```
+
+---
+
+## `sfs hooks`
+
+Manage SessionFS hooks for tools with native hook support. v0.9.9.6 supports Claude Code only. See [Hook-based injection](/docs/rules/#hook-based-injection-claude-code) for the full reference.
+
+### `sfs hooks install`
+
+Wire the SessionFS `SessionStart` hook into the target tool's settings. The hook calls `sfs rules emit` on every session start and pipes the compiled rules into the system prompt. Idempotent — running twice does not duplicate the entry.
+
+```
+sfs hooks install --for TOOL [--user|--project] [--force]
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--for` | string | required | Target tool (`claude-code` only in v0.9.9.6) |
+| `--user` | flag | default | Install at user scope (`~/.claude/settings.json`) |
+| `--project` | flag | `false` | Install at project scope (`.claude/settings.json` in repo root) |
+| `--force` | flag | `false` | Skip the conflict warning when a managed `CLAUDE.md` already exists |
+
+**Example:**
+
+```bash
+$ sfs hooks install --for claude-code
+Hook installed: ~/.claude/settings.json (SessionStart)
+SessionFS will inject project rules at every Claude Code startup.
+```
+
+### `sfs hooks uninstall`
+
+Remove the SessionFS-managed hook entry from the target tool's settings. Idempotent — no-op if not installed.
+
+```
+sfs hooks uninstall --for TOOL [--user|--project] [--force]
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--for` | string | required | Target tool (`claude-code` only in v0.9.9.6) |
+| `--user` | flag | default | Uninstall from user scope |
+| `--project` | flag | `false` | Uninstall from project scope |
+| `--force` | flag | `false` | Skip the confirmation prompt |
+
+### `sfs hooks status`
+
+Show which SessionFS hooks are installed across supported tools and scopes. Tools without native hook support appear as `N/A`.
+
+```
+sfs hooks status
+```
+
+**Example:**
+
+```bash
+$ sfs hooks status
+
+SessionFS Hooks
+───────────────
+claude-code (user):     INSTALLED at ~/.claude/settings.json (SessionStart)
+claude-code (project):  not installed
+codex:                  N/A (no native hook system)
+gemini:                 N/A
+cursor:                 N/A
+```
+
 ---
 
 ## `sfs storage`

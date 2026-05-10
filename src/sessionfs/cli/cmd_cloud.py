@@ -21,6 +21,28 @@ from sessionfs.cli.common import (
 auth_app = typer.Typer(name="auth", help="Authentication for cloud sync.")
 
 
+# Mirror the server-side cap (sessions.MAX_SYNC_MEMBER_SIZE). We check locally
+# first so a 57MB messages.jsonl doesn't waste an upload only to come back as
+# a 413 from the server.
+MAX_MEMBER_SIZE = 10 * 1024 * 1024
+
+
+def _find_oversized_member(archive_data: bytes) -> tuple[str, int] | None:
+    """Return (name, size) of the first archive member > MAX_MEMBER_SIZE, else None."""
+    import io as _io
+    import tarfile as _tarfile
+
+    try:
+        with _tarfile.open(fileobj=_io.BytesIO(archive_data), mode="r:gz") as tar:
+            for member in tar.getmembers():
+                if member.size > MAX_MEMBER_SIZE:
+                    return member.name, member.size
+    except _tarfile.TarError:
+        # Bad archive — let the server-side validation surface a clean error.
+        return None
+    return None
+
+
 def _load_sync_config() -> dict:
     """Load sync config from config.toml."""
     from sessionfs.daemon.config import load_config
@@ -238,7 +260,7 @@ def push(
 ) -> None:
     """Push a local session to the server."""
     from sessionfs.sync.archive import pack_session
-    from sessionfs.sync.client import SyncConflictError, SyncDeletedError
+    from sessionfs.sync.client import SyncConflictError, SyncDeletedError, SyncTooLargeError
 
     store = open_store()
     client = _get_sync_client()
@@ -312,6 +334,21 @@ def push(
         console.print(f"Packing session {full_id[:12]}...")
         archive_data = pack_session(session_dir)
 
+        # Local size check: don't waste an upload for a session the server
+        # will reject with 413. This typically means the user needs to
+        # /clear or /compact in their AI tool.
+        oversized = _find_oversized_member(archive_data)
+        if oversized is not None:
+            name, size = oversized
+            err_console.print(
+                f"[red]Session too large to push:[/red] '{name}' is "
+                f"{size // (1024 * 1024)}MB (limit "
+                f"{MAX_MEMBER_SIZE // (1024 * 1024)}MB).\n"
+                f"[yellow]Try /clear or /compact in your AI tool to shrink the session, "
+                f"then push again.[/yellow]"
+            )
+            raise SystemExit(1)
+
         # Read local etag
         manifest = store.get_session_manifest(full_id)
         local_etag = (manifest or {}).get("sync", {}).get("etag")
@@ -349,6 +386,9 @@ def push(
             f"[yellow]Session {full_id[:12]} has been deleted on the server.[/yellow]\n"
             f"Local copy cleaned up. Restore with: sfs restore {full_id}"
         )
+        raise SystemExit(1)
+    except SyncTooLargeError as exc:
+        err_console.print(f"[red]{exc}[/red]")
         raise SystemExit(1)
     except SyncConflictError as exc:
         err_console.print(
@@ -632,7 +672,7 @@ def handoff(
 ) -> None:
     """Hand off a session to another user (push + email notification)."""
     from sessionfs.sync.archive import pack_session
-    from sessionfs.sync.client import SyncConflictError
+    from sessionfs.sync.client import SyncConflictError, SyncDeletedError, SyncTooLargeError
 
     store = open_store()
     client = _get_sync_client()
@@ -647,6 +687,20 @@ def handoff(
 
         console.print(f"Ensuring session {full_id[:12]} is synced...")
         archive_data = pack_session(session_dir)
+
+        # Pre-upload oversize check — same gate as `sfs push` so we catch
+        # the 10MB-per-file cap locally and give the user an actionable
+        # message before wasting bandwidth on a guaranteed-413 upload.
+        oversized = _find_oversized_member(archive_data)
+        if oversized is not None:
+            name, size = oversized
+            err_console.print(
+                f"[red]Session too large to hand off: {name} is "
+                f"{size // (1024 * 1024)}MB, exceeds {MAX_MEMBER_SIZE // (1024 * 1024)}MB limit.[/red]\n"
+                f"Try /clear or /compact in your AI tool to start a fresh session, "
+                f"then re-run sfs handoff."
+            )
+            raise SystemExit(1)
 
         async def _push_and_handoff():
             try:
@@ -688,6 +742,20 @@ def handoff(
             err_console.print(f"[red]Handoff failed: {resp.text}[/red]")
             raise SystemExit(1)
 
+    except SyncDeletedError:
+        from sessionfs.sync.deleted_cleanup import cleanup_deleted_session
+        cleanup_deleted_session(full_id, session_dir, store)
+        err_console.print(
+            f"[yellow]Session {full_id[:12]} has been deleted on the server.[/yellow]\n"
+            f"Local copy cleaned up. Cannot hand off a deleted session.\n"
+            f"Restore with: sfs restore {full_id}"
+        )
+        raise SystemExit(1)
+    except SyncTooLargeError as exc:
+        # Server-side 413 (a member sneaked past the local check, or the
+        # local check was disabled). Surface the server's friendly message.
+        err_console.print(f"[red]{exc}[/red]")
+        raise SystemExit(1)
     except SyncConflictError:
         err_console.print("[red]Conflict pushing session. Pull latest first.[/red]")
         raise SystemExit(1)

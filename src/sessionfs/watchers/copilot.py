@@ -121,10 +121,29 @@ class CopilotWatcher:
         logger.info("Capturing Copilot session %s (%d bytes)", native_id[:12], size)
         try:
             from sessionfs.converters.copilot_to_sfs import (
+                parse_copilot_session,
                 convert_copilot_to_sfs,
             )
 
+            # Parse first to get message count for the compression guard
+            copilot_session = parse_copilot_session(native_path)
             sfs_id = session_id_from_native(native_id)
+
+            # Guard against compression data loss
+            from sessionfs.watchers.capture_guard import should_recapture
+            if not should_recapture(self._store, sfs_id, copilot_session.message_count, "copilot"):
+                ref = NativeSessionRef(
+                    tool="copilot-cli",
+                    native_session_id=native_id,
+                    native_path=str(native_path),
+                    sfs_session_id=sfs_id,
+                    last_mtime=mtime,
+                    last_size=size,
+                )
+                self._store.upsert_tracked_session(ref)
+                self._tracked[native_id] = ref
+                return
+
             session_dir = self._store.allocate_session_dir(sfs_id)
             convert_copilot_to_sfs(native_path, session_dir, session_id=sfs_id)
 

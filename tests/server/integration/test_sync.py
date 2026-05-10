@@ -309,3 +309,79 @@ async def test_admin_reindex(
     assert detail["source_tool"] == "claude-code"
     assert detail["message_count"] == 5
     assert detail["model_id"] == "claude-opus-4-6"
+
+
+# ── Oversized session protection (10MB per-file cap) ──
+
+def _build_oversized_archive(member_size: int = 11 * 1024 * 1024) -> bytes:
+    """Construct a valid tar.gz with a single oversized messages.jsonl member.
+
+    The contents are highly compressible (single repeated byte) so the wire
+    payload stays tiny — but the in-archive uncompressed size is what
+    _check_member_sizes inspects, so the rejection still fires.
+    """
+    import tarfile
+
+    payload = b"x" * member_size
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        # A minimal manifest so _extract_manifest_metadata doesn't choke.
+        manifest = b'{"sfs_version": "0.1.0", "session_id": "ses_huge1234abcdef0"}'
+        info = tarfile.TarInfo(name="manifest.json")
+        info.size = len(manifest)
+        tar.addfile(info, io.BytesIO(manifest))
+
+        info = tarfile.TarInfo(name="messages.jsonl")
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+    return buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_sync_push_oversized_member_returns_413(
+    client: AsyncClient, auth_headers: dict
+):
+    """Pushing an archive whose messages.jsonl exceeds 10MB returns a
+    structured 413 (not a 500 / ValueError from deep in DLP).
+
+    Regression for the Baptist Health 57MB session bug.
+    """
+    archive = _build_oversized_archive()
+    resp = await client.put(
+        "/api/v1/sessions/ses_huge1234abcdef0/sync",
+        headers=auth_headers,
+        files={"file": ("session.tar.gz", io.BytesIO(archive), "application/gzip")},
+    )
+    assert resp.status_code == 413, (
+        f"Expected 413 for oversized archive, got {resp.status_code}: {resp.text[:200]}"
+    )
+
+    body = resp.json()
+    # FastAPI may wrap the detail in a custom error envelope. Normalise.
+    detail = body.get("detail", body.get("error", {}).get("details", body.get("error", body)))
+    if isinstance(detail, dict) and "detail" in detail:
+        detail = detail["detail"]
+    assert isinstance(detail, dict), f"Detail should be structured, got: {detail!r}"
+    assert detail.get("error") == "session_too_large"
+    assert detail.get("file") == "messages.jsonl"
+    assert detail.get("size_bytes") == 11 * 1024 * 1024
+    assert detail.get("limit_bytes") == 10 * 1024 * 1024
+    assert "compact" in detail.get("suggestion", "").lower() or \
+           "clear" in detail.get("suggestion", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_sync_push_at_limit_succeeds(
+    client: AsyncClient, auth_headers: dict
+):
+    """A session with each member <= 10MB still goes through fine."""
+    # 5MB messages.jsonl — well under the 10MB cap.
+    archive = _build_oversized_archive(member_size=5 * 1024 * 1024)
+    resp = await client.put(
+        "/api/v1/sessions/ses_atlimit1234abcd/sync",
+        headers=auth_headers,
+        files={"file": ("session.tar.gz", io.BytesIO(archive), "application/gzip")},
+    )
+    assert resp.status_code in (200, 201), (
+        f"Expected success at the limit, got {resp.status_code}: {resp.text[:200]}"
+    )

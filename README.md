@@ -98,7 +98,7 @@ Sessions are indexed locally for fast browsing via the CLI. Cloud sync is opt-in
 | `sfs watcher list\|enable\|disable` | Manage tool watchers |
 | `sfs auth login\|signup\|status` | Manage cloud authentication |
 | `sfs config show\|set` | Manage configuration |
-| `sfs mcp serve` | Start MCP server (14 tools) for AI tool integration |
+| `sfs mcp serve` | Start MCP server (21 tools) for AI tool integration |
 | `sfs mcp install --for TOOL` | Auto-configure MCP for all 8 supported tools |
 | `sfs init` | Interactive setup wizard — auto-detects tools, optional sync |
 | `sfs security scan\|fix` | Audit config permissions, API key exposure, dependencies |
@@ -211,7 +211,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
-**v0.9.9.5 — Public Beta.** 1205 backend tests + 109 dashboard tests passing. 30 database migrations.
+**v0.9.9.6 — Public Beta.** 1279 backend tests + 109 dashboard tests passing. 30 database migrations.
 
 ### Session capture, resume, and search
 
@@ -248,7 +248,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ### MCP and dashboard
 
-- **MCP server** (local + remote) with 14 tools — search, context, recent, related, project context, summary, audit report, add_knowledge, update_wiki_page, list_wiki_pages, search_project_knowledge, ask_project, get_rules, get_compiled_rules
+- **MCP server** (local + remote) with 21 tools — sessions (search, context, recent, related, summary, audit, provenance), knowledge read (project context, context section, wiki page, search, list entries, get entry, health, ask), knowledge write (add_knowledge, update_wiki_page, list_wiki_pages, compile), and rules (get_rules, get_compiled_rules)
 - **`sfs mcp install --for <tool>`** for all 8 tools (stale registration repair, malformed config handling)
 - **Web dashboard** with light/dark mode, resume-first layout, date-grouped sessions, lineage grouping, command palette (Cmd+K), mobile nav, accessibility (focus trapping, ARIA live regions), product identity
 - **`/help` page** — MCP-first guidance, 8-tool installer with live terminal + copy button, agent prompt examples, curated CLI quick-reference

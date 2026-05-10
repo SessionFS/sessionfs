@@ -228,6 +228,9 @@ spec:
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
+          # Liveness: only restart on hard failure. Higher failureThreshold avoids
+          # restart storms from transient blips (RDS reconnect, GC pause, slow query).
+          # Baptist Health observed 15-18 restarts over 12 days at threshold=3.
           livenessProbe:
             httpGet:
               path: /health
@@ -235,7 +238,8 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 15
             timeoutSeconds: 5
-            failureThreshold: 3
+            failureThreshold: 5
+          # Readiness: keep tight so traffic drains quickly from a struggling pod.
           readinessProbe:
             httpGet:
               path: /health

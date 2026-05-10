@@ -157,6 +157,47 @@ def _validate_tar_gz(data: bytes) -> None:
         raise ValueError(f"Invalid tar.gz archive: {e}") from e
 
 
+# Per-file cap inside a session archive. The hard limit in _validate_tar_gz
+# is 100MB to prevent abuse, but in practice we want to reject huge sessions
+# much earlier with an actionable error so users know to /clear or /compact
+# their AI tool. 10MB is a comfortable upper bound for a single AI session
+# transcript (a 30+ minute Claude Code session typically lands around 1-3 MB).
+MAX_SYNC_MEMBER_SIZE = 10 * 1024 * 1024
+
+
+def _check_member_sizes(data: bytes) -> None:
+    """Reject archives with any single file exceeding MAX_SYNC_MEMBER_SIZE.
+
+    Raises HTTPException(413) with a structured detail body that the CLI
+    surfaces verbatim so users get a clean "your session is too big — try
+    /clear or /compact" message instead of a stack trace from deep inside
+    the DLP scanner.
+    """
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+            for member in tar.getmembers():
+                if member.size > MAX_SYNC_MEMBER_SIZE:
+                    raise HTTPException(
+                        status_code=413,
+                        detail={
+                            "error": "session_too_large",
+                            "message": (
+                                f"Session file '{member.name}' is "
+                                f"{member.size // (1024 * 1024)}MB which exceeds the "
+                                f"{MAX_SYNC_MEMBER_SIZE // (1024 * 1024)}MB per-file limit."
+                            ),
+                            "file": member.name,
+                            "size_bytes": member.size,
+                            "limit_bytes": MAX_SYNC_MEMBER_SIZE,
+                            "suggestion": "Try /clear or /compact in your AI tool",
+                        },
+                    )
+    except tarfile.TarError:
+        # Malformed archives are caught and reported by _validate_tar_gz —
+        # don't double-report them here.
+        return
+
+
 def _sanitize_string(value: str) -> str:
     """Strip HTML tags and null bytes from a string."""
     if "\x00" in value:
@@ -570,6 +611,10 @@ async def upload_session(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    # Same per-file size guard as sync_push so /sessions and /sessions/{id}/sync
+    # behave consistently when an AI tool produces a runaway transcript.
+    _check_member_sizes(data)
+
     session_id = f"ses_{uuid.uuid4().hex[:16]}"
     etag = hashlib.sha256(data).hexdigest()
     key = _blob_key(user.id, session_id)
@@ -837,6 +882,68 @@ async def get_session(
     return _session_to_detail(session)
 
 
+class SessionProvenanceResponse(_BaseModel):
+    """Instruction provenance for a session — which canonical rules version
+    governed the agent at session capture time, and what artifacts were
+    actually injected into the prompt context.
+
+    Fields default to None when the session was captured before rules
+    portability landed (migration 028) or when the watcher chose not to
+    record provenance (`SFS_CAPTURE_GLOBAL_RULES=0`).
+    """
+
+    session_id: str
+    rules_version: int | None = None
+    rules_hash: str | None = None
+    rules_source: str | None = None
+    instruction_artifacts: list = []
+
+
+@router.get("/{session_id}/provenance", response_model=SessionProvenanceResponse)
+async def get_session_provenance(
+    session_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the instruction provenance fields for a session.
+
+    Provenance answers: "which rules instructed this session?" — useful for
+    debugging stale-rule regressions or replaying a session under the same
+    governance state. Returns 200 with all-null fields if the session
+    exists but has no provenance recorded; 404 if the session doesn't
+    exist.
+
+    Provenance is read-only and lives in a separate endpoint (rather than
+    expanding SessionDetail) so the common session detail call stays lean.
+    """
+    _validate_session_id_or_alias(session_id)
+    session = await _get_user_session(db, user.id, session_id)
+
+    artifacts: list = []
+    raw = getattr(session, "instruction_artifacts", "[]") or "[]"
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            artifacts = parsed
+    except (ValueError, TypeError):
+        artifacts = []
+
+    rules_source = getattr(session, "rules_source", None)
+    # The DB default is the literal string "none"; surface that as None to
+    # the API caller to keep "no provenance" semantics consistent across
+    # pre-migration and post-migration sessions.
+    if rules_source == "none":
+        rules_source = None
+
+    return SessionProvenanceResponse(
+        session_id=session.id,
+        rules_version=getattr(session, "rules_version", None),
+        rules_hash=getattr(session, "rules_hash", None),
+        rules_source=rules_source,
+        instruction_artifacts=artifacts,
+    )
+
+
 @router.get("/{session_id}/download")
 async def download_session(
     session_id: str,
@@ -953,13 +1060,27 @@ async def clear_alias(
 @router.delete("/{session_id}", status_code=200, response_model=SessionDetail)
 async def delete_session(
     session_id: str,
+    response: Response,
     scope: str | None = Query(None),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Soft delete a session with explicit scope."""
-    if scope not in ("cloud", "everywhere"):
-        raise HTTPException(status_code=400, detail="scope query parameter required: 'cloud' or 'everywhere'")
+    """Soft delete a session.
+
+    Backward-compat: clients that don't pass scope (older sfs CLI versions
+    pre-v0.9.9.4) get the conservative "cloud" behaviour — a server-side
+    soft delete only, no instruction to remove the local copy. We attach
+    X-Deprecation-Warning so the operator can grep for callers and upgrade
+    them before v1.0 makes scope mandatory.
+    """
+    if scope is None:
+        scope = "cloud"
+        response.headers["X-Deprecation-Warning"] = (
+            "scope query parameter will be required in v1.0. "
+            "Please update your CLI to specify --cloud or --everywhere."
+        )
+    elif scope not in ("cloud", "everywhere"):
+        raise HTTPException(status_code=400, detail="scope must be 'cloud' or 'everywhere'")
     _validate_session_id_or_alias(session_id)
 
     # Look up session including already-deleted ones for proper 410 handling
@@ -1174,6 +1295,10 @@ async def sync_push(
             _validate_tar_gz(data)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+
+        # Reject oversized sessions early with a structured 413 — keeps DLP
+        # and downstream code from blowing up on multi-hundred-MB transcripts.
+        _check_member_sizes(data)
 
         new_etag = hashlib.sha256(data).hexdigest()
         key = _blob_key(user_id, session_id)

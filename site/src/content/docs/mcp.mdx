@@ -31,7 +31,7 @@ sfs mcp install --for claude-code --skip-instructions
 
 ## Tools
 
-The MCP server exposes 14 tools in four categories.
+The MCP server exposes 21 tools in four categories.
 
 ### Session Tools
 
@@ -91,25 +91,80 @@ Get the LLM Judge trust audit — verifiable claims, verdicts (verified/unverifi
 |-----------|------|----------|-------------|
 | `session_id` | string | yes | Session ID in `ses_...` format |
 
+#### `get_session_provenance`
+
+Return the instruction provenance recorded for a session — what rules and artifacts shaped the agent at capture time. Returns `rules_version`, `rules_hash`, `rules_source` (`sessionfs` / `manual` / `mixed` / `none`), and the `instruction_artifacts` list.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `session_id` | string | yes | Session ID in `ses_...` format |
+
 ### Knowledge Read
 
 #### `get_project_context`
 
-Get the shared project context document — architecture decisions, conventions, wiki pages, and recent knowledge entries. Call early in a session to understand the project.
+Get the shared project context document — architecture decisions, conventions, wiki pages, and recent knowledge entries. Call early in a session to understand the project. Use `get_context_section` or `get_wiki_page` instead when you only need one slice — they return less and cost less.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `git_remote` | string | no | Git remote URL (auto-detected from working directory if omitted) |
 
+#### `get_context_section`
+
+Return one section of the project context document by slug instead of the full document. If the slug is not found, the response lists the available slugs so you can retry.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `slug` | string | yes | Section slug (lowercase, non-alphanumeric collapsed to `_`) |
+| `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
+
+#### `get_wiki_page`
+
+Read one wiki page's full content plus backlinks. Cheaper than `get_project_context` when you already know the page slug.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `slug` | string | yes | Wiki page slug (e.g., `architecture`) |
+| `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
+
 #### `search_project_knowledge`
 
-Search across knowledge entries and wiki pages by keyword.
+Search across knowledge entries and wiki pages by keyword. Use this when you have a query string. Use `list_knowledge_entries` instead when you want a filtered list with no query.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `query` | string | yes | What to search for |
 | `entry_type` | string | no | Filter by type: `decision`, `pattern`, `discovery`, `convention`, `bug`, `dependency` |
 | `limit` | number | no | Maximum results (default: 10) |
+
+#### `list_knowledge_entries`
+
+Filtered list of knowledge entries with pagination. Useful when you want to browse by type, claim class, freshness, or origin session without a search query.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `entry_type` | string | no | One of `decision`, `pattern`, `discovery`, `convention`, `bug`, `dependency` |
+| `claim_class` | string | no | `evidence`, `claim`, or `note` |
+| `freshness_class` | string | no | `current`, `aging`, `stale`, or `superseded` |
+| `dismissed` | boolean | no | Include dismissed entries (default: false) |
+| `session_id` | string | no | Only entries linked to this session |
+| `sort` | string | no | `created_at_desc` (default), `last_relevant_at_desc`, `confidence_desc` |
+| `page` | number | no | 1-based page number (default: 1) |
+| `limit` | number | no | Page size, max 200 (default: 50) |
+
+#### `get_knowledge_entry`
+
+Return one knowledge entry's full record, including `last_relevant_at` for stale review.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | number | yes | Knowledge entry ID |
+
+#### `get_knowledge_health`
+
+One call for the dashboard banner data — pending, compiled, dismissed, and total counts; stale and low-confidence counts; word count for the compiled context; recommended next actions.
+
+No parameters required.
 
 #### `ask_project`
 
@@ -145,6 +200,12 @@ Create or update a wiki page in the project knowledge base. Use for longer-form 
 #### `list_wiki_pages`
 
 List all wiki pages for the project. Returns page slugs, titles, word counts, and entry counts. No parameters required.
+
+#### `compile_knowledge_base`
+
+Trigger a compile pass on the project's knowledge base. Promotes pending entries, refreshes section pages and concept pages, and rebuilds the compiled context document. Returns a structured result: `entries_compiled`, `context_words_before`, `context_words_after`, `section_pages_updated`, `concept_pages_updated`, `compiled_at`.
+
+No parameters required.
 
 ### Rules (Read-only)
 

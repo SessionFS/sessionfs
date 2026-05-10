@@ -34,7 +34,16 @@ def register_exception_handlers(app: FastAPI) -> None:
                     message=str(exc.detail),
                 )
             )
-        return JSONResponse(status_code=exc.status_code, content=body.model_dump())
+        # Preserve headers raised with the HTTPException (e.g. Retry-After
+        # on rate limits, X-Deprecation-Warning on legacy paths). Without
+        # this, FastAPI's default forwarding is bypassed by our custom
+        # handler and the headers silently disappear.
+        headers = getattr(exc, "headers", None) or None
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=body.model_dump(),
+            headers=headers,
+        )
 
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError):

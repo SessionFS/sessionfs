@@ -31,6 +31,57 @@ MANAGED_TAG = "sessionfs-managed"
 CANONICAL_SOURCE = "sfs rules edit"
 
 
+_SESSIONFS_MCP_GUIDANCE = """## SessionFS Integration
+
+MCP tools are installed for this project. For ALL SessionFS operations,
+use MCP tools — not CLI commands. Do not run `sfs` commands in the
+terminal for these operations.
+
+Knowledge operations (read):
+  get_project_context — full wiki: overview + pages + concepts
+  get_context_section — one section of the context doc (cheaper than full)
+  get_wiki_page — one wiki page's content
+  search_project_knowledge — search by query
+  list_knowledge_entries — filter by type/class/freshness/session
+  get_knowledge_entry — one entry's full record
+  get_knowledge_health — pending/compiled counts + recommendations
+  ask_project — Q&A against KB + sessions
+
+Knowledge operations (write):
+  add_knowledge — save a discovery, decision, pattern, or convention
+  update_wiki_page — create or update a wiki page
+  list_wiki_pages — browse wiki structure
+  compile_knowledge_base — HEAVY + MUTATING; do not call routinely
+
+Session operations:
+  search_sessions, get_session_context, list_recent_sessions,
+  find_related_sessions, get_session_summary, get_audit_report,
+  get_session_provenance — what rules instructed this session
+
+Rules (read-only):
+  get_rules, get_compiled_rules
+
+Knowledge contribution guidelines:
+  - Only add genuinely novel project knowledge
+  - Most entries default to 'note' class, not 'claim'
+  - Max 5 contributions per session
+  - Ask: "Would a new team member need to know this?" If no, skip it.
+
+Compile workflow (important):
+  - Pending claims do NOT compile themselves. There is no background
+    scheduler — they sit until somebody compiles.
+  - After contributing knowledge in a session, check pending count via
+    get_knowledge_health and remind the user, e.g. "Heads up — you
+    now have N pending knowledge entries. Want me to compile so they
+    fold into the project context?"
+  - Only call compile_knowledge_base when the user explicitly says yes.
+    Do not auto-compile after add_knowledge — compilation is heavy
+    (decay + retention + LLM + page refresh) and serializes on a
+    project lock.
+  - The dashboard's project page also shows a "Compile now" CTA when
+    pending entries exist; users can act there too."""
+
+
 @dataclass
 class KnowledgeClaim:
     """A knowledge entry as seen by compilers — only the fields we inject."""
@@ -268,6 +319,12 @@ class _BaseCompiler:
             parts.append("")
             parts.append(override)
             parts.append("")
+        # SessionFS MCP guidance — instructs the agent to prefer MCP tools
+        # over `sfs` CLI commands. Without this, agents default to bash
+        # because bash is their hammer, hitting CLI rate limits and auth
+        # edge cases that the direct API tools avoid.
+        parts.append(_SESSIONFS_MCP_GUIDANCE)
+        parts.append("")
         if knowledge_block:
             parts.append(knowledge_block)
         if context_block:
