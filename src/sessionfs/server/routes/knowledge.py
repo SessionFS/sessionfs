@@ -283,6 +283,12 @@ async def add_entry(
     # for ops scenarios (e.g. backfills, CI imports).
     effective_tier = await get_effective_tier(user, db)
     tier_value = effective_tier.value if hasattr(effective_tier, "value") else str(effective_tier)
+    # get_effective_tier collapses the legacy "admin" string to Tier.ENTERPRISE,
+    # which would silently cap admins at the enterprise bucket (200/hr).
+    # Check the raw user.tier first so admin users actually get the 500/hr
+    # bucket the table advertises.
+    if getattr(user, "tier", None) == "admin":
+        tier_value = "admin"
     default_limit = KNOWLEDGE_RATE_LIMITS.get(tier_value, 20)
     try:
         max_per_hour = int(

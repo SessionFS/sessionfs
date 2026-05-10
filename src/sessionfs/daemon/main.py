@@ -146,7 +146,12 @@ class DaemonSyncer:
     async def _sync_sessions(self, session_ids: set[str]) -> None:
         """Push pending sessions to the server."""
         from sessionfs.sync.archive import pack_session
-        from sessionfs.sync.client import SyncConflictError, SyncDeletedError, SyncError
+        from sessionfs.sync.client import (
+            SyncConflictError,
+            SyncDeletedError,
+            SyncError,
+            SyncTooLargeError,
+        )
 
         client = self._get_client()
 
@@ -209,11 +214,13 @@ class DaemonSyncer:
                 self._store_local_etag(session_id, exc.current_etag)
                 self._mark_session_dirty_flag(session_id)
 
-            except SyncError as exc:
+            except SyncTooLargeError as exc:
+                # Permanent error: session exceeds the 10MB per-file cap.
+                # Count toward exclusion threshold — retrying will not help.
                 self._consecutive_failures += 1
                 await self._update_watch_status(session_id, "failed", client)
                 logger.warning(
-                    "Sync failed for %s (failures=%d/%d): %s",
+                    "Sync failed for %s (too large, failures=%d/%d): %s",
                     session_id[:12],
                     self._consecutive_failures,
                     self.config.sync.retry_max,
@@ -221,11 +228,28 @@ class DaemonSyncer:
                 )
                 self._record_session_failure(session_id, str(exc))
 
-            except Exception as exc:
+            except SyncError as exc:
+                # Transient error (429, 5xx, network) — log and retry next
+                # cycle. Do NOT count toward the per-session exclusion
+                # threshold; that's reserved for permanent errors like 413.
+                self._consecutive_failures += 1
+                await self._update_watch_status(session_id, "failed", client)
+                logger.warning(
+                    "Sync failed for %s (transient, failures=%d/%d): %s",
+                    session_id[:12],
+                    self._consecutive_failures,
+                    self.config.sync.retry_max,
+                    exc,
+                )
+
+            except Exception:
+                # Unknown/unexpected error path. Treat as transient by
+                # default — better to retry a session that should have
+                # been excluded than to permanently exclude a healthy one
+                # because of a bug in our own error handling.
                 self._consecutive_failures += 1
                 await self._update_watch_status(session_id, "failed", client)
                 logger.exception("Unexpected sync error for %s", session_id[:12])
-                self._record_session_failure(session_id, str(exc))
 
         try:
             await client.close()

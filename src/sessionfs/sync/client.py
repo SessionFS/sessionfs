@@ -51,6 +51,19 @@ class SyncAuthError(SyncError):
     """Authentication failed."""
 
 
+class SyncTooLargeError(SyncError):
+    """Server rejected the upload because a file exceeds the per-member size cap.
+
+    Distinct from generic SyncError so the daemon can permanently exclude
+    these sessions (the user must /clear or /compact to fix), without
+    permanently excluding sessions that hit transient 429/5xx/network errors.
+    """
+
+    def __init__(self, session_id: str, message: str):
+        self.session_id = session_id
+        super().__init__(message)
+
+
 @dataclass
 class SyncResult:
     """Result of a push operation."""
@@ -244,10 +257,11 @@ class SyncClient:
                 message = resp.text
 
             if "Member too large" in message or resp.status_code == 413:
-                raise SyncError(
+                raise SyncTooLargeError(
+                    session_id,
                     f"Session too large to sync ({len(archive_data) // (1024*1024)}MB). "
                     f"This session exceeds the upload limit. "
-                    f"Try: sfs storage prune --session {session_id}"
+                    f"Try: /clear or /compact in your AI tool to start a fresh session."
                 )
 
             raise SyncError(f"Push failed ({resp.status_code}): {message}")

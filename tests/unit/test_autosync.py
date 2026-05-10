@@ -197,6 +197,51 @@ class TestSyncFailureExclusion:
         assert not is_excluded("ses_intermittent01")
 
 
+class TestTransientErrorsDoNotExclude:
+    """Regression: only SyncTooLargeError counts toward the per-session
+    exclusion threshold. Transient errors (429/5xx/network) must not
+    cause a healthy session to be permanently excluded.
+    """
+
+    def _make_syncer(self, tmp_path, monkeypatch):
+        from sessionfs.daemon.config import DaemonConfig
+        from sessionfs.daemon.main import DaemonSyncer
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        import sessionfs.store.deleted as _deleted
+        _deleted._DEFAULT_DIR = tmp_path / ".sessionfs"
+        _deleted._DEFAULT_PATH = _deleted._DEFAULT_DIR / "deleted.json"
+
+        config = DaemonConfig(sync={"enabled": True, "api_key": "test", "auto": "all", "debounce": 1})
+        store = MagicMock()
+        return DaemonSyncer(config, store)
+
+    def test_only_too_large_increments_counter(self, tmp_path, monkeypatch):
+        """Direct test that _record_session_failure is only called for
+        SyncTooLargeError, not generic SyncError or unexpected exceptions.
+
+        Verified by inspecting the daemon source: SyncError and Exception
+        branches no longer call _record_session_failure. If a future refactor
+        adds the call back to those branches, this test catches it via grep.
+        """
+        import inspect
+        from sessionfs.daemon import main as daemon_main
+
+        src = inspect.getsource(daemon_main.DaemonSyncer._sync_sessions)
+        # The "too large" branch must call the failure recorder.
+        too_large_block = src.split("except SyncTooLargeError")[1].split("except SyncError")[0]
+        assert "_record_session_failure" in too_large_block, \
+            "SyncTooLargeError branch must record the failure for exclusion"
+        # The transient SyncError branch must NOT call the failure recorder.
+        sync_error_block = src.split("except SyncError")[1].split("except Exception")[0]
+        assert "_record_session_failure" not in sync_error_block, \
+            "Transient SyncError must NOT count toward exclusion threshold"
+        # The unexpected-exception branch must NOT call it either.
+        exception_block = src.split("except Exception")[1]
+        assert "_record_session_failure" not in exception_block, \
+            "Unknown exceptions must NOT count toward exclusion threshold"
+
+
 class TestClientSideOversizedCheck:
     """sfs push refuses to upload archives whose members exceed 10MB."""
 
