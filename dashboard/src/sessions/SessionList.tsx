@@ -228,12 +228,16 @@ export default function SessionList() {
   const { data: folderSessionsData } = useFolderSessions(selectedFolderId);
   const { data: foldersData } = useFolders();
 
-  // Handoffs inbox query
+  // Handoffs inbox query. 5-min stale window — incoming handoffs are
+  // async events that don't need sub-minute precision in the badge
+  // counter, and SessionList is the hottest screen so cutting
+  // remount refetches matters. The badge stays accurate after any
+  // claim/accept flow because those paths invalidate the cache.
   const { data: handoffsData } = useQuery<HandoffListResponse>({
     queryKey: ['handoffs', 'inbox'],
     queryFn: () => auth!.client.listInbox(),
     enabled: !!auth,
-    staleTime: 60_000,
+    staleTime: 300_000,
   });
 
   const pendingHandoffs = useMemo(() => {

@@ -49,18 +49,28 @@ export default function GettingStartedPage() {
   const signupApiKey = (location.state as { apiKey?: string } | null)?.apiKey;
   const [showKeyBanner, setShowKeyBanner] = useState(!!signupApiKey);
 
+  // Each query polls until its own completion condition is met. Once
+  // the user has at least one session / project the page is going to
+  // redirect anyway, so background polling at that point is wasted
+  // requests against the API.
   const sessions = useQuery({
     queryKey: ['sessions', { page: 1, page_size: 1 }],
     queryFn: () => auth!.client.listSessions({ page: 1, page_size: 1 }),
     enabled: !!auth,
-    refetchInterval: 10_000,
+    refetchInterval: (q) => {
+      const total = (q.state.data as { total?: number } | undefined)?.total ?? 0;
+      return total > 0 ? false : 10_000;
+    },
   });
 
   const projects = useQuery({
     queryKey: ['projects'],
     queryFn: () => auth!.client.listProjects(),
     enabled: !!auth,
-    refetchInterval: 10_000,
+    refetchInterval: (q) => {
+      const data = q.state.data as unknown[] | undefined;
+      return (data?.length ?? 0) > 0 ? false : 10_000;
+    },
   });
 
   const hasSession = (sessions.data?.total ?? 0) > 0;

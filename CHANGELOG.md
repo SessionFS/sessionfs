@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.9.9] - 2026-05-11
+
+### Fixed
+- **CI / Deploy API gate.** Three tests asserted substrings (`--to`, `messages.jsonl`, `claude-code (user)`) directly against captured stdout/stderr. Rich's console renderer splits styled text across ANSI escape sequences when color is enabled (CI's wider terminal triggered it; local pytest had color disabled). v0.9.9.8's Deploy API workflow runs `pytest tests/ -v` as a deploy gate, so this blocked the release deploy. Fix: strip ANSI codes with a `\x1b\[[0-9;]*[a-zA-Z]` regex before substring assertions in `tests/unit/test_autosync.py` and `tests/unit/test_hooks_installer.py`. Verified by running the full backend suite under `FORCE_COLOR=1`.
+
+### Changed
+- **Dashboard audit polling consolidated.** `dashboard/src/hooks/useAudit.ts` previously exposed a `useRunAudit` hook that owned a parallel 5-second poll loop competing with `BackgroundTasksProvider` for the same audit lifecycle. `useRunAudit` had zero callers — pure dead code. Removed; `BackgroundTasksProvider` (driven by `AuditModal`) is now the single owner of run + poll.
+- **Onboarding page stops polling on completion.** `dashboard/src/onboarding/GettingStartedPage.tsx` used `refetchInterval: 10_000` unconditionally on the `sessions` and `projects` queries, so the page kept hitting `/api/v1/sessions` and `/api/v1/projects` every 10 s indefinitely. Now each query stops polling once its own completion condition is met (`sessions.total > 0`, `projects.length > 0`) via the function-form `refetchInterval`.
+- **Folder + inbox-handoff stale windows extended on the hottest screen.** `useFolders` staleTime 30 s → 300 s; `SessionList`'s inbox-handoff query 60 s → 300 s. Folder mutations (`create`/`update`/`delete`/`bookmark`) still invalidate the cache, so stale data isn't a correctness risk. The 5-min window cuts redundant refetches on every remount and tab focus — `SessionList` is the dashboard's hottest screen and these queries fired on every mount.
+
+### Notes
+- No new database migrations. No server-side code changes.
+- Helm chart version 0.9.11 → 0.9.12 (chart evolves independent of app). appVersion 0.9.9.9.
+- 1344 backend tests + 109 dashboard tests passing. Test fix verified under `FORCE_COLOR=1` to match CI behaviour.
+
 ## [0.9.9.8] - 2026-05-11
 
 ### Fixed

@@ -175,7 +175,13 @@ def test_status_reports_each_tool_slot(tmp_path: Path):
         result = runner.invoke(hooks_app, ["status"])
 
     assert result.exit_code == 0, result.output
-    out = result.stdout
+    # Strip ANSI codes — Rich's status renderer splits styled text
+    # across escape sequences (e.g. "claude-code (user)" may render as
+    # "\x1b[1mclaude-code\x1b[0m (user)" under FORCE_COLOR/CI), which
+    # breaks substring assertions in environments with color enabled.
+    import re as _re
+
+    out = _re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", result.stdout)
     # User scope: installed.
     assert "claude-code (user)" in out
     assert "INSTALLED" in out
