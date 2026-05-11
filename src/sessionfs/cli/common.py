@@ -19,12 +19,26 @@ err_console = Console(stderr=True)
 
 def handle_errors(func):
     """Decorator that catches common exceptions and prints friendly messages."""
+    # click.exceptions.ClickException is the base for typer.BadParameter
+    # and Typer/Click usage errors. They render themselves cleanly with
+    # the standard "Usage: ... \n Error: ..." formatting; if we let
+    # them fall through to the generic Exception catch they print as
+    # "Unexpected error: ..." which looks like a crash. Let Click/Typer
+    # handle their own validation errors and we only intercept the
+    # truly-unexpected stuff.
+    import click.exceptions as _click_exc
 
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         try:
             return func(*args, **kwargs)
         except SystemExit:
+            raise
+        except _click_exc.ClickException:
+            # Re-raise so Typer's outer handler can render the standard
+            # parser-error format ("Usage: ... \n Try '... --help'." +
+            # "Error: <message>"). Wrapping this in our friendly
+            # decorator would mask the actual UX.
             raise
         except KeyboardInterrupt:
             err_console.print("\nCancelled.")

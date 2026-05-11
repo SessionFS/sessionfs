@@ -26,6 +26,13 @@ logger = logging.getLogger("sessionfs.store.deleted")
 _DEFAULT_DIR = Path.home() / ".sessionfs"
 _DEFAULT_PATH = _DEFAULT_DIR / "deleted.json"
 
+# Reasons that indicate a TRANSIENT exclusion — the session could become
+# syncable again if conditions change (tier upgrade lifts the size cap,
+# user /compacts the session, server env override changes). Manual
+# `sfs sync` clears these before its run so the user can retry; the
+# daemon's autosync respects them to avoid retry storms.
+TRANSIENT_REASONS: frozenset[str] = frozenset({"too_large"})
+
 
 def _deleted_path(base_dir: Path | None = None) -> Path:
     """Return the path to deleted.json."""
@@ -116,10 +123,15 @@ def mark_deleted(
 
 
 def is_excluded(session_id: str, base_dir: Path | None = None) -> bool:
-    """Check if a session is in the local exclusion list."""
-    path = _deleted_path(base_dir)
-    data = _read_deleted(path)
-    return session_id in data
+    """Check if a session is in the local exclusion list.
+
+    Delegates to `get_entry` so the malformed-entry filter applies
+    here too. Without this, watchers, the push undelete prompt, and
+    410 cleanup would treat a corrupt non-dict entry as "excluded"
+    while manual sync and `sfs trash` would treat it as absent —
+    that split-brain was the round-10 finding.
+    """
+    return get_entry(session_id, base_dir) is not None
 
 
 def remove_exclusion(session_id: str, base_dir: Path | None = None) -> None:
@@ -140,13 +152,156 @@ def remove_exclusion(session_id: str, base_dir: Path | None = None) -> None:
 
 
 def list_deleted(base_dir: Path | None = None) -> dict[str, Any]:
-    """Return all entries from the local exclusion list."""
+    """Return all entries from the local exclusion list.
+
+    Filters out non-dict values defensively — a hand-edited or
+    corrupt `deleted.json` (e.g. `{"ses_x": "everywhere"}` with the
+    string snuck in instead of a dict) would otherwise crash every
+    caller that iterates and does `entry.get(...)`. Mirrors the
+    same defensive shape as `get_entry`: every caller gets sanitized
+    data without needing its own isinstance() check.
+    """
     path = _deleted_path(base_dir)
-    return _read_deleted(path)
+    data = _read_deleted(path)
+    return {
+        sid: entry for sid, entry in data.items()
+        if isinstance(entry, dict)
+    }
 
 
 def get_entry(session_id: str, base_dir: Path | None = None) -> dict[str, Any] | None:
-    """Get the exclusion entry for a session, or None."""
+    """Get the exclusion entry for a session, or None.
+
+    Defensively returns None for non-dict values — a hand-edited or
+    corrupted deleted.json (e.g. `{"ses_x": "everywhere"}` where the
+    string snuck in instead of a dict) used to crash callers that
+    immediately did `.get("reason")`. The atomic `acquire_for_retry`
+    helper has its own non-dict guard for the gate path; this guard
+    closes the same hole for every other caller (sfs delete CLI,
+    push-with-undelete prompt, sync hint path) in one place.
+    """
     path = _deleted_path(base_dir)
     data = _read_deleted(path)
-    return data.get(session_id)
+    entry = data.get(session_id)
+    if entry is None or not isinstance(entry, dict):
+        return None
+    return entry
+
+
+def is_transient_exclusion(
+    session_id: str, base_dir: Path | None = None
+) -> bool:
+    """Return True if this session was excluded for a TRANSIENT reason
+    (e.g. too_large) that could resolve on retry. Hard deletes
+    (no reason, or unknown reason) return False — those stay excluded.
+    """
+    entry = get_entry(session_id, base_dir)
+    if entry is None:
+        return False
+    return entry.get("reason") in TRANSIENT_REASONS
+
+
+def remove_if_transient(session_id: str, base_dir: Path | None = None) -> bool:
+    """Atomically remove `session_id` ONLY if its reason is currently
+    in TRANSIENT_REASONS. Returns True when the entry was removed,
+    False otherwise (no entry, or entry is a hard delete now).
+
+    Closes the TOCTOU window between an unlocked get_entry() read and
+    a separate remove_exclusion() write. Manual sync calls this right
+    before the actual push/pull network call — if another writer
+    (e.g. an `sfs delete --everywhere` CLI) flipped the entry from
+    "too_large" to a hard delete between our read and now, the hard
+    delete wins and we abort the retry.
+    """
+    path = _deleted_path(base_dir)
+    lock = _lock_path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock, "a") as lf:
+        fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+        try:
+            data = _read_deleted(path)
+            entry = data.get(session_id)
+            if entry is None:
+                return False
+            if not isinstance(entry, dict):
+                return False
+            if entry.get("reason") not in TRANSIENT_REASONS:
+                return False
+            del data[session_id]
+            _write_deleted(path, data)
+            return True
+        finally:
+            fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+
+
+def acquire_for_retry(session_id: str, base_dir: Path | None = None) -> bool:
+    """Atomic "may I proceed with a sync retry for this session?" gate.
+
+    Under the same fcntl.flock the other writers hold, returns:
+      - True with no side effects, when no exclusion entry exists.
+      - True with the entry removed, when a transient exclusion exists.
+      - False with no side effects, when a hard delete entry exists.
+
+    This is the only safe way to ask the question right before a
+    network call. The two-step pattern (unlocked get_entry snapshot
+    → remove_if_transient under lock) leaked a race window: if the
+    first read saw None and another writer wrote a hard delete before
+    the network call, sync would have pushed the deleted session
+    anyway. acquire_for_retry closes that window by doing the
+    presence check, transient discrimination, and removal in a
+    single critical section.
+    """
+    path = _deleted_path(base_dir)
+    lock = _lock_path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock, "a") as lf:
+        fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+        try:
+            data = _read_deleted(path)
+            entry = data.get(session_id)
+            if entry is None or not isinstance(entry, dict):
+                # No exclusion (or malformed entry) → safe to proceed.
+                return True
+            if entry.get("reason") in TRANSIENT_REASONS:
+                # Transient: clear it atomically and let the caller proceed.
+                del data[session_id]
+                _write_deleted(path, data)
+                return True
+            # Hard delete present → caller must abort the retry.
+            return False
+        finally:
+            fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+
+
+def clear_transient_exclusions(base_dir: Path | None = None) -> list[str]:
+    """Remove all entries whose `reason` is in TRANSIENT_REASONS.
+
+    Returns the list of session_ids that were cleared. Manual
+    `sfs sync` calls this at the start of a run so the user-driven
+    retry attempt isn't silently filtered out by a stale auto-exclusion.
+    Hard deletes (user-initiated, scope=everywhere/local/cloud without
+    transient reason) are preserved.
+    """
+    path = _deleted_path(base_dir)
+    lock = _lock_path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cleared: list[str] = []
+    with open(lock, "a") as lf:
+        fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+        try:
+            data = _read_deleted(path)
+            for sid, entry in list(data.items()):
+                if isinstance(entry, dict) and entry.get("reason") in TRANSIENT_REASONS:
+                    cleared.append(sid)
+                    del data[sid]
+            if cleared:
+                _write_deleted(path, data)
+        finally:
+            fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+    if cleared:
+        logger.info(
+            "Cleared %d transient exclusion(s): %s",
+            len(cleared),
+            ", ".join(cleared),
+        )
+    return cleared

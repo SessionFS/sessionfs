@@ -97,3 +97,11 @@ app.command("restore")(handle_errors(restore_cmd))
 def cli_main() -> None:
     """Entry point for the sfs CLI."""
     app()
+
+
+if __name__ == "__main__":
+    # Lets `python -m sessionfs.cli.main` work as a fallback when the
+    # installed `sfs` binary is shadowed by an older copy on PATH.
+    # `sfs doctor` surfaces this advice when stale-install drift is
+    # detected — keep the entry point reachable.
+    cli_main()

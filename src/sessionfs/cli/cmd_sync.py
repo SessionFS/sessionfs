@@ -64,9 +64,14 @@ async def _api_delete(path: str, api_url: str, api_key: str) -> dict:
 
 @sync_app.callback(invoke_without_command=True)
 def sync_default(ctx: typer.Context) -> None:
-    """Show sync status or run bidirectional sync."""
+    """Show sync status or run bidirectional sync.
+
+    Transient-exclusion clearing happens INSIDE sync_all after the
+    auth client is constructed (see cmd_cloud.sync_all). That way a
+    failed manual sync (no API key, bad URL) doesn't silently wipe the
+    daemon's backoff guard for sessions it auto-excluded.
+    """
     if ctx.invoked_subcommand is None:
-        # Default: run bidirectional sync (existing behavior)
         from sessionfs.cli.cmd_cloud import sync_all
         sync_all()
 

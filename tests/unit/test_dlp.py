@@ -416,3 +416,210 @@ class TestValidateDLPPolicy:
             {"mode": "warn", "categories": ["secrets", "secrets", "phi"]}
         )
         assert result["categories"] == ["phi", "secrets"]
+
+
+# =========================================================================
+# redact_and_repack tier-aware member-size cap (v0.9.9.8 fix)
+# =========================================================================
+
+
+class TestRedactAndRepackMemberLimit:
+    """Regression for the v0.9.9.7 release miss: redact_and_repack had a
+    hardcoded 50 MB cap that silently nullified any
+    SFS_MAX_SYNC_MEMBER_BYTES_PAID override above 50 MB for orgs with
+    DLP=REDACT mode. The fix accepts a `member_limit_bytes` parameter
+    and raises a typed DlpMemberTooLargeError so the route can return
+    the same structured 413 envelope as _check_member_sizes.
+    """
+
+    @staticmethod
+    def _build_archive(member_size: int, name: str = "messages.jsonl") -> bytes:
+        """Construct a valid tar.gz with a single member of the given
+        uncompressed size. The payload is highly compressible (single
+        byte repeated) so the wire payload stays small.
+        """
+        import io
+        import tarfile
+
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            payload = b"x" * member_size
+            info = tarfile.TarInfo(name=name)
+            info.size = len(payload)
+            tar.addfile(info, io.BytesIO(payload))
+        return buf.getvalue()
+
+    def test_accepts_member_under_supplied_limit(self):
+        """20 MB member with a 30 MB limit should redact + repack cleanly."""
+        from sessionfs.server.dlp import redact_and_repack
+        from sessionfs.security.secrets import DLPFinding
+
+        archive = self._build_archive(member_size=20 * 1024 * 1024)
+        # A finding is required so the function does work (it short-circuits
+        # on empty findings and returns the input unchanged).
+        # match_text must NOT appear in the payload — otherwise redact_text
+        # grinds through millions of regex matches in O(payload_size).
+        # The point of these tests is the member-size guard, not the
+        # redaction work, so we use a sentinel that's absent from the
+        # all-"x" payload.
+        findings = [
+            DLPFinding(
+                pattern_name="dummy",
+                match_text="not-in-payload-Z9Q",
+                line_number=1,
+                category="secrets",
+                severity="low",
+                context="",
+            )
+        ]
+        result = redact_and_repack(
+            archive,
+            findings,
+            member_limit_bytes=30 * 1024 * 1024,
+        )
+        assert isinstance(result, bytes)
+        assert len(result) > 0
+
+    def test_rejects_member_over_supplied_limit_with_typed_exception(self):
+        """Pre-fix this raised generic ValueError. Post-fix it raises
+        DlpMemberTooLargeError carrying member_name, member_size,
+        limit_bytes — enough for the route to build the structured 413."""
+        from sessionfs.server.dlp import (
+            DlpMemberTooLargeError,
+            redact_and_repack,
+        )
+        from sessionfs.security.secrets import DLPFinding
+
+        archive = self._build_archive(member_size=11 * 1024 * 1024)
+        # match_text must NOT appear in the payload — otherwise redact_text
+        # grinds through millions of regex matches in O(payload_size).
+        # The point of these tests is the member-size guard, not the
+        # redaction work, so we use a sentinel that's absent from the
+        # all-"x" payload.
+        findings = [
+            DLPFinding(
+                pattern_name="dummy",
+                match_text="not-in-payload-Z9Q",
+                line_number=1,
+                category="secrets",
+                severity="low",
+                context="",
+            )
+        ]
+        with pytest.raises(DlpMemberTooLargeError) as exc_info:
+            redact_and_repack(
+                archive,
+                findings,
+                member_limit_bytes=10 * 1024 * 1024,
+            )
+        exc = exc_info.value
+        assert exc.member_name == "messages.jsonl"
+        assert exc.member_size == 11 * 1024 * 1024
+        assert exc.limit_bytes == 10 * 1024 * 1024
+
+    def test_accepts_60mb_member_when_limit_is_80mb(self):
+        """The headline regression: pre-fix the hardcoded 50 MB rejected
+        anything above 50 MB regardless of caller config. Post-fix, an
+        80 MB limit (matching SFS_MAX_SYNC_MEMBER_BYTES_PAID=80MB)
+        accepts a 60 MB member cleanly.
+        """
+        from sessionfs.server.dlp import redact_and_repack
+        from sessionfs.security.secrets import DLPFinding
+
+        archive = self._build_archive(member_size=60 * 1024 * 1024)
+        # match_text must NOT appear in the payload — otherwise redact_text
+        # grinds through millions of regex matches in O(payload_size).
+        # The point of these tests is the member-size guard, not the
+        # redaction work, so we use a sentinel that's absent from the
+        # all-"x" payload.
+        findings = [
+            DLPFinding(
+                pattern_name="dummy",
+                match_text="not-in-payload-Z9Q",
+                line_number=1,
+                category="secrets",
+                severity="low",
+                context="",
+            )
+        ]
+        result = redact_and_repack(
+            archive,
+            findings,
+            member_limit_bytes=80 * 1024 * 1024,
+        )
+        assert isinstance(result, bytes)
+        assert len(result) > 0
+
+    def test_default_limit_is_conservative_when_caller_skips_param(self):
+        """Backward compat: callers that don't pass member_limit_bytes
+        get the conservative 10 MB default (matches free-tier cap).
+        Production sync_push always passes the tier-resolved limit; the
+        default only fires for unauthenticated / non-tier callers.
+        """
+        from sessionfs.server.dlp import (
+            DEFAULT_DLP_MEMBER_LIMIT_BYTES,
+            DlpMemberTooLargeError,
+            redact_and_repack,
+        )
+        from sessionfs.security.secrets import DLPFinding
+
+        assert DEFAULT_DLP_MEMBER_LIMIT_BYTES == 10 * 1024 * 1024
+
+        # 11 MB member with NO limit specified → rejected via default.
+        archive = self._build_archive(member_size=11 * 1024 * 1024)
+        # match_text must NOT appear in the payload — otherwise redact_text
+        # grinds through millions of regex matches in O(payload_size).
+        # The point of these tests is the member-size guard, not the
+        # redaction work, so we use a sentinel that's absent from the
+        # all-"x" payload.
+        findings = [
+            DLPFinding(
+                pattern_name="dummy",
+                match_text="not-in-payload-Z9Q",
+                line_number=1,
+                category="secrets",
+                severity="low",
+                context="",
+            )
+        ]
+        with pytest.raises(DlpMemberTooLargeError) as exc_info:
+            redact_and_repack(archive, findings)
+        assert exc_info.value.limit_bytes == DEFAULT_DLP_MEMBER_LIMIT_BYTES
+
+    def test_rejects_member_that_grows_over_limit_after_redaction(self):
+        """A member that starts under the cap can still exceed it after
+        replacement expansion. The post-redaction size must be enforced,
+        not just the original tar header size.
+        """
+        from sessionfs.server.dlp import (
+            DlpMemberTooLargeError,
+            redact_and_repack,
+        )
+        from sessionfs.security.secrets import DLPFinding
+
+        limit = 1024 * 1024  # 1 MB
+        # Starts well below the limit, but every "x" expands to the
+        # 16-byte "[REDACTED:dummy]" marker, pushing the repacked member
+        # above 1 MB.
+        archive = self._build_archive(member_size=70 * 1024)
+        findings = [
+            DLPFinding(
+                pattern_name="dummy",
+                match_text="x",
+                line_number=1,
+                category="secrets",
+                severity="low",
+                context="",
+            )
+        ]
+
+        with pytest.raises(DlpMemberTooLargeError) as exc_info:
+            redact_and_repack(
+                archive,
+                findings,
+                member_limit_bytes=limit,
+            )
+        exc = exc_info.value
+        assert exc.member_name == "messages.jsonl"
+        assert exc.member_size > limit
+        assert exc.limit_bytes == limit
