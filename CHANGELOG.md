@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.9.8] - 2026-05-11
+
+### Fixed
+- **DLP per-member size cap is now tier-aware.** `redact_and_repack` accepts a `member_limit_bytes` parameter sourced from the same `_member_size_limit_for_tier` helper used by `_check_member_sizes`. Pre-fix, a hardcoded `50 * 1024 * 1024` in `server/dlp.py` silently nullified any `SFS_MAX_SYNC_MEMBER_BYTES_PAID` env override above 50 MB for orgs with DLP=REDACT mode enabled. New typed `DlpMemberTooLargeError` lets the route return the same structured 413 envelope as the non-DLP path. Post-redaction size validation added — replacement markers like `[REDACTED:openai_api_key]` (24 chars) can expand a payload past the cap.
+- **`sfs handoff <handoff_id>` now redirects to `sfs pull-handoff` instead of "Missing option --to".** Recipients who pasted a handoff ID into the (sender) command hit a wall; redirect is gated on `not to` so session aliases shaped like `hnd_…` aren't hijacked.
+- **`handle_errors` decorator no longer swallows Typer/Click validation errors.** `click.exceptions.ClickException` re-raises through the standard Typer error-box rendering instead of being caught as generic Exception and printed as "Unexpected error: ...".
+- **`sfs sync` no longer silently skips sessions the daemon auto-excluded for transient reasons.** Hard deletes still respected. Per-session atomic clearing under `fcntl.flock` (new `acquire_for_retry()` helper) gates immediately before the network call so partial-failure paths preserve the exclusion. TOCTOU window between snapshot read and clear is closed: any concurrent writer that installs a hard delete during the sync run wins. All exclusion-list helpers (`is_excluded`, `get_entry`, `list_deleted`, `is_transient_exclusion`) now defensively filter non-dict entries from a hand-edited or corrupted `deleted.json`.
+- **`sfs doctor` install-consistency check** detects "pip-installed sessionfs to user-site but PATH points at an older binary tied to a different Python interpreter" drift. Parses the on-PATH `sfs` binary's shebang and subprocesses that interpreter to read its `sessionfs.__version__`. Reports the divergence and points at the `python -m sessionfs.cli.main` fallback (made reachable via a new `__main__` guard in `cli/main.py`).
+- **Helm chart version** bumped 0.9.10 → 0.9.11 (chart evolves independently of app version; appVersion 0.9.9.8).
+
+### Notes
+- No new database migrations. 031, 032, 033 from v0.9.9.7 remain authoritative.
+- 1344 backend tests + 109 dashboard tests passing. Ten Codex review rounds resolved.
+
 ## [0.9.9.7] - 2026-05-10
 
 ### Added

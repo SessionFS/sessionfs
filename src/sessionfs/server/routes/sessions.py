@@ -1413,7 +1413,45 @@ async def sync_push(
                             },
                         )
                     elif mode == "redact":
-                        data = redact_and_repack(data, findings)
+                        # Pass the tier-resolved member cap so DLP rejects at
+                        # the same threshold as `_check_member_sizes`. Before
+                        # v0.9.9.8, redact_and_repack had a hardcoded 50 MB
+                        # cap that silently nullified SFS_MAX_SYNC_MEMBER_BYTES_PAID
+                        # overrides above 50 MB for orgs with DLP=REDACT.
+                        from sessionfs.server.dlp import DlpMemberTooLargeError
+
+                        try:
+                            data = redact_and_repack(
+                                data,
+                                findings,
+                                member_limit_bytes=_member_size_limit_for_tier(
+                                    effective_tier
+                                ),
+                            )
+                        except DlpMemberTooLargeError as exc:
+                            # Same 413 envelope as `_check_member_sizes` so
+                            # the CLI surfaces identical guidance regardless
+                            # of which guard fired.
+                            raise HTTPException(
+                                status_code=413,
+                                detail={
+                                    "error": "session_too_large",
+                                    "message": (
+                                        f"Session file '{exc.member_name}' is "
+                                        f"{exc.member_size // (1024 * 1024)}MB which "
+                                        f"exceeds the {exc.limit_bytes // (1024 * 1024)}MB "
+                                        "per-file limit for your tier."
+                                    ),
+                                    "file": exc.member_name,
+                                    "size_bytes": exc.member_size,
+                                    "limit_bytes": exc.limit_bytes,
+                                    "suggestion": (
+                                        "Try /compact in your AI tool to start a "
+                                        "fresh session, or contact support for a "
+                                        "larger limit."
+                                    ),
+                                },
+                            ) from exc
                         messages_text = _extract_messages_text(data)
 
         # Extract git metadata for PR matching

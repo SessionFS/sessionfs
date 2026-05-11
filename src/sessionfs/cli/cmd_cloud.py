@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -541,7 +542,18 @@ def sync_all() -> None:
     from sessionfs.sync.archive import pack_session, unpack_session
     from sessionfs.sync.client import SyncConflictError, SyncDeletedError
 
+    # Construct the client FIRST so auth/config failures (no API key,
+    # bad URL, etc.) exit before we touch the exclusion list.
     client = _get_sync_client()
+
+    # NOTE: transient exclusions are NOT cleared in bulk here. They're
+    # cleared per-session at the moment of retry (in _push_one /
+    # _pull_one), so if sync crashes before reaching session X, X's
+    # exclusion stays intact and the daemon's backoff guard keeps
+    # working on the next cycle. This is the only way to guarantee
+    # "exclusion cleared ⇒ retry actually attempted" — bulk-clearing
+    # upfront breaks that invariant on any partial-failure path.
+
     store = open_store()
 
     async def _sync():
@@ -552,7 +564,13 @@ def sync_all() -> None:
         upload_sem = asyncio.Semaphore(5)
 
         try:
-            # Get all remote sessions (paginate through all pages)
+            # Get all remote sessions (paginate through all pages). The
+            # first successful page-1 response is our "server is
+            # reachable" signal — only after that do we clear
+            # transient exclusions. If the network is down or the
+            # server is 5xx, list_remote_sessions raises here, the
+            # exclusion file stays intact, and the daemon's backoff
+            # guard continues to do its job.
             remote_by_id: dict = {}
             page = 1
             while True:
@@ -573,10 +591,23 @@ def sync_all() -> None:
             async def _push_one(sid: str) -> None:
                 nonlocal pushed, conflicts
 
-                # Skip sessions in the local exclusion list
-                from sessionfs.store.deleted import is_excluded
-                if is_excluded(sid):
-                    return
+                # Cheap unlocked pre-filter for the common case:
+                # already a hard delete? Skip without doing filesystem
+                # work. This is a hint, not a guarantee — the
+                # authoritative gate is the atomic acquire_for_retry()
+                # call immediately before the network request below.
+                from sessionfs.store.deleted import (
+                    TRANSIENT_REASONS,
+                    acquire_for_retry,
+                    get_entry,
+                )
+
+                hint = get_entry(sid)
+                if (
+                    hint is not None
+                    and hint.get("reason") not in TRANSIENT_REASONS
+                ):
+                    return  # Already hard-deleted at snapshot time
 
                 session_dir = store.get_session_dir(sid)
                 if not session_dir:
@@ -587,11 +618,23 @@ def sync_all() -> None:
 
                 remote = remote_by_id.get(sid)
                 if remote and remote.etag == local_etag:
-                    return  # Already in sync
+                    return  # Already in sync — no retry needed
 
                 async with upload_sem:
                     try:
                         archive_data = pack_session(session_dir)
+                        # Authoritative gate: atomically asks the
+                        # deleted.json file "may I proceed?". Returns
+                        # True if no entry OR a transient entry was
+                        # cleared in the same critical section. Returns
+                        # False if a hard delete is present (whether it
+                        # was there at snapshot time or a concurrent
+                        # writer added it between the snapshot and
+                        # now). Closes the round-7 race where an
+                        # unlocked-None-then-hard-delete sequence
+                        # would have pushed the deleted session.
+                        if not acquire_for_retry(sid):
+                            return
                         result = await client.push_session(sid, archive_data, etag=local_etag)
                         _update_manifest_sync(session_dir, result.etag)
                         push_results[sid] = "pushed"
@@ -620,13 +663,26 @@ def sync_all() -> None:
             pull_sem = asyncio.Semaphore(5)
 
             async def _pull_one(sid: str) -> bool:
-                # Skip sessions in the local exclusion list
-                from sessionfs.store.deleted import is_excluded
-                if is_excluded(sid):
+                # Same shape as _push_one: cheap unlocked hint to
+                # short-circuit known hard deletes, then a definitive
+                # atomic gate inside the semaphore.
+                from sessionfs.store.deleted import (
+                    TRANSIENT_REASONS,
+                    acquire_for_retry,
+                    get_entry,
+                )
+
+                hint = get_entry(sid)
+                if (
+                    hint is not None
+                    and hint.get("reason") not in TRANSIENT_REASONS
+                ):
                     return False
 
                 async with pull_sem:
                     try:
+                        if not acquire_for_retry(sid):
+                            return False
                         result = await client.pull_session(sid)
                         if result.data:
                             target_dir = store.allocate_session_dir(sid)
@@ -673,12 +729,50 @@ def sync_all() -> None:
 handoffs_app = typer.Typer(name="handoffs", help="View handoff inbox and sent items.")
 
 
+_HANDOFF_ID_RE = re.compile(r"^hnd_[a-f0-9]{8,}$")
+
+
 def handoff(
     session_id: str = typer.Argument(help="Session ID or prefix."),
-    to: str = typer.Option(..., "--to", help="Recipient email."),
+    # --to is intentionally NOT required at the Typer level. Making it
+    # Option(...) (required) means Typer's argument parser rejects
+    # `sfs handoff hnd_<id>` BEFORE this function runs — the exact user
+    # mistake we want to catch with a friendly redirect. We validate
+    # presence ourselves below, after the redirect check has had a
+    # chance to fire.
+    to: str = typer.Option(None, "--to", help="Recipient email."),
     message: str = typer.Option("", "--message", "-m", help="Message to include."),
 ) -> None:
     """Hand off a session to another user (push + email notification)."""
+    # Common UX confusion: recipients with a handoff ID type
+    # `sfs handoff hnd_...` expecting to claim it, hit a wall of
+    # `--to` errors, and never find pull-handoff. Detect that exact
+    # case and redirect.
+    #
+    # Gate on `not to`: when --to IS provided the user clearly intends a
+    # send, so respect their input even if the positional looks like a
+    # handoff ID (a session alias might legitimately be named
+    # "hnd_deadbeef" — resolve_session_id below will resolve it). This
+    # keeps the redirect tight to the bug pattern Pius hit.
+    if not to and _HANDOFF_ID_RE.match(session_id):
+        err_console.print(
+            f"[yellow]'{session_id}' looks like a handoff ID, not a session ID.[/yellow]\n"
+            f"\n"
+            f"To CLAIM a handoff someone sent you, run:\n"
+            f"    [cyan]sfs pull-handoff {session_id}[/cyan]\n"
+            f"\n"
+            f"[dim]`sfs handoff` is for SENDING — it pushes one of your sessions\n"
+            f"and emails a recipient. Different verbs, easy to mix up.[/dim]"
+        )
+        raise SystemExit(2)
+
+    # Now enforce --to. typer.BadParameter renders through the standard
+    # Typer "Usage: ... Error: ..." formatting (handle_errors lets
+    # ClickException through specifically so this looks like every
+    # other validation error in the CLI).
+    if not to:
+        raise typer.BadParameter("Missing option '--to'.", param_hint="'--to'")
+
     from sessionfs.sync.archive import pack_session
     from sessionfs.sync.client import SyncConflictError, SyncDeletedError, SyncTooLargeError
 

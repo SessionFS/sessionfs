@@ -387,3 +387,84 @@ class TestHandoffOversizeHandling:
 
         # Confirm push was never attempted.
         mock_client.push_session.assert_not_called()
+
+
+class TestHandoffIdMisuseRedirect:
+    """v0.9.9.8: a user with a handoff ID who runs `sfs handoff <hnd_id>`
+    expecting to CLAIM it must be redirected to `sfs pull-handoff`. The
+    original error ("Missing option '--to'") was actively misleading.
+
+    Codex round 1 caught that direct-function-call tests bypass Typer's
+    parser, which would reject `--to` BEFORE the redirect ran. These
+    tests invoke through Typer's CliRunner so the parser is exercised
+    end-to-end, matching what the real `sfs` binary does.
+    """
+
+    @staticmethod
+    def _runner():
+        from typer.testing import CliRunner
+        from sessionfs.cli.main import app
+
+        return CliRunner(), app
+
+    def test_typer_invocation_with_handoff_id_redirects_without_to(self):
+        """End-to-end via Typer: `sfs handoff hnd_<id>` without --to
+        must hit the redirect, NOT Typer's "Missing option '--to'"
+        error. This is the exact user scenario.
+        """
+        runner, app = self._runner()
+        result = runner.invoke(app, ["handoff", "hnd_a83256fc5ed68cef"])
+        assert result.exit_code == 2, result.output
+        out = result.output.lower()
+        assert "pull-handoff" in out
+        assert "hnd_a83256fc5ed68cef" in out
+        # The misleading legacy error must NOT appear.
+        assert "missing option '--to'" not in out
+
+    def test_typer_invocation_with_session_id_still_requires_to(self):
+        """Normal flow regression: a real session ID with no --to must
+        still error with the standard Typer validation message, NOT
+        the generic "Unexpected error: ..." that handle_errors would
+        otherwise produce when our BadParameter falls through.
+        """
+        runner, app = self._runner()
+        result = runner.invoke(
+            app, ["handoff", "ses_abc123def4567890"]
+        )
+        assert result.exit_code != 0
+        out = result.output.lower()
+        assert "--to" in out
+        # Codex round 2 caught this: handle_errors used to swallow
+        # ClickException as generic Exception, producing this string.
+        # The fix (let ClickException pass through) means the standard
+        # Typer parser-error format is what the user sees.
+        assert "unexpected error" not in out
+
+    def test_alias_shaped_like_handoff_id_works_with_to(self):
+        """A user with a session aliased "hnd_deadbeef12345678" must
+        still be able to send it. The redirect only triggers when
+        `--to` is absent — providing `--to` means the user wants to
+        SEND, so the positional is treated as a session ID/alias.
+
+        We invoke through Typer; the call will fail downstream at
+        session resolution (we didn't actually create the alias) but
+        the FAILURE must NOT be the handoff-ID redirect.
+        """
+        runner, app = self._runner()
+        result = runner.invoke(
+            app,
+            ["handoff", "hnd_deadbeef12345678", "--to", "alice@example.com"],
+        )
+        out = result.output.lower()
+        # Must NOT redirect to pull-handoff — the user is sending, not claiming.
+        assert "pull-handoff" not in out
+        assert "looks like a handoff id" not in out
+
+    def test_regex_matches_handoff_ids_only(self):
+        """The pattern shouldn't match session IDs or short strings."""
+        from sessionfs.cli import cmd_cloud
+
+        assert cmd_cloud._HANDOFF_ID_RE.match("hnd_a83256fc5ed68cef")
+        assert not cmd_cloud._HANDOFF_ID_RE.match("ses_abc123def4567890")
+        assert not cmd_cloud._HANDOFF_ID_RE.match("hnd_short")
+        assert not cmd_cloud._HANDOFF_ID_RE.match("handoff_id")

@@ -27,6 +27,30 @@ logger = logging.getLogger("sessionfs.api")
 VALID_MODES = {"warn", "redact", "block"}
 VALID_CATEGORIES = {"secrets", "phi"}
 
+# Default member-size cap when the caller doesn't pass one. Matches the
+# free-tier limit at routes/sessions.py:SFS_MAX_SYNC_MEMBER_BYTES_FREE so
+# unauthenticated / non-tier paths behave conservatively. Production
+# sync_push always passes a tier-resolved limit — the constant only
+# kicks in for callers that don't have a User context.
+DEFAULT_DLP_MEMBER_LIMIT_BYTES = 10 * 1024 * 1024
+
+
+class DlpMemberTooLargeError(Exception):
+    """Raised by redact_and_repack when a tar member exceeds the
+    caller-supplied size limit. Carries enough detail for the route to
+    return the same structured 413 envelope that _check_member_sizes
+    uses, so DLP-mode failures look identical to non-DLP failures.
+    """
+
+    def __init__(self, member_name: str, member_size: int, limit_bytes: int):
+        self.member_name = member_name
+        self.member_size = member_size
+        self.limit_bytes = limit_bytes
+        super().__init__(
+            f"Member too large: {member_name} ({member_size} bytes, "
+            f"limit {limit_bytes} bytes)"
+        )
+
 DEFAULT_DLP_POLICY: dict = {
     "enabled": False,
     "mode": "warn",
@@ -140,14 +164,37 @@ def redact_text(text: str, findings: list[DLPFinding]) -> str:
     return result
 
 
-def redact_and_repack(tar_data: bytes, findings: list[DLPFinding]) -> bytes:
+def redact_and_repack(
+    tar_data: bytes,
+    findings: list[DLPFinding],
+    *,
+    member_limit_bytes: int | None = None,
+) -> bytes:
     """Extract tar.gz, redact findings in messages.jsonl, repack.
 
     Uses the same safe extraction validation as sync/archive.py:
-    rejects path traversal, absolute paths, symlinks, and oversized members.
+    rejects path traversal, absolute paths, symlinks, and oversized
+    members.
+
+    `member_limit_bytes` is the per-file cap. Callers in the sync path
+    pass the tier-resolved limit from `_member_size_limit_for_tier()`
+    so DLP enforcement stays in sync with the upload-time check at
+    `_check_member_sizes` — before v0.9.9.8 this was a hardcoded 50 MB
+    that silently nullified any `SFS_MAX_SYNC_MEMBER_BYTES_PAID` override
+    above 50 MB for orgs with DLP=REDACT mode enabled.
+
+    Raises `DlpMemberTooLargeError` (not ValueError) so the caller can
+    distinguish a tier-cap rejection from a malformed-archive failure
+    and return the structured 413 envelope.
     """
     if not findings:
         return tar_data
+
+    limit = (
+        member_limit_bytes
+        if member_limit_bytes is not None
+        else DEFAULT_DLP_MEMBER_LIMIT_BYTES
+    )
 
     # Phase 1: validate and extract all members
     members_data: dict[str, bytes] = {}
@@ -161,9 +208,11 @@ def redact_and_repack(tar_data: bytes, findings: list[DLPFinding]) -> bytes:
                     raise ValueError(f"Absolute path in tar member: {member.name}")
                 if member.issym() or member.islnk():
                     raise ValueError(f"Symlink in tar archive: {member.name}")
-                if member.size > 50 * 1024 * 1024:
-                    raise ValueError(
-                        f"Member too large: {member.name} ({member.size} bytes)"
+                if member.size > limit:
+                    raise DlpMemberTooLargeError(
+                        member_name=member.name,
+                        member_size=member.size,
+                        limit_bytes=limit,
                     )
                 f = tar.extractfile(member)
                 if f is not None:
@@ -176,7 +225,18 @@ def redact_and_repack(tar_data: bytes, findings: list[DLPFinding]) -> bytes:
         if key.endswith(".json") or key.endswith(".jsonl"):
             original_text = members_data[key].decode("utf-8", errors="replace")
             redacted_text = redact_text(original_text, findings)
-            members_data[key] = redacted_text.encode("utf-8")
+            redacted_bytes = redacted_text.encode("utf-8")
+            # Redaction can expand the payload (e.g. replacing a short token
+            # with a longer "[REDACTED:...]" marker). Re-validate the final
+            # member size after replacement so a member that started under the
+            # cap cannot slip past the tier limit once repacked.
+            if len(redacted_bytes) > limit:
+                raise DlpMemberTooLargeError(
+                    member_name=key,
+                    member_size=len(redacted_bytes),
+                    limit_bytes=limit,
+                )
+            members_data[key] = redacted_bytes
 
     # Phase 3: repack
     buf = io.BytesIO()
