@@ -7,7 +7,13 @@ export function useFolders() {
     queryKey: ['bookmark-folders'],
     queryFn: () => auth!.client.listFolders(),
     enabled: !!auth,
-    staleTime: 30_000,
+    // 5 min — folders are user-configured and rarely change mid-session.
+    // SessionList eager-loads this to show the folder sidebar + bookmark
+    // counts; the longer window cuts redundant refetches on every
+    // remount / tab focus. Mutations (create/update/delete/bookmark)
+    // already invalidate the cache, so stale data isn't a correctness
+    // risk.
+    staleTime: 300_000,
   });
 }
 
