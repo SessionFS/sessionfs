@@ -379,11 +379,14 @@ class TestHandoffOversizeHandling:
         # /compact suggestion. The CLI pre-flight uses MAX_MEMBER_SIZE which
         # is now tier-aware (50 MB default, env-overridable), so we don't
         # pin a specific MB number — just that it's reported.
+        import re as _re
+
         captured = capsys.readouterr()
-        out = (captured.out + captured.err).lower()
-        assert "messages.jsonl" in out, f"output missing filename: {captured.err}"
-        assert "mb" in out, f"output missing size: {captured.err}"
-        assert "/compact" in out, f"output missing suggestion: {captured.err}"
+        raw = (captured.out + captured.err)
+        out = _re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", raw).lower()
+        assert "messages.jsonl" in out, f"output missing filename: {raw}"
+        assert "mb" in out, f"output missing size: {raw}"
+        assert "/compact" in out, f"output missing suggestion: {raw}"
 
         # Confirm push was never attempted.
         mock_client.push_session.assert_not_called()
@@ -412,10 +415,14 @@ class TestHandoffIdMisuseRedirect:
         must hit the redirect, NOT Typer's "Missing option '--to'"
         error. This is the exact user scenario.
         """
+        import re
+
         runner, app = self._runner()
         result = runner.invoke(app, ["handoff", "hnd_a83256fc5ed68cef"])
         assert result.exit_code == 2, result.output
-        out = result.output.lower()
+        # Strip ANSI so substring checks survive Rich's `[cyan]`/`[yellow]`
+        # markup expansion under color-enabled CI environments.
+        out = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", result.output).lower()
         assert "pull-handoff" in out
         assert "hnd_a83256fc5ed68cef" in out
         # The misleading legacy error must NOT appear.
@@ -427,12 +434,20 @@ class TestHandoffIdMisuseRedirect:
         the generic "Unexpected error: ..." that handle_errors would
         otherwise produce when our BadParameter falls through.
         """
+        import re
+
         runner, app = self._runner()
         result = runner.invoke(
             app, ["handoff", "ses_abc123def4567890"]
         )
         assert result.exit_code != 0
-        out = result.output.lower()
+        # Strip ANSI escape sequences before substring checks. Rich
+        # renders `--to` with style markup that splits the dashes
+        # across separate escape codes, so a naïve `"--to" in out`
+        # search misses on environments with color enabled (CI's
+        # wider terminal triggered it; local didn't). Compare on the
+        # cleaned text instead.
+        out = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", result.output).lower()
         assert "--to" in out
         # Codex round 2 caught this: handle_errors used to swallow
         # ClickException as generic Exception, producing this string.
