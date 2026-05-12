@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.9.11] - 2026-05-12
+
+### Fixed
+- **Dashboard freeze when editing project rules → knowledge / context max tokens.** Both `<input type="number">` fields fired `patchRules()` on every keystroke, so typing `8000` issued four sequential `PUT /api/v1/projects/{id}/rules` calls — the first succeeded with a new ETag, the next three 409'd against the stale one, and the cascade of "refresh and try again" toasts plus react-query refetch storm rendered as a freeze. `RulesTab.tsx` now routes both inputs through a new `DebouncedTokenInput` helper: 600 ms local-draft debounce, flush-on-blur, flush-on-unmount (via empty-dep `useEffect` cleanup + `onCommitRef`), and a `flush(): Promise<boolean>` handle exposed via `forwardRef` + `useImperativeHandle` so the Compile button can drain pending edits before running. `patchRules` switched to `mutateAsync` and returns `Promise<boolean>` (never rejects — signals failure in-band so the existing 8 fire-and-forget checkbox callers don't generate unhandled-rejection warnings). `handleCompile` is now `async`, awaits both flushes, and short-circuits with a "Compile skipped — pending rules update failed" toast when any flush returned `false`. Compile button additionally disabled while `updateRules.isPending` as defense-in-depth against HTTP/2 multiplexing race. Six new regression tests in `RulesTab.test.tsx` cover: keystroke coalescing per pause, independent debounce per input, blur-flush, unmount-flush, compile-drains-pending (deferred-promise pattern proves compile is held until the patch promise settles), compile-skipped-on-409, compile-skipped-on-network/500.
+
+### Notes
+- No new database migrations (still 034). No server-side code changes.
+- Helm chart version 0.9.13 → 0.9.14 (chart evolves independent of app). appVersion 0.9.9.11.
+- 1376 backend tests + 117 dashboard tests passing (was 109 dashboard in v0.9.9.10; +8 from the RulesTab regression suite). Four Codex review rounds (entries 214 → 216 → 218 → 220 CLEAN) resolved before tag.
+
 ## [0.9.9.10] - 2026-05-12
 
 ### Added

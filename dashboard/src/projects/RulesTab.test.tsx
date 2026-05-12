@@ -1,6 +1,6 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../api/client';
 import RulesTab from './RulesTab';
 
@@ -31,6 +31,7 @@ vi.mock('../hooks/useToast', () => ({
 function makeMutation(extra: Record<string, unknown> = {}) {
   return {
     mutate: vi.fn(),
+    mutateAsync: vi.fn().mockResolvedValue(undefined),
     isPending: false,
     isError: false,
     error: null,
@@ -218,8 +219,8 @@ describe('RulesTab', () => {
     // Enable Cursor (currently off)
     await user.click(screen.getByRole('checkbox', { name: /enable cursor/i }));
 
-    expect(update.mutate).toHaveBeenCalled();
-    const [args] = update.mutate.mock.calls[0];
+    expect(update.mutateAsync).toHaveBeenCalled();
+    const [args] = update.mutateAsync.mock.calls[0];
     expect(args.etag).toBe('W/"v3"');
     expect(args.rules.enabled_tools).toEqual(
       expect.arrayContaining(['claude-code', 'codex', 'cursor']),
@@ -236,8 +237,8 @@ describe('RulesTab', () => {
     // "Pattern" is not in defaultRules().knowledge_types
     await user.click(screen.getByRole('checkbox', { name: /knowledge type pattern/i }));
 
-    expect(update.mutate).toHaveBeenCalled();
-    const [args] = update.mutate.mock.calls[0];
+    expect(update.mutateAsync).toHaveBeenCalled();
+    const [args] = update.mutateAsync.mock.calls[0];
     expect(args.rules.knowledge_types).toEqual(
       expect.arrayContaining(['decision', 'convention', 'pattern']),
     );
@@ -309,6 +310,280 @@ describe('RulesTab', () => {
         'info',
         expect.stringMatching(/no changes/i),
       );
+    });
+  });
+
+  describe('Max tokens input debounce', () => {
+    // Regression for v0.9.9.10 post-release report: typing in the
+    // Max tokens fields fired one PUT /rules per keystroke. The
+    // first succeeded, subsequent keystrokes 409'd on stale etag,
+    // and the dashboard "froze" through a refetch + toast storm.
+    // DebouncedTokenInput coalesces typing into a single mutation
+    // 600ms after the user stops.
+    beforeEach(() => {
+      vi.useFakeTimers({ shouldAdvanceTime: false });
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('coalesces rapid edits into one mutation per pause', async () => {
+      const update = makeMutation();
+      hooks.useUpdateProjectRules.mockReturnValue(update);
+
+      render(<RulesTab projectId="sessionfs/sessionfs" />);
+
+      const input = screen.getByRole('spinbutton', {
+        name: /knowledge injection max tokens/i,
+      }) as HTMLInputElement;
+      expect(input.value).toBe('4000');
+
+      // Simulate typing 8000 across four keystrokes — fireEvent.change
+      // re-runs onChange the same way React would for sequential
+      // input events.
+      fireEvent.change(input, { target: { value: '8' } });
+      fireEvent.change(input, { target: { value: '80' } });
+      fireEvent.change(input, { target: { value: '800' } });
+      fireEvent.change(input, { target: { value: '8000' } });
+
+      // Before the debounce fires: zero mutations.
+      expect(update.mutateAsync).not.toHaveBeenCalled();
+
+      act(() => {
+        vi.advanceTimersByTime(600);
+      });
+
+      // After the debounce: exactly one mutation with the final value.
+      expect(update.mutateAsync).toHaveBeenCalledTimes(1);
+      expect(update.mutateAsync).toHaveBeenCalledWith({
+        rules: { knowledge_max_tokens: 8000 },
+        etag: 'W/"v3"',
+      });
+    });
+
+    it('debounces the context injection input independently', () => {
+      const update = makeMutation();
+      hooks.useUpdateProjectRules.mockReturnValue(update);
+
+      render(<RulesTab projectId="sessionfs/sessionfs" />);
+
+      const input = screen.getByRole('spinbutton', {
+        name: /context injection max tokens/i,
+      }) as HTMLInputElement;
+
+      fireEvent.change(input, { target: { value: '5' } });
+      fireEvent.change(input, { target: { value: '50' } });
+      fireEvent.change(input, { target: { value: '500' } });
+
+      expect(update.mutateAsync).not.toHaveBeenCalled();
+      act(() => {
+        vi.advanceTimersByTime(600);
+      });
+      expect(update.mutateAsync).toHaveBeenCalledTimes(1);
+      expect(update.mutateAsync).toHaveBeenCalledWith({
+        rules: { context_max_tokens: 500 },
+        etag: 'W/"v3"',
+      });
+    });
+
+    it('flushes pending change on blur instead of waiting for the timer', () => {
+      const update = makeMutation();
+      hooks.useUpdateProjectRules.mockReturnValue(update);
+
+      render(<RulesTab projectId="sessionfs/sessionfs" />);
+
+      const input = screen.getByRole('spinbutton', {
+        name: /knowledge injection max tokens/i,
+      }) as HTMLInputElement;
+
+      fireEvent.change(input, { target: { value: '7500' } });
+      fireEvent.blur(input);
+
+      // Blur fires the commit synchronously — no timer advance needed.
+      expect(update.mutateAsync).toHaveBeenCalledTimes(1);
+      expect(update.mutateAsync).toHaveBeenCalledWith({
+        rules: { knowledge_max_tokens: 7500 },
+        etag: 'W/"v3"',
+      });
+
+      // Subsequent timer tick must NOT fire a second mutation.
+      act(() => {
+        vi.advanceTimersByTime(600);
+      });
+      expect(update.mutateAsync).toHaveBeenCalledTimes(1);
+    });
+
+    it('awaits the patch mutation before launching Compile', async () => {
+      // Round-2 reviewer (KB entry 216, MEDIUM) flagged that without
+      // awaiting the patch, flush()+mutate fire then compile fires
+      // immediately and can race on HTTP/2. Verify compile is held
+      // until the patch promise resolves.
+      const update = makeMutation();
+      const compile = makeMutation();
+
+      // Deferred promise — we control when patchRules resolves.
+      let resolveUpdate: () => void = () => {};
+      const updatePromise = new Promise<void>((r) => {
+        resolveUpdate = r;
+      });
+      update.mutateAsync = vi.fn().mockReturnValue(updatePromise);
+
+      hooks.useUpdateProjectRules.mockReturnValue(update);
+      hooks.useCompileRules.mockReturnValue(compile);
+
+      render(<RulesTab projectId="sessionfs/sessionfs" />);
+
+      const input = screen.getByRole('spinbutton', {
+        name: /knowledge injection max tokens/i,
+      }) as HTMLInputElement;
+
+      // User types and immediately clicks Compile inside the debounce window.
+      fireEvent.change(input, { target: { value: '9000' } });
+      expect(update.mutateAsync).not.toHaveBeenCalled();
+
+      const compileBtn = screen.getByRole('button', { name: /^compile$/i });
+      await act(async () => {
+        fireEvent.click(compileBtn);
+        // Let the synchronous part of handleCompile run (calls flush()).
+        await Promise.resolve();
+      });
+
+      // Patch fired with the final typed value.
+      expect(update.mutateAsync).toHaveBeenCalledTimes(1);
+      expect(update.mutateAsync).toHaveBeenCalledWith({
+        rules: { knowledge_max_tokens: 9000 },
+        etag: 'W/"v3"',
+      });
+      // Compile MUST NOT have fired yet — the await is still pending.
+      expect(compile.mutate).not.toHaveBeenCalled();
+
+      // Resolve the patch promise; flush microtasks so the await unwraps.
+      await act(async () => {
+        resolveUpdate();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // Now compile fires.
+      expect(compile.mutate).toHaveBeenCalledTimes(1);
+
+      // The pending timer was cancelled by flush — no extra mutation
+      // after the timer would otherwise have fired.
+      act(() => {
+        vi.advanceTimersByTime(600);
+      });
+      expect(update.mutateAsync).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips Compile when the flushed patch fails (409 stale-etag)', async () => {
+      // Round-3 reviewer (KB entry 218, MEDIUM) flagged that even
+      // with the await chain, a failed patch resolved flush() as
+      // success and Compile ran against the stale server snapshot.
+      // Now flush() returns false on patch failure and handleCompile
+      // short-circuits with a "Compile skipped" toast.
+      const update = makeMutation();
+      const compile = makeMutation();
+      update.mutateAsync = vi.fn().mockRejectedValue(new ApiError(409, 'stale'));
+      hooks.useUpdateProjectRules.mockReturnValue(update);
+      hooks.useCompileRules.mockReturnValue(compile);
+
+      render(<RulesTab projectId="sessionfs/sessionfs" />);
+
+      const input = screen.getByRole('spinbutton', {
+        name: /knowledge injection max tokens/i,
+      }) as HTMLInputElement;
+
+      fireEvent.change(input, { target: { value: '9999' } });
+      const compileBtn = screen.getByRole('button', { name: /^compile$/i });
+
+      await act(async () => {
+        fireEvent.click(compileBtn);
+        // Let the synchronous flush() fire mutateAsync, then drain
+        // the .then/.catch + Promise.all + handleCompile continuation.
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // Patch was attempted...
+      expect(update.mutateAsync).toHaveBeenCalledTimes(1);
+      // ...the 409 surfaced the standard stale-etag toast...
+      expect(mockAddToast).toHaveBeenCalledWith(
+        'error',
+        expect.stringMatching(/refresh and try again/i),
+      );
+      // ...AND compile was short-circuited with its own toast.
+      expect(mockAddToast).toHaveBeenCalledWith(
+        'error',
+        expect.stringMatching(/compile skipped/i),
+      );
+      // Compile must NOT have fired against the stale server state.
+      expect(compile.mutate).not.toHaveBeenCalled();
+    });
+
+    it('skips Compile when the flushed patch fails (network/500)', async () => {
+      // Mirror of the 409 test but with a non-stale-etag failure to
+      // confirm the gate is universal, not specific to 409.
+      const update = makeMutation();
+      const compile = makeMutation();
+      update.mutateAsync = vi.fn().mockRejectedValue(new Error('network down'));
+      hooks.useUpdateProjectRules.mockReturnValue(update);
+      hooks.useCompileRules.mockReturnValue(compile);
+
+      render(<RulesTab projectId="sessionfs/sessionfs" />);
+
+      const input = screen.getByRole('spinbutton', {
+        name: /context injection max tokens/i,
+      }) as HTMLInputElement;
+
+      fireEvent.change(input, { target: { value: '3333' } });
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /^compile$/i }));
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(update.mutateAsync).toHaveBeenCalledTimes(1);
+      expect(mockAddToast).toHaveBeenCalledWith(
+        'error',
+        expect.stringMatching(/update failed/i),
+      );
+      expect(mockAddToast).toHaveBeenCalledWith(
+        'error',
+        expect.stringMatching(/compile skipped/i),
+      );
+      expect(compile.mutate).not.toHaveBeenCalled();
+    });
+
+    it('disables Compile while an update mutation is in-flight', () => {
+      hooks.useUpdateProjectRules.mockReturnValue(makeMutation({ isPending: true }));
+      render(<RulesTab projectId="sessionfs/sessionfs" />);
+      expect(screen.getByRole('button', { name: /^compile$/i })).toBeDisabled();
+    });
+
+    it('flushes pending change on unmount so navigation does not lose typing', () => {
+      const update = makeMutation();
+      hooks.useUpdateProjectRules.mockReturnValue(update);
+
+      const { unmount } = render(<RulesTab projectId="sessionfs/sessionfs" />);
+
+      const input = screen.getByRole('spinbutton', {
+        name: /knowledge injection max tokens/i,
+      }) as HTMLInputElement;
+
+      fireEvent.change(input, { target: { value: '6000' } });
+      expect(update.mutateAsync).not.toHaveBeenCalled();
+
+      // User switches tab / navigates away within the 600ms window.
+      unmount();
+
+      // Unmount-only useEffect cleanup commits the pending value.
+      expect(update.mutateAsync).toHaveBeenCalledTimes(1);
+      expect(update.mutateAsync).toHaveBeenCalledWith({
+        rules: { knowledge_max_tokens: 6000 },
+        etag: 'W/"v3"',
+      });
     });
   });
 
