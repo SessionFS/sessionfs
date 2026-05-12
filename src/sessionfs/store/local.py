@@ -76,10 +76,22 @@ class LocalStore:
             self._index._needs_reindex = False
 
     def _rebuild_index_from_disk(self) -> None:
-        """Rebuild the session index by scanning .sfs directories on disk."""
+        """Rebuild the session index by scanning .sfs directories on disk.
+
+        Each session is reindexed in isolation: a single malformed
+        manifest cannot abort the loop. Pre-v0.9.9.12, the except
+        clause caught only `(json.JSONDecodeError, OSError)`, so any
+        unexpected exception (AttributeError from a null `source`
+        field, sqlite IntegrityError from a missing required field,
+        TypeError from non-serializable tags, etc.) bubbled up and
+        aborted the rebuild after the offending session — every
+        sorted-later session was silently dropped from the index.
+        Skips are logged at WARNING so they appear in normal logs.
+        """
         if not self._sessions_dir.is_dir():
             return
         count = 0
+        skipped = 0
         for sfs_dir in sorted(self._sessions_dir.iterdir()):
             if not sfs_dir.is_dir() or not sfs_dir.name.endswith(".sfs"):
                 continue
@@ -93,9 +105,22 @@ class LocalStore:
                 )
                 self.upsert_session_metadata(session_id, manifest, str(sfs_dir))
                 count += 1
-            except (json.JSONDecodeError, OSError) as exc:
-                logger.debug("Skipped %s during reindex: %s", sfs_dir.name, exc)
-        logger.info("Rebuilt index from disk: %d sessions", count)
+            except Exception as exc:  # noqa: BLE001 — isolate per-session failure
+                skipped += 1
+                logger.warning(
+                    "Skipped %s during reindex (%s: %s)",
+                    sfs_dir.name,
+                    type(exc).__name__,
+                    exc,
+                )
+        if skipped:
+            logger.warning(
+                "Rebuilt index from disk: %d sessions indexed, %d skipped",
+                count,
+                skipped,
+            )
+        else:
+            logger.info("Rebuilt index from disk: %d sessions", count)
 
     def check_permissions(self) -> list[str]:
         """Check store directory permissions and return warnings."""
@@ -147,11 +172,15 @@ class LocalStore:
     def upsert_tracked_session(self, ref: NativeSessionRef) -> None:
         """Insert or update a tracked session record.
 
-        If the database is corrupted during the write, automatically
-        rebuilds the index and retries the operation once.
+        IntegrityError is propagated (data problem with this ref —
+        not the index). Other DatabaseError subclasses (genuine
+        index corruption) trigger a rebuild + retry. Same shape as
+        upsert_session_metadata — see the longer docstring there.
         """
         try:
             self.index.upsert_tracked_session(ref)
+        except sqlite3.IntegrityError:
+            raise
         except sqlite3.DatabaseError as exc:
             logger.warning(
                 "Index corrupted during tracked session write. Rebuilding... (%s)", exc
@@ -169,11 +198,30 @@ class LocalStore:
     ) -> None:
         """Insert or update session metadata in the index.
 
-        If the database is corrupted during the write, automatically
-        rebuilds the index and retries the operation once.
+        Distinguishes two failure modes that share the same parent
+        exception class (`sqlite3.DatabaseError`):
+
+        - `sqlite3.IntegrityError` (NOT NULL / UNIQUE / FK / CHECK
+          violation) is a DATA problem with this specific manifest.
+          The index itself is fine. Propagate so the caller — usually
+          `_rebuild_index_from_disk` — can isolate this one session
+          via its broad per-session except and continue with the rest.
+          Pre-v0.9.9.12, IntegrityError was caught by the
+          `sqlite3.DatabaseError` branch below and misinterpreted as
+          index corruption, triggering a destructive recreate of the
+          DB handle + recursive reindex per bad session.
+
+        - Other `sqlite3.DatabaseError` subclasses (OperationalError
+          for "database disk image is malformed", etc.) ARE genuine
+          index corruption. Recreate the index handle, reindex from
+          disk, retry the write once.
         """
         try:
             self.index.upsert_session(session_id, manifest, sfs_dir_path)
+        except sqlite3.IntegrityError:
+            # Data-level constraint failure for this manifest. Don't
+            # touch the index — let the caller skip this session.
+            raise
         except sqlite3.DatabaseError as exc:
             logger.warning(
                 "Index corrupted during write. Rebuilding... (%s)", exc

@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.9.12] - 2026-05-12
+
+### Fixed
+- **Daemon-reindex data loss when the SQLite index self-heals against any malformed manifest.** A user-reported symptom — "7-8 Codex sessions disappeared from `sfs list` after daemon restart following an Index-was-corrupted recovery" — traced to two distinct bugs in the rebuild loop:
+  1. `src/sessionfs/store/index.py:upsert_session` used `manifest.get("source", {})` (and the same shape for `model` / `stats` / `tags`), which returns `None` (not the default) when the manifest has `"source": null`. The next `source.get(...)` raised `AttributeError`. `created_at` and `source.tool` (both NOT NULL columns) hit `sqlite3.IntegrityError` on the same kind of null-or-wrong-type input. Replaced with `_as_dict` / `_as_list` helpers that use `isinstance` checks — so any falsy OR truthy non-matching type (e.g. `"source": "codex"`, `"source": ["codex"]`, `"tags": "not-a-list"`) is normalized to an empty container instead of crashing.
+  2. `_rebuild_index_from_disk` only caught `(json.JSONDecodeError, OSError)`, so an `AttributeError` from bug #1 — or any `sqlite3.IntegrityError` / `TypeError` — aborted the entire reindex loop. Every session sorted alphabetically AFTER the bad one was silently dropped. Broadened to `except Exception` with WARNING-level skip logging and a "N indexed, K skipped" summary line.
+- **`sqlite3.IntegrityError` misinterpreted as index corruption.** `upsert_session_metadata`'s `except sqlite3.DatabaseError` branch caught IntegrityError (parent class) and ran the destructive recreate-and-retry recovery path per bad session — wasteful + noisy. Now catches `sqlite3.IntegrityError` first and re-raises so the per-session skip in the outer loop handles it cleanly. Same fix applied to `upsert_tracked_session`.
+- **`sfs daemon rebuild-index` CLI command had its own copy of the same two bugs.** `cli/cmd_daemon.py:rebuild_index` duplicated the reindex loop with the same null-unsafe defaults and the same too-narrow except. Applied the matching `isinstance` guards and broadened the per-session except. Backfill block now repairs `"source": null` / `"source": "codex"` shapes in-place when a `tracked_sessions` row exists for the ID. Cross-reference comment added so future maintainers audit both loops together; the DRY refactor is queued for a v0.10.x cleanup.
+
+### Notes
+- No new database migrations (still 034). No new MCP tools.
+- Helm chart version 0.9.14 → 0.9.15 (chart evolves independent of app). appVersion 0.9.9.12.
+- 1384 backend tests + 117 dashboard tests passing (was 1376 + 117 at v0.9.9.11; +8 backend from new regression suite in `tests/unit/test_resilience.py`). Four Codex review rounds (KB entries 222 → 224 → 226 → 228 → 229 CLEAN) resolved before tag.
+
 ## [0.9.9.11] - 2026-05-12
 
 ### Fixed

@@ -17,14 +17,36 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.9.9.11 -->
+      <!-- v0.9.9.12 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
-            <span class="text-brand font-semibold">v0.9.9.11</span>
+            <span class="text-brand font-semibold">v0.9.9.12</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">May 12, 2026</span>
           <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Daemon-Reindex Data Loss Hotfix</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Daemon-reindex data loss when self-heal runs against any malformed manifest</strong> &mdash; user-reported "7-8 Codex sessions disappeared from <span class="font-mono text-accent text-sm">sfs list</span> after daemon restart following Index-was-corrupted recovery" traced to <span class="font-mono text-accent text-sm">manifest.get("source", &#123;&#125;)</span> returning <span class="font-mono text-accent text-sm">None</span> on <span class="font-mono text-accent text-sm">"source": null</span>, plus NOT NULL bindings (<span class="font-mono text-accent text-sm">created_at</span>, <span class="font-mono text-accent text-sm">source.tool</span>) hitting <span class="font-mono text-accent text-sm">sqlite3.IntegrityError</span> on the same input class. <span class="font-mono text-accent text-sm">store/index.py</span> rewritten with <span class="font-mono text-accent text-sm">_as_dict</span> / <span class="font-mono text-accent text-sm">_as_list</span> <span class="font-mono text-accent text-sm">isinstance</span> guards so any non-matching type (falsy or truthy) normalizes to an empty container instead of crashing.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Per-session exception broadened in the reindex loop</strong> &mdash; <span class="font-mono text-accent text-sm">_rebuild_index_from_disk</span> in <span class="font-mono text-accent text-sm">store/local.py</span> previously caught only <span class="font-mono text-accent text-sm">(json.JSONDecodeError, OSError)</span>, so any <span class="font-mono text-accent text-sm">AttributeError</span> / <span class="font-mono text-accent text-sm">IntegrityError</span> / <span class="font-mono text-accent text-sm">TypeError</span> aborted the entire loop and every session sorted alphabetically AFTER the bad one was silently dropped. Now <span class="font-mono text-accent text-sm">except Exception</span> with WARNING-level skip logging and an "N indexed, K skipped" summary.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>sqlite3.IntegrityError misinterpreted as index corruption</strong> &mdash; <span class="font-mono text-accent text-sm">upsert_session_metadata</span>'s <span class="font-mono text-accent text-sm">except sqlite3.DatabaseError</span> branch caught <span class="font-mono text-accent text-sm">IntegrityError</span> (parent class) and ran the destructive recreate-and-retry recovery path per bad session. IntegrityError-before-DatabaseError split now catches it first and re-raises so the per-session skip handles it cleanly. Same fix applied to <span class="font-mono text-accent text-sm">upsert_tracked_session</span>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>sfs daemon rebuild-index CLI command had the same two bugs duplicated</strong> &mdash; <span class="font-mono text-accent text-sm">cli/cmd_daemon.py:rebuild_index</span> carried its own copy of the null-unsafe defaults and the too-narrow except. Fixed in parallel with matching <span class="font-mono text-accent text-sm">isinstance</span> guards and broadened per-session except. Backfill block now repairs <span class="font-mono text-accent text-sm">"source": null</span> / <span class="font-mono text-accent text-sm">"source": "codex"</span> shapes in-place when a <span class="font-mono text-accent text-sm">tracked_sessions</span> row exists for the ID. Cross-reference comment added; DRY refactor queued for v0.10.x.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>New regression suite</strong> &mdash; <span class="font-mono text-accent text-sm">tests/unit/test_resilience.py</span> covers malformed-manifest survival across both the daemon and CLI reindex paths (+8 backend tests).</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Helm chart 0.9.14 &rarr; 0.9.15</strong>, appVersion bumped to 0.9.9.12. Chart evolves independently of app per Helm SemVer.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">1,384 backend + 117 dashboard UI tests passing &middot; 34 migrations &middot; 22 MCP tools</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.9.9.11 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.9.9.11</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">May 12, 2026</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Dashboard Rules Tab Freeze Fix</h2>
         <ul class="space-y-2 text-base text-muted">

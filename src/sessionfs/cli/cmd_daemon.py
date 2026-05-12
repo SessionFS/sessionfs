@@ -222,7 +222,16 @@ def logs(
 
 @daemon_app.command("rebuild-index")
 def rebuild_index() -> None:
-    """Rebuild the local session index from .sfs files on disk."""
+    """Rebuild the local session index from .sfs files on disk.
+
+    This duplicates the per-session loop in
+    `LocalStore._rebuild_index_from_disk` so it can layer a CLI-only
+    pre-step (backfilling `source.tool` from tracked_sessions when
+    older manifests are missing it). It MUST stay aligned with the
+    LocalStore loop on null-safety and exception-isolation — see
+    KB entry 225 (v0.9.9.12) for the regression class. If you change
+    one, audit the other.
+    """
     import json
 
     from sessionfs.cli.common import open_store
@@ -235,6 +244,7 @@ def rebuild_index() -> None:
             return
 
         count = 0
+        skipped = 0
         for sfs_dir in sorted(sessions_dir.iterdir()):
             if not sfs_dir.is_dir() or not sfs_dir.name.endswith(".sfs"):
                 continue
@@ -244,23 +254,41 @@ def rebuild_index() -> None:
             try:
                 manifest = json.loads(manifest_path.read_text())
                 session_id = manifest.get("session_id", sfs_dir.name.replace(".sfs", ""))
-                # Backfill source_tool from tracked_sessions if missing
-                source = manifest.get("source", {})
+                # Backfill source_tool from tracked_sessions if missing.
+                # `isinstance(..., dict)` is the strict guard — covers
+                # `"source"` missing, null, AND any truthy non-dict
+                # value (e.g. `"source": "codex"`). The plain `or {}`
+                # shape we used in round 3 only caught falsy values,
+                # so a string/list source would still raise
+                # AttributeError on `.get(...)`. KB entry 227.
+                raw_source = manifest.get("source")
+                source = raw_source if isinstance(raw_source, dict) else {}
                 if not source.get("tool"):
                     tracked = store.index.conn.execute(
                         "SELECT tool FROM tracked_sessions WHERE sfs_session_id = ?",
                         (session_id,),
                     ).fetchone()
                     if tracked:
-                        if "source" not in manifest:
+                        # Repair the manifest: replace any non-dict
+                        # source with `{}` so the backfill writes a
+                        # well-formed structure.
+                        if not isinstance(manifest.get("source"), dict):
                             manifest["source"] = {}
                         manifest["source"]["tool"] = tracked[0]
                         manifest_path.write_text(json.dumps(manifest, indent=2))
                 store.upsert_session_metadata(session_id, manifest, str(sfs_dir))
                 count += 1
-            except (json.JSONDecodeError, OSError) as e:
-                console.print(f"[dim]Skipped {sfs_dir.name}: {e}[/dim]")
+            except Exception as e:  # noqa: BLE001 — isolate per-session failure
+                skipped += 1
+                console.print(
+                    f"[dim]Skipped {sfs_dir.name} ({type(e).__name__}: {e})[/dim]"
+                )
 
-        console.print(f"[green]Rebuilt index: {count} sessions.[/green]")
+        if skipped:
+            console.print(
+                f"[green]Rebuilt index: {count} sessions, {skipped} skipped.[/green]"
+            )
+        else:
+            console.print(f"[green]Rebuilt index: {count} sessions.[/green]")
     finally:
         store.close()
