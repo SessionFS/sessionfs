@@ -45,6 +45,42 @@ def _get_project_client():
     return cfg["api_url"], cfg["api_key"]
 
 
+_ASK_STOP_WORDS = frozenset({
+    "what", "whats", "is", "the", "a", "an", "how", "does", "do",
+    "explain", "tell", "me", "about", "can", "you", "are", "was",
+    "were", "this", "that", "it", "of", "in", "to", "for", "with",
+    "on", "at", "by",
+})
+# Mirrors the 3-char floor enforced server-side in routes/knowledge.py:297
+# (pg_trgm GIN index falls back to seq scan for 1-2 char patterns).
+_ASK_MIN_KEYWORD_LEN = 3
+_ASK_MAX_KEYWORDS = 5
+
+
+def _extract_search_keywords(question: str) -> list[str]:
+    """Tokenize an ask-question into search-eligible keywords.
+
+    Strips trailing punctuation, lowercases, drops stop words and any
+    token shorter than the server-side search floor. Returns at most
+    `_ASK_MAX_KEYWORDS` to bound the per-question API fan-out.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for token in question.lower().split():
+        stripped = token.strip("?.,!")
+        if not stripped or stripped in _ASK_STOP_WORDS:
+            continue
+        if len(stripped) < _ASK_MIN_KEYWORD_LEN:
+            continue
+        if stripped in seen:
+            continue
+        seen.add(stripped)
+        out.append(stripped)
+        if len(out) >= _ASK_MAX_KEYWORDS:
+            break
+    return out
+
+
 async def _api_request(method: str, path: str, api_url: str, api_key: str, json_data: dict | None = None) -> dict:
     """Make an authenticated API request."""
     import httpx
@@ -493,15 +529,13 @@ def ask_project(
     context_doc = result.get("context_document", "")
 
     # 2. Search knowledge entries for the question
-    # Extract keywords from the question (drop stop words, URL-encode)
     from urllib.parse import quote
-    stop_words = {"what", "whats", "is", "the", "a", "an", "how", "does", "do", "explain", "tell", "me", "about", "can", "you", "are", "was", "were", "this", "that", "it", "of", "in", "to", "for", "with", "on", "at", "by"}
-    keywords = [w for w in question.lower().split() if w.strip("?.,!") not in stop_words and len(w) > 1]
+    keywords = _extract_search_keywords(question)
 
     entries: list[dict] = []
     # Search with each keyword to get broader matches
     seen_ids: set[int] = set()
-    for kw in keywords[:5]:
+    for kw in keywords:
         search_params = f"?search={quote(kw)}&limit=10"
         kw_result = asyncio.run(_api_request(
             "GET", f"/api/v1/projects/{project_id}/entries{search_params}",

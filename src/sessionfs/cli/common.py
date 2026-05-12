@@ -43,6 +43,18 @@ def handle_errors(func):
         except KeyboardInterrupt:
             err_console.print("\nCancelled.")
             raise SystemExit(130)
+        except _click_exc.Abort:
+            # click.exceptions.Abort inherits from RuntimeError, not
+            # ClickException, so the pass-through above misses it. It
+            # fires when an interactive prompt (typer.confirm) hits
+            # EOF — typically because stdin is piped or the user hit
+            # Ctrl-D. Without this branch, callers see "Unexpected
+            # error:" with an empty body which looks like a crash.
+            err_console.print(
+                "[dim]Cancelled (no interactive input). "
+                "Pass --yes to skip confirmation prompts in scripts.[/dim]"
+            )
+            raise SystemExit(130)
         except sqlite3.DatabaseError as exc:
             err_console.print(f"[red]Database error: {exc}[/red]")
             err_console.print(
@@ -78,6 +90,35 @@ def handle_errors(func):
             raise SystemExit(1)
 
     return wrapper
+
+
+def confirm_or_exit(
+    message: str,
+    *,
+    default: bool = False,
+    yes: bool = False,
+    yes_hint: str = "Pass --yes to confirm in non-interactive mode.",
+) -> bool:
+    """typer.confirm wrapper that handles non-interactive stdin gracefully.
+
+    - If `yes` is True, return True without prompting.
+    - If stdin is not a TTY (piped, redirected, no terminal), print a
+      clear error mentioning the `--yes` flag and raise SystemExit(2).
+      Without this guard, click.confirm hits EOF immediately and
+      raises click.exceptions.Abort which falls through handle_errors
+      as a generic "Unexpected error:".
+    - Otherwise delegate to typer.confirm.
+    """
+    import sys
+    import typer
+
+    if yes:
+        return True
+    if not sys.stdin.isatty():
+        err_console.print(f"[red]{message}[/red] (no interactive input)")
+        err_console.print(f"[dim]{yes_hint}[/dim]")
+        raise SystemExit(2)
+    return typer.confirm(message, default=default)
 
 
 def get_store_dir() -> Path:

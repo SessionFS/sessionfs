@@ -295,7 +295,19 @@ async def list_entries(
         stmt = stmt.where(KnowledgeEntry.id < cursor)
 
     if search is not None:
-        stmt = stmt.where(KnowledgeEntry.content.ilike(f"%{search}%"))
+        # Enforce a 3-char floor so every accepted search query can use
+        # the gin_trgm_ops index on PostgreSQL (migration 034). 1-2
+        # char queries fall back to a sequential scan and are nearly
+        # always typos / partial typing from a search box — 422 with a
+        # clear message is the right UX. SQLite paths get the same
+        # gate so behavior is uniform across dev/test and prod.
+        search_stripped = search.strip()
+        if len(search_stripped) < 3:
+            raise HTTPException(
+                status_code=422,
+                detail="`search` must be at least 3 characters",
+            )
+        stmt = stmt.where(KnowledgeEntry.content.ilike(f"%{search_stripped}%"))
     if type is not None:
         stmt = stmt.where(KnowledgeEntry.entry_type == type)
     if pending is True:
