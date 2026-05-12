@@ -144,9 +144,23 @@ class SessionIndex:
         sfs_dir_path: str,
     ) -> None:
         """Insert or update a session record from its manifest."""
-        source = manifest.get("source", {})
-        model = manifest.get("model") or {}
-        stats = manifest.get("stats") or {}
+        # `or {}` handled the falsy cases (`null`, `""`, `0`) but a
+        # TRUTHY non-dict — e.g. `"source": "codex"` (string) or
+        # `"source": ["codex"]` (list) — would still raise
+        # AttributeError on the subsequent `.get(...)`. Use an
+        # explicit isinstance guard so any wrong-type value lands the
+        # fallback. Same hazard for model / stats / tags. See KB
+        # entry 227 for the round-3 catch.
+        def _as_dict(value: Any) -> dict:
+            return value if isinstance(value, dict) else {}
+
+        def _as_list(value: Any) -> list:
+            return value if isinstance(value, list) else []
+
+        source = _as_dict(manifest.get("source"))
+        model = _as_dict(manifest.get("model"))
+        stats = _as_dict(manifest.get("stats"))
+        tags = _as_list(manifest.get("tags"))
 
         self.conn.execute(
             """
@@ -172,13 +186,19 @@ class SessionIndex:
             (
                 session_id,
                 manifest.get("title"),
-                source.get("tool", "unknown"),
+                # NOT NULL columns get `or <fallback>` so a manifest
+                # with `"<field>": null` (not just missing) lands the
+                # fallback instead of None — which would otherwise
+                # raise sqlite3.IntegrityError and (pre-v0.9.9.12)
+                # cascade into the destructive recovery path in
+                # upsert_session_metadata.
+                source.get("tool") or "unknown",
                 source.get("tool_version"),
                 source.get("original_session_id"),
                 None,
                 model.get("provider"),
                 model.get("model_id"),
-                manifest.get("created_at", ""),
+                manifest.get("created_at") or "",
                 manifest.get("updated_at"),
                 stats.get("message_count", 0),
                 stats.get("turn_count", 0),
@@ -186,7 +206,7 @@ class SessionIndex:
                 stats.get("total_input_tokens", 0),
                 stats.get("total_output_tokens", 0),
                 stats.get("duration_ms"),
-                json.dumps(manifest.get("tags", [])),
+                json.dumps(tags),
                 sfs_dir_path,
                 datetime.now(timezone.utc).isoformat(),
             ),
