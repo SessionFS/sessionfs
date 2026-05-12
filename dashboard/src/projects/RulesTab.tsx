@@ -1,4 +1,10 @@
-import { useRef, useState } from 'react';
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from 'react';
 import {
   useProjectRules,
   useUpdateProjectRules,
@@ -212,6 +218,171 @@ function VersionViewerModal({ version, onClose }: VersionViewerModalProps) {
   );
 }
 
+interface DebouncedTokenInputProps {
+  value: number;
+  disabled: boolean;
+  ariaLabel: string;
+  /**
+   * Commit a confirmed value. Returns a Promise resolving to `true`
+   * when the server-side mutation succeeds, `false` when it fails
+   * (the failure has already been surfaced to the user via a toast,
+   * so the caller just needs to know whether to proceed with a
+   * follow-up action). May also return `void` for callers that don't
+   * round-trip to a server.
+   */
+  onCommit: (n: number) => Promise<boolean> | void;
+}
+
+export interface DebouncedTokenInputHandle {
+  /**
+   * Force-commit any pending draft immediately, cancelling the timer.
+   * Returns `Promise<true>` if nothing was pending OR the commit
+   * succeeded; `Promise<false>` if the commit failed. Compile and
+   * other gated follow-ups should treat a `false` resolution as
+   * "skip — the rules update did not land".
+   */
+  flush: () => Promise<boolean>;
+}
+
+// Local-draft + 600ms debounce around `<input type="number">`. Each
+// keystroke previously fired patchRules → PUT /rules with an ETag,
+// so typing "8000" produced four sequential mutations: the first
+// succeeded with a new etag and the next three 409'd with stale
+// etag, surfaced as a cascade of "refresh and try again" toasts.
+// The debounce coalesces typing into one mutation per pause.
+//
+// Flush points (added post-Codex round-1 review on this fix):
+//   - onBlur:  commit immediately when focus leaves the input
+//   - unmount: commit pending change on tab-switch / navigation
+//   - parent:  flush() exposed via ref so Compile can drain pending
+//              edits before invoking the compile mutation
+const DebouncedTokenInput = forwardRef<DebouncedTokenInputHandle, DebouncedTokenInputProps>(
+  function DebouncedTokenInput({ value, disabled, ariaLabel, onCommit }, ref) {
+    const [draft, setDraft] = useState<string>(String(value));
+    const lastCommittedRef = useRef<number>(value);
+    const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const pendingRef = useRef<number | null>(null);
+
+    // Tracks the most recent in-flight onCommit promise so `flush()`
+    // can resolve only when the backend has actually accepted the
+    // value — not just when the local mutate() call was issued. This
+    // is what lets Compile await a freshly-typed value's PUT to land
+    // before its POST goes out, instead of racing it on HTTP/2.
+    //
+    // Resolves to `true` on success, `false` on failure (the caller
+    // gates follow-up actions on this). `Promise.resolve(true)` is
+    // the initial value so flush() with nothing pending is a no-op.
+    const lastCommitPromiseRef = useRef<Promise<boolean>>(Promise.resolve(true));
+
+    // `onCommit` may be an inline arrow at the parent and so change
+    // each render. Capture the latest in a ref so the unmount-only
+    // effect can call it without resubscribing the cleanup.
+    const onCommitRef = useRef(onCommit);
+    useEffect(() => {
+      onCommitRef.current = onCommit;
+    }, [onCommit]);
+
+    function clearTimer() {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+    }
+
+    function commit(n: number) {
+      pendingRef.current = null;
+      lastCommittedRef.current = n;
+      const result = onCommitRef.current(n);
+      // Normalize to Promise<boolean>:
+      //  - synchronous void return → success (true)
+      //  - resolved with `false` → failure (callers will short-circuit)
+      //  - rejected (defensive — onCommit shouldn't throw, but a buggy
+      //    callback shouldn't crash the dashboard) → treated as failure
+      lastCommitPromiseRef.current = Promise.resolve(result).then(
+        (ok) => ok !== false,
+        () => false,
+      );
+    }
+
+    useImperativeHandle(
+      ref,
+      () => ({
+        flush() {
+          clearTimer();
+          if (pendingRef.current !== null) {
+            commit(pendingRef.current);
+          }
+          return lastCommitPromiseRef.current;
+        },
+      }),
+      [],
+    );
+
+    // Re-sync local draft when the server-confirmed value changes
+    // (e.g. another tab edited the rules, or a successful commit
+    // rounds the value). Skip when the draft already matches to
+    // avoid disrupting in-progress typing.
+    useEffect(() => {
+      if (value !== lastCommittedRef.current) {
+        lastCommittedRef.current = value;
+        setDraft(String(value));
+        pendingRef.current = null;
+        clearTimer();
+      }
+    }, [value]);
+
+    // Debounce: schedule a commit 600ms after the user stops typing.
+    useEffect(() => {
+      const n = parseInt(draft, 10);
+      if (Number.isNaN(n) || n < 0 || n === lastCommittedRef.current) {
+        pendingRef.current = null;
+        return;
+      }
+      pendingRef.current = n;
+      clearTimer();
+      timerRef.current = setTimeout(() => {
+        timerRef.current = null;
+        if (pendingRef.current !== null) {
+          commit(pendingRef.current);
+        }
+      }, 600);
+      return clearTimer;
+    }, [draft]);
+
+    // Unmount-only flush. Empty deps so this cleanup runs only when
+    // the component leaves the tree (tab switch, navigation, etc.) —
+    // not on every re-render. Uses onCommitRef.current to stay
+    // current without depending on `onCommit`.
+    useEffect(() => {
+      return () => {
+        if (pendingRef.current !== null) {
+          onCommitRef.current(pendingRef.current);
+        }
+      };
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    return (
+      <input
+        type="number"
+        min={0}
+        step={500}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => {
+          clearTimer();
+          if (pendingRef.current !== null) {
+            commit(pendingRef.current);
+          }
+        }}
+        disabled={disabled}
+        aria-label={ariaLabel}
+        className="w-24 px-2 py-1 text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)]"
+      />
+    );
+  },
+);
+
 export default function RulesTab({ projectId }: { projectId: string }) {
   const { data: rulesResp, isLoading, error } = useProjectRules(projectId);
   const { data: versionsResp } = useRulesVersions(projectId);
@@ -232,22 +403,38 @@ export default function RulesTab({ projectId }: { projectId: string }) {
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
   const { data: versionDetail } = useRulesVersion(projectId, selectedVersion);
 
-  function patchRules(partial: Partial<ProjectRules>) {
-    if (!rules) return;
-    updateRules.mutate(
-      { rules: partial, etag },
-      {
-        onSuccess: () => addToast('success', 'Rules updated.'),
-        onError: (err) => {
-          if (isStaleEtagError(err)) {
-            addToast(
-              'error',
-              'Rules have changed since you loaded them — refresh and try again.',
-            );
-          } else {
-            addToast('error', `Update failed: ${String(err)}`);
-          }
-        },
+  // Refs to the debounced Max tokens inputs so Compile can drain any
+  // pending typed value before the compile mutation fires (otherwise
+  // a fast typist → click can compile a stale server-side snapshot).
+  const knowledgeTokensRef = useRef<DebouncedTokenInputHandle>(null);
+  const contextTokensRef = useRef<DebouncedTokenInputHandle>(null);
+
+  // Returns Promise<boolean>:  true = server committed, false = failed
+  // (toast already surfaced). Gated follow-ups (Compile) check the
+  // boolean and short-circuit on false instead of compiling against
+  // a stale-server snapshot. Non-awaiting callers (checkbox toggles)
+  // can ignore the return value — they still see the toast.
+  //
+  // The promise NEVER rejects: failure is signalled in-band via the
+  // boolean so inline-arrow callers (`onChange={() => patchRules(…)}`)
+  // don't generate unhandled-rejection warnings.
+  function patchRules(partial: Partial<ProjectRules>): Promise<boolean> {
+    if (!rules) return Promise.resolve(true);
+    return updateRules.mutateAsync({ rules: partial, etag }).then(
+      () => {
+        addToast('success', 'Rules updated.');
+        return true;
+      },
+      (err) => {
+        if (isStaleEtagError(err)) {
+          addToast(
+            'error',
+            'Rules have changed since you loaded them — refresh and try again.',
+          );
+        } else {
+          addToast('error', `Update failed: ${String(err)}`);
+        }
+        return false;
       },
     );
   }
@@ -275,7 +462,29 @@ export default function RulesTab({ projectId }: { projectId: string }) {
     );
   }
 
-  function handleCompile() {
+  // Drain any pending debounced edits AND await their server commits
+  // before firing the compile. Without the await, flush()'s mutate
+  // and compile's mutate fly in parallel under HTTP/2 multiplexing,
+  // so the backend can see compile-before-PUT and emit a stale build.
+  //
+  // If any flushed patch FAILED (409 stale-etag / network / server
+  // error), short-circuit instead of compiling against the stale
+  // server snapshot. The user already saw the patch-failure toast
+  // from patchRules; we add a second toast explaining that compile
+  // was skipped so the cause-effect chain is clear.
+  async function handleCompile() {
+    const results = await Promise.all([
+      knowledgeTokensRef.current?.flush() ?? Promise.resolve(true),
+      contextTokensRef.current?.flush() ?? Promise.resolve(true),
+    ]);
+    if (results.some((ok) => !ok)) {
+      addToast(
+        'error',
+        'Compile skipped — pending rules update failed. Refresh and try again.',
+      );
+      return;
+    }
+
     compileRules.mutate(undefined, {
       onSuccess: (result) => {
         if (result.created_new_version === false) {
@@ -353,7 +562,7 @@ export default function RulesTab({ projectId }: { projectId: string }) {
         </div>
         <button
           onClick={handleCompile}
-          disabled={compileRules.isPending}
+          disabled={compileRules.isPending || updateRules.isPending}
           className="px-4 py-2 text-sm font-semibold bg-[var(--brand)] text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {compileRules.isPending ? 'Compiling...' : 'Compile'}
@@ -488,19 +697,12 @@ export default function RulesTab({ projectId }: { projectId: string }) {
             </div>
             <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)]">
               Max tokens:
-              <input
-                type="number"
-                min={0}
-                step={500}
+              <DebouncedTokenInput
+                ref={knowledgeTokensRef}
                 value={rules.knowledge_max_tokens}
-                onChange={(e) => {
-                  const n = parseInt(e.target.value, 10);
-                  if (!Number.isNaN(n) && n >= 0) {
-                    patchRules({ knowledge_max_tokens: n });
-                  }
-                }}
                 disabled={updateRules.isPending}
-                className="w-24 px-2 py-1 text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)]"
+                ariaLabel="Knowledge injection max tokens"
+                onCommit={(n) => patchRules({ knowledge_max_tokens: n })}
               />
             </label>
           </>
@@ -550,19 +752,12 @@ export default function RulesTab({ projectId }: { projectId: string }) {
             </div>
             <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)]">
               Max tokens:
-              <input
-                type="number"
-                min={0}
-                step={500}
+              <DebouncedTokenInput
+                ref={contextTokensRef}
                 value={rules.context_max_tokens}
-                onChange={(e) => {
-                  const n = parseInt(e.target.value, 10);
-                  if (!Number.isNaN(n) && n >= 0) {
-                    patchRules({ context_max_tokens: n });
-                  }
-                }}
                 disabled={updateRules.isPending}
-                className="w-24 px-2 py-1 text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)]"
+                ariaLabel="Context injection max tokens"
+                onCommit={(n) => patchRules({ context_max_tokens: n })}
               />
             </label>
           </>

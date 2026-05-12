@@ -17,14 +17,31 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.9.9.10 -->
+      <!-- v0.9.9.11 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
-            <span class="text-brand font-semibold">v0.9.9.10</span>
+            <span class="text-brand font-semibold">v0.9.9.11</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">May 12, 2026</span>
           <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Dashboard Rules Tab Freeze Fix</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Dashboard freeze when editing project rules &rarr; knowledge / context max tokens</strong> (<span class="font-mono text-accent text-sm">RulesTab.tsx</span>: debounce + flush-on-blur/unmount + boolean-gated Compile).</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">1,376 backend + 117 dashboard UI tests passing &middot; 34 migrations &middot; 22 MCP tools</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.9.9.10 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.9.9.10</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">May 12, 2026</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">KB Search Trigram Index, Sync Status Query Collapse, ANSI Test Helper</h2>
         <ul class="space-y-2 text-base text-muted">

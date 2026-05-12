@@ -235,7 +235,7 @@ No LLM is required for rules compilation in v0.9.9.
 ## Hook-based injection (Claude Code)
 
 <Aside type="note" title="Claude Code only">
-Hook-based injection requires native hook support in the AI tool. As of v0.9.9.10, Claude Code is the only supported tool with that capability. File-based compile remains the universal path for codex, cursor, copilot, and gemini.
+Hook-based injection requires native hook support in the AI tool. As of v0.9.9.11, Claude Code is the only supported tool with that capability. File-based compile remains the universal path for codex, cursor, copilot, and gemini.
 </Aside>
 
 SessionFS can inject compiled rules through Claude Code's `SessionStart` hook instead of (or alongside) a `CLAUDE.md` file. Every time Claude Code starts a session, the hook runs `sfs rules emit` and pipes the latest compiled rules into the system prompt.
