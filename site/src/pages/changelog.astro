@@ -17,14 +17,40 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.9.9.9 -->
+      <!-- v0.9.9.10 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.9.9.10</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">May 12, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">KB Search Trigram Index, Sync Status Query Collapse, ANSI Test Helper</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>pg_trgm GIN index on knowledge_entries.content</strong> (migration 034) — accelerates ILIKE substring search used by <span class="font-mono text-accent text-sm">GET /projects/&#123;id&#125;/entries?search=</span> and MCP <span class="font-mono text-accent text-sm">search_project_knowledge</span>. PostgreSQL only; SQLite is a no-op. Route and MCP wrapper now enforce a 3-char minimum on <span class="font-mono text-accent text-sm">search</span> so every accepted query benefits from the index.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>/sync/status collapsed 5 queries to 2</strong> — watchlist counts (watched/queued/failed) now come from a single <span class="font-mono text-accent text-sm">GROUP BY status</span> SELECT against <span class="font-mono text-accent text-sm">tracked_sessions</span>. Aggregate session counters remain on a single multi-aggregate SELECT. Behavior unchanged.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Admin /orgs no longer N+1s</strong> — member counts for the paginated org list load via a single <span class="font-mono text-accent text-sm">WHERE org_id IN (...) GROUP BY org_id</span> SELECT, then merge into the response. Empty-page guard prevents <span class="font-mono text-accent text-sm">IN ()</span>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>sfs project ask keyword extractor rebuilt</strong> — strips trailing punctuation, lowercases, drops stop words, enforces the 3-char server floor, dedupes, caps at 5 keywords. Previous tokenizer produced 422s on common 2-char tokens (<span class="font-mono text-accent text-sm">db</span>, <span class="font-mono text-accent text-sm">ai</span>, <span class="font-mono text-accent text-sm">ui</span>) once the search gate landed. Canary test fails if CLI floor and server gate drift.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Shared ANSI-strip test helper</strong> (<span class="font-mono text-accent text-sm">tests/utils/ansi.py</span>) — replaces four inline regex sites that previously protected tests from the v0.9.9.8 CI-color flake class. 10 dedicated unit tests; case-insensitive matching is opt-out.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>confirm_or_exit() CLI helper</strong> — single source of truth for interactive confirmation prompts with a non-TTY guard so piped EOF returns a structured exit instead of leaking "Unexpected error" through <span class="font-mono text-accent text-sm">handle_errors</span>. Wired into DLP scan-on-push and push-after-delete prompts.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>/release skill step 12 hardened</strong> — cache-busted probes, strict <span class="font-mono text-accent text-sm">grep -F</span> version match against the changelog endpoint, <span class="font-mono text-accent text-sm">vercel inspect &lt;live-alias&gt;</span> on the deployment that actually serves traffic, output captured to a variable so <span class="font-mono text-accent text-sm">set -o pipefail</span> doesn't mask failures.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>urllib3 bumped past CVE-2026-44431 / CVE-2026-44432</strong> (fix in 2.7.0). Transitive — no direct pin in <span class="font-mono text-accent text-sm">pyproject.toml</span>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>click.exceptions.Abort backstop in handle_errors</strong> — <span class="font-mono text-accent text-sm">Abort</span> does not inherit from <span class="font-mono text-accent text-sm">ClickException</span>; without an explicit catch it bubbled up as "Unexpected error: aborted." for any cancelled <span class="font-mono text-accent text-sm">typer.confirm</span>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Helm chart 0.9.12 &rarr; 0.9.13</strong>, appVersion bumped to 0.9.9.10. Chart evolves independently of app per Helm SemVer.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">1,376 backend tests + 109 dashboard UI tests passing &middot; 34 migrations &middot; 22 MCP tools</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.9.9.9 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
             <span class="text-brand font-semibold">v0.9.9.9</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">May 11, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Deploy API Gate Fix, Stale-Window Tuning, Onboarding Polling Cleanup</h2>
         <ul class="space-y-2 text-base text-muted">

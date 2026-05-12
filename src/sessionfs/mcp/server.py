@@ -1083,6 +1083,17 @@ async def _handle_search_knowledge(args: dict) -> str:
     include_stale = args.get("include_stale", False)
     git_remote = args.get("git_remote", "")
 
+    # Match the route-side 3-char floor (v0.9.9.10) so the pg_trgm
+    # index on knowledge_entries.content can serve every accepted
+    # query without falling back to a sequential scan. Reject early
+    # so agents get a clean message instead of an HTTP 422 round-trip.
+    if isinstance(query, str) and len(query.strip()) < 3:
+        return (
+            "search_project_knowledge requires a query of 3+ characters "
+            "(strip whitespace). Shorter queries fall back to a "
+            "sequential scan in production — narrow your search."
+        )
+
     if not git_remote:
         git_remote = await _resolve_workspace_git_remote()
 

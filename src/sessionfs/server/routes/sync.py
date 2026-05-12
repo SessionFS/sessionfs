@@ -209,46 +209,39 @@ async def get_sync_status(
     """Get current sync status."""
     import os
 
-    # Total sessions
-    total_result = await db.execute(
-        select(func.count()).select_from(Session).where(
-            Session.user_id == user.id, Session.is_deleted == False  # noqa: E712
+    # Collapse the 5 prior aggregates to 2 round-trips.
+    # Round-trip 1: session total + storage in one SELECT over the same
+    # filtered Session set.
+    session_agg = await db.execute(
+        select(
+            func.count(),
+            func.coalesce(func.sum(Session.blob_size_bytes), 0),
+        ).where(
+            Session.user_id == user.id,
+            Session.is_deleted == False,  # noqa: E712
         )
     )
-    total = total_result.scalar() or 0
+    total, storage_used = session_agg.one()
+    total = total or 0
+    storage_used = storage_used or 0
 
-    # Storage used
-    storage_result = await db.execute(
-        select(func.coalesce(func.sum(Session.blob_size_bytes), 0)).where(
-            Session.user_id == user.id, Session.is_deleted == False  # noqa: E712
-        )
+    # Round-trip 2: watchlist counts grouped by status. The total is
+    # the sum of all rows for this user; "queued" and "failed" are the
+    # status-specific bucket counts. Using COUNT FILTER (BY status =
+    # 'X') would let us do this in one expression, but SQLite doesn't
+    # support FILTER pre-3.30 — GROUP BY is cross-DB safe.
+    watchlist_rows = (await db.execute(
+        select(SyncWatchlist.status, func.count())
+        .where(SyncWatchlist.user_id == user.id)
+        .group_by(SyncWatchlist.status)
+    )).all()
+    watched = sum(count for _status, count in watchlist_rows)
+    queued = next(
+        (count for status, count in watchlist_rows if status == "queued"), 0
     )
-    storage_used = storage_result.scalar() or 0
-
-    # Watched sessions
-    watched_result = await db.execute(
-        select(func.count()).select_from(SyncWatchlist).where(
-            SyncWatchlist.user_id == user.id
-        )
+    failed = next(
+        (count for status, count in watchlist_rows if status == "failed"), 0
     )
-    watched = watched_result.scalar() or 0
-
-    # Queued/failed from watchlist
-    queued_result = await db.execute(
-        select(func.count()).select_from(SyncWatchlist).where(
-            SyncWatchlist.user_id == user.id,
-            SyncWatchlist.status == "queued",
-        )
-    )
-    queued = queued_result.scalar() or 0
-
-    failed_result = await db.execute(
-        select(func.count()).select_from(SyncWatchlist).where(
-            SyncWatchlist.user_id == user.id,
-            SyncWatchlist.status == "failed",
-        )
-    )
-    failed = failed_result.scalar() or 0
 
     # Storage limit based on effective tier — org members inherit their org's
     # tier instead of being limited by personal user.tier.

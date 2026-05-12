@@ -379,14 +379,13 @@ class TestHandoffOversizeHandling:
         # /compact suggestion. The CLI pre-flight uses MAX_MEMBER_SIZE which
         # is now tier-aware (50 MB default, env-overridable), so we don't
         # pin a specific MB number — just that it's reported.
-        import re as _re
+        from tests.utils.ansi import assert_in_ansi
 
         captured = capsys.readouterr()
-        raw = (captured.out + captured.err)
-        out = _re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", raw).lower()
-        assert "messages.jsonl" in out, f"output missing filename: {raw}"
-        assert "mb" in out, f"output missing size: {raw}"
-        assert "/compact" in out, f"output missing suggestion: {raw}"
+        raw = captured.out + captured.err
+        assert_in_ansi("messages.jsonl", raw)
+        assert_in_ansi("mb", raw)
+        assert_in_ansi("/compact", raw)
 
         # Confirm push was never attempted.
         mock_client.push_session.assert_not_called()
@@ -417,16 +416,18 @@ class TestHandoffIdMisuseRedirect:
         """
         import re
 
+        from tests.utils.ansi import assert_in_ansi, assert_not_in_ansi
+
         runner, app = self._runner()
         result = runner.invoke(app, ["handoff", "hnd_a83256fc5ed68cef"])
         assert result.exit_code == 2, result.output
-        # Strip ANSI so substring checks survive Rich's `[cyan]`/`[yellow]`
-        # markup expansion under color-enabled CI environments.
-        out = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", result.output).lower()
-        assert "pull-handoff" in out
-        assert "hnd_a83256fc5ed68cef" in out
+        # Substring checks survive Rich's `[cyan]`/`[yellow]` markup
+        # expansion under color-enabled CI environments by routing
+        # through tests/utils/ansi.py.
+        assert_in_ansi("pull-handoff", result.output)
+        assert_in_ansi("hnd_a83256fc5ed68cef", result.output)
         # The misleading legacy error must NOT appear.
-        assert "missing option '--to'" not in out
+        assert_not_in_ansi("missing option '--to'", result.output)
 
     def test_typer_invocation_with_session_id_still_requires_to(self):
         """Normal flow regression: a real session ID with no --to must
@@ -434,26 +435,22 @@ class TestHandoffIdMisuseRedirect:
         the generic "Unexpected error: ..." that handle_errors would
         otherwise produce when our BadParameter falls through.
         """
-        import re
+        from tests.utils.ansi import assert_in_ansi, assert_not_in_ansi
 
         runner, app = self._runner()
         result = runner.invoke(
             app, ["handoff", "ses_abc123def4567890"]
         )
         assert result.exit_code != 0
-        # Strip ANSI escape sequences before substring checks. Rich
-        # renders `--to` with style markup that splits the dashes
-        # across separate escape codes, so a naïve `"--to" in out`
-        # search misses on environments with color enabled (CI's
-        # wider terminal triggered it; local didn't). Compare on the
-        # cleaned text instead.
-        out = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", result.output).lower()
-        assert "--to" in out
+        # The exact-match check happens through the shared helper —
+        # Rich splits `--to` across escape codes under color-enabled
+        # CI (the bug v0.9.9.9 fixed); strip_ansi normalises that.
+        assert_in_ansi("--to", result.output)
         # Codex round 2 caught this: handle_errors used to swallow
         # ClickException as generic Exception, producing this string.
         # The fix (let ClickException pass through) means the standard
         # Typer parser-error format is what the user sees.
-        assert "unexpected error" not in out
+        assert_not_in_ansi("unexpected error", result.output)
 
     def test_alias_shaped_like_handoff_id_works_with_to(self):
         """A user with a session aliased "hnd_deadbeef12345678" must

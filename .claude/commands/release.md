@@ -227,21 +227,66 @@ The release workflow (release.yml) will:
 - Create GitHub Release with changelog notes
 
 ### 12. Post-deploy verification
+
+**Always use cache-busted URLs.** Vercel's edge cache can serve stale content
+from a healthy CDN even when a freshly-promoted deployment is broken or
+empty. Hit `?nocache=$(date +%s)` to bypass.
+
+Set the release version once so the rest of the block uses it:
+
 ```bash
+VERSION="X.Y.Z"   # e.g. "0.9.9.10"
+
 # API health
 curl -s https://api.sessionfs.dev/health
 
-# Landing page
-curl -s https://sessionfs.dev | grep -o "<title>[^<]*</title>"
+# Landing page reachable + non-empty
+SITE_HTML=$(curl -s "https://sessionfs.dev/?nocache=$(date +%s)")
+echo "$SITE_HTML" | grep -o "<title>[^<]*</title>"
+
+# STRICT version check — the changelog page MUST contain the literal
+# `v${VERSION}` string. Anything else (loose major.minor prefix, the
+# standing "Public Beta" badge, etc.) lets a stale build through —
+# e.g. when releasing 0.9.9.10 a build still on 0.9.7.2 would have
+# satisfied v0.9. / Public Beta. The changelog is also what
+# Scribe-Site updates every release, so its presence proves both
+# (a) the deploy isn't empty AND (b) the site sync ran.
+CHANGELOG_HTML=$(curl -s "https://sessionfs.dev/changelog?nocache=$(date +%s)")
+if echo "$CHANGELOG_HTML" | grep -F "v${VERSION}" >/dev/null 2>&1; then
+  echo "Site changelog contains v${VERSION} — deploy is current."
+else
+  echo "WARN: https://sessionfs.dev/changelog does NOT contain v${VERSION}."
+  echo "      Likely an empty/stale Vercel deploy or Scribe-Site didn't run."
+  echo "      Inspect with the live-alias check below and fix before tagging."
+fi
 
 # Dashboard
-curl -s -o /dev/null -w "%{http_code}" https://app.sessionfs.dev
+curl -s -o /dev/null -w "%{http_code}\n" "https://app.sessionfs.dev/?nocache=$(date +%s)"
+
+# Vercel deployment health check — authoritative via the live alias URL.
+# `vercel inspect <alias-url>` resolves the alias server-side and returns
+# the exact deployment serving traffic, with no race against
+# `vercel ls` ordering or duplicate alias rows. The x-vercel-id header
+# is captured for the log trail so we have a trace id if support is needed.
+SITE_VID=$(curl -sI "https://sessionfs.dev/?nocache=$(date +%s)" | awk -F': ' '/^x-vercel-id/{print $2}' | tr -d '\r')
+echo "Live site deploy x-vercel-id (trace): $SITE_VID"
+# Capture inspect output + exit code BEFORE piping into grep — otherwise
+# a piped grep masks any auth/network/CLI failure as exit-0 with empty
+# output (`set -o pipefail` is not portable across the readers of this
+# skill, so we check the exit code explicitly).
+if VCL_INSPECT=$(cd site && npx vercel inspect https://sessionfs.dev 2>&1); then
+  echo "$VCL_INSPECT" | grep -E "Builds|status|Aliases|url\s" | head -10
+else
+  echo "WARN: vercel inspect https://sessionfs.dev failed — release is" \
+    "unverified at the Vercel layer:"
+  echo "$VCL_INSPECT" | head -10
+fi
 
 # PyPI (after release workflow completes)
 curl -s https://pypi.org/pypi/sessionfs/json | python3 -c "import sys,json; print(json.load(sys.stdin)['info']['version'])"
 
 # GitHub Release
-gh release view vX.Y.Z --repo SessionFS/sessionfs
+gh release view "v${VERSION}" --repo SessionFS/sessionfs
 ```
 
 ### 13. Wait for all pipelines

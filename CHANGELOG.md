@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.9.10] - 2026-05-12
+
+### Added
+- **`pg_trgm` GIN index on `knowledge_entries.content`** (migration 034). PostgreSQL only; SQLite is a no-op. Accelerates `ILIKE '%query%'` substring search used by `GET /api/v1/projects/{id}/entries?search=` and MCP `search_project_knowledge`. The route and the MCP wrapper now both enforce a 3-character minimum on `search` so every accepted query benefits from the trigram index — 1-2 char queries previously fell back to a sequential scan.
+- **Shared ANSI-strip test helper** (`tests/utils/ansi.py`) with `strip_ansi()`, `assert_in_ansi()`, `assert_not_in_ansi()`. Replaces four inline `re.sub(r"\x1b\[...", ...)` sites in `test_autosync.py` and `test_hooks_installer.py` that previously protected those tests from the v0.9.9.8 CI-color flake class. New helper has 10 unit tests in `tests/unit/test_ansi_helper.py`; default case-insensitive matching is opt-out for tests where casing is part of the contract.
+- **`confirm_or_exit()` CLI helper** (`src/sessionfs/cli/common.py`) — single source of truth for interactive confirmation prompts. Adds a non-TTY guard before `typer.confirm` so piped EOF returns a structured "stdin not a tty; pass --yes" exit instead of leaking an "Unexpected error" through `handle_errors`. Wired into the DLP scan-on-push prompt and the push-after-delete prompt in `cli/cmd_cloud.py`.
+
+### Changed
+- **`/api/v1/sync/status` collapsed from 5 queries to 2.** The watchlist counts (`watched`/`queued`/`failed`) now come from a single `GROUP BY status` SELECT against `tracked_sessions`; `watched` is the row sum across statuses, with `queued` and `failed` projected from the grouped result. The aggregate session counters remain on a single multi-aggregate SELECT. Behavior unchanged.
+- **Admin `/api/v1/admin/orgs` no longer N+1s.** Member counts for the paginated org list are now loaded via a single `WHERE org_id IN (...) GROUP BY org_id` SELECT against `org_members`, then merged into the response. Empty-page guard prevents `IN ()`.
+- **`sfs project ask` keyword extractor** rebuilt around `_extract_search_keywords()` in `cli/cmd_project.py`. The helper strips trailing punctuation, lowercases, drops stop words, enforces a 3-character minimum (mirrors the server gate), dedupes, and caps at 5 keywords. Previous behavior tokenized with `len(w) > 1` and would 422-abort on common 2-char tokens like `db`, `ai`, `ui` once the server-side floor landed. 8 regression tests in `tests/unit/test_ask_keywords.py` including a canary that fails if the CLI floor and server gate drift apart.
+- **`/release` skill step 12 (post-deploy verification)** hardened against the v0.9.9.x detection-blind-spot class. Cache-busted probes (`?nocache=$(date +%s)`); strict version match via `grep -F "v${VERSION}"` against the changelog endpoint; `vercel inspect <live-alias>` checks the deployment that actually serves traffic; output captured to a variable before `grep` so `set -o pipefail` doesn't mask `inspect` failures.
+
+### Fixed
+- **`urllib3` bumped past CVE-2026-44431 / CVE-2026-44432** (fix in 2.7.0). Transitive dependency — no direct pin in `pyproject.toml`.
+- **`click.exceptions.Abort` backstop in `handle_errors`** (`cli/common.py`). `Abort` does not inherit from `ClickException`; without an explicit catch it was bubbling up as "Unexpected error: aborted." for any cancelled `typer.confirm`.
+
+### Notes
+- Migration 034 added: `idx_ke_content_trgm` (`CREATE EXTENSION IF NOT EXISTS pg_trgm` + GIN with `gin_trgm_ops`). Idempotent on re-run; downgrade drops the index but leaves the extension installed (other tables / future migrations may depend on it).
+- Helm chart version 0.9.12 → 0.9.13 (chart evolves independent of app). appVersion 0.9.9.10.
+- 1376 backend tests + 109 dashboard tests passing (was 1367 in v0.9.9.9; +9 from B4/B6 + ask-keyword regression suites). Three Codex review rounds (entry 207 → 209 → 211 CLEAN) resolved before tag.
+
 ## [0.9.9.9] - 2026-05-11
 
 ### Fixed

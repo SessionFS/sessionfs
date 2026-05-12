@@ -1178,7 +1178,7 @@ $ sfs rules emit --tool claude-code --format hook
 
 ## `sfs hooks`
 
-Manage SessionFS hooks for tools with native hook support. v0.9.9.9 supports Claude Code only. See [Hook-based injection](/docs/rules/#hook-based-injection-claude-code) for the full reference.
+Manage SessionFS hooks for tools with native hook support. v0.9.9.10 supports Claude Code only. See [Hook-based injection](/docs/rules/#hook-based-injection-claude-code) for the full reference.
 
 ### `sfs hooks install`
 
@@ -1190,7 +1190,7 @@ sfs hooks install --for TOOL [--user|--project] [--force]
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `--for` | string | required | Target tool (`claude-code` only in v0.9.9.9) |
+| `--for` | string | required | Target tool (`claude-code` only in v0.9.9.10) |
 | `--user` | flag | default | Install at user scope (`~/.claude/settings.json`) |
 | `--project` | flag | `false` | Install at project scope (`.claude/settings.json` in repo root) |
 | `--force` | flag | `false` | Skip the conflict warning when a managed `CLAUDE.md` already exists |
@@ -1213,7 +1213,7 @@ sfs hooks uninstall --for TOOL [--user|--project] [--force]
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `--for` | string | required | Target tool (`claude-code` only in v0.9.9.9) |
+| `--for` | string | required | Target tool (`claude-code` only in v0.9.9.10) |
 | `--user` | flag | default | Uninstall from user scope |
 | `--project` | flag | `false` | Uninstall from project scope |
 | `--force` | flag | `false` | Skip the confirmation prompt |

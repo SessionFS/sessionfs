@@ -317,11 +317,21 @@ def push(
                         console.print(
                             "[dim]--yes: proceeding despite DLP findings.[/dim]"
                         )
-                    elif not typer.confirm(
-                        "Continue pushing with these findings?", default=False
-                    ):
-                        console.print("[dim]Push cancelled.[/dim]")
-                        return
+                    else:
+                        from sessionfs.cli.common import confirm_or_exit
+                        # In a piped / non-TTY shell, this exits with a
+                        # clean message instead of letting click.confirm
+                        # hit EOF → Abort → "Unexpected error:".
+                        if not confirm_or_exit(
+                            "Continue pushing with these findings?",
+                            default=False,
+                            yes_hint=(
+                                "Pass --yes to push despite DLP findings "
+                                "in non-interactive mode."
+                            ),
+                        ):
+                            console.print("[dim]Push cancelled.[/dim]")
+                            return
 
         # Check if session is in the local exclusion list (deleted from cloud)
         from sessionfs.store.deleted import is_excluded, get_entry, remove_exclusion
@@ -330,13 +340,15 @@ def push(
         if is_excluded(full_id):
             entry = get_entry(full_id)
             scope = entry.get("scope", "?") if entry else "?"
-            if not yes:
-                if not typer.confirm(
-                    f"This session was deleted from the cloud (scope={scope}). Push anyway?",
-                    default=False,
-                ):
-                    console.print("[dim]Push cancelled.[/dim]")
-                    return
+            from sessionfs.cli.common import confirm_or_exit
+            if not confirm_or_exit(
+                f"This session was deleted from the cloud (scope={scope}). Push anyway?",
+                default=False,
+                yes=yes,
+                yes_hint="Pass --yes to undelete + push in non-interactive mode.",
+            ):
+                console.print("[dim]Push cancelled.[/dim]")
+                return
             extra_headers["X-SessionFS-Undelete"] = "true"
 
         console.print(f"Packing session {full_id[:12]}...")

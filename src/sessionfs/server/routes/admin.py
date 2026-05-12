@@ -293,13 +293,22 @@ async def list_orgs(
     )
     orgs = result.scalars().all()
 
+    # Batch-load member counts for the page's orgs in ONE query instead
+    # of N+1. Previously the loop below ran `SELECT count(*) FROM
+    # org_members WHERE org_id = ?` once per org — on a 50-org page
+    # that's 50 round-trips for what's a single GROUP BY.
+    member_counts: dict[str, int] = {}
+    if orgs:
+        org_ids = [o.id for o in orgs]
+        member_rows = (await db.execute(
+            select(OrgMember.org_id, func.count(OrgMember.user_id))
+            .where(OrgMember.org_id.in_(org_ids))
+            .group_by(OrgMember.org_id)
+        )).all()
+        member_counts = {oid: cnt for oid, cnt in member_rows}
+
     items = []
     for org in orgs:
-        member_count = (
-            await db.execute(
-                select(func.count(OrgMember.user_id)).where(OrgMember.org_id == org.id)
-            )
-        ).scalar() or 0
         items.append({
             "id": org.id,
             "name": org.name,
@@ -307,7 +316,7 @@ async def list_orgs(
             "tier": org.tier,
             "seats_limit": org.seats_limit,
             "storage_limit_bytes": org.storage_limit_bytes,
-            "member_count": member_count,
+            "member_count": member_counts.get(org.id, 0),
             "created_at": org.created_at.isoformat() if org.created_at else None,
         })
 

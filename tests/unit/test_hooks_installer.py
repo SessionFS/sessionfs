@@ -175,23 +175,21 @@ def test_status_reports_each_tool_slot(tmp_path: Path):
         result = runner.invoke(hooks_app, ["status"])
 
     assert result.exit_code == 0, result.output
-    # Strip ANSI codes — Rich's status renderer splits styled text
-    # across escape sequences (e.g. "claude-code (user)" may render as
-    # "\x1b[1mclaude-code\x1b[0m (user)" under FORCE_COLOR/CI), which
-    # breaks substring assertions in environments with color enabled.
-    import re as _re
+    # Route every substring check through the shared ANSI-strip helper.
+    # Rich splits styled text across escape sequences under FORCE_COLOR
+    # / CI; the helper normalises that.
+    from tests.utils.ansi import assert_in_ansi
 
-    out = _re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", result.stdout)
     # User scope: installed.
-    assert "claude-code (user)" in out
-    assert "INSTALLED" in out
+    assert_in_ansi("claude-code (user)", result.stdout)
+    assert_in_ansi("INSTALLED", result.stdout)
     # Project scope: simulated as not-in-repo.
-    assert "claude-code (project)" in out
-    assert "not in a git repo" in out
+    assert_in_ansi("claude-code (project)", result.stdout)
+    assert_in_ansi("not in a git repo", result.stdout)
     # Capture-only tools rendered as N/A.
     for tool in ("codex", "gemini", "cursor", "copilot"):
-        assert tool in out
-    assert "N/A" in out
+        assert_in_ansi(tool, result.stdout)
+    assert_in_ansi("N/A", result.stdout)
 
 
 # ---------------------------------------------------------------------------
