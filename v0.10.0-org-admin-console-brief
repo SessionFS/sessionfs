@@ -1,0 +1,201 @@
+# v0.10.0 — Org Admin Console: Implementation Brief
+
+Status: CEO-approved 2026-05-12 (KB entry 230). Builder UNBLOCKED.
+Predecessor: v0.9.9.12 (daemon-reindex hotfix) shipped.
+
+---
+
+## SCOPE LOCK
+
+In-scope:
+1. Migration 035 — add `Project.org_id` (nullable; null = personal project)
+2. Members management UI — invite, remove, promote/demote (CRUD likely exists at API; UI is the gap)
+3. Team-project semantics: `project.org_id IS NOT NULL` projects gain org-admin gating
+4. Project transfers (BOTH directions) with MANDATORY audit trail
+5. Per-user `default_org_id` setting (User.default_org_id + CLI config + dashboard pref)
+6. Daemon routes session capture by `project.org_id` (load-bearing — get it right)
+7. Org + project settings UI (DLP policy, retention, compile model, KB config — non-deferred only)
+
+NOT in scope (deferred per KB 230):
+- Per-project ACLs → v0.10.1+
+- Audit log UI surface → v0.10.1
+- Server env vars / secrets management → v0.10.1+
+- SCIM / SSO → v0.11.0 (when an enterprise prospect funds it)
+- Billing dashboard → v1.0 (no point until Stripe goes live)
+
+---
+
+## CEO ANSWERS (full text in KB entry 230)
+
+1. **Transfers**: Both directions allowed. Personal→Org: user initiates, no collaborator consent. Org→Other: admin initiates, target accepts via one-time dashboard prompt. MANDATORY audit log (compliance, Baptist).
+2. **Multi-org**: Yes. Per-user `default_org_id`. CLI uses default; `--org` flag overrides. Daemon routes by `project.org_id`.
+3. **Member removal**: Revoke access, NEVER destroy data. Sessions stay (org owns byte trail). Projects auto-transfer to removing admin. KB entries stay with `authored_by` preserved.
+4. **Deferred**: see "NOT in scope" above.
+
+---
+
+## CURRENT-STATE AUDIT (verified against develop @ v0.9.9.12)
+
+**Already in place** (from prior phases — re-use, don't rebuild):
+- `Organization`, `OrgMember`, `OrgInvite` tables (`src/sessionfs/server/db/models.py:369-435`)
+- Stripe billing with org-isolated checkout, org-first webhook handling
+- Tier-based sync limits (50MB free / 300MB paid) — applies to org tiers too
+- Server-side tier gating (6 tiers, 30+ features)
+- RBAC: admin/member roles with seat enforcement on invite accept
+- Admin dashboard with tier management + self-demotion guard + org cleanup on delete
+
+**Missing — this is the v0.10.0 build**:
+- `Project.org_id` column (`Project` model line 328-349 — only has `owner_id`)
+- `User.default_org_id` column
+- Project transfer endpoints + audit table
+- Daemon `project.org_id` routing logic in capture pipeline
+- Members management UI (CLI may exist via admin scope; dashboard members tab does not)
+- Project transfer UI (target-user accept prompt)
+- Org/project settings UI extensions for DLP/retention/compile-model
+
+---
+
+## PHASED DELIVERY
+
+Each phase = a shippable wedge. After each phase: lint, tests, smoke, KB review-request for Codex.
+
+### Phase 1 — Schema foundations (migration 035)
+- Migration 035 adds `projects.org_id` (nullable String FK to organizations.id, ON DELETE SET NULL).
+- Migration 035 adds `users.default_org_id` (nullable String FK to organizations.id, ON DELETE SET NULL).
+- New table `project_transfers`:
+  ```
+  id String PK
+  project_id String? FK projects(id) ON DELETE SET NULL  -- nullable for audit durability
+  project_git_remote_snapshot String?                    -- STABLE identity (git_remote is unique)
+  project_name_snapshot String?                          -- human-readable label only
+  initiated_by String FK users(id)
+  target_user_id String? FK users(id) ON DELETE SET NULL  -- pending recipient
+  from_scope String  -- "personal" or org_id
+  to_scope String    -- "personal" or org_id
+  state String       -- "pending" / "accepted" / "rejected" / "cancelled"
+  accepted_by String? FK users(id)
+  created_at, accepted_at, updated_at
+  ```
+  Durability invariants (CEO directive, KB 230 #1; refined across
+  Codex Phase-1 rounds 2-4, KB entries 233/235/238):
+  - `project_id` ON DELETE SET NULL — a hard project delete clears the live
+    linkage but the audit row survives. Identity is preserved via the
+    `project_git_remote_snapshot` column (the STABLE durable identifier —
+    `projects.git_remote_normalized` is `unique=True`, so two deleted
+    projects with the same display name remain distinguishable in audit
+    history). `project_name_snapshot` is a display-only label, not
+    load-bearing for identity. Both columns are populated by the Phase 2
+    route at create time.
+  - `from_scope` / `to_scope` are plain TEXT (not FK) so they survive an org
+    deletion intact.
+  - `accepted_by` FK has NO ondelete clause — post-accept user deletion is
+    rejected by the FK (the auditor's identity stays attached).
+  - `target_user_id` ON DELETE SET NULL — pending recipient deletion clears
+    the field; Phase 2 route treats target_user_id=NULL on a pending row as
+    "stale, auto-cancel".
+
+  `target_user_id` is the inbox-recipient column (set on initiate, distinct
+  from `accepted_by` which only fills on accept). For auto-accept shapes
+  (initiator == target — e.g. a user transferring their own personal project
+  to an org they belong to), the Phase 2 route sets target_user_id =
+  initiated_by AND flips state to `accepted` at create time.
+- Model classes updated (`Project.org_id`, `User.default_org_id`, new `ProjectTransfer`).
+- Backfill: existing projects get `org_id = NULL` (personal). No data migration risk.
+- Tests: 9 (defaults nullable, org_id set roundtrip, FK ondelete=SET NULL on projects.org_id + users.default_org_id via schema inspection, ProjectTransfer roundtrip + inbox composite index `(state, target_user_id)`, audit-durability FK metadata canary for project_id=SET NULL, both-snapshots roundtrip, end-to-end audit-survives-project-delete with stable identity, migration module chain canary).
+
+DONE when: migration 035 applies cleanly on a fresh PG + on an upgrade from migration 034 with real session data, all 9 tests pass, ruff clean. (PG-flavored migration runtime test is deferred to Forge as a v0.10.x DevOps task — KB entry 237.)
+
+### Phase 2 — Project transfer endpoints
+- `POST /api/v1/projects/{id}/transfer` — initiate. Body: `{to: "personal" | <org_id>}`. Owner-or-org-admin gate. Creates a `project_transfers` row in `pending` state. Sends a notification (email + dashboard) to the target user. Returns `transfer_id`.
+- `POST /api/v1/transfers/{transfer_id}/accept` — target user only. Flips `state` to `accepted`, atomically updates `projects.org_id` (or sets to NULL for transfer-out), writes the accepted_at timestamp.
+- `POST /api/v1/transfers/{transfer_id}/reject` — target user only.
+- `POST /api/v1/transfers/{transfer_id}/cancel` — initiator only, while pending.
+- `GET /api/v1/transfers?state=pending&direction=incoming|outgoing` — list (for dashboard inbox).
+- Audit log row written on every state transition.
+- Tests: 10 (every state transition × happy-path + edge cases: stale pending cancel after accept, rejecting a non-existent transfer, non-target trying to accept, etc.)
+
+DONE when: every transfer state transition covered, server tests pass, REST contract documented in `docs/cli-reference.md` or new `docs/transfers.md`.
+
+### Phase 3 — Members management UI (dashboard MembersTab)
+- New `dashboard/src/org/MembersTab.tsx` (parallel to existing RulesTab).
+- React-query hooks: `useOrgMembers(orgId)`, `useInviteMember(orgId)`, `useRemoveMember(orgId)`, `usePromoteMember(orgId)`, `useDemoteMember(orgId)`.
+- CRUD UI: invite (email + role selector), member table with role pill, remove button (confirm modal — explains data-stays-access-revoked semantics, mandatory wording from CEO), promote/demote dropdown.
+- Server endpoints likely already exist for admin CLI — reuse those. If not, add `POST /api/v1/orgs/{id}/members/invite`, `DELETE /api/v1/orgs/{id}/members/{user_id}`, `PUT /api/v1/orgs/{id}/members/{user_id}/role`.
+- Self-demotion guard already exists in admin dashboard — extend to this surface.
+- Tests: 8-10 dashboard unit tests + 6-8 server route tests.
+
+DONE when: invite flow works end-to-end, remove flow shows the data-stays modal and writes the audit log, promote/demote enforces self-demotion guard.
+
+### Phase 4 — Project transfer UI
+- New `dashboard/src/projects/TransferPanel.tsx` (settings tab on the project page).
+- Settings page on project gains a "Transfer ownership" section. Lists user's orgs as destinations + "Make personal".
+- Transfer inbox surface: dashboard nav badge counts incoming pending transfers. New `dashboard/src/transfers/TransferInbox.tsx` page shows pending accepts with the project name + initiator + from-scope.
+- CLI: `sfs project transfer --to <org-slug|personal>` initiates. `sfs project transfer --accept <transfer-id>`, `--reject`, `--cancel`. `sfs project transfers` lists pending.
+- Tests: 4-6 dashboard tests, 4 CLI tests.
+
+DONE when: a user can initiate transfer in dashboard, target accepts in another browser tab, `project.org_id` updates, audit log written.
+
+### Phase 5 — Multi-org daemon routing
+- THE LOAD-BEARING PIECE. Get this wrong and two-org users see sessions in the wrong bucket.
+- Default-org: User.default_org_id read at daemon startup AND per-session capture.
+- `sfs config set default-org <slug>` writes to `~/.sessionfs/config.toml`.
+- `sfs project init` defaults to `default_org_id`. `--org <slug>` overrides. If user has multiple orgs and no default, CLI prompts.
+- Daemon capture path: when a new session is detected, look up the corresponding `project.org_id` (via project lookup from workspace path or via tracked_sessions). Route the session's sync upload to that org's storage.
+- For untracked workspaces (no project linked): use the user's default_org_id; if none, fall back to personal (org_id = null).
+- Tests: 6 — daemon routing happy-path, default-org fallback, --org override, multi-org user with no default (prompt path), sync routing per session, daemon restart preserves routing.
+
+DONE when: a user with two orgs (acme + beta) can start a session in an acme project and see the session land in acme's storage tier limits, not beta's.
+
+### Phase 6 — Org & project settings UI extensions
+- Org settings: DLP policy edit (already exists?), retention days, compile model selection, KB config knobs.
+- Project settings: same set scoped to project where they override org defaults.
+- Tests: 4-6 dashboard tests covering form validation + save.
+
+DONE when: every non-deferred setting in the scope locks edits via the new UI and persists.
+
+### Phase 7 — Documentation + release prep
+- `docs/org-admin.md` — full org admin guide (members, transfers, settings).
+- `docs/cli-reference.md` — new `sfs project transfer` commands.
+- README + CLAUDE.md updates.
+- Site changelog entry for v0.10.0.
+
+DONE when: all docs reflect the new surface, Scribe-Site sync clean, ready for /release.
+
+---
+
+## RISKS & MITIGATIONS
+
+| Risk | Mitigation |
+|------|-----------|
+| Project transfer races (two users accept simultaneously) | Atomic UPDATE with WHERE state='pending', return affected_row_count; non-1 → 409 |
+| Daemon routing for in-flight sessions during transfer | Hold transfer accept until current sync completes for the project; or just re-route next session (simpler — sessions are append-only, the transfer doesn't migrate historical data anyway) |
+| Multi-org user with default_org_id pointing to an org they were removed from | Validate default_org_id on every load; null it on member-removal |
+| Migration 035 backfill on large project tables | Trivial — adding a nullable column with no backfill is O(1) in PG; SQLite is fine at any scale we have |
+| Compatibility with existing personal projects | `org_id = NULL` is the existing state; nothing changes for personal projects until user opts in |
+| Audit log volume for transfers | Negligible (low-frequency event); log to existing `audit_log` table |
+
+---
+
+## DEFINITION OF DONE (release-readiness gate for v0.10.0)
+
+- [ ] All 7 phases shipped, each with Codex CLEAN before next phase starts
+- [ ] 1384 + (~30 new) backend tests passing — target 1414+
+- [ ] 117 + (~25 new) dashboard tests passing — target 142+
+- [ ] No new MEDIUM/HIGH bandit / pip-audit / npm-audit findings
+- [ ] `sfs doctor` reports clean on the new daemon-routing path
+- [ ] Org admin can: invite + remove + promote member, transfer project in + out, edit org settings
+- [ ] User in 2 orgs: default-org pref persists, CLI respects it, daemon routes correctly
+- [ ] Migration 035 reversible (down() restores schema cleanly)
+- [ ] CHANGELOG entry + docs/org-admin.md
+- [ ] /release v0.10.0 ships clean (CI + Release + Deploy API + Deploy Dashboard + Deploy Site + Publish Container Images all green)
+
+---
+
+## KICKOFF — Phase 1 starts now
+
+Phase 1 (migration 035) is the foundation. The diff is small and surgical:
+1. `src/sessionfs/server/db/migrations/versions/035_org_scoped_projects_and_transfers.py`
+2. `src/sessionfs/server/db/models.py` — add `Project.org_id`, `User.default_org_id`, new `ProjectTransfer` class
+3. `tests/server/integration/test_org_scoped_projects.py` — 9 tests (grew across Codex rounds 1-4 as durability invariants tightened)
+
+After Phase 1 ships clean with Codex review, Phase 2 begins.

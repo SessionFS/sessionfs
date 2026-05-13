@@ -3,6 +3,7 @@ import { Link, Outlet, useLocation } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { useHandoffInbox } from '../hooks/useHandoffs';
 import { useMe } from '../hooks/useMe';
+import { useTransfers } from '../transfers/useTransfers';
 import SearchBar from './SearchBar';
 import ThemeToggle from './ThemeToggle';
 import { Badge } from './Badge';
@@ -12,6 +13,7 @@ const NAV_LINKS = [
   { to: '/', label: 'Sessions', match: (p: string) => p === '/' },
   { to: '/projects', label: 'Projects', match: (p: string) => p.startsWith('/projects') },
   { to: '/handoffs', label: 'Handoffs', match: (p: string) => p.startsWith('/handoffs') },
+  { to: '/transfers', label: 'Transfers', match: (p: string) => p.startsWith('/transfers') },
   { to: '/settings', label: 'Settings', match: (p: string) => p.startsWith('/settings') && p !== '/settings/billing' },
   { to: '/settings/billing', label: 'Billing', match: (p: string) => p === '/settings/billing' },
 ];
@@ -31,6 +33,8 @@ export default function Layout() {
   const me = useMe();
   const isAdmin = me.data?.tier === 'admin';
   const pendingCount = inbox.data?.handoffs.filter((h) => h.status === 'pending').length ?? 0;
+  const incomingTransfers = useTransfers('incoming', 'pending');
+  const transfersPendingCount = incomingTransfers.data?.transfers.length ?? 0;
 
   const [avatarOpen, setAvatarOpen] = useState(false);
   const avatarRef = useRef<HTMLDivElement>(null);
@@ -129,6 +133,19 @@ export default function Layout() {
                     aria-label={`${pendingCount} pending handoff${pendingCount === 1 ? '' : 's'}`}
                   >
                     {pendingCount}
+                  </span>
+                )}
+                {label === 'Transfers' && transfersPendingCount > 0 && (
+                  <span
+                    className="ml-1 px-1.5 py-0.5 text-xs rounded-full font-medium"
+                    style={{
+                      backgroundColor: 'rgba(240,192,64,0.15)',
+                      color: 'var(--warning)',
+                    }}
+                    role="status"
+                    aria-label={`${transfersPendingCount} pending transfer${transfersPendingCount === 1 ? '' : 's'}`}
+                  >
+                    {transfersPendingCount}
                   </span>
                 )}
               </Link>
@@ -270,6 +287,19 @@ export default function Layout() {
                       aria-label={`${pendingCount} pending handoff${pendingCount === 1 ? '' : 's'}`}
                     >
                       {pendingCount}
+                    </span>
+                  )}
+                  {label === 'Transfers' && transfersPendingCount > 0 && (
+                    <span
+                      className="px-1.5 py-0.5 text-xs rounded-full font-medium"
+                      style={{
+                        backgroundColor: 'rgba(240,192,64,0.15)',
+                        color: 'var(--warning)',
+                      }}
+                      role="status"
+                      aria-label={`${transfersPendingCount} pending transfer${transfersPendingCount === 1 ? '' : 's'}`}
+                    >
+                      {transfersPendingCount}
                     </span>
                   )}
                 </Link>

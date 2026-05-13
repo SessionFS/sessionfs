@@ -392,6 +392,47 @@ Set scan_interval_s = 10
 
 ---
 
+## `sfs config default-org`
+
+*v0.10.0+ — multi-org users only.* Show, set, or clear your default org. The
+default org is consulted by `sfs project init` to pick the scope for a new
+project when neither `--org` nor `--personal` is passed; sessions captured in
+workspaces with no matching `Project` row stay personal regardless of this
+setting (server-side session-routing keys on git remote → project lookup, not
+on `default_org_id`). The value is stored server-side (User.default_org_id)
+and validated against your membership — you cannot set a default for an org
+you don't belong to.
+
+```
+sfs config default-org [ORG_ID] [--clear]
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `ORG_ID` | no | Org id to set as default. Omit (and pass no flags) to show. |
+
+| Option | Description |
+|--------|-------------|
+| `--clear` | Remove the default org preference (fall back to personal scope) |
+
+**Examples:**
+
+```bash
+# Show current default
+$ sfs config default-org
+Default org: org_acme_4f3d
+
+# Set default
+$ sfs config default-org org_acme_4f3d
+Default org set to org_acme_4f3d.
+
+# Clear default
+$ sfs config default-org --clear
+Default org cleared.
+```
+
+---
+
 ## `sfs alias`
 
 Set or clear a session alias for easy reference.
@@ -788,8 +829,70 @@ Manage shared project context — a single document shared across the team via M
 Create a project context for the current repo (matched by git remote).
 
 ```
-sfs project init
+sfs project init [--org ORG_ID | --personal]
 ```
+
+| Option | Description |
+|--------|-------------|
+| `--org ORG_ID` | Scope the project to the given org. You must be a member. |
+| `--personal` | Force personal scope, overriding any `default_org_id`. |
+
+*v0.10.0+:* if neither flag is passed, the project inherits scope from your
+server-side `default_org_id` (set with `sfs config default-org`). If you have
+no default, the project is personal.
+
+New org-scoped projects also inherit their org's KB creation defaults
+(`kb_retention_days` / `kb_max_context_words` / `kb_section_page_limit`) from
+the org settings panel at creation time.
+
+### `sfs project transfer`
+
+*v0.10.0+.* Initiate or act on a project transfer. Exactly one of `--to`,
+`--accept`, `--reject`, or `--cancel` must be passed.
+
+```
+sfs project transfer (--to DEST | --accept ID | --reject ID | --cancel ID)
+```
+
+| Option | Description |
+|--------|-------------|
+| `--to DEST` | Initiate a transfer. `DEST` is `personal` or an org id. Run from the project's repo. |
+| `--accept ID` | Target user accepts a pending incoming transfer. |
+| `--reject ID` | Target user rejects a pending incoming transfer. |
+| `--cancel ID` | Initiator cancels a pending outgoing transfer. |
+
+State machine: pending → accepted | rejected | cancelled. Audit row survives
+the transition for compliance. When the initiator IS the target (personal →
+own org you belong to), the server auto-accepts at create time.
+
+**Examples:**
+
+```bash
+# Move this project into an org you belong to
+$ sfs project transfer --to org_acme_4f3d
+
+# Make a project personal again (admin initiates from org)
+$ sfs project transfer --to personal
+
+# Target accepts a pending incoming transfer
+$ sfs project transfer --accept xfer_a1b2c3d4
+
+# Initiator cancels before the target acts
+$ sfs project transfer --cancel xfer_a1b2c3d4
+```
+
+### `sfs project transfers`
+
+*v0.10.0+.* List your project transfers.
+
+```
+sfs project transfers [-d incoming|outgoing] [--state STATE]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--direction`, `-d` | `incoming` | `incoming` (waiting on you) or `outgoing` (you initiated). |
+| `--state` | — | Filter: `pending` / `accepted` / `rejected` / `cancelled`. |
 
 ### `sfs project show`
 

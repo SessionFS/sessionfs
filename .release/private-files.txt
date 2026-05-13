@@ -47,3 +47,7 @@ github-app-manifest.json
 # Implementation briefs (internal scope docs)
 v*-implementation-brief
 v*-resume-*-brief
+v0.10.0-org-admin-console-brief
+
+# Internal automation scripts (cron pollers, ad-hoc utilities)
+scripts/

@@ -26,6 +26,16 @@ vi.mock('../auth/AuthContext', () => ({
   useAuth: () => mockAuth(),
 }));
 
+// v0.10.0 Phase 6: OrgSettingsTab mounted on OrgPage hits a new endpoint
+// (/api/v1/orgs/{id}/settings). Stub it out here so this suite stays
+// focused on the existing OrgPage surface — OrgSettingsTab has its own
+// dedicated test file.
+vi.mock('./OrgSettingsTab', () => ({
+  default: ({ orgId }: { orgId: string }) => (
+    <div data-testid={`org-settings-stub-${orgId}`}>org settings</div>
+  ),
+}));
+
 function makeQueryClient() {
   return new QueryClient({
     defaultOptions: {

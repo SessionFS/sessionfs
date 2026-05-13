@@ -54,6 +54,15 @@ vi.mock('../hooks/useToast', () => ({
   useToast: () => ({ addToast: mockAddToast }),
 }));
 
+// v0.10.0 Phase 4 added a Transfer tab to ProjectDetail. The
+// `useMyOrgs` hook calls `useAuth()` which would require an
+// AuthProvider; the inbox + panel surfaces are exercised by their own
+// component tests, so we stub the hook here to avoid wiring the auth
+// context for the broader ProjectDetail suite.
+vi.mock('../transfers/useTransfers', () => ({
+  useMyOrgs: () => ({ data: [], isLoading: false, error: null }),
+}));
+
 // react-markdown is ESM-only and pulls in a lot — stub it to a simple
 // <div> so we don't have to transform the import tree in tests.
 vi.mock('react-markdown', () => ({

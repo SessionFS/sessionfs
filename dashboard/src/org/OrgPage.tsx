@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
 import { getAvatarColor } from '../utils/avatar';
+import OrgSettingsTab from './OrgSettingsTab';
 
 export default function OrgPage() {
   const { auth } = useAuth();
@@ -250,6 +251,13 @@ export default function OrgPage() {
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* v0.10.0 Phase 6 — org defaults (retention, compile model, KB knobs). */}
+      {org?.id && (
+        <div className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl p-5 mt-6">
+          <OrgSettingsTab orgId={org.id} canEdit={isAdmin} />
         </div>
       )}
     </div>

@@ -125,3 +125,30 @@ Storage is pooled across all org members. The `GET /api/v1/org` response include
 ## Dashboard
 
 Org settings are in **Settings > Organization** in the web dashboard. From there, admins can view members, send invites, and access the billing portal. Members see the org info and their role but cannot modify settings.
+
+## Multi-org membership (v0.10.0)
+
+Starting in v0.10.0, a user can belong to more than one organization. The new multi-org API lives at `/api/v1/orgs/...` and is the canonical surface for member and project management:
+
+- `GET /api/v1/orgs` — list the caller's memberships with role.
+- `GET/POST/PUT/DELETE /api/v1/orgs/{org_id}/members[/...]` — list, invite, promote/demote, and remove members in a specific org.
+- `GET/PUT /api/v1/orgs/{org_id}/settings` — read/write the org's knowledge base creation defaults (`kb_retention_days`, `kb_max_context_words`, `kb_section_page_limit`). New org-scoped projects inherit these defaults at create time.
+- `GET /api/v1/auth/me` includes `default_org_id`; `PUT /api/v1/auth/me/default-org` sets it (membership validated).
+
+Removal preserves all member-authored data — sessions stay user-owned, org-scoped projects auto-transfer to the removing admin (with a `ProjectTransfer` audit row), KB entries keep their authorship, and pending transfers tied to the removed user's standing are cancelled. The legacy `/api/v1/org/members/...` routes still work and delegate to the same services as the multi-org routes, so both URL surfaces enforce the same invariants.
+
+## Project transfers (v0.10.0)
+
+Projects carry an explicit org scope (`projects.org_id`, nullable). Transfers move a project between scopes (personal &harr; org, or org &harr; org) through a durable state machine:
+
+- `POST /api/v1/projects/{id}/transfer` initiates a transfer.
+- `POST /api/v1/transfers/{xfer_id}/accept | reject | cancel` mutates state. Atomic `UPDATE ... WHERE state='pending'` prevents double-accept.
+- `GET /api/v1/transfers?direction=&state=` lists incoming and outgoing transfers.
+
+Auto-accept fires when the initiator and target are the same user/org (e.g. moving a personal project into your own org). Standing is re-validated at accept/reject — a member demoted between initiate and accept loses the right to act on the transfer.
+
+The CLI surface mirrors the API: `sfs project transfer --to | --accept | --reject | --cancel`, `sfs project transfers --direction --state`, and `sfs config default-org [<id>|--clear]`. See the [CLI reference](/docs/cli/) for full options.
+
+## Session-to-project routing (v0.10.0)
+
+Sessions carry an explicit `project_id` (`sessions.project_id`, nullable). On every upload (`POST /sessions` and `PUT /sessions/{id}/sync`) the server resolves the linkage from the workspace's git remote inside the write transaction. Re-sync re-evaluates: pre-v0.10.0 sessions retroactively pick up a `project_id` when the matching project is created later; stale linkages clear when access is revoked.

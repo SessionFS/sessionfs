@@ -112,8 +112,42 @@ async def _api_request(method: str, path: str, api_url: str, api_key: str, json_
 
 
 @project_app.command("init")
-def project_init() -> None:
-    """Initialize a project context for the current repo."""
+def project_init(
+    org: str | None = typer.Option(
+        None,
+        "--org",
+        help=(
+            "Org id to scope this project to. If omitted, the server uses "
+            "your default_org_id; if you have none, the project is personal."
+        ),
+    ),
+    personal: bool = typer.Option(
+        False,
+        "--personal",
+        help=(
+            "Force personal scope, overriding any default_org_id. Mutually "
+            "exclusive with --org."
+        ),
+    ),
+) -> None:
+    """Initialize a project context for the current repo.
+
+    v0.10.0 Phase 5: scope resolution at init time —
+    1. `--org <org_id>` wins if provided (caller must be a member).
+    2. `--personal` forces NULL org_id even if default_org_id is set.
+    3. Otherwise the server's default_org_id is used (read from /me).
+    4. Falls back to NULL (personal) if neither default nor flag is set.
+
+    The chosen scope is recorded server-side on the Project row and
+    propagates to every future session captured against this repo via
+    the daemon's git-remote → project lookup (KB entry 230 #2).
+    """
+    if org is not None and personal:
+        err_console.print(
+            "[red]--org and --personal are mutually exclusive.[/red]"
+        )
+        raise typer.Exit(2)
+
     git_remote = _get_git_remote()
     if not git_remote:
         err_console.print("[red]Not a git repository. Run from inside a git repo.[/red]")
@@ -133,15 +167,37 @@ def project_init() -> None:
         console.print("Run 'sfs project edit' to update context.")
         return
 
+    # Resolve org scope.
+    chosen_org_id: str | None
+    if personal:
+        chosen_org_id = None
+    elif org is not None:
+        chosen_org_id = org
+    else:
+        # Server-side default: read /me.default_org_id.
+        me = asyncio.run(_api_request("GET", "/api/v1/auth/me", api_url, api_key))
+        chosen_org_id = me.get("default_org_id")
+
     # Create project
     name = normalized.split("/")[-1]
+    body: dict = {"name": name, "git_remote_normalized": normalized}
+    if chosen_org_id is not None:
+        body["org_id"] = chosen_org_id
+
     result = asyncio.run(_api_request(
         "POST", "/api/v1/projects/",
         api_url, api_key,
-        json_data={"name": name, "git_remote_normalized": normalized},
+        json_data=body,
     ))
+    if result.get("_status") == 403:
+        err_console.print(
+            "[red]You are not a member of that org. Use --personal to scope this "
+            "project to yourself, or pick an org you belong to.[/red]"
+        )
+        raise typer.Exit(1)
 
-    console.print(f"Project created for [bold]{normalized}[/bold]")
+    scope_label = "personal" if chosen_org_id is None else f"org {chosen_org_id}"
+    console.print(f"Project created for [bold]{normalized}[/bold] ({scope_label})")
     console.print("Run 'sfs project edit' to add context.")
 
 
@@ -889,3 +945,175 @@ def project_rebuild() -> None:
     console.print(f"  Context document: {words} words")
     console.print(f"  Section pages: {sections}")
     console.print(f"  Concept pages: {concepts}")
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# v0.10.0 Phase 4 — Project transfer commands.
+#
+# These hit the Phase 2 transfer routes (KB entry 246):
+#   POST /api/v1/projects/{project_id}/transfer
+#   POST /api/v1/transfers/{xfer_id}/{accept,reject,cancel}
+#   GET  /api/v1/transfers?direction=&state=
+#
+# Identity for the source project is the git remote of the cwd (same
+# pattern as init/show/edit). Destination is either "personal" or an
+# org_id provided via `--to`. The destination identifier is the org_id;
+# the brief mentions org slugs, but the server addresses orgs by id and
+# the CLI defers any slug↔id mapping to a future config-store work
+# item (KB 230 deferred per CEO directive).
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _resolve_project_id() -> tuple[str, str, str]:
+    """Resolve the cwd project to (project_id, api_url, api_key).
+
+    Exits with a friendly error if the cwd is not a git repo or no
+    project context exists. Mirrors the init/show/edit pattern.
+    """
+    git_remote = _get_git_remote()
+    if not git_remote:
+        err_console.print("[red]Not a git repository. Run from inside a git repo.[/red]")
+        raise typer.Exit(1)
+
+    normalized = _normalize_remote(git_remote)
+    if not normalized:
+        err_console.print("[red]Could not parse git remote URL.[/red]")
+        raise typer.Exit(1)
+
+    api_url, api_key = _get_project_client()
+    result = asyncio.run(_api_request("GET", f"/api/v1/projects/{normalized}", api_url, api_key))
+    if result.get("_status") == 404:
+        err_console.print("[yellow]No project context found. Run 'sfs project init' first.[/yellow]")
+        raise typer.Exit(1)
+    return result["id"], api_url, api_key
+
+
+def _print_transfer(t: dict) -> None:
+    console.print(
+        f"  [bold]{t['id']}[/bold]  "
+        f"{t.get('project_name_snapshot') or '(project)'}  "
+        f"{t['from_scope']} → {t['to_scope']}  "
+        f"[dim]{t['state']}[/dim]"
+    )
+
+
+@project_app.command("transfer")
+def project_transfer(
+    to: str | None = typer.Option(
+        None,
+        "--to",
+        help="Destination: 'personal' or an org_id. Required for initiate.",
+    ),
+    accept: str | None = typer.Option(
+        None, "--accept", help="Transfer id to accept."
+    ),
+    reject: str | None = typer.Option(
+        None, "--reject", help="Transfer id to reject."
+    ),
+    cancel: str | None = typer.Option(
+        None, "--cancel", help="Transfer id to cancel (initiator only)."
+    ),
+) -> None:
+    """Initiate or act on a project transfer.
+
+    Examples:
+        sfs project transfer --to org_acme
+        sfs project transfer --to personal
+        sfs project transfer --accept xfer_abc
+        sfs project transfer --reject xfer_abc
+        sfs project transfer --cancel xfer_abc
+    """
+    # Exactly one of --to / --accept / --reject / --cancel must be set.
+    actions = [a for a in (to, accept, reject, cancel) if a is not None]
+    if len(actions) != 1:
+        err_console.print(
+            "[red]Pass exactly one of --to / --accept / --reject / --cancel.[/red]"
+        )
+        raise typer.Exit(2)
+
+    if to is not None:
+        # Initiate from the cwd project.
+        project_id, api_url, api_key = _resolve_project_id()
+        result = asyncio.run(_api_request(
+            "POST",
+            f"/api/v1/projects/{project_id}/transfer",
+            api_url,
+            api_key,
+            json_data={"to": to},
+        ))
+        if result.get("_status") == 404:
+            err_console.print("[red]Project not found on the server.[/red]")
+            raise typer.Exit(1)
+        if result.get("_status") == 409:
+            err_console.print(
+                "[red]A pending transfer already exists for this project. "
+                "Cancel it first.[/red]"
+            )
+            raise typer.Exit(1)
+        if result.get("state") == "accepted":
+            console.print(f"Transfer auto-accepted: {result['id']} → {result['to_scope']}")
+        else:
+            console.print(
+                f"Transfer initiated: {result['id']} → {result['to_scope']} "
+                f"(waiting on {result.get('target_user_id', '?')})"
+            )
+        return
+
+    # State-change actions don't need cwd resolution — they reference
+    # the transfer by id.
+    api_url, api_key = _get_project_client()
+    if accept is not None:
+        path = f"/api/v1/transfers/{accept}/accept"
+        verb = "accepted"
+    elif reject is not None:
+        path = f"/api/v1/transfers/{reject}/reject"
+        verb = "rejected"
+    else:
+        assert cancel is not None
+        path = f"/api/v1/transfers/{cancel}/cancel"
+        verb = "cancelled"
+
+    result = asyncio.run(_api_request("POST", path, api_url, api_key))
+    if result.get("_status") == 404:
+        err_console.print("[red]Transfer not found.[/red]")
+        raise typer.Exit(1)
+    if result.get("_status") == 409:
+        err_console.print(
+            "[red]Transfer is no longer pending (already accepted, rejected, or "
+            "cancelled).[/red]"
+        )
+        raise typer.Exit(1)
+    console.print(f"Transfer {verb}: {result['id']}")
+
+
+@project_app.command("transfers")
+def project_transfers(
+    direction: str = typer.Option(
+        "incoming",
+        "--direction",
+        "-d",
+        help="incoming (waiting on you) or outgoing (you initiated).",
+    ),
+    state: str | None = typer.Option(
+        None,
+        "--state",
+        help="Filter: pending / accepted / rejected / cancelled.",
+    ),
+) -> None:
+    """List project transfers for the current user."""
+    if direction not in ("incoming", "outgoing"):
+        err_console.print("[red]--direction must be 'incoming' or 'outgoing'.[/red]")
+        raise typer.Exit(2)
+
+    api_url, api_key = _get_project_client()
+    path = f"/api/v1/transfers?direction={direction}"
+    if state:
+        path += f"&state={state}"
+    result = asyncio.run(_api_request("GET", path, api_url, api_key))
+    transfers = result.get("transfers", [])
+    if not transfers:
+        console.print(f"[dim]No {direction} transfers.[/dim]")
+        return
+    console.print(f"[bold]{direction.title()} transfers ({len(transfers)}):[/bold]")
+    for t in transfers:
+        _print_transfer(t)

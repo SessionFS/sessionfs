@@ -401,6 +401,30 @@ Set scan_interval_s = 10
 
 ---
 
+## `sfs config default-org`
+
+Set or clear the server-canonical default organization used when capturing sessions and creating projects. Available starting v0.10.0.
+
+```
+sfs config default-org [ORG_ID | --clear]
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `ORG_ID` | no | Org ID to use as default. Pass `--clear` to drop the preference. |
+
+The value is persisted on the server (`users.default_org_id`) and returned in `GET /auth/me`. Membership is validated — non-members cannot set an org as default.
+
+**Example:**
+
+```bash
+$ sfs config default-org acme_eng
+
+Default organization set to acme_eng.
+```
+
+---
+
 ## `sfs alias`
 
 Set or clear a session alias for easy reference.
@@ -756,8 +780,15 @@ Manage shared project context — a single document shared across the team via M
 Create a project context for the current repo (matched by git remote).
 
 ```
-sfs project init
+sfs project init [--org ORG_ID | --personal]
 ```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--org` | string | — | Create the project scoped to the given organization (caller must be a member) |
+| `--personal` | flag | default | Create the project under the caller's personal scope |
+
+When `--org` is supplied, the project inherits the org's knowledge base creation defaults at create time. If neither flag is supplied, the project is personal-scope (pre-v0.10.0 behavior).
 
 ### `sfs project show`
 
@@ -1027,6 +1058,43 @@ $ sfs project dismiss 38
 Entry 38 dismissed.
 ```
 
+### `sfs project transfer`
+
+Initiate, accept, reject, or cancel a project transfer between scopes (personal &harr; org, or org &harr; org). Available starting v0.10.0.
+
+```
+sfs project transfer (--to TARGET | --accept ID | --reject ID | --cancel ID)
+```
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `--to` | string | Initiate a transfer to the given target. Use `personal` for personal scope, or an org ID for an org you belong to. |
+| `--accept` | string | Accept an incoming pending transfer by ID. |
+| `--reject` | string | Reject an incoming pending transfer by ID. |
+| `--cancel` | string | Cancel an outgoing pending transfer you initiated. |
+
+The transfer is auto-accepted when the initiator and target are the same user/org (e.g. moving a personal project into your own org). Standing is re-validated on accept/reject, so a member demoted between initiate and accept loses the right to act on the transfer.
+
+**Example:**
+
+```bash
+$ sfs project transfer --to acme_eng
+Transfer initiated. Awaiting target acceptance: xfer_a1b2c3
+```
+
+### `sfs project transfers`
+
+List project transfers involving the caller.
+
+```
+sfs project transfers [--direction incoming|outgoing] [--state pending|accepted|rejected|cancelled]
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--direction` | string | both | Filter by incoming or outgoing transfers |
+| `--state` | string | all | Filter by transfer state |
+
 ---
 
 ## `sfs rules`
@@ -1178,7 +1246,7 @@ $ sfs rules emit --tool claude-code --format hook
 
 ## `sfs hooks`
 
-Manage SessionFS hooks for tools with native hook support. v0.9.9.12 supports Claude Code only. See [Hook-based injection](/docs/rules/#hook-based-injection-claude-code) for the full reference.
+Manage SessionFS hooks for tools with native hook support. v0.10.0 supports Claude Code only. See [Hook-based injection](/docs/rules/#hook-based-injection-claude-code) for the full reference.
 
 ### `sfs hooks install`
 
@@ -1190,7 +1258,7 @@ sfs hooks install --for TOOL [--user|--project] [--force]
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `--for` | string | required | Target tool (`claude-code` only in v0.9.9.12) |
+| `--for` | string | required | Target tool (`claude-code` only in v0.10.0) |
 | `--user` | flag | default | Install at user scope (`~/.claude/settings.json`) |
 | `--project` | flag | `false` | Install at project scope (`.claude/settings.json` in repo root) |
 | `--force` | flag | `false` | Skip the conflict warning when a managed `CLAUDE.md` already exists |
@@ -1213,7 +1281,7 @@ sfs hooks uninstall --for TOOL [--user|--project] [--force]
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `--for` | string | required | Target tool (`claude-code` only in v0.9.9.12) |
+| `--for` | string | required | Target tool (`claude-code` only in v0.10.0) |
 | `--user` | flag | default | Uninstall from user scope |
 | `--project` | flag | `false` | Uninstall from project scope |
 | `--force` | flag | `false` | Skip the confirmation prompt |
