@@ -366,6 +366,10 @@ def _extract_manifest_metadata(data: bytes) -> dict:
         "duration_ms": None,
         "tags": "[]",
         "parent_session_id": None,
+        # v0.10.1 Phase 6 — written by the watcher's
+        # active_ticket_annot helper if the user is working under a ticket.
+        "persona_name": None,
+        "ticket_id": None,
     }
     try:
         manifest = None
@@ -416,6 +420,17 @@ def _extract_manifest_metadata(data: bytes) -> dict:
         defaults["duration_ms"] = stats.get("duration_ms")
         defaults["tags"] = json.dumps(manifest.get("tags", []))
         defaults["parent_session_id"] = manifest.get("parent_session_id") or manifest.get("_resume_parent_id")
+
+        # v0.10.1 Phase 6 — active-ticket provenance written by
+        # watchers/active_ticket_annot.py. Truncate to the column widths
+        # declared in migration 037 (persona_name VARCHAR(50), ticket_id
+        # VARCHAR(64)) so malformed bundles can't push past schema limits.
+        pn = manifest.get("persona_name")
+        if isinstance(pn, str) and pn.strip():
+            defaults["persona_name"] = pn.strip()[:50]
+        tid = manifest.get("ticket_id")
+        if isinstance(tid, str) and tid.strip():
+            defaults["ticket_id"] = tid.strip()[:64]
 
         # Rules provenance (migration 028) — embedded by the watchers when
         # they capture a native session. Unknown clients leave this absent,
@@ -787,6 +802,12 @@ async def upload_session(
         rules_hash=meta.get("rules_hash"),
         instruction_artifacts=meta.get("instruction_artifacts", "[]"),
         project_id=resolved_project_id,
+        # v0.10.1 Phase 6 — propagate active-ticket provenance from
+        # manifest into the sessions table. These columns landed in
+        # migration 037; the dashboard ticket view + KB lineage queries
+        # both rely on them being populated at upload time.
+        persona_name=meta.get("persona_name"),
+        ticket_id=meta.get("ticket_id"),
     )
     db.add(session)
     await db.commit()
@@ -1630,6 +1651,9 @@ async def sync_push(
                     rules_hash=meta.get("rules_hash"),
                     instruction_artifacts=meta.get("instruction_artifacts", "[]"),
                     project_id=resolved_project_id,
+                    # v0.10.1 Phase 6 — active-ticket provenance.
+                    persona_name=meta.get("persona_name"),
+                    ticket_id=meta.get("ticket_id"),
                 )
                 if dlp_scan_results and hasattr(session, "dlp_scan_results"):
                     session.dlp_scan_results = json.dumps(dlp_scan_results)
@@ -1760,6 +1784,11 @@ async def sync_push(
             sess.rules_version = meta.get("rules_version")
             sess.rules_hash = meta.get("rules_hash")
             sess.instruction_artifacts = meta.get("instruction_artifacts", "[]")
+            # v0.10.1 Phase 6 — propagate active-ticket provenance on
+            # update/undelete. The manifest is the source of truth, so a
+            # re-upload correctly mirrors whatever the watcher tagged.
+            sess.persona_name = meta.get("persona_name")
+            sess.ticket_id = meta.get("ticket_id")
             # v0.10.0 Phase 5 Round 2 (KB entry 285): also re-evaluate
             # project linkage on the update / undelete path. Without
             # this, sessions captured before the project existed (or
@@ -2080,6 +2109,9 @@ async def reindex_sessions(
             session.rules_version = meta.get("rules_version")
             session.rules_hash = meta.get("rules_hash")
             session.instruction_artifacts = meta.get("instruction_artifacts", "[]")
+            # v0.10.1 Phase 6 — propagate active-ticket provenance on reindex.
+            session.persona_name = meta.get("persona_name")
+            session.ticket_id = meta.get("ticket_id")
 
             # Update git metadata for PR matching
             ws = _extract_workspace_from_archive(data)

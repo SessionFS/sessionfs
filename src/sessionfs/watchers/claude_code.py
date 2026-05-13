@@ -550,6 +550,11 @@ class ClaudeCodeWatcher:
             annotate_manifest_with_provenance(
                 session_dir, "claude-code", cc_session.project_path
             )
+            # v0.10.1 Phase 6: tag with active ticket + persona if any.
+            from sessionfs.watchers.active_ticket_annot import (
+                annotate_manifest_with_active_ticket,
+            )
+            annotate_manifest_with_active_ticket(session_dir)
 
             # Read back manifest and index it (must happen before tracked
             # session upsert due to FK constraint)

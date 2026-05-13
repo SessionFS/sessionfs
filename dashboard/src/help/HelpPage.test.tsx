@@ -48,7 +48,7 @@ describe('HelpPage', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Codex' }));
     // Terminal should now show the Codex command and output
     expect(screen.getByText(/sfs mcp install --for codex/)).toBeInTheDocument();
-    expect(screen.getByText(/Codex will now have access to 21 tools/)).toBeInTheDocument();
+    expect(screen.getByText(/Codex will now have access to 36 tools/)).toBeInTheDocument();
     // Codex pill should be marked selected, Claude should not
     expect(screen.getByRole('tab', { name: 'Codex' })).toHaveAttribute(
       'aria-selected',
@@ -151,7 +151,7 @@ describe('HelpPage', () => {
     expect(screen.getByText('sfs project edit')).toBeInTheDocument();
   });
 
-  it('lists all 22 MCP tools', () => {
+  it('lists all 36 MCP tools', () => {
     renderPage();
     const expected = [
       // Session tools (7)
@@ -180,6 +180,22 @@ describe('HelpPage', () => {
       // Rules (2)
       'get_rules',
       'get_compiled_rules',
+      // Personas (5) — v0.10.1
+      'list_personas',
+      'get_persona',
+      'create_persona',
+      'assume_persona',
+      'forget_persona',
+      // Tickets (9) — v0.10.1
+      'list_tickets',
+      'get_ticket',
+      'create_ticket',
+      'start_ticket',
+      'complete_ticket',
+      'resolve_ticket',
+      'assign_persona',
+      'escalate_ticket',
+      'add_ticket_comment',
     ];
     for (const name of expected) {
       expect(screen.getByText(name)).toBeInTheDocument();

@@ -33,7 +33,7 @@ In any conversation, ask about your past sessions:
 
 ### Available tools
 
-The MCP server exposes 21 tools in four categories. Full parameter reference at [sessionfs.dev/docs/mcp/](https://sessionfs.dev/docs/mcp/).
+The MCP server exposes 36 tools across five categories (sessions, knowledge read/write, rules, personas, tickets). Full parameter reference at [sessionfs.dev/docs/mcp/](https://sessionfs.dev/docs/mcp/).
 
 **Session tools**
 
@@ -68,6 +68,7 @@ The MCP server exposes 21 tools in four categories. Full parameter reference at 
 | `update_wiki_page` | Create or update a wiki page |
 | `list_wiki_pages` | Browse the wiki structure |
 | `compile_knowledge_base` | Trigger a compile pass; returns counts of entries compiled and pages updated |
+| `dismiss_knowledge_entry` | Retire a wrong/stale entry with audited reason; idempotent; `undismiss=true` reverses |
 
 **Rules (read)**
 
@@ -75,6 +76,30 @@ The MCP server exposes 21 tools in four categories. Full parameter reference at 
 |------|-------------|
 | `get_rules` | Canonical project rules and compilation config |
 | `get_compiled_rules` | Compiled rule text for a tool (CLAUDE.md / codex.md / .cursorrules / copilot-instructions.md / GEMINI.md) |
+
+**Personas** (v0.10.1)
+
+| Tool | What it does |
+|------|-------------|
+| `list_personas` | List active agent personas for the project |
+| `get_persona` | Full content + role + specializations for one persona |
+| `create_persona` | Create a new persona (ASCII name 1-50 chars, role, content, specializations) |
+| `assume_persona` | Declare you are working as a persona without a ticket — writes a persona-only provenance bundle |
+| `forget_persona` | Clear the local persona bundle written by `assume_persona` |
+
+**Tickets** (v0.10.1)
+
+| Tool | What it does |
+|------|-------------|
+| `list_tickets` | List tickets with optional `assigned_to` / `status` / `priority` filters |
+| `get_ticket` | Full ticket detail including dependencies and comments |
+| `create_ticket` | Create a new ticket (human or agent source; FSM-validated) |
+| `start_ticket` | Atomic open→in_progress transition; returns compiled persona+ticket context sized to the target tool; writes local provenance bundle |
+| `complete_ticket` | Atomic in_progress→review transition with completion notes + changed files; clears the local bundle iff owned |
+| `resolve_ticket` | Atomic review→done transition; runs dependency enrichment + auto-unblock for dependents |
+| `assign_persona` | Set or change `ticket.assigned_to` (FSM state unchanged) |
+| `escalate_ticket` | Bump priority one level (low → medium → high → critical); optional rationale posted as a comment |
+| `add_ticket_comment` | Slack-like comment with optional persona attribution |
 
 ## Remote MCP (Claude.ai Web)
 

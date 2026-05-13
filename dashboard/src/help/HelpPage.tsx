@@ -144,6 +144,26 @@ const MCP_RULES: McpTool[] = [
   { name: 'get_compiled_rules', desc: 'Compiled rule text for a tool (CLAUDE.md, codex.md, …)' },
 ];
 
+const MCP_PERSONAS: McpTool[] = [
+  { name: 'list_personas', desc: 'List active agent personas for this project' },
+  { name: 'get_persona', desc: 'Full content + role + specializations for one persona' },
+  { name: 'create_persona', desc: 'Create a new persona (ASCII name 1-50 chars)' },
+  { name: 'assume_persona', desc: 'Work as a persona without a ticket (writes provenance bundle)' },
+  { name: 'forget_persona', desc: 'Clear the persona-only bundle (refuses ticket bundles)' },
+];
+
+const MCP_TICKETS: McpTool[] = [
+  { name: 'list_tickets', desc: 'List tickets filtered by assignee / status / priority' },
+  { name: 'get_ticket', desc: 'Full ticket detail including dependencies and comments' },
+  { name: 'create_ticket', desc: 'Create a ticket (human or agent source; FSM-validated)' },
+  { name: 'start_ticket', desc: 'open → in_progress; returns compiled persona+ticket context; writes bundle' },
+  { name: 'complete_ticket', desc: 'in_progress → review; clears bundle iff owned' },
+  { name: 'resolve_ticket', desc: 'review → done; runs dependency enrichment + auto-unblock' },
+  { name: 'assign_persona', desc: 'Set or change ticket.assigned_to' },
+  { name: 'escalate_ticket', desc: 'Bump priority one level (low → medium → high → critical)' },
+  { name: 'add_ticket_comment', desc: 'Add a comment with optional persona attribution' },
+];
+
 function getCurrentTheme(): 'light' | 'dark' {
   if (typeof window === 'undefined') return 'dark';
   // localStorage is ThemeToggle's source of truth (via src/utils/storage).
@@ -325,7 +345,7 @@ export default function HelpPage() {
   const siteHref = (path: string) => buildSiteHref(theme, path);
 
   const fakeOutput = `✓ MCP server registered
-✓ ${selectedTool.label} will now have access to 21 tools
+✓ ${selectedTool.label} will now have access to 36 tools
 
 Restart ${selectedTool.label} to activate.`;
 
@@ -503,7 +523,7 @@ Restart ${selectedTool.label} to activate.`;
       <section className="mb-12 md:mb-16">
         <SectionHeading
           eyebrow="Reference"
-          title="MCP Tools (14)"
+          title="MCP Tools (36)"
           subtitle="The tools your agent gets when SessionFS is installed."
         />
 
@@ -512,6 +532,8 @@ Restart ${selectedTool.label} to activate.`;
           <McpToolGroup label="Knowledge (read)" tools={MCP_KNOWLEDGE_READ} />
           <McpToolGroup label="Knowledge (write)" tools={MCP_KNOWLEDGE_WRITE} />
           <McpToolGroup label="Rules (read)" tools={MCP_RULES} />
+          <McpToolGroup label="Personas" tools={MCP_PERSONAS} />
+          <McpToolGroup label="Tickets" tools={MCP_TICKETS} />
         </div>
       </section>
 

@@ -60,6 +60,7 @@ TIER_FEATURES: dict[Tier, dict] = {
             "project_context",
             "dlp_secrets",
             "custom_base_url",
+            "agent_personas",
         },
         "storage_bytes": 500 * 1024 * 1024,  # 500 MB
         "description": "Everything including DLP and auto-audit",
@@ -87,6 +88,8 @@ TIER_FEATURES: dict[Tier, dict] = {
             "team_management",
             "shared_storage_pool",
             "org_settings",
+            "agent_personas",
+            "agent_tickets",
         },
         "storage_bytes": 1024 * 1024 * 1024,  # 1 GB per user
         "description": "Pro + team management",
@@ -114,6 +117,8 @@ TIER_FEATURES: dict[Tier, dict] = {
             "team_management",
             "shared_storage_pool",
             "org_settings",
+            "agent_personas",
+            "agent_tickets",
             "dlp_hipaa",
             "security_dashboard",
             "policy_engine",
