@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 
@@ -45,6 +46,10 @@ DEFAULT_TEMPLATE = """\
 class CreateProjectRequest(BaseModel):
     name: str
     git_remote_normalized: str
+    # v0.10.0 Phase 5 — optional org scope on creation. If omitted, the
+    # project is personal (org_id stays NULL). If provided, the creator
+    # must be a member of that org (server validates).
+    org_id: str | None = None
 
 
 class UpdateContextRequest(BaseModel):
@@ -241,13 +246,71 @@ async def create_project(
     if existing:
         raise HTTPException(409, "Project already exists for this repository")
 
-    project = Project(
-        id=f"proj_{uuid.uuid4().hex[:16]}",
-        name=body.name,
-        git_remote_normalized=body.git_remote_normalized,
-        context_document=DEFAULT_TEMPLATE,
-        owner_id=user.id,
-    )
+    # v0.10.0 Phase 5 — validate org_id if provided. Caller must be a
+    # member of the target org. Server is load-bearing here; CLI/dashboard
+    # may pre-filter but cannot be trusted.
+    org_general: dict = {}
+    if body.org_id is not None:
+        from sessionfs.server.db.models import OrgMember, Organization
+        membership = (
+            await db.execute(
+                select(OrgMember).where(
+                    OrgMember.user_id == user.id,
+                    OrgMember.org_id == body.org_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if membership is None:
+            raise HTTPException(
+                403,
+                "You are not a member of the requested org",
+            )
+
+        # v0.10.0 Phase 6 Round 2 (KB entry 296) — pragmatic
+        # inheritance: seed the new project's kb_* defaults from the
+        # org's general settings at creation time. The compile/KB
+        # runtime reads project columns directly and the columns are
+        # NOT NULL, so "live inheritance" would require a schema
+        # rewrite (nullable columns + effective-settings resolver at
+        # every read site). Copying at creation gives org admins
+        # control over the defaults their teammates start with while
+        # keeping per-project overrides explicit and discoverable.
+        org_row = (
+            await db.execute(
+                select(Organization).where(Organization.id == body.org_id)
+            )
+        ).scalar_one_or_none()
+        if org_row is not None:
+            try:
+                settings_obj = (
+                    json.loads(org_row.settings)
+                    if isinstance(org_row.settings, str)
+                    else (org_row.settings or {})
+                )
+            except (ValueError, TypeError):
+                settings_obj = {}
+            if isinstance(settings_obj, dict):
+                general = settings_obj.get("general", {})
+                if isinstance(general, dict):
+                    org_general = general
+
+    project_kwargs: dict = {
+        "id": f"proj_{uuid.uuid4().hex[:16]}",
+        "name": body.name,
+        "git_remote_normalized": body.git_remote_normalized,
+        "context_document": DEFAULT_TEMPLATE,
+        "owner_id": user.id,
+        "org_id": body.org_id,
+    }
+    # Apply org-default seeds only when the org has a non-null value
+    # for each field. Server's hardcoded column defaults still apply
+    # when the org didn't set a value, matching pre-Phase-6 behavior.
+    for col in ("kb_retention_days", "kb_max_context_words", "kb_section_page_limit"):
+        val = org_general.get(col)
+        if isinstance(val, int):
+            project_kwargs[col] = val
+
+    project = Project(**project_kwargs)
     db.add(project)
     await db.commit()
     await db.refresh(project)

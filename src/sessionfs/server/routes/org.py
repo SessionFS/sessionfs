@@ -347,37 +347,22 @@ async def change_member_role(
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ):
-    """Change a member's role. Admin only."""
+    """Change a member's role. Admin only.
+
+    Delegates to `org_members.perform_role_change()` so the same
+    guards (last-admin, self-role, target-not-member) AND the
+    admin→member source-authority cleanup fire from BOTH this legacy
+    `/api/v1/org/*` surface and the new `/api/v1/orgs/{org_id}/*`
+    surface — Codex Phase-3a round-5 MEDIUM (KB entry 262).
+    """
+    from sessionfs.server.routes.org_members import perform_role_change
+
     check_role(ctx, "admin")
 
     if not ctx.org:
         raise HTTPException(400, "You are not in an organization")
 
-    if data.role not in ("admin", "member"):
-        raise HTTPException(400, "Role must be 'admin' or 'member'")
-
-    # Can't change own role (prevents last-admin lockout)
-    if user_id == ctx.user.id:
-        raise HTTPException(400, "Cannot change your own role")
-
-    result = await db.execute(
-        select(OrgMember).where(
-            OrgMember.org_id == ctx.org.id,
-            OrgMember.user_id == user_id,
-        )
-    )
-    member = result.scalar_one_or_none()
-    if not member:
-        raise HTTPException(404, "Member not found in your organization")
-
-    await db.execute(
-        update(OrgMember)
-        .where(OrgMember.org_id == ctx.org.id, OrgMember.user_id == user_id)
-        .values(role=data.role)
-    )
-    await db.commit()
-
-    return {"user_id": user_id, "role": data.role}
+    return await perform_role_change(db, ctx.user, ctx.org.id, user_id, data.role)
 
 
 @router.delete("/members/{user_id}")
@@ -386,35 +371,26 @@ async def remove_member(
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ):
-    """Remove a member from the org. Admin only."""
+    """Remove a member from the org. Admin only.
+
+    Delegates to `org_members.perform_member_removal()` so the
+    same CEO data-stays invariants fire from BOTH this legacy
+    `/api/v1/org/*` surface and the new `/api/v1/orgs/{org_id}/*`
+    surface — Codex Phase-3a round-1 HIGH (KB entry 254).
+
+    The legacy route adds nothing here beyond:
+      - the `ctx.role == admin` precondition
+      - resolving the single-org via `ctx.org.id` (legacy callers
+        don't pass org_id in the URL)
+    """
+    from sessionfs.server.routes.org_members import perform_member_removal
+
     check_role(ctx, "admin")
 
     if not ctx.org:
         raise HTTPException(400, "You are not in an organization")
 
-    # Can't remove yourself
-    if user_id == ctx.user.id:
-        raise HTTPException(400, "Cannot remove yourself. Transfer admin role first.")
-
-    result = await db.execute(
-        select(OrgMember).where(
-            OrgMember.org_id == ctx.org.id,
-            OrgMember.user_id == user_id,
-        )
-    )
-    member = result.scalar_one_or_none()
-    if not member:
-        raise HTTPException(404, "Member not found in your organization")
-
-    await db.execute(
-        delete(OrgMember).where(
-            OrgMember.org_id == ctx.org.id,
-            OrgMember.user_id == user_id,
-        )
-    )
-    await db.commit()
-
-    return {"removed": user_id}
+    return await perform_member_removal(db, ctx.user, ctx.org.id, user_id)
 
 
 @router.get("/invites")

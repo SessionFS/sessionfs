@@ -26,6 +26,13 @@ vi.mock('../hooks/useMe', () => ({
   }),
 }));
 
+// Phase 4 Round 3 added a Transfers nav link with a pending-count
+// badge. The hook needs AuthProvider context; stub it here so this
+// suite stays focused on the layout shell.
+vi.mock('../transfers/useTransfers', () => ({
+  useTransfers: () => ({ data: { transfers: [] }, isLoading: false, error: null }),
+}));
+
 vi.mock('./SearchBar', () => ({
   default: () => <div data-testid="search-bar">Search</div>,
 }));

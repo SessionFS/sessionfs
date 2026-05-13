@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, Index, Integer, String, Text, ForeignKey, UniqueConstraint, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, Index, Integer, String, Text, ForeignKey, UniqueConstraint, func, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -39,6 +39,23 @@ class User(Base):
     last_client_platform: Mapped[str | None] = mapped_column(String(50), nullable=True)
     last_client_device: Mapped[str | None] = mapped_column(String(100), nullable=True)
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # v0.10.0: per-user default org for multi-org membership. `sfs
+    # project init` reads this via /api/v1/auth/me when the user passes
+    # neither --org nor --personal and uses it as the new project's
+    # scope. Session sync routing does NOT consume this today (uses
+    # git remote → Project lookup; see
+    # routes/sessions.py:_resolve_project_id_for_session); a v0.10.x
+    # follow-up may add a default-org fallback for unmatched remotes.
+    # Nullable so single-org / no-org users keep the existing
+    # personal-scope default. ON DELETE SET NULL — if the org is
+    # deleted or the user is removed from it (the latter is enforced
+    # application-side in the member-removal endpoint), this falls
+    # back to None.
+    default_org_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("organizations.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
 
 class ApiKey(Base):
@@ -107,6 +124,22 @@ class Session(Base):
     )
     instruction_artifacts: Mapped[str] = mapped_column(
         Text, nullable=False, default="[]", server_default="[]"
+    )
+    # v0.10.0 Phase 5 — multi-org daemon routing. Links a captured
+    # session to its project. The daemon resolves project membership
+    # at capture time from the workspace's git remote; the sync upload
+    # carries the project_id forward to the server, which validates
+    # the caller has access (owner or org member of project.org_id).
+    # Nullable for sessions captured before Phase 5 OR for workspaces
+    # that aren't linked to a project (untracked git repos / non-repo
+    # workspaces). ON DELETE SET NULL preserves the session even if
+    # the project is hard-deleted — same durability shape as the
+    # ProjectTransfer.project_id column from Phase 1.
+    project_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("projects.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
 
 
@@ -327,6 +360,9 @@ class SyncWatchlist(Base):
 
 class Project(Base):
     __tablename__ = "projects"
+    __table_args__ = (
+        Index("idx_projects_org_id", "org_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -336,6 +372,17 @@ class Project(Base):
     context_document: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     owner_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("users.id"), nullable=False
+    )
+    # v0.10.0: org-scoped projects. NULL = personal project (the
+    # pre-v0.10.0 state — preserved for every existing row by the
+    # migration). NON-NULL = team project, gated by org-admin role
+    # in the routes layer. ON DELETE SET NULL: deleting the org
+    # demotes its projects to personal-scope rather than destroying
+    # them (data-stays-access-revoked invariant, KB entry 230 #3).
+    org_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("organizations.id", ondelete="SET NULL"),
+        nullable=True,
     )
     auto_narrative: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     kb_retention_days: Mapped[int] = mapped_column(Integer, default=180, server_default="180")
@@ -428,6 +475,106 @@ class OrgInvite(Base):
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ProjectTransfer(Base):
+    """v0.10.0 — durable state machine + audit row for project
+    ownership transfers (personal ↔ org, org ↔ org).
+
+    State machine: ``pending`` → ``accepted`` | ``rejected`` | ``cancelled``.
+    Rows are NEVER deleted post-resolution — the audit trail is the
+    compliance artifact (CEO directive, KB entry 230 #1).
+
+    ``from_scope`` / ``to_scope`` hold either the literal string
+    ``"personal"`` or an ``organizations.id``. Stored as plain TEXT
+    (not FK) so the historical record survives an org deletion.
+
+    ``target_user_id`` identifies the user who must accept WHILE the
+    row is pending. The dashboard inbox query is
+    ``WHERE state='pending' AND target_user_id=:user``. The composite
+    index ``idx_project_transfers_inbox`` matches that shape. For an
+    auto-accept shape (initiator == target — e.g. a user transferring
+    their own personal project into an org they belong to) the route
+    layer sets target_user_id = initiated_by and flips state to
+    ``accepted`` at create time.
+
+    ``accepted_by`` is the user at the moment of acceptance, frozen
+    for audit even if ``target_user_id`` is later nulled by a user
+    delete.
+    """
+
+    __tablename__ = "project_transfers"
+    __table_args__ = (
+        Index("idx_project_transfers_project", "project_id"),
+        Index("idx_project_transfers_state", "state"),
+        # Composite index for the dashboard inbox query:
+        # "incoming pending transfers for user X".
+        Index("idx_project_transfers_inbox", "state", "target_user_id"),
+        # Concurrency-safe duplicate guard: at most one pending row
+        # per project. The route does a SELECT precheck for the
+        # friendly error message, but this DB-level constraint is the
+        # backstop two concurrent initiates collide on. Codex Phase-2
+        # round-2 catch (KB entry 248).
+        Index(
+            "idx_project_transfers_pending_unique",
+            "project_id",
+            unique=True,
+            postgresql_where=text("state = 'pending'"),
+            sqlite_where=text("state = 'pending'"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # project_id is FK ON DELETE SET NULL (nullable). The audit row
+    # MUST survive a hard project delete (CEO durability invariant,
+    # KB entry 230 #1; Codex Phase-1 round-2 catch).
+    #
+    # Two snapshot columns keep the row self-describing after
+    # project_id goes NULL:
+    #   - project_git_remote_snapshot: the STABLE unique identifier.
+    #     `projects.git_remote_normalized` is `unique=True`, so a
+    #     snapshot disambiguates audit rows even if two deleted
+    #     projects shared a display name (Codex Phase-1 round-3
+    #     catch, KB entry 238).
+    #   - project_name_snapshot: human-readable label for display.
+    #     Not load-bearing for identity — use git_remote_snapshot
+    #     for any "which project was this?" lookups.
+    project_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("projects.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    project_git_remote_snapshot: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    project_name_snapshot: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    initiated_by: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id"), nullable=False
+    )
+    target_user_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    from_scope: Mapped[str] = mapped_column(String(64), nullable=False)
+    to_scope: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="pending"
+    )
+    accepted_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    accepted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class StripeEvent(Base):

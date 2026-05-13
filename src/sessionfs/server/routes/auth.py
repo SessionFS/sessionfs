@@ -17,10 +17,12 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from pydantic import BaseModel
+
 from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.auth.keys import generate_api_key, hash_api_key
 from sessionfs.server.db.engine import get_db
-from sessionfs.server.db.models import ApiKey, User
+from sessionfs.server.db.models import ApiKey, OrgMember, User
 from sessionfs.server.schemas.auth import (
     ApiKeySummary,
     CreateApiKeyRequest,
@@ -51,7 +53,63 @@ async def get_me(user: User = Depends(get_current_user)):
         "last_client_device": user.last_client_device,
         "last_sync_at": user.last_sync_at.isoformat() if user.last_sync_at else None,
         "latest_version": server_version,
+        # v0.10.0 Phase 5 — `sfs project init` reads this when neither
+        # --org nor --personal is passed to pick the new project's
+        # scope. Server-side session sync routing does not consume it
+        # today (uses git remote → Project lookup); a v0.10.x follow-up
+        # may add a default-org fallback for unmatched remotes.
+        "default_org_id": user.default_org_id,
     }
+
+
+class SetDefaultOrgRequest(BaseModel):
+    """Body for PUT /api/v1/auth/me/default-org.
+
+    Passing `org_id=None` clears the preference (user falls back to
+    personal scope for untracked workspaces). Passing a string requires
+    the caller to be a member of that org — admin or plain.
+    """
+
+    org_id: str | None = None
+
+
+@router.put("/me/default-org")
+async def set_default_org(
+    body: SetDefaultOrgRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Set the authenticated user's default org.
+
+    Validation:
+      - If `org_id` is None, clear the pointer (no membership check).
+      - If `org_id` is a string, the user MUST be an active member of
+        that org. The membership SELECT both validates existence AND
+        access in a single shape — non-members and unknown org ids
+        both surface as 403 "You are not a member of that org" (no
+        404 leakage of which org ids exist).
+
+    Phase 5 (v0.10.0) — surface consumed by the `sfs config default-org`
+    CLI command. A dashboard default-org widget is planned but not
+    shipped in v0.10.0; it would call this same endpoint.
+    """
+    if body.org_id is not None:
+        membership = (
+            await db.execute(
+                select(OrgMember).where(
+                    OrgMember.user_id == user.id,
+                    OrgMember.org_id == body.org_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if membership is None:
+            raise HTTPException(
+                403, "You are not a member of that org"
+            )
+    user.default_org_id = body.org_id
+    await db.commit()
+    await db.refresh(user)
+    return {"default_org_id": user.default_org_id}
 
 
 @router.post("/signup", response_model=SignupResponse, status_code=201)

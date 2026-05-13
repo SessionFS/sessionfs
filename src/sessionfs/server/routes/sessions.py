@@ -478,6 +478,69 @@ def _extract_workspace_from_archive(data: bytes) -> dict | None:
     return None
 
 
+async def _resolve_project_id_for_session(
+    db: AsyncSession,
+    user_id: str,
+    git_remote_normalized: str,
+) -> str | None:
+    """Resolve session.project_id from a workspace git remote.
+
+    v0.10.0 Phase 5 (KB 285/287/291). Shared between POST /sessions
+    and PUT /sessions/{id}/sync so both write surfaces apply the same
+    access rules and produce identical linkage decisions.
+
+    Returns the project id when:
+      - A project exists for `git_remote_normalized`, AND
+      - The caller is either the project owner OR a member of
+        project.org_id when the project is org-scoped.
+
+    Returns None when no project exists, the remote is empty, or the
+    caller lacks access — in which case the session row keeps
+    project_id = NULL (sessions are user-owned per the CEO data-stays
+    invariant; project linkage is metadata only).
+
+    Concurrency: both the Project SELECT and the org-scope OrgMember
+    SELECT use `.with_for_update()`. This holds row locks until the
+    enclosing transaction commits, blocking concurrent project deletes
+    or membership removals from racing the session write. Without
+    these locks, a concurrent project hard-delete between the SELECT
+    here and the Session INSERT/UPDATE flush would surface as an FK
+    failure that the create-path catch misreports as a 409 PK
+    collision (KB entry 291). PG honors the FOR UPDATE row lock; the
+    SQLite test DB falls back to its single-writer serialization
+    which provides the same invariant by different means.
+    """
+    if not git_remote_normalized:
+        return None
+    from sessionfs.server.db.models import OrgMember as _OrgMember
+    from sessionfs.server.db.models import Project as _Project
+    project_row = (
+        await db.execute(
+            select(_Project)
+            .where(_Project.git_remote_normalized == git_remote_normalized)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if project_row is None:
+        return None
+    if project_row.owner_id == user_id:
+        return project_row.id
+    if project_row.org_id is not None:
+        membership = (
+            await db.execute(
+                select(_OrgMember)
+                .where(
+                    _OrgMember.user_id == user_id,
+                    _OrgMember.org_id == project_row.org_id,
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if membership is not None:
+            return project_row.id
+    return None
+
+
 _MAX_MESSAGES_TEXT_BYTES = 100 * 1024  # 100KB limit
 
 
@@ -681,6 +744,16 @@ async def upload_session(
         git_branch = workspace_data.get("git_branch", "")
         git_commit = workspace_data.get("git_commit", "")
 
+    # v0.10.0 Phase 5 Round 3 (KB entry 287) — mirror the sync_push
+    # project_id resolution on this upload surface too. Codex flagged
+    # that POST /api/v1/sessions stayed unrouted, contradicting the
+    # phase invariant that server-side resolution is authoritative on
+    # every write. Same access rules: owner OR org member of the
+    # project's org. No project / no access → project_id stays NULL.
+    resolved_project_id = await _resolve_project_id_for_session(
+        db, user.id, git_remote_normalized
+    )
+
     now = datetime.now(timezone.utc)
     session = Session(
         id=session_id,
@@ -713,6 +786,7 @@ async def upload_session(
         rules_version=meta.get("rules_version"),
         rules_hash=meta.get("rules_hash"),
         instruction_artifacts=meta.get("instruction_artifacts", "[]"),
+        project_id=resolved_project_id,
     )
     db.add(session)
     await db.commit()
@@ -1465,6 +1539,15 @@ async def sync_push(
             git_branch = workspace_data.get("git_branch", "")
             git_commit = workspace_data.get("git_commit", "")
 
+        # v0.10.0 Phase 5 Round 4 (KB entry 289): project_id resolution
+        # MUST run inside the Phase 3 write transaction, not here in
+        # the outer request-scoped db. Otherwise a hard project delete
+        # (or org-standing change) between resolution and the final
+        # write produces a stale project_id and an FK failure that the
+        # create-path IntegrityError catch misreports as a PK collision
+        # (409 "Session created by another request"). Resolution moves
+        # inside `_do_phase3_writes(db2)` below.
+
         # Upload blob to a temporary key first (prevents race where two
         # overlapping pushes corrupt the same blob key). The final key is
         # committed atomically with the DB write in Phase 3.
@@ -1503,6 +1586,13 @@ async def sync_push(
 
         async def _do_phase3_writes(db2: AsyncSession) -> Response | SyncPushResponse:
           _row_committed = False
+          # v0.10.0 Phase 5 Round 4 — resolve project linkage in the
+          # same transaction that writes the session row. This closes
+          # the cross-session race where the outer `db` saw a project
+          # that's gone by the time `db2` commits.
+          resolved_project_id = await _resolve_project_id_for_session(
+              db2, user_id, git_remote_normalized
+          )
           try:
             if existing is None and not is_undelete:
                 # Create: insert with temp blob key first, use PK constraint
@@ -1539,6 +1629,7 @@ async def sync_push(
                     rules_version=meta.get("rules_version"),
                     rules_hash=meta.get("rules_hash"),
                     instruction_artifacts=meta.get("instruction_artifacts", "[]"),
+                    project_id=resolved_project_id,
                 )
                 if dlp_scan_results and hasattr(session, "dlp_scan_results"):
                     session.dlp_scan_results = json.dumps(dlp_scan_results)
@@ -1669,6 +1760,15 @@ async def sync_push(
             sess.rules_version = meta.get("rules_version")
             sess.rules_hash = meta.get("rules_hash")
             sess.instruction_artifacts = meta.get("instruction_artifacts", "[]")
+            # v0.10.0 Phase 5 Round 2 (KB entry 285): also re-evaluate
+            # project linkage on the update / undelete path. Without
+            # this, sessions captured before the project existed (or
+            # before Phase 5) stay project_id=NULL forever despite
+            # later re-syncs from the same repo; conversely, a session
+            # whose project membership changed (org demotion, etc.)
+            # would keep a stale linkage. Server-side resolution must
+            # be authoritative on every write, not just INSERT.
+            sess.project_id = resolved_project_id
             if dlp_scan_results and hasattr(sess, "dlp_scan_results"):
                 sess.dlp_scan_results = json.dumps(dlp_scan_results)
             await db2.commit()

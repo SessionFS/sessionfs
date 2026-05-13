@@ -27,8 +27,15 @@ import { useToast } from '../hooks/useToast';
 import RelativeDate from '../components/RelativeDate';
 import type { KnowledgeEntry, WikiPage } from '../api/client';
 import RulesTab from './RulesTab';
+import TransferPanel from './TransferPanel';
+import { useMyOrgs } from '../transfers/useTransfers';
 
-type ProjectTab = 'context' | 'pages' | 'rules' | 'entries' | 'history';
+type ProjectTab = 'context' | 'pages' | 'rules' | 'entries' | 'history' | 'transfer';
+
+// v0.10.0 added `projects.org_id` (migration 035). The current dashboard
+// `ProjectContext` type was generated before that change. Until the type
+// is regenerated, project responses may carry an extra optional `org_id`.
+type ProjectContextWithOrg = { org_id?: string | null };
 
 const ENTRY_TYPE_COLORS: Record<string, { bg: string; text: string; border: string }> = {
   decision: { bg: 'rgba(34,197,94,0.12)', text: '#22c55e', border: 'rgba(34,197,94,0.3)' },
@@ -956,6 +963,7 @@ export default function ProjectDetail() {
   const updateContext = useUpdateProjectContext();
   const deleteProject = useDeleteProject();
   const { addToast } = useToast();
+  const myOrgs = useMyOrgs();
 
   const [activeTab, setActiveTab] = useState<ProjectTab>('context');
   const [tabKey, setTabKey] = useState(0);
@@ -1084,6 +1092,7 @@ export default function ProjectDetail() {
     { key: 'context', label: 'Context', step: 2 },
     { key: 'pages', label: 'Pages', step: 3 },
     { key: 'rules', label: 'Rules' },
+    { key: 'transfer', label: 'Transfer' },
     { key: 'history', label: 'History', step: 4 },
   ];
   function handleCompileFromContext() {
@@ -1361,6 +1370,18 @@ export default function ProjectDetail() {
       {activeTab === 'entries' && (
         <div key={`entries-${tabKey}`} className="mt-4 tab-panel-enter bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-sm)]">
           <KnowledgeEntriesTab projectId={project.id} />
+        </div>
+      )}
+
+      {activeTab === 'transfer' && (
+        <div key={`transfer-${tabKey}`} className="mt-4 tab-panel-enter bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-sm)] p-4">
+          <TransferPanel
+            projectId={project.id}
+            currentScope={
+              (project as ProjectContextWithOrg).org_id ?? 'personal'
+            }
+            availableOrgs={myOrgs.data ?? []}
+          />
         </div>
       )}
 

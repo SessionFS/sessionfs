@@ -17,14 +17,40 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.9.9.12 -->
+      <!-- v0.10.0 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.10.0</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">May 13, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Org Admin Console</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Org Admin Console</strong> &mdash; first SessionFS release with full org-level administration. Org admins manage members, transfer projects between scopes, edit org defaults, and link captured sessions to org-scoped projects from a single Organization page and a parallel CLI surface. Shipped across 7 phases.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Migration 035</strong> &mdash; <span class="font-mono text-accent text-sm">projects.org_id</span> (nullable FK, ON DELETE SET NULL) gives projects an explicit org scope. <span class="font-mono text-accent text-sm">users.default_org_id</span> stores each user's preferred org for multi-org routing. New <span class="font-mono text-accent text-sm">project_transfers</span> table provides a durable audit + state machine for cross-scope moves, with a partial-unique pending index as the DB-level backstop for concurrent-initiate races.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Migration 036</strong> &mdash; <span class="font-mono text-accent text-sm">sessions.project_id</span> (nullable FK, ON DELETE SET NULL, indexed). Server resolves the linkage on every sync from the workspace git remote so the org-scope of any captured session is recoverable.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Project transfer API</strong> &mdash; <span class="font-mono text-accent text-sm">POST /projects/&#123;id&#125;/transfer</span> initiates; <span class="font-mono text-accent text-sm">POST /transfers/&#123;xfer_id&#125;/&#123;accept,reject,cancel&#125;</span> mutates state. Atomic <span class="font-mono text-accent text-sm">UPDATE ... WHERE state='pending'</span> with rowcount check prevents double-accept. Auto-accept when initiator == target (personal &rarr; own org). Standing is re-validated on accept/reject.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Multi-org member management API</strong> &mdash; list memberships, invite, promote/demote, remove. Removal preserves all member-authored data ("data stays, access revoked") &mdash; sessions stay user-owned, org-scoped projects auto-transfer with an audit row, KB entries preserve authorship, default-org clears, pending transfers tied to the removed user's standing are cancelled. <span class="font-mono text-accent text-sm">SELECT ... FOR UPDATE</span> row-locks the admin rows before the last-admin guard.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Org settings API</strong> &mdash; <span class="font-mono text-accent text-sm">GET/PUT /orgs/&#123;id&#125;/settings</span> for the three KB creation defaults (<span class="font-mono text-accent text-sm">kb_retention_days</span>, <span class="font-mono text-accent text-sm">kb_max_context_words</span>, <span class="font-mono text-accent text-sm">kb_section_page_limit</span>). Admin-only PUT with range validation; DLP block survives a general-settings PUT via structural merge. New org-scoped projects inherit the defaults at create time.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Default-org API</strong> &mdash; <span class="font-mono text-accent text-sm">GET /auth/me</span> now includes <span class="font-mono text-accent text-sm">default_org_id</span>. <span class="font-mono text-accent text-sm">PUT /auth/me/default-org</span> sets it (membership validated); passing null clears.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Session project resolution</strong> &mdash; both upload surfaces (<span class="font-mono text-accent text-sm">POST /sessions</span> and <span class="font-mono text-accent text-sm">PUT /sessions/&#123;id&#125;/sync</span>) resolve <span class="font-mono text-accent text-sm">session.project_id</span> from the workspace git remote inside the write transaction with <span class="font-mono text-accent text-sm">SELECT ... FOR UPDATE</span> on Project and OrgMember rows. Re-sync re-evaluates; pre-v0.10.0 sessions retroactively pick up <span class="font-mono text-accent text-sm">project_id</span> when the project is created later.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Dashboard surfaces</strong> &mdash; new <span class="font-mono text-accent text-sm">MembersTab</span> (org member management), <span class="font-mono text-accent text-sm">/transfers</span> route inbox, per-project <span class="font-mono text-accent text-sm">TransferPanel</span> tab, <span class="font-mono text-accent text-sm">OrgSettingsTab</span> for KB creation defaults. New nav link with a pending-incoming badge.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>CLI</strong> &mdash; <span class="font-mono text-accent text-sm">sfs project init --org &lt;id&gt;</span> / <span class="font-mono text-accent text-sm">--personal</span> for explicit scope, <span class="font-mono text-accent text-sm">sfs project transfer --to|--accept|--reject|--cancel</span>, <span class="font-mono text-accent text-sm">sfs project transfers --direction --state</span> for transfer ops, <span class="font-mono text-accent text-sm">sfs config default-org [&lt;id&gt;|--clear]</span> for the server-canonical default-org preference.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">1,502 backend + 165 dashboard UI tests passing (was 1,384 + 117 at v0.9.9.12) &middot; 36 migrations &middot; 22 MCP tools. +118 backend (project transfers, org members, default-org routing, org general settings, creation-time inheritance). +48 dashboard (MembersTab, TransferInbox, TransferPanel, OrgSettingsTab).</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.9.9.12 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
             <span class="text-brand font-semibold">v0.9.9.12</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">May 12, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Daemon-Reindex Data Loss Hotfix</h2>
         <ul class="space-y-2 text-base text-muted">
