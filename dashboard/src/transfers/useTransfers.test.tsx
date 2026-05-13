@@ -58,7 +58,7 @@ const fakeTransfer = {
 };
 
 beforeEach(() => {
-  vi.spyOn(global, 'fetch').mockResolvedValue(makeOkResponse(fakeTransfer));
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(makeOkResponse(fakeTransfer));
 });
 
 afterEach(() => {
