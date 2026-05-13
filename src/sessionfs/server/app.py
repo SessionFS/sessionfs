@@ -13,7 +13,7 @@ from sessionfs.server.config import ServerConfig
 from sessionfs.server.db.engine import close_engine, init_engine
 from sessionfs.server.errors import register_exception_handlers
 from sessionfs.server.middleware import RequestLoggingMiddleware
-from sessionfs.server.routes import admin, admin_licenses, audit, auth, billing, bookmarks, dlp, handoffs, health, helm, knowledge, org, org_members, project_transfers, projects, rules, sessions, settings, summaries, sync, telemetry, webhooks, wiki
+from sessionfs.server.routes import admin, admin_licenses, audit, auth, billing, bookmarks, dlp, handoffs, health, helm, knowledge, org, org_members, personas, project_transfers, projects, rules, sessions, settings, summaries, sync, telemetry, tickets, webhooks, wiki
 from sessionfs.server.storage.local import LocalBlobStore
 
 
@@ -115,6 +115,13 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     # `/{project_id}/rules`, `/{project_id}/transfer`, and sibling endpoints.
     app.include_router(rules.router)
     app.include_router(project_transfers.router)
+    # Personas register BEFORE projects so the `/personas` subpath is
+    # matched before projects' catch-all `/{git_remote_normalized:path}`
+    # route (v0.10.1 Phase 2 — same precedence trick as rules/transfers).
+    app.include_router(personas.router)
+    # Tickets same precedence (v0.10.1 Phase 3): `/tickets` subpath
+    # under projects must beat the catch-all.
+    app.include_router(tickets.router)
     app.include_router(projects.router)
     app.include_router(summaries.router)
     app.include_router(summaries.batch_router)

@@ -161,6 +161,11 @@ class GeminiWatcher:
             # Migration 028: annotate with instruction provenance.
             from sessionfs.watchers.provenance import annotate_manifest_with_provenance
             annotate_manifest_with_provenance(session_dir, "gemini", project_path)
+            # v0.10.1 Phase 6: tag with active ticket + persona if any.
+            from sessionfs.watchers.active_ticket_annot import (
+                annotate_manifest_with_active_ticket,
+            )
+            annotate_manifest_with_active_ticket(session_dir)
 
             manifest_path = session_dir / "manifest.json"
             if manifest_path.exists():

@@ -38,7 +38,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
             <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs mcp install --for claude-code</span></div>
             <div class="mt-2 text-muted">MCP server configured for Claude Code.</div>
             <div class="text-muted">Restart Claude Code to activate.</div>
-            <div class="mt-4 text-muted-dim">22 tools available to your AI agent:</div>
+            <div class="mt-4 text-muted-dim">36 tools available to your AI agent:</div>
             <div class="mt-1 text-muted-dim">Session tools (7):</div>
             <div class="text-txt">&bull; <span class="text-brand">search_sessions</span> <span class="text-muted-dim">— Search past sessions</span></div>
             <div class="text-txt">&bull; <span class="text-brand">get_session_context</span> <span class="text-muted-dim">— Full conversation from a session</span></div>
@@ -65,6 +65,22 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
             <div class="mt-2 text-muted-dim">Rules (2):</div>
             <div class="text-txt">&bull; <span class="text-brand">get_rules</span> <span class="text-muted-dim">— Canonical project rules</span></div>
             <div class="text-txt">&bull; <span class="text-brand">get_compiled_rules</span> <span class="text-muted-dim">— Compiled rules per tool</span></div>
+            <div class="mt-2 text-muted-dim">Personas (5) — <span class="text-accent">Pro+</span>:</div>
+            <div class="text-txt">&bull; <span class="text-brand">list_personas</span> <span class="text-muted-dim">— Project personas</span></div>
+            <div class="text-txt">&bull; <span class="text-brand">get_persona</span> <span class="text-muted-dim">— One persona's full content</span></div>
+            <div class="text-txt">&bull; <span class="text-accent">create_persona</span> <span class="text-muted-dim">— Define a new project persona</span></div>
+            <div class="text-txt">&bull; <span class="text-accent">assume_persona</span> <span class="text-muted-dim">— Tag captured sessions with this persona</span></div>
+            <div class="text-txt">&bull; <span class="text-accent">forget_persona</span> <span class="text-muted-dim">— Clear the active persona bundle</span></div>
+            <div class="mt-2 text-muted-dim">Tickets (9) — <span class="text-accent">Team+</span>:</div>
+            <div class="text-txt">&bull; <span class="text-brand">list_tickets</span> <span class="text-muted-dim">— Filter by status / assignee</span></div>
+            <div class="text-txt">&bull; <span class="text-brand">get_ticket</span> <span class="text-muted-dim">— Ticket detail + dependencies</span></div>
+            <div class="text-txt">&bull; <span class="text-accent">create_ticket</span> <span class="text-muted-dim">— Open new ticket (acceptance criteria required for agents)</span></div>
+            <div class="text-txt">&bull; <span class="text-accent">start_ticket</span> <span class="text-muted-dim">— Atomic claim + compiled context + bundle write</span></div>
+            <div class="text-txt">&bull; <span class="text-accent">complete_ticket</span> <span class="text-muted-dim">— Send to review, clear owned bundle</span></div>
+            <div class="text-txt">&bull; <span class="text-accent">resolve_ticket</span> <span class="text-muted-dim">— Mark done from review</span></div>
+            <div class="text-txt">&bull; <span class="text-accent">assign_persona</span> <span class="text-muted-dim">— Set the persona on a ticket</span></div>
+            <div class="text-txt">&bull; <span class="text-accent">escalate_ticket</span> <span class="text-muted-dim">— Audit comment + raise priority</span></div>
+            <div class="text-txt">&bull; <span class="text-accent">add_ticket_comment</span> <span class="text-muted-dim">— Slack-like thread</span></div>
           </div>
         </div>
       </div>

@@ -119,13 +119,15 @@ class TestFindRelated:
 
 
 class TestToolRegistryV0996:
-    """Tier A read tools (v0.9.9.6) + dismiss_knowledge_entry (v0.9.9.7).
-    Tool count totals 22."""
+    """Tier A read tools (v0.9.9.6) + dismiss_knowledge_entry (v0.9.9.7)
+    + v0.10.1 Phase 4 persona/ticket tools (8) + Phase 8 agent workflow
+    tools (6: create_persona, assign_persona, assume_persona,
+    forget_persona, resolve_ticket, escalate_ticket). Total: 36."""
 
-    def test_tool_count_is_22(self):
+    def test_tool_count_is_36(self):
         from sessionfs.mcp.server import _TOOLS
-        assert len(_TOOLS) == 22, (
-            f"Expected 22 MCP tools after v0.9.9.7 dismiss tool, got {len(_TOOLS)}"
+        assert len(_TOOLS) == 36, (
+            f"Expected 36 MCP tools after v0.10.1 Phase 8, got {len(_TOOLS)}"
         )
 
     def test_new_tools_registered(self):
@@ -452,3 +454,331 @@ class TestNewToolDispatch:
             "reason": "   ",
         })
         assert "reason" not in captured["json"]
+
+    @pytest.mark.asyncio
+    async def test_complete_ticket_only_unlinks_own_bundle(
+        self, fake_resolver, fake_httpx, monkeypatch, tmp_path
+    ):
+        """KB 332 LOW: complete_ticket must only remove the local
+        active_ticket.json bundle if it points at the ticket we just
+        completed. If another tool started a different ticket since, its
+        bundle must survive.
+        """
+        bundle_path = tmp_path / "active_ticket.json"
+        bundle_path.write_text(json.dumps({
+            "ticket_id": "tk_OTHER",
+            "persona_name": "atlas",
+            "project_id": "proj_test",
+            "started_at": "2026-05-13T00:00:00Z",
+        }))
+        from sessionfs import active_ticket as _at
+        monkeypatch.setattr(_at, "bundle_path", lambda: bundle_path)
+
+        result = await mcp_server._handle_complete_ticket({
+            "ticket_id": "tk_ME",
+            "notes": "done",
+        })
+        assert "error" not in result
+        # Bundle for the OTHER ticket must still exist.
+        assert bundle_path.exists()
+        assert json.loads(bundle_path.read_text())["ticket_id"] == "tk_OTHER"
+
+    @pytest.mark.asyncio
+    async def test_complete_ticket_unlinks_own_bundle(
+        self, fake_resolver, fake_httpx, monkeypatch, tmp_path
+    ):
+        """When the bundle does point at this ticket, complete_ticket
+        removes it so subsequent sessions are no longer attributed."""
+        bundle_path = tmp_path / "active_ticket.json"
+        bundle_path.write_text(json.dumps({
+            "ticket_id": "tk_ME",
+            "persona_name": "atlas",
+            "project_id": "proj_test",
+            "started_at": "2026-05-13T00:00:00Z",
+        }))
+        from sessionfs import active_ticket as _at
+        monkeypatch.setattr(_at, "bundle_path", lambda: bundle_path)
+
+        result = await mcp_server._handle_complete_ticket({
+            "ticket_id": "tk_ME",
+            "notes": "done",
+        })
+        assert "error" not in result
+        assert not bundle_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_complete_ticket_preserves_bundle_from_other_project(
+        self, fake_resolver, fake_httpx, monkeypatch, tmp_path
+    ):
+        """Same ticket_id in a different project must not trigger unlink.
+        Belt + suspenders against id collisions across projects.
+        """
+        bundle_path = tmp_path / "active_ticket.json"
+        bundle_path.write_text(json.dumps({
+            "ticket_id": "tk_ME",
+            "persona_name": "atlas",
+            "project_id": "proj_OTHER",  # different project
+            "started_at": "2026-05-13T00:00:00Z",
+        }))
+        from sessionfs import active_ticket as _at
+        monkeypatch.setattr(_at, "bundle_path", lambda: bundle_path)
+
+        await mcp_server._handle_complete_ticket({
+            "ticket_id": "tk_ME",
+            "notes": "done",
+        })
+        assert bundle_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_start_ticket_surfaces_bundle_write_failure(
+        self, fake_resolver, monkeypatch, tmp_path
+    ):
+        """KB 339 LOW: when write_bundle returns False, start_ticket's
+        payload must include a `provenance_warning` so the agent knows
+        the daemon won't tag subsequent sessions."""
+        import httpx
+
+        # Fake start_ticket API response.
+        class _Resp:
+            status_code = 200
+            text = "{}"
+            def json(self):
+                return {
+                    "ticket": {"id": "tk_x", "assigned_to": "atlas"},
+                    "compiled_context": "...",
+                }
+
+        class _FakeClient:
+            def __init__(self, *a, **k): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def post(self, url, *, headers=None, params=None, json=None):
+                return _Resp()
+
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+        # Force write_bundle to fail by pointing at an unwritable path.
+        from sessionfs import active_ticket as _at
+        bogus = tmp_path / "blocker" / "active.json"
+        (tmp_path / "blocker").write_text("not a dir")
+        monkeypatch.setattr(_at, "bundle_path", lambda: bogus)
+
+        result = await mcp_server._handle_start_ticket({"ticket_id": "tk_x"})
+        assert "provenance_warning" in result
+        assert "Could not write" in result["provenance_warning"]
+
+    # ── v0.10.1 Phase 8 — agent workflow handlers ──
+
+    @pytest.mark.asyncio
+    async def test_create_persona_requires_name_and_role(self, fake_resolver):
+        assert "error" in await mcp_server._handle_create_persona({})
+        assert "error" in await mcp_server._handle_create_persona({"name": "atlas"})
+        assert "error" in await mcp_server._handle_create_persona({"role": "Backend"})
+
+    @pytest.mark.asyncio
+    async def test_create_persona_posts_payload(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        await mcp_server._handle_create_persona({
+            "name": "atlas",
+            "role": "Backend Architect",
+            "content": "# Atlas\n\nBackend focus.",
+            "specializations": ["backend", "api"],
+        })
+        assert captured["method"] == "POST"
+        assert captured["url"] == "https://api.test/api/v1/projects/proj_test/personas"
+        assert captured["json"]["name"] == "atlas"
+        assert captured["json"]["role"] == "Backend Architect"
+        assert captured["json"]["specializations"] == ["backend", "api"]
+
+    @pytest.mark.asyncio
+    async def test_assign_persona_sends_put(self, fake_resolver, fake_httpx, captured):
+        await mcp_server._handle_assign_persona({
+            "ticket_id": "tk_42",
+            "persona_name": "atlas",
+        })
+        assert captured["method"] == "PUT"
+        assert captured["url"] == "https://api.test/api/v1/projects/proj_test/tickets/tk_42"
+        assert captured["json"] == {"assigned_to": "atlas"}
+
+    @pytest.mark.asyncio
+    async def test_assume_persona_writes_persona_only_bundle(
+        self, fake_resolver, fake_httpx, monkeypatch, tmp_path
+    ):
+        """KB Phase 8: assume_persona writes the bundle with ticket_id=None
+        so the daemon tags subsequent sessions with persona only."""
+        bundle = tmp_path / "active.json"
+        from sessionfs import active_ticket as _at
+        monkeypatch.setattr(_at, "bundle_path", lambda: bundle)
+
+        result = await mcp_server._handle_assume_persona({"name": "atlas"})
+        assert "error" not in result
+        assert bundle.exists()
+        data = json.loads(bundle.read_text())
+        assert data["ticket_id"] is None
+        assert data["persona_name"] == "atlas"
+        assert data["project_id"] == "proj_test"
+
+    def test_forget_persona_clears_bundle(self, monkeypatch, tmp_path):
+        bundle = tmp_path / "active.json"
+        bundle.write_text(json.dumps({
+            "ticket_id": None,
+            "persona_name": "atlas",
+            "project_id": "proj_test",
+            "started_at": "2026-05-13T00:00:00Z",
+        }))
+        from sessionfs import active_ticket as _at
+        monkeypatch.setattr(_at, "bundle_path", lambda: bundle)
+
+        result = mcp_server._handle_forget_persona({})
+        assert result["cleared"] is True
+        assert not bundle.exists()
+
+    def test_forget_persona_when_no_bundle(self, monkeypatch, tmp_path):
+        from sessionfs import active_ticket as _at
+        monkeypatch.setattr(_at, "bundle_path", lambda: tmp_path / "missing.json")
+        result = mcp_server._handle_forget_persona({})
+        assert result["cleared"] is False
+
+    @pytest.mark.asyncio
+    async def test_resolve_ticket_hits_accept_endpoint(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        await mcp_server._handle_resolve_ticket({"ticket_id": "tk_42"})
+        assert captured["method"] == "POST"
+        assert captured["url"] == "https://api.test/api/v1/projects/proj_test/tickets/tk_42/accept"
+
+    @pytest.mark.asyncio
+    async def test_escalate_ticket_bumps_priority(self, fake_resolver, monkeypatch):
+        """escalate_ticket reads current priority then PUTs the next level."""
+        import httpx
+
+        seen: list[tuple[str, str, dict | None]] = []
+
+        class _Resp:
+            def __init__(self, body, status=200):
+                self.status_code = status
+                self._body = body
+                self.text = json.dumps(body)
+            def json(self):
+                return self._body
+
+        class _FakeClient:
+            def __init__(self, *a, **k): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def get(self, url, *, headers=None, params=None):
+                seen.append(("GET", url, None))
+                return _Resp({"id": "tk_42", "priority": "medium"})
+            async def put(self, url, *, json=None, headers=None):
+                seen.append(("PUT", url, json))
+                return _Resp({"id": "tk_42", "priority": json["priority"]})
+            async def post(self, url, *, json=None, headers=None):
+                seen.append(("POST", url, json))
+                return _Resp({"id": "c"})
+
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+        result = await mcp_server._handle_escalate_ticket({
+            "ticket_id": "tk_42",
+            "reason": "Customer-facing outage",
+        })
+        # First GET to read current priority.
+        assert seen[0][0] == "GET"
+        # Second call is PUT with the bumped priority.
+        assert seen[1][0] == "PUT"
+        assert seen[1][2] == {"priority": "high"}
+        # Third call is the audit comment.
+        assert seen[2][0] == "POST"
+        assert "Escalated medium → high" in seen[2][2]["content"]
+        assert result["escalated_from"] == "medium"
+        assert result["escalated_to"] == "high"
+
+    @pytest.mark.asyncio
+    async def test_escalate_ticket_noop_when_critical(self, fake_resolver, monkeypatch):
+        """KB 352 LOW — already-critical ticket returns a non-error no-op
+        payload that matches the tool description and the CLI's exit-0
+        semantics."""
+        import httpx
+
+        class _Resp:
+            status_code = 200
+            text = "{}"
+            def json(self): return {"id": "tk_42", "priority": "critical"}
+
+        class _FakeClient:
+            def __init__(self, *a, **k): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def get(self, url, *, headers=None, params=None): return _Resp()
+
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+        result = await mcp_server._handle_escalate_ticket({"ticket_id": "tk_42"})
+        assert "error" not in result
+        assert result["escalated"] is False
+        assert result["priority"] == "critical"
+        assert result["ticket_id"] == "tk_42"
+
+    @pytest.mark.asyncio
+    async def test_escalate_ticket_audit_comment_failure_surfaces(
+        self, fake_resolver, monkeypatch
+    ):
+        """KB 352 LOW — when the audit-comment POST returns 4xx/5xx, the
+        priority bump stands but the response carries `comment_warning`
+        so the caller knows the rationale wasn't recorded."""
+        import httpx
+
+        class _Resp:
+            def __init__(self, body, status=200):
+                self.status_code = status
+                self._body = body
+                self.text = json.dumps(body) if not isinstance(body, str) else body
+            def json(self):
+                if isinstance(self._body, str):
+                    return json.loads(self._body)
+                return self._body
+
+        class _FakeClient:
+            def __init__(self, *a, **k): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def get(self, url, *, headers=None, params=None):
+                return _Resp({"id": "tk_42", "priority": "medium"})
+            async def put(self, url, *, json=None, headers=None):
+                return _Resp({"id": "tk_42", "priority": json["priority"]})
+            async def post(self, url, *, json=None, headers=None):
+                return _Resp("comment rejected", status=500)
+
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+        result = await mcp_server._handle_escalate_ticket({
+            "ticket_id": "tk_42",
+            "reason": "P0 incident",
+        })
+        assert result["escalated"] is True
+        assert result["escalated_to"] == "high"
+        assert "comment_warning" in result
+        assert "500" in result["comment_warning"]
+
+    def test_forget_persona_refuses_to_clear_ticket_bundle(
+        self, monkeypatch, tmp_path
+    ):
+        """KB 352 MEDIUM — `forget_persona` must NOT clear a ticket-tagged
+        bundle. The right path for that is `complete_ticket` (ownership
+        check). The user/agent gets a structured refusal pointing them at
+        the correct tool."""
+        bundle = tmp_path / "active.json"
+        bundle.write_text(json.dumps({
+            "ticket_id": "tk_42",
+            "persona_name": "atlas",
+            "project_id": "proj_test",
+            "started_at": "2026-05-13T00:00:00Z",
+        }))
+        from sessionfs import active_ticket as _at
+        monkeypatch.setattr(_at, "bundle_path", lambda: bundle)
+
+        result = mcp_server._handle_forget_persona({})
+        assert result["cleared"] is False
+        assert "complete_ticket" in result.get("error", "")
+        # Bundle survives.
+        assert bundle.exists()

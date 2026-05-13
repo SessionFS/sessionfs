@@ -582,6 +582,319 @@ _TOOLS = [
             },
         },
     ),
+    # ── v0.10.1 Phase 4 — Agent Personas + Ticketing ──
+    Tool(
+        name="list_personas",
+        description=(
+            "List active agent personas for this project. Returns each "
+            "persona's id, name, role, and specializations.\n\n"
+            "Use this to discover which agents exist in this project — "
+            "personas are portable AI roles (atlas/prism/scribe/etc.) "
+            "shared by humans and AI agents.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs persona list` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+        },
+    ),
+    Tool(
+        name="get_persona",
+        description=(
+            "Load a persona's full context. Returns the persona's role, "
+            "specializations, and full markdown content. Use this when you "
+            "want to work as a specific agent but aren't starting from a "
+            "ticket — for ticket work, use `start_ticket` which loads the "
+            "persona automatically.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs persona show` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Persona name (e.g. 'atlas')"},
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+            "required": ["name"],
+        },
+    ),
+    Tool(
+        name="list_tickets",
+        description=(
+            "List tickets for this project. Filter by `assigned_to` "
+            "(persona name), `status`, or `priority`. Returns each ticket's "
+            "id, title, assigned persona, status, and priority.\n\n"
+            "Status values: suggested, open, in_progress, blocked, review, "
+            "done, cancelled.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs ticket list` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "assigned_to": {"type": "string", "description": "Filter by persona name"},
+                "status": {"type": "string", "description": "Filter by status"},
+                "priority": {"type": "string", "description": "Filter by priority"},
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+        },
+    ),
+    Tool(
+        name="get_ticket",
+        description=(
+            "Get full ticket details including description, acceptance "
+            "criteria, context references, file references, dependency "
+            "status, and comments.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs ticket show` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "ticket_id": {"type": "string", "description": "Ticket id (e.g. 'tk_...')"},
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+            "required": ["ticket_id"],
+        },
+    ),
+    Tool(
+        name="start_ticket",
+        description=(
+            "Start working on a ticket. Returns the compiled persona + "
+            "ticket context (markdown) the agent should consume.\n\n"
+            "Automatically loads the assigned persona, ticket description, "
+            "acceptance criteria, file refs, explicit KB claims, recent "
+            "comments, and completion notes from already-done dependencies. "
+            "The persona is loaded automatically — you don't need to call "
+            "get_persona separately.\n\n"
+            "Also writes ~/.sessionfs/active_ticket.json so the daemon "
+            "tags every session captured during this work with the persona "
+            "+ ticket provenance.\n\n"
+            "Returns 409 if the ticket is already in_progress (concurrent "
+            "start). Pass `force=true` to recover a stuck `blocked` "
+            "ticket.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs ticket start` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "ticket_id": {"type": "string", "description": "Ticket id"},
+                "force": {"type": "boolean", "description": "Recover a blocked ticket", "default": False},
+                "tool": {"type": "string", "description": "Target tool for token budget (claude-code/codex/gemini/copilot/cursor/...)", "default": "generic"},
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+            "required": ["ticket_id"],
+        },
+    ),
+    Tool(
+        name="create_ticket",
+        description=(
+            "Create a new ticket. Can be created by a human or an agent "
+            "working on another ticket.\n\n"
+            "Agent-created tickets (source='agent') default to 'suggested' "
+            "status and require:\n"
+            "- acceptance_criteria (at least one)\n"
+            "- description >= 20 characters\n"
+            "- max 3 per session_id\n\n"
+            "Human-created tickets (source='human', default) land as "
+            "'open' immediately.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs ticket create` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "description": {"type": "string", "default": ""},
+                "assigned_to": {"type": "string", "description": "Persona name"},
+                "priority": {"type": "string", "enum": ["critical", "high", "medium", "low"], "default": "medium"},
+                "context_refs": {"type": "array", "items": {"type": "string"}, "default": []},
+                "file_refs": {"type": "array", "items": {"type": "string"}, "default": []},
+                "acceptance_criteria": {"type": "array", "items": {"type": "string"}, "default": []},
+                "depends_on": {"type": "array", "items": {"type": "string"}, "default": []},
+                "source": {"type": "string", "enum": ["human", "agent"], "default": "human"},
+                "created_by_session_id": {"type": "string"},
+                "created_by_persona": {"type": "string"},
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+            "required": ["title"],
+        },
+    ),
+    Tool(
+        name="complete_ticket",
+        description=(
+            "Mark a ticket as complete. Provide `notes` on what was done "
+            "and `changed_files` (list of paths). The ticket moves to "
+            "'review' status; the reporter sees it in their next session.\n\n"
+            "Knowledge entries extracted from the session are tagged with "
+            "the ticket_id for traceability. Removes "
+            "~/.sessionfs/active_ticket.json so subsequent sessions are no "
+            "longer attributed to this ticket.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs ticket complete` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "ticket_id": {"type": "string"},
+                "notes": {"type": "string", "description": "Completion notes — what was done, key decisions, follow-ups"},
+                "changed_files": {"type": "array", "items": {"type": "string"}, "default": []},
+                "knowledge_entry_ids": {"type": "array", "items": {"type": "string"}, "default": []},
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+            "required": ["ticket_id", "notes"],
+        },
+    ),
+    Tool(
+        name="add_ticket_comment",
+        description=(
+            "Add a comment to a ticket. Use for progress updates, "
+            "questions, blockers, or findings during work. Optionally pass "
+            "`author_persona` to attribute the comment to a specific "
+            "persona role.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs ticket comment` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "ticket_id": {"type": "string"},
+                "content": {"type": "string"},
+                "author_persona": {"type": "string"},
+                "session_id": {"type": "string"},
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+            "required": ["ticket_id", "content"],
+        },
+    ),
+    # ── v0.10.1 Phase 8 — Agent workflow MCP tools ──
+    Tool(
+        name="create_persona",
+        description=(
+            "Create a new agent persona in this project. Persona names "
+            "must be ASCII (1-50 chars: letters, digits, dash, underscore). "
+            "Use this when an agent decides a new role is needed (e.g. "
+            "after recognizing a gap in the team's expertise).\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs persona create` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Persona name (ASCII, 1-50 chars)"},
+                "role": {"type": "string", "description": "Short role description (≤100 chars)"},
+                "content": {"type": "string", "description": "Full persona content (markdown)", "default": ""},
+                "specializations": {"type": "array", "items": {"type": "string"}, "default": []},
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+            "required": ["name", "role"],
+        },
+    ),
+    Tool(
+        name="assign_persona",
+        description=(
+            "Assign a persona to a ticket (sets `ticket.assigned_to`). "
+            "Use when an agent triages an unassigned ticket or wants to "
+            "hand work off to a different persona. The ticket FSM is "
+            "unaffected — this is purely a routing update.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs ticket assign` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "ticket_id": {"type": "string"},
+                "persona_name": {"type": "string", "description": "Persona to assign"},
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+            "required": ["ticket_id", "persona_name"],
+        },
+    ),
+    Tool(
+        name="assume_persona",
+        description=(
+            "Declare that you are working AS a persona without starting a "
+            "ticket. Writes the local provenance bundle so the daemon tags "
+            "every captured session with the persona name. Useful for "
+            "ad-hoc agent work that isn't tied to a specific ticket "
+            "(exploration, code review, etc).\n\n"
+            "Pairs with `forget_persona` which clears the bundle so "
+            "subsequent sessions aren't attributed.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs persona assume` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Persona name to assume"},
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+            "required": ["name"],
+        },
+    ),
+    Tool(
+        name="resolve_ticket",
+        description=(
+            "Mark a ticket as resolved — moves from `review` to `done`. "
+            "Triggers the dependency-enrichment pass that propagates "
+            "completion notes + KB refs to every dependent ticket and "
+            "auto-unblocks any that were waiting on this one.\n\n"
+            "Atomic state transition with rowcount-1 guard — concurrent "
+            "resolves cannot duplicate enrichment.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs ticket resolve` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "ticket_id": {"type": "string"},
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+            "required": ["ticket_id"],
+        },
+    ),
+    Tool(
+        name="escalate_ticket",
+        description=(
+            "Bump a ticket's priority one level (low → medium → high → "
+            "critical). No-op if already critical. Optionally posts an "
+            "escalation comment so the audit trail captures who/why.\n\n"
+            "Use when work needs more urgency than originally rated. The "
+            "ticket FSM state is unaffected.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs ticket escalate` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "ticket_id": {"type": "string"},
+                "reason": {"type": "string", "description": "Optional rationale — recorded as a comment on the ticket"},
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+            "required": ["ticket_id"],
+        },
+    ),
+    Tool(
+        name="forget_persona",
+        description=(
+            "Clear the local persona-only provenance bundle written by "
+            "`assume_persona`. Subsequent sessions will no longer be "
+            "tagged with the persona name.\n\n"
+            "Safe to call when no bundle exists — returns gracefully. "
+            "Does NOT clear ticket-tagged bundles (use `complete_ticket` "
+            "for that, which checks ticket ownership).\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs persona forget` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {},
+        },
+    ),
     Tool(
         name="dismiss_knowledge_entry",
         description=(
@@ -689,6 +1002,34 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_get_session_provenance(arguments)
         elif name == "compile_knowledge_base":
             result = await _handle_compile_knowledge_base(arguments)
+        elif name == "list_personas":
+            result = await _handle_list_personas(arguments)
+        elif name == "get_persona":
+            result = await _handle_get_persona(arguments)
+        elif name == "list_tickets":
+            result = await _handle_list_tickets(arguments)
+        elif name == "get_ticket":
+            result = await _handle_get_ticket(arguments)
+        elif name == "start_ticket":
+            result = await _handle_start_ticket(arguments)
+        elif name == "create_ticket":
+            result = await _handle_create_ticket(arguments)
+        elif name == "complete_ticket":
+            result = await _handle_complete_ticket(arguments)
+        elif name == "add_ticket_comment":
+            result = await _handle_add_ticket_comment(arguments)
+        elif name == "create_persona":
+            result = await _handle_create_persona(arguments)
+        elif name == "assign_persona":
+            result = await _handle_assign_persona(arguments)
+        elif name == "assume_persona":
+            result = await _handle_assume_persona(arguments)
+        elif name == "forget_persona":
+            result = _handle_forget_persona(arguments)
+        elif name == "resolve_ticket":
+            result = await _handle_resolve_ticket(arguments)
+        elif name == "escalate_ticket":
+            result = await _handle_escalate_ticket(arguments)
         elif name == "dismiss_knowledge_entry":
             result = await _handle_dismiss_knowledge_entry(arguments)
         else:
@@ -1698,6 +2039,536 @@ async def _handle_compile_knowledge_base(args: dict) -> dict:
     if isinstance(payload, dict):
         payload.pop("context_before", None)
         payload.pop("context_after", None)
+    return payload
+
+
+async def _handle_list_personas(args: dict) -> dict:
+    """Wrap GET /api/v1/projects/{project_id}/personas."""
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/projects/{project_id}/personas",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return {"personas": resp.json()}
+
+
+async def _handle_get_persona(args: dict) -> dict:
+    """Wrap GET /api/v1/projects/{project_id}/personas/{name}."""
+    name = args.get("name", "")
+    if not name:
+        return {"error": "name is required"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/projects/{project_id}/personas/{name}",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code == 404:
+        return {"error": f"Persona '{name}' not found"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_list_tickets(args: dict) -> dict:
+    """Wrap GET /api/v1/projects/{project_id}/tickets."""
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    params: dict[str, str] = {}
+    for key in ("assigned_to", "status", "priority"):
+        val = args.get(key)
+        if isinstance(val, str) and val.strip():
+            params[key] = val.strip()
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/projects/{project_id}/tickets",
+            headers={"Authorization": f"Bearer {api_key}"},
+            params=params,
+        )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return {"tickets": resp.json()}
+
+
+async def _handle_get_ticket(args: dict) -> dict:
+    """Wrap GET /api/v1/projects/{project_id}/tickets/{ticket_id}."""
+    ticket_id = args.get("ticket_id", "")
+    if not ticket_id:
+        return {"error": "ticket_id is required"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/projects/{project_id}/tickets/{ticket_id}",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code == 404:
+        return {"error": f"Ticket '{ticket_id}' not found"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_start_ticket(args: dict) -> dict:
+    """Wrap POST /api/v1/projects/{project_id}/tickets/{ticket_id}/start.
+
+    Returns the compiled persona + ticket context and writes the local
+    provenance bundle so the daemon tags subsequent sessions with the
+    persona + ticket.
+    """
+    ticket_id = args.get("ticket_id", "")
+    if not ticket_id:
+        return {"error": "ticket_id is required"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    params: dict[str, str] = {}
+    if args.get("force"):
+        params["force"] = "true"
+    tool = args.get("tool")
+    if isinstance(tool, str) and tool.strip():
+        params["tool"] = tool.strip()
+
+    import httpx
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{api_url}/api/v1/projects/{project_id}/tickets/{ticket_id}/start",
+            headers={"Authorization": f"Bearer {api_key}"},
+            params=params,
+        )
+    if resp.status_code == 404:
+        return {"error": f"Ticket '{ticket_id}' not found"}
+    if resp.status_code == 409:
+        return {"error": "Ticket already started — pass force=true to recover a blocked ticket"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+
+    payload = resp.json()
+    ticket = payload.get("ticket", {}) if isinstance(payload, dict) else {}
+    persona_name = ticket.get("assigned_to")
+
+    from sessionfs.active_ticket import bundle_path, write_bundle
+    bundle_ok = write_bundle(
+        ticket_id=ticket_id,
+        persona_name=persona_name,
+        project_id=project_id,
+    )
+    # KB 339 LOW — surface a structured warning when the bundle write
+    # failed so the agent doesn't keep working under the assumption
+    # that subsequent sessions are tagged with this ticket/persona.
+    if not bundle_ok and isinstance(payload, dict):
+        payload["provenance_warning"] = (
+            f"Could not write {bundle_path()}. Subsequent sessions will "
+            "NOT be tagged with this ticket until the bundle can be "
+            f"written. Check permissions on {bundle_path().parent}."
+        )
+
+    return payload
+
+
+async def _handle_create_ticket(args: dict) -> dict:
+    """Wrap POST /api/v1/projects/{project_id}/tickets."""
+    title = args.get("title", "")
+    if not title:
+        return {"error": "title is required"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    body: dict[str, Any] = {"title": title}
+    for key in (
+        "description", "assigned_to", "priority", "source",
+        "created_by_session_id", "created_by_persona",
+    ):
+        val = args.get(key)
+        if isinstance(val, str) and val.strip():
+            body[key] = val.strip()
+    for key in ("context_refs", "file_refs", "acceptance_criteria", "depends_on"):
+        val = args.get(key)
+        if isinstance(val, list):
+            body[key] = val
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            f"{api_url}/api/v1/projects/{project_id}/tickets",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=body,
+        )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_complete_ticket(args: dict) -> dict:
+    """Wrap POST /api/v1/projects/{project_id}/tickets/{ticket_id}/complete.
+
+    Removes the local provenance bundle so subsequent sessions are no
+    longer attributed to this ticket.
+    """
+    ticket_id = args.get("ticket_id", "")
+    if not ticket_id:
+        return {"error": "ticket_id is required"}
+    notes = args.get("notes", "")
+    if not notes:
+        return {"error": "notes is required"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    body: dict[str, Any] = {"notes": notes}
+    for key in ("changed_files", "knowledge_entry_ids"):
+        val = args.get(key)
+        if isinstance(val, list):
+            body[key] = val
+
+    import httpx
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{api_url}/api/v1/projects/{project_id}/tickets/{ticket_id}/complete",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=body,
+        )
+    if resp.status_code == 404:
+        return {"error": f"Ticket '{ticket_id}' not found"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+
+    # Only remove the bundle if it points at the ticket we just completed
+    # (KB 332 LOW fix). If another tool/session started a different ticket
+    # since we started this one, leave its bundle in place so the daemon
+    # keeps tagging that ticket's sessions.
+    from sessionfs.active_ticket import clear_bundle_if_owned
+    clear_bundle_if_owned(ticket_id=ticket_id, project_id=project_id)
+
+    return resp.json()
+
+
+async def _handle_add_ticket_comment(args: dict) -> dict:
+    """Wrap POST /api/v1/projects/{project_id}/tickets/{ticket_id}/comments."""
+    ticket_id = args.get("ticket_id", "")
+    if not ticket_id:
+        return {"error": "ticket_id is required"}
+    content = args.get("content", "")
+    if not content:
+        return {"error": "content is required"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    body: dict[str, Any] = {"content": content}
+    for key in ("author_persona", "session_id"):
+        val = args.get(key)
+        if isinstance(val, str) and val.strip():
+            body[key] = val.strip()
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            f"{api_url}/api/v1/projects/{project_id}/tickets/{ticket_id}/comments",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=body,
+        )
+    if resp.status_code == 404:
+        return {"error": f"Ticket '{ticket_id}' not found"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+# ── v0.10.1 Phase 8 — Agent workflow handlers ──
+
+
+async def _handle_create_persona(args: dict) -> dict:
+    """Wrap POST /api/v1/projects/{project_id}/personas."""
+    name = (args.get("name") or "").strip()
+    role = (args.get("role") or "").strip()
+    if not name:
+        return {"error": "name is required"}
+    if not role:
+        return {"error": "role is required"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    body: dict[str, Any] = {
+        "name": name,
+        "role": role,
+        "content": args.get("content") or "",
+        "specializations": list(args.get("specializations") or []),
+    }
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            f"{api_url}/api/v1/projects/{project_id}/personas",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=body,
+        )
+    if resp.status_code == 409:
+        return {"error": f"Persona '{name}' already exists"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_assign_persona(args: dict) -> dict:
+    """Wrap PUT /api/v1/projects/{project_id}/tickets/{ticket_id} with
+    {"assigned_to": persona_name}."""
+    ticket_id = (args.get("ticket_id") or "").strip()
+    persona_name = (args.get("persona_name") or "").strip()
+    if not ticket_id:
+        return {"error": "ticket_id is required"}
+    if not persona_name:
+        return {"error": "persona_name is required"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.put(
+            f"{api_url}/api/v1/projects/{project_id}/tickets/{ticket_id}",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={"assigned_to": persona_name},
+        )
+    if resp.status_code == 404:
+        return {"error": f"Ticket '{ticket_id}' not found"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_assume_persona(args: dict) -> dict:
+    """Write a persona-only bundle so the daemon tags subsequent
+    sessions with the persona name (without a ticket).
+    """
+    persona_name = (args.get("name") or "").strip()
+    if not persona_name:
+        return {"error": "name is required"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    # Verify the persona exists in this project before pretending to be it.
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/projects/{project_id}/personas/{persona_name}",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code == 404:
+        return {"error": f"Persona '{persona_name}' not found"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+
+    from sessionfs.active_ticket import bundle_path, write_bundle
+    bundle_ok = write_bundle(
+        ticket_id=None,
+        persona_name=persona_name,
+        project_id=project_id,
+    )
+    result: dict[str, Any] = {
+        "persona_name": persona_name,
+        "project_id": project_id,
+        "bundle_path": str(bundle_path()),
+    }
+    if not bundle_ok:
+        result["provenance_warning"] = (
+            f"Could not write {bundle_path()}. Subsequent sessions will "
+            f"NOT be tagged with persona '{persona_name}' until the bundle "
+            f"can be written. Check permissions on {bundle_path().parent}."
+        )
+    return result
+
+
+def _handle_forget_persona(args: dict) -> dict:
+    """Clear a persona-only active bundle. Refuses (no-op + error) when
+    the bundle is ticket-tagged — that path goes through
+    `complete_ticket` so the ownership check fires (KB 332 LOW + KB 352
+    MEDIUM). The tool description is the contract; this guards it.
+    """
+    from sessionfs.active_ticket import bundle_path, clear_bundle, read_bundle
+    bundle = read_bundle()
+    if isinstance(bundle, dict) and bundle.get("ticket_id"):
+        return {
+            "cleared": False,
+            "bundle_path": str(bundle_path()),
+            "error": (
+                f"Bundle is tagged to ticket "
+                f"{bundle.get('ticket_id')!r}. Use `complete_ticket` "
+                "(which enforces the ownership check) instead of "
+                "`forget_persona` to retire a ticket attribution."
+            ),
+        }
+    cleared = clear_bundle()
+    return {
+        "cleared": cleared,
+        "bundle_path": str(bundle_path()),
+    }
+
+
+async def _handle_resolve_ticket(args: dict) -> dict:
+    """Wrap POST /api/v1/projects/{project_id}/tickets/{ticket_id}/accept
+    (the existing review → done lifecycle endpoint)."""
+    ticket_id = (args.get("ticket_id") or "").strip()
+    if not ticket_id:
+        return {"error": "ticket_id is required"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    import httpx
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{api_url}/api/v1/projects/{project_id}/tickets/{ticket_id}/accept",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code == 404:
+        return {"error": f"Ticket '{ticket_id}' not found"}
+    if resp.status_code == 409:
+        return {"error": f"Ticket '{ticket_id}' is not in 'review' state"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+_PRIORITY_ESCALATION = {"low": "medium", "medium": "high", "high": "critical"}
+
+
+async def _handle_escalate_ticket(args: dict) -> dict:
+    """Bump a ticket's priority one level. Optionally post a comment
+    capturing the escalation rationale.
+    """
+    ticket_id = (args.get("ticket_id") or "").strip()
+    if not ticket_id:
+        return {"error": "ticket_id is required"}
+    reason = args.get("reason")
+    if isinstance(reason, str):
+        reason = reason.strip()
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        # Read current priority.
+        get_resp = await client.get(
+            f"{api_url}/api/v1/projects/{project_id}/tickets/{ticket_id}",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+        if get_resp.status_code == 404:
+            return {"error": f"Ticket '{ticket_id}' not found"}
+        if get_resp.status_code >= 400:
+            return {"error": f"API error {get_resp.status_code}: {get_resp.text}"}
+        current = get_resp.json().get("priority", "medium")
+        new_priority = _PRIORITY_ESCALATION.get(current)
+        if new_priority is None:
+            # KB 352 LOW — match the tool description ("No-op if already
+            # critical") and the CLI's exit-0 semantics. Return a
+            # structured no-op payload instead of an error envelope.
+            return {
+                "ticket_id": ticket_id,
+                "priority": current,
+                "escalated": False,
+                "reason": "already at maximum priority",
+            }
+
+        # Bump priority via PUT.
+        put_resp = await client.put(
+            f"{api_url}/api/v1/projects/{project_id}/tickets/{ticket_id}",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={"priority": new_priority},
+        )
+        if put_resp.status_code >= 400:
+            return {"error": f"API error {put_resp.status_code}: {put_resp.text}"}
+
+        # Optionally post the rationale as an audit-trail comment. This
+        # is non-fatal — if the comment fails the priority bump stands —
+        # but capture HTTP failures into `comment_warning` so the caller
+        # knows the rationale wasn't recorded (KB 352 LOW).
+        comment_warning: str | None = None
+        if reason:
+            try:
+                cresp = await client.post(
+                    f"{api_url}/api/v1/projects/{project_id}/tickets/{ticket_id}/comments",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    json={"content": f"Escalated {current} → {new_priority}: {reason}"},
+                )
+                if cresp.status_code >= 400:
+                    comment_warning = (
+                        f"Priority bumped, but audit comment failed: "
+                        f"HTTP {cresp.status_code}: {cresp.text}"
+                    )
+                    logger.warning("Escalation comment post returned %s: %s", cresp.status_code, cresp.text)
+            except Exception as exc:
+                comment_warning = (
+                    f"Priority bumped, but audit comment failed: {exc}"
+                )
+                logger.warning("Escalation comment post failed: %s", exc)
+
+    payload = put_resp.json() if isinstance(put_resp.json(), dict) else {}
+    payload["escalated_from"] = current
+    payload["escalated_to"] = new_priority
+    payload["escalated"] = True
+    if comment_warning:
+        payload["comment_warning"] = comment_warning
     return payload
 
 

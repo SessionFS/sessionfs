@@ -1782,6 +1782,189 @@ sfs security fix
 
 ---
 
+## `sfs persona` (v0.10.1)
+
+Manage agent personas for the current project. Personas are portable AI roles (e.g. `atlas`, `prism`, `scribe`) shared by humans and AI agents working on the same codebase.
+
+**Tier:** Pro+. Persona names must be ASCII (1–50 chars: letters, digits, `_`, `-`).
+
+### `sfs persona list`
+
+List active personas in the current project.
+
+```bash
+sfs persona list
+```
+
+### `sfs persona show`
+
+Print a persona's role, specializations, and full markdown content.
+
+```bash
+sfs persona show atlas
+sfs persona show atlas --raw  # don't render markdown
+```
+
+### `sfs persona create`
+
+Create a new persona. Pass `--content` or `--file`, or omit both to open `$EDITOR`.
+
+```bash
+sfs persona create atlas --role "Backend Architect" --file ./atlas.md
+sfs persona create prism --role "Frontend Lead" --content "# Prism\n\nReact/TypeScript focus."
+sfs persona create scribe --role "Docs Lead"  # opens $EDITOR
+```
+
+Options: `--role/-r` (required), `--file/-f`, `--content`, `--spec` (repeatable).
+
+### `sfs persona edit`
+
+Open the persona's content in `$EDITOR` and update on save.
+
+```bash
+sfs persona edit atlas
+```
+
+### `sfs persona delete`
+
+Soft-delete a persona. The row stays (`is_active=false`) so historical tickets still resolve the name.
+
+```bash
+sfs persona delete atlas
+sfs persona delete atlas --yes --force
+```
+
+Refuses (409) when non-terminal tickets reference the persona unless `--force` is passed; the CLI prints how many tickets are affected and suggests `sfs ticket list --assigned-to <name>` for triage.
+
+### `sfs persona assume`
+
+Declare that you are working as a persona without starting a ticket. Writes `~/.sessionfs/active_ticket.json` (with `ticket_id=null`) so the daemon tags every captured session with the persona name.
+
+```bash
+sfs persona assume atlas
+```
+
+Pair with `sfs persona forget` when done.
+
+### `sfs persona forget`
+
+Clear the local persona bundle written by `sfs persona assume`.
+
+```bash
+sfs persona forget
+```
+
+---
+
+## `sfs ticket` (v0.10.1)
+
+Manage agent tickets for the current project. Tickets are self-contained units of work assigned to a persona.
+
+**Tier:** Team+.
+
+**Status FSM:** `suggested → open → in_progress → blocked → review → done` (terminal). `suggested/open → cancelled` (terminal).
+
+### `sfs ticket list`
+
+List tickets with optional filters.
+
+```bash
+sfs ticket list
+sfs ticket list --assigned-to atlas
+sfs ticket list --status in_progress
+sfs ticket list --priority high
+```
+
+### `sfs ticket show`
+
+Print full ticket details: description, acceptance criteria, file refs, dependencies, completion notes.
+
+```bash
+sfs ticket show tk_abc123
+```
+
+### `sfs ticket create`
+
+Create a new ticket. Defaults to source=`human` (lands as `open`).
+
+```bash
+sfs ticket create --title "Fix rate limiter" \
+  --description "KB search endpoint allows unbounded queries." \
+  --assigned-to atlas --priority high \
+  --criteria "Per-user limit" --criteria "Tier-aware" \
+  --file src/sessionfs/server/routes/knowledge.py
+```
+
+Options: `--title/-t` (required), `--description/-d`, `--assigned-to/-a`, `--priority/-p` (critical/high/medium/low), `--criteria` (repeatable), `--file/-f` (repeatable), `--depends-on` (repeatable).
+
+### `sfs ticket start`
+
+Start working on a ticket. Writes `~/.sessionfs/active_ticket.json` (the local provenance bundle) so the daemon tags every session captured during this work with the persona + ticket. Prints the compiled persona + ticket context the agent should consume.
+
+```bash
+sfs ticket start tk_abc123
+sfs ticket start tk_abc123 --force          # recover a stuck blocked ticket
+sfs ticket start tk_abc123 --tool cursor    # size context to cursor's 4k-token budget
+sfs ticket start tk_abc123 --no-print-context
+```
+
+### `sfs ticket complete`
+
+Mark a ticket complete. Moves to `review`. Clears the active-ticket bundle only when it points at this ticket — bundles from another tool/session are preserved.
+
+```bash
+sfs ticket complete tk_abc123 --notes "Implemented per-user rate limit; tests added." \
+  --file src/sessionfs/server/middleware.py \
+  --kb-entry 142
+```
+
+### `sfs ticket comment`
+
+Add a comment (progress update, question, blocker). Comments are slack-like — each call creates a new row.
+
+```bash
+sfs ticket comment tk_abc123 --content "Spotted a related bug in the cache layer."
+sfs ticket comment tk_abc123 --content "Speaking as atlas" --as atlas
+```
+
+### `sfs ticket status`
+
+Show which ticket the local provenance bundle currently points at.
+
+```bash
+sfs ticket status
+```
+
+### Lifecycle commands
+
+```bash
+sfs ticket block tk_abc123     # in_progress → blocked
+sfs ticket unblock tk_abc123   # blocked → in_progress
+sfs ticket reopen tk_abc123    # review → open (reporter requests changes)
+sfs ticket approve tk_abc123   # suggested → open (approve an agent-created ticket)
+sfs ticket dismiss tk_abc123   # suggested/open → cancelled
+sfs ticket resolve tk_abc123   # review → done (final close, runs dep enrichment)
+```
+
+### `sfs ticket assign`
+
+Assign or re-assign a ticket to a persona. FSM state is unaffected.
+
+```bash
+sfs ticket assign tk_abc123 --to atlas
+```
+
+### `sfs ticket escalate`
+
+Bump a ticket's priority one level (low → medium → high → critical). Optional `--reason` is posted as an audit-trail comment.
+
+```bash
+sfs ticket escalate tk_abc123
+sfs ticket escalate tk_abc123 --reason "Customer-facing outage in prod"
+```
+
+---
+
 ## Billing and Tier Enforcement
 
 When any cloud command receives a `403` response with an `upgrade_required` error, the CLI displays a friendly message indicating the required tier and a URL to upgrade:

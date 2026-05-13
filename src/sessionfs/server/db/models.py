@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, Index, Integer, String, Text, ForeignKey, UniqueConstraint, func, text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, Float, Index, Integer, String, Text, ForeignKey, UniqueConstraint, func, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -141,6 +141,16 @@ class Session(Base):
         nullable=True,
         index=True,
     )
+    # v0.10.1 Phase 1 — agent personas + ticketing provenance. Set by
+    # the daemon at capture time from ~/.sessionfs/active_ticket.json
+    # if a developer (human or AI) was working under a named persona
+    # on a specific ticket. Plain String, no FK — personas and tickets
+    # are project-scoped and a session may reference rows in the
+    # target project before/after this session row is created. The
+    # capture pipeline doesn't enforce existence; the read paths
+    # (dashboard, /api/v1/sessions/{id}) join cooperatively.
+    persona_name: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    ticket_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
 
 class Handoff(Base):
@@ -855,3 +865,204 @@ class KnowledgeLink(Base):
     link_type: Mapped[str] = mapped_column(String(20), nullable=False, server_default="related")
     confidence: Mapped[float] = mapped_column(Float, server_default="1.0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+
+# v0.10.1 Phase 1 — Agent Personas + Ticketing (migration 037).
+#
+# Personas are portable AI roles scoped to a project. Tickets are
+# self-contained task units assigned to a persona, tracked through a
+# status FSM, and linked to sessions via the local provenance bundle
+# pattern (see daemon capture path). Persona/ticket linkage on a
+# session row uses plain String columns (Session.persona_name +
+# Session.ticket_id, above) — no FK because sessions can carry the
+# tag forward even if the persona/ticket row is hard-deleted.
+
+
+class AgentPersona(Base):
+    """A portable AI role scoped to one project.
+
+    Multiple personas per project; the same persona name is unique
+    within a project (uq_persona_project_name). `content` is opaque
+    markdown injected into the context window as-is. `specializations`
+    is a JSON array of domain keywords used for routing suggestions in
+    a future version — v0.10.1 does NOT auto-filter the KB by them.
+    Soft-delete via `is_active = false`.
+    """
+
+    __tablename__ = "agent_personas"
+    __table_args__ = (
+        UniqueConstraint("project_id", "name", name="uq_persona_project_name"),
+        Index("idx_persona_project_active", "project_id", "is_active"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String(50), nullable=False)
+    role: Mapped[str] = mapped_column(String(100), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    specializations: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default="[]"
+    )
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=text("true")
+    )
+    version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    created_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class Ticket(Base):
+    """A self-contained task unit assigned to a persona.
+
+    Status FSM enforced server-side (routes layer):
+      suggested → open → in_progress → blocked → review → done → cancelled
+    Agent-created tickets default to 'suggested' (quality gate at
+    creation time requires acceptance criteria + 20+ char description
+    + ≤3 per session). Reporter provenance is structured into three
+    fields: user_id (always set, from auth), session_id (optional —
+    set if created during a captured session), persona (optional —
+    set if created by an agent working under a persona).
+
+    `assigned_to` is the persona name (NOT FK) — tickets may be
+    created before the persona row exists; start_ticket() validates
+    at execution time. ON DELETE CASCADE on project_id means deleting
+    a project takes its tickets with it; sessions stay (Session.
+    ticket_id is a plain String, not an FK).
+    """
+
+    __tablename__ = "tickets"
+    __table_args__ = (
+        Index("idx_ticket_project_status", "project_id", "status"),
+        Index("idx_ticket_assigned", "project_id", "assigned_to", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    # Task
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+    priority: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="medium", server_default="medium"
+    )
+
+    # Assignment — must match an existing AgentPersona.name in the
+    # same project when start_ticket() runs. Nullable for unassigned
+    # tickets that humans triage.
+    assigned_to: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    # Reporter provenance (structured, not free string).
+    created_by_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by_session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_by_persona: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    # Status FSM.
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="open", server_default="open"
+    )
+
+    # Context — explicit references chosen by the reporter. NO
+    # automatic KB injection in v1; compile_persona_context only
+    # uses these claim IDs verbatim.
+    context_refs: Mapped[str] = mapped_column(Text, default="[]", server_default="[]")
+    file_refs: Mapped[str] = mapped_column(Text, default="[]", server_default="[]")
+    related_sessions: Mapped[str] = mapped_column(Text, default="[]", server_default="[]")
+    acceptance_criteria: Mapped[str] = mapped_column(
+        Text, default="[]", server_default="[]"
+    )
+
+    # Resolution.
+    resolver_session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    resolver_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    completion_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    changed_files: Mapped[str] = mapped_column(Text, default="[]", server_default="[]")
+    knowledge_entry_ids: Mapped[str] = mapped_column(
+        Text, default="[]", server_default="[]"
+    )
+
+    # Timestamps.
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class TicketDependency(Base):
+    """Join table for ticket-to-ticket dependencies.
+
+    Both columns part of the composite PK; ON DELETE CASCADE on each
+    side so deleting a ticket cleans up both directions. CHECK
+    constraint prevents a ticket from depending on itself. Cycle
+    detection is deliberately application-layer (DAG enforcement on
+    insert) — too expensive to compute in SQL on every insert.
+    """
+
+    __tablename__ = "ticket_dependencies"
+    __table_args__ = (
+        CheckConstraint("ticket_id != depends_on_id", name="ck_no_self_dep"),
+        Index("idx_ticket_deps_depends_on", "depends_on_id"),
+    )
+
+    ticket_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("tickets.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    depends_on_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("tickets.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class TicketComment(Base):
+    """Append-only comment thread on a ticket.
+
+    Authors are humans or AI agents; `author_persona` distinguishes.
+    `session_id` links the comment to the capture that produced it
+    (plain String, not FK — sessions may be deleted independently and
+    the comment should survive).
+    """
+
+    __tablename__ = "ticket_comments"
+    __table_args__ = (
+        Index("idx_comment_ticket", "ticket_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    ticket_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("tickets.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    author_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    author_persona: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

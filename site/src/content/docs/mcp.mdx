@@ -31,7 +31,7 @@ sfs mcp install --for claude-code --skip-instructions
 
 ## Tools
 
-The MCP server exposes 22 tools in four categories.
+The MCP server exposes 36 tools in six categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), and Tickets (Team+).
 
 ### Session Tools
 
@@ -234,6 +234,141 @@ Returns the compiled rule text for a requested tool, or for the current tool if 
 |-----------|------|----------|-------------|
 | `tool` | string | no | Tool slug: `claude-code`, `codex`, `cursor`, `copilot`, `gemini` |
 | `git_remote` | string | no | Override auto-detected git remote |
+
+### Personas (Pro+)
+
+Tier-gated by the `agent_personas` feature flag. Personas are portable AI roles per project — each persona has a name (`^[A-Za-z0-9_-]{1,50}$`), markdown content, and is project-scoped.
+
+#### `list_personas`
+
+List all personas defined for the current project.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
+
+#### `get_persona`
+
+Return a single persona's full content.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | yes | Persona name |
+| `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
+
+#### `create_persona`
+
+Define a new persona for the project. Name must be unique within the project.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | yes | ASCII identifier, 1-50 chars |
+| `content` | string | yes | Markdown body |
+| `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
+
+#### `assume_persona`
+
+Write a persona-only provenance bundle so the daemon tags subsequent captures with `persona_name` (and `ticket_id=null`).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | yes | Persona name to assume |
+| `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
+
+#### `forget_persona`
+
+Clear the active persona bundle. Refuses when a ticket-owned bundle is in effect — complete the ticket first.
+
+No parameters required.
+
+### Tickets (Team+)
+
+Tier-gated by the `agent_tickets` feature flag. Tickets are self-contained units of work with a server-enforced FSM (`suggested → open → in_progress → blocked → review → done | cancelled`), dependency graph (BFS cycle detection), comments, and an active-ticket provenance bundle.
+
+#### `list_tickets`
+
+Filter by status, assignee, or persona.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `status` | string | no | One of the FSM states |
+| `assignee` | string | no | User ID |
+| `persona` | string | no | Persona name |
+| `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
+
+#### `get_ticket`
+
+Return a ticket's full record, dependencies, dependents, and recent comments.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `ticket_id` | string | yes | Ticket ID |
+
+#### `create_ticket`
+
+Open a new ticket. Agent-created tickets require ≥1 acceptance criterion + ≥20-char description; max 3 per `session_id`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `title` | string | yes | Short summary |
+| `description` | string | yes | Markdown body |
+| `acceptance_criteria` | array | no | List of strings (required for agent source) |
+| `depends_on` | array | no | List of ticket IDs |
+| `persona` | string | no | Assign a persona |
+| `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
+
+#### `start_ticket`
+
+Atomic claim (`UPDATE ... WHERE status='open' OR 'blocked'` with rowcount guard). Writes the active-ticket bundle and returns the compiled persona + ticket context (tool-aware token budget via `tool`).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `ticket_id` | string | yes | Ticket ID |
+| `tool` | string | no | `claude-code` (16k), `codex`/`gemini`/`copilot`/`amp`/`generic` (8k), `cursor`/`windsurf`/`cline`/`roo-code` (4k) |
+
+#### `complete_ticket`
+
+Send a ticket from `in_progress` to `review` and clear the owned bundle. Attaches `provenance_warning` on bundle write failure.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `ticket_id` | string | yes | Ticket ID |
+
+#### `resolve_ticket`
+
+Move a ticket from `review` to `done`. Atomic with rowcount-1 guard.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `ticket_id` | string | yes | Ticket ID |
+
+#### `assign_persona`
+
+Set the persona on a ticket.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `ticket_id` | string | yes | Ticket ID |
+| `persona` | string | yes | Persona name |
+
+#### `escalate_ticket`
+
+Raise ticket priority and append a non-idempotent audit comment.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `ticket_id` | string | yes | Ticket ID |
+| `reason` | string | yes | Why this is being escalated |
+
+#### `add_ticket_comment`
+
+Slack-like comment thread. Non-idempotent (each call creates a row).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `ticket_id` | string | yes | Ticket ID |
+| `body` | string | yes | Markdown body |
+| `as_persona` | string | no | Comment authored by this persona |
 
 ## Agent Knowledge Contribution
 

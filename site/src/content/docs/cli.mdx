@@ -1246,7 +1246,7 @@ $ sfs rules emit --tool claude-code --format hook
 
 ## `sfs hooks`
 
-Manage SessionFS hooks for tools with native hook support. v0.10.0 supports Claude Code only. See [Hook-based injection](/docs/rules/#hook-based-injection-claude-code) for the full reference.
+Manage SessionFS hooks for tools with native hook support. v0.10.1 supports Claude Code only. See [Hook-based injection](/docs/rules/#hook-based-injection-claude-code) for the full reference.
 
 ### `sfs hooks install`
 
@@ -1258,7 +1258,7 @@ sfs hooks install --for TOOL [--user|--project] [--force]
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `--for` | string | required | Target tool (`claude-code` only in v0.10.0) |
+| `--for` | string | required | Target tool (`claude-code` only in v0.10.1) |
 | `--user` | flag | default | Install at user scope (`~/.claude/settings.json`) |
 | `--project` | flag | `false` | Install at project scope (`.claude/settings.json` in repo root) |
 | `--force` | flag | `false` | Skip the conflict warning when a managed `CLAUDE.md` already exists |
@@ -1281,7 +1281,7 @@ sfs hooks uninstall --for TOOL [--user|--project] [--force]
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `--for` | string | required | Target tool (`claude-code` only in v0.10.0) |
+| `--for` | string | required | Target tool (`claude-code` only in v0.10.1) |
 | `--user` | flag | default | Uninstall from user scope |
 | `--project` | flag | `false` | Uninstall from project scope |
 | `--force` | flag | `false` | Skip the confirmation prompt |
@@ -1680,3 +1680,47 @@ Re-extract metadata for all cloud sessions (admin only).
 ```
 sfs admin reindex
 ```
+
+---
+
+## `sfs persona`
+
+Manage portable AI personas per project. Each persona has an ASCII name (`^[A-Za-z0-9_-]{1,50}$`) and a markdown body. Tier: **Pro+**. Available starting v0.10.1.
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `sfs persona list` | List personas defined for the current project |
+| `sfs persona show <name> [--raw]` | Show a persona's full content (`--raw` skips markdown render) |
+| `sfs persona create <name> [--content TEXT \| --file PATH]` | Create a persona inline, from a file, or via `$EDITOR` |
+| `sfs persona edit <name>` | Open the persona content in `$EDITOR` |
+| `sfs persona delete <name> [--force]` | Delete a persona; refuses 409 if non-terminal tickets reference it (use `--force` to override) |
+| `sfs persona assume <name>` | Tag subsequent captured sessions with this persona (persona-only bundle) |
+| `sfs persona forget` | Clear the active persona bundle (refuses while a ticket bundle is in effect) |
+
+---
+
+## `sfs ticket`
+
+Manage tickets with a server-enforced FSM (`suggested → open → in_progress → blocked → review → done | cancelled`), dependency graph, comments, and an active-ticket provenance bundle that tags every captured session with `persona_name` + `ticket_id`. Tier: **Team+**. Available starting v0.10.1.
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `sfs ticket list [--status STATE]` | List tickets, optionally filtered by FSM state |
+| `sfs ticket show <id>` | Show ticket detail + dependencies + recent comments |
+| `sfs ticket create --title T --description D [--accept "..." --depends-on tkt_…]` | Open a ticket (agent source requires ≥1 acceptance criterion + ≥20-char description) |
+| `sfs ticket start <id> [--tool T] [--force] [--no-print-context]` | Atomic claim; writes the active-ticket bundle and prints compiled persona + ticket context with tool-aware token budget |
+| `sfs ticket complete <id>` | Move from `in_progress` to `review`; clears owned bundle |
+| `sfs ticket comment <id> "body" [--as PERSONA]` | Slack-like comment (non-idempotent) |
+| `sfs ticket status` | Render the active-ticket bundle (Rich panel) |
+| `sfs ticket block <id> --reason "..."` / `sfs ticket unblock <id>` | Toggle blocked state |
+| `sfs ticket reopen <id>` | Move a terminal ticket back to `open` |
+| `sfs ticket approve <id>` / `sfs ticket dismiss <id>` | Decide on `suggested` tickets |
+| `sfs ticket assign <id> --persona NAME` | Attach a persona to a ticket |
+| `sfs ticket resolve <id>` | Move from `review` to `done` (atomic with rowcount guard) |
+| `sfs ticket escalate <id> --reason "..."` | Raise priority + append audit comment |
+
+The active-ticket bundle is stored locally and read by all 7 daemon watchers (claude_code, codex, copilot, cursor, gemini, amp, cline). Captured sessions carry the bundle in their `manifest.json` and the server populates `sessions.persona_name` + `sessions.ticket_id` on upload.

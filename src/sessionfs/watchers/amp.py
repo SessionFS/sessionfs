@@ -147,6 +147,12 @@ class AmpWatcher:
             session_dir = self._store.allocate_session_dir(sfs_id)
             convert_amp_to_sfs(native_path, session_dir, session_id=sfs_id)
 
+            # v0.10.1 Phase 6: tag with active ticket + persona if any.
+            from sessionfs.watchers.active_ticket_annot import (
+                annotate_manifest_with_active_ticket,
+            )
+            annotate_manifest_with_active_ticket(session_dir)
+
             manifest_path = session_dir / "manifest.json"
             if manifest_path.exists():
                 manifest = json.loads(manifest_path.read_text())

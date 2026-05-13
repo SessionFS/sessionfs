@@ -90,6 +90,10 @@ Sessions are indexed locally for fast browsing via the CLI. Cloud sync is opt-in
 | `sfs project ask\|pages\|page\|regenerate\|set` | Query knowledge, manage wiki pages, configure project |
 | `sfs rules init\|edit\|show\|compile` | Manage canonical project rules — compile once, drive every tool |
 | `sfs rules push\|pull` | Sync canonical rules through the SessionFS API |
+| `sfs persona list\|show\|create\|edit\|delete\|assume\|forget` | Manage agent personas; `assume`/`forget` toggle a persona-only local provenance bundle (Pro+) |
+| `sfs ticket list\|show\|create\|start\|complete\|comment` | Manage agent tickets — start/complete writes a local provenance bundle so the daemon tags captured sessions (Team+) |
+| `sfs ticket assign\|resolve\|escalate` | Re-route, close out (review→done with dep enrichment), or bump priority |
+| `sfs ticket status\|block\|unblock\|reopen\|approve\|dismiss` | Ticket lifecycle transitions and active-bundle inspection |
 | `sfs doctor` | Run 8 health checks with auto-repair |
 | `sfs storage` | Show local disk usage and retention policy |
 | `sfs storage prune` | Prune old sessions to free disk space |
@@ -98,7 +102,7 @@ Sessions are indexed locally for fast browsing via the CLI. Cloud sync is opt-in
 | `sfs watcher list\|enable\|disable` | Manage tool watchers |
 | `sfs auth login\|signup\|status` | Manage cloud authentication |
 | `sfs config show\|set` | Manage configuration |
-| `sfs mcp serve` | Start MCP server (21 tools) for AI tool integration |
+| `sfs mcp serve` | Start MCP server (36 tools) for AI tool integration |
 | `sfs mcp install --for TOOL` | Auto-configure MCP for all 8 supported tools |
 | `sfs init` | Interactive setup wizard — auto-detects tools, optional sync |
 | `sfs security scan\|fix` | Audit config permissions, API key exposure, dependencies |
@@ -211,7 +215,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
-**v0.10.0 — Public Beta.** 1502 backend tests + 165 dashboard tests passing. 36 database migrations.
+**v0.10.1 — Public Beta.** 1626 backend tests + 165 dashboard tests passing. 37 database migrations.
 
 ### Session capture, resume, and search
 
@@ -246,9 +250,17 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 - **`handle_errors` decorator** on all CLI commands (no raw tracebacks)
 - **Multi-provider email** (Resend, SMTP, or disabled for air-gapped)
 
+### Agent personas and tickets (v0.10.1)
+
+- **Agent personas** — portable AI roles per project (atlas, prism, scribe, ...), shared by humans and AI agents; CRUD via `sfs persona` (CLI) or 5 MCP tools (`list_personas`, `get_persona`, `create_persona`, `assume_persona`, `forget_persona`); ASCII name regex (1–50 chars), soft-delete preserves history. **Pro+** tier-gated. Dashboard management UI ships in v0.10.2.
+- **Agent tickets** — full ticket FSM (`suggested → open → in_progress → blocked → review → done`) with acceptance criteria, context refs, file refs, dependencies, comments; CRUD + lifecycle via `sfs ticket` (15 commands) or 9 MCP tools (`list_tickets`, `get_ticket`, `create_ticket`, `start_ticket`, `complete_ticket`, `resolve_ticket`, `assign_persona`, `escalate_ticket`, `add_ticket_comment`); atomic state transitions with rowcount-1 guard; agent-created tickets require ≥1 acceptance criterion + ≥20-char description (max 3/session); persona-delete refuses when non-terminal tickets reference it (`--force` bypass). **Team+** tier-gated. Dashboard UI ships in v0.10.2.
+- **Compiled persona+ticket context** — `start_ticket` returns markdown context (persona + ticket + criteria + file refs + active KB claims + completed-dep notes + recent comments) sized to the target tool's token budget (`?tool=claude-code|cursor|codex|gemini|copilot|generic`); same project_id + active-state filters applied across KB claims and dep notes.
+- **Local provenance bundle** — `~/.sessionfs/active_ticket.json` written by `start_ticket` (CLI + MCP) and consumed by all 7 watchers (claude_code/codex/copilot/cursor/gemini/amp/cline); the bundle's `ticket_id` + `persona_name` flow into the manifest at capture time and through sync into the `sessions` table (migration 037).
+- **Bundle ownership safety** — `complete_ticket` only unlinks the bundle when both `ticket_id` AND `project_id` match the completing ticket; bundles written by another tool/session are preserved.
+
 ### MCP and dashboard
 
-- **MCP server** (local + remote) with 21 tools — sessions (search, context, recent, related, summary, audit, provenance), knowledge read (project context, context section, wiki page, search, list entries, get entry, health, ask), knowledge write (add_knowledge, update_wiki_page, list_wiki_pages, compile), and rules (get_rules, get_compiled_rules)
+- **MCP server** (local + remote) with 36 tools — sessions (search, context, recent, related, summary, audit, provenance), knowledge read (project context, context section, wiki page, search, list entries, get entry, health, ask), knowledge write (add_knowledge, update_wiki_page, list_wiki_pages, compile, dismiss_knowledge_entry), rules (get_rules, get_compiled_rules), **personas** (list_personas, get_persona, create_persona, assume_persona, forget_persona), and **tickets** (list_tickets, get_ticket, start_ticket, create_ticket, complete_ticket, resolve_ticket, assign_persona, escalate_ticket, add_ticket_comment)
 - **`sfs mcp install --for <tool>`** for all 8 tools (stale registration repair, malformed config handling)
 - **Web dashboard** with light/dark mode, resume-first layout, date-grouped sessions, lineage grouping, command palette (Cmd+K), mobile nav, accessibility (focus trapping, ARIA live regions), product identity
 - **`/help` page** — MCP-first guidance, 8-tool installer with live terminal + copy button, agent prompt examples, curated CLI quick-reference
