@@ -27,6 +27,7 @@ import json as _json
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.markdown import Markdown
@@ -167,6 +168,7 @@ def run_agent(
     # Optional polling.
     if timeout > 0:
         deadline = time.time() + timeout
+        r3: dict[str, Any] | list[Any] | str = {}
         while time.time() < deadline:
             time.sleep(2)
             s3, r3 = _get(f"/api/v1/projects/{{p}}/agent-runs/{run_id}")
@@ -191,7 +193,10 @@ def run_agent(
                 return
         # Timed out — DO NOT mark the run failed; just exit 0 (run still
         # running externally). Caller can poll status later.
-        msg = f"[yellow]Run {run_id} still in {r3.get('status', '?') if 'r3' in dir() else '?'} after {timeout}s — exiting without marking failed.[/yellow]"
+        last_status = (
+            str(r3.get("status", "?")) if isinstance(r3, dict) else "?"
+        )
+        msg = f"[yellow]Run {run_id} still in {last_status} after {timeout}s — exiting without marking failed.[/yellow]"
         err_console.print(msg)
 
 
