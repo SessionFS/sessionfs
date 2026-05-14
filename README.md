@@ -215,7 +215,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
-**v0.10.2 — Public Beta.** 1686 backend tests + 165 dashboard tests passing. 38 database migrations. AgentRun + CI integration on top of the v0.10.1 personas + tickets layer.
+**v0.10.3 — Public Beta.** 1688 backend tests + 186 dashboard tests passing. 38 database migrations. Dashboard UI for personas / tickets / AgentRun on top of the v0.10.2 CI-integration layer.
 
 ### Session capture, resume, and search
 
@@ -252,8 +252,8 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ### Agent personas and tickets (v0.10.1)
 
-- **Agent personas** — portable AI roles per project (atlas, prism, scribe, ...), shared by humans and AI agents; CRUD via `sfs persona` (CLI) or 5 MCP tools (`list_personas`, `get_persona`, `create_persona`, `assume_persona`, `forget_persona`); ASCII name regex (1–50 chars), soft-delete preserves history. **Pro+** tier-gated. Dashboard management UI ships in v0.10.2.
-- **Agent tickets** — full ticket FSM (`suggested → open → in_progress → blocked → review → done`) with acceptance criteria, context refs, file refs, dependencies, comments; CRUD + lifecycle via `sfs ticket` (15 commands) or 9 MCP tools (`list_tickets`, `get_ticket`, `create_ticket`, `start_ticket`, `complete_ticket`, `resolve_ticket`, `assign_persona`, `escalate_ticket`, `add_ticket_comment`); atomic state transitions with rowcount-1 guard; agent-created tickets require ≥1 acceptance criterion + ≥20-char description (max 3/session); persona-delete refuses when non-terminal tickets reference it (`--force` bypass). **Team+** tier-gated. Dashboard UI ships in v0.10.2.
+- **Agent personas** — portable AI roles per project (atlas, prism, scribe, ...), shared by humans and AI agents; CRUD via `sfs persona` (CLI) or 5 MCP tools (`list_personas`, `get_persona`, `create_persona`, `assume_persona`, `forget_persona`); ASCII name regex (1–50 chars), soft-delete preserves history. **Pro+** tier-gated. Dashboard management UI shipped in v0.10.3.
+- **Agent tickets** — full ticket FSM (`suggested → open → in_progress → blocked → review → done`) with acceptance criteria, context refs, file refs, dependencies, comments; CRUD + lifecycle via `sfs ticket` (15 commands) or 9 MCP tools (`list_tickets`, `get_ticket`, `create_ticket`, `start_ticket`, `complete_ticket`, `resolve_ticket`, `assign_persona`, `escalate_ticket`, `add_ticket_comment`); atomic state transitions with rowcount-1 guard; agent-created tickets require ≥1 acceptance criterion + ≥20-char description (max 3/session); persona-delete refuses when non-terminal tickets reference it (`--force` bypass). **Team+** tier-gated. Dashboard UI shipped in v0.10.3.
 - **Compiled persona+ticket context** — `start_ticket` returns markdown context (persona + ticket + criteria + file refs + active KB claims + completed-dep notes + recent comments) sized to the target tool's token budget (`?tool=claude-code|cursor|codex|gemini|copilot|generic`); same project_id + active-state filters applied across KB claims and dep notes.
 - **Local provenance bundle** — `~/.sessionfs/active_ticket.json` written by `start_ticket` (CLI + MCP) and consumed by all 7 watchers (claude_code/codex/copilot/cursor/gemini/amp/cline); the bundle's `ticket_id` + `persona_name` flow into the manifest at capture time and through sync into the `sessions` table (migration 037).
 - **Bundle ownership safety** — `complete_ticket` only unlinks the bundle when both `ticket_id` AND `project_id` match the completing ticket; bundles written by another tool/session are preserved.
