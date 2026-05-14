@@ -28,9 +28,21 @@ import RelativeDate from '../components/RelativeDate';
 import type { KnowledgeEntry, WikiPage } from '../api/client';
 import RulesTab from './RulesTab';
 import TransferPanel from './TransferPanel';
+import PersonasTab from './PersonasTab';
+import TicketsTab from './TicketsTab';
+import AgentRunsTab from './AgentRunsTab';
 import { useMyOrgs } from '../transfers/useTransfers';
 
-type ProjectTab = 'context' | 'pages' | 'rules' | 'entries' | 'history' | 'transfer';
+type ProjectTab =
+  | 'context'
+  | 'pages'
+  | 'rules'
+  | 'entries'
+  | 'personas'
+  | 'tickets'
+  | 'agent-runs'
+  | 'history'
+  | 'transfer';
 
 // v0.10.0 added `projects.org_id` (migration 035). The current dashboard
 // `ProjectContext` type was generated before that change. Until the type
@@ -1092,6 +1104,9 @@ export default function ProjectDetail() {
     { key: 'context', label: 'Context', step: 2 },
     { key: 'pages', label: 'Pages', step: 3 },
     { key: 'rules', label: 'Rules' },
+    { key: 'personas', label: 'Personas' },
+    { key: 'tickets', label: 'Tickets' },
+    { key: 'agent-runs', label: 'Agent runs' },
     { key: 'transfer', label: 'Transfer' },
     { key: 'history', label: 'History', step: 4 },
   ];
@@ -1364,6 +1379,24 @@ export default function ProjectDetail() {
       {activeTab === 'rules' && (
         <div key={`rules-${tabKey}`} className="mt-4 tab-panel-enter bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-sm)]">
           <RulesTab projectId={project.id} />
+        </div>
+      )}
+
+      {activeTab === 'personas' && (
+        <div key={`personas-${tabKey}`} className="mt-4 tab-panel-enter bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-sm)] p-4">
+          <PersonasTab projectId={project.id} />
+        </div>
+      )}
+
+      {activeTab === 'tickets' && (
+        <div key={`tickets-${tabKey}`} className="mt-4 tab-panel-enter bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-sm)] p-4">
+          <TicketsTab projectId={project.id} />
+        </div>
+      )}
+
+      {activeTab === 'agent-runs' && (
+        <div key={`agent-runs-${tabKey}`} className="mt-4 tab-panel-enter bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-sm)] p-4">
+          <AgentRunsTab projectId={project.id} />
         </div>
       )}
 
