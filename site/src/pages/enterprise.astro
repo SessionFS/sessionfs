@@ -1,19 +1,19 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
 ---
-<BaseLayout title="Enterprise — SessionFS" activeNav="enterprise" description="AI coding agent governance for enterprise. Audit trail across 8 tools. Managed single-tenant or self-hosted — your data stays yours.">
+<BaseLayout title="Enterprise — SessionFS" activeNav="enterprise" description="AI agent governance and coordination for enterprise. Personas, tickets, AgentRuns + the audit trail your compliance team needs. Managed single-tenant or self-hosted.">
 
   <!-- Section 1: Hero -->
   <section class="relative pt-32 sm:pt-40 pb-16 px-5 noise">
     <div class="max-w-4xl mx-auto text-center">
       <h1 class="fade-up font-heading text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight leading-[1.1] mb-6">
-        Know what your AI coding agents are doing.
+        AI agent governance and coordination for enterprise.
       </h1>
       <p class="fade-up text-lg sm:text-xl text-muted leading-relaxed max-w-2xl mx-auto mb-4">
-        Your engineers use Claude Code, Codex, Gemini, Cursor, and Copilot every day. Every session generates file writes, test runs, and package installs. Today, none of it is audited.
+        Personas, tickets, and AgentRuns reduce custom orchestration. The knowledge base grows with every session and teaches every new agent your team's context. Compliance &mdash; DLP, audit trail, session provenance &mdash; is built into the foundation, not bolted on.
       </p>
       <p class="fade-up text-base text-muted-dim max-w-2xl mx-auto">
-        SessionFS captures every AI coding session automatically — across 8 tools, with zero developer behavior change. The audit trail your compliance team needs. The visibility your CISO demands.
+        Your team today. AI agents tomorrow. Same tickets, same knowledge, same system.
       </p>
       <div class="fade-up mt-10 flex flex-col sm:flex-row gap-3 justify-center">
         <a href="mailto:enterprise@sessionfs.dev?subject=SessionFS%20Enterprise" class="inline-flex items-center justify-center gap-2 bg-brand text-white font-semibold rounded-lg px-7 py-3 hover:brightness-110 transition">
@@ -56,12 +56,12 @@ import BaseLayout from '../layouts/BaseLayout.astro';
 
   <!-- Section 3: Three Pillars -->
 
-  <!-- Pillar 1: Complete Visibility -->
+  <!-- Pillar 1: Agent Coordination -->
   <section class="relative py-20 sm:py-28 px-5 noise">
     <div class="max-w-5xl mx-auto flex flex-col lg:flex-row items-center gap-12">
       <div class="lg:w-1/2 fade-up">
-        <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-5">Complete visibility</h2>
-        <p class="text-muted text-lg mb-4 leading-relaxed">SessionFS captures every session across 8 tools automatically. No developer behavior change required. No agents to install in each tool. One daemon watches everything.</p>
+        <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-5">Agent Coordination</h2>
+        <p class="text-muted text-lg mb-4 leading-relaxed">Personas claim tickets. AgentRuns enforce CI policy. The orchestration layer your team would otherwise build in-house &mdash; portable across 8 local tools and cloud-agent-ready for AWS Bedrock, Google Vertex, and custom API clients via integration docs.</p>
         <div class="flex flex-wrap gap-3">
           <span class="font-mono text-sm bg-surface border border-border rounded px-3 py-1.5 text-muted-dim">Claude Code</span>
           <span class="font-mono text-sm bg-surface border border-border rounded px-3 py-1.5 text-muted-dim">Codex</span>
@@ -110,13 +110,13 @@ import BaseLayout from '../layouts/BaseLayout.astro';
 
   <div class="grad-divider"></div>
 
-  <!-- Pillar 2: AI-Verified Audit Trail -->
+  <!-- Pillar 2: Organizational Memory -->
   <section class="relative py-20 sm:py-28 px-5 bg-surface/50 noise">
     <div class="max-w-5xl mx-auto flex flex-col lg:flex-row items-center gap-12">
       <div class="lg:w-1/2 fade-up">
-        <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-5">AI-verified audit trail</h2>
-        <p class="text-muted text-lg mb-4 leading-relaxed">LLM Judge cross-references every claim an AI agent makes against the actual evidence in your codebase. CWE classification. Confidence scores. Dismiss false positives with a single command.</p>
-        <p class="text-muted text-lg leading-relaxed">Runs automatically on sync or PR/MR. Contradiction reports appear directly in GitHub PR comments and GitLab MR threads.</p>
+        <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-5">Organizational Memory</h2>
+        <p class="text-muted text-lg mb-4 leading-relaxed">Every session distils into knowledge claims your agents read &mdash; and write back to. Architecture decisions, debugging patterns, API contracts, environment quirks. Your codebase documents itself. The next agent (human or AI) starts with everything the last one learned.</p>
+        <p class="text-muted text-lg leading-relaxed">LLM Judge cross-references every AI claim against actual tool output and feeds verified findings into the same knowledge base. Trust scores surface in GitHub PR and GitLab MR threads.</p>
       </div>
       <div class="lg:w-1/2 w-full fade-up">
         <div class="relative">
@@ -150,13 +150,13 @@ import BaseLayout from '../layouts/BaseLayout.astro';
 
   <div class="grad-divider"></div>
 
-  <!-- Pillar 3: Secrets Never Leave -->
+  <!-- Pillar 3: Compliance Built In -->
   <section class="relative py-20 sm:py-28 px-5 noise">
     <div class="max-w-5xl mx-auto flex flex-col lg:flex-row items-center gap-12">
       <div class="lg:w-1/2 fade-up">
-        <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-5">Secrets never leave</h2>
-        <p class="text-muted text-lg mb-4 leading-relaxed">DLP scanning detects sensitive content before any session syncs to the cloud. AWS keys, connection strings, API tokens, and 18 PHI identifiers for HIPAA compliance. BLOCK, REDACT, or WARN policies per organization.</p>
-        <p class="text-muted text-lg leading-relaxed">BAA available for healthcare deployments.</p>
+        <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-5">Compliance Built In</h2>
+        <p class="text-muted text-lg mb-4 leading-relaxed">DLP scans every session archive server-side &mdash; 14 PHI patterns + 22 secret patterns, with BLOCK / REDACT / WARN modes set per organisation. Every captured manifest carries instruction provenance, persona, ticket, and the AgentRun that signed off. Audit-ready by construction.</p>
+        <p class="text-muted text-lg leading-relaxed">HIPAA-ready managed or self-hosted deployment. Helm chart hardened with non-root UID 10001, read-only rootfs, RuntimeDefault seccomp. Deployed at a major healthcare system on AWS EKS.</p>
       </div>
       <div class="lg:w-1/2 w-full fade-up">
         <div class="relative">
@@ -180,7 +180,44 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             </div>
           </div>
         </div>
-        <p class="text-muted-dim text-sm mt-4">DLP scanning — coming in v1.0</p>
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- Section 3b: Hybrid Operator Phases -->
+  <section class="relative py-20 sm:py-28 px-5 noise">
+    <div class="max-w-5xl mx-auto">
+      <div class="text-center mb-14 fade-up">
+        <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-4">Your team today. AI agents tomorrow.</h2>
+        <p class="text-muted text-lg max-w-2xl mx-auto leading-relaxed">Same tickets, same knowledge, same system &mdash; whether the operator is an engineer or an AI agent. The transition happens one persona at a time.</p>
+      </div>
+      <div class="grid md:grid-cols-3 gap-5">
+        <div class="glass fade-up p-6">
+          <div class="flex items-center gap-3 mb-4">
+            <span class="flex items-center justify-center w-9 h-9 rounded-full bg-brand/10 text-brand text-sm font-bold border border-brand/20">1</span>
+            <h3 class="font-heading font-semibold text-lg">Engineers load personas</h3>
+          </div>
+          <p class="text-muted text-base leading-relaxed mb-3">Every engineer assumes a persona (atlas, sentinel, scribe&hellip;) on their tickets. Sessions inherit the persona's rules, context, and identity. Captured work flows back into the knowledge base.</p>
+          <p class="text-muted-dim text-sm leading-relaxed">Where most teams start. No AI autonomy yet &mdash; just consistent rules and a growing audit trail.</p>
+        </div>
+        <div class="glass fade-up p-6">
+          <div class="flex items-center gap-3 mb-4">
+            <span class="flex items-center justify-center w-9 h-9 rounded-full bg-brand/10 text-brand text-sm font-bold border border-brand/20">2</span>
+            <h3 class="font-heading font-semibold text-lg">Routine personas operate</h3>
+          </div>
+          <p class="text-muted text-base leading-relaxed mb-3">Trusted personas run autonomously on routine tickets &mdash; security review, dependency bumps, doc sync &mdash; under human supervision. AgentRuns enforce CI policy; LLM Judge flags contradictions before they merge.</p>
+          <p class="text-muted-dim text-sm leading-relaxed">Hybrid operation. The persona does the work; the engineer reviews the AgentRun like a pull request.</p>
+        </div>
+        <div class="glass fade-up p-6">
+          <div class="flex items-center gap-3 mb-4">
+            <span class="flex items-center justify-center w-9 h-9 rounded-full bg-brand/10 text-brand text-sm font-bold border border-brand/20">3</span>
+            <h3 class="font-heading font-semibold text-lg">Autonomous on routine; humans on exceptions</h3>
+          </div>
+          <p class="text-muted text-base leading-relaxed mb-3">Whole categories of routine work move to autonomous personas. Humans handle exceptions, novel problems, and the work that requires judgement. The audit trail is the same regardless of which side of the line did the work.</p>
+          <p class="text-muted-dim text-sm leading-relaxed">The endgame. Custom orchestration was never built &mdash; the same tickets and knowledge base carry the workload through every phase.</p>
+        </div>
       </div>
     </div>
   </section>

@@ -1,7 +1,7 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
 ---
-<BaseLayout title="SessionFS — The memory layer for AI coding agents" description="Every AI coding session builds organizational memory. Resume anywhere, verify AI claims, hand off to teammates. Your next AI agent starts with everything the last one learned.">
+<BaseLayout title="SessionFS — The memory layer for AI coding agents" description="Memory, identity, and coordination for AI coding agents. Agents remember past work, rules follow every tool, and teams coordinate through personas and tickets. Your team today. AI agents tomorrow.">
 
 
   <!-- ========== 1. HERO ========== -->
@@ -17,10 +17,10 @@ import BaseLayout from '../layouts/BaseLayout.astro';
           </svg>
         </div>
         <h1 class="fade-up font-heading text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight leading-[1.1] mb-6">
-          Stop re-prompting.<br>Start resuming.
+          The memory layer<br>for AI coding agents.
         </h1>
         <p class="fade-up text-lg sm:text-xl text-muted leading-relaxed max-w-xl mx-auto lg:mx-0 mb-8">
-          The memory layer for AI coding agents. SessionFS captures every session, builds organizational knowledge, and gives your next AI agent everything the last one learned.
+          Agents remember past work. Rules follow every tool. Teams coordinate through personas and tickets. Your team today &mdash; AI agents tomorrow.
         </p>
         <div class="fade-up inline-flex items-center gap-3 bg-surface border border-border rounded-lg px-5 py-3 mb-8 font-mono text-sm">
           <span class="text-muted-dim select-none">$</span>
@@ -77,17 +77,28 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <!-- ========== 2. SOCIAL PROOF BAR ========== -->
   <div class="grad-divider"></div>
   <section class="py-8 px-5 fade-up">
-    <div class="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-center gap-4 sm:gap-6 text-sm">
-      <span class="text-muted-dim font-medium shrink-0">Works with</span>
-      <div class="border-l border-border h-4 hidden sm:block"></div>
-      <div class="flex flex-wrap justify-center gap-x-5 gap-y-2 font-mono text-muted text-sm">
-        <span>Claude Code</span><span>Codex</span><span>Gemini</span><span>Copilot</span><span>Cursor</span><span>Amp</span><span>Cline</span><span>Roo Code</span>
+    <div class="max-w-6xl mx-auto flex flex-col gap-3 text-sm items-center">
+      <div class="flex flex-col sm:flex-row items-center justify-center gap-3 sm:gap-5">
+        <span class="text-muted-dim font-medium shrink-0">Local tools</span>
+        <div class="border-l border-border h-4 hidden sm:block"></div>
+        <div class="flex flex-wrap justify-center gap-x-5 gap-y-2 font-mono text-muted text-sm">
+          <span>Claude Code</span><span>Codex</span><span>Gemini</span><span>Copilot</span><span>Cursor</span><span>Amp</span><span>Cline</span><span>Roo Code</span>
+        </div>
       </div>
-      <div class="border-l border-border h-4 hidden sm:block"></div>
-      <img src="https://img.shields.io/github/stars/SessionFS/sessionfs?style=flat&color=30363d&labelColor=161b22&logo=github&logoColor=e6edf3" alt="GitHub stars" class="h-5 shrink-0">
-      <div class="border-l border-border h-4 hidden sm:block"></div>
-      <span class="font-mono text-muted text-sm">1,686 backend + 165 UI tests</span>
-      <span class="text-muted-dim text-sm">Enterprise tested</span>
+      <div class="flex flex-col sm:flex-row items-center justify-center gap-3 sm:gap-5">
+        <span class="text-muted-dim font-medium shrink-0">Cloud-agent-ready</span>
+        <div class="border-l border-border h-4 hidden sm:block"></div>
+        <div class="flex flex-wrap justify-center gap-x-5 gap-y-2 font-mono text-muted text-sm">
+          <span>AWS Bedrock</span><span>Google Vertex</span><span>Custom API clients</span>
+        </div>
+        <span class="text-muted-dim text-xs">(via integration docs)</span>
+      </div>
+      <div class="flex flex-col sm:flex-row items-center justify-center gap-3 sm:gap-5">
+        <img src="https://img.shields.io/github/stars/SessionFS/sessionfs?style=flat&color=30363d&labelColor=161b22&logo=github&logoColor=e6edf3" alt="GitHub stars" class="h-5 shrink-0">
+        <div class="border-l border-border h-4 hidden sm:block"></div>
+        <span class="font-mono text-muted text-sm">1,688 backend + 186 UI tests</span>
+        <span class="text-muted-dim text-sm">Deployed at a major healthcare system on AWS EKS</span>
+      </div>
     </div>
   </section>
   <div class="grad-divider"></div>
@@ -97,33 +108,33 @@ import BaseLayout from '../layouts/BaseLayout.astro';
     <div class="max-w-5xl mx-auto">
       <div class="grid md:grid-cols-3 gap-5">
 
-        <!-- Remember -->
+        <!-- Memory -->
         <a href="/features/knowledge-base/" class="glass fade-up p-6 block group" style="border-top: 3px solid #3ddc84;">
           <div class="mb-4">
-            <div class="text-sm font-mono text-accent uppercase tracking-wider mb-3">Remember</div>
-            <h3 class="font-heading font-semibold text-xl mb-3 group-hover:text-brand transition-colors">Your team's AI gets smarter with every session</h3>
+            <div class="text-sm font-mono text-accent uppercase tracking-wider mb-3">Memory</div>
+            <h3 class="font-heading font-semibold text-xl mb-3 group-hover:text-brand transition-colors">Agents remember every session</h3>
           </div>
-          <p class="text-muted text-base leading-relaxed mb-4">Onboard new engineers' AI in seconds. Every session extracts decisions, patterns, and bugs into a living wiki — compiled automatically, served via MCP. Knowledge compounds. It never starts from zero.</p>
+          <p class="text-muted text-base leading-relaxed mb-4">Every captured session distills into knowledge claims, project context, and a wiki your agents read &mdash; and write back to. Cross-tool resume keeps the conversation alive when an engineer switches from Claude Code to Codex.</p>
           <div class="font-mono text-sm text-accent">Learn more &rarr;</div>
         </a>
 
-        <!-- Verify -->
-        <a href="/features/judge/" class="glass fade-up p-6 block group" style="border-top: 3px solid #4f9cf7;">
+        <!-- Identity -->
+        <a href="/rules/" class="glass fade-up p-6 block group" style="border-top: 3px solid #4f9cf7;">
           <div class="mb-4">
-            <div class="text-sm font-mono text-brand uppercase tracking-wider mb-3">Verify</div>
-            <h3 class="font-heading font-semibold text-xl mb-3 group-hover:text-brand transition-colors">Catch what the AI got wrong</h3>
+            <div class="text-sm font-mono text-brand uppercase tracking-wider mb-3">Identity</div>
+            <h3 class="font-heading font-semibold text-xl mb-3 group-hover:text-brand transition-colors">Rules follow every tool</h3>
           </div>
-          <p class="text-muted text-base leading-relaxed mb-4">Reviewable AI. Every claim verified before it reaches production. Confidence scores on every finding. Your team reviews AI work the same way they review human work.</p>
+          <p class="text-muted text-base leading-relaxed mb-4">One canonical rules document compiles to CLAUDE.md, codex.md, .cursorrules, copilot-instructions.md, and GEMINI.md. Agent personas (atlas, sentinel, scribe&hellip;) give each role a portable identity with instruction provenance on every session.</p>
           <div class="font-mono text-sm text-brand">Learn more &rarr;</div>
         </a>
 
-        <!-- Continue -->
-        <a href="/features/handoff/" class="glass fade-up p-6 block group" style="border-top: 3px solid #4f9cf7;">
+        <!-- Coordination -->
+        <a href="/integrations/ci-integration/" class="glass fade-up p-6 block group" style="border-top: 3px solid #4f9cf7;">
           <div class="mb-4">
-            <div class="text-sm font-mono text-brand uppercase tracking-wider mb-3">Continue</div>
-            <h3 class="font-heading font-semibold text-xl mb-3 group-hover:text-brand transition-colors">Resume anywhere. Hand off to anyone.</h3>
+            <div class="text-sm font-mono text-brand uppercase tracking-wider mb-3">Coordination</div>
+            <h3 class="font-heading font-semibold text-xl mb-3 group-hover:text-brand transition-colors">Teams coordinate through tickets</h3>
           </div>
-          <p class="text-muted text-base leading-relaxed mb-4">Context never lost. Hand off mid-session. Pick up exactly where the last developer — or the last tool — left off. Full transcript injected. No re-prompting.</p>
+          <p class="text-muted text-base leading-relaxed mb-4">Tickets carry the work, personas claim it, AgentRuns enforce CI policy on the way out. Team handoff moves context between teammates &mdash; today engineers operate; tomorrow agents do, on the same tickets and the same knowledge.</p>
           <div class="font-mono text-sm text-brand">Learn more &rarr;</div>
         </a>
 
@@ -131,26 +142,27 @@ import BaseLayout from '../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <!-- Enterprise Outcomes Strip -->
+  <!-- Governance Layer -->
   <section class="relative py-14 px-5">
     <div class="max-w-5xl mx-auto">
+      <div class="fade-up text-sm font-mono text-muted-dim uppercase tracking-wider text-center mb-6">Enterprise governance, built in</div>
       <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-6 text-center">
-        <div class="fade-up">
-          <div class="text-xl font-bold text-txt mb-1">Governance</div>
-          <p class="text-muted text-sm leading-relaxed">Complete audit trail of every AI action across every tool and every developer.</p>
-        </div>
-        <div class="fade-up">
-          <div class="text-xl font-bold text-txt mb-1">Onboarding</div>
-          <p class="text-muted text-sm leading-relaxed">New engineers' AI tools know the codebase from day one. Zero ramp-up time.</p>
-        </div>
-        <div class="fade-up">
-          <div class="text-xl font-bold text-txt mb-1">Continuity</div>
-          <p class="text-muted text-sm leading-relaxed">Context never lost between sessions, tools, or teammates. Work always resumes.</p>
-        </div>
-        <div class="fade-up">
-          <div class="text-xl font-bold text-txt mb-1">Risk Reduction</div>
-          <p class="text-muted text-sm leading-relaxed">Every AI claim verified. Secrets detected before sync. Contradictions surfaced.</p>
-        </div>
+        <a href="/features/judge/" class="fade-up block hover:opacity-80 transition">
+          <div class="text-xl font-bold text-txt mb-1">LLM Judge</div>
+          <p class="text-muted text-sm leading-relaxed">Cross-references every AI claim against tool output. Contradictions surface before they reach production.</p>
+        </a>
+        <a href="/dlp/" class="fade-up block hover:opacity-80 transition">
+          <div class="text-xl font-bold text-txt mb-1">DLP &amp; Secrets</div>
+          <p class="text-muted text-sm leading-relaxed">14 PHI patterns + 22 secret patterns scrub session archives at the server. BLOCK / REDACT / WARN modes.</p>
+        </a>
+        <a href="/features/handoff/" class="fade-up block hover:opacity-80 transition">
+          <div class="text-xl font-bold text-txt mb-1">Audit Trail</div>
+          <p class="text-muted text-sm leading-relaxed">Every captured session carries instruction provenance, persona, ticket, and the AgentRun that signed off.</p>
+        </a>
+        <a href="/self-hosted/" class="fade-up block hover:opacity-80 transition">
+          <div class="text-xl font-bold text-txt mb-1">Self-hosted Helm</div>
+          <p class="text-muted text-sm leading-relaxed">Hardened chart (UID 10001, read-only rootfs, RuntimeDefault seccomp). Your data stays in your cluster.</p>
+        </a>
       </div>
     </div>
   </section>
