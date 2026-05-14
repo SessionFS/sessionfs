@@ -234,6 +234,20 @@ def complete_agent(
         if not isinstance(findings, list):
             err_console.print("[red]Findings file must contain a JSON list.[/red]")
             raise typer.Exit(2)
+        # The API model accepts `findings: list[dict[str, Any]]`. Plain
+        # arrays like `[1]` or `["bad"]` pass `isinstance(..., list)` but
+        # the server rejects them with 422, which leaves the run stuck
+        # in `running`. Catch the bad shape locally with a clear message.
+        bad = next(
+            (i for i, f in enumerate(findings) if not isinstance(f, dict)),
+            None,
+        )
+        if bad is not None:
+            err_console.print(
+                f"[red]Findings file must be a list of objects. Element "
+                f"{bad} is {type(findings[bad]).__name__}, not an object.[/red]"
+            )
+            raise typer.Exit(2)
 
     body = {
         "status": status,

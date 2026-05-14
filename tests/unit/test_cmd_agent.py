@@ -188,3 +188,76 @@ def test_ticket_create_output_id_prints_only_id(monkeypatch):
     assert "tk_abcdef0123" in lines, (
         f"Expected 'tk_abcdef0123' as a standalone line in output, got: {result.output!r}"
     )
+
+
+def test_agent_complete_findings_rejects_non_object_elements(monkeypatch, tmp_path):
+    """v0.10.2 follow-up: API model is `list[dict[str, Any]]` and rejects
+    `[1]` / `["bad"]` with 422. The CLI must catch the bad shape locally
+    so the run never reaches a stuck `running` state."""
+    from sessionfs.cli import cmd_agent
+
+    monkeypatch.setattr(
+        cmd_agent, "_resolve_project",
+        lambda: ("https://api.test", "k", "proj_a"),
+    )
+
+    async def _fake_api(*a, **kw):  # pragma: no cover — should not run
+        raise AssertionError("API must not be called when findings shape is bad")
+
+    monkeypatch.setattr(cmd_agent, "_api_request", _fake_api)
+
+    findings = tmp_path / "findings.json"
+    findings.write_text('[1, "bad"]')
+
+    result = runner.invoke(
+        agent_app,
+        [
+            "complete", "run_x",
+            "--summary", "ok",
+            "--severity", "none",
+            "--findings-file", str(findings),
+        ],
+    )
+    assert result.exit_code == 2
+    assert "list of objects" in result.output
+    # Specifically reports which element failed (index 0).
+    assert "Element 0" in result.output
+
+
+def test_agent_complete_findings_accepts_list_of_objects(monkeypatch, tmp_path):
+    """Positive control: a well-formed list of objects passes the new
+    guard and reaches the API."""
+    from sessionfs.cli import cmd_agent
+
+    monkeypatch.setattr(
+        cmd_agent, "_resolve_project",
+        lambda: ("https://api.test", "k", "proj_a"),
+    )
+
+    async def _fake_api(method, path, api_url, api_key, json_data=None, extra_headers=None):
+        return (
+            200,
+            {
+                "id": "run_x",
+                "status": "passed",
+                "policy_result": "pass",
+                "exit_code": 0,
+            },
+            {},
+        )
+
+    monkeypatch.setattr(cmd_agent, "_api_request", _fake_api)
+
+    findings = tmp_path / "findings.json"
+    findings.write_text('[{"severity": "low", "title": "x"}]')
+
+    result = runner.invoke(
+        agent_app,
+        [
+            "complete", "run_x",
+            "--summary", "ok",
+            "--severity", "low",
+            "--findings-file", str(findings),
+        ],
+    )
+    assert result.exit_code == 0

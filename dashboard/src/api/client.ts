@@ -397,6 +397,141 @@ export interface RestoreResponse extends SessionDetail {
   local_copy_may_be_missing?: boolean;
 }
 
+// ------------------------------------------------------------------
+// Personas (v0.10.1, Pro+)
+// ------------------------------------------------------------------
+
+export interface Persona {
+  id: string;
+  project_id: string;
+  name: string;
+  role: string;
+  content: string;
+  specializations: string[];
+  is_active: boolean;
+  version: number;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PersonaCreate {
+  name: string;
+  role: string;
+  content?: string;
+  specializations?: string[];
+}
+
+export interface PersonaUpdate {
+  role?: string;
+  content?: string;
+  specializations?: string[];
+}
+
+// ------------------------------------------------------------------
+// Tickets (v0.10.1, Team+)
+// ------------------------------------------------------------------
+
+export type TicketStatus =
+  | 'suggested'
+  | 'open'
+  | 'in_progress'
+  | 'blocked'
+  | 'review'
+  | 'done'
+  | 'cancelled';
+
+export type TicketPriority = 'low' | 'medium' | 'high' | 'critical';
+
+export interface Ticket {
+  id: string;
+  project_id: string;
+  title: string;
+  description: string;
+  priority: TicketPriority | string;
+  assigned_to: string | null;
+  created_by_user_id: string;
+  created_by_session_id: string | null;
+  created_by_persona: string | null;
+  status: TicketStatus | string;
+  context_refs: string[];
+  file_refs: string[];
+  related_sessions: string[];
+  acceptance_criteria: string[];
+  resolver_session_id: string | null;
+  resolver_user_id: string | null;
+  completion_notes: string | null;
+  changed_files: string[];
+  knowledge_entry_ids: string[];
+  depends_on: string[];
+  created_at: string;
+  updated_at: string;
+  resolved_at: string | null;
+}
+
+export interface TicketCreate {
+  title: string;
+  description: string;
+  priority?: TicketPriority | string;
+  assigned_to?: string | null;
+  acceptance_criteria?: string[];
+  context_refs?: string[];
+  file_refs?: string[];
+  related_sessions?: string[];
+  depends_on?: string[];
+}
+
+export interface TicketComment {
+  id: string;
+  ticket_id: string;
+  author_user_id: string;
+  author_persona: string | null;
+  content: string;
+  session_id: string | null;
+  created_at: string;
+}
+
+// ------------------------------------------------------------------
+// AgentRuns (v0.10.2, Team+)
+// ------------------------------------------------------------------
+
+export type AgentRunStatus =
+  | 'queued'
+  | 'running'
+  | 'passed'
+  | 'failed'
+  | 'errored'
+  | 'cancelled';
+
+export type Severity = 'none' | 'low' | 'medium' | 'high' | 'critical';
+
+export interface AgentRun {
+  id: string;
+  project_id: string;
+  persona_name: string;
+  tool: string;
+  trigger_source: string;
+  status: AgentRunStatus | string;
+  ticket_id: string | null;
+  trigger_ref: string | null;
+  ci_provider: string | null;
+  ci_run_url: string | null;
+  result_summary: string | null;
+  severity: Severity | string | null;
+  findings_count: number;
+  findings: Record<string, unknown>[];
+  fail_on: Severity | string | null;
+  policy_result: 'pass' | 'fail' | string | null;
+  exit_code: number | null;
+  session_id: string | null;
+  triggered_by_user_id: string | null;
+  triggered_by_persona: string | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  duration_seconds: number | null;
+}
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -1026,6 +1161,106 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         method: 'PUT',
         body: JSON.stringify(policy),
       }),
+
+    // ── v0.10.1 Personas (Pro+) ──
+    listPersonas: (projectId: string) =>
+      request<Persona[]>(`/api/v1/projects/${projectId}/personas`),
+
+    getPersona: (projectId: string, name: string) =>
+      request<Persona>(`/api/v1/projects/${projectId}/personas/${encodeURIComponent(name)}`),
+
+    createPersona: (projectId: string, body: PersonaCreate) =>
+      request<Persona>(`/api/v1/projects/${projectId}/personas`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+
+    updatePersona: (projectId: string, name: string, body: PersonaUpdate) =>
+      request<Persona>(`/api/v1/projects/${projectId}/personas/${encodeURIComponent(name)}`, {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      }),
+
+    deletePersona: (projectId: string, name: string, force = false) =>
+      request<{ status: string }>(
+        `/api/v1/projects/${projectId}/personas/${encodeURIComponent(name)}${force ? '?force=true' : ''}`,
+        { method: 'DELETE' },
+      ),
+
+    // ── v0.10.1 Tickets (Team+) ──
+    listTickets: (
+      projectId: string,
+      params: { status?: string; assigned_to?: string; priority?: string; limit?: number } = {},
+    ) => {
+      const sp = new URLSearchParams();
+      if (params.status) sp.set('status', params.status);
+      if (params.assigned_to) sp.set('assigned_to', params.assigned_to);
+      if (params.priority) sp.set('priority', params.priority);
+      if (params.limit) sp.set('limit', String(params.limit));
+      const qs = sp.toString();
+      return request<Ticket[]>(
+        `/api/v1/projects/${projectId}/tickets${qs ? `?${qs}` : ''}`,
+      );
+    },
+
+    getTicket: (projectId: string, ticketId: string) =>
+      request<Ticket>(`/api/v1/projects/${projectId}/tickets/${ticketId}`),
+
+    createTicket: (projectId: string, body: TicketCreate) =>
+      request<Ticket>(`/api/v1/projects/${projectId}/tickets`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+
+    approveTicket: (projectId: string, ticketId: string) =>
+      request<Ticket>(`/api/v1/projects/${projectId}/tickets/${ticketId}/approve`, {
+        method: 'POST',
+      }),
+
+    dismissTicket: (projectId: string, ticketId: string) =>
+      request<Ticket>(`/api/v1/projects/${projectId}/tickets/${ticketId}/dismiss`, {
+        method: 'POST',
+      }),
+
+    listTicketComments: (projectId: string, ticketId: string) =>
+      request<TicketComment[]>(
+        `/api/v1/projects/${projectId}/tickets/${ticketId}/comments`,
+      ),
+
+    addTicketComment: (projectId: string, ticketId: string, content: string) =>
+      request<TicketComment>(
+        `/api/v1/projects/${projectId}/tickets/${ticketId}/comments`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ content }),
+        },
+      ),
+
+    // ── v0.10.2 AgentRuns (Team+) ──
+    listAgentRuns: (
+      projectId: string,
+      params: {
+        persona_name?: string;
+        status?: string;
+        trigger_source?: string;
+        ticket_id?: string;
+        limit?: number;
+      } = {},
+    ) => {
+      const sp = new URLSearchParams();
+      if (params.persona_name) sp.set('persona_name', params.persona_name);
+      if (params.status) sp.set('status', params.status);
+      if (params.trigger_source) sp.set('trigger_source', params.trigger_source);
+      if (params.ticket_id) sp.set('ticket_id', params.ticket_id);
+      if (params.limit) sp.set('limit', String(params.limit));
+      const qs = sp.toString();
+      return request<AgentRun[]>(
+        `/api/v1/projects/${projectId}/agent-runs${qs ? `?${qs}` : ''}`,
+      );
+    },
+
+    getAgentRun: (projectId: string, runId: string) =>
+      request<AgentRun>(`/api/v1/projects/${projectId}/agent-runs/${runId}`),
   };
 }
 

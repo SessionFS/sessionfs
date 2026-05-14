@@ -34,6 +34,15 @@ def handle_errors(func):
             return func(*args, **kwargs)
         except SystemExit:
             raise
+        except _click_exc.Exit as exc:
+            # `typer.Exit(code)` raises a `click.exceptions.Exit`, which
+            # is a `RuntimeError`, not a `SystemExit`. Without this
+            # branch the generic `except Exception` below would swallow
+            # it and emit "Unexpected error: <code>" with `SystemExit(1)`
+            # — silently downgrading every CLI's `typer.Exit(2)` to a
+            # generic 1. Re-raise as `SystemExit` so callers see the
+            # intended code.
+            raise SystemExit(exc.exit_code)
         except _click_exc.ClickException:
             # Re-raise so Typer's outer handler can render the standard
             # parser-error format ("Usage: ... \n Try '... --help'." +

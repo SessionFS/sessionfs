@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.3] - 2026-05-14
+
+### Added
+- **Dashboard UI: Personas, Tickets, AgentRuns tabs.** Three new ProjectDetail tabs surface the v0.10.1 personas + tickets and v0.10.2 AgentRun backends. Read-focused MVP — the moderation transitions a human reviewer wants ship; the FSM transitions tied to the local active-ticket bundle stay in CLI/MCP. Reviewed across 2 rounds of Codex review on ticket `tk_530dfba7f14446dd`; full receipts there.
+  - **Personas tab** — list with role + specializations + last-updated; create modal with name-immutable + ASCII regex pattern + markdown content; edit modal; delete with `--force` toggle for the server's non-terminal-ticket guard.
+  - **Tickets tab** — list filtered by status (all 7 FSM states + All); expand-in-place detail panel (description, acceptance criteria as ☐ boxes, dependency list, completion notes, comments); approve (suggested→open) + dismiss (suggested/open→cancelled) buttons gated by current status; inline comment composer; new-ticket modal.
+  - **AgentRuns tab** — audit-trail read-only view (CI-driven on the backend); status + persona + trigger filters; 30s refetchInterval; expand to view tool / ticket / trigger ref / fail-on / duration / structured findings JSON. Clickable CI run URL goes through a `safeHttpUrl()` allowlist (http/https only) so a crafted `javascript:` or `data:` URL falls back to plain text.
+- **API client + react-query hooks** for all three surfaces. 14 new methods on `ApiClient` (list/get/create/update/delete personas; list/get/create/approve/dismiss/comment tickets; list/get agent-runs). New typed interfaces mirror the server Pydantic responses field-for-field.
+
+### Fixed
+- **CLI `sfs agent complete --findings-file` now rejects non-object list elements locally.** The API model is `list[dict[str, Any]]` and rejects `[1]` or `["bad"]` with a 422 that leaves the run stuck in `running` for non-CI users. The CLI now enumerates elements and reports the index + type of the first non-object before the HTTP call.
+- **`handle_errors` decorator preserves `typer.Exit(N)` exit codes.** Latent bug: `typer.Exit` is a `RuntimeError`, not a `SystemExit`, so the generic `except Exception` was silently downgrading every `typer.Exit(N)` (N != 0) to `SystemExit(1)` with `"Unexpected error: N"`. Affected 7 sites across cmd_agent / cmd_persona / cmd_config / cmd_project. The decorator now catches `click.exceptions.Exit` explicitly and re-raises as `SystemExit(exit_code)`.
+- **Mypy union-attr error in `sfs agent run` timeout polling.** `r3.get('status')` was called inside an `'r3' in dir()` guard, but mypy correctly rejected `.get()` on the union return type. Replaced with `isinstance(r3, dict)` narrowing + pre-initialised `r3: dict[str, Any] | list[Any] | str = {}`. CI hotfix already on main; bundled here for the release commit.
+- **Dashboard `addToast` signature.** `PersonasTab` + `TicketsTab` had 10 call sites using `addToast({ kind, message })`; the hook exports `addToast(type, message)`. `npm run build` was failing TS2554 at every site even though the vitest mocks were permissive enough to mask it. All 10 sites rewritten; test mocks now assert against the positional shape.
+- **Dashboard `ci_run_url` rendered without scheme guard.** Operator-supplied URL was rendered as `<a href={url}>` with `rel="noreferrer"`. Now goes through `safeHttpUrl(raw)` which parses via `new URL()` and only allows `http:` / `https:`; everything else (`javascript:`, `data:`, malformed) falls back to plain text. `rel` upgraded to `"noopener noreferrer"`.
+- **DeleteConfirmModal Esc close.** The persona-delete modal trapped focus via `useFocusTrap` but missed the `keydown` Esc handler that the create/edit and new-ticket modals already used. All three modals now share the same close-on-Escape behaviour.
+
+### Tests
+- +2 backend (1686 → 1688): findings-file non-object rejection + `handle_errors` Exit-preservation regression.
+- +21 dashboard (165 → 186): three new tab test files covering happy + filter + expand + action-gating + toast surfacing + URL safety + Esc close.
+
+### Security
+- Shield-SR independent pre-release review CLEAN — zero CRITICAL/HIGH findings, zero pip-audit / npm audit vulnerabilities (104 Python + dashboard deps). Bandit clean (no new findings; pre-existing MEDIUMs in unchanged files). `dangerouslySetInnerHTML`: 0 occurrences in new dashboard code. Codex R1 HIGH on `ci_run_url` confirmed closed.
+
 ## [0.10.2] - 2026-05-14
 
 ### Added
