@@ -96,6 +96,14 @@ describe('PersonasTab', () => {
     expect(screen.getByText(/Force/)).toBeInTheDocument();
   });
 
+  it('closes the delete confirm modal on Escape', () => {
+    render(<PersonasTab projectId="proj_1" />);
+    fireEvent.click(screen.getAllByRole('button', { name: /Delete/i })[0]);
+    expect(screen.getByText(/Delete "atlas"\?/i)).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByText(/Delete "atlas"\?/i)).toBeNull();
+  });
+
   it('surfaces API errors as toasts', async () => {
     const create = makeMutation({
       mutateAsync: vi.fn().mockRejectedValue(new ApiError(409, 'name taken')),
@@ -107,8 +115,6 @@ describe('PersonasTab', () => {
     fireEvent.change(screen.getByLabelText(/Role/i), { target: { value: 'Tester' } });
     fireEvent.submit(screen.getByRole('dialog').querySelector('form')!);
     await new Promise((r) => setTimeout(r, 0));
-    expect(mockAddToast).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: 'error', message: expect.stringContaining('409') }),
-    );
+    expect(mockAddToast).toHaveBeenCalledWith('error', expect.stringContaining('409'));
   });
 });

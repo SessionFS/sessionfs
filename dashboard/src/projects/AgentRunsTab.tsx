@@ -13,6 +13,26 @@ import { useAgentRuns } from '../hooks/useAgentRuns';
 import RelativeDate from '../components/RelativeDate';
 import type { AgentRun } from '../api/client';
 
+/**
+ * AgentRun `ci_run_url` is operator-supplied (`--ci-run-url` flag on
+ * `sfs agent run`) and stored verbatim. Treat it as untrusted — only
+ * render it as a clickable link when the scheme is http(s). Anything
+ * else (`javascript:`, `data:`, malformed) falls back to plain text so
+ * a crafted run row cannot execute code on click. Codex R1 HIGH fix.
+ */
+function safeHttpUrl(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  try {
+    const u = new URL(raw);
+    if (u.protocol === 'http:' || u.protocol === 'https:') {
+      return u.toString();
+    }
+  } catch {
+    // Falls through to null — malformed URLs are not clickable.
+  }
+  return null;
+}
+
 interface AgentRunsTabProps {
   projectId: string;
 }
@@ -230,18 +250,22 @@ function RunDetail({ run }: { run: AgentRun }) {
         <div>
           <dt className="text-muted">CI provider</dt>
           <dd>
-            {run.ci_run_url ? (
-              <a
-                href={run.ci_run_url}
-                target="_blank"
-                rel="noreferrer"
-                className="text-brand hover:underline"
-              >
-                {run.ci_provider ?? 'open'}
-              </a>
-            ) : (
-              run.ci_provider ?? '—'
-            )}
+            {(() => {
+              const href = safeHttpUrl(run.ci_run_url);
+              if (href) {
+                return (
+                  <a
+                    href={href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-brand hover:underline"
+                  >
+                    {run.ci_provider ?? 'open'}
+                  </a>
+                );
+              }
+              return run.ci_provider ?? '—';
+            })()}
           </dd>
         </div>
         <div>

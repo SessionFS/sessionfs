@@ -119,7 +119,7 @@ export default function PersonasTab({ projectId }: PersonasTabProps) {
             try {
               if (edit.mode === 'create') {
                 await create.mutateAsync(body);
-                addToast({ kind: 'success', message: `Created persona "${body.name}"` });
+                addToast('success', `Created persona "${body.name}"`);
               } else if (edit.persona) {
                 await update.mutateAsync({
                   name: edit.persona.name,
@@ -129,13 +129,13 @@ export default function PersonasTab({ projectId }: PersonasTabProps) {
                     specializations: body.specializations,
                   },
                 });
-                addToast({ kind: 'success', message: `Updated "${edit.persona.name}"` });
+                addToast('success', `Updated "${edit.persona.name}"`);
               }
               setEdit(null);
             } catch (exc) {
               const msg =
                 exc instanceof ApiError ? `${exc.status}: ${exc.message}` : String(exc);
-              addToast({ kind: 'error', message: msg });
+              addToast('error', msg);
             }
           }}
         />
@@ -148,12 +148,12 @@ export default function PersonasTab({ projectId }: PersonasTabProps) {
           onConfirm={async (force) => {
             try {
               await remove.mutateAsync({ name: deleting.name, force });
-              addToast({ kind: 'success', message: `Deleted "${deleting.name}"` });
+              addToast('success', `Deleted "${deleting.name}"`);
               setDeleting(null);
             } catch (exc) {
               const msg =
                 exc instanceof ApiError ? `${exc.status}: ${exc.message}` : String(exc);
-              addToast({ kind: 'error', message: msg });
+              addToast('error', msg);
             }
           }}
         />
@@ -305,6 +305,14 @@ function DeleteConfirmModal({ persona, onClose, onConfirm }: DeleteModalProps) {
   useFocusTrap(dialogRef);
   const [force, setForce] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose();
+    }
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">

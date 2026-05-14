@@ -93,6 +93,36 @@ describe('AgentRunsTab', () => {
     fireEvent.click(screen.getByText('run_abc'));
     const link = screen.getByRole('link', { name: /github/i });
     expect(link).toHaveAttribute('href', 'https://example.com/run');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+  });
+
+  it('refuses to render javascript: ci_run_url as a clickable link', () => {
+    hooks.useAgentRuns.mockReturnValue({
+      data: [run({ ci_run_url: 'javascript:alert(1)//' })],
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+      isFetching: false,
+    });
+    render(<AgentRunsTab projectId="proj_1" />);
+    fireEvent.click(screen.getByText('run_abc'));
+    // Provider label still renders, but NOT as an <a>.
+    expect(screen.queryByRole('link', { name: /github/i })).toBeNull();
+    // Plain text node falls through to "github".
+    expect(screen.getAllByText('github').length).toBeGreaterThan(0);
+  });
+
+  it('refuses to render a malformed ci_run_url as a clickable link', () => {
+    hooks.useAgentRuns.mockReturnValue({
+      data: [run({ ci_run_url: 'not a url' })],
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+      isFetching: false,
+    });
+    render(<AgentRunsTab projectId="proj_1" />);
+    fireEvent.click(screen.getByText('run_abc'));
+    expect(screen.queryByRole('link', { name: /github/i })).toBeNull();
   });
 
   it('filters by status', () => {

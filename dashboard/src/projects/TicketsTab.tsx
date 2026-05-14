@@ -194,10 +194,10 @@ function TicketDetail({ projectId, ticketId, fallback }: DetailProps) {
     try {
       if (action === 'approve') {
         await approve.mutateAsync(ticketId);
-        addToast({ kind: 'success', message: 'Approved' });
+        addToast('success', 'Approved');
       } else if (action === 'dismiss') {
         await dismiss.mutateAsync(ticketId);
-        addToast({ kind: 'success', message: 'Dismissed' });
+        addToast('success', 'Dismissed');
       } else if (action === 'comment') {
         if (!draft.trim()) return;
         await addComment.mutateAsync({ ticketId, content: draft.trim() });
@@ -205,7 +205,7 @@ function TicketDetail({ projectId, ticketId, fallback }: DetailProps) {
       }
     } catch (exc) {
       const msg = exc instanceof ApiError ? `${exc.status}: ${exc.message}` : String(exc);
-      addToast({ kind: 'error', message: msg });
+      addToast('error', msg);
     } finally {
       setSubmitting(null);
     }
@@ -361,11 +361,11 @@ function NewTicketModal({ projectId, onClose }: NewModalProps) {
         assigned_to: assignedTo.trim() || null,
         acceptance_criteria: acceptanceCriteria,
       });
-      addToast({ kind: 'success', message: `Created ticket "${title.trim()}"` });
+      addToast('success', `Created ticket "${title.trim()}"`);
       onClose();
     } catch (exc) {
       const msg = exc instanceof ApiError ? `${exc.status}: ${exc.message}` : String(exc);
-      addToast({ kind: 'error', message: msg });
+      addToast('error', msg);
     } finally {
       setSubmitting(false);
     }
