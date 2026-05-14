@@ -1,0 +1,183 @@
+# EXAMPLE GitLab CI configuration for SessionFS agent reviews.
+#
+# This is reference documentation. It is NOT an active pipeline.
+# Copy it into your `.gitlab-ci.yml` and adapt as needed.
+#
+# Required CI/CD variables (Settings → CI/CD → Variables):
+#   SESSIONFS_API_KEY  — your SessionFS Bearer token (sfs auth login),
+#                        Type=Variable, Masked=true, Protected=true.
+#
+# What this pipeline does (mirror of the GitHub Actions example):
+#   1. On every merge request, opens an agent ticket scoped to the MR.
+#   2. Creates an AgentRun assigned to the `sentinel` persona with
+#      fail_on=high.
+#   3. Pipes the compiled persona+ticket context to your review script.
+#   4. Records findings and exits non-zero per the fail_on policy.
+#   5. CRASH SAFETY: a shell `trap` on EXIT records the run as `errored`
+#      if the script aborts before the normal complete step runs, so
+#      the run never gets stuck in `running` (KB Round 2 MEDIUM fix —
+#      Codex AgentRun ticket).
+#
+# NOTE: All temp files use a workspace-relative path
+# (`$CI_PROJECT_DIR/.sessionfs/`) instead of `/tmp/`. GitLab artifacts
+# must be project-directory-relative to upload; absolute /tmp paths
+# silently get dropped (Codex Round 3 LOW fix).
+#
+# SECURITY MODEL (Codex Round 7 HIGH fix — read before copying):
+#
+#   * `./scripts/review.sh` lives in the MR checkout, so an MR can
+#     modify it. We invoke that script in a subshell with
+#     `SESSIONFS_API_KEY` unset (`( unset SESSIONFS_API_KEY; … )`) so
+#     a malicious MR cannot exfiltrate the SessionFS token via the
+#     review path. The parent shell still has the token for the
+#     surrounding `sfs ticket` / `sfs agent` calls.
+#
+#   * `$CI_MERGE_REQUEST_TITLE` / `$CI_MERGE_REQUEST_DESCRIPTION` are
+#     GitLab CI runtime environment variables (set by the runner, not
+#     pre-substituted templates). With double-quoted `"$VAR"`
+#     expansion the shell treats their contents as inert data, so
+#     they cannot inject commands the way GitHub Actions' `${{ … }}`
+#     pre-substitution can. We keep the double-quoting explicit for
+#     defense-in-depth.
+
+stages:
+  - review
+
+sessionfs-agent-review:
+  stage: review
+  image: python:3.12-slim
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  variables:
+    PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  before_script:
+    - apt-get update -qq && apt-get install -qq -y git jq
+    - pip install --upgrade "sessionfs>=0.10.2"
+    - mkdir -p .sessionfs
+  script:
+    # Use `set -e` BUT install a shell trap that records the run as
+    # errored if anything below exits non-zero before the normal
+    # complete step runs. `set -e` is the default for GitLab jobs, but
+    # we make it explicit so the trap timing is obvious.
+    - set -e
+    - RUN=""
+    - trap '
+        rc=$?;
+        if [ -n "$RUN" ] && [ "$rc" -ne 0 ]; then
+          echo "Review script failed (exit $rc) — recording run as errored.";
+          sfs agent complete "$RUN" \
+            --status errored \
+            --severity none \
+            --summary "Review script failed or aborted with exit code $rc. See CI logs." \
+            --enforce || true;
+        fi
+      ' EXIT
+
+    # --output-id prints exactly the ticket id; everything else → stderr.
+    - |
+      TICKET=$(sfs ticket create \
+        --title "MR !${CI_MERGE_REQUEST_IID}: ${CI_MERGE_REQUEST_TITLE}" \
+        --description "${CI_MERGE_REQUEST_DESCRIPTION:-}" \
+        --assigned-to sentinel \
+        --priority high \
+        --output-id)
+    - echo "Created ticket $TICKET"
+
+    # --output-id prints exactly the run id; compiled context →
+    # --context-file (workspace-relative) so artifact collection works.
+    - |
+      RUN=$(sfs agent run sentinel \
+        --ticket "$TICKET" \
+        --trigger-source ci \
+        --trigger-ref "$CI_COMMIT_SHA" \
+        --ci-provider gitlab \
+        --ci-run-url "$CI_PIPELINE_URL" \
+        --fail-on high \
+        --tool generic \
+        --context-file .sessionfs/context.md \
+        --output-id)
+    - echo "Started run $RUN"
+
+    # Your review script. Reads context from .sessionfs/context.md and
+    # writes findings to .sessionfs/findings.json. If this exits non-zero,
+    # the EXIT trap records the run as errored.
+    #
+    # The subshell + `unset SESSIONFS_API_KEY` keeps the SessionFS
+    # token out of the review script's environment (Codex R7 HIGH fix).
+    # The MR-controlled script can be rewritten by an MR author; the
+    # parent shell retains the token for the surrounding `sfs` calls.
+    - |
+      ( unset SESSIONFS_API_KEY; \
+        ./scripts/review.sh \
+          --context .sessionfs/context.md \
+          --base "$CI_MERGE_REQUEST_DIFF_BASE_SHA" \
+          --head "$CI_COMMIT_SHA" \
+          --out .sessionfs/findings.json )
+
+    # Guard against the review script returning 0 without writing the
+    # findings file — also a failure mode. Record errored explicitly so
+    # the trap doesn't fire on a controlled errored-complete. Also
+    # validate findings.json is a JSON array before downstream `jq`
+    # (Codex Round 4 MEDIUM fix); without this, malformed JSON would
+    # crash jq and trigger the EXIT trap with a cryptic parse error
+    # instead of a meaningful summary.
+    - |
+      if [ ! -s .sessionfs/findings.json ]; then
+        echo "Review script returned 0 but produced no findings — recording errored."
+        sfs agent complete "$RUN" \
+          --status errored \
+          --severity none \
+          --summary "Review script exited 0 but no findings JSON was produced." \
+          --enforce
+      elif ! jq -e 'type == "array" and all(.[]; type == "object")' .sessionfs/findings.json >/dev/null 2>&1; then
+        # Codex Round 6 MEDIUM fix — validate the FULL shape the API
+        # expects (list[dict[str, Any]]). Arrays like `[1]` or
+        # `["bad"]` pass `type == "array"` but the API rejects them
+        # with 422 before the run reaches a terminal state. Route any
+        # such payload to the errored fallback with a clear summary.
+        echo "findings.json is not a list of objects — recording errored."
+        sfs agent complete "$RUN" \
+          --status errored \
+          --severity none \
+          --summary "Review script wrote findings.json but its shape is not a list of objects (got a non-object element)." \
+          --enforce
+      fi
+
+    # Compute the worst severity from findings.
+    - |
+      SEVERITY=$(jq -r '
+        map(.severity)
+        | (if any(. == "critical") then "critical"
+           elif any(. == "high") then "high"
+           elif any(. == "medium") then "medium"
+           elif any(. == "low") then "low"
+           else "none" end)
+      ' .sessionfs/findings.json)
+
+    # --enforce exits the job with the stored exit_code (0/1) per the
+    # fail_on policy, so GitLab fails the MR pipeline appropriately.
+    # Once this succeeds the run is in `passed` (or `failed`/`errored`
+    # depending on severity); a second complete from the trap would
+    # 409, but the trap only fires on non-zero exit so this is safe.
+    - sfs agent complete "$RUN"
+        --summary "Sentinel reviewed MR !${CI_MERGE_REQUEST_IID}."
+        --severity "$SEVERITY"
+        --findings-file .sessionfs/findings.json
+        --enforce
+  after_script:
+    # Step-summary-style report. The RUN id doesn't survive into
+    # after_script without dotenv, so we list the most recent runs
+    # filtered by valid terminal statuses (passed/failed/errored —
+    # `review` is a ticket FSM state, NOT an AgentRun status; Codex
+    # Round 3 LOW fix).
+    - sfs agent list --persona sentinel --status passed --limit 1 || true
+    - sfs agent list --persona sentinel --status failed --limit 1 || true
+    - sfs agent list --persona sentinel --status errored --limit 1 || true
+  artifacts:
+    # Workspace-relative paths so GitLab actually uploads them.
+    # Absolute /tmp paths were silently dropped pre-Codex Round 3 LOW fix.
+    when: always
+    paths:
+      - .sessionfs/context.md
+      - .sessionfs/findings.json
+    expire_in: 1 week

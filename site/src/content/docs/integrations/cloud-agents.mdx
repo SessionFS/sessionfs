@@ -1,0 +1,145 @@
+---
+title: Cloud Agent Control Plane
+description: Connect Bedrock, Vertex/Gemini, and custom HTTP agents to SessionFS personas, tickets, knowledge, and rules — no MCP required.
+---
+
+# Cloud Agent Control Plane
+
+SessionFS coordinates AI agents across local tools and cloud platforms through one shared control plane: **personas, tickets, project knowledge, and rules**. This page covers integrating cloud agents — Amazon Bedrock, Google Vertex/Gemini, and any custom HTTP-callable agent — directly with the SessionFS REST API.
+
+This is a **control-plane** integration: cloud agents can participate in your team's personas, tickets, knowledge, and rules. **Transcript capture as `.sfs` sessions is not part of this layer** — that ships in a future release. Until then, what your cloud agent says inside its own platform stays there; what it *does* against SessionFS (tickets, knowledge contributions) is captured here.
+
+## What cloud agents can do today
+
+| Capability | Endpoint(s) | Tier |
+|---|---|---|
+| List + load personas (atlas, prism, scribe, ...) | `GET /api/v1/projects/{project_id}/personas[/{name}]` | Pro+ |
+| List, create, start, complete tickets | `GET/POST /api/v1/projects/{project_id}/tickets[/{ticket_id}/{start,complete}]` | Team+ |
+| Get the compiled persona + ticket context for a started ticket | Returned by `POST /tickets/{ticket_id}/start` | Team+ |
+| Add knowledge entries (decisions, patterns, bugs, ...) | `POST /api/v1/projects/{project_id}/entries/add` | Paid |
+| Search knowledge | `GET /api/v1/projects/{project_id}/entries?search=...` | Paid |
+| Fetch canonical project rules | `GET /api/v1/projects/{project_id}/rules` | Paid |
+| Resolve project + compiled context by git remote | `GET /api/v1/projects/{git_remote_normalized}` | Paid |
+
+All operations require `Authorization: Bearer <SessionFS_API_key>`. The same API key you use for `sfs auth login` works for cloud agents — no new auth model. Scoped service tokens are a deferred follow-up.
+
+## Why this is not MCP
+
+MCP works great for local tools (Claude Code, Cursor, Codex, etc.) where the agent runtime can spawn `sfs mcp serve` as a stdio subprocess. Bedrock, Vertex, and custom cloud agents typically can't. The Cloud Agent Control Plane gives those agents the same operations through plain HTTP, with no client-side daemon, no MCP transport, and no special SDK.
+
+If your agent *can* speak MCP, prefer it — you get 43 tools and richer descriptions. If it can't, use this layer.
+
+## Amazon Bedrock
+
+Bedrock agents call out to AWS Lambdas for every action group operation. SessionFS ships two reference artifacts:
+
+### 1. OpenAPI spec — `docs/integrations/bedrock-action-group.yaml`
+
+Import this file when creating a Bedrock Action Group. It declares 10 operations:
+
+```
+listPersonas        — GET  /api/v1/projects/{project_id}/personas
+getPersona          — GET  /api/v1/projects/{project_id}/personas/{name}
+listTickets         — GET  /api/v1/projects/{project_id}/tickets
+createTicket        — POST /api/v1/projects/{project_id}/tickets
+startTicket         — POST /api/v1/projects/{project_id}/tickets/{ticket_id}/start
+completeTicket      — POST /api/v1/projects/{project_id}/tickets/{ticket_id}/complete
+addKnowledge        — POST /api/v1/projects/{project_id}/entries/add
+searchKnowledge     — GET  /api/v1/projects/{project_id}/entries
+getRules            — GET  /api/v1/projects/{project_id}/rules
+getProjectContext   — GET  /api/v1/projects/{git_remote_normalized}
+```
+
+### 2. Lambda reference handler — `docs/integrations/bedrock_lambda.py`
+
+A 220-line Python 3.12 handler that:
+- Parses the Bedrock action-group event (`messageVersion`, `apiPath`, `httpMethod`, `parameters`, `requestBody`).
+- Dispatches to the matching SessionFS HTTP endpoint via an internal operation table that mirrors the OpenAPI spec.
+- Reads `SESSIONFS_API_URL` + `SESSIONFS_API_KEY` from the Lambda's environment. **In production, fetch `SESSIONFS_API_KEY` from AWS Secrets Manager** rather than env directly — the env path is for quick testing.
+- Returns a Bedrock-compatible response envelope.
+
+Uses only `urllib.request` so it runs on the vanilla Lambda Python runtime with **no packaging dependencies**.
+
+### Deploy
+
+1. Create a Lambda from `bedrock_lambda.py` (Python 3.12 runtime; handler `bedrock_lambda.lambda_handler`).
+2. Grant the Lambda permission to read your SessionFS API key from Secrets Manager.
+3. Set `SESSIONFS_API_URL` (default `https://api.sessionfs.dev` works for cloud-hosted SessionFS).
+4. In the Bedrock agent console: create an action group, point it at the Lambda, and upload `bedrock-action-group.yaml` as the API schema.
+5. Bedrock validates the schema, generates tool descriptions for the agent, and routes function calls through your Lambda.
+
+## Google Vertex / Gemini
+
+Vertex agents use function calling (`google-generativeai` ≥ 0.7). SessionFS ships:
+
+### `docs/integrations/vertex_tools.py`
+
+This file is two things in one:
+
+1. **`FUNCTION_DECLARATIONS`** — a list of 10 function-declaration dicts (`name`, `description`, `parameters` in OpenAPI-subset JSON Schema). Convert them with `genai.protos.FunctionDeclaration(**decl)` in your agent runtime.
+2. **`call_sessionfs_function(name, args)`** — a reference handler that maps a Gemini function-call result back into a SessionFS HTTP request. Deploy as a Cloud Function or Cloud Run service that proxies tool calls from your Vertex agent.
+
+```python
+from google.generativeai import protos
+from vertex_tools import FUNCTION_DECLARATIONS, call_sessionfs_function
+
+tools = [protos.Tool(function_declarations=[
+    protos.FunctionDeclaration(**d) for d in FUNCTION_DECLARATIONS
+])]
+
+# In your message loop:
+response = model.generate_content(prompt, tools=tools)
+for fc in response.candidates[0].content.parts:
+    if fc.function_call:
+        result = call_sessionfs_function(fc.function_call.name, dict(fc.function_call.args))
+        # Feed `result` back into the model as a function-response part.
+```
+
+### Cloud Function entry point
+
+`vertex_tools.cloud_function_entrypoint(request)` is a Flask-style HTTP handler ready to deploy. Wire your Vertex agent's function-call loop to POST `{"name": "...", "args": {...}}` to that URL.
+
+## Custom HTTP agents
+
+If you're rolling your own (LangChain, LlamaIndex, custom agent runtime, internal AI gateway, ...), you don't need either reference handler. Just speak HTTP:
+
+```bash
+curl -X POST "$SESSIONFS_API_URL/api/v1/projects/$PROJECT_ID/tickets/$TICKET_ID/start?tool=generic" \
+  -H "Authorization: Bearer $SESSIONFS_API_KEY"
+```
+
+The OpenAPI spec at `docs/integrations/bedrock-action-group.yaml` doubles as a generic API reference for the control plane — the operationIds are platform-neutral.
+
+## Recommended workflow
+
+A cloud agent kicking off a piece of work typically does:
+
+1. `getProjectContext` to load the project's compiled context document.
+2. `getRules` to learn project-wide constraints.
+3. `listTickets` (filtered to its assigned persona) to find work.
+4. `startTicket` on the chosen ticket — the response includes the compiled persona + ticket context as markdown. Feed this back into the model as system prompt / role context.
+5. Do the work (writing code, drafting docs, etc.).
+6. `addKnowledge` for any decisions or discoveries surfaced during the work.
+7. `completeTicket` with notes + changed_files when done. The ticket moves to `review` and propagates completion notes to dependents.
+
+## Authentication
+
+For now, cloud agents use the same Bearer API key as everything else (`sfs auth login` → CLI/MCP/Bedrock/Vertex). Treat the key like any production secret: load from AWS Secrets Manager or Google Secret Manager, never bake into Lambda/Cloud Function source.
+
+**Scoped service tokens** (API keys with restricted scopes for non-human callers) are a deferred follow-up.
+
+## What this does NOT include
+
+To keep this release thin and reviewable:
+
+- **No transcript / session capture.** Cloud agents don't yet upload `.sfs` sessions. That ships separately.
+- **No new server endpoints.** Everything is the v0.10.2 shipped API.
+- **No new auth model.** Bearer tokens only.
+- **No broad CORS changes.** Lambda and Cloud Functions are server-to-server callers; CORS would only matter for browser-hosted cloud agents, which is not in scope.
+- **No new ticket fields for platform routing.** If you need to know which cloud platform executed a ticket, that's an `AgentRun` design — open a follow-up.
+
+## See also
+
+- [MCP Server](/mcp) — full MCP tool catalogue, including the 14 persona + ticket tools.
+- [MCP integration](/features/mcp) — preferred path for local tools (Claude Code, Cursor, Codex, ...).
+- [CLI reference](/cli) — `sfs persona`, `sfs ticket`, `sfs project entries` — the same operations from a terminal.

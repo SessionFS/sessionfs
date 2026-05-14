@@ -42,6 +42,7 @@ from sessionfs.cli.cmd_rules import rules_app
 from sessionfs.cli.cmd_hooks import hooks_app
 from sessionfs.cli.cmd_persona import persona_app
 from sessionfs.cli.cmd_ticket import ticket_app
+from sessionfs.cli.cmd_agent import agent_app
 
 app.add_typer(daemon_app, name="daemon")
 app.add_typer(config_app, name="config")
@@ -61,6 +62,7 @@ app.add_typer(rules_app, name="rules")
 app.add_typer(hooks_app, name="hooks")
 app.add_typer(persona_app, name="persona")
 app.add_typer(ticket_app, name="ticket")
+app.add_typer(agent_app, name="agent")
 
 # Register top-level commands (wrapped with handle_errors for resilient error reporting)
 from sessionfs.cli.common import handle_errors

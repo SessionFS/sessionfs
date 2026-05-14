@@ -1,0 +1,257 @@
+---
+title: CI Integration (Agent Runs)
+description: Track agent reviews in CI with the SessionFS AgentRun API. Compatible with GitHub Actions, GitLab CI, and any system that can run sfs.
+---
+
+# CI Integration
+
+v0.10.2 introduces **AgentRun** — an audit record for one execution of one persona, optionally against one ticket, with policy enforcement at completion. Use it to gate CI on agent review outcomes (e.g. "fail the build when the security persona reports a high-severity issue").
+
+This is a **tracking + enforcement** integration. SessionFS records who ran (which persona), what triggered the run (CI / PR / scheduled / manual), severity of findings, and a stored `exit_code` your CI step can honor. **It does NOT spawn the model runtime** — your CI script (or whichever LLM tool you call) does the actual review; SessionFS records the result.
+
+Transcript / `.sfs` session capture for CI runs is deferred to a future release.
+
+## What you get
+
+For every run, SessionFS stores:
+
+| Field | Meaning |
+|---|---|
+| `id` | `run_<hex>` |
+| `persona_name` | Which persona executed (`sentinel`, `atlas`, ...) |
+| `tool` | Token-budget hint (`generic`, `claude-code`, `bedrock`, `gemini`, ...) |
+| `trigger_source` | `manual` / `ci` / `webhook` / `scheduled` / `mcp` / `api` |
+| `ticket_id` | Optional ticket the run was scoped to |
+| `trigger_ref` | e.g. PR commit SHA, branch name, schedule cron |
+| `ci_provider` | `github` / `gitlab` / `bitbucket` / etc. |
+| `ci_run_url` | Deep link back to the CI run |
+| `status` | `queued` → `running` → `passed` / `failed` / `errored` / `cancelled` |
+| `severity` | Worst finding severity at completion |
+| `findings_count` | Total findings |
+| `findings` | Structured findings JSON |
+| `fail_on` | Severity threshold for `policy_result = "fail"` |
+| `policy_result` | `pass` / `fail` |
+| `exit_code` | `0` / `1` — what `sfs agent complete --enforce` exits with |
+| `duration_seconds` | started_at → completed_at |
+
+## Quick start (GitHub Actions)
+
+A complete example workflow is at [`docs/integrations/github-actions-agent-run.yml`](https://github.com/SessionFS/sessionfs/blob/main/docs/integrations/github-actions-agent-run.yml). Copy it into `.github/workflows/` in your repo and adapt the persona / threshold / review script.
+
+Skeleton (note the **per-step** `env:` blocks — see "PR-injection hardening" below for why):
+
+```yaml
+- name: Prepare scratch dir (workspace, not /tmp)
+  run: mkdir -p .sessionfs
+
+- name: Create review ticket
+  id: ticket
+  # SESSIONFS_API_KEY is scoped to THIS step (not job-level) so the
+  # review step further down — which runs PR-modifiable code — can't
+  # read it. PR title/body flow through `env:` so a crafted title
+  # cannot inject shell via `${{ … }}` pre-substitution.
+  env:
+    SESSIONFS_API_KEY: ${{ secrets.SESSIONFS_API_KEY }}
+    PR_NUMBER: ${{ github.event.pull_request.number }}
+    PR_TITLE: ${{ github.event.pull_request.title }}
+  run: |
+    TICKET=$(sfs ticket create \
+      --title "PR #${PR_NUMBER}: ${PR_TITLE}" \
+      --assigned-to sentinel \
+      --output-id)
+    echo "ticket=$TICKET" >> "$GITHUB_OUTPUT"
+
+- name: Start AgentRun
+  id: run
+  env:
+    SESSIONFS_API_KEY: ${{ secrets.SESSIONFS_API_KEY }}
+  run: |
+    RUN=$(sfs agent run sentinel \
+      --ticket "${{ steps.ticket.outputs.ticket }}" \
+      --trigger-source ci \
+      --trigger-ref "${{ github.event.pull_request.head.sha }}" \
+      --ci-provider github \
+      --fail-on high \
+      --context-file .sessionfs/context.md \
+      --output-id)
+    echo "run=$RUN" >> "$GITHUB_OUTPUT"
+
+- name: Your review script
+  id: review
+  # NO SESSIONFS_API_KEY env on purpose: this step executes
+  # `scripts/review.sh` from the PR checkout, which a PR author can
+  # rewrite. Withholding the token here prevents exfiltration.
+  continue-on-error: true     # keep going so complete always runs
+  run: ./scripts/review.sh --context .sessionfs/context.md --out .sessionfs/findings.json
+
+- name: Complete AgentRun (branches in shell)
+  # Single always-runs step that branches on shell `[ -s ... ]` AND
+  # validates findings.json is a JSON array before the success path.
+  # Three failure modes all route to the errored fallback: review
+  # crashed, findings missing, or findings malformed/not-a-list. AVOID
+  # `hashFiles('/tmp/...')` — `hashFiles()` only evaluates workspace
+  # patterns, so absolute /tmp paths silently return empty.
+  if: always() && steps.run.outputs.run != ''
+  env:
+    SESSIONFS_API_KEY: ${{ secrets.SESSIONFS_API_KEY }}
+    PR_NUMBER: ${{ github.event.pull_request.number }}
+  run: |
+    set +e
+    route="errored"
+    summary="Review script failed or produced no findings."
+    if [ "${{ steps.review.outcome }}" = "success" ] && [ -s .sessionfs/findings.json ]; then
+      # Validate the FULL shape the API accepts (list[dict[str, Any]]).
+      # Arrays like `[1]` or `["bad"]` pass the simpler `type == "array"`
+      # check but the API rejects them with 422; without the stricter
+      # guard the success-path complete crashes before terminalizing.
+      if jq -e 'type == "array" and all(.[]; type == "object")' .sessionfs/findings.json >/dev/null 2>&1; then
+        route="success"
+      else
+        summary="Review wrote findings.json but its shape is not a list of objects."
+      fi
+    fi
+    if [ "$route" = "success" ]; then
+      SEVERITY=$(jq -r 'map(.severity) | (if any(.=="critical") then "critical" elif any(.=="high") then "high" elif any(.=="medium") then "medium" elif any(.=="low") then "low" else "none" end)' .sessionfs/findings.json)
+      sfs agent complete "${{ steps.run.outputs.run }}" \
+        --summary "Sentinel reviewed PR #${PR_NUMBER}." \
+        --severity "$SEVERITY" \
+        --findings-file .sessionfs/findings.json \
+        --enforce
+    else
+      sfs agent complete "${{ steps.run.outputs.run }}" \
+        --status errored --severity none --summary "$summary" --enforce
+    fi
+
+- name: Step summary
+  if: always() && steps.run.outputs.run != ''
+  env:
+    SESSIONFS_API_KEY: ${{ secrets.SESSIONFS_API_KEY }}
+  run: sfs agent status "${{ steps.run.outputs.run }}" --format markdown >> "$GITHUB_STEP_SUMMARY"
+```
+
+### PR-injection hardening
+
+Three CI hazards apply to any "review the PR" workflow that runs in the same job as a checkout of the PR's code. All three are addressed in the example above:
+
+1. **SessionFS token scoping.** A `SESSIONFS_API_KEY` set at job level lands in `$SESSIONFS_API_KEY` for *every* step — including the step that runs `scripts/review.sh` from the PR checkout. A malicious PR can modify that script and `curl` the token out. Scope the secret on each `sfs` step's own `env:` block; omit it from the review step.
+2. **`${{ … }}` template injection.** GitHub interpolates `${{ github.event.pull_request.* }}` *before* the shell sees the script, so a PR title of `"; curl evil; "` becomes literal shell tokens. Pass user-controlled fields through `env:` and reference them via double-quoted shell variables (`"$PR_TITLE"`); shell expansion of an env var is inert against command injection. Bot-controlled fields (head SHA, repo, run id) are safe to interpolate directly because they come from GitHub's own metadata.
+3. **GitHub token persistence in the workspace.** `actions/checkout@v4` defaults to `persist-credentials: true`, which writes the job's GITHUB_TOKEN into `.git/config` as an `extraheader` so subsequent `git` commands authenticate automatically. PR-modifiable `scripts/review.sh` can then `git push` with that token or grep it out of `.git/config` — even though SessionFS-scoped secrets are withheld. Set `persist-credentials: false` on the checkout step, and keep job permissions to `contents: read` only. If the review needs to comment on the PR, do it from a SEPARATE job (GitHub Actions only supports workflow-level and job-level `permissions:`, NOT step-level): add a follow-up `comment-on-pr` job with `needs: agent-review` and job-level `pull-requests: write`, which does NOT check out the PR and consumes only sanitized artifacts produced by the review job (e.g. `findings.json` via `actions/download-artifact@v4`). The `github-actions-agent-run.yml` example workflow ships with a commented-out reference implementation of this pattern. Never put write tokens in the same job that runs PR-modifiable code.
+
+GitLab CI variables don't have the template-substitution hazard (they're set in the shell environment at runtime, so `"$CI_MERGE_REQUEST_TITLE"` is safe). GitLab also doesn't auto-persist credentials into `.git/config` the way `actions/checkout` does — the runner injects `CI_JOB_TOKEN` into a temporary `git credential` helper, not a workspace file readable by review.sh. The token-scoping concern still applies, so the GitLab example invokes the review script inside `( unset SESSIONFS_API_KEY; ./scripts/review.sh … )` — a subshell that runs without the token while the surrounding `sfs` calls keep it.
+
+## Crash safety: always complete the run
+
+If your review script crashes (non-zero exit, missing findings file, OOM, etc.), CI must still record the run as `errored` — otherwise the run stays stuck in `running` forever, the audit trail breaks, and `--enforce` has nothing to gate on. Two patterns:
+
+**GitHub Actions** — split the review step from the complete step with `continue-on-error: true`, then use a single `if: always()` complete step that branches in shell:
+
+```yaml
+- name: Run review
+  id: review
+  continue-on-error: true                  # do NOT abort the job here
+  run: ./scripts/review.sh ...
+
+- name: Complete AgentRun (branches in shell)
+  # `hashFiles()` only evaluates workspace patterns; using `[ -s ... ]`
+  # plus a `jq -e 'type == "array" and all(.[]; type == "object")'`
+  # pre-validation in shell is robust against missing files, malformed
+  # JSON, non-list payloads, AND arrays of non-objects (which the API
+  # rejects with 422). All four failure modes route to the errored
+  # complete so the run always reaches a terminal state.
+  if: always() && steps.run.outputs.run != ''
+  run: |
+    set +e
+    route="errored"; summary="Review failed or produced no findings"
+    if [ "${{ steps.review.outcome }}" = "success" ] && [ -s .sessionfs/findings.json ]; then
+      if jq -e 'type == "array" and all(.[]; type == "object")' .sessionfs/findings.json >/dev/null 2>&1; then
+        route="success"
+      else
+        summary="Findings.json shape is not a list of objects"
+      fi
+    fi
+    if [ "$route" = "success" ]; then
+      sfs agent complete "$RUN" --summary "..." --severity "$SEV" \
+        --findings-file .sessionfs/findings.json --enforce
+    else
+      sfs agent complete "$RUN" --status errored --severity none \
+        --summary "$summary" --enforce
+    fi
+```
+
+> **`hashFiles()` caveat:** GitHub's `hashFiles(...)` only matches files under `$GITHUB_WORKSPACE`. Absolute `/tmp/...` paths return empty, so an `if: hashFiles('/tmp/findings.json') != ''` guard silently fails for good reviews and routes them to the errored fallback. Use shell `[ -s ... ]` (works with any path) or write findings under the workspace.
+
+**GitLab CI** — install a shell `trap` on EXIT inside the `script` block that records `errored` when the script aborts:
+
+```yaml
+script:
+  - set -e
+  - RUN=""
+  - trap '
+      rc=$?;
+      if [ -n "$RUN" ] && [ "$rc" -ne 0 ]; then
+        sfs agent complete "$RUN" --status errored --severity none \
+          --summary "Review aborted (exit $rc)" --enforce || true;
+      fi
+    ' EXIT
+  - RUN=$(sfs agent run ... --output-id)
+  - ./scripts/review.sh ...    # if this fails, the trap records errored
+  - sfs agent complete "$RUN" --summary "..." --severity "$SEV" --findings-file ... --enforce
+```
+
+Both example workflows in `docs/integrations/` ship with this pattern wired in.
+
+## Quick start (GitLab CI)
+
+Full example at [`docs/integrations/gitlab-agent-run.yml`](https://github.com/SessionFS/sessionfs/blob/main/docs/integrations/gitlab-agent-run.yml). Same shape, GitLab variables instead of GitHub Actions outputs.
+
+## Machine-safe output
+
+Two flags exist specifically for CI scripting:
+
+- **`sfs ticket create --output-id`** — prints exactly the ticket id on stdout (everything else routes to stderr). Use `$(sfs ticket create ... --output-id)` to capture.
+- **`sfs agent run --output-id`** — prints exactly the run id on stdout. Pair with `--context-file` so the compiled persona+ticket context goes to a file instead of stdout.
+
+Status output formats:
+- **`sfs agent status --format json`** — parseable JSON for `jq` pipelines.
+- **`sfs agent status --format markdown`** — GitHub/GitLab step-summary-compatible markdown (`>> $GITHUB_STEP_SUMMARY`).
+- **`sfs agent status --format text`** — Rich panel for terminals (default).
+
+## Policy evaluation
+
+When you set `--fail-on <severity>` at `agent run` time, SessionFS evaluates it at `agent complete` time:
+
+| `severity` submitted | `fail_on=low` | `fail_on=medium` | `fail_on=high` | `fail_on=critical` |
+|---|---|---|---|---|
+| `none` | pass | pass | pass | pass |
+| `low` | **fail** | pass | pass | pass |
+| `medium` | **fail** | **fail** | pass | pass |
+| `high` | **fail** | **fail** | **fail** | pass |
+| `critical` | **fail** | **fail** | **fail** | **fail** |
+
+`fail_on=none` always passes. `severity=none` never trips a threshold. The stored `exit_code` is `1` on fail, `0` on pass. `sfs agent complete --enforce` exits with `exit_code`, so CI builds gate on it naturally.
+
+`status=errored` (signaling the review tool itself crashed) is preserved regardless of policy.
+
+## CLI reference
+
+```text
+sfs agent run <persona>      Create + start a run; print compiled context.
+sfs agent complete <run_id>  Record result, exit per fail_on policy.
+sfs agent status <run_id>    Show run detail (text / json / markdown).
+sfs agent list               List recent runs with filters.
+```
+
+Same operations are available through 3 MCP tools (`create_agent_run`, `complete_agent_run`, `list_agent_runs`) and the underlying REST API at `/api/v1/projects/{project_id}/agent-runs`.
+
+## What this does NOT do
+
+- **No transcript / session capture.** AgentRun records the *outcome* of a review; the model's transcript is not uploaded.
+- **No model orchestration.** SessionFS doesn't spawn Claude/Codex/Bedrock. Your script picks the LLM and writes findings.
+- **No automatic KB promotion.** Findings stay as run data. If you want a finding promoted into the persistent knowledge base, call `sfs project entries add` (or the MCP `add_knowledge` tool) explicitly.
+- **No scoped service tokens.** Use your existing Bearer API key (the same one `sfs auth login` set up). Scoped service tokens for CI runners are a deferred follow-up.
+
+## See also
+
+- [Cloud Agent Control Plane](/integrations/cloud-agents) — same persona / ticket / knowledge surface for Bedrock + Vertex.
+- [MCP Server](/mcp) — `create_agent_run`, `complete_agent_run`, `list_agent_runs` in the full tool catalogue.
+- [CLI reference](/cli) — `sfs agent` group + the new `--output-id` flag on `sfs ticket create`.

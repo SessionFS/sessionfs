@@ -331,6 +331,15 @@ _TOOL_TOKEN_LIMITS: dict[str, int] = {
     "cline": 4000,
     "roo-code": 4000,
     "amp": 8000,
+    # v0.10.1 cloud-agent aliases — Bedrock typically fronts Claude/Titan
+    # (Claude-class budget); Vertex fronts Gemini (Gemini-class budget).
+    # Documented in docs/integrations/bedrock-action-group.yaml and the
+    # cloud-agents site page. Added per KB review of Cloud Agent Control
+    # Plane ticket — without these aliases, callers passing tool=bedrock
+    # silently fell back to "generic" (8k) instead of the claude-code
+    # budget the docs promise.
+    "bedrock": 16000,
+    "vertex": 8000,
     "generic": 8000,
 }
 
@@ -350,17 +359,30 @@ def _truncate_to_chars(text: str, max_tokens: int) -> str:
 async def _compile_persona_context(
     db: AsyncSession,
     persona: AgentPersona | None,
-    ticket: Ticket,
+    ticket: Ticket | None,
     tool: str = "generic",
 ) -> str:
-    """Assemble persona + ticket + KB claims + comments + dep notes
-    into a single markdown block sized for the target tool."""
+    """Assemble persona + (optional) ticket + KB claims + comments + dep
+    notes into a single markdown block sized for the target tool.
+
+    v0.10.2 — `ticket` is now optional so AgentRun.start can compile
+    persona-only context for ticket-less runs (e.g. CI security scans
+    that aren't tied to a specific ticket). When `ticket` is None the
+    function emits the persona block only, sized to the tool budget.
+    """
     sections: list[str] = []
 
     if persona is not None:
         sections.append(
             f"# You are {persona.name} — {persona.role}\n\n{persona.content}"
         )
+
+    if ticket is None:
+        # Persona-only mode (AgentRun without ticket linkage). Skip every
+        # ticket-derived section — there's nothing to compile from.
+        compiled = "\n---\n\n".join(sections) if sections else ""
+        max_tokens = _TOOL_TOKEN_LIMITS.get(tool, _TOOL_TOKEN_LIMITS["generic"])
+        return _truncate_to_chars(compiled, max_tokens)
 
     ticket_section = f"# Current Ticket: {ticket.title}\n"
     ticket_section += f"Priority: {ticket.priority}\n"

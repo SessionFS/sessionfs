@@ -1066,3 +1066,103 @@ class TicketComment(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class AgentRun(Base):
+    """One execution of one persona, optionally against one ticket.
+
+    v0.10.2 — AgentRun is the audit/enforcement record for ephemeral
+    agent work. The server tracks identity (which persona ran), trigger
+    (manual/CI/webhook), result severity, findings, and policy outcome.
+    It does NOT spawn the model — `start_agent_run` returns compiled
+    persona+ticket context that the caller feeds into its own runtime.
+
+    Status FSM (enforced at routes layer):
+        queued → running → passed | failed | errored | cancelled
+        queued → cancelled
+        running → cancelled
+
+    `persona_name`, `ticket_id`, `session_id` are plain Strings, not
+    FKs — same pattern as `sessions.persona_name` / `sessions.ticket_id`
+    from migration 037. Personas may be soft-deleted; tickets and
+    sessions may be hard-deleted; the AgentRun audit row survives.
+    """
+
+    __tablename__ = "agent_runs"
+    __table_args__ = (
+        Index("idx_agent_run_project_status", "project_id", "status"),
+        Index("idx_agent_run_ticket", "ticket_id"),
+        Index("idx_agent_run_project_persona", "project_id", "persona_name"),
+        Index(
+            "idx_agent_run_project_trigger",
+            "project_id",
+            "trigger_source",
+            "trigger_ref",
+        ),
+        Index("idx_agent_run_project_created", "project_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # run_<hex>
+    project_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    # Required execution metadata.
+    persona_name: Mapped[str] = mapped_column(String(50), nullable=False)
+    tool: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="generic", server_default="generic"
+    )
+    trigger_source: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="manual", server_default="manual"
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="queued", server_default="queued"
+    )
+
+    # Optional ticket linkage.
+    ticket_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # CI / trigger context.
+    trigger_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    ci_provider: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    ci_run_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Result fields (set on complete).
+    result_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    severity: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    findings_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    findings: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default="[]"
+    )
+
+    # Policy fields.
+    fail_on: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    policy_result: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Session linkage (.sfs session that captured this run).
+    session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # Triggerer provenance.
+    triggered_by_user_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    triggered_by_persona: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    # Timestamps.
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)

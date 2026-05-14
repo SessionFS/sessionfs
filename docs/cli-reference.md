@@ -1965,6 +1965,90 @@ sfs ticket escalate tk_abc123 --reason "Customer-facing outage in prod"
 
 ---
 
+## `sfs agent` (v0.10.2)
+
+Record auditable runs of an agent persona against a ticket, with policy enforcement at completion. CI-first design — every flag has a stdin/stdout contract suitable for shell scripting and `gh`/`gitlab-ci` workflows.
+
+**Tier:** Team+.
+
+**Status FSM:** `queued → running → passed | failed | errored | cancelled` (all terminal).
+
+### `sfs agent run <persona>`
+
+Create + start an AgentRun, emit the compiled persona + ticket context, and optionally poll until completion.
+
+```
+sfs agent run <persona> [--ticket TK_ID]
+                        [--trigger-source ci|webhook|scheduled|manual|mcp|api]
+                        [--trigger-ref <sha|branch|cron>]
+                        [--ci-provider github|gitlab|bitbucket|...]
+                        [--ci-run-url <url>]
+                        [--tool generic|claude-code|codex|gemini|bedrock|vertex|...]
+                        [--fail-on none|low|medium|high|critical]
+                        [--context-file PATH]
+                        [--timeout SECONDS]
+                        [--format text|json|markdown]
+                        [--output-id]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--ticket` | Scope the run to a ticket (must be same project; cross-project ticket-id is rejected with 422). |
+| `--trigger-source` | Where the run originated. CI runners pass `ci`. |
+| `--trigger-ref` | Free-form ref (PR commit SHA, branch, cron expr). |
+| `--ci-provider`, `--ci-run-url` | Deep-link the run back to your CI UI. |
+| `--tool` | Token budget hint when compiling persona + ticket context. `claude-code`=16k, `codex/gemini/copilot/amp/generic`=8k, `cursor/windsurf/cline/roo-code`=4k, `bedrock`=16k, `vertex`=8k. |
+| `--fail-on` | Severity threshold for `policy_result = "fail"` at complete time. |
+| `--context-file` | Write the compiled context to this file instead of stdout (use this with `--output-id`). |
+| `--timeout` | Block and poll until the run reaches a terminal status or `SECONDS` elapse. |
+| `--format` | Status output format when polling. `markdown` is GitHub/GitLab step-summary-compatible. |
+| `--output-id` | Print **only** the run id on stdout (everything else routes to stderr). Pairs with `$(sfs agent run ... --output-id)` capture in CI. |
+
+### `sfs agent complete <run_id>`
+
+Record findings + severity, evaluate policy, exit per the stored `exit_code`.
+
+```
+sfs agent complete <run_id> --summary "..." --severity none|low|medium|high|critical
+                            [--findings-file findings.json]
+                            [--status passed|failed|errored]
+                            [--session-id SES_ID]
+                            [--enforce]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--summary` | Human-readable summary of what the run did. Required. |
+| `--severity` | Worst severity present in findings. `none` never trips a `fail_on` threshold. |
+| `--findings-file` | Path to a JSON file with a list of objects (e.g. `[{"severity":"high","title":"..."}]`). |
+| `--status` | Override the terminal status — useful for review tooling that crashed (`--status errored --severity none`). Failed/errored statuses always store `exit_code=1` regardless of severity, so `--enforce` fails CI on crash. |
+| `--session-id` | Tag the run with the session that produced it. |
+| `--enforce` | Exit with the stored `exit_code` (0 on pass / 1 on fail). Defense-in-depth: also exits non-zero for any `failed`/`errored` status even when stored `exit_code` is 0. |
+
+### `sfs agent status <run_id>`
+
+Show a run's detail.
+
+```
+sfs agent status <run_id> [--format text|json|markdown]
+```
+
+`--format markdown` emits a GitHub-Actions / GitLab step-summary-compatible block — pipe it to `$GITHUB_STEP_SUMMARY` to surface the result in the CI summary panel.
+
+### `sfs agent list`
+
+List recent runs in the project.
+
+```
+sfs agent list [--persona NAME] [--status STATUS]
+               [--trigger-source SOURCE] [--ticket TK_ID]
+               [--limit N]
+```
+
+Default sort: `created_at` descending. See `docs/integrations/github-actions-agent-run.yml` and `docs/integrations/gitlab-agent-run.yml` for full CI-workflow examples wired up against `sfs agent run/complete/status` + the `--output-id` capture pattern.
+
+---
+
 ## Billing and Tier Enforcement
 
 When any cloud command receives a `403` response with an `upgrade_required` error, the CLI displays a friendly message indicating the required tier and a URL to upgrade:

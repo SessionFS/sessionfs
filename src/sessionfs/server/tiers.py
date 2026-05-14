@@ -90,6 +90,7 @@ TIER_FEATURES: dict[Tier, dict] = {
             "org_settings",
             "agent_personas",
             "agent_tickets",
+            "agent_runs",
         },
         "storage_bytes": 1024 * 1024 * 1024,  # 1 GB per user
         "description": "Pro + team management",
@@ -119,6 +120,7 @@ TIER_FEATURES: dict[Tier, dict] = {
             "org_settings",
             "agent_personas",
             "agent_tickets",
+            "agent_runs",
             "dlp_hipaa",
             "security_dashboard",
             "policy_engine",

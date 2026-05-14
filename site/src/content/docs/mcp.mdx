@@ -31,7 +31,7 @@ sfs mcp install --for claude-code --skip-instructions
 
 ## Tools
 
-The MCP server exposes 36 tools in six categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), and Tickets (Team+).
+The MCP server exposes 43 tools in seven categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), and AgentRun (Team+).
 
 ### Session Tools
 
@@ -306,7 +306,7 @@ Return a ticket's full record, dependencies, dependents, and recent comments.
 
 #### `create_ticket`
 
-Open a new ticket. Agent-created tickets require ≥1 acceptance criterion + ≥20-char description; max 3 per `session_id`.
+Open a new ticket. Agent-created tickets require ≥1 acceptance criterion + ≥20-char description; max 3 per `session_id`. Agent-source tickets land in `suggested` status — a human (or trusted agent) approves them with `approve_ticket` before they can be started.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -315,6 +315,15 @@ Open a new ticket. Agent-created tickets require ≥1 acceptance criterion + ≥
 | `acceptance_criteria` | array | no | List of strings (required for agent source) |
 | `depends_on` | array | no | List of ticket IDs |
 | `persona` | string | no | Assign a persona |
+| `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
+
+#### `approve_ticket`
+
+Move a `suggested` ticket → `open` so it can be assigned and started. Returns 409 if the ticket is in any other state.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `ticket_id` | string | yes | Ticket ID |
 | `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
 
 #### `start_ticket`
@@ -369,6 +378,37 @@ Slack-like comment thread. Non-idempotent (each call creates a row).
 | `ticket_id` | string | yes | Ticket ID |
 | `body` | string | yes | Markdown body |
 | `as_persona` | string | no | Comment authored by this persona |
+
+### Session checkpoint + fork
+
+Local-only tools that operate on `~/.sessionfs`. Use these to branch a session for "what-if" exploration or to mark a known-good state before risky changes. Neither tool uploads anything — call `sfs push <new_id>` afterwards if the fork should sync.
+
+#### `checkpoint_session`
+
+Create a named snapshot of a session's current manifest + messages under `~/.sessionfs/sessions/<id>.sfs/checkpoints/<name>/`. Snapshot names must start with alphanumeric and use only `[A-Za-z0-9._-]` (1–100 chars). Re-using a name returns an error.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `session_id` | string | yes | Full session id or unique prefix |
+| `name` | string | yes | Checkpoint name |
+
+#### `list_checkpoints`
+
+List checkpoints for a session, oldest first. Each entry returns `name`, `created_at`, `message_count`, and the on-disk path. Returns an empty list if there are no checkpoints.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `session_id` | string | yes | Full session id or unique prefix |
+
+#### `fork_session`
+
+Fork a session (or one of its checkpoints) into a new independent session. The new manifest records `parent_session_id` and — when `from_checkpoint` is supplied — `forked_from_checkpoint`, so lineage is introspectable.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `session_id` | string | yes | Source session id or unique prefix |
+| `name` | string | yes | Title for the forked session |
+| `from_checkpoint` | string | no | Fork from this snapshot instead of the live head |
 
 ## Agent Knowledge Contribution
 

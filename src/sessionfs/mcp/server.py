@@ -895,6 +895,116 @@ _TOOLS = [
             "properties": {},
         },
     ),
+    # ── v0.10.2 — AgentRun tracking tools ──
+    Tool(
+        name="create_agent_run",
+        description=(
+            "Create a tracked execution record for an agent run. This is "
+            "a TRACKING + ENFORCEMENT tool — it records that a persona "
+            "ran (manually or via CI), captures findings + severity, and "
+            "evaluates a fail_on policy at completion. It does NOT spawn "
+            "the model runtime; the caller is responsible for executing "
+            "the actual agent work and submitting results via "
+            "`complete_agent_run`.\n\n"
+            "Pass `start_now=true` to chain create + start as a single "
+            "MCP call (two HTTP requests under the hood — POST /create "
+            "then POST /start). The response includes compiled context "
+            "from the start call. If the start step fails after create "
+            "succeeded, the queued run is returned with `start_error`; "
+            "callers can retry `start_agent_run` separately.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs agent run` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "persona_name": {"type": "string"},
+                "tool": {"type": "string", "default": "generic"},
+                "trigger_source": {
+                    "type": "string",
+                    "enum": ["manual", "ci", "webhook", "scheduled", "mcp", "api"],
+                    "default": "mcp",
+                },
+                "ticket_id": {"type": "string"},
+                "trigger_ref": {"type": "string"},
+                "ci_provider": {"type": "string"},
+                "ci_run_url": {"type": "string"},
+                "fail_on": {
+                    "type": "string",
+                    "enum": ["none", "low", "medium", "high", "critical"],
+                },
+                "triggered_by_persona": {"type": "string"},
+                "start_now": {"type": "boolean", "default": False},
+                "git_remote": {"type": "string"},
+            },
+            "required": ["persona_name"],
+        },
+    ),
+    Tool(
+        name="complete_agent_run",
+        description=(
+            "Record the result of an agent run. Submit `severity` of "
+            "findings and a list of structured findings; the server "
+            "evaluates the configured `fail_on` policy and stores "
+            "`policy_result` (pass/fail) + `exit_code` (0/1).\n\n"
+            "Severity hierarchy (low → critical). `severity=none` never "
+            "trips a threshold. Caller-submitted `status=errored` is "
+            "preserved regardless of policy.\n\n"
+            "Atomic transition — only running/queued runs can be "
+            "completed. Returns the full updated row.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs agent complete` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "status": {
+                    "type": "string",
+                    "enum": ["passed", "failed", "errored"],
+                    "default": "passed",
+                },
+                "result_summary": {"type": "string"},
+                "severity": {
+                    "type": "string",
+                    "enum": ["none", "low", "medium", "high", "critical"],
+                    "default": "none",
+                },
+                "findings": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "default": [],
+                },
+                "session_id": {"type": "string"},
+                "git_remote": {"type": "string"},
+            },
+            "required": ["run_id"],
+        },
+    ),
+    Tool(
+        name="list_agent_runs",
+        description=(
+            "List recent agent runs in the project. Filter by persona, "
+            "status, trigger_source, or ticket_id. Sorted by created_at "
+            "descending; default limit 50, max 200.\n\n"
+            "Useful for: 'has atlas already reviewed this PR?', 'show me "
+            "all failed sentinel runs from last week', 'what runs touched "
+            "this ticket?'.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs agent list` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "persona_name": {"type": "string"},
+                "status": {"type": "string"},
+                "trigger_source": {"type": "string"},
+                "ticket_id": {"type": "string"},
+                "limit": {"type": "integer", "default": 50},
+                "git_remote": {"type": "string"},
+            },
+        },
+    ),
     Tool(
         name="dismiss_knowledge_entry",
         description=(
@@ -939,6 +1049,103 @@ _TOOLS = [
                 "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
             },
             "required": ["id"],
+        },
+    ),
+    # ── v0.10.2 — Ticket approval + session ops ──
+    Tool(
+        name="approve_ticket",
+        description=(
+            "Approve an agent-suggested ticket: moves status from "
+            "`suggested` → `open` so it can be assigned and started. Use "
+            "this on tickets created via `create_ticket` by a non-trusted "
+            "agent. The ticket must currently be in `suggested` status — "
+            "any other state returns a 409 conflict.\n\n"
+            "Use `dismiss_knowledge_entry` for KB entries, NOT this tool — "
+            "this is for tickets only.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs ticket approve` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "ticket_id": {"type": "string"},
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+            "required": ["ticket_id"],
+        },
+    ),
+    Tool(
+        name="checkpoint_session",
+        description=(
+            "Create a named checkpoint snapshot of a local session's "
+            "current state (manifest + messages). Lives on disk under "
+            "`~/.sessionfs/sessions/<id>.sfs/checkpoints/<name>/` and lets "
+            "you later `fork_session(from_checkpoint=<name>)` to branch "
+            "from that point.\n\n"
+            "Names: 1-100 chars, must start with alphanumeric; allowed "
+            "chars are letters/digits/'.'/'_'/'-'. Re-using an existing "
+            "name returns an error.\n\n"
+            "LOCAL-ONLY: operates on `~/.sessionfs`. Does not upload "
+            "anything to the cloud.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs checkpoint` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string", "description": "Full session id or unique prefix"},
+                "name": {"type": "string", "description": "Checkpoint name (see naming rules)"},
+            },
+            "required": ["session_id", "name"],
+        },
+    ),
+    Tool(
+        name="list_checkpoints",
+        description=(
+            "List checkpoints stored for a session, oldest first. Each "
+            "entry returns `name`, `created_at`, `message_count`, and the "
+            "absolute path on disk. Use this before `fork_session` to "
+            "discover what branch points exist.\n\n"
+            "Returns an empty list if the session has no checkpoints.\n\n"
+            "LOCAL-ONLY: operates on `~/.sessionfs`."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string", "description": "Full session id or unique prefix"},
+            },
+            "required": ["session_id"],
+        },
+    ),
+    Tool(
+        name="fork_session",
+        description=(
+            "Fork a session (or a named checkpoint of it) into a new "
+            "independent session. The new session inherits the source's "
+            "messages + workspace + tools but gets a fresh session id and "
+            "the `name` you supply as its title. The new manifest records "
+            "`parent_session_id` (and `forked_from_checkpoint` when "
+            "applicable) so lineage stays introspectable.\n\n"
+            "Pass `from_checkpoint` to fork from a snapshot created by "
+            "`checkpoint_session`; omit it to fork from the live session "
+            "head. The source session is unmodified.\n\n"
+            "LOCAL-ONLY: operates on `~/.sessionfs`. The fork is not "
+            "automatically pushed to the cloud — run `sfs push <new_id>` "
+            "explicitly if you want that.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs fork` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string", "description": "Full session id or unique prefix"},
+                "name": {"type": "string", "description": "Title for the forked session (non-empty)"},
+                "from_checkpoint": {
+                    "type": "string",
+                    "description": "Optional checkpoint name to fork from (see list_checkpoints)",
+                },
+            },
+            "required": ["session_id", "name"],
         },
     ),
 ]
@@ -1030,8 +1237,22 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_resolve_ticket(arguments)
         elif name == "escalate_ticket":
             result = await _handle_escalate_ticket(arguments)
+        elif name == "create_agent_run":
+            result = await _handle_create_agent_run(arguments)
+        elif name == "complete_agent_run":
+            result = await _handle_complete_agent_run(arguments)
+        elif name == "list_agent_runs":
+            result = await _handle_list_agent_runs(arguments)
         elif name == "dismiss_knowledge_entry":
             result = await _handle_dismiss_knowledge_entry(arguments)
+        elif name == "approve_ticket":
+            result = await _handle_approve_ticket(arguments)
+        elif name == "checkpoint_session":
+            result = _handle_checkpoint_session(arguments)
+        elif name == "list_checkpoints":
+            result = _handle_list_checkpoints(arguments)
+        elif name == "fork_session":
+            result = _handle_fork_session(arguments)
         else:
             result = {"error": f"Unknown tool: {name}"}
     except Exception as exc:
@@ -2572,6 +2793,138 @@ async def _handle_escalate_ticket(args: dict) -> dict:
     return payload
 
 
+# ── v0.10.2 — AgentRun MCP handlers ──
+
+
+async def _handle_create_agent_run(args: dict) -> dict:
+    """Wrap POST /api/v1/projects/{project_id}/agent-runs.
+
+    When `start_now=True` is passed, also calls /start on the newly
+    created run and returns the StartAgentRunResponse with compiled
+    context. Otherwise returns the queued run record.
+    """
+    persona_name = (args.get("persona_name") or "").strip()
+    if not persona_name:
+        return {"error": "persona_name is required"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    body: dict[str, Any] = {"persona_name": persona_name}
+    for key in (
+        "tool", "trigger_source", "ticket_id", "trigger_ref",
+        "ci_provider", "ci_run_url", "fail_on", "triggered_by_persona",
+    ):
+        val = args.get(key)
+        if isinstance(val, str) and val.strip():
+            body[key] = val.strip()
+
+    # MCP-only convenience flag — server REST does not honor a body
+    # field; we chain a follow-up /start call below.
+    start_now = bool(args.get("start_now", False))
+
+    import httpx
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{api_url}/api/v1/projects/{project_id}/agent-runs",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=body,
+        )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    payload = resp.json()
+    run_id = payload.get("id")
+
+    if start_now and run_id:
+        async with httpx.AsyncClient(timeout=30) as client:
+            start_resp = await client.post(
+                f"{api_url}/api/v1/projects/{project_id}/agent-runs/{run_id}/start",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+        if start_resp.status_code >= 400:
+            # Creation succeeded but start failed — return the create
+            # payload plus an error so the caller knows it can still
+            # call start_agent_run separately.
+            return {
+                **payload,
+                "start_error": f"API error {start_resp.status_code}: {start_resp.text}",
+            }
+        return start_resp.json()
+    return payload
+
+
+async def _handle_complete_agent_run(args: dict) -> dict:
+    """Wrap POST /api/v1/projects/{project_id}/agent-runs/{run_id}/complete."""
+    run_id = (args.get("run_id") or "").strip()
+    if not run_id:
+        return {"error": "run_id is required"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    body: dict[str, Any] = {
+        "status": args.get("status", "passed"),
+        "severity": args.get("severity", "none"),
+    }
+    if args.get("result_summary"):
+        body["result_summary"] = args["result_summary"]
+    if args.get("session_id"):
+        body["session_id"] = args["session_id"]
+    findings = args.get("findings")
+    if isinstance(findings, list):
+        body["findings"] = findings
+
+    import httpx
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{api_url}/api/v1/projects/{project_id}/agent-runs/{run_id}/complete",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=body,
+        )
+    if resp.status_code == 404:
+        return {"error": f"Agent run '{run_id}' not found"}
+    if resp.status_code == 409:
+        return {"error": f"Agent run '{run_id}' is already in a terminal state"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_list_agent_runs(args: dict) -> dict:
+    """Wrap GET /api/v1/projects/{project_id}/agent-runs."""
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    params: dict[str, str] = {}
+    for key in ("persona_name", "status", "trigger_source", "ticket_id"):
+        val = args.get(key)
+        if isinstance(val, str) and val.strip():
+            params[key] = val.strip()
+    limit = args.get("limit")
+    if isinstance(limit, int) and limit > 0:
+        params["limit"] = str(limit)
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/projects/{project_id}/agent-runs",
+            headers={"Authorization": f"Bearer {api_key}"},
+            params=params,
+        )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return {"agent_runs": resp.json()}
+
+
 async def _handle_dismiss_knowledge_entry(args: dict) -> dict:
     """Wrap PUT /api/v1/projects/{project_id}/entries/{entry_id}.
 
@@ -2604,6 +2957,109 @@ async def _handle_dismiss_knowledge_entry(args: dict) -> dict:
     if resp.status_code >= 400:
         return {"error": f"API error {resp.status_code}: {resp.text}"}
     return resp.json()
+
+
+async def _handle_approve_ticket(args: dict) -> dict:
+    """Wrap POST /api/v1/projects/{project_id}/tickets/{ticket_id}/approve."""
+    ticket_id = args.get("ticket_id", "")
+    if not ticket_id:
+        return {"error": "ticket_id is required"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    import httpx
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{api_url}/api/v1/projects/{project_id}/tickets/{ticket_id}/approve",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code == 404:
+        return {"error": f"Ticket '{ticket_id}' not found"}
+    if resp.status_code == 409:
+        return {"error": f"Ticket '{ticket_id}' is not in `suggested` status: {resp.text}"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+def _handle_checkpoint_session(args: dict) -> dict:
+    """Create a named checkpoint of a local session via the shared helper."""
+    from sessionfs.session_ops import SessionOpError, create_checkpoint
+
+    session_id = args.get("session_id", "")
+    name = args.get("name", "")
+    if not session_id:
+        return {"error": "session_id is required"}
+    if not name:
+        return {"error": "name is required"}
+
+    store = _get_store()
+    full_id = _resolve_session_id_or_error(store, session_id)
+    if isinstance(full_id, dict):
+        return full_id
+    try:
+        return create_checkpoint(store, full_id, name)
+    except SessionOpError as exc:
+        return {"error": str(exc)}
+
+
+def _handle_list_checkpoints(args: dict) -> dict:
+    from sessionfs.session_ops import SessionOpError, list_checkpoints
+
+    session_id = args.get("session_id", "")
+    if not session_id:
+        return {"error": "session_id is required"}
+
+    store = _get_store()
+    full_id = _resolve_session_id_or_error(store, session_id)
+    if isinstance(full_id, dict):
+        return full_id
+    try:
+        return {"session_id": full_id, "checkpoints": list_checkpoints(store, full_id)}
+    except SessionOpError as exc:
+        return {"error": str(exc)}
+
+
+def _handle_fork_session(args: dict) -> dict:
+    from sessionfs.session_ops import SessionOpError, fork_session
+
+    session_id = args.get("session_id", "")
+    name = args.get("name", "")
+    from_checkpoint = args.get("from_checkpoint")
+    if not session_id:
+        return {"error": "session_id is required"}
+    if not name:
+        return {"error": "name is required"}
+
+    store = _get_store()
+    full_id = _resolve_session_id_or_error(store, session_id)
+    if isinstance(full_id, dict):
+        return full_id
+    try:
+        return fork_session(store, full_id, name, from_checkpoint=from_checkpoint)
+    except SessionOpError as exc:
+        return {"error": str(exc)}
+
+
+def _resolve_session_id_or_error(store, session_id: str):
+    """Return the full session id, or an `{"error": ...}` dict.
+
+    Accepts a unique prefix; ambiguous matches → error. Mirrors the
+    CLI's `resolve_session_id` semantics without raising SystemExit.
+    """
+    if store.get_session_dir(session_id):
+        return session_id
+    matches = store.find_sessions_by_prefix(session_id)
+    if not matches:
+        return {"error": f"Session '{session_id}' not found"}
+    if len(matches) > 1:
+        ids = ", ".join(m["session_id"][:12] for m in matches[:5])
+        return {"error": f"Session prefix '{session_id}' is ambiguous: {ids}..."}
+    return matches[0]["session_id"]
 
 
 # ---------------------------------------------------------------------------

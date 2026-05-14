@@ -1,0 +1,330 @@
+# EXAMPLE GitHub Actions workflow for SessionFS agent reviews.
+#
+# This is reference documentation. It is NOT an active workflow in this
+# repository — copy it into `.github/workflows/` in your own repo and
+# adapt the persona, fail_on threshold, and review script as needed.
+#
+# Required secrets:
+#   SESSIONFS_API_KEY  — your SessionFS Bearer token (sfs auth login).
+#
+# Required Python package:
+#   pip install sessionfs>=0.10.2
+#
+# What this workflow does:
+#   1. On every pull_request, opens an agent ticket scoped to the PR.
+#   2. Creates an AgentRun assigned to the `sentinel` security persona,
+#      with fail_on=high so the build fails when a high/critical finding
+#      lands.
+#   3. Pipes the compiled persona+ticket context to your own review
+#      script (`scripts/review.sh` — you write that part).
+#   4. The review script writes findings JSON; sfs agent complete
+#      records them, evaluates policy, and exits non-zero on fail.
+#   5. CRASH SAFETY: a single `if: always()` complete step branches in
+#      shell on whether findings JSON exists. If the review script
+#      crashed OR produced no findings, the step records the run as
+#      `errored` so the AgentRun audit trail is always closed and
+#      `--enforce` correctly fails CI per the v0.10.2 policy fix.
+#
+# NOTE: All temp files use the workspace path (`.sessionfs/` under
+# $GITHUB_WORKSPACE) instead of `/tmp/`. GitHub Actions' `hashFiles()`
+# function only evaluates workspace-relative paths, so absolute /tmp
+# paths silently return "" and would skip the success branch even for
+# good reviews. Shell `[ -s ... ]` works on either path; workspace
+# paths additionally let artifact-collection steps pick them up.
+#
+# SECURITY MODEL (Codex Rounds 7 + 8 HIGH and Round 9 MEDIUM fixes —
+# read before copying):
+#
+#   * `SESSIONFS_API_KEY` is set as a STEP-SCOPED env on each step
+#     that calls `sfs`, not at job scope. A job-scoped secret is in
+#     `$SESSIONFS_API_KEY` for every step — including the review step,
+#     which runs `./scripts/review.sh` from the PR checkout. A
+#     malicious PR can modify that script and exfiltrate the token.
+#     Step-scoping keeps the secret away from PR-controlled code.
+#
+#   * PR title / body / number are passed into shell via `env:` blocks,
+#     never via direct `${{ github.event.pull_request.* }}` substitution
+#     inside `run:`. GitHub Actions interpolates `${{ … }}` BEFORE the
+#     shell sees the script, so a crafted PR title containing
+#     `"; curl evil; "` would land as literal shell tokens. Using
+#     environment variables defers expansion to the shell, where
+#     double-quoted `"$VAR"` is inert against command injection.
+#
+#   * Bot-controlled fields that aren't user-supplied (head SHA, repo,
+#     run id) are still interpolated directly because they come from
+#     GitHub's own metadata and cannot contain shell syntax. Anything
+#     ultimately authored by a PR contributor flows through env.
+#
+#   * `actions/checkout` is configured with `persist-credentials: false`
+#     (Codex R8 HIGH fix). Without this, `actions/checkout` writes the
+#     job's GitHub token into `.git/config` so subsequent `git` commands
+#     pick it up automatically — meaning PR-modifiable `scripts/review.sh`
+#     can `git config --get-regexp http\..*\.extraheader` or simply `git
+#     push` with the token. Disabling persistence makes the checkout
+#     token vanish after the checkout step finishes.
+#
+#   * Job permissions are tightened to `contents: read` only. The
+#     previous `pull-requests: write` is dropped because nothing in the
+#     core review flow needs to write PR data, and PR-modifiable review
+#     code must NEVER run inside a job that holds write tokens. If you
+#     want the persona to post a PR comment, add a SEPARATE follow-up
+#     JOB (`needs: agent-review`) with job-level `pull-requests: write`
+#     that does NOT check out the PR and consumes only sanitized
+#     artifacts produced by the review job (e.g. download
+#     `sessionfs-agent-run` via `actions/download-artifact@v4`, parse
+#     `findings.json`, post the PR comment). GitHub Actions does NOT
+#     support step-level `permissions:` — permissions are workflow-
+#     level or job-level only, so the comment job must be a separate
+#     job. (Codex R9 MEDIUM fix.)
+#
+# This example uses the `pull_request` trigger (NOT
+# `pull_request_target`), so it runs with the PR's permissions and the
+# secret context is already reduced. The fixes above protect against
+# token reuse within that already-limited context. If you switch to
+# `pull_request_target`, you MUST additionally avoid checking out PR
+# code or running any PR-modifiable scripts in the same job — see
+# https://docs.github.com/en/actions/security-for-github-actions for
+# the full hardening checklist.
+
+name: SessionFS Agent Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  agent-review:
+    runs-on: ubuntu-latest
+    permissions:
+      # `contents: read` only. The review step runs PR-modifiable code
+      # (scripts/review.sh from the PR checkout) and must NEVER run in a
+      # job that holds write tokens (Codex R8 HIGH fix). If you need
+      # the persona to post a PR comment, add a SEPARATE follow-up JOB
+      # with `needs: agent-review` and job-level `pull-requests: write`.
+      # The comment job must NOT check out the PR and must consume only
+      # sanitized artifacts from this job (e.g. `findings.json` via
+      # `actions/download-artifact@v4`). GitHub Actions does not allow
+      # step-level `permissions:`, only workflow- or job-level
+      # (Codex R9 MEDIUM fix).
+      contents: read
+    # NOTE: No job-level `env:` block setting SESSIONFS_API_KEY. The
+    # secret is scoped per-step below so the review step (which runs
+    # PR-modifiable code) never sees it.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history so reviewers can diff
+          # Do not write GITHUB_TOKEN into `.git/config` (Codex R8 HIGH
+          # fix). `actions/checkout` defaults to `persist-credentials:
+          # true`, which leaves the job's GitHub token sitting in the
+          # workspace `extraheader` for later `git` commands to pick up.
+          # PR-modifiable `scripts/review.sh` would then be able to
+          # `git push` or grep the token out of `.git/config` even
+          # though SESSIONFS_API_KEY is withheld from its env.
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install SessionFS
+        run: pip install --upgrade "sessionfs>=0.10.2"
+
+      - name: Prepare workspace scratch dir
+        run: mkdir -p .sessionfs
+
+      - name: Create review ticket
+        id: ticket
+        # --output-id prints exactly the ticket id; everything else goes
+        # to stderr. The $() capture below is safe.
+        #
+        # PR title/body flow via env vars: `${{ … }}` is substituted by
+        # GitHub before the shell runs, so direct interpolation of
+        # untrusted user input is a script-injection vector. Quoting
+        # the env-var expansion (`"$PR_TITLE"`) defers expansion to
+        # the shell, which is safe.
+        env:
+          SESSIONFS_API_KEY: ${{ secrets.SESSIONFS_API_KEY }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          TICKET=$(sfs ticket create \
+            --title "PR #${PR_NUMBER}: ${PR_TITLE}" \
+            --description "$PR_BODY" \
+            --assigned-to sentinel \
+            --priority high \
+            --output-id)
+          echo "ticket=$TICKET" >> "$GITHUB_OUTPUT"
+
+      - name: Start AgentRun
+        id: run
+        # --output-id prints exactly the run id; compiled context goes
+        # to --context-file so it doesn't pollute the captured stdout.
+        # Head SHA / repo / run id are GitHub-controlled metadata that
+        # cannot contain shell syntax, so `${{ … }}` interpolation is
+        # safe here.
+        env:
+          SESSIONFS_API_KEY: ${{ secrets.SESSIONFS_API_KEY }}
+        run: |
+          RUN=$(sfs agent run sentinel \
+            --ticket "${{ steps.ticket.outputs.ticket }}" \
+            --trigger-source ci \
+            --trigger-ref "${{ github.event.pull_request.head.sha }}" \
+            --ci-provider github \
+            --ci-run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --fail-on high \
+            --tool generic \
+            --context-file .sessionfs/context.md \
+            --output-id)
+          echo "run=$RUN" >> "$GITHUB_OUTPUT"
+
+      - name: Run review (your script)
+        id: review
+        # `continue-on-error: true` lets the workflow proceed to the
+        # complete step EVEN IF the review script crashes — so the run
+        # never gets stuck in `running` (KB Round 2 MEDIUM fix).
+        #
+        # NO SESSIONFS_API_KEY env here on purpose: this step runs
+        # `scripts/review.sh` from the PR checkout. A malicious PR can
+        # rewrite that script; withholding the SessionFS token from
+        # this step's environment blocks token-exfiltration via the
+        # PR-controlled code path (Codex R7 HIGH fix).
+        continue-on-error: true
+        run: |
+          ./scripts/review.sh \
+            --context .sessionfs/context.md \
+            --base ${{ github.event.pull_request.base.sha }} \
+            --head ${{ github.event.pull_request.head.sha }} \
+            --out .sessionfs/findings.json
+
+      - name: Complete AgentRun (branches in shell)
+        # Single `if: always()` complete step that branches on shell
+        # checks. This avoids the `hashFiles('/tmp/...')` trap from
+        # Round 2 (Codex Round 3 MEDIUM fix): hashFiles only evaluates
+        # workspace patterns, so a successful review writing to /tmp
+        # would silently fall through to the errored fallback.
+        #
+        # The success branch ALSO validates that findings.json is a
+        # well-formed JSON array via `jq -e 'type == "array"'` BEFORE
+        # calling `sfs agent complete --findings-file` (Codex Round 4
+        # MEDIUM fix). Without the pre-validation, malformed JSON would
+        # crash the CLI at parse time with exit 2 — before the API
+        # complete call succeeds — leaving the run stuck in `running`.
+        # Validation failures now route to the errored fallback below.
+        if: always() && steps.run.outputs.run != ''
+        env:
+          SESSIONFS_API_KEY: ${{ secrets.SESSIONFS_API_KEY }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set +e  # we want to inspect every branch, not abort early
+
+          # First decide which path to take. All three failure modes
+          # (review crashed, findings missing, findings malformed) route
+          # to the errored fallback so the run never gets stuck.
+          route="errored"
+          summary="Review script failed or produced no findings file. See CI logs."
+          if [ "${{ steps.review.outcome }}" = "success" ] && [ -s .sessionfs/findings.json ]; then
+            # Codex Round 6 MEDIUM fix — validate the FULL shape the
+            # API expects (list[dict[str, Any]]). Arrays like `[1]` or
+            # `["bad"]` pass `type == "array"` but the API rejects them
+            # with 422, which would crash the success-path complete
+            # call before the run reaches a terminal state. Route any
+            # such payload to the errored fallback explicitly.
+            if jq -e 'type == "array" and all(.[]; type == "object")' .sessionfs/findings.json >/dev/null 2>&1; then
+              route="success"
+            else
+              summary="Review script produced findings.json but its shape is not a list of objects."
+            fi
+          fi
+
+          if [ "$route" = "success" ]; then
+            # Compute the worst severity present in findings.
+            SEVERITY=$(jq -r '
+              map(.severity)
+              | (if any(. == "critical") then "critical"
+                 elif any(. == "high") then "high"
+                 elif any(. == "medium") then "medium"
+                 elif any(. == "low") then "low"
+                 else "none" end)
+            ' .sessionfs/findings.json)
+            sfs agent complete "${{ steps.run.outputs.run }}" \
+              --summary "Sentinel reviewed PR #${PR_NUMBER}." \
+              --severity "$SEVERITY" \
+              --findings-file .sessionfs/findings.json \
+              --enforce
+          else
+            # Review crashed, produced no findings, or wrote malformed
+            # JSON. The v0.10.2 server fix forces exit_code=1 for
+            # status='errored', so --enforce still fails CI with the
+            # right signal AND the run reaches a terminal state.
+            sfs agent complete "${{ steps.run.outputs.run }}" \
+              --status errored \
+              --severity none \
+              --summary "$summary" \
+              --enforce
+          fi
+
+      - name: Write step summary
+        # if: always() so the summary is written even on failure paths.
+        if: always() && steps.run.outputs.run != ''
+        env:
+          SESSIONFS_API_KEY: ${{ secrets.SESSIONFS_API_KEY }}
+        run: |
+          sfs agent status "${{ steps.run.outputs.run }}" --format markdown \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload AgentRun artifacts
+        if: always() && steps.run.outputs.run != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: sessionfs-agent-run
+          path: |
+            .sessionfs/context.md
+            .sessionfs/findings.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # OPTIONAL — separate trusted job that posts a sanitized PR comment.
+  # Uncomment and adapt if you want the persona findings surfaced as a
+  # PR comment. This pattern is the only safe way to do it on GitHub
+  # Actions (Codex R9 MEDIUM fix), because:
+  #   * step-level `permissions:` is not supported by GitHub Actions;
+  #   * giving the agent-review job `pull-requests: write` would put
+  #     that token in reach of PR-modifiable `scripts/review.sh`.
+  # Putting the write capability in a SEPARATE job that does NOT
+  # check out the PR — only downloads sanitized findings — keeps the
+  # write token away from any PR-controlled code.
+  # comment-on-pr:
+  #   needs: agent-review
+  #   if: always()
+  #   runs-on: ubuntu-latest
+  #   permissions:
+  #     pull-requests: write
+  #     contents: read
+  #   steps:
+  #     # Deliberately NO actions/checkout step. We do not run any
+  #     # PR-controlled code in this job.
+  #     - uses: actions/download-artifact@v4
+  #       with:
+  #         name: sessionfs-agent-run
+  #         path: artifacts
+  #     - name: Post sanitized findings comment
+  #       env:
+  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  #         PR_NUMBER: ${{ github.event.pull_request.number }}
+  #       run: |
+  #         # Treat findings.json as untrusted data: validate shape
+  #         # before formatting (same `jq -e 'type == "array" and
+  #         # all(.[]; type == "object")'` guard as the review job).
+  #         if ! jq -e 'type == "array" and all(.[]; type == "object")' \
+  #              artifacts/findings.json >/dev/null 2>&1; then
+  #           echo "findings.json malformed; not posting PR comment."
+  #           exit 0
+  #         fi
+  #         # Build the comment body from validated JSON, never from
+  #         # PR-author-controlled scripts. Use jq to escape values.
+  #         BODY=$(jq -r '
+  #           "## SessionFS Agent Review\n\n" +
+  #           (map("- **\(.severity // "none")**: \(.title // "(no title)")")
+  #            | join("\n"))
+  #         ' artifacts/findings.json)
+  #         gh pr comment "$PR_NUMBER" --body "$BODY"

@@ -416,24 +416,17 @@ def checkpoint(
     name: str = typer.Option(..., help="Checkpoint name."),
 ) -> None:
     """Create a named checkpoint of a session's current state."""
+    from sessionfs.session_ops import SessionOpError, create_checkpoint
+
     store = open_store()
     try:
         full_id = resolve_session_id(store, session_id)
-        session_dir = get_session_dir_or_exit(store, full_id)
-
-        checkpoints_dir = session_dir / "checkpoints" / name
-        if checkpoints_dir.exists():
-            err_console.print(f"[red]Checkpoint '{name}' already exists.[/red]")
-            raise SystemExit(1)
-
-        checkpoints_dir.mkdir(parents=True)
-
-        # Copy manifest and messages
-        shutil.copy2(session_dir / "manifest.json", checkpoints_dir / "manifest.json")
-        messages_path = session_dir / "messages.jsonl"
-        if messages_path.exists():
-            shutil.copy2(messages_path, checkpoints_dir / "messages.jsonl")
-
+        get_session_dir_or_exit(store, full_id)
+        try:
+            create_checkpoint(store, full_id, name)
+        except SessionOpError as exc:
+            err_console.print(f"[red]{exc}[/red]")
+            raise SystemExit(1) from exc
         console.print(f"[green]Checkpoint '{name}' created for session {full_id[:12]}.[/green]")
     finally:
         store.close()
@@ -447,56 +440,20 @@ def fork(
     ),
 ) -> None:
     """Fork a session into a new independent session."""
+    from sessionfs.session_ops import SessionOpError, fork_session
+
     store = open_store()
     try:
         full_id = resolve_session_id(store, session_id)
-        session_dir = get_session_dir_or_exit(store, full_id)
-
-        # Determine source directory
-        if from_checkpoint:
-            source_dir = session_dir / "checkpoints" / from_checkpoint
-            if not source_dir.exists():
-                err_console.print(
-                    f"[red]Checkpoint '{from_checkpoint}' not found.[/red]"
-                )
-                raise SystemExit(1)
-        else:
-            source_dir = session_dir
-
-        # Create new session
-        from sessionfs.session_id import generate_session_id
-        new_id = generate_session_id()
-        new_dir = store.allocate_session_dir(new_id)
-
-        # Copy messages
-        src_messages = source_dir / "messages.jsonl"
-        if src_messages.exists():
-            shutil.copy2(src_messages, new_dir / "messages.jsonl")
-
-        # Read and modify manifest
-        src_manifest_path = source_dir / "manifest.json"
-        if src_manifest_path.exists():
-            manifest = json.loads(src_manifest_path.read_text())
-        else:
-            manifest = json.loads((session_dir / "manifest.json").read_text())
-
-        manifest["session_id"] = new_id
-        manifest["title"] = name
-        manifest["parent_session_id"] = full_id
-        if from_checkpoint:
-            manifest["forked_from_checkpoint"] = from_checkpoint
-
-        (new_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
-
-        # Copy workspace and tools if they exist
-        for fname in ("workspace.json", "tools.json"):
-            src = session_dir / fname
-            if src.exists():
-                shutil.copy2(src, new_dir / fname)
-
-        # Index the new session
-        store.upsert_session_metadata(new_id, manifest, str(new_dir))
-
+        get_session_dir_or_exit(store, full_id)
+        try:
+            result = fork_session(
+                store, full_id, name, from_checkpoint=from_checkpoint
+            )
+        except SessionOpError as exc:
+            err_console.print(f"[red]{exc}[/red]")
+            raise SystemExit(1) from exc
+        new_id = result["session_id"]
         console.print(f"[green]Forked session created: {new_id[:12]}[/green]")
         console.print(f"  Title: {name}")
         console.print(f"  Parent: {full_id[:12]}")
