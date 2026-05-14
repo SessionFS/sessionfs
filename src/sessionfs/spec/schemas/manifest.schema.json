@@ -86,6 +86,29 @@
       "description": "Extensible key-value pairs for source-specific data.",
       "additionalProperties": true,
       "default": {}
+    },
+    "persona_name": {
+      "type": ["string", "null"],
+      "description": "v0.10.1 — agent persona under which this session was captured. Written by watchers/active_ticket_annot.py when the local provenance bundle is present. Truncated to 50 chars server-side to match the sessions.persona_name column.",
+      "maxLength": 50,
+      "default": null
+    },
+    "ticket_id": {
+      "type": ["string", "null"],
+      "description": "v0.10.1 — agent ticket under which this session was captured. Written by watchers/active_ticket_annot.py when the local provenance bundle is present. Truncated to 64 chars server-side to match the sessions.ticket_id column.",
+      "maxLength": 64,
+      "default": null
+    },
+    "instruction_provenance": {
+      "type": "object",
+      "description": "Rules-portability provenance (migration 028) — rules source, version, hash, and instruction-artifact discovery results. Written by watchers/provenance.py at capture time.",
+      "additionalProperties": true,
+      "default": {}
+    },
+    "_resume_parent_id": {
+      "type": ["string", "null"],
+      "description": "Internal marker carried by sfs resume for parent-session lineage. Not part of the public spec.",
+      "default": null
     }
   },
   "$defs": {

@@ -77,6 +77,13 @@ export default defineConfig({
           ],
         },
         {
+          label: 'Integrations',
+          items: [
+            { label: 'Cloud Agents (Bedrock, Vertex)', slug: 'integrations/cloud-agents' },
+            { label: 'CI Integration (Agent Runs)', slug: 'integrations/ci-integration' },
+          ],
+        },
+        {
           label: 'Deployment',
           items: [
             { label: 'Self-Hosted (Helm)', slug: 'self-hosted' },

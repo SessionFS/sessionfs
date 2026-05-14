@@ -189,6 +189,11 @@ def create_ticket(
     criteria: list[str] = typer.Option([], "--criteria", help="Acceptance criterion (repeatable)"),
     file_ref: list[str] = typer.Option([], "--file", "-f", help="File reference (repeatable)"),
     depends_on: list[str] = typer.Option([], "--depends-on", help="Upstream ticket id (repeatable)"),
+    output_id: bool = typer.Option(
+        False, "--output-id",
+        help="Print ONLY the new ticket id to stdout (no decorations). "
+             "CI-safe — use `$(sfs ticket create ... --output-id)` to capture.",
+    ),
 ) -> None:
     """Create a new ticket. Defaults to source='human' (lands as 'open')."""
     api_url, api_key, project_id = _resolve_project()
@@ -211,7 +216,14 @@ def create_ticket(
     if s >= 400 or not isinstance(body, dict):
         err_console.print(f"[red]API error ({s}): {body}[/red]")
         raise typer.Exit(1)
-    console.print(f"[green]Created ticket {body['id']}[/green] — {body['title']}")
+    if output_id:
+        # Machine-safe: stdout = ticket id, nothing else. Confirmation
+        # goes to stderr so `$(sfs ticket create ... --output-id)` is
+        # safe to capture.
+        print(body["id"])
+        err_console.print(f"[dim]Created ticket {body['id']} — {body['title']}[/dim]")
+    else:
+        console.print(f"[green]Created ticket {body['id']}[/green] — {body['title']}")
 
 
 @ticket_app.command("start")

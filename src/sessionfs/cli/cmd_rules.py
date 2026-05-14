@@ -164,10 +164,31 @@ def _normalize_remote(url: str) -> str:
 
 
 def _get_api_config() -> tuple[str, str]:
+    """Return (api_url, api_key) for cloud requests.
+
+    Resolution order (highest priority first):
+    1. `SESSIONFS_API_KEY` / `SESSIONFS_API_URL` environment variables —
+       so a fresh CI runner with just those secrets can authenticate
+       without running `sfs auth login` first. Documented in the
+       CI integration examples.
+    2. The `~/.sessionfs/config.toml` sync block populated by
+       `sfs auth login` — for local interactive use.
+    """
+    import os
+
+    env_key = os.environ.get("SESSIONFS_API_KEY")
+    env_url = os.environ.get("SESSIONFS_API_URL")
+    if env_key:
+        return (env_url or "https://api.sessionfs.dev").rstrip("/"), env_key
+
     from sessionfs.cli.cmd_cloud import _load_sync_config
     cfg = _load_sync_config()
     if not cfg["api_key"]:
-        err_console.print("[red]Not authenticated. Run 'sfs auth login' first.[/red]")
+        err_console.print(
+            "[red]Not authenticated.[/red] Run [bold]sfs auth login[/bold] "
+            "first, or set [bold]SESSIONFS_API_KEY[/bold] (and optionally "
+            "[bold]SESSIONFS_API_URL[/bold]) for CI/non-interactive use."
+        )
         raise typer.Exit(1)
     return cfg["api_url"], cfg["api_key"]
 

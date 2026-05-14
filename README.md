@@ -215,7 +215,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
-**v0.10.1 — Public Beta.** 1626 backend tests + 165 dashboard tests passing. 37 database migrations.
+**v0.10.2 — Public Beta.** 1686 backend tests + 165 dashboard tests passing. 38 database migrations. AgentRun + CI integration on top of the v0.10.1 personas + tickets layer.
 
 ### Session capture, resume, and search
 

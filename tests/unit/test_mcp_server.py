@@ -121,13 +121,16 @@ class TestFindRelated:
 class TestToolRegistryV0996:
     """Tier A read tools (v0.9.9.6) + dismiss_knowledge_entry (v0.9.9.7)
     + v0.10.1 Phase 4 persona/ticket tools (8) + Phase 8 agent workflow
-    tools (6: create_persona, assign_persona, assume_persona,
-    forget_persona, resolve_ticket, escalate_ticket). Total: 36."""
+    tools (6) + v0.10.2 AgentRun tools (3: create_agent_run,
+    complete_agent_run, list_agent_runs) + v0.10.2 ticket-approval +
+    session-ops tools (4: approve_ticket, checkpoint_session,
+    list_checkpoints, fork_session). Total: 43."""
 
-    def test_tool_count_is_36(self):
+    def test_tool_count_is_43(self):
         from sessionfs.mcp.server import _TOOLS
-        assert len(_TOOLS) == 36, (
-            f"Expected 36 MCP tools after v0.10.1 Phase 8, got {len(_TOOLS)}"
+        assert len(_TOOLS) == 43, (
+            f"Expected 43 MCP tools after v0.10.2 ticket-approval + "
+            f"session-ops, got {len(_TOOLS)}"
         )
 
     def test_new_tools_registered(self):
@@ -145,6 +148,11 @@ class TestToolRegistryV0996:
             "compile_knowledge_base",
             # v0.9.9.7 audited write
             "dismiss_knowledge_entry",
+            # v0.10.2 ticket approval + session ops
+            "approve_ticket",
+            "checkpoint_session",
+            "list_checkpoints",
+            "fork_session",
         ):
             assert new_tool in names, f"Missing MCP tool: {new_tool}"
 
@@ -782,3 +790,192 @@ class TestNewToolDispatch:
         assert "complete_ticket" in result.get("error", "")
         # Bundle survives.
         assert bundle.exists()
+
+
+# ---------------------------------------------------------------------------
+# v0.10.2 — ticket approval + local session ops
+# ---------------------------------------------------------------------------
+
+
+class TestApproveTicketDispatch:
+    """approve_ticket must POST to the /approve endpoint and surface
+    409 (wrong-state) as a readable error."""
+
+    @pytest.mark.asyncio
+    async def test_dispatch_approve_ticket_posts_to_approve_endpoint(self, monkeypatch):
+        captured = {}
+
+        async def _fake_resolve(_git_remote: str = ""):
+            return ("https://api.test", "test-key", "proj_test")
+        monkeypatch.setattr(mcp_server, "_resolve_project_id", _fake_resolve)
+
+        import httpx
+
+        class _Resp:
+            def __init__(self, code, body):
+                self.status_code = code
+                self._body = body
+                self.text = json.dumps(body)
+            def json(self):
+                return self._body
+
+        class _Client:
+            def __init__(self, *a, **kw): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def post(self, url, *, headers=None, json=None):
+                captured["url"] = url
+                captured["method"] = "POST"
+                captured["headers"] = headers or {}
+                return _Resp(200, {"id": "tk_x", "status": "open"})
+
+        monkeypatch.setattr(httpx, "AsyncClient", _Client)
+
+        result = await mcp_server._handle_approve_ticket({"ticket_id": "tk_x"})
+        assert captured["url"] == "https://api.test/api/v1/projects/proj_test/tickets/tk_x/approve"
+        assert captured["method"] == "POST"
+        assert result["status"] == "open"
+
+    @pytest.mark.asyncio
+    async def test_approve_ticket_requires_ticket_id(self):
+        result = await mcp_server._handle_approve_ticket({})
+        assert "error" in result and "ticket_id" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_approve_ticket_409_surfaces_status_conflict(self, monkeypatch):
+        async def _fake_resolve(_git_remote: str = ""):
+            return ("https://api.test", "test-key", "proj_test")
+        monkeypatch.setattr(mcp_server, "_resolve_project_id", _fake_resolve)
+
+        import httpx
+
+        class _Resp:
+            def __init__(self, code, body):
+                self.status_code = code
+                self._body = body
+                self.text = json.dumps(body)
+            def json(self): return self._body
+
+        class _Client:
+            def __init__(self, *a, **kw): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def post(self, url, *, headers=None, json=None):
+                return _Resp(409, {"detail": "Cannot move from in_progress to open"})
+
+        monkeypatch.setattr(httpx, "AsyncClient", _Client)
+        result = await mcp_server._handle_approve_ticket({"ticket_id": "tk_x"})
+        assert "error" in result and "suggested" in result["error"]
+
+
+class TestCheckpointAndForkHandlers:
+    """Local session-op MCP handlers operate on ~/.sessionfs via the
+    shared `session_ops` helpers. Uses the `mcp_env` fixture which
+    spins up a temp store with two real sessions."""
+
+    def test_checkpoint_creates_named_snapshot(self, mcp_env):
+        result = mcp_server._handle_checkpoint_session(
+            {"session_id": "ses_auth1234abcdef", "name": "before-fix"}
+        )
+        assert result["name"] == "before-fix"
+        assert result["session_id"] == "ses_auth1234abcdef"
+        assert Path(result["path"]).is_dir()
+        # Manifest copied; messages copied
+        assert (Path(result["path"]) / "manifest.json").exists()
+        assert (Path(result["path"]) / "messages.jsonl").exists()
+        assert result["has_messages"] is True
+
+    def test_checkpoint_rejects_invalid_name(self, mcp_env):
+        result = mcp_server._handle_checkpoint_session(
+            {"session_id": "ses_auth1234abcdef", "name": "../escape"}
+        )
+        assert "error" in result and "Checkpoint name" in result["error"]
+
+    def test_checkpoint_rejects_duplicate_name(self, mcp_env):
+        mcp_server._handle_checkpoint_session(
+            {"session_id": "ses_auth1234abcdef", "name": "v1"}
+        )
+        result = mcp_server._handle_checkpoint_session(
+            {"session_id": "ses_auth1234abcdef", "name": "v1"}
+        )
+        assert "error" in result and "already exists" in result["error"]
+
+    def test_checkpoint_unknown_session(self, mcp_env):
+        result = mcp_server._handle_checkpoint_session(
+            {"session_id": "ses_doesnotexist000", "name": "v1"}
+        )
+        assert "error" in result and "not found" in result["error"]
+
+    def test_list_checkpoints_returns_recent_snapshots(self, mcp_env):
+        mcp_server._handle_checkpoint_session(
+            {"session_id": "ses_auth1234abcdef", "name": "alpha"}
+        )
+        mcp_server._handle_checkpoint_session(
+            {"session_id": "ses_auth1234abcdef", "name": "beta"}
+        )
+        result = mcp_server._handle_list_checkpoints(
+            {"session_id": "ses_auth1234abcdef"}
+        )
+        assert result["session_id"] == "ses_auth1234abcdef"
+        names = [cp["name"] for cp in result["checkpoints"]]
+        assert names == ["alpha", "beta"]  # ascending by mtime
+        # message_count reflects the seeded jsonl with 2 messages
+        assert all(cp["message_count"] == 2 for cp in result["checkpoints"])
+
+    def test_list_checkpoints_empty(self, mcp_env):
+        result = mcp_server._handle_list_checkpoints(
+            {"session_id": "ses_dbmigrate1234ab"}
+        )
+        assert result["checkpoints"] == []
+
+    def test_fork_session_creates_new_session(self, mcp_env):
+        result = mcp_server._handle_fork_session(
+            {"session_id": "ses_auth1234abcdef", "name": "Auth retry path"}
+        )
+        new_id = result["session_id"]
+        assert new_id != "ses_auth1234abcdef"
+        assert result["parent_session_id"] == "ses_auth1234abcdef"
+        assert result["forked_from_checkpoint"] is None
+        # Messages were copied
+        assert (Path(result["path"]) / "messages.jsonl").exists()
+        # Manifest reflects new id + title + parent linkage
+        manifest = json.loads((Path(result["path"]) / "manifest.json").read_text())
+        assert manifest["session_id"] == new_id
+        assert manifest["title"] == "Auth retry path"
+        assert manifest["parent_session_id"] == "ses_auth1234abcdef"
+        # Indexed
+        store, _ = mcp_env
+        assert store.get_session_metadata(new_id) is not None
+
+    def test_fork_from_checkpoint(self, mcp_env):
+        mcp_server._handle_checkpoint_session(
+            {"session_id": "ses_auth1234abcdef", "name": "snapshot1"}
+        )
+        result = mcp_server._handle_fork_session({
+            "session_id": "ses_auth1234abcdef",
+            "name": "After snapshot1",
+            "from_checkpoint": "snapshot1",
+        })
+        assert result["forked_from_checkpoint"] == "snapshot1"
+        manifest = json.loads((Path(result["path"]) / "manifest.json").read_text())
+        assert manifest["forked_from_checkpoint"] == "snapshot1"
+
+    def test_fork_rejects_missing_checkpoint(self, mcp_env):
+        result = mcp_server._handle_fork_session({
+            "session_id": "ses_auth1234abcdef",
+            "name": "x",
+            "from_checkpoint": "nope",
+        })
+        assert "error" in result and "not found" in result["error"]
+
+    def test_fork_requires_name(self, mcp_env):
+        result = mcp_server._handle_fork_session(
+            {"session_id": "ses_auth1234abcdef"}
+        )
+        assert "error" in result and "name" in result["error"]
+
+    def test_fork_accepts_session_id_prefix(self, mcp_env):
+        result = mcp_server._handle_fork_session(
+            {"session_id": "ses_auth1234", "name": "via prefix"}
+        )
+        assert result["parent_session_id"] == "ses_auth1234abcdef"

@@ -1,0 +1,542 @@
+openapi: 3.0.1
+info:
+  title: SessionFS Cloud Agent Control Plane
+  version: "1.0"
+  description: |
+    Action group spec for Amazon Bedrock agents to participate in SessionFS
+    personas, tickets, knowledge, and rules. This is a CONTROL-PLANE
+    integration — Bedrock agents call SessionFS HTTP APIs to coordinate
+    work; transcript capture as .sfs sessions is NOT in scope.
+
+    All operations require Bearer auth via `Authorization: Bearer <api_key>`
+    on the underlying HTTP request. The Lambda handler is responsible for
+    reading the token from environment/secrets and forwarding it.
+
+    All paths are prefixed with the SessionFS base URL
+    (e.g. https://api.sessionfs.dev). The Bedrock action group runtime
+    passes `{project_id}` and `{ticket_id}` as path parameters.
+
+    Tier gating:
+    - Persona operations require Pro+ (`agent_personas`).
+    - Ticket operations require Team+ (`agent_tickets`).
+    - Knowledge + rules + context operations are available on all paid
+      tiers; rate limits are tier-scoped.
+servers:
+  - url: https://api.sessionfs.dev
+    description: SessionFS production API
+paths:
+  /api/v1/projects/{project_id}/personas:
+    get:
+      operationId: listPersonas
+      summary: List active personas for a project
+      description: |
+        Returns the active agent personas (atlas, prism, scribe, ...) defined
+        in this project. Use to decide which persona to assign a new ticket
+        to, or to load a persona's content before doing ad-hoc work.
+      parameters:
+        - in: path
+          name: project_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Active personas
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Persona"
+  /api/v1/projects/{project_id}/personas/{name}:
+    get:
+      operationId: getPersona
+      summary: Get full persona content
+      description: |
+        Returns the full markdown content of a persona. The agent should
+        consume this as its system prompt / role context before starting
+        work as that persona.
+      parameters:
+        - in: path
+          name: project_id
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Persona detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Persona"
+  /api/v1/projects/{project_id}/tickets:
+    get:
+      operationId: listTickets
+      summary: List tickets in a project
+      parameters:
+        - in: path
+          name: project_id
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: assigned_to
+          schema:
+            type: string
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [suggested, open, in_progress, blocked, review, done, cancelled]
+        - in: query
+          name: priority
+          schema:
+            type: string
+            enum: [critical, high, medium, low]
+      responses:
+        "200":
+          description: Tickets
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Ticket"
+    post:
+      operationId: createTicket
+      summary: Create a new ticket
+      description: |
+        Cloud agents typically create tickets with source="agent". The
+        server enforces quality gates: at least one acceptance criterion
+        and a 20+ char description; max 3 agent-created tickets per
+        session.
+      parameters:
+        - in: path
+          name: project_id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TicketCreate"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Ticket"
+  /api/v1/projects/{project_id}/tickets/{ticket_id}/start:
+    post:
+      operationId: startTicket
+      summary: Start a ticket (open → in_progress)
+      description: |
+        Atomic state transition. Returns the compiled persona + ticket
+        context as markdown sized to the target tool's token budget.
+
+        Pass `tool=bedrock` to request a budget similar to claude-code
+        (16k tokens). Pass `force=true` to recover a stuck blocked
+        ticket. The compiled_context is what the Bedrock agent should
+        feed back into its model as the role+task prompt.
+      parameters:
+        - in: path
+          name: project_id
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: ticket_id
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: tool
+          schema:
+            type: string
+            description: |
+              Sizing hint for compiled_context. Recognized values include
+              `claude-code` / `bedrock` (16k), `codex` / `gemini` /
+              `vertex` / `copilot` / `amp` / `generic` (8k),
+              `cursor` / `windsurf` / `cline` / `roo-code` (4k).
+              Unknown values fall back to `generic`.
+        - in: query
+          name: force
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: Compiled persona+ticket context
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StartTicketResponse"
+  /api/v1/projects/{project_id}/tickets/{ticket_id}/complete:
+    post:
+      operationId: completeTicket
+      summary: Complete a ticket (in_progress → review)
+      parameters:
+        - in: path
+          name: project_id
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: ticket_id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CompleteTicketRequest"
+      responses:
+        "200":
+          description: Completed ticket
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Ticket"
+  /api/v1/projects/{project_id}/entries/add:
+    post:
+      operationId: addKnowledge
+      summary: Add a knowledge entry
+      description: |
+        Persists a single knowledge entry to the project KB. Cloud
+        agents should use this to record decisions, bug findings,
+        patterns, and conventions during work.
+
+        Server-side quality gates: minimum 20 chars content; entries
+        default to `note` claim_class and auto-promote to `claim` when
+        confidence >= 0.8, content >= 50 chars, and passes dedup.
+      parameters:
+        - in: path
+          name: project_id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddKnowledgeRequest"
+      responses:
+        "201":
+          description: Created entry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KnowledgeEntry"
+  /api/v1/projects/{project_id}/entries:
+    get:
+      operationId: searchKnowledge
+      summary: Search knowledge entries
+      description: |
+        Case-insensitive substring search across entry content with
+        optional type / claim_class / freshness filters. Use
+        `cursor` for stable pagination during long-running agent runs.
+      parameters:
+        - in: path
+          name: project_id
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: search
+          schema:
+            type: string
+        - in: query
+          name: type
+          schema:
+            type: string
+            enum: [decision, pattern, discovery, convention, bug, dependency]
+        - in: query
+          name: claim_class
+          schema:
+            type: string
+            enum: [evidence, claim, note]
+        - in: query
+          name: freshness_class
+          schema:
+            type: string
+            enum: [current, aging, stale, superseded]
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+      responses:
+        "200":
+          description: Matching entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/KnowledgeEntry"
+  /api/v1/projects/{project_id}/rules:
+    get:
+      operationId: getRules
+      summary: Get canonical project rules
+      description: |
+        Returns the canonical rules document for the project plus the
+        compilation config (which tools are enabled, knowledge budget,
+        etc.). Cloud agents should read this before drafting code to
+        respect project-wide rules (no Redis, append-only sessions,
+        etc.).
+      parameters:
+        - in: path
+          name: project_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Rules + config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RulesResponse"
+  /api/v1/projects/{git_remote_normalized}:
+    get:
+      operationId: getProjectContext
+      summary: Resolve project + return compiled context
+      description: |
+        Project lookup is git-remote based for cross-machine identity.
+        Returns the project record including the compiled
+        `context_document` (full wiki + concepts + sections). Cloud
+        agents that don't have a project_id can call this with a
+        normalized git remote string (e.g. `github.com/acme/repo`).
+      parameters:
+        - in: path
+          name: git_remote_normalized
+          required: true
+          schema:
+            type: string
+            description: |
+              The normalized git remote (host/owner/repo, no .git
+              suffix). Cloud agents should normalize on their side
+              before calling.
+      responses:
+        "200":
+          description: Project record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+components:
+  schemas:
+    Persona:
+      type: object
+      required: [id, name, role]
+      properties:
+        id:
+          type: string
+        project_id:
+          type: string
+        name:
+          type: string
+          pattern: ^[A-Za-z0-9_-]{1,50}$
+        role:
+          type: string
+        content:
+          type: string
+        specializations:
+          type: array
+          items:
+            type: string
+        is_active:
+          type: boolean
+    Ticket:
+      type: object
+      required: [id, title, status, priority]
+      properties:
+        id:
+          type: string
+        project_id:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        priority:
+          type: string
+          enum: [critical, high, medium, low]
+        assigned_to:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [suggested, open, in_progress, blocked, review, done, cancelled]
+        acceptance_criteria:
+          type: array
+          items:
+            type: string
+        file_refs:
+          type: array
+          items:
+            type: string
+        depends_on:
+          type: array
+          items:
+            type: string
+        completion_notes:
+          type: string
+          nullable: true
+    TicketCreate:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+          maxLength: 200
+        description:
+          type: string
+        priority:
+          type: string
+          enum: [critical, high, medium, low]
+          default: medium
+        assigned_to:
+          type: string
+        acceptance_criteria:
+          type: array
+          items:
+            type: string
+        file_refs:
+          type: array
+          items:
+            type: string
+        depends_on:
+          type: array
+          items:
+            type: string
+        source:
+          type: string
+          enum: [human, agent]
+          default: human
+        created_by_session_id:
+          type: string
+        created_by_persona:
+          type: string
+    StartTicketResponse:
+      type: object
+      required: [ticket, compiled_context]
+      properties:
+        ticket:
+          $ref: "#/components/schemas/Ticket"
+        compiled_context:
+          type: string
+          description: |
+            Markdown — persona + ticket + criteria + file refs + KB
+            claims + completed-dep notes + recent comments, sized to
+            the requested tool's token budget.
+    CompleteTicketRequest:
+      type: object
+      required: [notes]
+      properties:
+        notes:
+          type: string
+        changed_files:
+          type: array
+          items:
+            type: string
+        knowledge_entry_ids:
+          type: array
+          items:
+            type: string
+        resolver_session_id:
+          type: string
+    AddKnowledgeRequest:
+      type: object
+      required: [content, entry_type]
+      properties:
+        content:
+          type: string
+          minLength: 20
+        entry_type:
+          type: string
+          enum: [decision, pattern, discovery, convention, bug, dependency]
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 1.0
+        session_id:
+          type: string
+        source_context:
+          type: string
+        entity_ref:
+          type: string
+        entity_type:
+          type: string
+        force_claim:
+          type: boolean
+          default: false
+    KnowledgeEntry:
+      type: object
+      required: [id, entry_type, content]
+      properties:
+        id:
+          type: integer
+        project_id:
+          type: string
+        session_id:
+          type: string
+        entry_type:
+          type: string
+        content:
+          type: string
+        confidence:
+          type: number
+        claim_class:
+          type: string
+        freshness_class:
+          type: string
+        dismissed:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+    RulesResponse:
+      type: object
+      properties:
+        content:
+          type: string
+        version:
+          type: integer
+        compile_config:
+          type: object
+    Project:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+        git_remote_normalized:
+          type: string
+        context_document:
+          type: string
+        owner_id:
+          type: string
+        org_id:
+          type: string
+          nullable: true
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: SessionFS API key
+security:
+  - BearerAuth: []
