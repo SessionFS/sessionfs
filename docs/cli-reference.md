@@ -1927,6 +1927,14 @@ sfs ticket comment tk_abc123 --content "Spotted a related bug in the cache layer
 sfs ticket comment tk_abc123 --content "Speaking as atlas" --as atlas
 ```
 
+### `sfs ticket comments`
+
+List all comments on a ticket, chronological. Renders each comment in a titled panel (author + created_at) with Markdown body content.
+
+```bash
+sfs ticket comments tk_abc123
+```
+
 ### `sfs ticket status`
 
 Show which ticket the local provenance bundle currently points at.
