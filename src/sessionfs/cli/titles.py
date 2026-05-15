@@ -80,6 +80,7 @@ _TOOL_ABBREVIATIONS: dict[str, str] = {
     "gemini-cli": "GEM",
     "cline": "CLN",
     "roo-code": "ROO",
+    "kilo-code": "KLO",
     "amp": "AMP",
     "aider": "AID",
     "windsurf": "WS",

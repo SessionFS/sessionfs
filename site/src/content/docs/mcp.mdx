@@ -21,6 +21,7 @@ sfs mcp install --for copilot       # ~/.copilot/config.json
 sfs mcp install --for amp           # ~/.amp/config.json
 sfs mcp install --for cline         # VS Code globalStorage
 sfs mcp install --for roo-code      # VS Code globalStorage
+sfs mcp install --for kilo-code     # VS Code globalStorage
 ```
 
 To skip the instruction injection (server registration only):
@@ -42,7 +43,7 @@ Search past AI coding sessions by keyword, error message, or file path.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `query` | string | yes | Keywords, error messages, or file paths to search for |
-| `tool_filter` | string | no | Filter by source tool (`claude-code`, `codex`, `gemini`, `cursor`, `copilot`, `amp`, `cline`, `roo-code`) |
+| `tool_filter` | string | no | Filter by source tool (`claude-code`, `codex`, `gemini`, `cursor`, `copilot`, `amp`, `cline`, `roo-code`, `kilo-code`) |
 | `max_results` | number | no | Maximum results to return (default: 5) |
 
 #### `get_session_context`
@@ -348,7 +349,7 @@ Atomic claim (`UPDATE ... WHERE status='open' OR 'blocked'` with rowcount guard)
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `ticket_id` | string | yes | Ticket ID |
-| `tool` | string | no | `claude-code` (16k), `codex`/`gemini`/`copilot`/`amp`/`generic` (8k), `cursor`/`windsurf`/`cline`/`roo-code` (4k) |
+| `tool` | string | no | `claude-code` (16k), `codex`/`gemini`/`copilot`/`amp`/`generic` (8k), `cursor`/`windsurf`/`cline`/`roo-code`/`kilo-code` (4k) |
 | `force` | boolean | no | Recover a blocked ticket; increments the lease epoch |
 
 #### `complete_ticket`

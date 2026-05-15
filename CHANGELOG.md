@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.6] - 2026-05-15
+
+### Added
+- **Kilo Code watcher (9th supported tool).** New capture-only watcher for the Kilo Code VS Code extension (`kilocode.Kilo-Code` on the marketplace, on-disk path `globalStorage/kilocode.kilo-code/`). Kilo Code is a fork of Roo Code (which is a fork of Cline) and uses the same per-task UUID storage layout with `api_conversation_history.json` and `cline_messages.json` files, so capture reuses the already-reviewed Cline parsing path. New `KiloCodeWatcher` is a thin subclass of `ClineWatcher` setting `tool="kilo-code"`. Wired into `sfs daemon`, `sfs init` auto-detect, `sfs watcher enable/disable/list`, `sfs mcp install/uninstall --for kilo-code`, `sfs recapture`, and the `sfs resume --in kilo-code` rejection path (capture-only contract matches Cline/Roo).
+
+### Tests
+- 1720 → 1727 backend (+7: parsing, UUID task ID, history_item metadata, fallback discovery, manifest tool name, watcher config default, platform-aware default storage path).
+
+### Security
+- Shield-SR independent pre-release review CLEAN — 0 CRITICAL / 0 HIGH / 0 MEDIUM. No new attack surface (storage_dir is admin-controlled TOML, same trust boundary as Cline/Roo; tool name added to closed allowlist enums on every routing site).
+
 ## [0.10.5] - 2026-05-15
 
 ### Added

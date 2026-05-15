@@ -102,6 +102,13 @@ def _get_tool_definitions() -> list[ToolInfo]:
                 vscode_global / "rooveterinaryinc.roo-cline",
             ],
         ),
+        ToolInfo(
+            name="Kilo Code",
+            config_key="kilo_code",
+            detect_paths=[
+                vscode_global / "kilocode.kilo-code",
+            ],
+        ),
     ]
 
 
@@ -315,6 +322,7 @@ def init_cmd() -> None:
             "amp": "amp",
             "cline": "cline",
             "roo_code": "roo-code",
+            "kilo_code": "kilo-code",
         }
         for tool in detected:
             if tool.info.config_key in enabled_keys:

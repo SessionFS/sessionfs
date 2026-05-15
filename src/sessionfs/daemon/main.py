@@ -555,6 +555,15 @@ class Daemon:
             )
             self.watchers.append(roo_watcher)
 
+        if self.config.kilo_code.enabled:
+            from sessionfs.watchers.kilocode import KiloCodeWatcher
+            kilo_watcher = KiloCodeWatcher(
+                config=self.config.kilo_code,
+                store=self.store,
+                scan_interval=self.config.scan_interval_s,
+            )
+            self.watchers.append(kilo_watcher)
+
         if self.config.amp.enabled:
             from sessionfs.watchers.amp import AmpWatcher
             amp_watcher = AmpWatcher(

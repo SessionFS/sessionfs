@@ -23,12 +23,13 @@ These tools are captured by the daemon but do not support session injection (res
 | Amp | Yes | No | Cloud-first architecture -- local files are a sync cache |
 | Cline | Yes | No | VS Code extension state is too fragile for automated injection |
 | Roo Code | Yes | No | VS Code extension state is too fragile for automated injection |
+| Kilo Code | Yes | No | VS Code extension state is too fragile for automated injection |
 
 ### Why not just write the files?
 
 - **Cursor** stores sessions in a SQLite database (`state.vscdb`) that uses content-addressed hashing for integrity checks. Writing sessions directly would cause hash mismatches and corrupt the database.
 - **Amp** syncs sessions from its cloud service to local JSON files. These files are a read cache, not the source of truth. Writing to them would be overwritten on the next sync.
-- **Cline** and **Roo Code** store session state inside VS Code's `globalStorage` directory. This state is tightly coupled to the extension lifecycle -- modifying it while VS Code is running can cause data loss or extension crashes.
+- **Cline**, **Roo Code**, and **Kilo Code** store session state inside VS Code's `globalStorage` directory (Kilo Code is a fork of Roo Code, which is itself a Cline fork — same per-task UUID storage layout). This state is tightly coupled to the extension lifecycle -- modifying it while VS Code is running can cause data loss or extension crashes.
 
 ## What You Can Still Do With Capture-Only Sessions
 
@@ -55,7 +56,7 @@ The only thing you cannot do is inject the session back into the original captur
 | Copilot | `.github/copilot-instructions.md` |
 | Gemini | `GEMINI.md` |
 
-**Resume-time rules sync** (`sfs resume` with preflight) is wired only for the four bidirectional tools: claude-code, codex, copilot, gemini. Cursor resume is out of scope — it stays capture-only. Amp, Cline, and Roo Code do not have rules compilers yet (deferred to a future release).
+**Resume-time rules sync** (`sfs resume` with preflight) is wired only for the four bidirectional tools: claude-code, codex, copilot, gemini. Cursor resume is out of scope — it stays capture-only. Amp, Cline, Roo Code, and Kilo Code do not have rules compilers yet (deferred to a future release).
 
 ## Cross-Tool Resume Examples
 

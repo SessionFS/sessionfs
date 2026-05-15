@@ -58,6 +58,7 @@ TOOL_INSTRUCTION_FILES: dict[str, str | None] = {
     "amp": None,
     "cline": None,
     "roo-code": None,
+    "kilo-code": None,
 }
 
 
@@ -125,7 +126,7 @@ def serve() -> None:
 def install(
     tool: str = typer.Option(
         ..., "--for",
-        help="Tool to configure: claude-code, codex, gemini, cursor, copilot, amp, cline, roo-code",
+        help="Tool to configure: claude-code, codex, gemini, cursor, copilot, amp, cline, roo-code, kilo-code",
     ),
     skip_instructions: bool = typer.Option(
         False, "--skip-instructions",
@@ -164,9 +165,10 @@ def _install_mcp_for_tool(tool: str) -> None:
         "amp": _install_amp,
         "cline": _install_vscode_extension,
         "roo-code": _install_vscode_extension,
+        "kilo-code": _install_vscode_extension,
     }
 
-    if tool in ("cline", "roo-code"):
+    if tool in ("cline", "roo-code", "kilo-code"):
         _install_vscode_extension(mcp_config, tool)
     elif tool in installers:
         installers[tool](mcp_config)
@@ -180,7 +182,7 @@ def _install_mcp_for_tool(tool: str) -> None:
 def uninstall(
     tool: str = typer.Option(
         ..., "--for",
-        help="Tool to unconfigure: claude-code, codex, gemini, cursor, copilot, amp, cline, roo-code",
+        help="Tool to unconfigure: claude-code, codex, gemini, cursor, copilot, amp, cline, roo-code, kilo-code",
     ),
 ) -> None:
     """Remove SessionFS MCP server registration from an AI tool."""
@@ -193,11 +195,12 @@ def uninstall(
         "amp": _uninstall_amp,
         "cline": _uninstall_vscode_extension,
         "roo-code": _uninstall_vscode_extension,
+        "kilo-code": _uninstall_vscode_extension,
     }
 
     uninstall_ok = True
     try:
-        if tool in ("cline", "roo-code"):
+        if tool in ("cline", "roo-code", "kilo-code"):
             _uninstall_vscode_extension(tool)
         elif tool in uninstallers:
             uninstallers[tool]()
@@ -316,9 +319,10 @@ def _uninstall_vscode_extension(tool: str = "cline") -> None:
     ext_ids = {
         "cline": "saoudrizwan.claude-dev",
         "roo-code": "rooveterinaryinc.roo-cline",
+        "kilo-code": "kilocode.kilo-code",
     }
     ext_id = ext_ids.get(tool, ext_ids["cline"])
-    display = "Cline" if tool == "cline" else "Roo Code"
+    display = {"cline": "Cline", "roo-code": "Roo Code", "kilo-code": "Kilo Code"}.get(tool, "Cline")
 
     import platform
     system = platform.system()
@@ -541,13 +545,14 @@ def _install_amp(mcp_config: dict) -> None:
 
 
 def _install_vscode_extension(mcp_config: dict, tool: str = "cline") -> None:
-    """Add SessionFS to a VS Code extension's MCP config (Cline or Roo Code)."""
+    """Add SessionFS to a VS Code extension's MCP config (Cline, Roo Code, or Kilo Code)."""
     ext_ids = {
         "cline": "saoudrizwan.claude-dev",
         "roo-code": "rooveterinaryinc.roo-cline",
+        "kilo-code": "kilocode.kilo-code",
     }
     ext_id = ext_ids.get(tool, ext_ids["cline"])
-    display = "Cline" if tool == "cline" else "Roo Code"
+    display = {"cline": "Cline", "roo-code": "Roo Code", "kilo-code": "Kilo Code"}.get(tool, "Cline")
 
     # VS Code globalStorage path
     import platform

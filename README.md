@@ -22,6 +22,7 @@ Start a session in Claude Code, resume it in Codex. Push a session to the cloud,
 | Amp | Yes | Capture-only |
 | Cline | Yes | Capture-only |
 | Roo Code | Yes | Capture-only |
+| Kilo Code | Yes | Capture-only |
 
 ## Quick Start
 
@@ -29,7 +30,7 @@ Start a session in Claude Code, resume it in Codex. Push a session to the cloud,
 # 1. Install
 pip install sessionfs
 
-# 2. Start the daemon — it watches all 8 tools automatically
+# 2. Start the daemon — it watches all 9 tools automatically
 sfs daemon start
 
 # 3. Use your AI tools normally — sessions are captured in the background
@@ -215,7 +216,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
-**v0.10.5 — Public Beta.** 1720 backend tests + 186 dashboard tests passing. 39 database migrations. Compile source manifest SoD fields (`created_by_persona` + `compile_id`) + tier-aware archive unpack cap + `sfs ticket comments` CLI on top of the v0.10.4 retrieval-audit layer.
+**v0.10.6 — Public Beta.** 1727 backend tests + 186 dashboard tests passing. 39 database migrations. **9-tool capture** with the new Kilo Code watcher (capture-only, VS Code globalStorage `kilocode.kilo-code`) on top of the v0.10.5 SoD source manifest layer.
 
 ### Session capture, resume, and search
 
@@ -261,14 +262,14 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 ### MCP and dashboard
 
 - **MCP server** (local + remote) with 36 tools — sessions (search, context, recent, related, summary, audit, provenance), knowledge read (project context, context section, wiki page, search, list entries, get entry, health, ask), knowledge write (add_knowledge, update_wiki_page, list_wiki_pages, compile, dismiss_knowledge_entry), rules (get_rules, get_compiled_rules), **personas** (list_personas, get_persona, create_persona, assume_persona, forget_persona), and **tickets** (list_tickets, get_ticket, start_ticket, create_ticket, complete_ticket, resolve_ticket, assign_persona, escalate_ticket, add_ticket_comment)
-- **`sfs mcp install --for <tool>`** for all 8 tools (stale registration repair, malformed config handling)
+- **`sfs mcp install --for <tool>`** for all 9 tools (stale registration repair, malformed config handling)
 - **Web dashboard** with light/dark mode, resume-first layout, date-grouped sessions, lineage grouping, command palette (Cmd+K), mobile nav, accessibility (focus trapping, ARIA live regions), product identity
-- **`/help` page** — MCP-first guidance, 8-tool installer with live terminal + copy button, agent prompt examples, curated CLI quick-reference
+- **`/help` page** — MCP-first guidance, 9-tool installer with live terminal + copy button, agent prompt examples, curated CLI quick-reference
 
 ### Security, compliance, and billing
 
 - **DLP / Secret Scrubbing** — 14 PHI patterns + 22 secret patterns, BLOCK/REDACT/WARN modes, server-side scan of all archive files, `sfs dlp scan/policy`, dashboard settings tab
-- **`sfs init` wizard** with auto-detection of 8 tools and optional sync setup
+- **`sfs init` wizard** with auto-detection of 9 tools and optional sync setup
 - **`sfs security scan/fix`** for config permissions, API key exposure, dependency audit
 - **Security pipeline** — pip-audit, Trivy (rendered Helm chart), Bandit, Dependabot, SECURITY.md; CRITICAL/HIGH blocks the pipeline
 - **FSL licensing** with open-source core and enterprise extensions
