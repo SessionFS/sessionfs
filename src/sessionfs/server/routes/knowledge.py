@@ -1040,15 +1040,24 @@ async def get_context_section(
     # heading text after splitting, so we reverse-derive a Title-cased name.
     title = slug.replace("_", " ").strip().title()
     source_entries: list[dict] = []
-    latest_manifest = (
+    # Pull the latest compilation's id + manifest together so each entry
+    # can be decorated with the parent compile_id at response time. The
+    # compile_id is not persisted inside each manifest dict — the compile
+    # row's id and its source_manifest are written atomically, so the id
+    # is the source of truth, not a denormalised copy.
+    latest_compile = (
         await db.execute(
-            select(ContextCompilation.source_manifest)
+            select(
+                ContextCompilation.id,
+                ContextCompilation.source_manifest,
+            )
             .where(ContextCompilation.project_id == project_id)
             .order_by(ContextCompilation.compiled_at.desc())
             .limit(1)
         )
-    ).scalar_one_or_none()
-    if latest_manifest:
+    ).one_or_none()
+    if latest_compile:
+        compile_id, latest_manifest = latest_compile
         try:
             manifest = json.loads(latest_manifest)
         except (TypeError, ValueError):
@@ -1056,7 +1065,11 @@ async def get_context_section(
         if isinstance(manifest, dict):
             entries = manifest.get(slug, [])
             if isinstance(entries, list):
-                source_entries = [e for e in entries if isinstance(e, dict)]
+                source_entries = [
+                    {**e, "compile_id": compile_id}
+                    for e in entries
+                    if isinstance(e, dict)
+                ]
 
     return ContextSectionResponse(
         slug=slug,

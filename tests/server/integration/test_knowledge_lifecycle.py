@@ -1567,13 +1567,77 @@ class TestGetContextSection:
         assert resp.status_code == 200, resp.text
         data = resp.json()
         assert data["slug"] == "key_decisions"
-        assert data["source_entries"] == [
-            {
-                "kb_entry_id": entry.id,
-                "created_by_user_id": entry.user_id,
-                "promoted_at": None,
-            }
-        ]
+        assert len(data["source_entries"]) == 1
+        src = data["source_entries"][0]
+        # Must-haves per the SoD spec:
+        assert src["kb_entry_id"] == entry.id
+        assert src["created_by_user_id"] == entry.user_id
+        # Also-useful fields landed by spec request:
+        assert "created_by_persona" in src  # nullable, present in dict
+        assert src["promoted_at"] is None
+        # compile_id is the parent ContextCompilation row's id,
+        # decorated at read time so the value cannot drift from the
+        # actual compile that produced the manifest.
+        assert isinstance(src["compile_id"], int)
+        assert src["compile_id"] == compilation.id
+
+    @pytest.mark.asyncio
+    async def test_get_section_source_entries_resolve_persona_via_session(
+        self, client, auth_headers: dict, db_session: AsyncSession, test_user
+    ):
+        """KnowledgeEntry has no persona column of its own — the compile
+        pass resolves persona attribution from the source Session.
+        Spec calls created_by_persona 'also useful' for SoD; this test
+        proves the lookup wires through end-to-end."""
+        from sessionfs.server.services.compiler import compile_project_context
+        from sessionfs.server.db.models import Session
+
+        project = await _mk_project(db_session)
+        project.owner_id = test_user.id
+        project.context_document = "# Project\n\n"
+        db_session.add(
+            Session(
+                id="ses_persona_aware",
+                user_id=test_user.id,
+                title="atlas-authored entry",
+                source_tool="codex",
+                blob_key="blob/ses_persona_aware",
+                etag="etag-x",
+                project_id=project.id,
+                persona_name="atlas",
+            )
+        )
+        await db_session.commit()
+        # Override the _mk_entry default session_id="ses_test" with the
+        # session we just created so persona resolution has something to
+        # join against.
+        entry = KnowledgeEntry(
+            project_id=project.id,
+            session_id="ses_persona_aware",
+            user_id=test_user.id,
+            content="Atlas-authored decision",
+            entry_type="decision",
+            confidence=0.95,
+            claim_class="claim",
+            freshness_class="current",
+            dismissed=False,
+        )
+        db_session.add(entry)
+        await db_session.commit()
+        await db_session.refresh(entry)
+
+        await compile_project_context(project.id, test_user.id, db_session)
+
+        resp = await client.get(
+            f"/api/v1/projects/{project.id}/context/sections/key_decisions",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200, resp.text
+        src_entries = resp.json()["source_entries"]
+        assert any(
+            s["kb_entry_id"] == entry.id and s["created_by_persona"] == "atlas"
+            for s in src_entries
+        ), src_entries
 
 
 # ---------- v0.9.9.6 Codex round 4: cross-user 403 regressions ----------
