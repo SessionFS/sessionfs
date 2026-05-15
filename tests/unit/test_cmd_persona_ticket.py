@@ -13,8 +13,65 @@ runner = CliRunner()
 def test_persona_help_lists_all_commands():
     result = runner.invoke(persona_app, ["--help"])
     assert result.exit_code == 0
-    for cmd in ("list", "show", "create", "edit", "delete"):
+    for cmd in ("list", "show", "create", "edit", "delete", "pull"):
         assert cmd in result.output
+
+
+def test_persona_pull_resolve_target_prefers_existing(tmp_path):
+    """`_resolve_pull_target` should reuse an existing `<name>-*.md` to
+    preserve the established .agents/ filename convention on re-pull."""
+    from sessionfs.cli.cmd_persona import _resolve_pull_target
+
+    existing = tmp_path / "atlas-backend.md"
+    existing.write_text("old")
+    target = _resolve_pull_target(tmp_path, "atlas", "Backend Architect")
+    assert target == existing
+
+
+def test_persona_pull_resolve_target_falls_back_to_role_fragment(tmp_path):
+    from sessionfs.cli.cmd_persona import _resolve_pull_target
+
+    target = _resolve_pull_target(tmp_path, "forge", "DevOps and GCP Platform Engineer")
+    assert target == tmp_path / "forge-devops.md"
+
+
+def test_persona_pull_resolve_target_no_role(tmp_path):
+    """Empty role still produces a valid filename (no leading dash)."""
+    from sessionfs.cli.cmd_persona import _resolve_pull_target
+
+    target = _resolve_pull_target(tmp_path, "rogue", "")
+    assert target == tmp_path / "rogue.md"
+
+
+def test_persona_pull_format_markdown_no_duplicate_h1():
+    """The preamble should be HTML comments only — the persona's own
+    content already starts with its identity H1, so wrapping with
+    another `# Agent: …` line would create two H1s in the same file."""
+    from sessionfs.cli.cmd_persona import _format_persona_markdown
+
+    out = _format_persona_markdown({
+        "name": "atlas",
+        "role": "Backend Architect",
+        "content": "# Agent: Atlas — Backend Architect\n\nBody.\n",
+        "version": 2,
+        "specializations": ["backend", "api"],
+    })
+    h1_count = out.count("\n# Agent") + (1 if out.startswith("# Agent") else 0)
+    assert h1_count == 1, f"Expected one H1, got {h1_count}: {out!r}"
+    assert "Server version: 2" in out
+    assert "backend, api" in out
+
+
+def test_persona_pull_requires_name_or_all():
+    """Passing neither --all nor a name should be a usage error."""
+    result = runner.invoke(persona_app, ["pull"])
+    assert result.exit_code != 0
+
+
+def test_persona_pull_rejects_name_and_all():
+    """--all + name is ambiguous; refuse it."""
+    result = runner.invoke(persona_app, ["pull", "atlas", "--all"])
+    assert result.exit_code != 0
 
 
 def test_ticket_help_lists_all_commands():
