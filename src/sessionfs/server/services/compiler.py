@@ -19,6 +19,7 @@ from sessionfs.server.db.models import (
     KnowledgeLink,
     KnowledgePage,
     Project,
+    Session,
 )
 
 if TYPE_CHECKING:
@@ -58,8 +59,27 @@ def _json_dt(value) -> str | None:
     return value.isoformat() if value is not None else None
 
 
-def _build_source_manifest(entries: list[KnowledgeEntry]) -> str:
-    """Map compiled context sections to the active KB claims feeding them."""
+def _build_source_manifest(
+    entries: list[KnowledgeEntry],
+    persona_by_session: dict[str, str | None] | None = None,
+) -> str:
+    """Map compiled context sections to the active KB claims feeding them.
+
+    Per-entry fields support SoD disqualification:
+    - `kb_entry_id` — primary key of the source claim
+    - `created_by_user_id` — claim author (must-have for SoD)
+    - `created_by_persona` — persona attribution resolved from the
+      source session's persona_name. KnowledgeEntry doesn't carry a
+      persona column directly, so we look it up via `session_id` at
+      compile time. None when the source session was authored without
+      an active persona bundle.
+    - `promoted_at` — when the claim entered the compiled context
+
+    `compile_id` is NOT persisted in each entry — it's denormalised at
+    read time in `get_context_section` from the parent ContextCompilation
+    row, so the compile and its manifest stay one atomic write.
+    """
+    persona_by_session = persona_by_session or {}
     manifest: dict[str, list[dict]] = defaultdict(list)
     for entry in entries:
         slug = _section_slug_for_entry_type(entry.entry_type)
@@ -67,6 +87,7 @@ def _build_source_manifest(entries: list[KnowledgeEntry]) -> str:
             {
                 "kb_entry_id": entry.id,
                 "created_by_user_id": entry.user_id,
+                "created_by_persona": persona_by_session.get(entry.session_id),
                 "promoted_at": _json_dt(entry.promoted_at),
             }
         )
@@ -295,7 +316,33 @@ async def compile_project_context(
             KnowledgeEntry.superseded_by.is_(None),
         )
     )
-    source_manifest = _build_source_manifest(list(source_result.scalars().all()))
+    source_entries_list = list(source_result.scalars().all())
+    # Resolve persona attribution per source session in one batch query.
+    # KnowledgeEntry has no persona column of its own; the persona that
+    # was active when the claim was authored is recorded on the source
+    # Session (set by the daemon's active-ticket annotation pipeline).
+    session_ids = sorted({e.session_id for e in source_entries_list if e.session_id})
+    persona_by_session: dict[str, str | None] = {}
+    if session_ids:
+        # Cross-project leak defense (Codex R1 MEDIUM): KnowledgeEntry.
+        # session_id is a plain string, not a project-validated FK, so a
+        # project-scoped claim can carry a session_id from another
+        # project. Filter the persona-resolution lookup by Session.
+        # project_id == this project AND not-deleted, so personas from
+        # foreign or deleted sessions degrade to None instead of leaking.
+        rows = (
+            await db.execute(
+                select(Session.id, Session.persona_name).where(
+                    Session.id.in_(session_ids),
+                    Session.project_id == project_id,
+                    Session.is_deleted == False,  # noqa: E712
+                )
+            )
+        ).all()
+        persona_by_session = {sid: pn for sid, pn in rows}
+    source_manifest = _build_source_manifest(
+        source_entries_list, persona_by_session=persona_by_session
+    )
 
     # Budget priority: confidence DESC, last_relevant_at DESC (recent first),
     # entity_ref IS NOT NULL (prefer entity-bound), then trim lowest-priority.

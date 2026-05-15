@@ -27,7 +27,7 @@ All operations require `Authorization: Bearer <SessionFS_API_key>`. The same API
 
 MCP works great for local tools (Claude Code, Cursor, Codex, etc.) where the agent runtime can spawn `sfs mcp serve` as a stdio subprocess. Bedrock, Vertex, and custom cloud agents typically can't. The Cloud Agent Control Plane gives those agents the same operations through plain HTTP, with no client-side daemon, no MCP transport, and no special SDK.
 
-If your agent *can* speak MCP, prefer it — you get 43 tools and richer descriptions. If it can't, use this layer.
+If your agent *can* speak MCP, prefer it — you get 44 tools and richer descriptions. If it can't, use this layer.
 
 ## Amazon Bedrock
 

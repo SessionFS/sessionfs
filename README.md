@@ -215,7 +215,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
-**v0.10.4 — Public Beta.** 1711 backend tests + 186 dashboard tests passing. 39 database migrations. Ticket lease fencing + compile source manifest + server-primary retrieval audit trail + `sfs persona pull` on top of the v0.10.3 dashboard layer.
+**v0.10.5 — Public Beta.** 1720 backend tests + 186 dashboard tests passing. 39 database migrations. Compile source manifest SoD fields (`created_by_persona` + `compile_id`) + tier-aware archive unpack cap + `sfs ticket comments` CLI on top of the v0.10.4 retrieval-audit layer.
 
 ### Session capture, resume, and search
 

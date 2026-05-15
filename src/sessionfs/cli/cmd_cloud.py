@@ -465,7 +465,7 @@ def pull(
 
         # Extract to local store
         target_dir = store.allocate_session_dir(session_id)
-        unpack_session(result.data, target_dir)
+        unpack_session(result.data, target_dir, member_limit_bytes=MAX_MEMBER_SIZE)
 
         # Update index
         manifest_path = target_dir / "manifest.json"
@@ -698,7 +698,11 @@ def sync_all() -> None:
                         result = await client.pull_session(sid)
                         if result.data:
                             target_dir = store.allocate_session_dir(sid)
-                            unpack_session(result.data, target_dir)
+                            unpack_session(
+                                result.data,
+                                target_dir,
+                                member_limit_bytes=MAX_MEMBER_SIZE,
+                            )
 
                             manifest_path = target_dir / "manifest.json"
                             if manifest_path.exists():
@@ -961,7 +965,9 @@ def pull_handoff(
 
         # Extract to local store
         target_dir = store.allocate_session_dir(session_id)
-        unpack_session(pull_result.data, target_dir)
+        unpack_session(
+            pull_result.data, target_dir, member_limit_bytes=MAX_MEMBER_SIZE
+        )
 
         # Update index
         manifest_path = target_dir / "manifest.json"

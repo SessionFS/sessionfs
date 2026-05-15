@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.5] - 2026-05-15
+
+### Added
+- **Compile source manifest: `created_by_persona` + `compile_id`.** Each entry in `get_context_section.source_entries` now carries the resolving persona (from the source session's `persona_name`, set by the daemon's active-ticket annotation pipeline) and the parent `ContextCompilation.id`. Agent Runner SoD callers can disqualify by persona/tool/whole-compile cohort, not just by `created_by_user_id`. Persona attribution lookup is one batched SELECT per compile (bounded by distinct session_ids, not entry count); compile_id is denormalized at response time so the compile + manifest stay one atomic write.
+- **Tier-aware archive unpack cap.** `sync/archive.py:validate_tar_archive` and `unpack_session` now accept `member_limit_bytes`. CLI `pull` / `sync` / `pull_handoff` thread `MAX_MEMBER_SIZE` (already reads `SFS_MAX_SYNC_MEMBER_BYTES_PAID`) into unpack. The old hardcoded 50 MB silently nullified paid-tier overrides above 50 MB — same class of bug DLP carried before v0.9.9.8. Default fallback is 100 MB, matching the server abuse cap in `_validate_tar_gz`. Self-hosted operators raising the paid-tier cap must set the same env var on every CLI host.
+- **`sfs ticket comments <id>` CLI** — read-only client of the existing `GET /api/v1/projects/{id}/tickets/{id}/comments` endpoint. Closes the gap where cross-agent review threads could only be read through the dashboard. Renders each comment in a titled Panel with author + created_at; Markdown body content so code fences render legibly.
+
+### Fixed
+- **Cross-project persona leak on `source_entries`.** Persona attribution SELECT now constrains `Session.project_id == project_id AND Session.is_deleted == False`. A project-scoped KB entry pointing at a session from another project (KnowledgeEntry.session_id is plain text, not a project-validated FK) no longer leaks that session's `persona_name` into this project's `source_entries`. Deleted-session attribution degrades to `created_by_persona=null` without error. 2 regression tests added.
+- **Nondeterministic `compile_id` in same-timestamp bucket.** `get_context_section` latest-compile lookup now orders by `(compiled_at DESC, id DESC)`. Since `compile_id` is part of the SoD evidence contract, identical-timestamp tiebreaks need to be deterministic. 1 regression test added.
+- **Site `devalue` HIGH (GHSA-77vg-94rm-hx3p, CWE-770 DoS, CVSS 7.5).** `site/node_modules/devalue` 5.6.4 → 5.8.1 via `npm audit fix`. Astro stays on 6.3.1. No app code change.
+
+### Tests
+- 1711 → 1720 backend (+9: archive tier-aware regressions, cross-project persona leak regressions, same-timestamp compile tiebreak regression). 186 dashboard unchanged.
+
+### Security
+- Shield-SR independent pre-release review: 0 CRITICAL / 0 HIGH / 0 MEDIUM after `devalue` fix. Codex R2 on `tk_12e6d8775eb045a2` (compile source manifest): no findings. Codex review on archive tier-aware change (KB 396): no blocking issues, one informational note on env-parity for self-hosted operators (documented in `docs/environment-variables.md`).
+
 ## [0.10.4] - 2026-05-15
 
 ### Added

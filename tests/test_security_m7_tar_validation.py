@@ -80,3 +80,35 @@ class TestTarArchiveValidation:
         data = _make_tar_gz([("../../escape.txt", b"bad")])
         with pytest.raises(ValueError, match="Path traversal"):
             unpack_session(data, tmp_path / "output")
+
+    def test_default_limit_accepts_up_to_100mb(self):
+        """Default tier-unaware ceiling matches server abuse cap (100 MB)."""
+        # 60 MB member would have failed the old hardcoded 50 MB check but
+        # should pass the default 100 MB safety ceiling.
+        data = _make_tar_gz([("messages.jsonl", b"x" * (60 * 1024 * 1024))])
+        validate_tar_archive(data)  # Should not raise
+
+    def test_custom_limit_rejects_oversized_member(self):
+        """Free-tier callers can pass a 10 MB cap and reject larger members."""
+        data = _make_tar_gz([("messages.jsonl", b"x" * (11 * 1024 * 1024))])
+        with pytest.raises(ValueError, match="Member too large"):
+            validate_tar_archive(data, member_limit_bytes=10 * 1024 * 1024)
+
+    def test_custom_limit_accepts_under_cap(self):
+        """A member under the supplied cap passes regardless of default."""
+        data = _make_tar_gz([("messages.jsonl", b"x" * (5 * 1024 * 1024))])
+        validate_tar_archive(data, member_limit_bytes=10 * 1024 * 1024)
+
+    def test_safety_checks_fire_regardless_of_size_cap(self):
+        """Path traversal still rejected even with a generous size cap."""
+        data = _make_tar_gz([("../escape.txt", b"bad")])
+        with pytest.raises(ValueError, match="Path traversal"):
+            validate_tar_archive(data, member_limit_bytes=1024 * 1024 * 1024)
+
+    def test_unpack_forwards_member_limit(self, tmp_path):
+        """unpack_session forwards member_limit_bytes to the validator."""
+        data = _make_tar_gz([("messages.jsonl", b"x" * (11 * 1024 * 1024))])
+        with pytest.raises(ValueError, match="Member too large"):
+            unpack_session(
+                data, tmp_path / "out", member_limit_bytes=10 * 1024 * 1024
+            )
