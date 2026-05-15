@@ -31,7 +31,7 @@ sfs mcp install --for claude-code --skip-instructions
 
 ## Tools
 
-The MCP server exposes 43 tools in seven categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), and AgentRun (Team+).
+The MCP server exposes 44 tools in seven categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), and AgentRun (Team+).
 
 ### Session Tools
 
@@ -54,6 +54,7 @@ Retrieve the full conversation from a specific session. Use after `search_sessio
 | `session_id` | string | yes | Session ID in `ses_...` format |
 | `max_messages` | number | no | Limit messages returned (default: 50) |
 | `summary_only` | boolean | no | Return metadata only, no messages (default: false) |
+| `audit_session_id` | string | no | Current session id to append this retrieval to its audit log |
 
 #### `list_recent_sessions`
 
@@ -74,6 +75,7 @@ Find sessions that touched a specific file or encountered a similar error. Provi
 | `file_path` | string | no | Find sessions that modified this file |
 | `error_text` | string | no | Find sessions with similar errors |
 | `limit` | number | no | Max results (default: 5) |
+| `audit_session_id` | string | no | Current session id to append this retrieval to its audit log |
 
 #### `get_session_summary`
 
@@ -99,6 +101,14 @@ Return the instruction provenance recorded for a session — what rules and arti
 |-----------|------|----------|-------------|
 | `session_id` | string | yes | Session ID in `ses_...` format |
 
+#### `get_session_retrieval_log`
+
+Return the retrieval audit log for a session. When `start_ticket` creates a server-side `retrieval_audit_id`, MCP retrieval tools append durable events to the SessionFS API; offline clients fall back to local JSONL when callers pass `audit_session_id` or set `SESSIONFS_SESSION_ID` / `SFS_SESSION_ID`. Each row records the tool name, arguments, timestamp, and returned IDs/slugs.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `session_id` | string | yes | Session ID whose retrieval log should be returned |
+
 ### Knowledge Read
 
 #### `get_project_context`
@@ -117,6 +127,7 @@ Return one section of the project context document by slug instead of the full d
 |-----------|------|----------|-------------|
 | `slug` | string | yes | Section slug (lowercase, non-alphanumeric collapsed to `_`) |
 | `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
+| `audit_session_id` | string | no | Current session id to append this retrieval to its audit log |
 
 #### `get_wiki_page`
 
@@ -126,6 +137,7 @@ Read one wiki page's full content plus backlinks. Cheaper than `get_project_cont
 |-----------|------|----------|-------------|
 | `slug` | string | yes | Wiki page slug (e.g., `architecture`) |
 | `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
+| `audit_session_id` | string | no | Current session id to append this retrieval to its audit log |
 
 #### `search_project_knowledge`
 
@@ -136,6 +148,7 @@ Search across knowledge entries and wiki pages by keyword. Use this when you hav
 | `query` | string | yes | What to search for |
 | `entry_type` | string | no | Filter by type: `decision`, `pattern`, `discovery`, `convention`, `bug`, `dependency` |
 | `limit` | number | no | Maximum results (default: 10) |
+| `audit_session_id` | string | no | Current session id to append this retrieval to its audit log |
 
 #### `list_knowledge_entries`
 
@@ -234,6 +247,7 @@ Returns the compiled rule text for a requested tool, or for the current tool if 
 |-----------|------|----------|-------------|
 | `tool` | string | no | Tool slug: `claude-code`, `codex`, `cursor`, `copilot`, `gemini` |
 | `git_remote` | string | no | Override auto-detected git remote |
+| `audit_session_id` | string | no | Current session id to append this retrieval to its audit log |
 
 ### Personas (Pro+)
 
@@ -255,6 +269,7 @@ Return a single persona's full content.
 |-----------|------|----------|-------------|
 | `name` | string | yes | Persona name |
 | `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
+| `audit_session_id` | string | no | Current session id to append this retrieval to its audit log |
 
 #### `create_persona`
 
@@ -328,28 +343,33 @@ Move a `suggested` ticket → `open` so it can be assigned and started. Returns 
 
 #### `start_ticket`
 
-Atomic claim (`UPDATE ... WHERE status='open' OR 'blocked'` with rowcount guard). Writes the active-ticket bundle and returns the compiled persona + ticket context (tool-aware token budget via `tool`).
+Atomic claim (`UPDATE ... WHERE status='open' OR 'blocked'` with rowcount guard). Increments and returns `ticket.lease_epoch`, creates a server-side `retrieval_audit_id`, writes both into the active-ticket bundle, and returns the compiled persona + ticket context (tool-aware token budget via `tool`).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `ticket_id` | string | yes | Ticket ID |
 | `tool` | string | no | `claude-code` (16k), `codex`/`gemini`/`copilot`/`amp`/`generic` (8k), `cursor`/`windsurf`/`cline`/`roo-code` (4k) |
+| `force` | boolean | no | Recover a blocked ticket; increments the lease epoch |
 
 #### `complete_ticket`
 
-Send a ticket from `in_progress` to `review` and clear the owned bundle. Attaches `provenance_warning` on bundle write failure.
+Send a ticket from `in_progress` to `review` and clear the owned bundle. Pass `lease_epoch` to reject stale workers with 409.
+
+Lease fencing is opt-in for backward compatibility. The CLI and MCP `start_ticket` path write the current epoch into the active-ticket bundle, so normal ticket workers are fenced automatically. Callers that omit `lease_epoch` are treated as legacy/single-worker clients; this is coordinated audit fencing, not a strict mutex unless callers pass the epoch.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `ticket_id` | string | yes | Ticket ID |
+| `lease_epoch` | integer | no | Optional stale-worker fence from `start_ticket` |
 
 #### `resolve_ticket`
 
-Move a ticket from `review` to `done`. Atomic with rowcount-1 guard.
+Move a ticket from `review` to `done`. Atomic with rowcount-1 guard. Pass `lease_epoch` to reject stale workers with 409.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `ticket_id` | string | yes | Ticket ID |
+| `lease_epoch` | integer | no | Optional stale-worker fence from `start_ticket` |
 
 #### `assign_persona`
 
@@ -371,13 +391,14 @@ Raise ticket priority and append a non-idempotent audit comment.
 
 #### `add_ticket_comment`
 
-Slack-like comment thread. Non-idempotent (each call creates a row).
+Slack-like comment thread. Non-idempotent (each call creates a row). Passing `lease_epoch` atomically rejects stale-worker comments when another worker has restarted the ticket; omitting it is allowed for legacy callers and is unfenced.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `ticket_id` | string | yes | Ticket ID |
 | `body` | string | yes | Markdown body |
 | `as_persona` | string | no | Comment authored by this persona |
+| `lease_epoch` | integer | no | Optional stale-worker fence from `start_ticket` |
 
 ### Session checkpoint + fork
 

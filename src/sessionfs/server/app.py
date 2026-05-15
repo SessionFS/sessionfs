@@ -13,7 +13,7 @@ from sessionfs.server.config import ServerConfig
 from sessionfs.server.db.engine import close_engine, init_engine
 from sessionfs.server.errors import register_exception_handlers
 from sessionfs.server.middleware import RequestLoggingMiddleware
-from sessionfs.server.routes import admin, admin_licenses, agent_runs, audit, auth, billing, bookmarks, dlp, handoffs, health, helm, knowledge, org, org_members, personas, project_transfers, projects, rules, sessions, settings, summaries, sync, telemetry, tickets, webhooks, wiki
+from sessionfs.server.routes import admin, admin_licenses, agent_runs, audit, auth, billing, bookmarks, dlp, handoffs, health, helm, knowledge, org, org_members, personas, project_transfers, projects, retrieval_audit, rules, sessions, settings, summaries, sync, telemetry, tickets, webhooks, wiki
 from sessionfs.server.storage.local import LocalBlobStore
 
 
@@ -125,6 +125,7 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     # Agent runs same precedence (v0.10.2): `/agent-runs` subpath under
     # projects must beat the projects catch-all `/{git_remote:path}`.
     app.include_router(agent_runs.router)
+    app.include_router(retrieval_audit.router)
     app.include_router(projects.router)
     app.include_router(summaries.router)
     app.include_router(summaries.batch_router)

@@ -43,6 +43,8 @@ def write_bundle(
     ticket_id: str | None,
     persona_name: str | None,
     project_id: str,
+    lease_epoch: int | None = None,
+    retrieval_audit_id: str | None = None,
 ) -> bool:
     """Write the active-ticket bundle. Returns True on success, False on
     OSError so callers can surface a "provenance NOT recorded" warning
@@ -59,16 +61,17 @@ def write_bundle(
     path = bundle_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(
-                {
-                    "ticket_id": ticket_id,
-                    "persona_name": persona_name,
-                    "project_id": project_id,
-                    "started_at": datetime.now(timezone.utc).isoformat(),
-                }
-            )
-        )
+        payload: dict[str, Any] = {
+            "ticket_id": ticket_id,
+            "persona_name": persona_name,
+            "project_id": project_id,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if lease_epoch is not None:
+            payload["lease_epoch"] = lease_epoch
+        if retrieval_audit_id:
+            payload["retrieval_audit_id"] = retrieval_audit_id
+        path.write_text(json.dumps(payload))
     except OSError as exc:
         logger.warning("Failed to write active_ticket.json: %s", exc)
         return False

@@ -96,6 +96,10 @@ _TOOLS = [
                     "type": "boolean",
                     "description": "Return just metadata summary instead of full messages (default: false)",
                 },
+                "audit_session_id": {
+                    "type": "string",
+                    "description": "Optional current session id to append this retrieval to its audit log",
+                },
             },
             "required": ["session_id"],
         },
@@ -145,6 +149,10 @@ _TOOLS = [
                 "limit": {
                     "type": "number",
                     "description": "Max results (default: 5)",
+                },
+                "audit_session_id": {
+                    "type": "string",
+                    "description": "Optional current session id to append this retrieval to its audit log",
                 },
             },
         },
@@ -229,6 +237,10 @@ _TOOLS = [
                     "description": "Include stale and superseded entries (default: false)",
                 },
                 "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "audit_session_id": {
+                    "type": "string",
+                    "description": "Optional current session id to append this retrieval to its audit log",
+                },
             },
             "required": ["query"],
         },
@@ -377,6 +389,10 @@ _TOOLS = [
                     "description": "Tool slug: claude-code, codex, cursor, copilot, gemini",
                 },
                 "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "audit_session_id": {
+                    "type": "string",
+                    "description": "Optional current session id to append this retrieval to its audit log",
+                },
             },
         },
     ),
@@ -481,6 +497,10 @@ _TOOLS = [
                     "description": "Page slug (e.g. 'architecture', 'concept/auth-flow')",
                 },
                 "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "audit_session_id": {
+                    "type": "string",
+                    "description": "Optional current session id to append this retrieval to its audit log",
+                },
             },
             "required": ["slug"],
         },
@@ -522,8 +542,31 @@ _TOOLS = [
                     "description": "Section slug (e.g. 'architecture', 'team_workflow')",
                 },
                 "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "audit_session_id": {
+                    "type": "string",
+                    "description": "Optional current session id to append this retrieval to its audit log",
+                },
             },
             "required": ["slug"],
+        },
+    ),
+    Tool(
+        name="get_session_retrieval_log",
+        description=(
+            "Return the retrieval audit log for a session. Server-side logs are "
+            "recorded automatically when start_ticket created a retrieval_audit_id; "
+            "offline MCP clients can still append local fallback rows with "
+            "`audit_session_id` or SESSIONFS_SESSION_ID/SFS_SESSION_ID."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "The session id whose retrieval log should be returned",
+                },
+            },
+            "required": ["session_id"],
         },
     ),
     Tool(
@@ -617,6 +660,10 @@ _TOOLS = [
             "properties": {
                 "name": {"type": "string", "description": "Persona name (e.g. 'atlas')"},
                 "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "audit_session_id": {
+                    "type": "string",
+                    "description": "Optional current session id to append this retrieval to its audit log",
+                },
             },
             "required": ["name"],
         },
@@ -675,7 +722,9 @@ _TOOLS = [
             "+ ticket provenance.\n\n"
             "Returns 409 if the ticket is already in_progress (concurrent "
             "start). Pass `force=true` to recover a stuck `blocked` "
-            "ticket.\n\n"
+            "ticket. Successful starts return `ticket.lease_epoch`; pass that "
+            "epoch to complete_ticket/add_ticket_comment/resolve_ticket to "
+            "fence stale daemons.\n\n"
             "IMPORTANT: Always use this MCP tool instead of running "
             "`sfs ticket start` or any other sfs CLI command."
         ),
@@ -734,6 +783,10 @@ _TOOLS = [
             "the ticket_id for traceability. Removes "
             "~/.sessionfs/active_ticket.json so subsequent sessions are no "
             "longer attributed to this ticket.\n\n"
+            "`lease_epoch` is optional for backward compatibility. Passing "
+            "the epoch returned by start_ticket enables coordinated stale-worker "
+            "fencing; omitting it is unfenced and should only be used by legacy "
+            "or single-worker callers.\n\n"
             "IMPORTANT: Always use this MCP tool instead of running "
             "`sfs ticket complete` or any other sfs CLI command."
         ),
@@ -744,6 +797,7 @@ _TOOLS = [
                 "notes": {"type": "string", "description": "Completion notes — what was done, key decisions, follow-ups"},
                 "changed_files": {"type": "array", "items": {"type": "string"}, "default": []},
                 "knowledge_entry_ids": {"type": "array", "items": {"type": "string"}, "default": []},
+                "lease_epoch": {"type": "integer", "description": "Optional stale-writer fence from start_ticket"},
                 "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
             },
             "required": ["ticket_id", "notes"],
@@ -755,7 +809,9 @@ _TOOLS = [
             "Add a comment to a ticket. Use for progress updates, "
             "questions, blockers, or findings during work. Optionally pass "
             "`author_persona` to attribute the comment to a specific "
-            "persona role.\n\n"
+            "persona role. `lease_epoch` is optional for backward compatibility; "
+            "when supplied, the comment insert is atomically rejected if the "
+            "ticket lease changed.\n\n"
             "IMPORTANT: Always use this MCP tool instead of running "
             "`sfs ticket comment` or any other sfs CLI command."
         ),
@@ -766,6 +822,7 @@ _TOOLS = [
                 "content": {"type": "string"},
                 "author_persona": {"type": "string"},
                 "session_id": {"type": "string"},
+                "lease_epoch": {"type": "integer", "description": "Optional stale-writer fence from start_ticket"},
                 "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
             },
             "required": ["ticket_id", "content"],
@@ -852,6 +909,7 @@ _TOOLS = [
             "type": "object",
             "properties": {
                 "ticket_id": {"type": "string"},
+                "lease_epoch": {"type": "integer", "description": "Optional stale-writer fence from start_ticket"},
                 "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
             },
             "required": ["ticket_id"],
@@ -1176,6 +1234,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = _handle_get_audit(arguments)
         elif name == "search_project_knowledge":
             result = await _handle_search_knowledge(arguments)
+            await _record_retrieval_for_tool(name, arguments, result)
             return [TextContent(type="text", text=result if isinstance(result, str) else json.dumps(result, indent=2, default=str))]
         elif name == "ask_project":
             result = await _handle_ask_project(arguments)
@@ -1207,6 +1266,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_get_context_section(arguments)
         elif name == "get_session_provenance":
             result = await _handle_get_session_provenance(arguments)
+        elif name == "get_session_retrieval_log":
+            result = await _handle_get_session_retrieval_log(arguments)
         elif name == "compile_knowledge_base":
             result = await _handle_compile_knowledge_base(arguments)
         elif name == "list_personas":
@@ -1259,7 +1320,58 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         logger.error("Tool %s failed: %s", name, exc, exc_info=True)
         result = {"error": str(exc)}
 
+    await _record_retrieval_for_tool(name, arguments, result)
     return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+
+async def _record_retrieval_for_tool(name: str, arguments: dict, result: Any) -> None:
+    from sessionfs.retrieval_audit import (
+        RETRIEVAL_TOOLS,
+        audit_context_id,
+        audit_session_id,
+        collect_returned_refs,
+        record_retrieval,
+        sanitize_arguments,
+    )
+
+    if name not in RETRIEVAL_TOOLS:
+        return
+    context_id = audit_context_id(arguments)
+    if context_id:
+        try:
+            api_url, api_key, project_id = await _resolve_project_id(
+                arguments.get("git_remote", "")
+            )
+            import httpx
+
+            payload = {
+                "context_id": context_id,
+                "session_id": audit_session_id(arguments),
+                "tool_name": name,
+                "arguments": sanitize_arguments(arguments),
+                "returned_refs": collect_returned_refs(result),
+                "source": "mcp",
+            }
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(
+                    f"{api_url}/api/v1/projects/{project_id}/retrieval-audit-events",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    json=payload,
+                )
+            if resp.status_code < 400:
+                return
+            logger.warning(
+                "Server retrieval audit failed for %s: %s %s",
+                name,
+                resp.status_code,
+                resp.text[:200],
+            )
+        except Exception as exc:
+            logger.warning("Server retrieval audit failed for %s: %s", name, exc)
+    try:
+        record_retrieval(tool_name=name, args=arguments, result=result)
+    except OSError as exc:
+        logger.warning("Failed to record retrieval audit for %s: %s", name, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -1733,6 +1845,7 @@ async def _handle_search_knowledge(args: dict) -> str:
             etype = e.get("entry_type", "unknown")
             badge = type_badges.get(etype, "\u2022")
             confidence = e.get("confidence", 0)
+            entry_id = e.get("id")
             created = e.get("created_at", "")[:10]
             session_id = e.get("session_id", "unknown")
             freshness = e.get("freshness_class", "current")
@@ -1741,7 +1854,8 @@ async def _handle_search_knowledge(args: dict) -> str:
             freshness_tag = f" [{freshness}]" if freshness != "current" else ""
             class_tag = f" ({claim_class})" if claim_class != "claim" else ""
 
-            lines.append(f"### {badge} [{etype.upper()}] (confidence: {confidence:.0%}){freshness_tag}{class_tag}")
+            id_tag = f" KB #{entry_id}" if entry_id is not None else ""
+            lines.append(f"### {badge} [{etype.upper()}]{id_tag} (confidence: {confidence:.0%}){freshness_tag}{class_tag}")
             lines.append(f"{e.get('content', '')}")
             lines.append(f"_Source session: {session_id} | {created}_\n")
 
@@ -2228,6 +2342,68 @@ async def _handle_get_session_provenance(args: dict) -> dict:
     return resp.json()
 
 
+async def _handle_get_session_retrieval_log(args: dict) -> dict:
+    session_id = args.get("session_id", "")
+    if not session_id:
+        return {"error": "session_id is required"}
+    from sessionfs.retrieval_audit import is_safe_audit_id, read_retrieval_log
+
+    if not is_safe_audit_id(session_id):
+        return {"error": "Invalid session_id"}
+    config = load_config()
+    if config.sync.api_key:
+        import httpx
+
+        api_url = config.sync.api_url.rstrip("/")
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(
+                    f"{api_url}/api/v1/sessions/{session_id}/retrieval-log",
+                    headers={"Authorization": f"Bearer {config.sync.api_key}"},
+                )
+            if resp.status_code == 200:
+                return resp.json()
+            if resp.status_code not in {404, 405}:
+                logger.warning(
+                    "Server retrieval log lookup failed: %s %s",
+                    resp.status_code,
+                    resp.text[:200],
+                )
+        except Exception as exc:
+            logger.warning("Server retrieval log lookup failed: %s", exc)
+    # Local-fallback shape MUST match the server's RetrievalAuditLog
+    # Response so agents see one stable schema regardless of which path
+    # fires. Local rows are JSONL records from retrieval_audit.record_
+    # retrieval — they carry timestamp / tool_name / arguments /
+    # returned_refs. We lift them into the same shape as the server's
+    # RetrievalAuditEventResponse with id=null / context_id="" /
+    # project_id="" / session_id=session_id / source="local" /
+    # caller_user_id=None so the response key set is identical.
+    # (Codex KB #395 Finding B fix.)
+    entries = read_retrieval_log(session_id)
+    events = [
+        {
+            "id": None,
+            "context_id": "",
+            "project_id": "",
+            "session_id": session_id,
+            "tool_name": e.get("tool_name", ""),
+            "arguments": e.get("arguments") or {},
+            "returned_refs": e.get("returned_refs") or {},
+            "source": "local",
+            "caller_user_id": None,
+            "created_at": e.get("timestamp"),
+        }
+        for e in entries
+    ]
+    return {
+        "session_id": session_id,
+        "retrieval_audit_id": "",
+        "events": events,
+        "count": len(events),
+    }
+
+
 async def _handle_compile_knowledge_base(args: dict) -> dict:
     """Wrap POST /api/v1/projects/{project_id}/compile.
 
@@ -2399,12 +2575,18 @@ async def _handle_start_ticket(args: dict) -> dict:
     payload = resp.json()
     ticket = payload.get("ticket", {}) if isinstance(payload, dict) else {}
     persona_name = ticket.get("assigned_to")
+    lease_epoch = ticket.get("lease_epoch")
+    retrieval_audit_id = payload.get("retrieval_audit_id") if isinstance(payload, dict) else None
 
     from sessionfs.active_ticket import bundle_path, write_bundle
     bundle_ok = write_bundle(
         ticket_id=ticket_id,
         persona_name=persona_name,
         project_id=project_id,
+        lease_epoch=lease_epoch if isinstance(lease_epoch, int) else None,
+        retrieval_audit_id=(
+            retrieval_audit_id if isinstance(retrieval_audit_id, str) else None
+        ),
     )
     # KB 339 LOW — surface a structured warning when the bundle write
     # failed so the agent doesn't keep working under the assumption
@@ -2480,6 +2662,8 @@ async def _handle_complete_ticket(args: dict) -> dict:
         val = args.get(key)
         if isinstance(val, list):
             body[key] = val
+    if args.get("lease_epoch") is not None:
+        body["lease_epoch"] = int(args["lease_epoch"])
 
     import httpx
     async with httpx.AsyncClient(timeout=30) as client:
@@ -2523,6 +2707,8 @@ async def _handle_add_ticket_comment(args: dict) -> dict:
         val = args.get(key)
         if isinstance(val, str) and val.strip():
             body[key] = val.strip()
+    if args.get("lease_epoch") is not None:
+        body["lease_epoch"] = int(args["lease_epoch"])
 
     import httpx
     async with httpx.AsyncClient(timeout=15) as client:
@@ -2692,16 +2878,28 @@ async def _handle_resolve_ticket(args: dict) -> dict:
     except Exception as exc:
         return {"error": str(exc)}
 
+    params: dict[str, str] = {}
+    if args.get("lease_epoch") is not None:
+        params["lease_epoch"] = str(int(args["lease_epoch"]))
+
     import httpx
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            f"{api_url}/api/v1/projects/{project_id}/tickets/{ticket_id}/accept",
-            headers={"Authorization": f"Bearer {api_key}"},
-        )
+        url = f"{api_url}/api/v1/projects/{project_id}/tickets/{ticket_id}/accept"
+        if params:
+            resp = await client.post(
+                url,
+                headers={"Authorization": f"Bearer {api_key}"},
+                params=params,
+            )
+        else:
+            resp = await client.post(
+                url,
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
     if resp.status_code == 404:
         return {"error": f"Ticket '{ticket_id}' not found"}
     if resp.status_code == 409:
-        return {"error": f"Ticket '{ticket_id}' is not in 'review' state"}
+        return {"error": f"Ticket '{ticket_id}' could not be resolved: {resp.text}"}
     if resp.status_code >= 400:
         return {"error": f"API error {resp.status_code}: {resp.text}"}
     return resp.json()

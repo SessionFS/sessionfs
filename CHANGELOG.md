@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.4] - 2026-05-15
+
+### Added
+- **Migration 039 — ticket lease epochs + context source manifest + retrieval audit tables.** Adds `tickets.lease_epoch` (NOT NULL DEFAULT 0), `context_compilations.source_manifest` (TEXT NOT NULL DEFAULT '{}'), `sessions.retrieval_audit_id` (nullable, indexed), and two new tables: `retrieval_audit_contexts` (one row per ticket start, links to project + ticket + persona + lease_epoch + created_by_user) and `retrieval_audit_events` (events per context, with serialized arguments/returned_refs, source flag, caller_user_id).
+- **Ticket lease fencing.** `start_ticket` now atomically increments `lease_epoch` via `UPDATE ... WHERE status IN (...) SET lease_epoch = lease_epoch + 1`. `complete_ticket`, `add_ticket_comment`, and `accept_ticket` accept optional `lease_epoch` in the request body and use it as an inline WHERE-clause predicate. Stale daemons get 409 with a clear current-vs-supplied message. Coordinated audit, not strict mutex — opt-in semantics documented on the MCP tool descriptions.
+- **Compile source manifest.** `compile_project_context` snapshots the active KB claims feeding each section before LLM compilation and stores them on the compilation row. `get_context_section` returns `source_entries` so SoD/audit callers can trace rendered prose back to the claims that shaped it.
+- **Retrieval audit log (server primary + local fallback).** Server: 4 new routes — `POST /api/v1/projects/{id}/retrieval-audit-contexts`, `POST /api/v1/projects/{id}/retrieval-audit-events`, `GET /api/v1/retrieval-audit-contexts/{ctx}/events`, `GET /api/v1/sessions/{id}/retrieval-log`. Local fallback: `~/.sessionfs/retrieval_logs/<id>.jsonl` for offline MCP clients. MCP records context-shaping retrievals (search_project_knowledge, get_wiki_page, get_persona, get_compiled_rules, get_context_section, find_related_sessions, get_session_context) when an active ticket bundle has `retrieval_audit_id`; sessions persist the id from `active_ticket` manifests so the audit chain survives capture.
+- **MCP `get_session_retrieval_log` tool** (44 total). Server-success path and local-fallback path return identical top-level keys `{session_id, retrieval_audit_id, events, count}`; local rows are lifted into the server's `RetrievalAuditEventResponse` shape with `source="local"` so consumers parse one schema.
+- **`sfs persona pull [<name>|--all]` CLI** — pulls server-side personas to local `.agents/*.md` files. Preserves the existing kebab-naming convention on re-pull (`<name>-<role-fragment>.md`); HTML-comment preamble only (no double H1 against the persona's own identity header). Release-only personas (`shield-security-review.md`, `scribe-site-sync.md`) untouched — no server equivalent.
+- **Site messaging rewrite for v1.0 positioning.** Landing / features / enterprise / pricing reframed around Memory / Identity / Coordination / Governance pillars. "Your team today. AI agents tomorrow." hybrid-operator section on enterprise. Cloud-agent-ready strip (Bedrock, Vertex, custom API) phrased precisely as "via integration docs" — not a hosted gateway.
+
+### Fixed
+- **Site `/dlp/` 404 + stale secret-pattern count.** Landing DLP card was linking to a non-existent route; repointed to `/enterprise/` where the Compliance Built In pillar describes DLP. Secret-pattern count corrected from stale 22 → 19 to match `sessionfs.security.secrets.SECRET_PATTERNS`. Historical changelog entries untouched.
+- **Retrieval-audit defenses (10 sentinel findings + 2 Codex follow-up findings closed).** Path traversal: `SAFE_AUDIT_ID_RE` regex validates audit/session IDs at every entry point (audit_session_id, audit_context_id, record_retrieval, read_retrieval_log, MCP `get_session_retrieval_log`). Session upload validates claimed `retrieval_audit_id` exists in `retrieval_audit_contexts` for the same project AND was created by the uploading user — silently drops the field with a warning otherwise. Context create validates supplied `ticket_id` and `persona_name` belong to the same project; rejects forged provenance with 422. Event creator must own the context (`_assert_context_owner`). Audit event payloads capped at 16 KiB with `_truncated` marker. Cross-project SELECT leak closed via `Project.id IN (accessible_projects_subquery)` filter in initial WHERE. Comment lease check is now atomic (`INSERT … SELECT WHERE lease_epoch = ?`). Local JSONL caps at 10 MiB. `sanitize_arguments` strips any key containing api_key/token/secret/password/auth/credential. `collect_returned_refs` walker has 50-level depth limit and no longer regex-extracts `KB N` / `Entry N` from arbitrary string fields.
+
+### Tests
+- 1626 → 1711 backend (+85: retrieval-audit API regression suite, ticket lease tests, compile source-manifest assertions, sentinel hardening regressions). 186 dashboard unchanged.
+
+### Security
+- Shield-SR independent pre-release review: 0 CRITICAL / 0 HIGH / 0 MEDIUM. One LOW noted: `_get_project_or_404` vs `_accessible_project_ids_subquery` give different visibility for context-create POST vs context-events GET (GET stricter). Direction is defensive, not permissive. Tracked as Atlas follow-up; not release-blocking.
+
 ## [0.10.3] - 2026-05-14
 
 ### Added

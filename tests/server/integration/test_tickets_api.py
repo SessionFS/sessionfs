@@ -217,6 +217,7 @@ async def test_lifecycle_open_to_done_happy_path(
     start_body = start.json()
     assert start_body["ticket"]["status"] == "in_progress"
     assert isinstance(start_body["compiled_context"], str)
+    assert start_body["retrieval_audit_id"].startswith("ra_")
 
     # in_progress → review
     complete = await client.post(
@@ -236,6 +237,109 @@ async def test_lifecycle_open_to_done_happy_path(
     assert accept.status_code == 200
     assert accept.json()["status"] == "done"
     assert accept.json()["resolved_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_ticket_lease_epoch_fences_complete_comment_and_resolve(
+    client: AsyncClient, db_session: AsyncSession
+):
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    await _make_persona(db_session, project, user, "atlas")
+
+    create = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(key),
+        json={"title": "Fence stale daemons", "assigned_to": "atlas"},
+    )
+    tk_id = create.json()["id"]
+
+    start = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{tk_id}/start",
+        headers=_hdrs(key),
+    )
+    assert start.status_code == 200, start.text
+    assert start.json()["retrieval_audit_id"].startswith("ra_")
+    lease_epoch = start.json()["ticket"]["lease_epoch"]
+    assert lease_epoch == 1
+
+    stale_comment = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{tk_id}/comments",
+        headers=_hdrs(key),
+        json={"content": "stale", "lease_epoch": lease_epoch - 1},
+    )
+    assert stale_comment.status_code == 409
+
+    current_comment = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{tk_id}/comments",
+        headers=_hdrs(key),
+        json={"content": "current", "lease_epoch": lease_epoch},
+    )
+    assert current_comment.status_code == 201, current_comment.text
+
+    stale_complete = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{tk_id}/complete",
+        headers=_hdrs(key),
+        json={"notes": "stale", "lease_epoch": lease_epoch - 1},
+    )
+    assert stale_complete.status_code == 409
+
+    complete = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{tk_id}/complete",
+        headers=_hdrs(key),
+        json={"notes": "done", "lease_epoch": lease_epoch},
+    )
+    assert complete.status_code == 200, complete.text
+    assert complete.json()["status"] == "review"
+
+    stale_accept = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{tk_id}/accept",
+        headers=_hdrs(key),
+        params={"lease_epoch": lease_epoch - 1},
+    )
+    assert stale_accept.status_code == 409
+
+    accept = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{tk_id}/accept",
+        headers=_hdrs(key),
+        params={"lease_epoch": lease_epoch},
+    )
+    assert accept.status_code == 200, accept.text
+    assert accept.json()["status"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_force_start_increments_ticket_lease_epoch(
+    client: AsyncClient, db_session: AsyncSession
+):
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    await _make_persona(db_session, project, user, "atlas")
+
+    create = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(key),
+        json={"title": "Force lease", "assigned_to": "atlas"},
+    )
+    tk_id = create.json()["id"]
+    start = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{tk_id}/start",
+        headers=_hdrs(key),
+    )
+    assert start.json()["ticket"]["lease_epoch"] == 1
+    block = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{tk_id}/block",
+        headers=_hdrs(key),
+    )
+    assert block.status_code == 200
+
+    forced = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{tk_id}/start",
+        headers=_hdrs(key),
+        params={"force": "true"},
+    )
+    assert forced.status_code == 200, forced.text
+    assert forced.json()["ticket"]["lease_epoch"] == 2
 
 
 @pytest.mark.asyncio

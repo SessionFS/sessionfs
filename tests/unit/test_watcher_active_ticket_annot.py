@@ -41,7 +41,12 @@ def test_no_bundle_leaves_manifest_untouched(tmp_path, monkeypatch):
 def test_bundle_present_tags_manifest(tmp_path, monkeypatch):
     bundle = tmp_path / "active_ticket.json"
     monkeypatch.setattr(at, "bundle_path", lambda: bundle)
-    at.write_bundle(ticket_id="tk_42", persona_name="atlas", project_id="proj_a")
+    at.write_bundle(
+        ticket_id="tk_42",
+        persona_name="atlas",
+        project_id="proj_a",
+        retrieval_audit_id="ra_123",
+    )
 
     session_dir = _make_session_dir(tmp_path, {"session_id": "ses_x", "title": "tagged"})
 
@@ -50,6 +55,7 @@ def test_bundle_present_tags_manifest(tmp_path, monkeypatch):
     out = json.loads((session_dir / "manifest.json").read_text())
     assert out["ticket_id"] == "tk_42"
     assert out["persona_name"] == "atlas"
+    assert out["retrieval_audit_id"] == "ra_123"
     # Pre-existing fields preserved.
     assert out["title"] == "tagged"
 

@@ -43,7 +43,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
-from sqlalchemy import select, update
+from sqlalchemy import insert, literal, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import get_current_user
@@ -51,6 +51,7 @@ from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import (
     AgentPersona,
     KnowledgeEntry,
+    RetrievalAuditContext,
     Ticket,
     TicketComment,
     TicketDependency,
@@ -197,6 +198,7 @@ class TicketResponse(BaseModel):
     created_by_session_id: str | None
     created_by_persona: str | None
     status: str
+    lease_epoch: int
     context_refs: list[str]
     file_refs: list[str]
     related_sessions: list[str]
@@ -217,6 +219,7 @@ class CompleteTicketRequest(BaseModel):
     changed_files: list[str] = []
     knowledge_entry_ids: list[str] = []
     resolver_session_id: str | None = None
+    lease_epoch: int | None = None
 
 
 class StartTicketResponse(BaseModel):
@@ -227,12 +230,14 @@ class StartTicketResponse(BaseModel):
 
     ticket: TicketResponse
     compiled_context: str
+    retrieval_audit_id: str | None = None
 
 
 class CommentCreate(BaseModel):
     content: str
     author_persona: str | None = None
     session_id: str | None = None
+    lease_epoch: int | None = None
 
     @field_validator("content")
     @classmethod
@@ -291,6 +296,7 @@ def _to_response(t: Ticket, deps: list[str]) -> TicketResponse:
         created_by_session_id=t.created_by_session_id,
         created_by_persona=t.created_by_persona,
         status=t.status,
+        lease_epoch=t.lease_epoch,
         context_refs=_loads(t.context_refs),
         file_refs=_loads(t.file_refs),
         related_sessions=_loads(t.related_sessions),
@@ -305,6 +311,20 @@ def _to_response(t: Ticket, deps: list[str]) -> TicketResponse:
         updated_at=t.updated_at,
         resolved_at=t.resolved_at,
     )
+
+
+def _assert_lease_epoch(ticket: Ticket, lease_epoch: int | None) -> None:
+    """Reject stale ticket writers when callers opt into lease fencing."""
+    if lease_epoch is None:
+        return
+    if lease_epoch != ticket.lease_epoch:
+        raise HTTPException(
+            409,
+            (
+                f"Stale ticket lease: provided lease_epoch={lease_epoch}, "
+                f"current lease_epoch={ticket.lease_epoch}."
+            ),
+        )
 
 
 # v0.10.1 Phase 4 — persona context compilation.
@@ -836,7 +856,11 @@ async def start_ticket(
             Ticket.id == ticket_id,
             Ticket.status.in_(list(allowed_from)),
         )
-        .values(status="in_progress", updated_at=datetime.now(timezone.utc))
+        .values(
+            status="in_progress",
+            updated_at=datetime.now(timezone.utc),
+            lease_epoch=Ticket.lease_epoch + 1,
+        )
     )
     if result.rowcount != 1:
         # Refresh and report the actual current state.
@@ -853,11 +877,22 @@ async def start_ticket(
 
     await db.commit()
     await db.refresh(ticket)
+    audit_context = RetrievalAuditContext(
+        id=f"ra_{uuid.uuid4().hex[:24]}",
+        project_id=project_id,
+        ticket_id=ticket_id,
+        persona_name=ticket.assigned_to,
+        lease_epoch=ticket.lease_epoch,
+        created_by_user_id=user.id,
+    )
+    db.add(audit_context)
+    await db.commit()
     deps = await _ticket_dependencies(db, ticket.id)
     compiled = await _compile_persona_context(db, persona, ticket, tool=tool)
     return StartTicketResponse(
         ticket=_to_response(ticket, deps),
         compiled_context=compiled,
+        retrieval_audit_id=audit_context.id,
     )
 
 
@@ -876,17 +911,37 @@ async def complete_ticket(
     """Move ticket from in_progress → review."""
     check_feature(ctx, "agent_tickets")
     await _get_project_or_404(project_id, db, user.id)
-    ticket = await _get_ticket_or_404(project_id, ticket_id, db)
-    _assert_transition(ticket.status, "review")
-
-    ticket.status = "review"
-    ticket.completion_notes = body.notes
-    ticket.changed_files = json.dumps(body.changed_files)
-    ticket.knowledge_entry_ids = json.dumps(body.knowledge_entry_ids)
-    ticket.resolver_session_id = body.resolver_session_id
-    ticket.resolver_user_id = user.id
-    ticket.updated_at = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
+    result = await db.execute(
+        update(Ticket)
+        .where(
+            Ticket.id == ticket_id,
+            Ticket.project_id == project_id,
+            Ticket.status == "in_progress",
+            *(
+                (Ticket.lease_epoch == body.lease_epoch,)
+                if body.lease_epoch is not None
+                else ()
+            ),
+        )
+        .values(
+            status="review",
+            completion_notes=body.notes,
+            changed_files=json.dumps(body.changed_files),
+            knowledge_entry_ids=json.dumps(body.knowledge_entry_ids),
+            resolver_session_id=body.resolver_session_id,
+            resolver_user_id=user.id,
+            updated_at=now,
+        )
+    )
+    if result.rowcount != 1:
+        await db.rollback()
+        ticket = await _get_ticket_or_404(project_id, ticket_id, db)
+        _assert_lease_epoch(ticket, body.lease_epoch)
+        _assert_transition(ticket.status, "review")
+        raise HTTPException(409, "Cannot complete ticket due to concurrent update")
     await db.commit()
+    ticket = await _get_ticket_or_404(project_id, ticket_id, db)
     await db.refresh(ticket)
     deps = await _ticket_dependencies(db, ticket.id)
     return _to_response(ticket, deps)
@@ -984,6 +1039,7 @@ async def _enrich_dependents(db: AsyncSession, completed: Ticket) -> None:
 async def accept_ticket(
     project_id: str,
     ticket_id: str,
+    lease_epoch: int | None = None,
     user: User = Depends(get_current_user),
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
@@ -1009,6 +1065,11 @@ async def accept_ticket(
             Ticket.id == ticket_id,
             Ticket.project_id == project_id,
             Ticket.status == "review",
+            *(
+                (Ticket.lease_epoch == lease_epoch,)
+                if lease_epoch is not None
+                else ()
+            ),
         )
         .values(status="done", resolved_at=now, updated_at=now)
     )
@@ -1026,6 +1087,14 @@ async def accept_ticket(
         ).scalar_one_or_none()
         if existing is None:
             raise HTTPException(404, "Ticket not found")
+        if lease_epoch is not None and existing.lease_epoch != lease_epoch:
+            raise HTTPException(
+                409,
+                (
+                    f"Stale ticket lease: provided lease_epoch={lease_epoch}, "
+                    f"current lease_epoch={existing.lease_epoch}."
+                ),
+            )
         legal = sorted(_legal_next(existing.status))
         legal_str = ", ".join(legal) if legal else "(none — terminal state)"
         raise HTTPException(
@@ -1224,18 +1293,49 @@ async def create_ticket_comment(
 ) -> CommentResponse:
     check_feature(ctx, "agent_tickets")
     await _get_project_or_404(project_id, db, user.id)
-    await _get_ticket_or_404(project_id, ticket_id, db)
-
-    comment = TicketComment(
-        id=f"tc_{uuid.uuid4().hex[:16]}",
-        ticket_id=ticket_id,
-        author_user_id=user.id,
-        author_persona=body.author_persona,
-        content=body.content,
-        session_id=body.session_id,
+    comment_id = f"tc_{uuid.uuid4().hex[:16]}"
+    now = datetime.now(timezone.utc)
+    source = select(
+        literal(comment_id),
+        literal(ticket_id),
+        literal(user.id),
+        literal(body.author_persona),
+        literal(body.content),
+        literal(body.session_id),
+        literal(now),
+    ).where(
+        Ticket.id == ticket_id,
+        Ticket.project_id == project_id,
+        *(
+            (Ticket.lease_epoch == body.lease_epoch,)
+            if body.lease_epoch is not None
+            else ()
+        ),
     )
-    db.add(comment)
+    result = await db.execute(
+        insert(TicketComment)
+        .from_select(
+            [
+                "id",
+                "ticket_id",
+                "author_user_id",
+                "author_persona",
+                "content",
+                "session_id",
+                "created_at",
+            ],
+            source,
+        )
+    )
+    if result.rowcount != 1:
+        await db.rollback()
+        ticket = await _get_ticket_or_404(project_id, ticket_id, db)
+        _assert_lease_epoch(ticket, body.lease_epoch)
+        raise HTTPException(409, "Cannot add comment due to concurrent update")
     await db.commit()
+    comment = (
+        await db.execute(select(TicketComment).where(TicketComment.id == comment_id))
+    ).scalar_one()
     await db.refresh(comment)
     return CommentResponse(
         id=comment.id,

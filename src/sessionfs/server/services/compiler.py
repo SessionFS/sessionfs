@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import secrets
@@ -45,6 +46,31 @@ Rules:
 - Remove duplicates (same fact stated differently)
 - Keep it concise — this document is injected into every session
 - Output ONLY the updated context document, nothing else"""
+
+
+def _section_slug_for_entry_type(entry_type: str) -> str:
+    heading = SECTION_MAP.get(entry_type, f"## {entry_type.title()}")
+    raw_title = heading.lstrip("# ").strip().lower()
+    return re.sub(r"[^a-z0-9]+", "_", raw_title).strip("_")
+
+
+def _json_dt(value) -> str | None:
+    return value.isoformat() if value is not None else None
+
+
+def _build_source_manifest(entries: list[KnowledgeEntry]) -> str:
+    """Map compiled context sections to the active KB claims feeding them."""
+    manifest: dict[str, list[dict]] = defaultdict(list)
+    for entry in entries:
+        slug = _section_slug_for_entry_type(entry.entry_type)
+        manifest[slug].append(
+            {
+                "kb_entry_id": entry.id,
+                "created_by_user_id": entry.user_id,
+                "promoted_at": _json_dt(entry.promoted_at),
+            }
+        )
+    return json.dumps(manifest, sort_keys=True)
 
 
 def _build_compile_prompt(context: str, grouped_entries: dict[str, list[str]]) -> str:
@@ -257,6 +283,20 @@ async def compile_project_context(
         logger.info("No pending entries for project %s", project_id)
         return None
 
+    # Snapshot the active-claim inputs that feed the compiled context. This
+    # is intentionally recorded with the compilation row so SoD/audit callers
+    # can trace rendered sections back to KB authors outside the LLM output.
+    source_result = await db.execute(
+        select(KnowledgeEntry).where(
+            KnowledgeEntry.project_id == project_id,
+            KnowledgeEntry.dismissed == False,  # noqa: E712
+            KnowledgeEntry.claim_class == "claim",
+            KnowledgeEntry.freshness_class.in_(["current", "aging"]),
+            KnowledgeEntry.superseded_by.is_(None),
+        )
+    )
+    source_manifest = _build_source_manifest(list(source_result.scalars().all()))
+
     # Budget priority: confidence DESC, last_relevant_at DESC (recent first),
     # entity_ref IS NOT NULL (prefer entity-bound), then trim lowest-priority.
     def _priority_key(e: KnowledgeEntry) -> tuple:
@@ -326,6 +366,7 @@ async def compile_project_context(
         entries_compiled=len(pending),
         context_before=context_before,
         context_after=context_after,
+        source_manifest=source_manifest,
     )
     db.add(compilation)
     await db.commit()
