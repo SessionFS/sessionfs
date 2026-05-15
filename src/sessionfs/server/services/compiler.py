@@ -324,10 +324,18 @@ async def compile_project_context(
     session_ids = sorted({e.session_id for e in source_entries_list if e.session_id})
     persona_by_session: dict[str, str | None] = {}
     if session_ids:
+        # Cross-project leak defense (Codex R1 MEDIUM): KnowledgeEntry.
+        # session_id is a plain string, not a project-validated FK, so a
+        # project-scoped claim can carry a session_id from another
+        # project. Filter the persona-resolution lookup by Session.
+        # project_id == this project AND not-deleted, so personas from
+        # foreign or deleted sessions degrade to None instead of leaking.
         rows = (
             await db.execute(
                 select(Session.id, Session.persona_name).where(
-                    Session.id.in_(session_ids)
+                    Session.id.in_(session_ids),
+                    Session.project_id == project_id,
+                    Session.is_deleted == False,  # noqa: E712
                 )
             )
         ).all()

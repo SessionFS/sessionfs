@@ -1052,7 +1052,13 @@ async def get_context_section(
                 ContextCompilation.source_manifest,
             )
             .where(ContextCompilation.project_id == project_id)
-            .order_by(ContextCompilation.compiled_at.desc())
+            # Tiebreak on id DESC (Codex R1 LOW): compile_id is part of
+            # the SoD evidence contract now, so two compiles in the same
+            # timestamp bucket must not flip nondeterministically.
+            .order_by(
+                ContextCompilation.compiled_at.desc(),
+                ContextCompilation.id.desc(),
+            )
             .limit(1)
         )
     ).one_or_none()

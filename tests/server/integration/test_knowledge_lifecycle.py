@@ -1639,6 +1639,175 @@ class TestGetContextSection:
             for s in src_entries
         ), src_entries
 
+    @pytest.mark.asyncio
+    async def test_get_section_source_entries_drop_foreign_session_persona(
+        self, client, auth_headers: dict, db_session: AsyncSession, test_user
+    ):
+        """Codex R1 MEDIUM regression — KnowledgeEntry.session_id is a
+        plain string, not a project-validated FK. A claim that points
+        at a Session in another project must NOT leak that session's
+        persona_name. Persona resolution should drop to None."""
+        from sessionfs.server.services.compiler import compile_project_context
+        from sessionfs.server.db.models import Session
+
+        project_a = await _mk_project(db_session, remote="acme/proj-a")
+        project_a.owner_id = test_user.id
+        project_a.context_document = "# Project A\n\n"
+        project_b = await _mk_project(db_session, remote="acme/proj-b")
+        project_b.owner_id = test_user.id
+        # The session lives in project B but carries persona_name=atlas.
+        db_session.add(
+            Session(
+                id="ses_foreign_to_a",
+                user_id=test_user.id,
+                title="atlas in B",
+                source_tool="codex",
+                blob_key="blob/ses_foreign_to_a",
+                etag="etag-fa",
+                project_id=project_b.id,
+                persona_name="atlas",
+            )
+        )
+        await db_session.commit()
+        # The claim is in project A but its session_id points to B's session.
+        entry = KnowledgeEntry(
+            project_id=project_a.id,
+            session_id="ses_foreign_to_a",
+            user_id=test_user.id,
+            content="forged provenance attempt",
+            entry_type="decision",
+            confidence=0.95,
+            claim_class="claim",
+            freshness_class="current",
+            dismissed=False,
+        )
+        db_session.add(entry)
+        await db_session.commit()
+        await db_session.refresh(entry)
+
+        await compile_project_context(project_a.id, test_user.id, db_session)
+
+        resp = await client.get(
+            f"/api/v1/projects/{project_a.id}/context/sections/key_decisions",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200, resp.text
+        src_entries = resp.json()["source_entries"]
+        # The claim still surfaces (it IS in project A) but its
+        # created_by_persona must be None — no leak from project B.
+        match = next((s for s in src_entries if s["kb_entry_id"] == entry.id), None)
+        assert match is not None
+        assert match["created_by_persona"] is None, (
+            "Foreign-project session persona leaked into source_entries"
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_section_source_entries_drop_deleted_session_persona(
+        self, client, auth_headers: dict, db_session: AsyncSession, test_user
+    ):
+        """Codex R1 MEDIUM regression — a soft-deleted session must not
+        contribute its persona_name to the manifest. Persona resolution
+        should drop to None."""
+        from sessionfs.server.services.compiler import compile_project_context
+        from sessionfs.server.db.models import Session
+
+        project = await _mk_project(db_session)
+        project.owner_id = test_user.id
+        project.context_document = "# Project\n\n"
+        db_session.add(
+            Session(
+                id="ses_soft_deleted",
+                user_id=test_user.id,
+                title="soft-deleted",
+                source_tool="codex",
+                blob_key="blob/ses_soft_deleted",
+                etag="etag-sd",
+                project_id=project.id,
+                persona_name="atlas",
+                is_deleted=True,
+            )
+        )
+        await db_session.commit()
+        entry = KnowledgeEntry(
+            project_id=project.id,
+            session_id="ses_soft_deleted",
+            user_id=test_user.id,
+            content="claim from a now-deleted session",
+            entry_type="decision",
+            confidence=0.95,
+            claim_class="claim",
+            freshness_class="current",
+            dismissed=False,
+        )
+        db_session.add(entry)
+        await db_session.commit()
+        await db_session.refresh(entry)
+
+        await compile_project_context(project.id, test_user.id, db_session)
+
+        resp = await client.get(
+            f"/api/v1/projects/{project.id}/context/sections/key_decisions",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200, resp.text
+        src_entries = resp.json()["source_entries"]
+        match = next((s for s in src_entries if s["kb_entry_id"] == entry.id), None)
+        assert match is not None
+        assert match["created_by_persona"] is None, (
+            "Deleted-session persona leaked into source_entries"
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_section_picks_stable_compile_id_in_same_bucket(
+        self, client, auth_headers: dict, db_session: AsyncSession, test_user
+    ):
+        """Codex R1 LOW regression — compile_id is part of the evidence
+        contract, so two compilations sharing a compiled_at timestamp
+        must not flip nondeterministically. Tiebreak by id DESC."""
+        from sessionfs.server.db.models import ContextCompilation
+        from datetime import datetime, timezone
+
+        project = await _mk_project(db_session)
+        project.owner_id = test_user.id
+        project.context_document = "# Project\n\n## Key Decisions\n\nx\n"
+        # Two compilations sharing a compiled_at timestamp. id DESC
+        # tiebreaker should always pick the one with the greater id.
+        ts = datetime.now(timezone.utc)
+        c1 = ContextCompilation(
+            project_id=project.id,
+            user_id=test_user.id,
+            entries_compiled=0,
+            context_before="",
+            context_after="",
+            source_manifest='{"key_decisions": [{"kb_entry_id": 1}]}',
+            compiled_at=ts,
+        )
+        c2 = ContextCompilation(
+            project_id=project.id,
+            user_id=test_user.id,
+            entries_compiled=0,
+            context_before="",
+            context_after="",
+            source_manifest='{"key_decisions": [{"kb_entry_id": 2}]}',
+            compiled_at=ts,
+        )
+        db_session.add(c1)
+        db_session.add(c2)
+        await db_session.commit()
+        await db_session.refresh(c1)
+        await db_session.refresh(c2)
+        winner_id = max(c1.id, c2.id)
+
+        resp = await client.get(
+            f"/api/v1/projects/{project.id}/context/sections/key_decisions",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200, resp.text
+        src_entries = resp.json()["source_entries"]
+        # Either entry is fine; what matters is the resolved compile_id
+        # is the same one on every read.
+        assert all(s["compile_id"] == winner_id for s in src_entries), src_entries
+
 
 # ---------- v0.9.9.6 Codex round 4: cross-user 403 regressions ----------
 
