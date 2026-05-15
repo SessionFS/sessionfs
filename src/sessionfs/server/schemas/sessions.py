@@ -40,6 +40,7 @@ class SessionDetail(SessionSummary):
     parent_session_id: str | None = None
     uploaded_at: datetime
     dlp_scan_results: str | None = None
+    retrieval_audit_id: str | None = None
 
 
 class RestoreResponse(SessionDetail):

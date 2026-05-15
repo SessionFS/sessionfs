@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import get_current_user, require_verified_user
 from sessionfs.server.db.engine import get_db
-from sessionfs.server.db.models import Session, ShareLink, User
+from sessionfs.server.db.models import RetrievalAuditContext, Session, ShareLink, User
 from sessionfs.server.tier_gate import UserContext, check_feature, get_user_context
 from sessionfs.server.schemas.sessions import (
     CreateShareLinkRequest,
@@ -324,6 +324,7 @@ def _session_to_detail(s: Session) -> SessionDetail:
         updated_at=s.updated_at,
         uploaded_at=s.uploaded_at,
         dlp_scan_results=getattr(s, "dlp_scan_results", None),
+        retrieval_audit_id=getattr(s, "retrieval_audit_id", None),
         is_deleted=s.is_deleted,
         deleted_at=s.deleted_at,
         deleted_by=getattr(s, "deleted_by", None),
@@ -370,6 +371,7 @@ def _extract_manifest_metadata(data: bytes) -> dict:
         # active_ticket_annot helper if the user is working under a ticket.
         "persona_name": None,
         "ticket_id": None,
+        "retrieval_audit_id": None,
     }
     try:
         manifest = None
@@ -431,6 +433,9 @@ def _extract_manifest_metadata(data: bytes) -> dict:
         tid = manifest.get("ticket_id")
         if isinstance(tid, str) and tid.strip():
             defaults["ticket_id"] = tid.strip()[:64]
+        raid = manifest.get("retrieval_audit_id")
+        if isinstance(raid, str) and raid.strip():
+            defaults["retrieval_audit_id"] = raid.strip()[:64]
 
         # Rules provenance (migration 028) — embedded by the watchers when
         # they capture a native session. Unknown clients leave this absent,
@@ -554,6 +559,38 @@ async def _resolve_project_id_for_session(
         if membership is not None:
             return project_row.id
     return None
+
+
+async def _validated_retrieval_audit_id(
+    db: AsyncSession,
+    claimed_id: str | None,
+    project_id: str | None,
+    user_id: str,
+) -> str | None:
+    """Accept manifest retrieval audit linkage only for the owning user/project."""
+    if not claimed_id:
+        return None
+    from sessionfs.retrieval_audit import is_safe_audit_id
+
+    if not is_safe_audit_id(claimed_id):
+        _logger.warning("Dropping unsafe retrieval_audit_id from session manifest")
+        return None
+    if not project_id:
+        _logger.warning("Dropping retrieval_audit_id with no resolved project")
+        return None
+    ctx = (
+        await db.execute(
+            select(RetrievalAuditContext.id).where(
+                RetrievalAuditContext.id == claimed_id,
+                RetrievalAuditContext.project_id == project_id,
+                RetrievalAuditContext.created_by_user_id == user_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if ctx is None:
+        _logger.warning("Dropping retrieval_audit_id not owned by uploader/project")
+        return None
+    return claimed_id
 
 
 _MAX_MESSAGES_TEXT_BYTES = 100 * 1024  # 100KB limit
@@ -768,6 +805,12 @@ async def upload_session(
     resolved_project_id = await _resolve_project_id_for_session(
         db, user.id, git_remote_normalized
     )
+    retrieval_audit_id = await _validated_retrieval_audit_id(
+        db,
+        meta.get("retrieval_audit_id"),
+        resolved_project_id,
+        user.id,
+    )
 
     now = datetime.now(timezone.utc)
     session = Session(
@@ -808,6 +851,7 @@ async def upload_session(
         # both rely on them being populated at upload time.
         persona_name=meta.get("persona_name"),
         ticket_id=meta.get("ticket_id"),
+        retrieval_audit_id=retrieval_audit_id,
     )
     db.add(session)
     await db.commit()
@@ -1614,6 +1658,12 @@ async def sync_push(
           resolved_project_id = await _resolve_project_id_for_session(
               db2, user_id, git_remote_normalized
           )
+          retrieval_audit_id = await _validated_retrieval_audit_id(
+              db2,
+              meta.get("retrieval_audit_id"),
+              resolved_project_id,
+              user_id,
+          )
           try:
             if existing is None and not is_undelete:
                 # Create: insert with temp blob key first, use PK constraint
@@ -1654,6 +1704,7 @@ async def sync_push(
                     # v0.10.1 Phase 6 — active-ticket provenance.
                     persona_name=meta.get("persona_name"),
                     ticket_id=meta.get("ticket_id"),
+                    retrieval_audit_id=retrieval_audit_id,
                 )
                 if dlp_scan_results and hasattr(session, "dlp_scan_results"):
                     session.dlp_scan_results = json.dumps(dlp_scan_results)
@@ -1789,6 +1840,7 @@ async def sync_push(
             # re-upload correctly mirrors whatever the watcher tagged.
             sess.persona_name = meta.get("persona_name")
             sess.ticket_id = meta.get("ticket_id")
+            sess.retrieval_audit_id = retrieval_audit_id
             # v0.10.0 Phase 5 Round 2 (KB entry 285): also re-evaluate
             # project linkage on the update / undelete path. Without
             # this, sessions captured before the project existed (or
@@ -2112,6 +2164,12 @@ async def reindex_sessions(
             # v0.10.1 Phase 6 — propagate active-ticket provenance on reindex.
             session.persona_name = meta.get("persona_name")
             session.ticket_id = meta.get("ticket_id")
+            session.retrieval_audit_id = await _validated_retrieval_audit_id(
+                db,
+                meta.get("retrieval_audit_id"),
+                session.project_id,
+                user.id,
+            )
 
             # Update git metadata for PR matching
             ws = _extract_workspace_from_archive(data)

@@ -132,6 +132,160 @@ def show_persona(
         console.print(Markdown(content))
 
 
+def _kebab_role_fragment(role: str) -> str:
+    """Pick the short suffix used in `.agents/<name>-<fragment>.md` filenames.
+
+    Heuristic: take the first meaningful word in the role. The existing
+    `.agents/` files use short fragments (backend, devops, revenue,
+    frontend, docs, security, compliance, licensing), not the literal
+    role kebab-cased. Map them by the leading word so atlas's "Backend
+    Architect" → atlas-backend.md, forge's "DevOps and GCP Platform
+    Engineer" → forge-devops.md, scribe's "Documentation and Positioning
+    Lead" → scribe-documentation.md. Callers can override with --path.
+    """
+    head = (role or "").strip().split()
+    if not head:
+        return ""
+    return head[0].lower().rstrip(",")
+
+
+def _resolve_pull_target(out_dir: Path, name: str, role: str) -> Path:
+    """Pick the target filename for `sfs persona pull`.
+
+    Prefers an existing `.agents/<name>-*.md` so the established naming
+    convention is preserved on re-pull. Falls back to
+    `<name>-<role-fragment>.md`, then `<name>.md`.
+    """
+    existing = sorted(out_dir.glob(f"{name}-*.md"))
+    if existing:
+        return existing[0]
+    fragment = _kebab_role_fragment(role)
+    if fragment:
+        return out_dir / f"{name}-{fragment}.md"
+    return out_dir / f"{name}.md"
+
+
+def _format_persona_markdown(persona: dict) -> str:
+    """Render a persona record as the markdown body to write to disk.
+
+    The persona's own `content` is expected to start with an H1 header,
+    so we don't add another. A short HTML-comment preamble records the
+    server version + specializations + pull timestamp so a human
+    browsing `.agents/` can tell the file is auto-synced.
+    """
+    specs = persona.get("specializations") or []
+    body = (persona.get("content") or "").rstrip() + "\n"
+    preamble = [
+        f"<!-- Pulled from SessionFS persona store. "
+        f"Server version: {persona.get('version', '?')}. "
+        f"Run `sfs persona pull --all --force` to refresh. -->",
+    ]
+    if specs:
+        preamble.append(f"<!-- Specializations: {', '.join(specs)} -->")
+    preamble.append("")
+    return "\n".join(preamble) + body
+
+
+@persona_app.command("pull")
+@handle_errors
+def pull_personas(
+    name: str | None = typer.Argument(
+        None,
+        help="Persona name to pull (e.g. 'atlas'). Omit with --all to pull every persona.",
+    ),
+    all_: bool = typer.Option(
+        False, "--all", help="Pull every active persona in the project.",
+    ),
+    out_dir: Path = typer.Option(
+        Path(".agents"),
+        "--dir",
+        help="Output directory. Defaults to .agents/ (matches CLAUDE.md / release-skill convention).",
+    ),
+    force: bool = typer.Option(
+        False, "--force", help="Overwrite existing files.",
+    ),
+    path: Path | None = typer.Option(
+        None, "--path", help="Explicit output path (single-persona only).",
+    ),
+) -> None:
+    """Pull server-side personas to local `.agents/*.md` files.
+
+    Use this after personas have been revised on the server (via
+    `sfs persona edit`, dashboard, or MCP) so local Agent-tool spawns
+    and the /release skill's sub-agents see the same content.
+
+    Default target: `.agents/<name>-<role-fragment>.md`. Preserves
+    existing filenames on re-pull so the established convention is
+    stable.
+    """
+    if not name and not all_:
+        err_console.print(
+            "[red]Pass a persona name or --all.[/red] See `sfs persona pull --help`."
+        )
+        raise typer.Exit(2)
+    if name and all_:
+        err_console.print("[red]Pass either a name or --all, not both.[/red]")
+        raise typer.Exit(2)
+    if path and (all_ or not name):
+        err_console.print("[red]--path is only valid when pulling a single persona by name.[/red]")
+        raise typer.Exit(2)
+
+    api_url, api_key, project_id = _resolve_project()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if all_:
+        status, body, _ = asyncio.run(
+            _api_request(
+                "GET", f"/api/v1/projects/{project_id}/personas", api_url, api_key,
+            )
+        )
+        if status >= 400 or not isinstance(body, list):
+            err_console.print(f"[red]API error ({status}): {body}[/red]")
+            raise typer.Exit(1)
+        personas = body
+    else:
+        status, body, _ = asyncio.run(
+            _api_request(
+                "GET",
+                f"/api/v1/projects/{project_id}/personas/{name}",
+                api_url, api_key,
+            )
+        )
+        if status == 404:
+            err_console.print(f"[red]Persona '{name}' not found.[/red]")
+            raise typer.Exit(1)
+        if status >= 400 or not isinstance(body, dict):
+            err_console.print(f"[red]API error ({status}): {body}[/red]")
+            raise typer.Exit(1)
+        personas = [body]
+
+    written: list[Path] = []
+    skipped: list[Path] = []
+    for p in personas:
+        if path is not None:
+            target = path
+        else:
+            target = _resolve_pull_target(out_dir, p["name"], p.get("role", ""))
+        if target.exists() and not force:
+            skipped.append(target)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(_format_persona_markdown(p), encoding="utf-8")
+        written.append(target)
+
+    for t in written:
+        console.print(f"[green]wrote[/green] {t}")
+    for t in skipped:
+        err_console.print(
+            f"[yellow]skipped[/yellow] {t} [dim](exists; use --force to overwrite)[/dim]"
+        )
+    if not written:
+        if skipped:
+            raise typer.Exit(1)
+        err_console.print("[yellow]No personas pulled.[/yellow]")
+        raise typer.Exit(1)
+
+
 @persona_app.command("create")
 @handle_errors
 def create_persona(

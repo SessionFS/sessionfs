@@ -272,6 +272,12 @@ def start_ticket(
         ticket_id=ticket_id,
         persona_name=ticket.get("assigned_to"),
         project_id=project_id,
+        lease_epoch=ticket.get("lease_epoch") if isinstance(ticket.get("lease_epoch"), int) else None,
+        retrieval_audit_id=(
+            body.get("retrieval_audit_id")
+            if isinstance(body.get("retrieval_audit_id"), str)
+            else None
+        ),
     )
     if bundle_ok:
         console.print(
@@ -310,6 +316,9 @@ def complete_ticket(
     knowledge_entry_id: list[str] = typer.Option(
         [], "--kb-entry", help="Knowledge entry id (repeatable)"
     ),
+    lease_epoch: int | None = typer.Option(
+        None, "--lease-epoch", help="Fence stale ticket workers"
+    ),
 ) -> None:
     """Mark a ticket complete. Moves to review; removes the active bundle."""
     api_url, api_key, project_id = _resolve_project()
@@ -318,6 +327,17 @@ def complete_ticket(
         "changed_files": list(file_changed),
         "knowledge_entry_ids": list(knowledge_entry_id),
     }
+    if lease_epoch is None:
+        bundle = read_bundle()
+        if (
+            isinstance(bundle, dict)
+            and bundle.get("ticket_id") == ticket_id
+            and bundle.get("project_id") == project_id
+            and isinstance(bundle.get("lease_epoch"), int)
+        ):
+            lease_epoch = bundle["lease_epoch"]
+    if lease_epoch is not None:
+        payload["lease_epoch"] = lease_epoch
     s, body, _ = asyncio.run(
         _api_request(
             "POST", f"/api/v1/projects/{project_id}/tickets/{ticket_id}/complete",
@@ -347,12 +367,26 @@ def comment_ticket(
     ticket_id: str = typer.Argument(...),
     content: str = typer.Option(..., "--content", "-c"),
     as_persona: str | None = typer.Option(None, "--as", help="Attribute to persona"),
+    lease_epoch: int | None = typer.Option(
+        None, "--lease-epoch", help="Fence stale ticket workers"
+    ),
 ) -> None:
     """Add a comment to a ticket."""
     api_url, api_key, project_id = _resolve_project()
     payload: dict = {"content": content}
     if as_persona:
         payload["author_persona"] = as_persona
+    if lease_epoch is None:
+        bundle = read_bundle()
+        if (
+            isinstance(bundle, dict)
+            and bundle.get("ticket_id") == ticket_id
+            and bundle.get("project_id") == project_id
+            and isinstance(bundle.get("lease_epoch"), int)
+        ):
+            lease_epoch = bundle["lease_epoch"]
+    if lease_epoch is not None:
+        payload["lease_epoch"] = lease_epoch
     s, body, _ = asyncio.run(
         _api_request(
             "POST", f"/api/v1/projects/{project_id}/tickets/{ticket_id}/comments",
@@ -466,15 +500,32 @@ def assign_ticket_cmd(
 
 @ticket_app.command("resolve")
 @handle_errors
-def resolve_ticket_cmd(ticket_id: str = typer.Argument(...)) -> None:
+def resolve_ticket_cmd(
+    ticket_id: str = typer.Argument(...),
+    lease_epoch: int | None = typer.Option(
+        None, "--lease-epoch", help="Fence stale ticket workers"
+    ),
+) -> None:
     """Mark a ticket resolved (review → done). Triggers dependency
     enrichment + auto-unblock for tickets waiting on this one.
     """
     api_url, api_key, project_id = _resolve_project()
+    suffix = ""
+    if lease_epoch is None:
+        bundle = read_bundle()
+        if (
+            isinstance(bundle, dict)
+            and bundle.get("ticket_id") == ticket_id
+            and bundle.get("project_id") == project_id
+            and isinstance(bundle.get("lease_epoch"), int)
+        ):
+            lease_epoch = bundle["lease_epoch"]
+    if lease_epoch is not None:
+        suffix = f"?lease_epoch={lease_epoch}"
     s, body, _ = asyncio.run(
         _api_request(
             "POST",
-            f"/api/v1/projects/{project_id}/tickets/{ticket_id}/accept",
+            f"/api/v1/projects/{project_id}/tickets/{ticket_id}/accept{suffix}",
             api_url, api_key,
         )
     )

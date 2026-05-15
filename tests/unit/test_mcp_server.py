@@ -9,6 +9,11 @@ import pytest
 
 from sessionfs.mcp import server as mcp_server
 from sessionfs.mcp.search import SessionSearchIndex
+from sessionfs.retrieval_audit import (
+    collect_returned_refs,
+    record_retrieval,
+    sanitize_arguments,
+)
 from sessionfs.store.local import LocalStore
 
 
@@ -113,6 +118,150 @@ class TestFindRelated:
         assert "error" in result
 
 
+class TestRetrievalAudit:
+    @pytest.mark.asyncio
+    async def test_records_and_reads_retrieval_log(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        await mcp_server._record_retrieval_for_tool(
+            "get_context_section",
+            {"slug": "architecture", "audit_session_id": "ses_audit"},
+            {
+                "slug": "architecture",
+                "source_entries": [{"kb_entry_id": 42}],
+            },
+        )
+
+        result = await mcp_server._handle_get_session_retrieval_log({
+            "session_id": "ses_audit"
+        })
+        # tk_b3ee62c732c44594 Finding B: response shape must match
+        # RetrievalAuditLogResponse on BOTH server-success and local-
+        # fallback paths. This test exercises the local-fallback path
+        # (no API key configured in mcp_env).
+        assert result["count"] == 1
+        assert set(result.keys()) == {
+            "session_id", "retrieval_audit_id", "events", "count",
+        }
+        row = result["events"][0]
+        assert row["tool_name"] == "get_context_section"
+        assert row["arguments"]["slug"] == "architecture"
+        assert row["returned_refs"]["slugs"] == ["architecture"]
+        assert row["returned_refs"]["kb_entry_ids"] == ["42"]
+        # Local-fallback rows carry source="local" + null context_id so
+        # consumers can tell server vs local apart.
+        assert row["source"] == "local"
+        assert row["context_id"] == ""
+        assert row["id"] is None
+        assert row["session_id"] == "ses_audit"
+
+    @pytest.mark.asyncio
+    async def test_retrieval_log_shape_matches_server_response(
+        self, tmp_path, monkeypatch
+    ):
+        """Server-success path and local-fallback path must return the
+        same top-level keys so agents can parse one schema regardless of
+        which path fired. tk_b3ee62c732c44594 Finding B."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        # Make the API call route into the server branch by configuring
+        # a fake api_key + url, then mock httpx to return the server
+        # shape.
+        from sessionfs.cli.common import load_config
+        cfg = load_config()
+        monkeypatch.setattr(cfg.sync, "api_key", "test-key", raising=False)
+        monkeypatch.setattr(cfg.sync, "api_url", "https://api.test", raising=False)
+        monkeypatch.setattr(mcp_server, "load_config", lambda: cfg)
+
+        import httpx
+
+        class _Resp:
+            status_code = 200
+            def json(self):
+                return {
+                    "session_id": "ses_x",
+                    "retrieval_audit_id": "ra_abc",
+                    "events": [{
+                        "id": 1, "context_id": "ra_abc", "project_id": "p",
+                        "session_id": "ses_x", "tool_name": "get_persona",
+                        "arguments": {}, "returned_refs": {},
+                        "source": "mcp", "caller_user_id": "u",
+                        "created_at": "2026-05-15T00:00:00Z",
+                    }],
+                    "count": 1,
+                }
+
+        class _Client:
+            def __init__(self, *a, **kw): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def get(self, *a, **kw): return _Resp()
+
+        monkeypatch.setattr(httpx, "AsyncClient", _Client)
+
+        server_result = await mcp_server._handle_get_session_retrieval_log(
+            {"session_id": "ses_x"}
+        )
+        server_keys = set(server_result.keys())
+
+        # Now force the local-fallback path: empty api_key. Reset config.
+        monkeypatch.setattr(cfg.sync, "api_key", "", raising=False)
+        local_result = await mcp_server._handle_get_session_retrieval_log(
+            {"session_id": "ses_x"}
+        )
+        local_keys = set(local_result.keys())
+
+        # Top-level keys must match. The actual key set is
+        # {session_id, retrieval_audit_id, events, count}.
+        assert server_keys == local_keys == {
+            "session_id", "retrieval_audit_id", "events", "count",
+        }
+
+    @pytest.mark.asyncio
+    async def test_retrieval_log_rejects_path_traversal_session_id(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        result = await mcp_server._handle_get_session_retrieval_log({
+            "session_id": "../../../etc/passwd"
+        })
+        assert "error" in result
+        assert not (tmp_path / ".sessionfs" / "retrieval_logs").exists()
+
+    def test_record_retrieval_rejects_unsafe_ids(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        for value in ("..", "../x", "/tmp/x", "bad/id", ""):
+            assert not record_retrieval(
+                tool_name="get_context_section",
+                args={"audit_session_id": value},
+                result={"slug": "architecture"},
+            )
+        assert not (tmp_path / ".sessionfs" / "retrieval_logs").exists()
+
+    def test_returned_refs_are_structural_only_and_depth_limited(self):
+        result = {
+            "content": "This page mentions KB 42 and Entry 7, but they are prose.",
+            "source_entries": [{"kb_entry_id": 99}],
+        }
+        refs = collect_returned_refs(result)
+        assert refs["kb_entry_ids"] == ["99"]
+
+        nested: object = {"kb_entry_id": "too_deep"}
+        for _ in range(60):
+            nested = {"child": nested}
+        assert collect_returned_refs(nested) == {}
+
+    def test_sanitize_arguments_strips_secret_shaped_keys(self):
+        sanitized = sanitize_arguments({
+            "query": "rate limit",
+            "git_remote": "github.com/acme/repo",
+            "api_key": "k",
+            "github_token": "t",
+            "password": "p",
+            "auth_header": "a",
+            "credential_id": "c",
+            "secret_name": "s",
+        })
+        assert sanitized == {"query": "rate limit"}
+
+
 # ---------------------------------------------------------------------------
 # v0.9.9.6 — Tier A read-side MCP tools (7 new tools)
 # ---------------------------------------------------------------------------
@@ -124,13 +273,12 @@ class TestToolRegistryV0996:
     tools (6) + v0.10.2 AgentRun tools (3: create_agent_run,
     complete_agent_run, list_agent_runs) + v0.10.2 ticket-approval +
     session-ops tools (4: approve_ticket, checkpoint_session,
-    list_checkpoints, fork_session). Total: 43."""
+    list_checkpoints, fork_session) + retrieval audit log. Total: 44."""
 
-    def test_tool_count_is_43(self):
+    def test_tool_count_is_44(self):
         from sessionfs.mcp.server import _TOOLS
-        assert len(_TOOLS) == 43, (
-            f"Expected 43 MCP tools after v0.10.2 ticket-approval + "
-            f"session-ops, got {len(_TOOLS)}"
+        assert len(_TOOLS) == 44, (
+            f"Expected 44 MCP tools after retrieval audit log, got {len(_TOOLS)}"
         )
 
     def test_new_tools_registered(self):
@@ -153,6 +301,7 @@ class TestToolRegistryV0996:
             "checkpoint_session",
             "list_checkpoints",
             "fork_session",
+            "get_session_retrieval_log",
         ):
             assert new_tool in names, f"Missing MCP tool: {new_tool}"
 

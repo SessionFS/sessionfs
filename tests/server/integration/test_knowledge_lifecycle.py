@@ -15,12 +15,12 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.db.models import (
+    ContextCompilation,
     KnowledgeEntry,
-    KnowledgePage,
     Project,
 )
 from sessionfs.server.services.knowledge import (
@@ -1534,6 +1534,46 @@ class TestGetContextSection:
         assert "available_slugs" in detail
         assert "architecture" in detail["available_slugs"]
         assert "team_workflow" in detail["available_slugs"]
+
+    @pytest.mark.asyncio
+    async def test_get_section_includes_compile_source_entries(
+        self, client, auth_headers: dict, db_session: AsyncSession, test_user
+    ):
+        from sessionfs.server.services.compiler import compile_project_context
+
+        project = await _mk_project(db_session)
+        project.owner_id = test_user.id
+        project.context_document = "# Project\n\n"
+        await db_session.commit()
+        entry = await _mk_entry(
+            db_session,
+            project_id=project.id,
+            entry_type="decision",
+            content="Use lease_epoch to fence stale ticket workers.",
+            confidence=0.95,
+        )
+
+        compilation = await compile_project_context(
+            project.id,
+            test_user.id,
+            db_session,
+        )
+        assert isinstance(compilation, ContextCompilation)
+
+        resp = await client.get(
+            f"/api/v1/projects/{project.id}/context/sections/key_decisions",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["slug"] == "key_decisions"
+        assert data["source_entries"] == [
+            {
+                "kb_entry_id": entry.id,
+                "created_by_user_id": entry.user_id,
+                "promoted_at": None,
+            }
+        ]
 
 
 # ---------- v0.9.9.6 Codex round 4: cross-user 403 regressions ----------

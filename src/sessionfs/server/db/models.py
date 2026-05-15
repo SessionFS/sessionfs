@@ -151,6 +151,7 @@ class Session(Base):
     # (dashboard, /api/v1/sessions/{id}) join cooperatively.
     persona_name: Mapped[str | None] = mapped_column(String(50), nullable=True)
     ticket_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    retrieval_audit_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
 
 class Handoff(Base):
@@ -713,6 +714,9 @@ class ContextCompilation(Base):
     entries_compiled: Mapped[int] = mapped_column(Integer, nullable=False)
     context_before: Mapped[str | None] = mapped_column(Text, nullable=True)
     context_after: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_manifest: Mapped[str] = mapped_column(
+        Text, nullable=False, default="{}", server_default="{}"
+    )
     compiled_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -976,6 +980,9 @@ class Ticket(Base):
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default="open", server_default="open"
     )
+    lease_epoch: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
 
     # Context — explicit references chosen by the reporter. NO
     # automatic KB injection in v1; compile_persona_context only
@@ -1166,3 +1173,67 @@ class AgentRun(Base):
         DateTime(timezone=True), nullable=True
     )
     duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class RetrievalAuditContext(Base):
+    """Server-side audit context for MCP retrievals that shaped a run."""
+
+    __tablename__ = "retrieval_audit_contexts"
+    __table_args__ = (
+        Index("idx_retrieval_ctx_project", "project_id"),
+        Index("idx_retrieval_ctx_ticket", "ticket_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    ticket_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    persona_name: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    lease_epoch: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class RetrievalAuditEvent(Base):
+    """Append-only server-side record of one context-shaping retrieval."""
+
+    __tablename__ = "retrieval_audit_events"
+    __table_args__ = (
+        Index("idx_retrieval_event_context", "context_id", "created_at"),
+        Index("idx_retrieval_event_session", "session_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    context_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("retrieval_audit_contexts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    project_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tool_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    arguments: Mapped[str] = mapped_column(Text, nullable=False, server_default="{}")
+    returned_refs: Mapped[str] = mapped_column(Text, nullable=False, server_default="{}")
+    source: Mapped[str] = mapped_column(String(20), nullable=False, server_default="mcp")
+    caller_user_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -95,6 +96,7 @@ class ContextSectionResponse(BaseModel):
     slug: str
     title: str
     content: str
+    source_entries: list[dict] = Field(default_factory=list)
 
 
 class CompileRequest(BaseModel):
@@ -1037,8 +1039,31 @@ async def get_context_section(
     # Recover a human-readable title from the slug. We don't keep the raw
     # heading text after splitting, so we reverse-derive a Title-cased name.
     title = slug.replace("_", " ").strip().title()
+    source_entries: list[dict] = []
+    latest_manifest = (
+        await db.execute(
+            select(ContextCompilation.source_manifest)
+            .where(ContextCompilation.project_id == project_id)
+            .order_by(ContextCompilation.compiled_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if latest_manifest:
+        try:
+            manifest = json.loads(latest_manifest)
+        except (TypeError, ValueError):
+            manifest = {}
+        if isinstance(manifest, dict):
+            entries = manifest.get(slug, [])
+            if isinstance(entries, list):
+                source_entries = [e for e in entries if isinstance(e, dict)]
 
-    return ContextSectionResponse(slug=slug, title=title, content=body)
+    return ContextSectionResponse(
+        slug=slug,
+        title=title,
+        content=body,
+        source_entries=source_entries,
+    )
 
 
 @router.get("/{project_id}/health", response_model=HealthResponse)

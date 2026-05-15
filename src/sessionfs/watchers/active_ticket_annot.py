@@ -7,6 +7,7 @@ log a warning and leave the manifest untouched.
 The manifest gains two top-level fields when a bundle exists:
 - ``persona_name`` — the persona the user is working under
 - ``ticket_id`` — the ticket the user has started
+- ``retrieval_audit_id`` — server-side retrieval audit context id
 
 These match the column names already in the ``sessions`` table
 (migration 037), so the cloud sync path will populate the SQL columns
@@ -35,6 +36,7 @@ def annotate_manifest_with_active_ticket(session_dir: Path) -> None:
             return
         ticket_id = bundle.get("ticket_id")
         persona_name = bundle.get("persona_name")
+        retrieval_audit_id = bundle.get("retrieval_audit_id")
         # v0.10.1 Phase 8 — persona-only bundles (assume_persona) carry
         # ticket_id=None. Annotate when EITHER field is present so ad-hoc
         # agent work still tags captured sessions with the persona.
@@ -55,6 +57,8 @@ def annotate_manifest_with_active_ticket(session_dir: Path) -> None:
             manifest["ticket_id"] = ticket_id
         if persona_name:
             manifest["persona_name"] = persona_name
+        if isinstance(retrieval_audit_id, str) and retrieval_audit_id.strip():
+            manifest["retrieval_audit_id"] = retrieval_audit_id.strip()[:64]
 
         manifest_path.write_text(json.dumps(manifest, indent=2))
     except Exception as exc:  # pragma: no cover — best-effort

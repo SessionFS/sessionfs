@@ -215,7 +215,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
-**v0.10.3 — Public Beta.** 1688 backend tests + 186 dashboard tests passing. 38 database migrations. Dashboard UI for personas / tickets / AgentRun on top of the v0.10.2 CI-integration layer.
+**v0.10.4 — Public Beta.** 1711 backend tests + 186 dashboard tests passing. 39 database migrations. Ticket lease fencing + compile source manifest + server-primary retrieval audit trail + `sfs persona pull` on top of the v0.10.3 dashboard layer.
 
 ### Session capture, resume, and search
 
