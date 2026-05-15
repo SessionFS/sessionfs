@@ -99,6 +99,15 @@ def _default_roo_code_storage() -> Path:
     return Path.home() / ".config" / "Code" / "User" / "globalStorage" / "rooveterinaryinc.roo-cline"
 
 
+def _default_kilo_code_storage() -> Path:
+    # Marketplace ID is kilocode.Kilo-Code (case-sensitive) but the
+    # globalStorage directory is lowercased to kilocode.kilo-code.
+    import platform
+    if platform.system() == "Darwin":
+        return Path.home() / "Library" / "Application Support" / "Code" / "User" / "globalStorage" / "kilocode.kilo-code"
+    return Path.home() / ".config" / "Code" / "User" / "globalStorage" / "kilocode.kilo-code"
+
+
 class ClineWatcherConfig(BaseModel):
     """Cline VS Code extension watcher configuration."""
 
@@ -111,6 +120,13 @@ class RooCodeWatcherConfig(BaseModel):
 
     enabled: bool = False
     storage_dir: Path = Field(default_factory=_default_roo_code_storage)
+
+
+class KiloCodeWatcherConfig(BaseModel):
+    """Kilo Code VS Code extension watcher configuration."""
+
+    enabled: bool = False
+    storage_dir: Path = Field(default_factory=_default_kilo_code_storage)
 
 
 class StoragePolicyConfig(BaseModel):
@@ -155,6 +171,7 @@ class DaemonConfig(BaseModel):
     cursor: CursorWatcherConfig = Field(default_factory=CursorWatcherConfig)
     cline: ClineWatcherConfig = Field(default_factory=ClineWatcherConfig)
     roo_code: RooCodeWatcherConfig = Field(default_factory=RooCodeWatcherConfig)
+    kilo_code: KiloCodeWatcherConfig = Field(default_factory=KiloCodeWatcherConfig)
     amp: AmpWatcherConfig = Field(default_factory=AmpWatcherConfig)
     storage: StoragePolicyConfig = Field(default_factory=StoragePolicyConfig)
     sync: SyncConfig = Field(default_factory=SyncConfig)
@@ -206,6 +223,10 @@ enabled = false
 [roo_code]
 enabled = false
 # storage_dir = "~/Library/Application Support/Code/User/globalStorage/rooveterinaryinc.roo-cline"
+
+[kilo_code]
+enabled = false
+# storage_dir = "~/Library/Application Support/Code/User/globalStorage/kilocode.kilo-code"
 
 [amp]
 enabled = false

@@ -17,14 +17,33 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.10.5 -->
+      <!-- v0.10.6 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
-            <span class="text-brand font-semibold">v0.10.5</span>
+            <span class="text-brand font-semibold">v0.10.6</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">May 15, 2026</span>
           <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Kilo Code Capture &mdash; 9-Tool Coverage</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Kilo Code added as the 9th supported tool</strong> (capture-only) &mdash; VS Code extension (marketplace ID <span class="font-mono text-accent text-sm">kilocode.Kilo-Code</span>), fork of Roo Code which is a fork of Cline. New <span class="font-mono text-accent text-sm">KiloCodeWatcher</span> is a thin subclass of <span class="font-mono text-accent text-sm">ClineWatcher</span>: same per-task UUID storage format, different globalStorage path (<span class="font-mono text-accent text-sm">kilocode.kilo-code</span>).</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Wired end-to-end across the toolchain</strong> &mdash; daemon registration, <span class="font-mono text-accent text-sm">sfs init</span> auto-detection, watcher CLI plumbing, MCP install (<span class="font-mono text-accent text-sm">sfs mcp install --for kilo-code</span> registers SessionFS as an MCP server in Kilo Code's settings), recapture path, and resume rejection (capture-only, like Cursor/Amp/Cline/Roo Code).</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Bidirectional resume targets unchanged</strong> &mdash; resume targets remain claude-code, codex, copilot, gemini. Kilo Code sessions can be resumed in any of those four.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">1,727 backend + 186 dashboard UI tests passing (was 1,720 + 186 at v0.10.5) &middot; 39 migrations &middot; 44 MCP tools. +7 backend covering Kilo Code watcher detection, capture, recapture guard, and resume rejection.</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.10.5 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.10.5</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">May 15, 2026</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">SoD Cohort Disqualification + Tier-Aware Archive Cap + Ticket Comments CLI</h2>
         <ul class="space-y-2 text-base text-muted">

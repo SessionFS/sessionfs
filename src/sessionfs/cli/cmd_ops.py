@@ -57,7 +57,7 @@ def resume(
     project: str | None = typer.Option(None, help="Target project path (overrides workspace)."),
     tool: str = typer.Option(
         "claude-code", "--in",
-        help="Target tool: claude-code, codex, copilot, gemini, cursor, cline, roo-code",
+        help="Target tool: claude-code, codex, copilot, gemini, cursor, cline, roo-code, kilo-code",
     ),
     model: str | None = typer.Option(
         None, "--model", "-m",
@@ -106,7 +106,7 @@ def resume(
 
         # v0.9.9: preflight the target tool's project rules file from
         # current canonical SessionFS rules. Non-fatal — never fails resume.
-        if target_path and tool not in ("cursor", "cline", "roo-code", "amp"):
+        if target_path and tool not in ("cursor", "cline", "roo-code", "kilo-code", "amp"):
             _run_rules_preflight(
                 project_path=target_path,
                 target_tool=tool,
@@ -146,6 +146,17 @@ def resume(
         elif tool == "roo-code":
             err_console.print(
                 "[yellow]Roo Code is capture-only: VS Code extension state is too fragile for automated injection.[/yellow]\n"
+                "Resume in a bidirectional tool instead:\n"
+                f"  sfs resume {session_id} --in claude-code\n"
+                f"  sfs resume {session_id} --in codex\n"
+                f"  sfs resume {session_id} --in copilot\n"
+                f"  sfs resume {session_id} --in gemini\n"
+                "\nLearn more: docs/compatibility.md"
+            )
+            raise SystemExit(1)
+        elif tool == "kilo-code":
+            err_console.print(
+                "[yellow]Kilo Code is capture-only: VS Code extension state is too fragile for automated injection.[/yellow]\n"
                 "Resume in a bidirectional tool instead:\n"
                 f"  sfs resume {session_id} --in claude-code\n"
                 f"  sfs resume {session_id} --in codex\n"

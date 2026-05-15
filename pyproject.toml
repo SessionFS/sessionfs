@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sessionfs"
-version = "0.10.5"
-description = "Capture, sync, and resume AI coding sessions across 8 tools — Claude Code, Codex, Gemini, Copilot, Cursor, Amp, Cline, and Roo Code."
+version = "0.10.6"
+description = "Capture, sync, and resume AI coding sessions across 9 tools — Claude Code, Codex, Gemini, Copilot, Cursor, Amp, Cline, Roo Code, and Kilo Code."
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}

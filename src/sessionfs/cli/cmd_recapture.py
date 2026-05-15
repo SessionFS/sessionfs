@@ -29,6 +29,7 @@ _TOOL_HANDLERS = {
     "amp": "_recapture_amp",
     "cline": "_recapture_cline",
     "roo-code": "_recapture_cline",
+    "kilo-code": "_recapture_cline",
 }
 
 

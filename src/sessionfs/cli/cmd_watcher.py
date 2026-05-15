@@ -28,6 +28,7 @@ TOOLS = {
     "amp": {"config_key": "amp", "default_enabled": False},
     "cline": {"config_key": "cline", "default_enabled": False},
     "roo-code": {"config_key": "roo_code", "default_enabled": False},
+    "kilo-code": {"config_key": "kilo_code", "default_enabled": False},
 }
 
 
@@ -66,6 +67,11 @@ def _tool_is_installed(tool: str) -> bool:
             home / "Library" / "Application Support" / "Code" / "User" / "globalStorage" / "rooveterinaryinc.roo-cline"
             if platform.system() == "Darwin"
             else home / ".config" / "Code" / "User" / "globalStorage" / "rooveterinaryinc.roo-cline"
+        ),
+        "kilo-code": (
+            home / "Library" / "Application Support" / "Code" / "User" / "globalStorage" / "kilocode.kilo-code"
+            if platform.system() == "Darwin"
+            else home / ".config" / "Code" / "User" / "globalStorage" / "kilocode.kilo-code"
         ),
         "cursor": (
             home / "Library" / "Application Support" / "Cursor"
@@ -152,7 +158,7 @@ def _restart_daemon() -> None:
 
 @watcher_app.command("enable")
 def enable_watcher(
-    tool: str = typer.Argument(..., help="Tool to enable (claude-code, codex, gemini, copilot, cursor, amp, cline, roo-code)"),
+    tool: str = typer.Argument(..., help="Tool to enable (claude-code, codex, gemini, copilot, cursor, amp, cline, roo-code, kilo-code)"),
 ) -> None:
     """Enable a tool watcher and restart the daemon."""
     if tool not in TOOLS:
