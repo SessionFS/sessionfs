@@ -17,14 +17,31 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.10.7 -->
+      <!-- v0.10.8 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
-            <span class="text-brand font-semibold">v0.10.7</span>
+            <span class="text-brand font-semibold">v0.10.8</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">May 16, 2026</span>
           <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">v0.10.7 Hotfix &mdash; CI Test Isolation Fix to Unblock Cloud Run Deploy</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Test isolation fix.</strong> <span class="font-mono text-accent text-sm">test_returns_kb_and_session_sources</span> passed locally but failed on the public CI runner because <span class="font-mono text-accent text-sm">_fetch_kb_entries_raw</span> re-imports <span class="font-mono text-accent text-sm">load_config</span> from <span class="font-mono text-accent text-sm">sessionfs.daemon.config</span> inside the function. The monkeypatch on <span class="font-mono text-accent text-sm">mcp_server.load_config</span> didn't intercept the re-import; CI without <span class="font-mono text-accent text-sm">~/.sessionfs/config.toml</span> on disk got empty defaults &rarr; empty <span class="font-mono text-accent text-sm">sources_cited</span> &rarr; assertion fail. Fix patches both namespaces.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">No product code changes from v0.10.7. This release unblocks Deploy API + Deploy MCP Server pipelines that failed on the v0.10.7 push. Cloud Run picks up v0.10.7's customer-ask provenance fields + <span class="font-mono">sfs ticket watch</span> CLI + migration 040 SQLite-compat fix here. Version skipped 0.10.7.1 because Helm rejects 4-segment versions (strict SemVer). 1,745 backend + 186 dashboard UI tests passing.</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.10.7 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.10.7</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">May 16, 2026</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Customer-Ask Provenance &mdash; sources_cited, Wiki History, Personas Active, Lease Required Mode</h2>
         <ul class="space-y-2 text-base text-muted">

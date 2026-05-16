@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.8] - 2026-05-16
+
+### Fixed
+- **CI test regression on v0.10.7.** `test_returns_kb_and_session_sources` passed locally but failed on the public CI runner. Root cause: `_fetch_kb_entries_raw` re-imports `load_config` from `sessionfs.daemon.config` inside the function body. The monkeypatch on `mcp_server.load_config` doesn't intercept that re-import; in CI without a real `~/.sessionfs/config.toml` on disk, `load_config` returned defaults (empty api_key) and the function early-returned `[]`, leaving `sources_cited` empty. Fix patches `sessionfs.daemon.config.load_config` directly alongside the existing `mcp_server.load_config` patch. Test now passes under CI-like conditions (no config file on disk).
+
+No product code changes from v0.10.7; this release exists to unblock the Deploy API and Deploy MCP Server pipelines that failed on the v0.10.7 push because of the test failure. Cloud Run picks up v0.10.7's customer-ask provenance fields + `sfs ticket watch` CLI + migration 040 SQLite-compat fix here.
+
+Version skipped 0.10.7.1 because Helm chart versions require strict SemVer (X.Y.Z) — 4-segment versions aren't valid.
+
 ## [0.10.7] - 2026-05-16
 
 ### Added

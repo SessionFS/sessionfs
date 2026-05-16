@@ -216,7 +216,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
-**v0.10.7 — Public Beta.** 1745 backend tests + 186 dashboard tests passing. 40 database migrations. Customer-ask provenance fields (`sources_cited` on ask_project + wiki revision history + `personas_active` on summaries + lease required-mode org setting) and `sfs ticket watch` CLI on top of the v0.10.6 9-tool-capture layer.
+**v0.10.8 — Public Beta.** 1745 backend tests + 186 dashboard tests passing. 40 database migrations. Same product as v0.10.7 (customer-ask provenance fields + `sfs ticket watch` CLI) with a CI test fix that unblocks Cloud Run deployment. No product code changes from v0.10.7.
 
 ### Session capture, resume, and search
 
