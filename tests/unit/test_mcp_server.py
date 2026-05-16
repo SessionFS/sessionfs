@@ -1148,7 +1148,18 @@ class TestAskProjectSourcesCited:
         cfg = load_config()
         monkeypatch.setattr(cfg.sync, "api_key", "test-key", raising=False)
         monkeypatch.setattr(cfg.sync, "api_url", "https://api.test", raising=False)
+        # Patch on both the mcp_server namespace AND the source module:
+        # _fetch_kb_entries_raw uses `from sessionfs.daemon.config import
+        # load_config` inside the function (re-imported each call) so
+        # patching only mcp_server.load_config doesn't intercept it.
+        # In CI without a real ~/.sessionfs/config.toml, the unpatched
+        # path returns an empty api_key and the KB fetch early-returns []
+        # — the test passed locally only because the dev's config file
+        # has a real key.
+        import sessionfs.daemon.config as daemon_cfg
+
         monkeypatch.setattr(mcp_server, "load_config", lambda: cfg)
+        monkeypatch.setattr(daemon_cfg, "load_config", lambda *_args, **_kw: cfg)
         monkeypatch.setattr(
             mcp_server, "_resolve_workspace_git_remote",
             lambda: _async_value("git@github.com:acme/repo.git"),
@@ -1256,7 +1267,13 @@ class TestAskProjectSourcesCited:
 
         cfg = load_config()
         monkeypatch.setattr(cfg.sync, "api_key", "", raising=False)
+        # Patch on both modules (see test_returns_kb_and_session_sources
+        # for the rationale — `_fetch_kb_entries_raw` re-imports
+        # load_config from sessionfs.daemon.config inside the function).
+        import sessionfs.daemon.config as daemon_cfg
+
         monkeypatch.setattr(mcp_server, "load_config", lambda: cfg)
+        monkeypatch.setattr(daemon_cfg, "load_config", lambda *_args, **_kw: cfg)
         monkeypatch.setattr(
             mcp_server, "_resolve_workspace_git_remote",
             lambda: _async_value("git@github.com:acme/repo.git"),
