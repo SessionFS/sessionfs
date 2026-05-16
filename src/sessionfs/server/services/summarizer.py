@@ -40,6 +40,7 @@ class SessionSummary:
     packages_installed: list[str] = field(default_factory=list)
     errors_encountered: list[str] = field(default_factory=list)
     skills_used: list[str] = field(default_factory=list)
+    personas_active: list[str] = field(default_factory=list)
 
     # LLM narrative (optional)
     what_happened: str | None = None
@@ -84,6 +85,24 @@ def summarize_session(
     detected_skills = detect_skills(messages, source_tool)
     skills_used = sorted(set(s.name for s in detected_skills))
 
+    # v0.10.7 — collect every persona that participated in the session.
+    # Sources: manifest.persona_name (session-level annotation from the
+    # daemon's active-ticket pipeline) + any per-message persona_name
+    # annotation that landed on individual assistant messages.
+    #
+    # Documented limitation: this is session-level overblocking, not
+    # per-item authorship. Per-decision attribution requires summarizer
+    # prompt + cache rework (separate ticket).
+    persona_set: set[str] = set()
+    manifest_persona = manifest.get("persona_name")
+    if isinstance(manifest_persona, str) and manifest_persona.strip():
+        persona_set.add(manifest_persona.strip())
+    for m in messages:
+        msg_persona = m.get("persona_name")
+        if isinstance(msg_persona, str) and msg_persona.strip():
+            persona_set.add(msg_persona.strip())
+    personas_active = sorted(persona_set)
+
     return SessionSummary(
         session_id=manifest.get("session_id", ""),
         title=manifest.get("title", "Untitled"),
@@ -103,6 +122,7 @@ def summarize_session(
         packages_installed=installs,
         errors_encountered=errors[:5],
         skills_used=skills_used,
+        personas_active=personas_active,
         generated_at=datetime.now(timezone.utc).isoformat(),
     )
 

@@ -13,7 +13,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.db.engine import get_db
-from sessionfs.server.db.models import KnowledgeLink, KnowledgePage, Project, User
+from sessionfs.server.db.models import (
+    AgentPersona,
+    KnowledgeLink,
+    KnowledgePage,
+    Project,
+    RetrievalAuditContext,
+    Ticket,
+    User,
+    WikiPageRevision,
+)
 from sessionfs.server.tier_gate import UserContext, check_feature, get_user_context
 
 logger = logging.getLogger("sessionfs.api")
@@ -63,6 +72,40 @@ class PageDetail(BaseModel):
 class PageWriteRequest(BaseModel):
     content: str
     title: str | None = None
+    persona_name: str | None = None
+    ticket_id: str | None = None
+
+
+class WikiRevisionResponse(BaseModel):
+    """v0.10.7 — single row from wiki_page_revisions history.
+
+    `id` is the internal row id used as the keyset-pagination cursor by
+    `GET .../history?cursor=<id>`. Surfaced on the response so callers
+    can paginate without guessing.
+    """
+
+    id: int
+    revision_number: int
+    revised_at: datetime
+    title: str
+    word_count: int
+    user_id: str | None
+    persona_name: str | None
+    ticket_id: str | None
+
+
+class WikiHistoryResponse(BaseModel):
+    """v0.10.7 — paginated revision history for a wiki page.
+
+    `next_cursor` is the `id` of the OLDEST revision in this page when
+    more rows are available; pass it back as `?cursor=<next_cursor>`
+    to fetch the next older page. None when no more rows.
+    """
+
+    slug: str
+    revisions: list[WikiRevisionResponse]
+    count: int
+    next_cursor: int | None = None
 
 
 class ProjectSettingsRequest(BaseModel):
@@ -132,6 +175,76 @@ async def list_pages(
     ]
 
 
+@router.get(
+    "/{project_id}/pages/{slug:path}/history",
+    response_model=WikiHistoryResponse,
+)
+async def get_page_history(
+    project_id: str,
+    slug: str,
+    limit: int = 50,
+    cursor: int | None = None,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> WikiHistoryResponse:
+    """v0.10.7 — return the wiki page's full revision history.
+
+    Cross-project access blocked by `_get_project_or_404`. Pagination:
+    pass `cursor` (the `id` of the last revision from the previous
+    page) for keyset pagination. Sort is `revised_at DESC, id DESC` so
+    same-timestamp ties resolve deterministically (mirrors v0.10.5
+    ContextCompilation history ordering).
+
+    Declared BEFORE the `{slug:path}` GET so FastAPI matches the
+    `/history` suffix here rather than treating `slug/history` as a
+    single page slug.
+    """
+    await _get_project_or_404(project_id, db, user.id)
+    limit = max(1, min(limit, 200))
+    conds = [
+        WikiPageRevision.project_id == project_id,
+        WikiPageRevision.page_slug == slug,
+    ]
+    if cursor is not None:
+        conds.append(WikiPageRevision.id < cursor)
+    # Fetch limit+1 so we can detect whether more rows exist without
+    # a second COUNT query — same pattern as v0.9.9 list_knowledge_entries.
+    rows = (
+        await db.execute(
+            select(WikiPageRevision)
+            .where(*conds)
+            .order_by(
+                WikiPageRevision.revised_at.desc(),
+                WikiPageRevision.id.desc(),
+            )
+            .limit(limit + 1)
+        )
+    ).scalars().all()
+    has_more = len(rows) > limit
+    if has_more:
+        rows = rows[:limit]
+    revisions = [
+        WikiRevisionResponse(
+            id=r.id,
+            revision_number=r.revision_number,
+            revised_at=r.revised_at,
+            title=r.title,
+            word_count=r.word_count,
+            user_id=r.user_id,
+            persona_name=r.persona_name,
+            ticket_id=r.ticket_id,
+        )
+        for r in rows
+    ]
+    next_cursor = revisions[-1].id if has_more and revisions else None
+    return WikiHistoryResponse(
+        slug=slug,
+        revisions=revisions,
+        count=len(revisions),
+        next_cursor=next_cursor,
+    )
+
+
 @router.get("/{project_id}/pages/{slug:path}", response_model=PageDetail)
 async def get_page(
     project_id: str,
@@ -187,6 +300,113 @@ async def get_page(
     )
 
 
+async def _validate_revision_provenance(
+    project_id: str,
+    user_id: str,
+    persona_name: str | None,
+    ticket_id: str | None,
+    db: AsyncSession,
+) -> None:
+    """v0.10.7 — guard against forged provenance on wiki revisions.
+
+    persona_name (if supplied) must exist in this project. ticket_id
+    (if supplied) must belong to this project AND the writing user
+    must own it through ONE of three roles:
+      - ticket creator (`Ticket.created_by_user_id`)
+      - current resolver (`Ticket.resolver_user_id`, set on complete)
+      - active executor — a RetrievalAuditContext exists for this
+        ticket, was created by this user via start_ticket, has the
+        same `lease_epoch` as the ticket's current lease_epoch, AND
+        the ticket is still `in_progress` (R4 hardening — closed_at
+        is never set anywhere so it can't gate executor expiry;
+        lease_epoch + status match is the real gate).
+
+    Executor write rights expire when:
+      - someone force-starts the ticket (lease_epoch bumps)
+      - the ticket is completed (status → review)
+      - the ticket is accepted (status → done)
+      - the ticket is blocked/cancelled (status changes)
+
+    Without the executor path, a team agent who STARTED a colleague's
+    ticket and is now executing it cannot attribute wiki revisions
+    to that ticket — which would defeat the agent-execution provenance
+    use case. Mirrors the v0.10.4 retrieval-audit context-create
+    validation + cb8a9da cross-project leak defense.
+    """
+    if persona_name:
+        persona = (
+            await db.execute(
+                select(AgentPersona.id).where(
+                    AgentPersona.project_id == project_id,
+                    AgentPersona.name == persona_name,
+                )
+            )
+        ).scalar_one_or_none()
+        if persona is None:
+            raise HTTPException(
+                422,
+                f"persona_name {persona_name!r} not found in this project",
+            )
+    if ticket_id:
+        ticket_row = (
+            await db.execute(
+                select(
+                    Ticket.created_by_user_id,
+                    Ticket.resolver_user_id,
+                    Ticket.lease_epoch,
+                    Ticket.status,
+                ).where(
+                    Ticket.id == ticket_id,
+                    Ticket.project_id == project_id,
+                )
+            )
+        ).one_or_none()
+        if ticket_row is None:
+            raise HTTPException(
+                422,
+                f"ticket_id {ticket_id!r} not found in this project",
+            )
+        created_by, resolver_by, ticket_lease, ticket_status = ticket_row
+        # v0.10.7 R3 — executor association: a user who STARTED this
+        # ticket has a RetrievalAuditContext with matching lease_epoch
+        # created by start_ticket(). v0.10.7 R4 hardening — the
+        # earlier `closed_at IS NULL` gate was effectively a no-op
+        # because nothing in the codebase ever SETS closed_at, so a
+        # user who started a ticket once retained write rights forever
+        # even after complete/accept/cancel/force-start. Tighter gate:
+        # the RetrievalAuditContext.lease_epoch must match the
+        # ticket's CURRENT lease_epoch (force-start bumps the ticket
+        # epoch → old context is stale) AND the ticket must still be
+        # in_progress (after complete/accept the executor stops being
+        # the writer). Both conditions together expire executor write
+        # rights cleanly without us having to backfill closed_at on
+        # every transition.
+        is_owner = user_id in {created_by, resolver_by}
+        if not is_owner and ticket_status == "in_progress":
+            executor_match = (
+                await db.execute(
+                    select(RetrievalAuditContext.id).where(
+                        RetrievalAuditContext.ticket_id == ticket_id,
+                        RetrievalAuditContext.project_id == project_id,
+                        RetrievalAuditContext.created_by_user_id == user_id,
+                        RetrievalAuditContext.lease_epoch == ticket_lease,
+                    )
+                )
+            ).scalar_one_or_none()
+            is_owner = executor_match is not None
+        if not is_owner:
+            raise HTTPException(
+                422,
+                (
+                    f"ticket_id {ticket_id!r} is not owned by you "
+                    "(must be the ticket creator, current resolver, "
+                    "or the active executor with a matching lease "
+                    "while the ticket is in_progress to attribute "
+                    "a wiki revision to it)"
+                ),
+            )
+
+
 @router.put("/{project_id}/pages/{slug:path}", response_model=PageDetail)
 async def create_or_update_page(
     project_id: str,
@@ -199,6 +419,9 @@ async def create_or_update_page(
     """Create or update a wiki page."""
     check_feature(ctx, "project_context")
     await _get_project_or_404(project_id, db, user.id)
+    await _validate_revision_provenance(
+        project_id, user.id, body.persona_name, body.ticket_id, db
+    )
 
     result = await db.execute(
         select(KnowledgePage).where(
@@ -217,6 +440,7 @@ async def create_or_update_page(
         page.updated_at = now
         if body.title is not None:
             page.title = body.title
+        effective_title = page.title
     else:
         title = body.title or slug.replace("-", " ").title()
         page = KnowledgePage(
@@ -231,8 +455,54 @@ async def create_or_update_page(
             updated_at=now,
         )
         db.add(page)
+        effective_title = title
 
-    await db.commit()
+    # v0.10.7 — append revision row. Computed monotone number scoped
+    # to (project_id, page_slug) so concurrent writers from different
+    # projects (or different pages) don't collide. The UNIQUE constraint
+    # on (project_id, page_slug, revision_number) is the safety net:
+    # a true race (two writers picking the same N+1) raises IntegrityError
+    # which we translate to HTTP 409. Clients should retry on 409.
+    # SELECT FOR UPDATE on the page row is not used because SQLite
+    # doesn't support it; the catch+409 path works on both backends.
+    # Numbering bypasses DELETEd history rows by design — gaps are
+    # tolerated; uniqueness is the invariant.
+    from sqlalchemy import func as sql_func
+    from sqlalchemy.exc import IntegrityError
+
+    max_rev = (
+        await db.execute(
+            select(sql_func.max(WikiPageRevision.revision_number)).where(
+                WikiPageRevision.project_id == project_id,
+                WikiPageRevision.page_slug == slug,
+            )
+        )
+    ).scalar_one_or_none()
+    revision = WikiPageRevision(
+        project_id=project_id,
+        page_slug=slug,
+        revision_number=(max_rev or 0) + 1,
+        title=effective_title,
+        content_snapshot=body.content,
+        word_count=word_count,
+        user_id=user.id,
+        persona_name=body.persona_name,
+        ticket_id=body.ticket_id,
+        revised_at=now,
+    )
+    db.add(revision)
+
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            409,
+            (
+                "Concurrent wiki page write detected (revision_number "
+                "race). Retry the request."
+            ),
+        )
     await db.refresh(page)
 
     return PageDetail(

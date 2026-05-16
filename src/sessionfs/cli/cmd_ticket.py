@@ -8,6 +8,9 @@ Commands:
 - sfs ticket complete <id> --notes N [--files ...]
 - sfs ticket comment <id> --content C [--as PERSONA]
 - sfs ticket comments <id>         — list all comments on a ticket
+- sfs ticket watch <id> [--interval N] [--from-author X] [--exit-on-new] [--notify]
+                                    — poll the ticket comments endpoint and
+                                      render new comments as they appear
 - sfs ticket status                — show the active ticket (from bundle)
 - sfs ticket block | unblock | reopen | approve | dismiss <id>
 
@@ -403,6 +406,19 @@ def comment_ticket(
     console.print(f"[green]Commented on {ticket_id}.[/green]")
 
 
+def _render_comment(c: dict) -> None:
+    """Render a single ticket comment as a titled Panel with markdown body."""
+    author = c.get("author_persona") or c.get("author_user_id") or "?"
+    created = c.get("created_at", "")
+    console.print(
+        Panel(
+            Markdown(c.get("content", "")),
+            title=f"{author} — {created}",
+            title_align="left",
+        )
+    )
+
+
 @ticket_app.command("comments")
 @handle_errors
 def list_ticket_comments(
@@ -428,14 +444,128 @@ def list_ticket_comments(
         console.print(f"[dim]No comments on {ticket_id}.[/dim]")
         return
     for c in body:
-        author = c.get("author_persona") or c.get("author_user_id") or "?"
-        created = c.get("created_at", "")
+        _render_comment(c)
+
+
+def _clamp_interval(seconds: int) -> int:
+    """Clamp the watch poll interval to [5, 300] seconds."""
+    return max(5, min(seconds, 300))
+
+
+def _notify_macos(title: str, message: str) -> None:
+    """Best-effort macOS notification via terminal-notifier. Silently
+    no-ops if terminal-notifier isn't installed."""
+    import shutil
+    import subprocess
+
+    notifier = shutil.which("terminal-notifier")
+    if notifier is None:
+        return
+    try:
+        subprocess.run(
+            [notifier, "-title", title, "-message", message],
+            check=False,
+            timeout=2,
+        )
+    except Exception:
+        pass
+
+
+@ticket_app.command("watch")
+@handle_errors
+def watch_ticket(
+    ticket_id: str = typer.Argument(...),
+    interval: int = typer.Option(
+        30, "--interval", "-i",
+        help="Poll cadence in seconds (clamped to [5, 300]). Default 30.",
+    ),
+    from_author: str | None = typer.Option(
+        None, "--from-author",
+        help="Only render comments where author_persona matches (e.g. codex-reviewer).",
+    ),
+    exit_on_new: bool = typer.Option(
+        False, "--exit-on-new",
+        help="Exit 0 after the first new comment lands (for CI scripting).",
+    ),
+    notify: bool = typer.Option(
+        False, "--notify",
+        help="Send an OS notification on new comments (macOS terminal-notifier).",
+    ),
+) -> None:
+    """Poll a ticket's comments endpoint and render new comments as they appear.
+
+    Initial poll renders all existing comments. Subsequent polls diff
+    against the seen-id set and only render NEW comments. Ctrl-C to
+    exit; process-local seen-id state is lost on restart.
+    """
+    interval = _clamp_interval(interval)
+    api_url, api_key, project_id = _resolve_project()
+
+    console.print(
+        f"[dim]Watching {ticket_id} (interval={interval}s, ctrl-C to stop)[/dim]"
+    )
+
+    seen: set[str] = set()
+    saw_any_new = False
+    new_count = 0
+
+    async def _poll_once() -> list[dict] | None:
+        s, body, _ = await _api_request(
+            "GET",
+            f"/api/v1/projects/{project_id}/tickets/{ticket_id}/comments",
+            api_url,
+            api_key,
+        )
+        if s == 404:
+            err_console.print(f"[red]Ticket '{ticket_id}' not found.[/red]")
+            raise typer.Exit(1)
+        if s >= 400 or not isinstance(body, list):
+            err_console.print(f"[red]API error ({s}): {body}[/red]")
+            return None
+        return body
+
+    async def _run() -> None:
+        nonlocal saw_any_new, new_count
+        first = True
+        while True:
+            comments = await _poll_once()
+            if comments is None:
+                await asyncio.sleep(interval)
+                continue
+            for c in comments:
+                cid = c.get("id")
+                if not isinstance(cid, str):
+                    continue
+                if cid in seen:
+                    continue
+                seen.add(cid)
+                if from_author and c.get("author_persona") != from_author:
+                    # Still mark as seen so we don't re-evaluate it.
+                    continue
+                if not first:
+                    console.print("\a", end="")  # terminal bell
+                    new_count += 1
+                    saw_any_new = True
+                    if notify:
+                        author = c.get("author_persona") or "?"
+                        _notify_macos(
+                            f"New ticket comment — {ticket_id}",
+                            f"From {author}",
+                        )
+                _render_comment(c)
+            first = False
+            if exit_on_new and saw_any_new:
+                return
+            await asyncio.sleep(interval)
+
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        pass
+    finally:
         console.print(
-            Panel(
-                Markdown(c.get("content", "")),
-                title=f"{author} — {created}",
-                title_align="left",
-            )
+            f"\n[dim]Stopped watching {ticket_id} — saw {new_count} new "
+            f"comment(s) during this session.[/dim]"
         )
 
 

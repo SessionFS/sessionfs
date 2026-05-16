@@ -216,7 +216,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
-**v0.10.6 — Public Beta.** 1727 backend tests + 186 dashboard tests passing. 39 database migrations. **9-tool capture** with the new Kilo Code watcher (capture-only, VS Code globalStorage `kilocode.kilo-code`) on top of the v0.10.5 SoD source manifest layer.
+**v0.10.7 — Public Beta.** 1745 backend tests + 186 dashboard tests passing. 40 database migrations. Customer-ask provenance fields (`sources_cited` on ask_project + wiki revision history + `personas_active` on summaries + lease required-mode org setting) and `sfs ticket watch` CLI on top of the v0.10.6 9-tool-capture layer.
 
 ### Session capture, resume, and search
 

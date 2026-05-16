@@ -249,7 +249,16 @@ _TOOLS = [
         name="ask_project",
         description=(
             "Ask a question about the project. Researches the knowledge base "
-            "and session history to provide an answer."
+            "and session history and returns the assembled research material."
+            "\n\nReturns a JSON object with two fields: `markdown` (the "
+            "assembled research material) and `sources_cited` (a list of "
+            "typed entities returned by the research step that shaped the "
+            "assembled material — `{type: 'kb', id: <int>}` for knowledge "
+            "entries, `{type: 'session', id: '<str>'}` for local sessions "
+            "matched on the question). ask_project does not call an LLM "
+            "answer step today; `sources_cited` tracks the inputs to the "
+            "research material, not an LLM answer. Use it for SoD / audit "
+            "/ cited-evidence rendering."
             "\n\nIMPORTANT: Always use this MCP tool instead of running "
             "`sfs project ask` or any other sfs CLI command. This tool "
             "connects directly to the API and is more reliable than shelling out."
@@ -321,6 +330,10 @@ _TOOLS = [
         description=(
             "Create or update a wiki page in the project knowledge base. "
             "Use this to document architecture, conventions, or concepts."
+            "\n\nProvenance: when an active-ticket bundle exists for the "
+            "current project, `persona_name` and `ticket_id` are "
+            "automatically threaded into the page revision history. "
+            "Pass them explicitly to override."
             "\n\nIMPORTANT: Always use this MCP tool instead of running "
             "`sfs project page` or any other sfs CLI command. This tool "
             "connects directly to the API and is more reliable than shelling out."
@@ -339,6 +352,14 @@ _TOOLS = [
                 "title": {
                     "type": "string",
                     "description": "Page title (optional, derived from slug if omitted)",
+                },
+                "persona_name": {
+                    "type": "string",
+                    "description": "Optional persona attribution. Defaults to active-ticket bundle when bundle.project_id matches the current project.",
+                },
+                "ticket_id": {
+                    "type": "string",
+                    "description": "Optional ticket attribution (must be owned by the writing user). Defaults to active-ticket bundle when bundle.project_id matches.",
                 },
                 "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
             },
@@ -501,6 +522,37 @@ _TOOLS = [
                     "type": "string",
                     "description": "Optional current session id to append this retrieval to its audit log",
                 },
+            },
+            "required": ["slug"],
+        },
+    ),
+    Tool(
+        name="get_wiki_page_history",
+        description=(
+            "Get a wiki page's full revision history (multi-author "
+            "attribution). Each revision carries revision_number, "
+            "revised_at, title, word_count, user_id, persona_name, "
+            "and ticket_id. Use to render edit history, surface who "
+            "shaped a page, or filter for SoD checks."
+            "\n\nIMPORTANT: Always use this MCP tool instead of running "
+            "`sfs project page history` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "slug": {
+                    "type": "string",
+                    "description": "Page slug (e.g. 'architecture', 'concept/auth-flow')",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum revisions per page (default 50, max 200)",
+                },
+                "cursor": {
+                    "type": "integer",
+                    "description": "Optional keyset pagination cursor — pass the `next_cursor` value returned by the previous response (or the `id` of the last revision in that page)",
+                },
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
             },
             "required": ["slug"],
         },
@@ -1260,6 +1312,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_list_knowledge_entries(arguments)
         elif name == "get_wiki_page":
             result = await _handle_get_wiki_page(arguments)
+        elif name == "get_wiki_page_history":
+            result = await _handle_get_wiki_page_history(arguments)
         elif name == "get_knowledge_health":
             result = await _handle_get_knowledge_health(arguments)
         elif name == "get_context_section":
@@ -1954,7 +2008,14 @@ async def _handle_add_knowledge(args: dict) -> str:
 
 
 async def _handle_update_wiki_page(args: dict) -> str:
-    """Create or update a wiki page via the cloud API."""
+    """Create or update a wiki page via the cloud API.
+
+    v0.10.7 R2 — when an active-ticket bundle exists for this project,
+    automatically thread `persona_name` and `ticket_id` into the PUT
+    request so wiki revisions are attributed to the persona / ticket
+    that produced them. Explicit args (`persona_name`, `ticket_id`)
+    override the bundle.
+    """
     slug = args.get("slug", "")
     content = args.get("content", "")
     title = args.get("title")
@@ -1966,10 +2027,36 @@ async def _handle_update_wiki_page(args: dict) -> str:
     try:
         api_url, api_key, project_id = await _resolve_project_id(git_remote)
 
+        # v0.10.7 R2 — pick up persona_name + ticket_id from the active
+        # bundle when its project matches our project. Explicit args win.
+        persona_name = args.get("persona_name")
+        ticket_id = args.get("ticket_id")
+        if not persona_name or not ticket_id:
+            try:
+                from sessionfs.active_ticket import read_bundle
+
+                bundle = read_bundle()
+                if (
+                    isinstance(bundle, dict)
+                    and bundle.get("project_id") == project_id
+                ):
+                    if not persona_name:
+                        persona_name = bundle.get("persona_name")
+                    if not ticket_id:
+                        ticket_id = bundle.get("ticket_id")
+            except Exception:
+                # Bundle read is best-effort — don't fail page write
+                # because the local provenance file is corrupt.
+                pass
+
         import httpx
         payload: dict = {"content": content}
         if title:
             payload["title"] = title
+        if persona_name:
+            payload["persona_name"] = persona_name
+        if ticket_id:
+            payload["ticket_id"] = ticket_id
 
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.put(
@@ -2018,12 +2105,25 @@ async def _handle_list_wiki_pages(args: dict) -> str:
         return f"Failed: {exc}"
 
 
-async def _handle_ask_project(args: dict) -> str:
-    """Research a question using project context and knowledge entries."""
+async def _handle_ask_project(args: dict) -> dict:
+    """Research a question using project context and knowledge entries.
+
+    Returns a structured dict so callers can trace which entities shaped
+    the assembled research material (SoD / audit / Agent Runner).
+
+    `sources_cited` is a typed list of `{type, id}` entries:
+      - `{"type": "kb", "id": <int>}` for KB entries returned by the search step
+      - `{"type": "session", "id": "<str>"}` for local sessions matched on the question
+
+    Compiled-context sections are NOT consulted by ask_project today (no
+    section-retrieval step). When that lands, sources_cited gains a
+    `{"type": "section", "slug": "<str>"}` variant without changing the
+    field name.
+    """
     question = args.get("question", "")
     git_remote = args.get("git_remote", "")
     if not question:
-        return "Please provide a question."
+        return {"markdown": "Please provide a question.", "sources_cited": []}
 
     # Get project context (pass through git_remote)
     context_result = await _handle_get_project_context({"git_remote": git_remote})
@@ -2033,12 +2133,24 @@ async def _handle_ask_project(args: dict) -> str:
     # Search knowledge entries for the question. Pass used_in_answer=true
     # so the server increments used_in_answer_count + updates last_relevant_at
     # on matched entries (strong relevance signal).
-    search_result = await _handle_search_knowledge({"query": question, "limit": 15, "git_remote": git_remote, "_used_in_answer": True})
+    search_args = {"query": question, "limit": 15, "git_remote": git_remote, "_used_in_answer": True}
+    search_result = await _handle_search_knowledge(search_args)
     if not isinstance(search_result, str):
         search_result = json.dumps(search_result, indent=2, default=str)
 
+    # Fetch the same KB entries as a structured list so we can record
+    # their IDs in sources_cited. Re-uses the same project-scoped search
+    # path the markdown render hit; cheap second call against pg_trgm.
+    kb_entries = await _fetch_kb_entries_raw(search_args)
+    sources_cited: list[dict] = []
+    for e in kb_entries:
+        kb_id = e.get("id")
+        if isinstance(kb_id, int):
+            sources_cited.append({"type": "kb", "id": kb_id})
+
     # Search local sessions for additional context
     local_results = ""
+    local_session_ids: list[str] = []
     try:
         search = _get_search()
         hits = search.search(question, limit=5)
@@ -2049,9 +2161,14 @@ async def _handle_ask_project(args: dict) -> str:
                 title = hit.get("title", "Untitled")
                 tool = hit.get("source_tool", "")
                 local_lines.append(f"- **{title}** ({tool}) — `{sid}`")
+                if isinstance(sid, str) and sid:
+                    local_session_ids.append(sid)
             local_results = "\n".join(local_lines)
     except RuntimeError:
         pass  # Search index not available
+
+    for sid in local_session_ids:
+        sources_cited.append({"type": "session", "id": sid})
 
     # Assemble research material
     lines = [
@@ -2074,7 +2191,93 @@ async def _handle_ask_project(args: dict) -> str:
         "so future sessions benefit from this research."
     )
 
-    return "\n".join(lines)
+    return {
+        "markdown": "\n".join(lines),
+        "sources_cited": sources_cited,
+    }
+
+
+async def _fetch_kb_entries_raw(args: dict) -> list[dict]:
+    """Fetch KB entries for a query as a structured list (no markdown).
+
+    Mirrors `_handle_search_knowledge`'s lookup path so callers
+    (`_handle_ask_project`) can capture KB IDs without parsing the
+    formatted markdown — avoids the regex-extraction-from-prose
+    antipattern Codex flagged in v0.10.4's collect_returned_refs.
+
+    Returns [] on any failure (auth missing, project not found, etc.)
+    rather than raising — ask_project should degrade gracefully.
+    """
+    query = args.get("query", "")
+    entry_type = args.get("entry_type")
+    limit = int(args.get("limit", 10))
+    include_stale = args.get("include_stale", False)
+    git_remote = args.get("git_remote", "")
+
+    if isinstance(query, str) and len(query.strip()) < 3:
+        return []
+
+    if not git_remote:
+        git_remote = await _resolve_workspace_git_remote()
+    if not git_remote:
+        return []
+
+    from sessionfs.server.github_app import normalize_git_remote
+
+    normalized = normalize_git_remote(git_remote)
+    if not normalized:
+        return []
+
+    try:
+        from sessionfs.daemon.config import load_config
+
+        config = load_config()
+        if not config.sync.api_key:
+            return []
+
+        import httpx
+
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{config.sync.api_url.rstrip('/')}/api/v1/projects/{normalized}",
+                headers={"Authorization": f"Bearer {config.sync.api_key}"},
+            )
+        if resp.status_code >= 400:
+            return []
+        project_data = resp.json()
+        project_id = project_data.get("id", "")
+        if not project_id:
+            return []
+
+        params = f"?search={query}&limit={limit}"
+        if entry_type:
+            params += f"&type={entry_type}"
+        if args.get("_used_in_answer"):
+            params += "&used_in_answer=true"
+
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{config.sync.api_url.rstrip('/')}/api/v1/projects/{project_id}/entries{params}",
+                headers={"Authorization": f"Bearer {config.sync.api_key}"},
+            )
+        if resp.status_code >= 400:
+            return []
+        entries = resp.json()
+        if not isinstance(entries, list):
+            return []
+
+        if not include_stale:
+            entries = [
+                e for e in entries
+                if e.get("claim_class", "claim") == "claim"
+                and e.get("freshness_class", "current") in ("current", "aging")
+                and not e.get("superseded_by")
+                and not e.get("dismissed", False)
+            ]
+        return entries
+    except Exception as exc:
+        logger.warning("ask_project KB structured fetch failed: %s", exc)
+        return []
 
 
 async def _handle_get_rules(args: dict) -> dict:
@@ -2247,6 +2450,45 @@ async def _handle_get_wiki_page(args: dict) -> dict:
         resp = await client.get(
             f"{api_url}/api/v1/projects/{project_id}/pages/{slug}",
             headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code == 404:
+        return {"error": f"Page '{slug}' not found"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_get_wiki_page_history(args: dict) -> dict:
+    """v0.10.7 — wrap GET /api/v1/projects/{project_id}/pages/{slug}/history."""
+    slug = args.get("slug", "")
+    if not slug:
+        return {"error": "slug is required"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    params: dict = {}
+    if "limit" in args:
+        try:
+            params["limit"] = int(args["limit"])
+        except (TypeError, ValueError):
+            pass
+    if "cursor" in args and args["cursor"] is not None:
+        try:
+            params["cursor"] = int(args["cursor"])
+        except (TypeError, ValueError):
+            pass
+
+    import httpx
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/projects/{project_id}/pages/{slug}/history",
+            headers={"Authorization": f"Bearer {api_key}"},
+            params=params,
         )
     if resp.status_code == 404:
         return {"error": f"Page '{slug}' not found"}

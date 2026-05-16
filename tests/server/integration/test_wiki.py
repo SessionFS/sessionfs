@@ -141,6 +141,374 @@ async def test_update_page(
 
 
 @pytest.mark.asyncio
+async def test_page_revision_history_recorded_per_write(
+    client: AsyncClient, auth_headers: dict, test_project: Project,
+    db_session: AsyncSession, test_user: User,
+):
+    """v0.10.7 — every PUT appends a wiki_page_revisions row, and GET
+    /history returns them in revised_at DESC, id DESC order."""
+    from sessionfs.server.db.models import AgentPersona, Ticket
+
+    persona = AgentPersona(
+        id=f"per_{uuid.uuid4().hex[:16]}",
+        project_id=test_project.id,
+        name="atlas",
+        role="Backend",
+        created_by=test_user.id,
+    )
+    db_session.add(persona)
+    ticket = Ticket(
+        id=f"tk_{uuid.uuid4().hex[:16]}",
+        project_id=test_project.id,
+        title="Wiki history test",
+        description="x",
+        priority="medium",
+        status="in_progress",
+        assigned_to="atlas",
+        created_by_user_id=test_user.id,
+    )
+    db_session.add(ticket)
+    await db_session.commit()
+
+    # First revision — bare body, no provenance
+    r1 = await client.put(
+        f"/api/v1/projects/{test_project.id}/pages/architecture",
+        json={"content": "v1 content", "title": "Architecture"},
+        headers=auth_headers,
+    )
+    assert r1.status_code == 200
+
+    # Second revision — same user, with persona + ticket
+    r2 = await client.put(
+        f"/api/v1/projects/{test_project.id}/pages/architecture",
+        json={
+            "content": "v2 content updated",
+            "persona_name": "atlas",
+            "ticket_id": ticket.id,
+        },
+        headers=auth_headers,
+    )
+    assert r2.status_code == 200
+
+    # Third revision — just content
+    r3 = await client.put(
+        f"/api/v1/projects/{test_project.id}/pages/architecture",
+        json={"content": "v3 content"},
+        headers=auth_headers,
+    )
+    assert r3.status_code == 200
+
+    hist = await client.get(
+        f"/api/v1/projects/{test_project.id}/pages/architecture/history",
+        headers=auth_headers,
+    )
+    assert hist.status_code == 200, hist.text
+    data = hist.json()
+    assert data["slug"] == "architecture"
+    assert data["count"] == 3
+    revs = data["revisions"]
+    # Newest first by (revised_at DESC, id DESC)
+    assert [r["revision_number"] for r in revs] == [3, 2, 1]
+    # Revision 2 carries the provenance we sent
+    assert revs[1]["persona_name"] == "atlas"
+    assert revs[1]["ticket_id"] == ticket.id
+    # Revisions 1 and 3 have no persona/ticket
+    assert revs[0]["persona_name"] is None
+    assert revs[2]["persona_name"] is None
+
+
+@pytest.mark.asyncio
+async def test_revision_provenance_accepts_active_executor(
+    client: AsyncClient, auth_headers: dict, test_project: Project,
+    db_session: AsyncSession, test_user: User,
+):
+    """v0.10.7 R3 — a user who STARTED a ticket they didn't create
+    has an open RetrievalAuditContext for it. That counts as ownership
+    for wiki provenance attribution. Without this, agents executing
+    a colleague's ticket can't attribute revisions to it."""
+    from sessionfs.server.db.models import RetrievalAuditContext, Ticket
+
+    # Ticket created by SOMEONE ELSE, but test_user has started it
+    # (simulated by inserting an open RetrievalAuditContext)
+    other_user = User(
+        id=str(uuid.uuid4()),
+        email=f"other-{uuid.uuid4().hex[:6]}@example.com",
+        display_name="Other",
+        tier="team",
+        email_verified=True,
+        created_at=datetime.now(timezone.utc),
+    )
+    db_session.add(other_user)
+    await db_session.commit()
+    ticket = Ticket(
+        id=f"tk_{uuid.uuid4().hex[:16]}",
+        project_id=test_project.id,
+        title="Started by test_user",
+        description="x",
+        priority="medium",
+        status="in_progress",
+        lease_epoch=1,
+        created_by_user_id=other_user.id,
+    )
+    db_session.add(ticket)
+    db_session.add(
+        RetrievalAuditContext(
+            id=f"ra_{uuid.uuid4().hex[:16]}",
+            project_id=test_project.id,
+            ticket_id=ticket.id,
+            created_by_user_id=test_user.id,
+            lease_epoch=1,  # matches ticket
+        )
+    )
+    await db_session.commit()
+
+    resp = await client.put(
+        f"/api/v1/projects/{test_project.id}/pages/architecture",
+        json={
+            "content": "attribute as the active executor",
+            "ticket_id": ticket.id,
+        },
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_revision_provenance_rejects_stale_lease_executor(
+    client: AsyncClient, auth_headers: dict, test_project: Project,
+    db_session: AsyncSession, test_user: User,
+):
+    """v0.10.7 R4 — executor write rights expire when someone
+    force-starts the ticket (ticket.lease_epoch bumps but the user's
+    old RetrievalAuditContext keeps its old lease_epoch). The
+    validator now rejects this so audit provenance stays tight."""
+    from sessionfs.server.db.models import RetrievalAuditContext, Ticket
+
+    other_user = User(
+        id=str(uuid.uuid4()),
+        email=f"other-{uuid.uuid4().hex[:6]}@example.com",
+        display_name="Other",
+        tier="team",
+        email_verified=True,
+        created_at=datetime.now(timezone.utc),
+    )
+    db_session.add(other_user)
+    await db_session.commit()
+    # Ticket has been force-restarted: lease_epoch is now 2
+    ticket = Ticket(
+        id=f"tk_{uuid.uuid4().hex[:16]}",
+        project_id=test_project.id,
+        title="Force-restarted",
+        description="x",
+        priority="medium",
+        status="in_progress",
+        lease_epoch=2,
+        created_by_user_id=other_user.id,
+    )
+    db_session.add(ticket)
+    # test_user's audit context is from the OLD lease (epoch 1)
+    db_session.add(
+        RetrievalAuditContext(
+            id=f"ra_{uuid.uuid4().hex[:16]}",
+            project_id=test_project.id,
+            ticket_id=ticket.id,
+            created_by_user_id=test_user.id,
+            lease_epoch=1,  # stale
+        )
+    )
+    await db_session.commit()
+
+    resp = await client.put(
+        f"/api/v1/projects/{test_project.id}/pages/architecture",
+        json={
+            "content": "stale-lease attribution attempt",
+            "ticket_id": ticket.id,
+        },
+        headers=auth_headers,
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_revision_provenance_rejects_executor_after_complete(
+    client: AsyncClient, auth_headers: dict, test_project: Project,
+    db_session: AsyncSession, test_user: User,
+):
+    """v0.10.7 R4 — executor write rights expire when the ticket
+    moves out of in_progress. After complete/accept/cancel the
+    user is no longer the active writer for provenance purposes."""
+    from sessionfs.server.db.models import RetrievalAuditContext, Ticket
+
+    other_user = User(
+        id=str(uuid.uuid4()),
+        email=f"other-{uuid.uuid4().hex[:6]}@example.com",
+        display_name="Other",
+        tier="team",
+        email_verified=True,
+        created_at=datetime.now(timezone.utc),
+    )
+    db_session.add(other_user)
+    await db_session.commit()
+    # Ticket has moved to review (post-complete)
+    ticket = Ticket(
+        id=f"tk_{uuid.uuid4().hex[:16]}",
+        project_id=test_project.id,
+        title="Completed elsewhere",
+        description="x",
+        priority="medium",
+        status="review",  # no longer in_progress
+        lease_epoch=1,
+        created_by_user_id=other_user.id,
+    )
+    db_session.add(ticket)
+    db_session.add(
+        RetrievalAuditContext(
+            id=f"ra_{uuid.uuid4().hex[:16]}",
+            project_id=test_project.id,
+            ticket_id=ticket.id,
+            created_by_user_id=test_user.id,
+            lease_epoch=1,  # matches but status doesn't
+        )
+    )
+    await db_session.commit()
+
+    resp = await client.put(
+        f"/api/v1/projects/{test_project.id}/pages/architecture",
+        json={
+            "content": "post-review attribution attempt",
+            "ticket_id": ticket.id,
+        },
+        headers=auth_headers,
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_revision_provenance_rejects_unowned_ticket(
+    client: AsyncClient, auth_headers: dict, test_project: Project,
+    db_session: AsyncSession, test_user: User,
+):
+    """v0.10.7 R2 — same-project users can't attribute revisions to
+    a ticket they don't own (must be created_by_user_id or
+    resolver_user_id). Closes Codex R2 MEDIUM finding (provenance
+    association)."""
+    from sessionfs.server.db.models import Ticket
+
+    # Ticket created by SOMEONE ELSE in this same project
+    other_user = User(
+        id=str(uuid.uuid4()),
+        email=f"other-{uuid.uuid4().hex[:6]}@example.com",
+        display_name="Other",
+        tier="team",
+        email_verified=True,
+        created_at=datetime.now(timezone.utc),
+    )
+    db_session.add(other_user)
+    await db_session.commit()
+    foreign_ticket = Ticket(
+        id=f"tk_{uuid.uuid4().hex[:16]}",
+        project_id=test_project.id,
+        title="Not yours",
+        description="x",
+        priority="medium",
+        status="in_progress",
+        created_by_user_id=other_user.id,
+    )
+    db_session.add(foreign_ticket)
+    await db_session.commit()
+
+    resp = await client.put(
+        f"/api/v1/projects/{test_project.id}/pages/architecture",
+        json={
+            "content": "I attribute to your ticket",
+            "ticket_id": foreign_ticket.id,
+        },
+        headers=auth_headers,
+    )
+    assert resp.status_code == 422
+    assert "not owned by you" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_page_history_rejects_foreign_project_persona(
+    client: AsyncClient, auth_headers: dict, test_project: Project,
+    db_session: AsyncSession, test_user: User,
+):
+    """v0.10.7 — provenance persona must exist in this project. A
+    persona from another project must not be acceptable as the author
+    of a revision in this project. Mirrors cb8a9da cross-project
+    leak defense."""
+    from sessionfs.server.db.models import AgentPersona
+
+    # Persona in a DIFFERENT project
+    other = Project(
+        id=f"proj_{uuid.uuid4().hex[:16]}",
+        name="Other",
+        git_remote_normalized=f"acme/other-{uuid.uuid4().hex[:6]}",
+        context_document="",
+        owner_id=test_user.id,
+    )
+    db_session.add(other)
+    await db_session.commit()
+    db_session.add(
+        AgentPersona(
+            id=f"per_{uuid.uuid4().hex[:16]}",
+            project_id=other.id,
+            name="ghost",
+            role="Backend",
+            created_by=test_user.id,
+        )
+    )
+    await db_session.commit()
+
+    resp = await client.put(
+        f"/api/v1/projects/{test_project.id}/pages/architecture",
+        json={
+            "content": "forged provenance",
+            "persona_name": "ghost",
+        },
+        headers=auth_headers,
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_page_history_pagination_via_cursor(
+    client: AsyncClient, auth_headers: dict, test_project: Project,
+):
+    """v0.10.7 — `cursor=last_id` returns older revisions only."""
+    for i in range(5):
+        await client.put(
+            f"/api/v1/projects/{test_project.id}/pages/paged",
+            json={"content": f"rev {i}"},
+            headers=auth_headers,
+        )
+
+    first = await client.get(
+        f"/api/v1/projects/{test_project.id}/pages/paged/history?limit=2",
+        headers=auth_headers,
+    )
+    page1 = first.json()
+    assert len(page1["revisions"]) == 2
+    assert [r["revision_number"] for r in page1["revisions"]] == [5, 4]
+    # v0.10.7 R3 — next_cursor is exposed on the envelope; ids on each
+    # revision. Use the envelope cursor for the follow-up request
+    # (don't guess insertion-order ids).
+    assert page1["next_cursor"] is not None
+    next_cursor = page1["next_cursor"]
+    assert all("id" in r for r in page1["revisions"])
+
+    second = await client.get(
+        f"/api/v1/projects/{test_project.id}/pages/paged/history?limit=10&cursor={next_cursor}",
+        headers=auth_headers,
+    )
+    page2 = second.json()
+    assert [r["revision_number"] for r in page2["revisions"]] == [3, 2, 1]
+    # No more pages → next_cursor is None
+    assert page2["next_cursor"] is None
+
+
+@pytest.mark.asyncio
 async def test_get_page(
     client: AsyncClient, auth_headers: dict, test_project: Project,
 ):

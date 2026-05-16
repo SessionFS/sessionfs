@@ -51,6 +51,8 @@ from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import (
     AgentPersona,
     KnowledgeEntry,
+    Organization,
+    Project,
     RetrievalAuditContext,
     Ticket,
     TicketComment,
@@ -323,6 +325,47 @@ def _assert_lease_epoch(ticket: Ticket, lease_epoch: int | None) -> None:
             (
                 f"Stale ticket lease: provided lease_epoch={lease_epoch}, "
                 f"current lease_epoch={ticket.lease_epoch}."
+            ),
+        )
+
+
+async def _assert_lease_required_mode(
+    project_id: str,
+    db: AsyncSession,
+    lease_epoch: int | None,
+) -> None:
+    """v0.10.7 — defense-in-depth: enforce org-level lease_epoch requirement.
+
+    When the project's org has settings.require_lease_epoch_on_ticket_writes
+    set to true, reject any complete/comment/accept that omits lease_epoch
+    with 422. Personal projects (no org_id) and orgs without the setting
+    continue to accept omitted lease (existing v0.10.4 opt-in semantics).
+    """
+    if lease_epoch is not None:
+        # Caller supplied it; _assert_lease_epoch handles staleness.
+        return
+    project = (
+        await db.execute(select(Project).where(Project.id == project_id))
+    ).scalar_one_or_none()
+    if project is None or project.org_id is None:
+        return
+    org = (
+        await db.execute(select(Organization).where(Organization.id == project.org_id))
+    ).scalar_one_or_none()
+    if org is None:
+        return
+    try:
+        settings = json.loads(org.settings or "{}")
+    except (json.JSONDecodeError, TypeError):
+        settings = {}
+    if settings.get("require_lease_epoch_on_ticket_writes") is True:
+        raise HTTPException(
+            422,
+            (
+                "Organization requires lease_epoch on ticket writes "
+                "(setting: require_lease_epoch_on_ticket_writes). Pass "
+                "lease_epoch from your active ticket bundle, or ask an "
+                "admin to disable the requirement."
             ),
         )
 
@@ -911,6 +954,7 @@ async def complete_ticket(
     """Move ticket from in_progress → review."""
     check_feature(ctx, "agent_tickets")
     await _get_project_or_404(project_id, db, user.id)
+    await _assert_lease_required_mode(project_id, db, body.lease_epoch)
     now = datetime.now(timezone.utc)
     result = await db.execute(
         update(Ticket)
@@ -1057,6 +1101,7 @@ async def accept_ticket(
     """
     check_feature(ctx, "agent_tickets")
     await _get_project_or_404(project_id, db, user.id)
+    await _assert_lease_required_mode(project_id, db, lease_epoch)
 
     now = datetime.now(timezone.utc)
     result = await db.execute(
@@ -1293,6 +1338,7 @@ async def create_ticket_comment(
 ) -> CommentResponse:
     check_feature(ctx, "agent_tickets")
     await _get_project_or_404(project_id, db, user.id)
+    await _assert_lease_required_mode(project_id, db, body.lease_epoch)
     comment_id = f"tc_{uuid.uuid4().hex[:16]}"
     now = datetime.now(timezone.utc)
     source = select(

@@ -309,6 +309,141 @@ async def test_ticket_lease_epoch_fences_complete_comment_and_resolve(
 
 
 @pytest.mark.asyncio
+async def test_lease_required_mode_rejects_missing_lease_with_422(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """v0.10.7 — when org.settings.require_lease_epoch_on_ticket_writes
+    is true, complete/comment/accept return 422 if lease_epoch omitted.
+    Existing supplied-lease behavior unchanged."""
+    import json as _json
+
+    from sessionfs.server.db.models import OrgMember, Organization
+
+    user, key = await _make_user(db_session)
+
+    org = Organization(
+        id=f"org_{uuid.uuid4().hex[:16]}",
+        name="Compliance Co",
+        slug=f"compliance-{uuid.uuid4().hex[:6]}",
+        tier="team",
+        settings=_json.dumps({"require_lease_epoch_on_ticket_writes": True}),
+    )
+    db_session.add(org)
+    await db_session.commit()
+    db_session.add(
+        OrgMember(
+            org_id=org.id,
+            user_id=user.id,
+            role="admin",
+        )
+    )
+    await db_session.commit()
+
+    project = Project(
+        id=f"proj_{uuid.uuid4().hex[:16]}",
+        name=f"required-{uuid.uuid4().hex[:6]}",
+        git_remote_normalized=f"acme/r-{uuid.uuid4().hex[:6]}",
+        context_document="",
+        owner_id=user.id,
+        org_id=org.id,
+    )
+    db_session.add(project)
+    await db_session.commit()
+    await _make_persona(db_session, project, user, "atlas")
+
+    create = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(key),
+        json={"title": "Required-mode test", "assigned_to": "atlas"},
+    )
+    tk_id = create.json()["id"]
+
+    start = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{tk_id}/start",
+        headers=_hdrs(key),
+    )
+    lease_epoch = start.json()["ticket"]["lease_epoch"]
+
+    # comment without lease → 422
+    no_lease_comment = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{tk_id}/comments",
+        headers=_hdrs(key),
+        json={"content": "no lease"},
+    )
+    assert no_lease_comment.status_code == 422, no_lease_comment.text
+    assert "require_lease_epoch_on_ticket_writes" in no_lease_comment.text
+
+    # comment with lease → 201 (unchanged behavior)
+    with_lease_comment = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{tk_id}/comments",
+        headers=_hdrs(key),
+        json={"content": "with lease", "lease_epoch": lease_epoch},
+    )
+    assert with_lease_comment.status_code == 201, with_lease_comment.text
+
+    # complete without lease → 422
+    no_lease_complete = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{tk_id}/complete",
+        headers=_hdrs(key),
+        json={"notes": "no lease"},
+    )
+    assert no_lease_complete.status_code == 422
+
+    # complete with lease → 200
+    with_lease_complete = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{tk_id}/complete",
+        headers=_hdrs(key),
+        json={"notes": "ok", "lease_epoch": lease_epoch},
+    )
+    assert with_lease_complete.status_code == 200, with_lease_complete.text
+
+    # accept without lease → 422
+    no_lease_accept = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{tk_id}/accept",
+        headers=_hdrs(key),
+    )
+    assert no_lease_accept.status_code == 422
+
+    # accept with lease → 200
+    with_lease_accept = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{tk_id}/accept",
+        headers=_hdrs(key),
+        params={"lease_epoch": lease_epoch},
+    )
+    assert with_lease_accept.status_code == 200, with_lease_accept.text
+
+
+@pytest.mark.asyncio
+async def test_lease_required_mode_skipped_for_personal_projects(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Personal projects (no org_id) skip the required-mode check —
+    setting is org-scoped and personal projects have no org."""
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)  # no org_id
+    await _make_persona(db_session, project, user, "atlas")
+
+    create = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(key),
+        json={"title": "Personal project", "assigned_to": "atlas"},
+    )
+    tk_id = create.json()["id"]
+    await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{tk_id}/start",
+        headers=_hdrs(key),
+    )
+
+    # Personal project: omitted lease still works (existing opt-in semantics)
+    comment = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{tk_id}/comments",
+        headers=_hdrs(key),
+        json={"content": "no lease, personal project"},
+    )
+    assert comment.status_code == 201, comment.text
+
+
+@pytest.mark.asyncio
 async def test_force_start_increments_ticket_lease_epoch(
     client: AsyncClient, db_session: AsyncSession
 ):
