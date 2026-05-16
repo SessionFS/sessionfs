@@ -54,6 +54,7 @@ class SummaryResponse(BaseModel):
     outcome: str | None = None
     open_issues: list[str] | None = None
     narrative_model: str | None = None
+    personas_active: list[str] = []
     generated_at: str = ""
 
 
@@ -123,7 +124,7 @@ async def generate_summary(
     if existing:
         for col in ("duration_minutes", "tool_call_count", "files_modified", "files_read",
                      "commands_executed", "tests_run", "tests_passed", "tests_failed",
-                     "packages_installed", "errors_encountered"):
+                     "packages_installed", "errors_encountered", "personas_active"):
             setattr(existing, col, getattr(record, col))
         existing.created_at = datetime.now(timezone.utc)
     else:
@@ -209,13 +210,16 @@ async def generate_narrative_summary(
         base_url=base_url,
     )
 
-    # Update the DB record with narrative fields
+    # Update the DB record with narrative fields. v0.10.7 R2 — also
+    # refresh personas_active so regenerations don't leave the cached
+    # value stale relative to the latest manifest/messages scan.
     if existing:
         existing.what_happened = summary.what_happened
         existing.key_decisions = json.dumps(summary.key_decisions) if summary.key_decisions else None
         existing.outcome = summary.outcome
         existing.open_issues = json.dumps(summary.open_issues) if summary.open_issues else None
         existing.narrative_model = summary.narrative_model
+        existing.personas_active = json.dumps(summary.personas_active or [])
     else:
         record = _summary_to_record(session_id, summary)
         db.add(record)
@@ -361,10 +365,17 @@ def _summary_to_record(session_id: str, summary) -> SessionSummaryRecord:
         outcome=summary.outcome,
         open_issues=json.dumps(summary.open_issues) if summary.open_issues else None,
         narrative_model=summary.narrative_model,
+        personas_active=json.dumps(summary.personas_active or []),
     )
 
 
 def _record_to_response(record: SessionSummaryRecord, session: Session) -> SummaryResponse:
+    try:
+        personas_active = json.loads(record.personas_active or "[]")
+        if not isinstance(personas_active, list):
+            personas_active = []
+    except (json.JSONDecodeError, TypeError):
+        personas_active = []
     return SummaryResponse(
         session_id=session.id,
         title=session.title or "Untitled",
@@ -386,6 +397,7 @@ def _record_to_response(record: SessionSummaryRecord, session: Session) -> Summa
         outcome=record.outcome,
         open_issues=json.loads(record.open_issues) if record.open_issues else None,
         narrative_model=record.narrative_model,
+        personas_active=personas_active,
         generated_at=record.created_at.isoformat() if record.created_at else "",
     )
 
@@ -412,5 +424,6 @@ def _summary_to_response(summary, session: Session) -> SummaryResponse:
         outcome=summary.outcome,
         open_issues=summary.open_issues,
         narrative_model=summary.narrative_model,
+        personas_active=list(summary.personas_active or []),
         generated_at=summary.generated_at,
     )

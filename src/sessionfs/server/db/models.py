@@ -323,6 +323,9 @@ class SessionSummaryRecord(Base):
     outcome: Mapped[str | None] = mapped_column(Text, nullable=True)
     open_issues: Mapped[str | None] = mapped_column(Text, nullable=True)
     narrative_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    personas_active: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="[]"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -758,6 +761,50 @@ class KnowledgePage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     auto_generated: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+
+
+class WikiPageRevision(Base):
+    """v0.10.7 — append-only per-revision history for wiki pages.
+
+    Inserted from routes/wiki.py:create_or_update_page on every page
+    write. Full content snapshot per revision (pages are bounded in
+    size — snapshots are simpler than diffs and cheaper to render).
+    """
+
+    __tablename__ = "wiki_page_revisions"
+    __table_args__ = (
+        Index(
+            "idx_wiki_revisions_history",
+            "project_id",
+            "page_slug",
+            "revised_at",
+            "id",
+        ),
+        UniqueConstraint(
+            "project_id",
+            "page_slug",
+            "revision_number",
+            name="uq_wiki_revisions_number",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    page_slug: Mapped[str] = mapped_column(String(100), nullable=False)
+    revision_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    content_snapshot: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    word_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    persona_name: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    ticket_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    revised_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class ProjectRules(Base):

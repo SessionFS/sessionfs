@@ -32,7 +32,7 @@ sfs mcp install --for claude-code --skip-instructions
 
 ## Tools
 
-The MCP server exposes 44 tools in seven categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), and AgentRun (Team+).
+The MCP server exposes 46 tools in seven categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), and AgentRun (Team+).
 
 ### Session Tools
 
@@ -140,6 +140,17 @@ Read one wiki page's full content plus backlinks. Cheaper than `get_project_cont
 | `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
 | `audit_session_id` | string | no | Current session id to append this retrieval to its audit log |
 
+#### `get_wiki_page_history`
+
+Return the revision history for a wiki page. Each revision carries `revision_number`, `revised_at`, the editing `user_id`, optional `persona_name` and `ticket_id`, and a content snapshot. Cursor-paginated for long histories.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `slug` | string | yes | Wiki page slug |
+| `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
+| `cursor` | string | no | Opaque pagination cursor returned as `next_cursor` from the previous call |
+| `limit` | number | no | Page size (default: 25) |
+
 #### `search_project_knowledge`
 
 Search across knowledge entries and wiki pages by keyword. Use this when you have a query string. Use `list_knowledge_entries` instead when you want a filtered list with no query.
@@ -182,7 +193,7 @@ No parameters required.
 
 #### `ask_project`
 
-Ask a question about the project. Gathers project context, searches the knowledge base, and finds related local sessions to assemble research material.
+Ask a question about the project. Gathers project context, searches the knowledge base, and finds related local sessions to assemble research material. Returns the assembled markdown plus a typed `sources_cited` list — `[{type: "kb"|"session", id}]` — resolved from a structured re-fetch of KB IDs and the local session search index, never regex-extracted from prose.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

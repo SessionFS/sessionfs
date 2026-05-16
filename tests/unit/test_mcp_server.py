@@ -275,10 +275,10 @@ class TestToolRegistryV0996:
     session-ops tools (4: approve_ticket, checkpoint_session,
     list_checkpoints, fork_session) + retrieval audit log. Total: 44."""
 
-    def test_tool_count_is_44(self):
+    def test_tool_count_is_45(self):
         from sessionfs.mcp.server import _TOOLS
-        assert len(_TOOLS) == 44, (
-            f"Expected 44 MCP tools after retrieval audit log, got {len(_TOOLS)}"
+        assert len(_TOOLS) == 45, (
+            f"Expected 45 MCP tools after get_wiki_page_history, got {len(_TOOLS)}"
         )
 
     def test_new_tools_registered(self):
@@ -1128,3 +1128,154 @@ class TestCheckpointAndForkHandlers:
             {"session_id": "ses_auth1234", "name": "via prefix"}
         )
         assert result["parent_session_id"] == "ses_auth1234abcdef"
+
+
+class TestAskProjectSourcesCited:
+    """v0.10.7 — ask_project returns structured sources_cited so SoD /
+    audit callers can trace which entities shaped the assembled research
+    material. KB entries come from the search step; session IDs come
+    from the local session-index match."""
+
+    @pytest.mark.asyncio
+    async def test_returns_kb_and_session_sources(self, tmp_path, monkeypatch):
+        """KB entries returned by search → {type:kb,id:int}, local
+        session matches → {type:session,id:str}. No regex-extraction
+        from the markdown — IDs come from the structured fetch path."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        from sessionfs.cli.common import load_config
+
+        cfg = load_config()
+        monkeypatch.setattr(cfg.sync, "api_key", "test-key", raising=False)
+        monkeypatch.setattr(cfg.sync, "api_url", "https://api.test", raising=False)
+        monkeypatch.setattr(mcp_server, "load_config", lambda: cfg)
+        monkeypatch.setattr(
+            mcp_server, "_resolve_workspace_git_remote",
+            lambda: _async_value("git@github.com:acme/repo.git"),
+        )
+
+        # Mock httpx so the project lookup + entries search return our
+        # fixture KB entries. Two project-scoped current-claim entries.
+        import httpx
+
+        class _ProjResp:
+            status_code = 200
+            def json(self):
+                return {"id": "proj_abc", "name": "acme"}
+
+        class _EntriesResp:
+            status_code = 200
+            def json(self):
+                return [
+                    {
+                        "id": 42, "content": "auth uses JWT", "entry_type": "pattern",
+                        "claim_class": "claim", "freshness_class": "current",
+                        "superseded_by": None, "dismissed": False,
+                        "session_id": "manual", "created_at": "2026-05-15T00:00:00Z",
+                        "confidence": 0.8,
+                    },
+                    {
+                        "id": 89, "content": "PBKDF2 share-link passwords", "entry_type": "decision",
+                        "claim_class": "claim", "freshness_class": "current",
+                        "superseded_by": None, "dismissed": False,
+                        "session_id": "manual", "created_at": "2026-05-15T00:00:00Z",
+                        "confidence": 0.9,
+                    },
+                ]
+
+        class _Client:
+            def __init__(self, *a, **kw): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def get(self, url, *a, **kw):
+                if "/entries" in url:
+                    return _EntriesResp()
+                return _ProjResp()
+
+        monkeypatch.setattr(httpx, "AsyncClient", _Client)
+
+        # Also short-circuit get_project_context so it doesn't make
+        # additional HTTP calls — return a constant string.
+        async def _fake_ctx(_args):
+            return "Project context: acme."
+        monkeypatch.setattr(mcp_server, "_handle_get_project_context", _fake_ctx)
+
+        # Wire a local session index so the session source path fires.
+        store_dir = tmp_path / ".sessionfs"
+        store = LocalStore(store_dir)
+        store.initialize()
+        d = store.allocate_session_dir("ses_local12345678")
+        manifest = {
+            "sfs_version": "0.1.0", "session_id": "ses_local12345678",
+            "title": "Auth debug", "created_at": "2026-05-15T00:00:00Z",
+            "updated_at": "2026-05-15T00:00:00Z",
+            "source": {"tool": "claude-code"}, "model": {"model_id": "claude-opus-4-6"},
+            "stats": {"message_count": 1},
+        }
+        (d / "manifest.json").write_text(json.dumps(manifest))
+        with open(d / "messages.jsonl", "w") as f:
+            f.write(json.dumps({"role": "user", "content": [{"type": "text", "text": "auth JWT debugging"}]}) + "\n")
+        store.upsert_session_metadata("ses_local12345678", manifest, str(d))
+        search = SessionSearchIndex(store_dir / "search.db")
+        search.initialize()
+        search.reindex_all(store_dir)
+        mcp_server._store = store
+        mcp_server._search = search
+
+        try:
+            result = await mcp_server._handle_ask_project(
+                {"question": "auth JWT"}
+            )
+        finally:
+            store.close()
+            search.close()
+            mcp_server._store = None
+            mcp_server._search = None
+
+        assert isinstance(result, dict)
+        assert "markdown" in result and "sources_cited" in result
+        assert isinstance(result["sources_cited"], list)
+        kb_sources = [s for s in result["sources_cited"] if s["type"] == "kb"]
+        session_sources = [s for s in result["sources_cited"] if s["type"] == "session"]
+        assert {s["id"] for s in kb_sources} == {42, 89}
+        assert "ses_local12345678" in {s["id"] for s in session_sources}
+
+    @pytest.mark.asyncio
+    async def test_empty_question_returns_empty_sources(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        result = await mcp_server._handle_ask_project({"question": ""})
+        assert result["sources_cited"] == []
+
+    @pytest.mark.asyncio
+    async def test_no_auth_degrades_gracefully(self, tmp_path, monkeypatch):
+        """Without an API key, KB fetch returns []. ask_project still
+        succeeds (degraded) with empty sources_cited rather than raising."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        from sessionfs.cli.common import load_config
+
+        cfg = load_config()
+        monkeypatch.setattr(cfg.sync, "api_key", "", raising=False)
+        monkeypatch.setattr(mcp_server, "load_config", lambda: cfg)
+        monkeypatch.setattr(
+            mcp_server, "_resolve_workspace_git_remote",
+            lambda: _async_value("git@github.com:acme/repo.git"),
+        )
+
+        async def _fake_ctx(_args):
+            return "ctx"
+        monkeypatch.setattr(mcp_server, "_handle_get_project_context", _fake_ctx)
+
+        mcp_server._search = None  # No local index → no session sources
+
+        result = await mcp_server._handle_ask_project(
+            {"question": "any question"}
+        )
+        assert isinstance(result, dict)
+        assert result["sources_cited"] == []
+
+
+async def _async_value(value):
+    """Helper: coerce a sync value into an awaitable used by
+    monkeypatched async functions."""
+    return value

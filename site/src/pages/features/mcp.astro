@@ -38,7 +38,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
             <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs mcp install --for claude-code</span></div>
             <div class="mt-2 text-muted">MCP server configured for Claude Code.</div>
             <div class="text-muted">Restart Claude Code to activate.</div>
-            <div class="mt-4 text-muted-dim">44 tools available to your AI agent:</div>
+            <div class="mt-4 text-muted-dim">46 tools available to your AI agent:</div>
             <div class="mt-1 text-muted-dim">Session tools (7):</div>
             <div class="text-txt">&bull; <span class="text-brand">search_sessions</span> <span class="text-muted-dim">— Search past sessions</span></div>
             <div class="text-txt">&bull; <span class="text-brand">get_session_context</span> <span class="text-muted-dim">— Full conversation from a session</span></div>
@@ -47,15 +47,16 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
             <div class="text-txt">&bull; <span class="text-brand">get_session_summary</span> <span class="text-muted-dim">— Structured session summary</span></div>
             <div class="text-txt">&bull; <span class="text-brand">get_audit_report</span> <span class="text-muted-dim">— Trust audit report</span></div>
             <div class="text-txt">&bull; <span class="text-brand">get_session_provenance</span> <span class="text-muted-dim">— Which rules instructed a session</span></div>
-            <div class="mt-2 text-muted-dim">Knowledge read (8):</div>
+            <div class="mt-2 text-muted-dim">Knowledge read (9):</div>
             <div class="text-txt">&bull; <span class="text-brand">get_project_context</span> <span class="text-muted-dim">— Full wiki: overview + pages + concepts</span></div>
             <div class="text-txt">&bull; <span class="text-brand">get_context_section</span> <span class="text-muted-dim">— One section of the context doc</span></div>
             <div class="text-txt">&bull; <span class="text-brand">get_wiki_page</span> <span class="text-muted-dim">— One wiki page in full</span></div>
+            <div class="text-txt">&bull; <span class="text-brand">get_wiki_page_history</span> <span class="text-muted-dim">— Revision history with persona / ticket attribution</span></div>
             <div class="text-txt">&bull; <span class="text-brand">search_project_knowledge</span> <span class="text-muted-dim">— Search knowledge entries</span></div>
             <div class="text-txt">&bull; <span class="text-brand">list_knowledge_entries</span> <span class="text-muted-dim">— Filter by type / class / freshness</span></div>
             <div class="text-txt">&bull; <span class="text-brand">get_knowledge_entry</span> <span class="text-muted-dim">— One entry's full record</span></div>
             <div class="text-txt">&bull; <span class="text-brand">get_knowledge_health</span> <span class="text-muted-dim">— Pending / compiled counts</span></div>
-            <div class="text-txt">&bull; <span class="text-brand">ask_project</span> <span class="text-muted-dim">— Q&A against knowledge base</span></div>
+            <div class="text-txt">&bull; <span class="text-brand">ask_project</span> <span class="text-muted-dim">— Q&A with sources_cited</span></div>
             <div class="mt-2 text-muted-dim">Knowledge write (5):</div>
             <div class="text-txt">&bull; <span class="text-accent">add_knowledge</span> <span class="text-muted-dim">— Save a discovery / decision / pattern</span></div>
             <div class="text-txt">&bull; <span class="text-accent">update_wiki_page</span> <span class="text-muted-dim">— Create or update a wiki page</span></div>

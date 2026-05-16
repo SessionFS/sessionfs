@@ -1935,6 +1935,20 @@ List all comments on a ticket, chronological. Renders each comment in a titled p
 sfs ticket comments tk_abc123
 ```
 
+### `sfs ticket watch`
+
+Poll a ticket's comments endpoint and render new comments as they appear. Initial poll renders all existing comments; subsequent polls only render NEW ones (diffed by comment id). Process-local seen-set — restart re-shows existing comments.
+
+```bash
+sfs ticket watch tk_abc123                               # default 30s cadence
+sfs ticket watch tk_abc123 --interval 15                 # poll every 15s (clamped to [5, 300])
+sfs ticket watch tk_abc123 --from-author codex-reviewer  # filter to one author
+sfs ticket watch tk_abc123 --exit-on-new                 # exit 0 on first new comment (CI hookup)
+sfs ticket watch tk_abc123 --notify                      # OS notification on new comments (macOS)
+```
+
+Each new comment triggers a terminal bell. `--notify` additionally calls `terminal-notifier` on macOS if installed (best-effort, no-op otherwise). Ctrl-C exits gracefully with a count of new comments seen during the session.
+
 ### `sfs ticket status`
 
 Show which ticket the local provenance bundle currently points at.

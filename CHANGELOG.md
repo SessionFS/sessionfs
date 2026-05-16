@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.7] - 2026-05-16
+
+### Added
+- **Customer-ask provenance fields.** Three read-side extensions to existing endpoints, all additive (no schema breaks). Same pattern as v0.10.5 `source_entries` work, extending the evidence trail to three more read endpoints.
+  - **`sources_cited` on `ask_project`** — typed `list[{type: "kb"|"session", id}]` returned alongside the assembled research markdown. KB IDs come from a structured re-fetch (`_fetch_kb_entries_raw`) — no regex extraction from prose. Session IDs come from the local search index. Open for `{type: "section", slug}` once ask_project grows a compiled-section retrieval step.
+  - **Wiki page revision history.** New `wiki_page_revisions` table (migration 040) stores every page edit with `revision_number`, `revised_at`, `user_id`, `persona_name`, `ticket_id`, full content snapshot. New `GET /api/v1/projects/{id}/pages/{slug}/history` endpoint with cursor pagination + `next_cursor` envelope. New `get_wiki_page_history` MCP tool (45 → 46 tools). Wiki PUT now accepts optional `persona_name` + `ticket_id`; MCP `update_wiki_page` auto-threads them from the active-ticket bundle when project matches.
+  - **`personas_active` on session summaries.** New `session_summaries.personas_active` JSON list collected from manifest + per-message persona annotations. Refreshed on both deterministic and narrative regeneration paths. Documented as session-level overblocking (per-decision authorship requires summarizer prompt rework — separate ticket).
+  - **Lease required-mode org setting.** Org admins can flip `Organization.settings.require_lease_epoch_on_ticket_writes = true`; complete/comment/accept ticket writes then return 422 if `lease_epoch` is omitted. Existing supplied-lease behavior unchanged. Personal projects (no org) bypass.
+- **`sfs ticket watch <id>` CLI.** Polls the `GET /comments` endpoint and renders new comments live (Panel + Markdown). Flags: `--interval N` (clamped to [5, 300] seconds, default 30), `--from-author NAME` filter, `--exit-on-new` for CI scripting, `--notify` for macOS terminal-notifier. Pairs with `sfs ticket comments` (v0.10.5).
+
+### Fixed
+- **Migration 040 SQLite-incompat.** First implementation called `op.create_unique_constraint` after `op.create_table` — fails on SQLite (ALTER TABLE can't add constraints). Codex flagged across R2-R7. Fix: `sa.UniqueConstraint(...)` moved inside `op.create_table()` as a column-level argument; downgrade simplified to drop the table (constraint goes with it). An interim follow-up migration 041 was tried first but Codex correctly identified that a linear repair migration can't heal a chain that halts at the failed 040 — pivoted to in-place edit since 040 had never shipped.
+- **Wiki revision provenance ownership check.** `_validate_revision_provenance` allows `ticket_id` only when the user owns the ticket through one of three roles: creator (`Ticket.created_by_user_id`), current resolver (`Ticket.resolver_user_id`), or active executor (open `RetrievalAuditContext` for this ticket created by the user via `start_ticket`, with matching `lease_epoch` AND ticket still `in_progress`). Without the executor path, agents executing colleagues' tickets couldn't attribute wiki revisions to them — defeating the agent-execution provenance use case. Lease+status gate replaces the original `closed_at IS NULL` check (which never expired because nothing in the codebase sets `closed_at`).
+- **Test isolation flake.** `test_unknown_block_type_logged` was failing under full-suite runs because `tests/server/integration/test_migrations_sqlite.py` triggered alembic's `fileConfig()` which defaults to `disable_existing_loggers=True`, killing the `sfs.writeback` logger's propagation. Fixture now constructs alembic `Config` without the ini path so `fileConfig` is skipped.
+
+### Tests
+- 1727 → 1745 backend (+18: ask_project sources_cited, wiki history + revision provenance + executor-association + stale-lease + post-status, lease required-mode + personal-project bypass, `sfs ticket watch` clamping/filter/exit-on-new/404, migration smoke xfail). 186 dashboard unchanged.
+- 2 xfail-strict: `test_migrations_sqlite.py` SQLite chain blocked by migration 003's `USING GIN` (broader fix tracked in `tk_7dc9e8764a5a4297`).
+
+### Security
+- Shield-SR independent pre-release review CLEAN — 0 CRITICAL / 0 HIGH / 0 MEDIUM. Codex review across 8 rounds (R1 scope + R2-R8 implementation): final R8 verdict VERIFIED-CLEAN.
+
 ## [0.10.6] - 2026-05-15
 
 ### Added
