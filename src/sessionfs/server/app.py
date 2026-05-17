@@ -13,7 +13,7 @@ from sessionfs.server.config import ServerConfig
 from sessionfs.server.db.engine import close_engine, init_engine
 from sessionfs.server.errors import register_exception_handlers
 from sessionfs.server.middleware import RequestLoggingMiddleware
-from sessionfs.server.routes import admin, admin_licenses, agent_runs, audit, auth, billing, bookmarks, dlp, handoffs, health, helm, knowledge, org, org_members, personas, project_transfers, projects, retrieval_audit, rules, sessions, settings, summaries, sync, telemetry, tickets, webhooks, wiki
+from sessionfs.server.routes import admin, admin_licenses, agent_runs, audit, auth, billing, bookmarks, dlp, handoffs, health, helm, knowledge, org, org_members, personas, project_transfers, projects, retrieval_audit, rules, sessions, settings, summaries, sync, teams, telemetry, tickets, webhooks, wiki
 from sessionfs.server.storage.local import LocalBlobStore
 
 
@@ -103,6 +103,7 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     app.include_router(auth.router)
     app.include_router(sessions.router)
     app.include_router(handoffs.router)
+    app.include_router(teams.router)
     app.include_router(audit.router)
     app.include_router(settings.router)
     app.include_router(bookmarks.router)

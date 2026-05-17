@@ -760,6 +760,51 @@ _TOOLS = [
         },
     ),
     Tool(
+        name="list_ticket_comments",
+        description=(
+            "List comments on a ticket in chronological (oldest-first) "
+            "order. Use this to poll review threads — pass the "
+            "`since` timestamp AND `since_id` of the last comment you've "
+            "seen, and only strictly newer comments are returned. Each "
+            "comment includes id, author_user_id, author_persona, "
+            "content, session_id, created_at, and ticket_id. Useful for "
+            "Codex/Claude review loops where one agent posts and another "
+            "reacts.\n\n"
+            "Always pass `since` + `since_id` together when polling — "
+            "two comments can share a millisecond and `since` alone "
+            "would skip one. Order is stable on (created_at, id).\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs ticket comments` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "ticket_id": {"type": "string", "description": "Ticket id (tk_...)"},
+                "since": {
+                    "type": "string",
+                    "description": (
+                        "Optional ISO-8601 timestamp. Only comments created "
+                        "strictly after this are returned (for incremental polling)."
+                    ),
+                },
+                "since_id": {
+                    "type": "string",
+                    "description": (
+                        "Cursor tiebreaker. Pass with `since` — when two "
+                        "comments share a created_at, the one with id > "
+                        "since_id is returned. Prevents same-timestamp skip."
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max comments to return (1-500, default 200).",
+                },
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+            "required": ["ticket_id"],
+        },
+    ),
+    Tool(
         name="start_ticket",
         description=(
             "Start working on a ticket. Returns the compiled persona + "
@@ -1258,6 +1303,143 @@ _TOOLS = [
             "required": ["session_id", "name"],
         },
     ),
+    # v0.10.9 — handoff MCP surface (8 tools).
+    Tool(
+        name="create_handoff",
+        description=(
+            "Hand off a session to another collaborator. Recipient is exactly one of: "
+            "recipient_email (any user), recipient_user_id (direct account), or "
+            "recipient_team_id (team — Team+ tier). Optional v0.10.9 provenance: "
+            "ticket_id + persona_name (carried to recipient's active-ticket bundle on claim). "
+            "Optional attachments: list of {kind: 'kb_entry'|'wiki_page'|'ticket', ref_id}. "
+            "Pro+ tier required."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string", "description": "Session to hand off"},
+                "recipient_email": {"type": "string", "description": "Recipient email"},
+                "recipient_user_id": {"type": "string", "description": "Recipient user id (direct account match)"},
+                "recipient_team_id": {"type": "string", "description": "Team id (Team+ tier)"},
+                "message": {"type": "string", "description": "Optional message to recipient"},
+                "ticket_id": {"type": "string", "description": "Active ticket id to carry through"},
+                "persona_name": {"type": "string", "description": "Persona to carry through"},
+                "expires_in_hours": {
+                    "type": "integer",
+                    "description": "Expiry in hours, default 168 (7d); clamped to tier max",
+                },
+                "attachments": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "kind": {"type": "string", "enum": ["kb_entry", "wiki_page", "ticket"]},
+                            "ref_id": {"type": "string"},
+                        },
+                        "required": ["kind", "ref_id"],
+                    },
+                    "description": "Curated refs to project KB/wiki/ticket entities",
+                },
+            },
+            "required": ["session_id"],
+        },
+    ),
+    Tool(
+        name="claim_handoff",
+        description=(
+            "Claim a handoff sent to you. Copies the session into your account and "
+            "(if the handoff carried ticket_id+persona_name) returns an active_ticket_payload "
+            "you can persist to ~/.sessionfs/active_ticket.json. Inaccessible attachment refs "
+            "are dropped (returned in dropped_attachments)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "handoff_id": {"type": "string", "description": "Handoff id (hnd_...)"},
+            },
+            "required": ["handoff_id"],
+        },
+    ),
+    Tool(
+        name="get_handoff",
+        description=(
+            "Get full details of a handoff including events, comments, attachments. "
+            "Caller must be the sender or a valid recipient (individual or team). "
+            "Recipient's first call records a `viewed` audit event."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "handoff_id": {"type": "string", "description": "Handoff id"},
+            },
+            "required": ["handoff_id"],
+        },
+    ),
+    Tool(
+        name="list_inbox_handoffs",
+        description=(
+            "List handoffs sent to you (matched by email, user_id, or team membership). "
+            "Pass include_team=false to drop team-handoff dimension."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "include_team": {"type": "boolean", "description": "Include team handoffs (default: true)"},
+            },
+        },
+    ),
+    Tool(
+        name="list_sent_handoffs",
+        description="List handoffs sent BY you.",
+        inputSchema={
+            "type": "object",
+            "properties": {},
+        },
+    ),
+    Tool(
+        name="revoke_handoff",
+        description=(
+            "Sender revokes a pending handoff with a required reason. The recipient is "
+            "notified by email (individual handoffs). Already-claimed handoffs cannot be revoked."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "handoff_id": {"type": "string", "description": "Handoff id"},
+                "reason": {"type": "string", "description": "Required reason (1-500 chars)"},
+            },
+            "required": ["handoff_id", "reason"],
+        },
+    ),
+    Tool(
+        name="decline_handoff",
+        description=(
+            "Recipient declines a pending handoff with optional reason. Sender is notified by email."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "handoff_id": {"type": "string", "description": "Handoff id"},
+                "reason": {"type": "string", "description": "Optional reason (max 500 chars)"},
+            },
+            "required": ["handoff_id"],
+        },
+    ),
+    Tool(
+        name="add_handoff_comment",
+        description=(
+            "Post a comment on a handoff thread (author must be sender or a valid recipient). "
+            "The other party is notified by email (individual handoffs)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "handoff_id": {"type": "string", "description": "Handoff id"},
+                "content": {"type": "string", "description": "Comment body (1-10000 chars)"},
+            },
+            "required": ["handoff_id", "content"],
+        },
+    ),
 ]
 
 
@@ -1332,6 +1514,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_list_tickets(arguments)
         elif name == "get_ticket":
             result = await _handle_get_ticket(arguments)
+        elif name == "list_ticket_comments":
+            result = await _handle_list_ticket_comments(arguments)
         elif name == "start_ticket":
             result = await _handle_start_ticket(arguments)
         elif name == "create_ticket":
@@ -1368,6 +1552,22 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = _handle_list_checkpoints(arguments)
         elif name == "fork_session":
             result = _handle_fork_session(arguments)
+        elif name == "create_handoff":
+            result = await _handle_create_handoff(arguments)
+        elif name == "claim_handoff":
+            result = await _handle_claim_handoff(arguments)
+        elif name == "get_handoff":
+            result = await _handle_get_handoff(arguments)
+        elif name == "list_inbox_handoffs":
+            result = await _handle_list_inbox_handoffs(arguments)
+        elif name == "list_sent_handoffs":
+            result = await _handle_list_sent_handoffs(arguments)
+        elif name == "revoke_handoff":
+            result = await _handle_revoke_handoff(arguments)
+        elif name == "decline_handoff":
+            result = await _handle_decline_handoff(arguments)
+        elif name == "add_handoff_comment":
+            result = await _handle_add_handoff_comment(arguments)
         else:
             result = {"error": f"Unknown tool: {name}"}
     except Exception as exc:
@@ -2776,6 +2976,61 @@ async def _handle_get_ticket(args: dict) -> dict:
     return resp.json()
 
 
+async def _handle_list_ticket_comments(args: dict) -> dict:
+    """Wrap GET /api/v1/projects/{project_id}/tickets/{ticket_id}/comments.
+
+    tk_32f3dacf1c9749bc — unblocks Codex/Claude review polling loops.
+    Supports `since` (ISO timestamp) + `since_id` (tiebreaker) + `limit`
+    for incremental polling. Pass since AND since_id together to handle
+    same-timestamp comment ties safely (Codex review #1).
+    """
+    ticket_id = args.get("ticket_id", "")
+    if not ticket_id:
+        return {"error": "ticket_id is required"}
+
+    # Codex review #2 — validate args BEFORE the network call so
+    # bad-input errors surface as local validation, not as opaque
+    # DNS/config failures from _resolve_project_id.
+    params: dict[str, Any] = {}
+    since = args.get("since")
+    if isinstance(since, str) and since.strip():
+        params["since"] = since.strip()
+    since_id = args.get("since_id")
+    if isinstance(since_id, str) and since_id.strip():
+        params["since_id"] = since_id.strip()
+    limit = args.get("limit")
+    if limit is not None:
+        try:
+            limit_int = int(limit)
+        except (TypeError, ValueError):
+            return {"error": "limit must be an integer"}
+        if limit_int < 1 or limit_int > 500:
+            return {"error": "limit must be between 1 and 500"}
+        params["limit"] = limit_int
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/projects/{project_id}/tickets/{ticket_id}/comments",
+            headers={"Authorization": f"Bearer {api_key}"},
+            params=params or None,
+        )
+    if resp.status_code == 404:
+        return {"error": f"Ticket '{ticket_id}' not found"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    # Wrap the list response in a dict so callers can extend later
+    # without breaking clients (e.g. add next_cursor when we move to
+    # opaque cursors). MCP responses are JSON-serialized to text anyway.
+    return {"comments": resp.json()}
+
+
 async def _handle_start_ticket(args: dict) -> dict:
     """Wrap POST /api/v1/projects/{project_id}/tickets/{ticket_id}/start.
 
@@ -3483,6 +3738,220 @@ def _handle_fork_session(args: dict) -> dict:
         return fork_session(store, full_id, name, from_checkpoint=from_checkpoint)
     except SessionOpError as exc:
         return {"error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
+# v0.10.9 handoff MCP handlers (8 tools)
+# ---------------------------------------------------------------------------
+
+
+def _handoff_api_config() -> tuple[str, str] | dict:
+    """Return (api_url, api_key) or an error dict. Handoffs are not
+    project-scoped, so unlike _resolve_project_id this doesn't need a
+    git remote."""
+    config = load_config()
+    if not config.sync.api_key:
+        return {"error": "Not authenticated. Run 'sfs auth login' first."}
+    return config.sync.api_url.rstrip("/"), config.sync.api_key
+
+
+async def _handle_create_handoff(args: dict) -> dict:
+    session_id = args.get("session_id", "")
+    if not session_id:
+        return {"error": "session_id is required"}
+    conf = _handoff_api_config()
+    if isinstance(conf, dict):
+        return conf
+    api_url, api_key = conf
+
+    body: dict[str, Any] = {"session_id": session_id}
+    for key in (
+        "recipient_email",
+        "recipient_user_id",
+        "recipient_team_id",
+        "message",
+        "ticket_id",
+        "persona_name",
+    ):
+        val = args.get(key)
+        if isinstance(val, str) and val.strip():
+            body[key] = val.strip()
+    if args.get("expires_in_hours") is not None:
+        try:
+            body["expires_in_hours"] = int(args["expires_in_hours"])
+        except (TypeError, ValueError):
+            return {"error": "expires_in_hours must be an integer"}
+    if isinstance(args.get("attachments"), list):
+        body["attachments"] = args["attachments"]
+
+    import httpx
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{api_url}/api/v1/handoffs",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=body,
+        )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_claim_handoff(args: dict) -> dict:
+    handoff_id = args.get("handoff_id", "")
+    if not handoff_id:
+        return {"error": "handoff_id is required"}
+    conf = _handoff_api_config()
+    if isinstance(conf, dict):
+        return conf
+    api_url, api_key = conf
+
+    import httpx
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.post(
+            f"{api_url}/api/v1/handoffs/{handoff_id}/claim",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_get_handoff(args: dict) -> dict:
+    handoff_id = args.get("handoff_id", "")
+    if not handoff_id:
+        return {"error": "handoff_id is required"}
+    conf = _handoff_api_config()
+    if isinstance(conf, dict):
+        return conf
+    api_url, api_key = conf
+
+    import httpx
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/handoffs/{handoff_id}",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_list_inbox_handoffs(args: dict) -> dict:
+    include_team = args.get("include_team", True)
+    conf = _handoff_api_config()
+    if isinstance(conf, dict):
+        return conf
+    api_url, api_key = conf
+
+    import httpx
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/handoffs/inbox",
+            headers={"Authorization": f"Bearer {api_key}"},
+            params={"include_team": str(bool(include_team)).lower()},
+        )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_list_sent_handoffs(args: dict) -> dict:
+    conf = _handoff_api_config()
+    if isinstance(conf, dict):
+        return conf
+    api_url, api_key = conf
+
+    import httpx
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/handoffs/sent",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_revoke_handoff(args: dict) -> dict:
+    handoff_id = args.get("handoff_id", "")
+    reason = args.get("reason", "")
+    if not handoff_id:
+        return {"error": "handoff_id is required"}
+    if not reason:
+        return {"error": "reason is required"}
+    conf = _handoff_api_config()
+    if isinstance(conf, dict):
+        return conf
+    api_url, api_key = conf
+
+    import httpx
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            f"{api_url}/api/v1/handoffs/{handoff_id}/revoke",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={"reason": reason},
+        )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_decline_handoff(args: dict) -> dict:
+    handoff_id = args.get("handoff_id", "")
+    if not handoff_id:
+        return {"error": "handoff_id is required"}
+    conf = _handoff_api_config()
+    if isinstance(conf, dict):
+        return conf
+    api_url, api_key = conf
+
+    body: dict[str, Any] = {}
+    reason = args.get("reason")
+    if isinstance(reason, str) and reason.strip():
+        body["reason"] = reason.strip()
+
+    import httpx
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            f"{api_url}/api/v1/handoffs/{handoff_id}/decline",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=body,
+        )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_add_handoff_comment(args: dict) -> dict:
+    handoff_id = args.get("handoff_id", "")
+    content = args.get("content", "")
+    if not handoff_id:
+        return {"error": "handoff_id is required"}
+    if not content:
+        return {"error": "content is required"}
+    conf = _handoff_api_config()
+    if isinstance(conf, dict):
+        return conf
+    api_url, api_key = conf
+
+    import httpx
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            f"{api_url}/api/v1/handoffs/{handoff_id}/comments",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={"content": content},
+        )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
 
 
 def _resolve_session_id_or_error(store, session_id: str):

@@ -166,6 +166,120 @@ def test_watch_404_exits_clean():
     assert "not found" in result.output.lower()
 
 
+class _UrlAwareFakeApiRequest:
+    """URL-routed fake for --until-closed tests.
+
+    Comments endpoint returns from `comments_responses` (scripted list of
+    bodies, last one repeats). Ticket-detail endpoint returns from
+    `ticket_status_responses` (scripted list of statuses, last repeats).
+    Both endpoints answer with HTTP 200."""
+
+    def __init__(
+        self,
+        comments_responses: list[list[dict]],
+        ticket_status_responses: list[str],
+    ):
+        self._comments = list(comments_responses)
+        self._statuses = list(ticket_status_responses)
+
+    async def __call__(self, method, url, *args, **kwargs):
+        if "/comments" in url:
+            body = self._comments[0] if len(self._comments) == 1 else self._comments.pop(0)
+            return 200, body, {}
+        # ticket-detail endpoint (used by --until-closed)
+        status = (
+            self._statuses[0] if len(self._statuses) == 1 else self._statuses.pop(0)
+        )
+        return 200, {"id": "tk_abc123", "status": status, "title": "t"}, {}
+
+
+def test_watch_until_closed_exits_when_ticket_done(monkeypatch):
+    """--until-closed keeps watching past new comments and exits cleanly
+    when the ticket transitions to 'done'."""
+    runner = CliRunner()
+
+    fake = _UrlAwareFakeApiRequest(
+        comments_responses=[
+            [],
+            [_make_comment("tc_1", content="codex-r1")],
+            [_make_comment("tc_1", content="codex-r1")],
+        ],
+        # Status sequence: open (initial poll) → in_progress (after first
+        # new comment) → done (third poll triggers exit).
+        ticket_status_responses=["open", "in_progress", "done"],
+    )
+
+    with (
+        patch(
+            "sessionfs.cli.cmd_ticket._resolve_project",
+            return_value=("https://api.test", "key", "proj_x"),
+        ),
+        patch(
+            "sessionfs.cli.cmd_ticket._api_request",
+            new=fake,
+        ),
+        patch("sessionfs.cli.cmd_ticket.asyncio.sleep", new=_no_sleep),
+    ):
+        result = runner.invoke(
+            ticket_app, ["watch", "tk_abc123", "--until-closed"]
+        )
+    assert result.exit_code == 0, result.output
+    assert "codex-r1" in result.output
+    assert "terminal status 'done'" in result.output
+
+
+def test_watch_until_closed_also_exits_on_cancelled(monkeypatch):
+    """`cancelled` is also a terminal status that triggers --until-closed exit."""
+    runner = CliRunner()
+
+    fake = _UrlAwareFakeApiRequest(
+        comments_responses=[[]],
+        ticket_status_responses=["cancelled"],
+    )
+
+    with (
+        patch(
+            "sessionfs.cli.cmd_ticket._resolve_project",
+            return_value=("https://api.test", "key", "proj_x"),
+        ),
+        patch(
+            "sessionfs.cli.cmd_ticket._api_request",
+            new=fake,
+        ),
+        patch("sessionfs.cli.cmd_ticket.asyncio.sleep", new=_no_sleep),
+    ):
+        result = runner.invoke(
+            ticket_app, ["watch", "tk_abc123", "--until-closed"]
+        )
+    assert result.exit_code == 0, result.output
+    assert "terminal status 'cancelled'" in result.output
+
+
+def test_watch_default_keeps_polling_until_interrupt(monkeypatch):
+    """Without --exit-on-new or --until-closed, the watcher polls until
+    KeyboardInterrupt (proxied here by exhausting the comments fake)."""
+    runner = CliRunner()
+    # _FakeApiRequest raises KeyboardInterrupt when the scripted queue
+    # is empty — mimics user hitting Ctrl-C.
+    fake = _FakeApiRequest([(200, [])])
+
+    with (
+        patch(
+            "sessionfs.cli.cmd_ticket._resolve_project",
+            return_value=("https://api.test", "key", "proj_x"),
+        ),
+        patch(
+            "sessionfs.cli.cmd_ticket._api_request",
+            new=fake,
+        ),
+        patch("sessionfs.cli.cmd_ticket.asyncio.sleep", new=_no_sleep),
+    ):
+        result = runner.invoke(ticket_app, ["watch", "tk_abc123"])
+    assert result.exit_code == 0, result.output
+    # No new comments seen; clean exit summary appears.
+    assert "saw 0 new" in result.output
+
+
 async def _no_sleep(_seconds):
     """Skip real sleep in tests so the watch loop drains the scripted
     fake immediately."""

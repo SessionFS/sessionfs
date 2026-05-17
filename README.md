@@ -216,7 +216,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
-**v0.10.8 — Public Beta.** 1745 backend tests + 186 dashboard tests passing. 40 database migrations. Same product as v0.10.7 (customer-ask provenance fields + `sfs ticket watch` CLI) with a CI test fix that unblocks Cloud Run deployment. No product code changes from v0.10.7.
+**v0.10.9 — Public Beta.** 1796 backend tests + 186 dashboard tests passing. 41 database migrations. 53 MCP tools. Comprehensive handoff redesign: first-class coordination primitive on the same plane as tickets, personas, and agent runs. New: 8 handoff MCP tools, team management surface, lifecycle endpoints (revoke / decline / comments / events), provenance carry-through (ticket + persona auto-applied to recipient's next session), atomic claim race protection, 404-not-403 existence hiding, lazy expiry.
 
 ### Session capture, resume, and search
 

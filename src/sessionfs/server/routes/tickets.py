@@ -41,9 +41,9 @@ import json
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, field_validator
-from sqlalchemy import insert, literal, select, update
+from sqlalchemy import and_, insert, literal, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import get_current_user
@@ -1295,20 +1295,68 @@ async def dismiss_ticket(
 async def list_ticket_comments(
     project_id: str,
     ticket_id: str,
+    since: datetime | None = Query(
+        None,
+        description=(
+            "Cursor timestamp from the last seen comment. Pair with "
+            "since_id when two comments share a created_at — the server "
+            "uses (created_at > since) OR (created_at = since AND id > since_id) "
+            "so no same-timestamp comments are skipped."
+        ),
+    ),
+    since_id: str | None = Query(
+        None,
+        description=(
+            "Cursor tiebreaker. Pass the id of the last seen comment "
+            "together with `since` to handle same-timestamp ties safely. "
+            "Without since_id, agents may skip same-millisecond comments."
+        ),
+    ),
+    limit: int = Query(200, ge=1, le=500, description="Max comments to return (1-500)."),
     user: User = Depends(get_current_user),
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> list[CommentResponse]:
+    """List ticket comments in chronological (oldest-first) order.
+
+    v0.10.10 (tk_32f3dacf1c9749bc) — added `since` + `since_id` + `limit`
+    for incremental polling. Agents tracking a review thread pass the
+    timestamp + id of the last comment they processed; only strictly
+    newer comments come back. Ordering is stable by (created_at, id)
+    so the cursor advances monotonically even when two comments share
+    a created_at (Codex review #1 fix — without the id tiebreaker, a
+    same-timestamp poll could permanently skip one of two siblings).
+    """
     check_feature(ctx, "agent_tickets")
     await _get_project_or_404(project_id, db, user.id)
     await _get_ticket_or_404(project_id, ticket_id, db)  # validates ticket
-    rows = (
-        await db.execute(
-            select(TicketComment)
-            .where(TicketComment.ticket_id == ticket_id)
-            .order_by(TicketComment.created_at)
-        )
-    ).scalars().all()
+    query = (
+        select(TicketComment)
+        .where(TicketComment.ticket_id == ticket_id)
+        .order_by(TicketComment.created_at, TicketComment.id)
+        .limit(limit)
+    )
+    if since is not None:
+        # Normalize to UTC so naive `since` values still compare cleanly
+        # against the timezone-aware DB column.
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=timezone.utc)
+        if since_id:
+            # Lexicographic tuple comparison: (created_at, id) > (since, since_id)
+            # written explicitly so SQLite + Postgres both honor the
+            # tiebreaker without needing row-value support.
+            query = query.where(
+                or_(
+                    TicketComment.created_at > since,
+                    and_(
+                        TicketComment.created_at == since,
+                        TicketComment.id > since_id,
+                    ),
+                )
+            )
+        else:
+            query = query.where(TicketComment.created_at > since)
+    rows = (await db.execute(query)).scalars().all()
     return [
         CommentResponse(
             id=c.id,

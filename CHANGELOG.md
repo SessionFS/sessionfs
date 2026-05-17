@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.9] - 2026-05-17
+
+### Added
+
+**Comprehensive handoff redesign** — single-feature release that elevates handoffs from "copy a session blob to an email recipient" to a first-class coordination primitive on the same plane as tickets, personas, and agent runs.
+
+- **Migration 041** — additive schema, zero existing data loss. 12 new columns on `handoffs` (recipient_user_id, recipient_team_id, ticket_id, persona_name, revoked_at, revoked_by_user_id, revoke_reason, handoff_kind, snapshot_persona_name, snapshot_ticket_title, sender_tier_snapshot, viewed_at) and 5 new tables: `teams`, `team_members`, `handoff_attachments` (with `project_id` for unambiguous wiki slug lookups), `handoff_comments`, `handoff_events`.
+- **Exactly-one-recipient invariant** — every handoff specifies exactly one of `recipient_email` (any user by email), `recipient_user_id` (direct account match), or `recipient_team_id` (team handoff, Team+ tier). Enforced server-side via Pydantic `@model_validator(exactly_one_recipient)` with `strip_blank` field validators so whitespace-only IDs collapse to None before the count check.
+- **Provenance carry-through** — sender attaches `ticket_id` + `persona_name`; on claim, the response includes an `active_ticket_payload` (ticket_id, persona_name, project_id, lease_epoch) that the recipient's CLI writes to `~/.sessionfs/active_ticket.json`. The next captured session is automatically tagged with the handed-off context. Persona-only handoffs derive `project_id` from the source session's git_remote so write_bundle has what it needs.
+- **Sender curates context** — `attachments[]` list of `{kind: kb_entry|wiki_page|ticket, ref_id}` validated against the session's project at create time. At claim, attachments are re-validated against recipient's accessible projects; inaccessible refs are silently dropped and surfaced in `dropped_attachments` with structured reason (`not_accessible` | `deleted` | `invalid_id` | `unknown_kind`).
+- **Lifecycle endpoints** — `POST /handoffs/{id}/revoke` (sender-only, atomic, required reason), `POST /handoffs/{id}/decline` (recipient-only, atomic, optional reason), `POST/GET /handoffs/{id}/comments` (sender + valid recipients, paged 200), `GET /handoffs/{id}/events` (audit log, paged 200).
+- **Team management surface** — `routes/teams.py`: `POST/GET /teams`, `GET/DELETE /teams/{id}`, `POST/GET/DELETE /teams/{id}/members/...`. Org admin required for mutations; any org member can list. `team_handoff` feature added to Team + Enterprise tiers.
+- **Existence-hiding (404-not-403)** — non-parties get 404 on `GET /handoffs/{id}`, `/claim`, `/decline`, `/comments`, `/events`, `/summary` (rewritten from 403 + email-only check). Eligibility is checked BEFORE any lazy-expire writes or status-specific responses so non-recipients can't distinguish pending vs claimed vs revoked via response codes.
+- **Atomic claim race** — `UPDATE Handoff WHERE id=X AND status='pending'` runs FIRST. Race losers never write blobs or insert Session rows — eliminates orphan blob storage from concurrent team-member claims. `new_session_id` is pre-allocated and included in the atomic UPDATE.
+- **Lazy expiry** — pending handoffs past `expires_at` flip to `expired` on read with audit event. Per-tier `expires_in_hours` clamping: 720h (30d) on Free/Pro/Team, 2160h (90d) on Enterprise.
+- **viewed_at tracking** — first GET by a non-sender stamps `viewed_at` + emits a `viewed` event. Sender's later reads do not overwrite.
+- **4 lifecycle email notifications** — `send_handoff_claimed` (to sender), `send_handoff_revoked` (to recipient), `send_handoff_declined` (to sender), `send_handoff_comment` (to other party). All templates `html.escape()` user-supplied fields. All sends are best-effort try/except — never fail the route.
+- **8 new MCP tools** — `create_handoff`, `claim_handoff`, `get_handoff`, `list_inbox_handoffs`, `list_sent_handoffs`, `revoke_handoff`, `decline_handoff`, `add_handoff_comment` (53 tools total, was 45). All use the shared `_handoff_api_config` helper (handoffs aren't project-scoped).
+- **CLI extensions** — `sfs handoff` accepts `--to-user-id`, `--to-team-id`, `--ticket`, `--persona`, `--expires-hours`, `--attach kind:ref_id` (repeatable). New subcommands: `sfs handoffs get | revoke | decline | comment | comments | events`. `sfs pull-handoff` now persists `active_ticket_payload` to `~/.sessionfs/active_ticket.json` (the core v0.10.9 promise — without this the recipient session loses ticket+persona context).
+
+### Review history
+
+Full receipts across 5 rounds of Codex review on parent ticket `tk_89e90060e6314311`:
+- R1 (scope): clean with 2 corrections (file paths `email.py`/`email_templates.py` not `email_service.py`; tier gating preserved at existing Pro+, not "Free=email")
+- R2 (schema): 3 MEDIUM (recipient_team_id missing FK, _accessible_project_ids missed org-member projects, wiki slug ambiguity in attachment validation) + 1 LOW (blank-strip whitespace) — all fixed pre-implementation
+- R3 (implementation): 2 HIGH (claim/decline existence leak via status-before-auth + pull_handoff dropping active_ticket_payload) + 4 MEDIUM (persona-only project_id, blob copy before atomic claim, /summary using old 403, attachment response missing project_id) + 2 LOW (MCP not dispatch-tested, no real team E2E test) — all fixed
+- R4 (re-review): VERIFIED-CLEAN. Independent Shield-SR security review: zero critical/high findings. Release approved.
+
+### Deferred to v0.10.10+
+- Broadcast claim_policy + per-team-member fan-out
+- `parent_handoff_id` relay chain (A→B→C)
+- `Session.blob_refcount` for storage efficiency on unchanged claims
+- Background expiry sweeper (currently lazy-on-read per Codex G)
+- Team email fan-out for revoke/comment notifications
+
 ## [0.10.8] - 2026-05-16
 
 ### Fixed

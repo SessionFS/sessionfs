@@ -2,6 +2,125 @@
 
 from __future__ import annotations
 
+import html as _html
+
+
+def _shell() -> str:
+    """Outer wrapper used by all v0.10.9 lifecycle email templates."""
+    return (
+        "<div style='font-family: system-ui, -apple-system, sans-serif; max-width: 560px; "
+        "margin: 0 auto; background: #0a0c10; color: #e6edf3; padding: 32px; "
+        "border-radius: 8px;'>"
+    )
+
+
+def _footer() -> str:
+    return (
+        "<p style='color: #484f58; font-size: 12px; margin-top: 24px; border-top: 1px solid #21262d; "
+        "padding-top: 16px;'>Sent by SessionFS. "
+        "If you didn't expect this email, you can safely ignore it.</p>"
+        "</div>"
+    )
+
+
+def _quote_block(label: str, content: str) -> str:
+    safe = _html.escape(content)
+    safe_label = _html.escape(label)
+    return (
+        "<div style='background: #1c2128; border-left: 3px solid #4f9cf7; "
+        "padding: 12px 16px; margin: 16px 0; border-radius: 4px;'>"
+        f"<p style='color: #8b949e; margin: 0 0 8px 0; font-size: 12px;'>{safe_label}</p>"
+        f"<p style='color: #e6edf3; margin: 0;'>{safe}</p>"
+        "</div>"
+    )
+
+
+def handoff_claimed_email(
+    *,
+    recipient_email: str,
+    session_title: str | None,
+    handoff_id: str,
+) -> str:
+    """Email sent to the sender when their handoff is claimed."""
+    title = _html.escape(session_title or "Untitled session")
+    recipient = _html.escape(recipient_email)
+    hid = _html.escape(handoff_id)
+    return (
+        _shell()
+        + "<h2 style='margin: 0 0 8px 0; color: #e6edf3;'>Handoff claimed</h2>"
+        + f"<p style='color: #8b949e;'>{recipient} claimed your handoff <strong>{title}</strong>.</p>"
+        + f"<p style='color: #8b949e; font-size: 13px;'>Handoff ID: <code>{hid}</code></p>"
+        + _footer()
+    )
+
+
+def handoff_revoked_email(
+    *,
+    sender_email: str,
+    session_title: str | None,
+    reason: str,
+    handoff_id: str,
+) -> str:
+    """Email sent to the recipient when the sender revokes a pending handoff."""
+    title = _html.escape(session_title or "Untitled session")
+    sender = _html.escape(sender_email)
+    hid = _html.escape(handoff_id)
+    return (
+        _shell()
+        + "<h2 style='margin: 0 0 8px 0; color: #e6edf3;'>Handoff revoked</h2>"
+        + f"<p style='color: #8b949e;'>{sender} revoked the handoff <strong>{title}</strong>.</p>"
+        + _quote_block(f"Reason from {sender_email}:", reason)
+        + f"<p style='color: #8b949e; font-size: 13px;'>Handoff ID: <code>{hid}</code></p>"
+        + _footer()
+    )
+
+
+def handoff_declined_email(
+    *,
+    recipient_email: str,
+    session_title: str | None,
+    reason: str | None,
+    handoff_id: str,
+) -> str:
+    """Email sent to the sender when the recipient declines a handoff."""
+    title = _html.escape(session_title or "Untitled session")
+    recipient = _html.escape(recipient_email)
+    hid = _html.escape(handoff_id)
+    reason_html = (
+        _quote_block(f"Reason from {recipient_email}:", reason)
+        if reason
+        else ""
+    )
+    return (
+        _shell()
+        + "<h2 style='margin: 0 0 8px 0; color: #e6edf3;'>Handoff declined</h2>"
+        + f"<p style='color: #8b949e;'>{recipient} declined the handoff <strong>{title}</strong>.</p>"
+        + reason_html
+        + f"<p style='color: #8b949e; font-size: 13px;'>Handoff ID: <code>{hid}</code></p>"
+        + _footer()
+    )
+
+
+def handoff_comment_email(
+    *,
+    author_email: str,
+    session_title: str | None,
+    content: str,
+    handoff_id: str,
+) -> str:
+    """Email sent to the other party when someone comments on a handoff."""
+    title = _html.escape(session_title or "Untitled session")
+    author = _html.escape(author_email)
+    hid = _html.escape(handoff_id)
+    return (
+        _shell()
+        + "<h2 style='margin: 0 0 8px 0; color: #e6edf3;'>New comment on handoff</h2>"
+        + f"<p style='color: #8b949e;'>{author} commented on the handoff <strong>{title}</strong>.</p>"
+        + _quote_block(f"From {author_email}:", content)
+        + f"<p style='color: #8b949e; font-size: 13px;'>Handoff ID: <code>{hid}</code></p>"
+        + _footer()
+    )
+
 
 def handoff_email(
     *,

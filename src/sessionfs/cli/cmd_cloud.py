@@ -6,7 +6,7 @@ import asyncio
 import json
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import typer
 from rich.table import Table
@@ -757,7 +757,33 @@ def handoff(
     # presence ourselves below, after the redirect check has had a
     # chance to fire.
     to: str = typer.Option(None, "--to", help="Recipient email."),
+    to_user_id: str = typer.Option(
+        None, "--to-user-id", help="Recipient user id (direct account match)."
+    ),
+    to_team_id: str = typer.Option(
+        None, "--to-team-id", help="Recipient team id (Team+ tier)."
+    ),
     message: str = typer.Option("", "--message", "-m", help="Message to include."),
+    ticket_id: str = typer.Option(
+        None, "--ticket", help="Carry an active ticket id through to the recipient."
+    ),
+    persona_name: str = typer.Option(
+        None, "--persona", help="Carry the persona name through to the recipient."
+    ),
+    expires_hours: int = typer.Option(
+        None,
+        "--expires-hours",
+        help="Expiry in hours (default 168=7d; tier-clamped to 30d / 90d).",
+    ),
+    attach: list[str] = typer.Option(
+        None,
+        "--attach",
+        help=(
+            "Attach a project ref. Repeatable. Format: 'kind:ref_id' "
+            "(kind: kb_entry|wiki_page|ticket). Example: --attach kb_entry:42 "
+            "--attach wiki_page:auth-flow."
+        ),
+    ),
 ) -> None:
     """Hand off a session to another user (push + email notification)."""
     # Common UX confusion: recipients with a handoff ID type
@@ -770,7 +796,7 @@ def handoff(
     # handoff ID (a session alias might legitimately be named
     # "hnd_deadbeef" — resolve_session_id below will resolve it). This
     # keeps the redirect tight to the bug pattern Pius hit.
-    if not to and _HANDOFF_ID_RE.match(session_id):
+    if not (to or to_user_id or to_team_id) and _HANDOFF_ID_RE.match(session_id):
         err_console.print(
             f"[yellow]'{session_id}' looks like a handoff ID, not a session ID.[/yellow]\n"
             f"\n"
@@ -782,12 +808,42 @@ def handoff(
         )
         raise SystemExit(2)
 
-    # Now enforce --to. typer.BadParameter renders through the standard
-    # Typer "Usage: ... Error: ..." formatting (handle_errors lets
-    # ClickException through specifically so this looks like every
-    # other validation error in the CLI).
-    if not to:
-        raise typer.BadParameter("Missing option '--to'.", param_hint="'--to'")
+    # Exactly one recipient must be specified. Mirrors the server-side
+    # @model_validator(exactly_one_recipient) so we surface a friendly
+    # error before any push work happens.
+    recipient_count = sum(1 for v in (to, to_user_id, to_team_id) if v)
+    if recipient_count == 0:
+        raise typer.BadParameter(
+            "Specify exactly one recipient via --to, --to-user-id, or --to-team-id.",
+            param_hint="'--to'",
+        )
+    if recipient_count > 1:
+        raise typer.BadParameter(
+            "Specify only one of --to, --to-user-id, --to-team-id.",
+            param_hint="'--to'",
+        )
+
+    parsed_attachments: list[dict[str, str]] = []
+    if attach:
+        for raw in attach:
+            if ":" not in raw:
+                raise typer.BadParameter(
+                    f"--attach {raw!r}: expected 'kind:ref_id' (e.g. 'kb_entry:42')",
+                    param_hint="'--attach'",
+                )
+            kind, ref_id = raw.split(":", 1)
+            kind = kind.strip()
+            ref_id = ref_id.strip()
+            if kind not in {"kb_entry", "wiki_page", "ticket"}:
+                raise typer.BadParameter(
+                    f"--attach kind {kind!r}: must be kb_entry|wiki_page|ticket",
+                    param_hint="'--attach'",
+                )
+            if not ref_id:
+                raise typer.BadParameter(
+                    f"--attach {raw!r}: ref_id is empty", param_hint="'--attach'"
+                )
+            parsed_attachments.append({"kind": kind, "ref_id": ref_id})
 
     from sessionfs.sync.archive import pack_session
     from sessionfs.sync.client import SyncConflictError, SyncDeletedError, SyncTooLargeError
@@ -835,12 +891,23 @@ def handoff(
         import httpx
 
         cfg = _load_sync_config()
-        body = {
-            "session_id": full_id,
-            "recipient_email": to,
-        }
+        body: dict[str, Any] = {"session_id": full_id}
+        if to:
+            body["recipient_email"] = to
+        if to_user_id:
+            body["recipient_user_id"] = to_user_id
+        if to_team_id:
+            body["recipient_team_id"] = to_team_id
         if message:
             body["message"] = message
+        if ticket_id:
+            body["ticket_id"] = ticket_id
+        if persona_name:
+            body["persona_name"] = persona_name
+        if expires_hours is not None:
+            body["expires_in_hours"] = expires_hours
+        if parsed_attachments:
+            body["attachments"] = parsed_attachments
 
         resp = httpx.post(
             f"{cfg['api_url']}/api/v1/handoffs",
@@ -853,8 +920,25 @@ def handoff(
             data = resp.json()
             handoff_id = data["id"]
             console.print(f"\n[green]Handoff created: {handoff_id}[/green]")
-            console.print(f"  Recipient: {to}")
+            recipient_display = (
+                to
+                or (f"user_id={to_user_id}" if to_user_id else None)
+                or (f"team_id={to_team_id}" if to_team_id else "")
+            )
+            console.print(f"  Recipient: {recipient_display}")
             console.print(f"  Expires: {data['expires_at']}")
+            if ticket_id or persona_name:
+                console.print(
+                    "  Provenance: "
+                    + ", ".join(
+                        x for x in (
+                            f"ticket={ticket_id}" if ticket_id else None,
+                            f"persona={persona_name}" if persona_name else None,
+                        ) if x
+                    )
+                )
+            if parsed_attachments:
+                console.print(f"  Attachments: {len(parsed_attachments)}")
             console.print("\nRecipient can pull with:")
             console.print(f"  sfs pull-handoff {handoff_id}")
         else:
@@ -934,11 +1018,45 @@ def pull_handoff(
 
         # Use recipient's copied session ID (persisted on handoff record)
         recipient_sid = handoff_data.get("recipient_session_id")
+        claim_data: dict | None = None
         if claim_resp.status_code in (200, 201):
             claim_data = claim_resp.json()
             recipient_sid = claim_data.get("recipient_session_id") or recipient_sid
         if recipient_sid:
             session_id = recipient_sid
+
+        # R3 HIGH 2 — persist active_ticket_payload from the claim
+        # response so the recipient's next captured session inherits the
+        # ticket+persona context the sender attached. This is the core
+        # v0.10.9 provenance carry-through promise; without it, all the
+        # server-side validation/derivation work is wasted.
+        if claim_data is not None:
+            payload = claim_data.get("active_ticket_payload")
+            if isinstance(payload, dict) and payload.get("project_id"):
+                from sessionfs.active_ticket import write_bundle
+
+                ok = write_bundle(
+                    ticket_id=payload.get("ticket_id"),
+                    persona_name=payload.get("persona_name"),
+                    project_id=payload["project_id"],
+                    lease_epoch=payload.get("lease_epoch"),
+                )
+                if ok:
+                    parts = []
+                    if payload.get("ticket_id"):
+                        parts.append(f"ticket={payload['ticket_id']}")
+                    if payload.get("persona_name"):
+                        parts.append(f"persona={payload['persona_name']}")
+                    console.print(
+                        f"  Active context written: {', '.join(parts)} "
+                        f"in project {payload['project_id'][:12]}"
+                    )
+                else:
+                    err_console.print(
+                        "[yellow]Warning: provenance bundle write failed — "
+                        "next session will not be tagged with the handed-off "
+                        "ticket/persona context.[/yellow]"
+                    )
 
         # Pull the session
         client = _get_sync_client()
@@ -1102,6 +1220,221 @@ def handoffs_sent() -> None:
         )
 
     console.print(table)
+
+
+@handoffs_app.command("get")
+def handoffs_get(
+    handoff_id: str = typer.Argument(help="Handoff id (hnd_...)."),
+) -> None:
+    """Show full handoff detail: events, comments, attachments, status."""
+    import httpx
+
+    cfg = _load_sync_config()
+    if not cfg["api_key"]:
+        err_console.print("[red]Not authenticated. Run 'sfs auth login' first.[/red]")
+        raise SystemExit(1)
+
+    resp = httpx.get(
+        f"{cfg['api_url']}/api/v1/handoffs/{handoff_id}",
+        headers={"Authorization": f"Bearer {cfg['api_key']}"},
+        timeout=15.0,
+    )
+    if resp.status_code == 404:
+        err_console.print(f"[red]Handoff {handoff_id} not found or not visible to you.[/red]")
+        raise SystemExit(1)
+    if resp.status_code != 200:
+        err_console.print(f"[red]Failed: {resp.status_code} {resp.text}[/red]")
+        raise SystemExit(1)
+    data = resp.json()
+
+    console.print(f"\n[bold cyan]{data['id']}[/bold cyan] [dim]({data['handoff_kind']})[/dim]")
+    console.print(f"  Status: {data['status']}")
+    console.print(f"  From: {data['sender_email']}")
+    if data.get("recipient_email"):
+        console.print(f"  To: {data['recipient_email']}")
+    if data.get("recipient_user_id"):
+        console.print(f"  To user: {data['recipient_user_id']}")
+    if data.get("recipient_team_id"):
+        console.print(f"  To team: {data['recipient_team_id']}")
+    console.print(f"  Session: {data.get('session_title') or '(untitled)'} ({data['session_id'][:16]})")
+    if data.get("ticket_id"):
+        console.print(f"  Ticket: {data['ticket_id']}" + (f" ({data['snapshot_ticket_title']})" if data.get('snapshot_ticket_title') else ""))
+    if data.get("persona_name"):
+        console.print(f"  Persona: {data['persona_name']}")
+    console.print(f"  Created: {data['created_at']}")
+    console.print(f"  Expires: {data['expires_at']}")
+    if data.get("viewed_at"):
+        console.print(f"  Viewed: {data['viewed_at']}")
+    if data.get("claimed_at"):
+        console.print(f"  Claimed: {data['claimed_at']}")
+    if data.get("revoked_at"):
+        console.print(f"  Revoked: {data['revoked_at']}" + (f" — {data['revoke_reason']}" if data.get('revoke_reason') else ""))
+
+    atts = data.get("attachments") or []
+    if atts:
+        console.print(f"\n[bold]Attachments ({len(atts)}):[/bold]")
+        for a in atts:
+            console.print(f"  - {a['kind']}: {a['ref_id']}")
+
+    comments = data.get("comments") or []
+    if comments:
+        console.print(f"\n[bold]Comments ({len(comments)}):[/bold]")
+        for c in comments:
+            console.print(f"  [{c['created_at'][:19]}] {c.get('author_user_id') or 'unknown'}: {c['content']}")
+
+    events = data.get("events") or []
+    if events:
+        console.print(f"\n[bold]Events ({len(events)}):[/bold]")
+        for e in events:
+            console.print(f"  [{e['created_at'][:19]}] {e['event_type']}")
+
+
+@handoffs_app.command("revoke")
+def handoffs_revoke(
+    handoff_id: str = typer.Argument(help="Handoff id (hnd_...)."),
+    reason: str = typer.Option(..., "--reason", "-r", help="Required reason (1-500 chars)."),
+) -> None:
+    """Sender revokes a pending handoff (recipient is notified)."""
+    import httpx
+
+    cfg = _load_sync_config()
+    if not cfg["api_key"]:
+        err_console.print("[red]Not authenticated. Run 'sfs auth login' first.[/red]")
+        raise SystemExit(1)
+
+    resp = httpx.post(
+        f"{cfg['api_url']}/api/v1/handoffs/{handoff_id}/revoke",
+        headers={"Authorization": f"Bearer {cfg['api_key']}"},
+        json={"reason": reason},
+        timeout=15.0,
+    )
+    if resp.status_code == 200:
+        console.print(f"[green]Handoff {handoff_id} revoked.[/green]")
+    else:
+        err_console.print(f"[red]Revoke failed: {resp.status_code} {resp.text}[/red]")
+        raise SystemExit(1)
+
+
+@handoffs_app.command("decline")
+def handoffs_decline(
+    handoff_id: str = typer.Argument(help="Handoff id (hnd_...)."),
+    reason: str = typer.Option(None, "--reason", "-r", help="Optional reason (max 500 chars)."),
+) -> None:
+    """Recipient declines a pending handoff (sender is notified)."""
+    import httpx
+
+    cfg = _load_sync_config()
+    if not cfg["api_key"]:
+        err_console.print("[red]Not authenticated. Run 'sfs auth login' first.[/red]")
+        raise SystemExit(1)
+
+    body: dict[str, Any] = {}
+    if reason:
+        body["reason"] = reason
+
+    resp = httpx.post(
+        f"{cfg['api_url']}/api/v1/handoffs/{handoff_id}/decline",
+        headers={"Authorization": f"Bearer {cfg['api_key']}"},
+        json=body,
+        timeout=15.0,
+    )
+    if resp.status_code == 200:
+        console.print(f"[green]Handoff {handoff_id} declined.[/green]")
+    else:
+        err_console.print(f"[red]Decline failed: {resp.status_code} {resp.text}[/red]")
+        raise SystemExit(1)
+
+
+@handoffs_app.command("comment")
+def handoffs_comment(
+    handoff_id: str = typer.Argument(help="Handoff id (hnd_...)."),
+    message: str = typer.Option(..., "--message", "-m", help="Comment body (1-10000 chars)."),
+) -> None:
+    """Post a comment on a handoff thread (other party is notified)."""
+    import httpx
+
+    cfg = _load_sync_config()
+    if not cfg["api_key"]:
+        err_console.print("[red]Not authenticated. Run 'sfs auth login' first.[/red]")
+        raise SystemExit(1)
+
+    resp = httpx.post(
+        f"{cfg['api_url']}/api/v1/handoffs/{handoff_id}/comments",
+        headers={"Authorization": f"Bearer {cfg['api_key']}"},
+        json={"content": message},
+        timeout=15.0,
+    )
+    if resp.status_code == 201:
+        data = resp.json()
+        console.print(f"[green]Comment {data['id']} posted on {handoff_id}.[/green]")
+    else:
+        err_console.print(f"[red]Comment failed: {resp.status_code} {resp.text}[/red]")
+        raise SystemExit(1)
+
+
+@handoffs_app.command("comments")
+def handoffs_comments(
+    handoff_id: str = typer.Argument(help="Handoff id (hnd_...)."),
+    limit: int = typer.Option(200, "--limit", help="Max comments to fetch (1-200)."),
+) -> None:
+    """List all comments on a handoff, oldest first."""
+    import httpx
+
+    cfg = _load_sync_config()
+    if not cfg["api_key"]:
+        err_console.print("[red]Not authenticated. Run 'sfs auth login' first.[/red]")
+        raise SystemExit(1)
+
+    resp = httpx.get(
+        f"{cfg['api_url']}/api/v1/handoffs/{handoff_id}/comments",
+        headers={"Authorization": f"Bearer {cfg['api_key']}"},
+        params={"limit": limit},
+        timeout=15.0,
+    )
+    if resp.status_code != 200:
+        err_console.print(f"[red]Failed: {resp.status_code} {resp.text}[/red]")
+        raise SystemExit(1)
+    rows = resp.json() or []
+    if not rows:
+        console.print("[dim]No comments yet.[/dim]")
+        return
+    for c in rows:
+        console.print(f"[{c['created_at'][:19]}] {c.get('author_user_id') or 'unknown'}: {c['content']}")
+
+
+@handoffs_app.command("events")
+def handoffs_events(
+    handoff_id: str = typer.Argument(help="Handoff id (hnd_...)."),
+    limit: int = typer.Option(200, "--limit", help="Max events to fetch (1-200)."),
+) -> None:
+    """Show the handoff audit log (oldest first)."""
+    import httpx
+
+    cfg = _load_sync_config()
+    if not cfg["api_key"]:
+        err_console.print("[red]Not authenticated. Run 'sfs auth login' first.[/red]")
+        raise SystemExit(1)
+
+    resp = httpx.get(
+        f"{cfg['api_url']}/api/v1/handoffs/{handoff_id}/events",
+        headers={"Authorization": f"Bearer {cfg['api_key']}"},
+        params={"limit": limit},
+        timeout=15.0,
+    )
+    if resp.status_code != 200:
+        err_console.print(f"[red]Failed: {resp.status_code} {resp.text}[/red]")
+        raise SystemExit(1)
+    rows = resp.json() or []
+    if not rows:
+        console.print("[dim]No events recorded.[/dim]")
+        return
+    for e in rows:
+        line = f"[{e['created_at'][:19]}] {e['event_type']}"
+        if e.get("actor_user_id"):
+            line += f" by {e['actor_user_id'][:8]}"
+        if e.get("payload"):
+            line += f"  {e['payload']}"
+        console.print(line)
 
 
 def _update_manifest_sync(session_dir: Path, etag: str) -> None:

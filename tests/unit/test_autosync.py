@@ -370,7 +370,13 @@ class TestHandoffOversizeHandling:
             cmd_cloud.handoff(
                 session_id="ses_oversize_test01",
                 to="recipient@example.com",
+                to_user_id=None,
+                to_team_id=None,
                 message="",
+                ticket_id=None,
+                persona_name=None,
+                expires_hours=None,
+                attach=None,
             )
 
         assert exit_info.value.code == 1, "handoff must exit with code 1 on oversize"

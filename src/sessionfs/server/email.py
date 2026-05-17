@@ -90,6 +90,90 @@ class EmailProvider(ABC):
         ok = await self.send(to_email, subject, html)
         return {"status": "sent" if ok else "failed"}
 
+    # v0.10.9 — handoff lifecycle notifications
+
+    async def send_handoff_claimed(
+        self,
+        to_email: str,
+        recipient_email: str,
+        session_title: str | None,
+        handoff_id: str,
+    ) -> dict[str, Any]:
+        from sessionfs.server.email_templates import handoff_claimed_email
+
+        html = handoff_claimed_email(
+            recipient_email=recipient_email,
+            session_title=session_title,
+            handoff_id=handoff_id,
+        )
+        title = session_title or "a session"
+        subject = f"SessionFS: {recipient_email} claimed your handoff of {title}"
+        ok = await self.send(to_email, subject, html)
+        return {"status": "sent" if ok else "failed"}
+
+    async def send_handoff_revoked(
+        self,
+        to_email: str,
+        sender_email: str,
+        session_title: str | None,
+        reason: str,
+        handoff_id: str,
+    ) -> dict[str, Any]:
+        from sessionfs.server.email_templates import handoff_revoked_email
+
+        html = handoff_revoked_email(
+            sender_email=sender_email,
+            session_title=session_title,
+            reason=reason,
+            handoff_id=handoff_id,
+        )
+        title = session_title or "a session"
+        subject = f"SessionFS: {sender_email} revoked their handoff of {title}"
+        ok = await self.send(to_email, subject, html)
+        return {"status": "sent" if ok else "failed"}
+
+    async def send_handoff_declined(
+        self,
+        to_email: str,
+        recipient_email: str,
+        session_title: str | None,
+        reason: str | None,
+        handoff_id: str,
+    ) -> dict[str, Any]:
+        from sessionfs.server.email_templates import handoff_declined_email
+
+        html = handoff_declined_email(
+            recipient_email=recipient_email,
+            session_title=session_title,
+            reason=reason,
+            handoff_id=handoff_id,
+        )
+        title = session_title or "a session"
+        subject = f"SessionFS: {recipient_email} declined your handoff of {title}"
+        ok = await self.send(to_email, subject, html)
+        return {"status": "sent" if ok else "failed"}
+
+    async def send_handoff_comment(
+        self,
+        to_email: str,
+        author_email: str,
+        session_title: str | None,
+        content: str,
+        handoff_id: str,
+    ) -> dict[str, Any]:
+        from sessionfs.server.email_templates import handoff_comment_email
+
+        html = handoff_comment_email(
+            author_email=author_email,
+            session_title=session_title,
+            content=content,
+            handoff_id=handoff_id,
+        )
+        title = session_title or "a session"
+        subject = f"SessionFS: {author_email} commented on handoff of {title}"
+        ok = await self.send(to_email, subject, html)
+        return {"status": "sent" if ok else "failed"}
+
     async def send_retention_notice(
         self, to_email: str, purged_count: int, session_titles: list[str],
     ) -> dict[str, Any]:

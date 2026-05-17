@@ -32,7 +32,7 @@ sfs mcp install --for claude-code --skip-instructions
 
 ## Tools
 
-The MCP server exposes 46 tools in seven categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), and AgentRun (Team+).
+The MCP server exposes 54 tools in eight categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), and Handoffs (Pro+ for direct, Team+ for team handoffs).
 
 ### Session Tools
 
@@ -442,6 +442,103 @@ Fork a session (or one of its checkpoints) into a new independent session. The n
 | `session_id` | string | yes | Source session id or unique prefix |
 | `name` | string | yes | Title for the forked session |
 | `from_checkpoint` | string | no | Fork from this snapshot instead of the live head |
+
+### Handoffs
+
+Handoffs are first-class coordination primitives. A handoff carries a session blob plus optional provenance (`ticket_id` + `persona_name`) and curated attachments (KB entries, wiki pages, ticket refs). On claim, the recipient's CLI persists an `active_ticket_payload` so the next captured session is automatically tagged with the handed-off context.
+
+Three recipient kinds, exactly one per handoff: `recipient_email` (any user by email), `recipient_user_id` (direct account match), or `recipient_team_id` (Team+ tier; any team member can claim with atomic race protection).
+
+Non-parties get 404 (not 403) on all handoff routes — existence-hiding so recipients can't distinguish pending vs claimed vs revoked. Pending handoffs past `expires_at` flip to `expired` on read; per-tier clamping is 720h (30d) on Free/Pro/Team, 2160h (90d) on Enterprise.
+
+#### `create_handoff`
+
+Create a handoff for a session. Sender provides exactly one recipient field plus optional ticket/persona provenance, expiry, and attachments.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `session_id` | string | yes | Session being handed off |
+| `recipient_email` | string | no | Recipient email (one-of) |
+| `recipient_user_id` | string | no | Recipient user id (one-of) |
+| `recipient_team_id` | string | no | Recipient team id (one-of, Team+ tier) |
+| `message` | string | no | Optional sender note |
+| `ticket_id` | string | no | Attach an active ticket for provenance carry-through |
+| `persona_name` | string | no | Attach a persona for provenance carry-through |
+| `expires_in_hours` | integer | no | Clamped per tier (720h Free/Pro/Team, 2160h Enterprise) |
+| `attachments` | array | no | List of `{kind: "kb_entry"\|"wiki_page"\|"ticket", ref_id}` |
+
+#### `claim_handoff`
+
+Atomic claim. `UPDATE Handoff WHERE id=X AND status='pending'` runs first; race losers never write blobs. Returns the new `session_id`, `active_ticket_payload` (if attached), and `dropped_attachments` for refs the recipient can't access.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `handoff_id` | string | yes | Handoff ID |
+
+#### `get_handoff`
+
+Fetch one handoff. Non-parties get 404. First non-sender read stamps `viewed_at` and emits a `viewed` event.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `handoff_id` | string | yes | Handoff ID |
+
+#### `list_inbox_handoffs`
+
+List handoffs addressed to the caller (by email, user_id, or team membership). Optional status filter.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `status` | string | no | `pending`, `claimed`, `revoked`, `declined`, `expired` |
+| `limit` | number | no | Page size |
+
+#### `list_sent_handoffs`
+
+List handoffs created by the caller. Optional status filter.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `status` | string | no | Status filter |
+| `limit` | number | no | Page size |
+
+#### `revoke_handoff`
+
+Sender-only. Atomic revoke with a required reason. Emits `revoked` audit event and sends `send_handoff_revoked` email to the recipient.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `handoff_id` | string | yes | Handoff ID |
+| `reason` | string | yes | Required revoke reason |
+
+#### `decline_handoff`
+
+Recipient-only. Atomic decline with an optional reason. Emits `declined` audit event and sends `send_handoff_declined` email to the sender.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `handoff_id` | string | yes | Handoff ID |
+| `reason` | string | no | Optional decline reason |
+
+#### `add_handoff_comment`
+
+Append a comment to the handoff comment thread. Both parties (sender + valid recipients) can post; paged 200. Emits `commented` audit event and sends `send_handoff_comment` email to the other party.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `handoff_id` | string | yes | Handoff ID |
+| `body` | string | yes | Markdown body |
+
+### Ticket comments listing
+
+#### `list_ticket_comments`
+
+Paginated read of the existing `GET /api/v1/projects/{id}/tickets/{id}/comments` endpoint. Returns markdown body, author, persona, and timestamps so MCP clients don't have to compose ticket-detail responses to inspect a comment thread.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `ticket_id` | string | yes | Ticket ID |
+| `limit` | number | no | Page size (default: 50) |
+| `cursor` | string | no | Opaque pagination cursor |
 
 ## Agent Knowledge Contribution
 

@@ -1097,3 +1097,255 @@ async def test_free_tier_blocked_from_tickets(
         json={"title": "nope"},
     )
     assert resp.status_code == 403
+
+
+# ── v0.10.10 list_ticket_comments (tk_32f3dacf1c9749bc) ──
+
+
+@pytest.mark.asyncio
+async def test_list_comments_returns_chronological(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Comments come back oldest-first regardless of insertion timing."""
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    tk = (
+        await client.post(
+            f"/api/v1/projects/{project.id}/tickets",
+            headers=_hdrs(key),
+            json={"title": "t", "description": "x" * 5},
+        )
+    ).json()
+    tk_id = tk["id"]
+
+    for body in ("first", "second", "third"):
+        r = await client.post(
+            f"/api/v1/projects/{project.id}/tickets/{tk_id}/comments",
+            headers=_hdrs(key),
+            json={"content": body},
+        )
+        assert r.status_code == 201
+
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/tickets/{tk_id}/comments",
+        headers=_hdrs(key),
+    )
+    assert resp.status_code == 200
+    contents = [c["content"] for c in resp.json()]
+    assert contents == ["first", "second", "third"]
+
+
+@pytest.mark.asyncio
+async def test_list_comments_empty_thread(
+    client: AsyncClient, db_session: AsyncSession
+):
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    tk = (
+        await client.post(
+            f"/api/v1/projects/{project.id}/tickets",
+            headers=_hdrs(key),
+            json={"title": "empty"},
+        )
+    ).json()
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/tickets/{tk['id']}/comments",
+        headers=_hdrs(key),
+    )
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+@pytest.mark.asyncio
+async def test_list_comments_missing_ticket_404(
+    client: AsyncClient, db_session: AsyncSession
+):
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/tickets/tk_missing/comments",
+        headers=_hdrs(key),
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_list_comments_since_filter_incremental_polling(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Pass `since` = created_at of last seen comment; only newer come back."""
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    tk = (
+        await client.post(
+            f"/api/v1/projects/{project.id}/tickets",
+            headers=_hdrs(key),
+            json={"title": "polling", "description": "x" * 5},
+        )
+    ).json()
+    tk_id = tk["id"]
+
+    c1 = (
+        await client.post(
+            f"/api/v1/projects/{project.id}/tickets/{tk_id}/comments",
+            headers=_hdrs(key),
+            json={"content": "old"},
+        )
+    ).json()
+    # Tiny sleep to ensure c2 has a strictly later created_at on
+    # platforms with coarse clock resolution.
+    import asyncio
+    await asyncio.sleep(0.01)
+    c2 = (
+        await client.post(
+            f"/api/v1/projects/{project.id}/tickets/{tk_id}/comments",
+            headers=_hdrs(key),
+            json={"content": "new"},
+        )
+    ).json()
+
+    # Poll with since = c1.created_at: should only see c2.
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/tickets/{tk_id}/comments",
+        headers=_hdrs(key),
+        params={"since": c1["created_at"]},
+    )
+    assert resp.status_code == 200
+    ids = [c["id"] for c in resp.json()]
+    assert ids == [c2["id"]]
+
+
+@pytest.mark.asyncio
+async def test_list_comments_since_id_tiebreaker_no_skip_on_same_timestamp(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Codex review MEDIUM — pure `since > created_at` filter can skip
+    a same-timestamp sibling. With since + since_id pair, neither side
+    of the tie is lost: poller seeing one comment passes its id, then
+    the next call returns the sibling instead of dropping it.
+
+    We force the tie by inserting two TicketComment rows directly with
+    identical created_at, then validate the cursor advances correctly."""
+    from datetime import datetime, timezone
+    from sessionfs.server.db.models import TicketComment
+
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    tk = (
+        await client.post(
+            f"/api/v1/projects/{project.id}/tickets",
+            headers=_hdrs(key),
+            json={"title": "ties", "description": "x" * 5},
+        )
+    ).json()
+    tk_id = tk["id"]
+
+    shared_ts = datetime.now(timezone.utc)
+    c1 = TicketComment(
+        id="tc_a",
+        ticket_id=tk_id,
+        author_user_id=user.id,
+        content="first",
+        created_at=shared_ts,
+    )
+    c2 = TicketComment(
+        id="tc_b",
+        ticket_id=tk_id,
+        author_user_id=user.id,
+        content="second",
+        created_at=shared_ts,  # identical timestamp
+    )
+    db_session.add_all([c1, c2])
+    await db_session.commit()
+
+    # Initial poll — both come back ordered by (created_at, id).
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/tickets/{tk_id}/comments",
+        headers=_hdrs(key),
+    )
+    assert resp.status_code == 200
+    rows = resp.json()
+    assert [r["id"] for r in rows] == ["tc_a", "tc_b"]
+
+    # Agent stores last seen (created_at, id) = (shared_ts, "tc_a") and
+    # polls again expecting to receive ONLY tc_b. Without the id
+    # tiebreaker, this poll would return [] and tc_b would be skipped
+    # forever.
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/tickets/{tk_id}/comments",
+        headers=_hdrs(key),
+        params={"since": rows[0]["created_at"], "since_id": "tc_a"},
+    )
+    assert resp.status_code == 200
+    follow = resp.json()
+    assert [r["id"] for r in follow] == ["tc_b"], (
+        f"since+since_id cursor must return the same-timestamp sibling; "
+        f"got {follow}"
+    )
+
+    # And once the agent advances to (shared_ts, "tc_b"), no more
+    # comments come back — cursor monotonically advances.
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/tickets/{tk_id}/comments",
+        headers=_hdrs(key),
+        params={"since": follow[0]["created_at"], "since_id": "tc_b"},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+@pytest.mark.asyncio
+async def test_list_comments_limit_caps_response(
+    client: AsyncClient, db_session: AsyncSession
+):
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    tk = (
+        await client.post(
+            f"/api/v1/projects/{project.id}/tickets",
+            headers=_hdrs(key),
+            json={"title": "lim", "description": "x" * 5},
+        )
+    ).json()
+    tk_id = tk["id"]
+    for i in range(5):
+        await client.post(
+            f"/api/v1/projects/{project.id}/tickets/{tk_id}/comments",
+            headers=_hdrs(key),
+            json={"content": f"c{i}"},
+        )
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/tickets/{tk_id}/comments",
+        headers=_hdrs(key),
+        params={"limit": 2},
+    )
+    assert resp.status_code == 200
+    assert len(resp.json()) == 2
+
+
+@pytest.mark.asyncio
+async def test_list_comments_cross_project_404(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Project A owner can't read comments on a ticket in project B
+    (which they have no access to)."""
+    user_a, key_a = await _make_user(db_session, name="alice")
+    user_b, key_b = await _make_user(db_session, name="bob")
+    project_b = await _make_project(db_session, user_b)
+    tk = (
+        await client.post(
+            f"/api/v1/projects/{project_b.id}/tickets",
+            headers=_hdrs(key_b),
+            json={"title": "b-ticket"},
+        )
+    ).json()
+    # user_a tries to read comments under project_b — must be denied.
+    # The shared _get_project_or_404 helper currently returns 403 for
+    # non-owners (not 404). Either is acceptable existence-hiding for
+    # this ticket's contract — we just verify the cross-project read
+    # is blocked.
+    resp = await client.get(
+        f"/api/v1/projects/{project_b.id}/tickets/{tk['id']}/comments",
+        headers=_hdrs(key_a),
+    )
+    assert resp.status_code in (403, 404)

@@ -175,7 +175,10 @@ class Handoff(Base):
     sender_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("users.id"), nullable=False
     )
-    recipient_email: Mapped[str] = mapped_column(String(255), nullable=False)
+    # v0.10.9 — recipient_email is now NULLABLE. Server enforces
+    # exactly-one-recipient invariant (email XOR user_id XOR team_id)
+    # at create time.
+    recipient_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # Lowercased copy of recipient_email used for case-insensitive lookups.
     # Backfilled from existing rows by migration 032 and kept in sync at
     # write time by the handoff create route. Nullable on legacy rows
@@ -185,6 +188,16 @@ class Handoff(Base):
     )
     recipient_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("users.id"), nullable=True
+    )
+    # v0.10.9 — direct account / team targeting. Recipient is determined
+    # by exactly one of recipient_email / recipient_user_id / recipient_team_id.
+    recipient_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    # Codex R2 MEDIUM #1 — real FK to teams.id with SET NULL so deleting
+    # a team strands the handoff to status only, not orphan ID.
+    recipient_team_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("teams.id", ondelete="SET NULL"), nullable=True
     )
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(20), server_default="pending")
@@ -200,6 +213,166 @@ class Handoff(Base):
     snapshot_model_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     snapshot_message_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     snapshot_total_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # v0.10.9 — provenance carried through to recipient's claim. Plain
+    # strings (not FKs) for audit-row survival per the v0.10.2 agent_runs
+    # pattern. Claim validates these against the recipient's accessible
+    # projects before populating active-ticket bundle.
+    ticket_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    persona_name: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # v0.10.9 — revoke metadata. Sender (or org admin) can revoke a
+    # pending handoff with a reason that surfaces in the revoke email.
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    revoke_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # v0.10.9 — 'individual' | 'team'. Determines which recipient_* field
+    # is authoritative for inbox lookups + claim eligibility.
+    handoff_kind: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="individual"
+    )
+    # v0.10.9 — recipient peeked at the handoff metadata via GET before
+    # claiming. Populated on the first GET by a recipient-context user.
+    viewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # v0.10.9 — display-time snapshots for when persona/ticket later
+    # rename or delete (mirrors snapshot_title pattern).
+    snapshot_persona_name: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    snapshot_ticket_title: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # v0.10.9 — tier at send time. Claim does NOT re-check sender's
+    # current tier (per Codex I.4); only recipient access matters at
+    # claim. Audit can compare snapshot vs current for forensic purposes.
+    sender_tier_snapshot: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
+
+class Team(Base):
+    """v0.10.9 — org sub-group used for team handoffs."""
+
+    __tablename__ = "teams"
+    __table_args__ = (
+        Index("idx_teams_org_id", "org_id"),
+        UniqueConstraint("org_id", "slug", name="uq_teams_org_slug"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    org_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    slug: Mapped[str] = mapped_column(String(50), nullable=False)
+    created_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class TeamMember(Base):
+    """v0.10.9 — user ↔ team membership. Users belong to multiple teams
+    (per Codex A.2 — single team_id on org_members is insufficient)."""
+
+    __tablename__ = "team_members"
+    __table_args__ = (
+        Index("idx_team_members_team_id", "team_id"),
+        Index("idx_team_members_user_id", "user_id"),
+        UniqueConstraint("team_id", "user_id", name="uq_team_members_team_user"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    team_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("teams.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    added_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    added_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class HandoffComment(Base):
+    """v0.10.9 — sender/recipient comment thread on a handoff."""
+
+    __tablename__ = "handoff_comments"
+    __table_args__ = (
+        Index("idx_handoff_comments_handoff_id", "handoff_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    handoff_id: Mapped[str] = mapped_column(
+        String(20), ForeignKey("handoffs.id", ondelete="CASCADE"), nullable=False
+    )
+    author_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class HandoffEvent(Base):
+    """v0.10.9 — durable audit log replacing the derived `_effective_status`
+    quirk. Event types: created, emailed, viewed, claimed, revoked,
+    expired, declined, commented, claim_failed_stale, email_delivery_failed,
+    attachment_dropped, source_session_deleted."""
+
+    __tablename__ = "handoff_events"
+    __table_args__ = (
+        Index("idx_handoff_events_handoff_id", "handoff_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    handoff_id: Mapped[str] = mapped_column(
+        String(20), ForeignKey("handoffs.id", ondelete="CASCADE"), nullable=False
+    )
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    payload: Mapped[str] = mapped_column(Text, nullable=False, server_default="{}")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class HandoffAttachment(Base):
+    """v0.10.9 — sender curates additional context for the recipient:
+    KB entries, wiki pages, and tickets they should also read. Validated
+    against sender's accessible projects on create and against recipient's
+    accessible projects on claim (stale refs silently dropped with an
+    `attachment_dropped` event and surfaced as `dropped_attachments` on
+    the claim response per Codex I.7).
+
+    Codex R2 MEDIUM #3 — `project_id` stored on each attachment row so
+    wiki_page refs validate unambiguously (slugs are project-local; without
+    this two projects with the same `auth-flow` slug would collide).
+    """
+
+    __tablename__ = "handoff_attachments"
+    __table_args__ = (
+        Index("idx_handoff_attachments_handoff_id", "handoff_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    handoff_id: Mapped[str] = mapped_column(
+        String(20), ForeignKey("handoffs.id", ondelete="CASCADE"), nullable=False
+    )
+    project_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)  # 'kb_entry'|'wiki_page'|'ticket'
+    ref_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class UserJudgeSettings(Base):

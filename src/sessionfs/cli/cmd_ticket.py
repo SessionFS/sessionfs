@@ -471,6 +471,9 @@ def _notify_macos(title: str, message: str) -> None:
         pass
 
 
+TERMINAL_TICKET_STATUSES = {"done", "cancelled"}
+
+
 @ticket_app.command("watch")
 @handle_errors
 def watch_ticket(
@@ -487,6 +490,15 @@ def watch_ticket(
         False, "--exit-on-new",
         help="Exit 0 after the first new comment lands (for CI scripting).",
     ),
+    until_closed: bool = typer.Option(
+        False, "--until-closed",
+        help=(
+            "Keep watching until the ticket reaches a terminal status "
+            "(done or cancelled), then exit. Natural for multi-round review "
+            "threads where you want to keep seeing follow-up Codex comments "
+            "until the work is resolved."
+        ),
+    ),
     notify: bool = typer.Option(
         False, "--notify",
         help="Send an OS notification on new comments (macOS terminal-notifier).",
@@ -495,21 +507,38 @@ def watch_ticket(
     """Poll a ticket's comments endpoint and render new comments as they appear.
 
     Initial poll renders all existing comments. Subsequent polls diff
-    against the seen-id set and only render NEW comments. Ctrl-C to
-    exit; process-local seen-id state is lost on restart.
+    against the seen-id set and only render NEW comments. Process-local
+    seen-id state is lost on restart.
+
+    Exit conditions (any of):
+    - Ctrl-C
+    - `--exit-on-new` (one-shot: exit after first new matching comment)
+    - `--until-closed` (exit when ticket.status hits done or cancelled)
+
+    `--exit-on-new` and `--until-closed` are mutually compatible; whichever
+    condition trips first wins.
     """
     interval = _clamp_interval(interval)
     api_url, api_key, project_id = _resolve_project()
 
+    banner_bits = [f"interval={interval}s"]
+    if from_author:
+        banner_bits.append(f"from-author={from_author}")
+    if exit_on_new:
+        banner_bits.append("exit-on-new")
+    if until_closed:
+        banner_bits.append("until-closed")
+    banner_bits.append("ctrl-C to stop")
     console.print(
-        f"[dim]Watching {ticket_id} (interval={interval}s, ctrl-C to stop)[/dim]"
+        f"[dim]Watching {ticket_id} ({', '.join(banner_bits)})[/dim]"
     )
 
     seen: set[str] = set()
     saw_any_new = False
     new_count = 0
+    exit_reason: str | None = None
 
-    async def _poll_once() -> list[dict] | None:
+    async def _poll_comments() -> list[dict] | None:
         s, body, _ = await _api_request(
             "GET",
             f"/api/v1/projects/{project_id}/tickets/{ticket_id}/comments",
@@ -524,11 +553,24 @@ def watch_ticket(
             return None
         return body
 
+    async def _poll_ticket_status() -> str | None:
+        """Fetch ticket status for --until-closed termination check."""
+        s, body, _ = await _api_request(
+            "GET",
+            f"/api/v1/projects/{project_id}/tickets/{ticket_id}",
+            api_url,
+            api_key,
+        )
+        if s >= 400 or not isinstance(body, dict):
+            return None
+        status = body.get("status")
+        return status if isinstance(status, str) else None
+
     async def _run() -> None:
-        nonlocal saw_any_new, new_count
+        nonlocal saw_any_new, new_count, exit_reason
         first = True
         while True:
-            comments = await _poll_once()
+            comments = await _poll_comments()
             if comments is None:
                 await asyncio.sleep(interval)
                 continue
@@ -555,7 +597,17 @@ def watch_ticket(
                 _render_comment(c)
             first = False
             if exit_on_new and saw_any_new:
+                exit_reason = "first-new-comment"
                 return
+            if until_closed:
+                status = await _poll_ticket_status()
+                if status in TERMINAL_TICKET_STATUSES:
+                    console.print(
+                        f"\n[dim]Ticket {ticket_id} reached terminal status "
+                        f"'{status}' — exiting.[/dim]"
+                    )
+                    exit_reason = f"ticket-{status}"
+                    return
             await asyncio.sleep(interval)
 
     try:

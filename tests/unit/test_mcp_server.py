@@ -270,15 +270,16 @@ class TestRetrievalAudit:
 class TestToolRegistryV0996:
     """Tier A read tools (v0.9.9.6) + dismiss_knowledge_entry (v0.9.9.7)
     + v0.10.1 Phase 4 persona/ticket tools (8) + Phase 8 agent workflow
-    tools (6) + v0.10.2 AgentRun tools (3: create_agent_run,
-    complete_agent_run, list_agent_runs) + v0.10.2 ticket-approval +
-    session-ops tools (4: approve_ticket, checkpoint_session,
-    list_checkpoints, fork_session) + retrieval audit log. Total: 44."""
+    tools (6) + v0.10.2 AgentRun tools (3) + v0.10.2 ticket-approval +
+    session-ops tools (4) + retrieval audit log (44) + v0.10.7
+    get_wiki_page_history (45) + v0.10.9 handoff lifecycle tools
+    (create/claim/get/list_inbox/list_sent/revoke/decline/comment = 8).
+    Total: 53."""
 
-    def test_tool_count_is_45(self):
+    def test_tool_count_is_54(self):
         from sessionfs.mcp.server import _TOOLS
-        assert len(_TOOLS) == 45, (
-            f"Expected 45 MCP tools after get_wiki_page_history, got {len(_TOOLS)}"
+        assert len(_TOOLS) == 54, (
+            f"Expected 54 MCP tools after v0.10.10 list_ticket_comments addition, got {len(_TOOLS)}"
         )
 
     def test_new_tools_registered(self):
@@ -302,6 +303,17 @@ class TestToolRegistryV0996:
             "list_checkpoints",
             "fork_session",
             "get_session_retrieval_log",
+            # v0.10.9 handoff lifecycle (R3 LOW 1)
+            "create_handoff",
+            "claim_handoff",
+            "get_handoff",
+            "list_inbox_handoffs",
+            "list_sent_handoffs",
+            "revoke_handoff",
+            "decline_handoff",
+            "add_handoff_comment",
+            # v0.10.10 ticket comment polling (tk_32f3dacf1c9749bc)
+            "list_ticket_comments",
         ):
             assert new_tool in names, f"Missing MCP tool: {new_tool}"
 
@@ -1015,6 +1027,306 @@ class TestApproveTicketDispatch:
         monkeypatch.setattr(httpx, "AsyncClient", _Client)
         result = await mcp_server._handle_approve_ticket({"ticket_id": "tk_x"})
         assert "error" in result and "suggested" in result["error"]
+
+
+class TestListTicketCommentsDispatch:
+    """v0.10.10 — list_ticket_comments wraps GET /comments and supports
+    since + limit for incremental polling. Project-scoped via the
+    standard _resolve_project_id helper."""
+
+    @pytest.mark.asyncio
+    async def test_dispatch_routes_to_comments_endpoint(self, monkeypatch):
+        captured = {}
+
+        async def _fake_resolve(_git_remote: str = ""):
+            return ("https://api.test", "test-key", "proj_x")
+        monkeypatch.setattr(mcp_server, "_resolve_project_id", _fake_resolve)
+
+        import httpx
+
+        class _Resp:
+            def __init__(self, code, body):
+                self.status_code = code
+                self._body = body
+                self.text = json.dumps(body)
+            def json(self):
+                return self._body
+
+        class _Client:
+            def __init__(self, *a, **kw): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def get(self, url, *, headers=None, params=None):
+                captured["url"] = url
+                captured["params"] = params
+                captured["headers"] = headers or {}
+                return _Resp(200, [
+                    {"id": "tc_1", "ticket_id": "tk_x", "content": "hi",
+                     "author_user_id": "u1", "author_persona": None,
+                     "session_id": None, "created_at": "2026-05-17T05:30:00Z"},
+                ])
+
+        monkeypatch.setattr(httpx, "AsyncClient", _Client)
+
+        out = await mcp_server._handle_list_ticket_comments({"ticket_id": "tk_x"})
+        assert captured["url"] == (
+            "https://api.test/api/v1/projects/proj_x/tickets/tk_x/comments"
+        )
+        assert captured["params"] is None  # no since/limit passed
+        assert out["comments"][0]["id"] == "tc_1"
+
+    @pytest.mark.asyncio
+    async def test_dispatch_passes_since_and_limit_for_incremental_polling(
+        self, monkeypatch
+    ):
+        captured = {}
+
+        async def _fake_resolve(_git_remote: str = ""):
+            return ("https://api.test", "test-key", "proj_x")
+        monkeypatch.setattr(mcp_server, "_resolve_project_id", _fake_resolve)
+
+        import httpx
+
+        class _Resp:
+            def __init__(self, code, body):
+                self.status_code = code
+                self._body = body
+                self.text = json.dumps(body)
+            def json(self): return self._body
+
+        class _Client:
+            def __init__(self, *a, **kw): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def get(self, url, *, headers=None, params=None):
+                captured["params"] = params
+                return _Resp(200, [])
+
+        monkeypatch.setattr(httpx, "AsyncClient", _Client)
+
+        await mcp_server._handle_list_ticket_comments({
+            "ticket_id": "tk_x",
+            "since": "2026-05-17T03:00:00Z",
+            "limit": 50,
+        })
+        assert captured["params"]["since"] == "2026-05-17T03:00:00Z"
+        assert captured["params"]["limit"] == 50
+
+    @pytest.mark.asyncio
+    async def test_dispatch_requires_ticket_id(self):
+        out = await mcp_server._handle_list_ticket_comments({})
+        assert "error" in out and "ticket_id" in out["error"]
+
+    @pytest.mark.asyncio
+    async def test_dispatch_invalid_limit_returns_error(self):
+        out = await mcp_server._handle_list_ticket_comments(
+            {"ticket_id": "tk_x", "limit": "not-a-number"}
+        )
+        assert "error" in out and "limit" in out["error"]
+
+    @pytest.mark.asyncio
+    async def test_dispatch_surfaces_404_for_missing_ticket(self, monkeypatch):
+        async def _fake_resolve(_git_remote: str = ""):
+            return ("https://api.test", "test-key", "proj_x")
+        monkeypatch.setattr(mcp_server, "_resolve_project_id", _fake_resolve)
+
+        import httpx
+
+        class _Resp:
+            def __init__(self, code, body):
+                self.status_code = code
+                self._body = body
+                self.text = json.dumps(body)
+            def json(self): return self._body
+
+        class _Client:
+            def __init__(self, *a, **kw): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def get(self, *a, **kw):
+                return _Resp(404, {"detail": "not found"})
+
+        monkeypatch.setattr(httpx, "AsyncClient", _Client)
+        out = await mcp_server._handle_list_ticket_comments(
+            {"ticket_id": "tk_missing"}
+        )
+        assert "error" in out and "tk_missing" in out["error"]
+
+
+class TestHandoffMcpDispatch:
+    """v0.10.9 R3 LOW 1 — MCP handoff tools need URL/body dispatch tests.
+
+    All 8 handoff handlers wrap REST endpoints and use the shared
+    `_handoff_api_config()` helper (which is NOT project-scoped — handoffs
+    are user-scoped). These tests confirm each handler routes to the
+    correct URL with the right method + body shape, and surfaces errors
+    cleanly."""
+
+    @staticmethod
+    def _install_fakes(monkeypatch, capture: dict, status: int = 200, body=None):
+        """Install fake _handoff_api_config + httpx.AsyncClient."""
+        body = body if body is not None else {"id": "hnd_x"}
+
+        def _fake_conf():
+            return ("https://api.test", "test-key")
+
+        monkeypatch.setattr(mcp_server, "_handoff_api_config", _fake_conf)
+
+        import httpx
+
+        class _Resp:
+            def __init__(self, code, b):
+                self.status_code = code
+                self._b = b
+                self.text = json.dumps(b)
+
+            def json(self):
+                return self._b
+
+        class _Client:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def post(self, url, *, headers=None, json=None, params=None):
+                capture["method"] = "POST"
+                capture["url"] = url
+                capture["body"] = json
+                capture["headers"] = headers or {}
+                return _Resp(status, body)
+
+            async def get(self, url, *, headers=None, params=None):
+                capture["method"] = "GET"
+                capture["url"] = url
+                capture["params"] = params
+                capture["headers"] = headers or {}
+                return _Resp(status, body)
+
+        monkeypatch.setattr(httpx, "AsyncClient", _Client)
+
+    @pytest.mark.asyncio
+    async def test_create_handoff_dispatch(self, monkeypatch):
+        cap = {}
+        self._install_fakes(monkeypatch, cap, status=201, body={"id": "hnd_abc"})
+        out = await mcp_server._handle_create_handoff(
+            {
+                "session_id": "ses_x",
+                "recipient_email": "r@x.com",
+                "ticket_id": "tk_1",
+                "attachments": [{"kind": "kb_entry", "ref_id": "42"}],
+                "expires_in_hours": 24,
+            }
+        )
+        assert cap["url"] == "https://api.test/api/v1/handoffs"
+        assert cap["method"] == "POST"
+        assert cap["body"]["session_id"] == "ses_x"
+        assert cap["body"]["recipient_email"] == "r@x.com"
+        assert cap["body"]["ticket_id"] == "tk_1"
+        assert cap["body"]["expires_in_hours"] == 24
+        assert cap["body"]["attachments"] == [{"kind": "kb_entry", "ref_id": "42"}]
+        assert out["id"] == "hnd_abc"
+
+    @pytest.mark.asyncio
+    async def test_create_handoff_requires_session_id(self):
+        out = await mcp_server._handle_create_handoff({})
+        assert "error" in out and "session_id" in out["error"]
+
+    @pytest.mark.asyncio
+    async def test_claim_handoff_dispatch(self, monkeypatch):
+        cap = {}
+        self._install_fakes(monkeypatch, cap, body={"status": "claimed"})
+        out = await mcp_server._handle_claim_handoff({"handoff_id": "hnd_q"})
+        assert cap["url"] == "https://api.test/api/v1/handoffs/hnd_q/claim"
+        assert cap["method"] == "POST"
+        assert out["status"] == "claimed"
+
+    @pytest.mark.asyncio
+    async def test_get_handoff_dispatch(self, monkeypatch):
+        cap = {}
+        self._install_fakes(monkeypatch, cap, body={"id": "hnd_q"})
+        out = await mcp_server._handle_get_handoff({"handoff_id": "hnd_q"})
+        assert cap["url"] == "https://api.test/api/v1/handoffs/hnd_q"
+        assert cap["method"] == "GET"
+        assert out["id"] == "hnd_q"
+
+    @pytest.mark.asyncio
+    async def test_list_inbox_handoffs_dispatch(self, monkeypatch):
+        cap = {}
+        self._install_fakes(monkeypatch, cap, body={"handoffs": [], "total": 0})
+        out = await mcp_server._handle_list_inbox_handoffs({"include_team": False})
+        assert cap["url"] == "https://api.test/api/v1/handoffs/inbox"
+        assert cap["method"] == "GET"
+        assert cap["params"]["include_team"] == "false"
+        assert out["total"] == 0
+
+    @pytest.mark.asyncio
+    async def test_list_sent_handoffs_dispatch(self, monkeypatch):
+        cap = {}
+        self._install_fakes(monkeypatch, cap, body={"handoffs": [], "total": 0})
+        out = await mcp_server._handle_list_sent_handoffs({})
+        assert cap["url"] == "https://api.test/api/v1/handoffs/sent"
+        assert cap["method"] == "GET"
+        assert out["total"] == 0
+
+    @pytest.mark.asyncio
+    async def test_revoke_handoff_dispatch(self, monkeypatch):
+        cap = {}
+        self._install_fakes(monkeypatch, cap, body={"status": "revoked"})
+        out = await mcp_server._handle_revoke_handoff(
+            {"handoff_id": "hnd_q", "reason": "wrong recipient"}
+        )
+        assert cap["url"] == "https://api.test/api/v1/handoffs/hnd_q/revoke"
+        assert cap["method"] == "POST"
+        assert cap["body"] == {"reason": "wrong recipient"}
+        assert out["status"] == "revoked"
+
+    @pytest.mark.asyncio
+    async def test_revoke_handoff_requires_reason(self):
+        out = await mcp_server._handle_revoke_handoff({"handoff_id": "hnd_q"})
+        assert "error" in out and "reason" in out["error"]
+
+    @pytest.mark.asyncio
+    async def test_decline_handoff_dispatch(self, monkeypatch):
+        cap = {}
+        self._install_fakes(monkeypatch, cap, body={"status": "declined"})
+        out = await mcp_server._handle_decline_handoff(
+            {"handoff_id": "hnd_q", "reason": "not my area"}
+        )
+        assert cap["url"] == "https://api.test/api/v1/handoffs/hnd_q/decline"
+        assert cap["method"] == "POST"
+        assert cap["body"] == {"reason": "not my area"}
+        assert out["status"] == "declined"
+
+    @pytest.mark.asyncio
+    async def test_decline_handoff_no_reason_sends_empty_body(self, monkeypatch):
+        cap = {}
+        self._install_fakes(monkeypatch, cap, body={"status": "declined"})
+        await mcp_server._handle_decline_handoff({"handoff_id": "hnd_q"})
+        assert cap["body"] == {}
+
+    @pytest.mark.asyncio
+    async def test_add_handoff_comment_dispatch(self, monkeypatch):
+        cap = {}
+        self._install_fakes(monkeypatch, cap, status=201, body={"id": "hcm_x"})
+        out = await mcp_server._handle_add_handoff_comment(
+            {"handoff_id": "hnd_q", "content": "Got it, will pick up tomorrow"}
+        )
+        assert cap["url"] == "https://api.test/api/v1/handoffs/hnd_q/comments"
+        assert cap["method"] == "POST"
+        assert cap["body"]["content"] == "Got it, will pick up tomorrow"
+        assert out["id"] == "hcm_x"
+
+    @pytest.mark.asyncio
+    async def test_handoff_handlers_surface_api_errors(self, monkeypatch):
+        cap = {}
+        self._install_fakes(monkeypatch, cap, status=404, body={"detail": "not found"})
+        out = await mcp_server._handle_get_handoff({"handoff_id": "hnd_missing"})
+        assert "error" in out and "404" in out["error"]
 
 
 class TestCheckpointAndForkHandlers:

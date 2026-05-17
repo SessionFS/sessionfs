@@ -7,14 +7,21 @@ Hand off AI coding sessions to teammates with full context — conversation hist
 ## Create a handoff
 
 ```bash
+# Email recipient (any user)
 sfs handoff ses_abc --to sarah@company.com --message "JWT middleware is the problem"
+
+# Direct user-id or team recipient
+sfs handoff ses_abc --to-user-id usr_x7k --ticket tkt_8f3a --persona atlas
+sfs handoff ses_abc --to-team-id team_frontend --attach kb_entry:412 --attach wiki_page:auth
 ```
 
-The recipient gets an email with:
-- Session title and tool info
-- Message count and token usage
-- Git remote and branch (if available)
-- Pull command: `sfs pull-handoff hnd_xxx`
+Exactly one of `--to`, `--to-user-id`, or `--to-team-id` is required. Optional flags:
+- `--ticket tkt_xxx` — attach active ticket for provenance carry-through
+- `--persona <name>` — attach persona for provenance carry-through
+- `--expires-hours N` — clamped per tier (720h on Free/Pro/Team, 2160h on Enterprise)
+- `--attach kind:ref_id` — KB entry, wiki page, or ticket reference (repeatable)
+
+The recipient gets an email with session details and the pull command.
 
 ## Claim a handoff
 
@@ -22,18 +29,43 @@ The recipient gets an email with:
 sfs pull-handoff hnd_xxx
 ```
 
-This copies the session data to your account. You can then resume it:
+This copies the session data to your account. If `--ticket` / `--persona` were attached, `pull-handoff` also persists an `active_ticket_payload` to `~/.sessionfs/active_ticket.json` — the next captured session is automatically tagged with that context.
+
+You can then resume the session:
 
 ```bash
 sfs resume ses_abc --in claude-code
 ```
 
+## Lifecycle
+
+Handoffs are first-class with a full lifecycle, not fire-and-forget:
+
+```bash
+sfs handoffs get hnd_xxx                         # inspect status, attachments, events
+sfs handoffs revoke hnd_xxx --reason "stale"     # sender-only, required reason
+sfs handoffs decline hnd_xxx --reason "wrong q"  # recipient-only, optional reason
+sfs handoffs comment hnd_xxx --body "..."        # both parties; paged
+sfs handoffs comments hnd_xxx                    # read the thread
+sfs handoffs events hnd_xxx                      # audit log
+```
+
+Every state change emits an audit event. Lifecycle email notifications fire to the other party for claim, revoke, decline, and comment.
+
+## Team handoffs (Team+ tier)
+
+Hand off to a team and any team member can claim it. The claim path is atomic — `UPDATE Handoff WHERE id=X AND status='pending'` runs first, race losers never write blobs or insert Session rows. New session IDs are pre-allocated and included in the atomic UPDATE, so concurrent team-member claims can't produce orphan storage.
+
+## Existence hiding
+
+Non-parties get 404 (not 403) on `GET /handoffs/{id}`, `/claim`, `/decline`, `/comments`, `/events`, `/summary`. Eligibility is checked before any lazy-expire write or status-specific response — recipients can't distinguish pending vs claimed vs revoked via response codes.
+
 ## How it works
 
-1. Sender pushes session to cloud and creates handoff
+1. Sender pushes session to cloud and creates handoff (with optional ticket/persona provenance + curated attachments)
 2. Recipient gets email notification
-3. Recipient claims handoff — session blob is copied to their account
-4. Recipient resumes in any supported tool
+3. Recipient claims handoff — session blob is copied, active-ticket payload persisted, inaccessible attachments dropped with structured reasons
+4. Recipient resumes in any supported tool — next capture inherits ticket + persona
 
 The session copy is independent — changes by the recipient don't affect the sender's original.
 
