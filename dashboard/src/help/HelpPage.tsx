@@ -137,6 +137,8 @@ const MCP_KNOWLEDGE_WRITE: McpTool[] = [
   { name: 'list_wiki_pages', desc: 'Browse the wiki structure' },
   { name: 'compile_knowledge_base', desc: 'Trigger a compile pass (heavy, mutating)' },
   { name: 'dismiss_knowledge_entry', desc: 'Retire a wrong/stale entry with audited reason' },
+  { name: 'update_entry_confidence', desc: 'Raise (or lower) a KB entry confidence score' },
+  { name: 'promote_entry', desc: 'Promote note → claim once quality gates pass' },
 ];
 
 const MCP_RULES: McpTool[] = [
