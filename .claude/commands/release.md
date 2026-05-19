@@ -184,30 +184,36 @@ git commit --author="sessionfsbot <bot@sessionfs.dev>" -m "Release vX.Y.Z"
 
 ### 10. Merge to main with sanitization
 
-**This is the critical step.** Use `.release/private-files.txt` as the definitive list.
+**This is the critical step.** `.release/private-files.txt` is the single source of truth for which paths must NOT appear on main.
 
 ```bash
 git checkout main
 git merge develop --no-edit
 ```
 
-Then remove ALL private files listed in `.release/private-files.txt`:
+**Expected merge noise** (do not panic): main has historically deleted some private files (e.g. `.claude/commands/release.md`, `CLAUDE.md`) that develop still modifies. You'll see `CONFLICT (modify/delete)` for those exact paths. Resolve by re-deleting:
 ```bash
-git show develop:.release/private-files.txt | while IFS= read -r line; do
-  [[ "$line" =~ ^#.*$ || -z "$line" ]] && continue
-  line="${line%%#*}"; line="${line%% *}"
-  [ -z "$line" ] && continue
-  git rm -rf "$line" 2>/dev/null
-done
+git rm -f .claude/commands/release.md CLAUDE.md 2>/dev/null
+```
+Anything else conflicting should be investigated manually — it's likely a real change collision, not the expected private-file mismatch.
+
+Then run the deterministic sanitizer (the file is on develop, so we need to fetch it first if it's not still in the working tree after the merge):
+```bash
+# Make sure the helper is reachable. The merge brought it in
+# unless we're in a clean-checkout flow.
+ls .release/sanitize_main.py >/dev/null || git checkout develop -- .release/sanitize_main.py
+
+# Dry run first (exits 1 if any private path is tracked — expected after merge):
+.venv/bin/python .release/sanitize_main.py
+
+# Apply: runs git rm on every leak, then re-verifies. Exits 0 only if
+# the branch is leak-clean post-sweep.
+.venv/bin/python .release/sanitize_main.py --apply
 ```
 
-**VERIFY nothing leaked** (zero tolerance):
-```bash
-for pattern in .agents/ src/spikes/ docs/security/ docs/positioning.md docs/pricing.md DOGFOOD.md brand/ landing/ packaging/ .claude/commands/ CLAUDE.md github-app-manifest.json .release/; do
-  git ls-files | grep "^${pattern}" && echo "LEAK: $pattern"
-done
-```
-Must print only "CLEAN" with no LEAK lines.
+The helper reads `.release/private-files.txt`, runs `git rm -rf` on each tracked match, and re-verifies before exiting. It replaces the prior ad-hoc bash loop (which the sandbox occasionally flagged as risky because it looked like an exfiltration prelude). See `tests/unit/test_sanitize_main.py` for the unit-test coverage of the parser + leak-finder.
+
+If the helper exits non-zero, STOP — the branch is not safe to push. Diagnose the residual leak before continuing.
 
 Commit:
 ```bash
@@ -289,6 +295,44 @@ curl -s https://pypi.org/pypi/sessionfs/json | python3 -c "import sys,json; prin
 # GitHub Release
 gh release view "v${VERSION}" --repo SessionFS/sessionfs
 ```
+
+### 12b. Post-PyPI smoke test
+
+Verify the wheel actually works end-to-end. Checking PyPI's `/json` only confirms the metadata uploaded; if the wheel didn't ship the right files (e.g. a new CLI command or a new MCP tool registration), users discover it. This step catches that before anyone files a bug.
+
+PyPI's index can lag a minute or two behind the release workflow — the loop retries until the wheel is installable.
+
+```bash
+VERSION=<the version you just shipped, e.g. 0.10.12>
+
+# Throwaway venv so the install doesn't touch the dev env.
+SMOKE_DIR=$(mktemp -d)
+python3 -m venv "$SMOKE_DIR/venv"
+"$SMOKE_DIR/venv/bin/pip" install --quiet --upgrade pip
+
+# Retry until the published wheel is installable (~3 min ceiling).
+for attempt in 1 2 3 4 5 6; do
+  if "$SMOKE_DIR/venv/bin/pip" install --quiet "sessionfs==${VERSION}"; then
+    break
+  fi
+  echo "PyPI not ready yet (attempt $attempt); sleeping 30s..."
+  sleep 30
+done
+
+# Smoke: version reports right + a representative new command's help works.
+"$SMOKE_DIR/venv/bin/python" -c "import sessionfs; assert sessionfs.__version__ == '${VERSION}', f'expected ${VERSION}, got {sessionfs.__version__}'; print('version ok')"
+"$SMOKE_DIR/venv/bin/sfs" --help | grep -q "SessionFS — Portable AI coding sessions" || { echo "sfs --help shape regressed"; exit 1; }
+
+# If this release added a new command/subcommand, check its help renders.
+# Replace the example with the actual new commands shipped this cycle.
+# Example for v0.10.12:
+#   "$SMOKE_DIR/venv/bin/sfs" project promote-eligible --help | grep -q "min-length"
+
+rm -rf "$SMOKE_DIR"
+echo "Post-PyPI smoke: clean."
+```
+
+**If smoke fails:** the wheel is broken on PyPI but PyPI doesn't support unpublish-and-replace at the same version. You must (a) yank the broken release with `gh release edit v${VERSION} --draft` + cut a fast patch release, or (b) accept a bad release. Catching this before announcing externally is the whole point of this step.
 
 ### 13. Wait for all pipelines
 ```bash
