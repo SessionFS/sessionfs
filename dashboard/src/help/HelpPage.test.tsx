@@ -171,12 +171,14 @@ describe('HelpPage', () => {
       'get_knowledge_entry',
       'get_knowledge_health',
       'ask_project',
-      // Knowledge write (5)
+      // Knowledge write (7)
       'add_knowledge',
       'update_wiki_page',
       'list_wiki_pages',
       'compile_knowledge_base',
       'dismiss_knowledge_entry',
+      'update_entry_confidence',
+      'promote_entry',
       // Rules (2)
       'get_rules',
       'get_compiled_rules',

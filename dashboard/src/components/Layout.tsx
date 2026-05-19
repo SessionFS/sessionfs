@@ -330,7 +330,7 @@ export default function Layout() {
         <span className="mx-2 text-[var(--text-tertiary)]">·</span>
         Memory layer for AI coding agents
         <span className="mx-2 text-[var(--text-tertiary)]">·</span>
-        v0.9.9
+        v{__APP_VERSION__}
         <span className="mx-2 text-[var(--text-tertiary)]">·</span>
         <a href={siteHref('/quickstart/')} className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors">Docs</a> &middot;{' '}
         <a href={siteHref('/')} className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors">Status</a> &middot;{' '}

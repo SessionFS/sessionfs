@@ -283,6 +283,18 @@ _TOOLS = [
             "conventions, bugs, or dependencies during a session. "
             "Entries default to 'note' class and auto-promote to 'claim' "
             "when quality gates pass (confidence >= 0.8, content >= 50 chars)."
+            "\n\nConfidence handling: omit `confidence` to let the server "
+            "default it by source — manual/cli-ask entries (no `session_id` "
+            "or `session_id='manual'`) default to 0.7, session-derived "
+            "entries default to 1.0. If you want a claim-eligible score, "
+            "pass `confidence: 0.9` (or 1.0) explicitly. The default does "
+            "NOT clear the 0.8 promotion gate, so a manual entry stays a "
+            "note until you raise its confidence."
+            "\n\nFull MCP workflow when starting from low confidence: "
+            "`add_knowledge` (creates note) → verify the claim against "
+            "stronger evidence → `update_entry_confidence` (raise above "
+            "0.8) → `promote_entry` (note → claim transition) → "
+            "`compile_knowledge_base` (refresh project context)."
             "\n\nIMPORTANT: Always use this MCP tool instead of running "
             "`sfs project add-entry` or any other sfs CLI command. This tool "
             "connects directly to the API and is more reliable than shelling "
@@ -306,7 +318,13 @@ _TOOLS = [
                 },
                 "confidence": {
                     "type": "number",
-                    "description": "Confidence score 0.0–1.0 (default: 1.0)",
+                    "description": (
+                        "Confidence score 0.0–1.0. Optional — when omitted "
+                        "the server defaults by source: manual/cli-ask "
+                        "entries → 0.7 (note, below the 0.8 promotion gate), "
+                        "session-derived entries → 1.0 (auto-promotable). "
+                        "Pass an explicit value (e.g. 0.9) to override."
+                    ),
                 },
                 "entity_ref": {
                     "type": "string",
@@ -805,6 +823,36 @@ _TOOLS = [
         },
     ),
     Tool(
+        name="get_ticket_review_state",
+        description=(
+            "Compact summary of a review ticket's open findings, closed "
+            "findings, last verdict, and severity counts — derived from "
+            "the comment thread without re-reading every comment.\n\n"
+            "Use this on Codex review tickets when picking up an "
+            "in-progress review loop, or polling for the latest verdict. "
+            "Far cheaper context than `list_ticket_comments` on a long "
+            "thread.\n\n"
+            "Returns `review_state: null` for non-review tickets (no "
+            "codex-reviewer comments). When present, the shape is:\n"
+            "  - open_findings: [{severity, text, round, raised_comment_id}]\n"
+            "  - closed_findings: [{severity, text, round, closed_round, ...}]\n"
+            "  - last_verdict: 'VERIFIED-CLEAN' or 'CHANGES_REQUESTED'\n"
+            "  - severity_counts: {CRITICAL, HIGH, MEDIUM, LOW} over OPEN findings\n"
+            "  - last_review_comment_id / last_implementer_comment_id\n"
+            "  - rounds: [{round, verdict, timestamp, findings_raised}]\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs ticket review-state` or scraping comments yourself."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "ticket_id": {"type": "string", "description": "Ticket id"},
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+            "required": ["ticket_id"],
+        },
+    ),
+    Tool(
         name="start_ticket",
         description=(
             "Start working on a ticket. Returns the compiled persona + "
@@ -1206,6 +1254,80 @@ _TOOLS = [
             "required": ["id"],
         },
     ),
+    Tool(
+        name="update_entry_confidence",
+        description=(
+            "Update a knowledge entry's confidence score in [0.0, 1.0]. "
+            "Wraps PUT /api/v1/projects/{pid}/entries/{id}/confidence — "
+            "the v0.10.10 repair endpoint added for tk_483cede83deb443b. "
+            "Does NOT auto-promote: keeps confidence orthogonal to the "
+            "claim_class transition. After raising confidence above the "
+            "0.8 promotion gate, call `promote_entry` to attempt the "
+            "note → claim transition."
+            "\n\nWhen to use: an agent added an entry via `add_knowledge` "
+            "with an initial confidence and now has stronger evidence "
+            "(e.g. the entry was verified against multiple sessions, or "
+            "the user explicitly confirmed it). Raising the score above "
+            "0.8 makes the entry eligible for promotion to a claim, which "
+            "is what reaches the compiled project context."
+            "\n\nIMPORTANT: Always use this MCP tool instead of running "
+            "`sfs project entries confidence` or any other sfs CLI "
+            "command. This tool connects directly to the API and is more "
+            "reliable than shelling out."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "integer",
+                    "description": "Knowledge entry ID",
+                },
+                "confidence": {
+                    "type": "number",
+                    "description": "New confidence score, 0.0–1.0 inclusive",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                },
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+            "required": ["id", "confidence"],
+        },
+    ),
+    Tool(
+        name="promote_entry",
+        description=(
+            "Promote a knowledge entry from `note` to `claim` if quality "
+            "gates pass. Wraps PUT /api/v1/projects/{pid}/entries/{id}/"
+            "promote. Quality gates enforced server-side: confidence ≥ "
+            "0.8, content length ≥ 50 chars, no near-duplicate (>85% word "
+            "overlap) of an existing active claim. Failures return a 422 "
+            "listing the specific gates that didn't pass — fix the entry "
+            "(e.g. raise confidence via `update_entry_confidence`, "
+            "lengthen the content) and retry."
+            "\n\nOnly claims reach the compiled project context — notes "
+            "live in the KB but are excluded from compile until promoted. "
+            "Re-promoting an already-claim entry returns 409."
+            "\n\nFull MCP workflow: `add_knowledge` (creates note) → "
+            "`update_entry_confidence` (raise above 0.8 once verified) → "
+            "`promote_entry` (transition note → claim) → "
+            "`compile_knowledge_base` (refresh project context)."
+            "\n\nIMPORTANT: Always use this MCP tool instead of running "
+            "`sfs project entries promote` or any other sfs CLI command. "
+            "This tool connects directly to the API and is more reliable "
+            "than shelling out."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "integer",
+                    "description": "Knowledge entry ID",
+                },
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+            "required": ["id"],
+        },
+    ),
     # ── v0.10.2 — Ticket approval + session ops ──
     Tool(
         name="approve_ticket",
@@ -1516,6 +1638,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_get_ticket(arguments)
         elif name == "list_ticket_comments":
             result = await _handle_list_ticket_comments(arguments)
+        elif name == "get_ticket_review_state":
+            result = await _handle_get_ticket_review_state(arguments)
         elif name == "start_ticket":
             result = await _handle_start_ticket(arguments)
         elif name == "create_ticket":
@@ -1544,6 +1668,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_list_agent_runs(arguments)
         elif name == "dismiss_knowledge_entry":
             result = await _handle_dismiss_knowledge_entry(arguments)
+        elif name == "update_entry_confidence":
+            result = await _handle_update_entry_confidence(arguments)
+        elif name == "promote_entry":
+            result = await _handle_promote_entry(arguments)
         elif name == "approve_ticket":
             result = await _handle_approve_ticket(arguments)
         elif name == "checkpoint_session":
@@ -2985,6 +3113,36 @@ async def _handle_get_ticket(args: dict) -> dict:
     return resp.json()
 
 
+async def _handle_get_ticket_review_state(args: dict) -> dict:
+    """Wrap GET /api/v1/projects/{project_id}/tickets/{ticket_id}/review-state.
+
+    v0.10.11 tk_e025375272b84a95 — compact derived review state for
+    long review threads. Returns `{"ticket_id": ..., "review_state": ...}`
+    where review_state is null for non-review tickets.
+    """
+    ticket_id = args.get("ticket_id", "")
+    if not ticket_id:
+        return {"error": "ticket_id is required"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/projects/{project_id}/tickets/{ticket_id}/review-state",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code == 404:
+        return {"error": f"Ticket '{ticket_id}' not found"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
 async def _handle_list_ticket_comments(args: dict) -> dict:
     """Wrap GET /api/v1/projects/{project_id}/tickets/{ticket_id}/comments.
 
@@ -3658,6 +3816,77 @@ async def _handle_dismiss_knowledge_entry(args: dict) -> dict:
             json=body,
             headers={"Authorization": f"Bearer {api_key}"},
         )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_update_entry_confidence(args: dict) -> dict:
+    """Wrap PUT /api/v1/projects/{project_id}/entries/{entry_id}/confidence.
+
+    Updates a KB entry's confidence in [0.0, 1.0]. Validates args locally
+    BEFORE resolving the project so bad input surfaces as a clear error
+    rather than a DNS / network failure.
+    """
+    entry_id = args.get("id")
+    if not isinstance(entry_id, int) or entry_id <= 0:
+        return {"error": "id must be a positive integer"}
+
+    confidence = args.get("confidence")
+    if not isinstance(confidence, (int, float)) or isinstance(confidence, bool):
+        return {"error": "confidence must be a number in [0.0, 1.0]"}
+    if not (0.0 <= float(confidence) <= 1.0):
+        return {"error": "confidence must be in [0.0, 1.0]"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.put(
+            f"{api_url}/api/v1/projects/{project_id}/entries/{entry_id}/confidence",
+            json={"confidence": float(confidence)},
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code == 404:
+        return {"error": f"Entry {entry_id} not found in project {project_id}"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_promote_entry(args: dict) -> dict:
+    """Wrap PUT /api/v1/projects/{project_id}/entries/{entry_id}/promote.
+
+    Server enforces quality gates (confidence ≥ 0.8, length ≥ 50, no
+    near-duplicate). 422 surfaces the failing gates verbatim so callers
+    can fix the entry and retry. 409 means already a claim.
+    """
+    entry_id = args.get("id")
+    if not isinstance(entry_id, int) or entry_id <= 0:
+        return {"error": "id must be a positive integer"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.put(
+            f"{api_url}/api/v1/projects/{project_id}/entries/{entry_id}/promote",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code == 404:
+        return {"error": f"Entry {entry_id} not found in project {project_id}"}
+    if resp.status_code == 409:
+        return {"error": f"Entry {entry_id} is already a claim"}
+    if resp.status_code == 422:
+        return {"error": f"Promotion gates failed: {resp.text}"}
     if resp.status_code >= 400:
         return {"error": f"API error {resp.status_code}: {resp.text}"}
     return resp.json()

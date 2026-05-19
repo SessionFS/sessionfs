@@ -621,6 +621,108 @@ def watch_ticket(
         )
 
 
+@ticket_app.command("review-state")
+@handle_errors
+def ticket_review_state(
+    ticket_id: str = typer.Argument(..., help="Ticket id (review tickets only)"),
+) -> None:
+    """Show a compact summary of a review ticket's open + closed findings.
+
+    Derived from the comment thread server-side — no LLM, no scraping.
+    Returns "no review state" for tickets without any codex-reviewer
+    comments.
+    """
+    api_url, api_key, project_id = _resolve_project()
+
+    async def _fetch() -> dict | None:
+        status, body, _ = await _api_request(
+            "GET",
+            f"/api/v1/projects/{project_id}/tickets/{ticket_id}/review-state",
+            api_url,
+            api_key,
+        )
+        if status == 404:
+            err_console.print(f"[red]Ticket '{ticket_id}' not found.[/red]")
+            raise typer.Exit(1)
+        if status >= 400 or not isinstance(body, dict):
+            err_console.print(f"[red]API error ({status}): {body}[/red]")
+            raise typer.Exit(1)
+        return body
+
+    payload = asyncio.run(_fetch())
+    if payload is None:
+        return
+
+    state = payload.get("review_state")
+    if not state:
+        console.print(
+            f"[dim]No review state for {ticket_id} — ticket has no "
+            f"codex-reviewer comments yet.[/dim]"
+        )
+        return
+
+    # Header: verdict + severity counts of OPEN findings.
+    verdict = state.get("last_verdict") or "—"
+    sev = state.get("severity_counts") or {}
+    open_total = sum(int(v) for v in sev.values())
+    verdict_style = "green" if verdict == "VERIFIED-CLEAN" else "yellow"
+    sev_bits = []
+    for s in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
+        n = int(sev.get(s, 0))
+        if n:
+            color = {"CRITICAL": "red", "HIGH": "red", "MEDIUM": "yellow", "LOW": "dim"}[s]
+            sev_bits.append(f"[{color}]{s}={n}[/{color}]")
+    sev_line = " ".join(sev_bits) if sev_bits else "[green]no open findings[/green]"
+
+    console.print(Panel(
+        f"[bold {verdict_style}]{verdict}[/bold {verdict_style}]   "
+        f"{sev_line}   "
+        f"[dim]open={open_total}, closed={len(state.get('closed_findings') or [])}, "
+        f"rounds={len(state.get('rounds') or [])}[/dim]",
+        title=f"Review state — {ticket_id}",
+        title_align="left",
+    ))
+
+    rounds = state.get("rounds") or []
+    if rounds:
+        table = Table(title="Rounds")
+        table.add_column("R")
+        table.add_column("Verdict")
+        table.add_column("Timestamp")
+        table.add_column("Raised")
+        for r in rounds:
+            v = r.get("verdict") or "—"
+            style = "green" if v == "VERIFIED-CLEAN" else "yellow"
+            table.add_row(
+                f"R{r.get('round')}",
+                f"[{style}]{v}[/{style}]",
+                str(r.get("timestamp") or ""),
+                str(r.get("findings_raised") or 0),
+            )
+        console.print(table)
+
+    open_findings = state.get("open_findings") or []
+    if open_findings:
+        console.print("\n[bold yellow]Open findings:[/bold yellow]")
+        for f in open_findings:
+            sev_str = f.get("severity") or "?"
+            color = {"CRITICAL": "red", "HIGH": "red", "MEDIUM": "yellow", "LOW": "dim"}.get(sev_str, "")
+            text = f.get("text") or ""
+            console.print(
+                f"  • [{color}]{sev_str}[/{color}] (R{f.get('round')}) {text}"
+            )
+
+    closed_findings = state.get("closed_findings") or []
+    if closed_findings:
+        console.print("\n[bold green]Closed findings:[/bold green]")
+        for f in closed_findings:
+            sev_str = f.get("severity") or "?"
+            text = f.get("text") or ""
+            console.print(
+                f"  • [dim]{sev_str}[/dim] (R{f.get('round')} → R{f.get('closed_round')}) {text}"
+            )
+
+
 @ticket_app.command("status")
 @handle_errors
 def active_ticket_status() -> None:

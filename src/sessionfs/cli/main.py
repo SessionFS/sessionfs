@@ -43,6 +43,12 @@ from sessionfs.cli.cmd_hooks import hooks_app
 from sessionfs.cli.cmd_persona import persona_app
 from sessionfs.cli.cmd_ticket import ticket_app
 from sessionfs.cli.cmd_agent import agent_app
+from sessionfs.cli.cmd_keys import auth_keys_app, service_keys_app
+
+# v0.10.11 — service-key CLI lives under existing admin / auth typers:
+#   sfs admin service-keys ...   sfs auth keys ...
+admin_app.add_typer(service_keys_app, name="service-keys")
+auth_app.add_typer(auth_keys_app, name="keys")
 
 app.add_typer(daemon_app, name="daemon")
 app.add_typer(config_app, name="config")

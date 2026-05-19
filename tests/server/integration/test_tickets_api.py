@@ -1349,3 +1349,137 @@ async def test_list_comments_cross_project_404(
         headers=_hdrs(key_a),
     )
     assert resp.status_code in (403, 404)
+
+
+# ── v0.10.11 tk_e025375272b84a95 — review-state endpoint ──
+
+
+@pytest.mark.asyncio
+async def test_review_state_returns_null_for_ticket_without_codex_comments(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Non-review tickets (no codex-reviewer comments) return
+    review_state: null — there's no thread to parse."""
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    tk = (
+        await client.post(
+            f"/api/v1/projects/{project.id}/tickets",
+            headers=_hdrs(key),
+            json={"title": "regular work", "description": "do stuff"},
+        )
+    ).json()
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/tickets/{tk['id']}/review-state",
+        headers=_hdrs(key),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ticket_id"] == tk["id"]
+    assert body["review_state"] is None
+
+
+@pytest.mark.asyncio
+async def test_review_state_summarizes_full_review_cycle(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """End-to-end: post a codex-reviewer R1 (CHANGES_REQUESTED with a
+    MEDIUM finding), an atlas closure, then a codex-reviewer R2
+    (VERIFIED-CLEAN). Review state should show 0 open / 1 closed /
+    last_verdict=VERIFIED-CLEAN."""
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    await _make_persona(db_session, project, user, "atlas")
+    await _make_persona(db_session, project, user, "codex-reviewer")
+    tk = (
+        await client.post(
+            f"/api/v1/projects/{project.id}/tickets",
+            headers=_hdrs(key),
+            json={"title": "review thread", "description": "x" * 20},
+        )
+    ).json()
+
+    r1 = (
+        "Codex R1 review on tk_x: CHANGES REQUESTED\n\n"
+        "Findings:\n\n"
+        " - MEDIUM - thing is broken\n\n"
+        "Verified clean / no change needed:\n\n - other thing\n"
+    )
+    await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{tk['id']}/comments",
+        headers=_hdrs(key),
+        json={"content": r1, "author_persona": "codex-reviewer"},
+    )
+    await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{tk['id']}/comments",
+        headers=_hdrs(key),
+        json={"content": "R1 closure - fixed in abc123", "author_persona": "atlas"},
+    )
+    r2 = (
+        "Codex R2 review on tk_x: VERIFIED-CLEAN\n\n"
+        "Findings: none.\n\nVerified:\n - all good\n"
+    )
+    await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{tk['id']}/comments",
+        headers=_hdrs(key),
+        json={"content": r2, "author_persona": "codex-reviewer"},
+    )
+
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/tickets/{tk['id']}/review-state",
+        headers=_hdrs(key),
+    )
+    assert resp.status_code == 200, resp.text
+    state = resp.json()["review_state"]
+    assert state is not None
+    assert state["last_verdict"] == "VERIFIED-CLEAN"
+    assert len(state["open_findings"]) == 0
+    assert len(state["closed_findings"]) == 1
+    closed = state["closed_findings"][0]
+    assert closed["severity"] == "MEDIUM"
+    assert closed["round"] == 1
+    assert closed["closed_round"] == 2
+    assert state["severity_counts"] == {
+        "CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0,
+    }
+    assert state["last_review_comment_id"] is not None
+    assert state["last_implementer_comment_id"] is not None
+    assert len(state["rounds"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_review_state_cross_project_denied(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """User A cannot read the review-state of a ticket in user B's
+    project. Same auth path as get_ticket / list_ticket_comments."""
+    user_a, key_a = await _make_user(db_session, name="alice")
+    user_b, key_b = await _make_user(db_session, name="bob")
+    project_b = await _make_project(db_session, user_b)
+    tk = (
+        await client.post(
+            f"/api/v1/projects/{project_b.id}/tickets",
+            headers=_hdrs(key_b),
+            json={"title": "b-ticket"},
+        )
+    ).json()
+    resp = await client.get(
+        f"/api/v1/projects/{project_b.id}/tickets/{tk['id']}/review-state",
+        headers=_hdrs(key_a),
+    )
+    # _get_project_or_404 in this codebase returns 403 for non-owners
+    # today; either is acceptable existence-hiding.
+    assert resp.status_code in (403, 404)
+
+
+@pytest.mark.asyncio
+async def test_review_state_unknown_ticket_returns_404(
+    client: AsyncClient, db_session: AsyncSession
+):
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/tickets/tk_does_not_exist/review-state",
+        headers=_hdrs(key),
+    )
+    assert resp.status_code == 404

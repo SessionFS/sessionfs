@@ -216,7 +216,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
-**v0.10.10 — Public Beta.** 1819 backend tests + 186 dashboard tests passing. 42 database migrations. 54 MCP tools. Scoped service API keys for cloud agents and CI: deny-by-default for service keys, capability-scoped routes (`handoffs:write`, `agent_runs:write`), cross-org boundary enforcement, structured error codes, audit-row provenance distinguishing service-key calls from human calls. Plus KB confidence update fix — explicit confidence from manual/MCP sources is now honored end-to-end (was silently clamped to 0.7).
+**v0.10.11 — Public Beta.** 1871 backend tests + 186 dashboard tests passing. 42 database migrations. 57 MCP tools. v0.10.11 adds the human-facing CLI for v0.10.10 scoped service keys (`sfs admin service-keys` + `sfs auth keys`), `docs/api-keys.md` public reference covering the 14-scope vocabulary with current opt-in status, per-ticket review-state derivation for long Codex review threads (new endpoint + `get_ticket_review_state` MCP tool + `sfs ticket review-state` CLI), and an actionable DNS/network-error message in the shared `_api_request` helper covering every CLI that talks to the API.
 
 ### Session capture, resume, and search
 

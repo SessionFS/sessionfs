@@ -276,10 +276,10 @@ class TestToolRegistryV0996:
     (create/claim/get/list_inbox/list_sent/revoke/decline/comment = 8).
     Total: 53."""
 
-    def test_tool_count_is_54(self):
+    def test_tool_count_is_57(self):
         from sessionfs.mcp.server import _TOOLS
-        assert len(_TOOLS) == 54, (
-            f"Expected 54 MCP tools after v0.10.10 list_ticket_comments addition, got {len(_TOOLS)}"
+        assert len(_TOOLS) == 57, (
+            f"Expected 57 MCP tools after tk_e025375272b84a95 added get_ticket_review_state, got {len(_TOOLS)}"
         )
 
     def test_new_tools_registered(self):
@@ -314,6 +314,11 @@ class TestToolRegistryV0996:
             "add_handoff_comment",
             # v0.10.10 ticket comment polling (tk_32f3dacf1c9749bc)
             "list_ticket_comments",
+            # v0.10.10 KB write API gap (tk_a253102a20c148a9)
+            "update_entry_confidence",
+            "promote_entry",
+            # v0.10.11 review-state summary (tk_e025375272b84a95)
+            "get_ticket_review_state",
         ):
             assert new_tool in names, f"Missing MCP tool: {new_tool}"
 
@@ -623,6 +628,78 @@ class TestNewToolDispatch:
             "reason": "   ",
         })
         assert "reason" not in captured["json"]
+
+    # ── tk_a253102a20c148a9 — KB write API gap closure ──
+
+    @pytest.mark.asyncio
+    async def test_dispatch_update_entry_confidence(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        await mcp_server._handle_update_entry_confidence({
+            "id": 42,
+            "confidence": 0.9,
+        })
+        assert captured["method"] == "PUT"
+        assert captured["url"] == (
+            "https://api.test/api/v1/projects/proj_test/entries/42/confidence"
+        )
+        assert captured["json"] == {"confidence": 0.9}
+
+    @pytest.mark.asyncio
+    async def test_dispatch_update_entry_confidence_validates_id(
+        self, fake_resolver, fake_httpx
+    ):
+        result = await mcp_server._handle_update_entry_confidence({"confidence": 0.5})
+        assert "error" in result and "positive integer" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_dispatch_update_entry_confidence_rejects_out_of_range(
+        self, fake_resolver, fake_httpx
+    ):
+        result = await mcp_server._handle_update_entry_confidence({
+            "id": 42,
+            "confidence": 1.5,
+        })
+        assert "error" in result and "0.0" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_dispatch_update_entry_confidence_rejects_non_numeric(
+        self, fake_resolver, fake_httpx
+    ):
+        # Booleans are technically int subclasses in Python — must reject
+        # explicitly so an agent passing `True` doesn't get interpreted
+        # as confidence=1.0.
+        result = await mcp_server._handle_update_entry_confidence({
+            "id": 42,
+            "confidence": True,
+        })
+        assert "error" in result
+
+        result = await mcp_server._handle_update_entry_confidence({
+            "id": 42,
+            "confidence": "high",
+        })
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_dispatch_promote_entry(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        await mcp_server._handle_promote_entry({"id": 42})
+        assert captured["method"] == "PUT"
+        assert captured["url"] == (
+            "https://api.test/api/v1/projects/proj_test/entries/42/promote"
+        )
+        # No body required on promote — the server reads the entry and
+        # applies quality gates.
+        assert captured.get("json") is None
+
+    @pytest.mark.asyncio
+    async def test_dispatch_promote_entry_validates_id(
+        self, fake_resolver, fake_httpx
+    ):
+        result = await mcp_server._handle_promote_entry({})
+        assert "error" in result and "positive integer" in result["error"]
 
     @pytest.mark.asyncio
     async def test_complete_ticket_only_unlinks_own_bundle(

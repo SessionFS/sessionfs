@@ -5,6 +5,8 @@ RUN npm ci
 COPY . .
 ARG VITE_API_URL=/api
 ENV VITE_API_URL=$VITE_API_URL
+ARG SFS_VERSION=dev
+ENV SFS_VERSION=$SFS_VERSION
 RUN npm run build
 
 FROM nginx:alpine
