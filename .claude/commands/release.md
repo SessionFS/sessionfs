@@ -52,6 +52,7 @@ Only TWO files hold the version — everything else reads dynamically:
 
 Also bump:
 - `charts/sessionfs/Chart.yaml` → `version` and `appVersion`
+- `dashboard/VERSION` → single-line `X.Y.Z` (the dashboard footer reads this; Vercel's build container can't reach repo-root `pyproject.toml`)
 
 DO NOT change `SFS_FORMAT_VERSION` in `src/sessionfs/spec/version.py` — that's the .sfs format version, independent of the package version. Only bump it if the .sfs spec itself changed.
 
@@ -111,7 +112,7 @@ grep -n "tests passing" README.md CLAUDE.md
 
 # Verify no stale version numbers
 OLD_VERSION=$(git tag --sort=-version:refname | head -1 | sed 's/v//')
-grep -rn "$OLD_VERSION" README.md CLAUDE.md charts/sessionfs/Chart.yaml pyproject.toml src/sessionfs/__init__.py
+grep -rn "$OLD_VERSION" README.md CLAUDE.md charts/sessionfs/Chart.yaml pyproject.toml src/sessionfs/__init__.py dashboard/VERSION
 ```
 
 Fix any stale test counts or version numbers.

@@ -158,6 +158,7 @@ jobs:
           push: true
           build-args: |
             VITE_API_URL=https://api.sessionfs.dev
+            SFS_VERSION=${{ steps.version.outputs.version }}
           tags: |
             ${{ env.IMAGE_PREFIX }}/sessionfs-dashboard:${{ steps.version.outputs.version }}
             ${{ env.IMAGE_PREFIX }}/sessionfs-dashboard:latest
