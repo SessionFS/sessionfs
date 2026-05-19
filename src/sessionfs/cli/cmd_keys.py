@@ -74,18 +74,61 @@ def _print_raw_key(raw: str, output_key: bool) -> None:
 
 
 def _parse_error(status: int, body) -> str:
-    """Render a server error body into a single-line message."""
-    if isinstance(body, dict):
-        err = body.get("error") if isinstance(body.get("error"), dict) else body
-        code = err.get("code") if isinstance(err, dict) else None
-        msg = (
-            err.get("message")
-            if isinstance(err, dict)
-            else body.get("detail") or str(body)
-        )
-        if code:
-            return f"{code}: {msg}"
-        return str(msg)
+    """Render a server error body into a single-line message.
+
+    Handles the four shapes the v0.10.10 backend can return:
+
+      1. {"error": {"code": "X", "message": "Y"}}
+         Custom structured error envelope used by the auth dependency.
+
+      2. {"detail": {"error": "X", "message": "Y"}}
+         FastAPI's wrapper when a route does
+         `HTTPException(detail={...})`. Used by tier_gate.py upgrade
+         prompts. "error" is the code field here.
+
+      3. {"detail": "Plain string"}
+         Most FastAPI HTTPExceptions (e.g. "Organization not found").
+
+      4. {"detail": [{loc, msg, type}, ...]}
+         Pydantic validation errors (422). Render the first error's
+         loc + msg — the full list would be noisy.
+
+    Codex R1 MEDIUM on tk_53e042ecee7e43ff: the earlier implementation
+    fell through to body.get("message") on shape #2/#3/#4, returning
+    the literal string "None" because no top-level "message" key
+    exists.
+    """
+    if not isinstance(body, dict):
+        return f"HTTP {status}: {body}"
+
+    # Shape 1: top-level structured error envelope.
+    top_error = body.get("error")
+    if isinstance(top_error, dict):
+        code = top_error.get("code") or top_error.get("error")
+        msg = top_error.get("message") or ""
+        return f"{code}: {msg}" if code else str(msg)
+
+    detail = body.get("detail")
+
+    # Shape 2: detail-wrapped structured envelope.
+    if isinstance(detail, dict):
+        code = detail.get("code") or detail.get("error")
+        msg = detail.get("message") or detail.get("detail") or ""
+        return f"{code}: {msg}" if code else str(msg)
+
+    # Shape 4: Pydantic validation errors.
+    if isinstance(detail, list) and detail:
+        first = detail[0]
+        if isinstance(first, dict):
+            loc = ".".join(str(p) for p in first.get("loc", []))
+            msg = first.get("msg") or first.get("message") or "validation error"
+            return f"validation error at {loc}: {msg}" if loc else str(msg)
+        return str(first)
+
+    # Shape 3: plain string detail (or anything else).
+    if isinstance(detail, str) and detail:
+        return detail
+
     return f"HTTP {status}: {body}"
 
 

@@ -452,3 +452,216 @@ def test_auth_keys_list_empty_message():
         result = runner.invoke(auth_keys_app, ["list"])
     assert result.exit_code == 0, result.output
     assert "no personal api keys" in _combined(result).lower()
+
+
+# ── _parse_error coverage (Codex R1 MEDIUM on tk_53e042ecee7e43ff) ───
+#
+# All four FastAPI / v0.10.10 error envelope shapes must render a
+# readable message. The previous implementation collapsed every shape
+# but the structured envelope to the literal string "None".
+
+
+def test_parse_error_top_level_structured_envelope():
+    from sessionfs.cli.cmd_keys import _parse_error
+
+    msg = _parse_error(
+        403,
+        {"error": {"code": "service_key_not_allowed", "message": "not allowed"}},
+    )
+    assert msg == "service_key_not_allowed: not allowed"
+
+
+def test_parse_error_detail_wrapped_envelope_uses_error_as_code():
+    """tier_gate.py raises HTTPException(detail={'error': 'upgrade_required',
+    'message': '...'}). FastAPI wraps that as {"detail": {...}}. The
+    `error` field acts as the code; this is the most common shape an
+    org-admin user will hit when they aren't on Team+ tier."""
+    from sessionfs.cli.cmd_keys import _parse_error
+
+    msg = _parse_error(
+        403,
+        {
+            "detail": {
+                "error": "upgrade_required",
+                "message": "This feature requires Team or above.",
+            }
+        },
+    )
+    assert msg == "upgrade_required: This feature requires Team or above."
+
+
+def test_parse_error_detail_plain_string():
+    """Most FastAPI HTTPExceptions: {"detail": "Organization not found"}."""
+    from sessionfs.cli.cmd_keys import _parse_error
+
+    assert _parse_error(404, {"detail": "Organization not found"}) == (
+        "Organization not found"
+    )
+
+
+def test_parse_error_pydantic_422_validation_list():
+    """Pydantic 422 errors arrive as {"detail": [{"loc": [...], "msg": "..."}]}.
+    Show the first error with a dotted loc path."""
+    from sessionfs.cli.cmd_keys import _parse_error
+
+    msg = _parse_error(
+        422,
+        {
+            "detail": [
+                {
+                    "loc": ["body", "reason"],
+                    "msg": "field required",
+                    "type": "value_error.missing",
+                }
+            ]
+        },
+    )
+    assert msg == "validation error at body.reason: field required"
+
+
+def test_parse_error_non_dict_body():
+    from sessionfs.cli.cmd_keys import _parse_error
+
+    assert "plain text body" in _parse_error(500, "plain text body")
+
+
+def test_parse_error_does_not_return_literal_none():
+    """Regression for Codex R1 MEDIUM: every shape must produce a
+    user-readable message, never the literal string 'None'."""
+    from sessionfs.cli.cmd_keys import _parse_error
+
+    for status, body in [
+        (403, {"detail": {"error": "x", "message": "y"}}),
+        (404, {"detail": "not found"}),
+        (422, {"detail": [{"loc": ["a"], "msg": "bad"}]}),
+        (500, {"error": {"code": "boom", "message": "explosion"}}),
+        (500, {}),
+    ]:
+        rendered = _parse_error(status, body)
+        assert rendered != "None", (
+            f"_parse_error({status}, {body}) returned literal 'None'"
+        )
+        assert rendered, f"_parse_error returned empty string for {body}"
+
+
+# ── Shared helper regressions (Codex R1 LOW on tk_53e042ecee7e43ff) ──
+#
+# cmd_rules._api_request gained two behaviors during v0.10.11 that
+# need explicit coverage:
+#   1. DELETE forwards json_data via client.request("DELETE", ...).
+#   2. Empty response body returns "" even when content-type says JSON
+#      (FastAPI 204 No Content with the header still attached).
+
+
+def test_api_request_delete_forwards_json_body():
+    """v0.10.10 revoke endpoints require RevokeKeyRequest in the body
+    on DELETE. The earlier `client.delete(...)` call did not accept a
+    json kwarg, so reasons were dropped and the server 422'd."""
+    import asyncio
+    from unittest.mock import patch
+
+    from sessionfs.cli.cmd_rules import _api_request
+
+    captured: dict = {}
+
+    class _FakeResponse:
+        status_code = 204
+        content = b""
+        headers: dict = {}
+
+        def json(self):
+            return {}
+
+        @property
+        def text(self):
+            return ""
+
+    class _FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return None
+
+        async def request(self, method, url, *, headers=None, json=None):
+            captured["method"] = method
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["json"] = json
+            return _FakeResponse()
+
+        async def get(self, *a, **kw):  # unused — DELETE path only
+            raise AssertionError("DELETE should not route through .get()")
+
+        async def delete(self, *a, **kw):
+            raise AssertionError(
+                "DELETE-with-body must NOT use .delete() — httpx ignores "
+                "the json kwarg on that helper. v0.10.11 service-keys "
+                "revoke regressed when the implementation called .delete()."
+            )
+
+    with patch("httpx.AsyncClient", return_value=_FakeClient()):
+        status, body, _ = asyncio.run(
+            _api_request(
+                "DELETE",
+                "/api/v1/orgs/o/service-keys/k",
+                "http://api.test",
+                "secret",
+                json_data={"reason": "rotated"},
+            )
+        )
+
+    assert status == 204
+    assert captured["method"] == "DELETE"
+    assert captured["json"] == {"reason": "rotated"}
+    assert captured["headers"]["Authorization"] == "Bearer secret"
+
+
+def test_api_request_empty_body_with_json_content_type_returns_empty_string():
+    """FastAPI 204 No Content responses still carry
+    `content-type: application/json` for some routes. resp.json() on
+    b"" raises JSONDecodeError — the helper now short-circuits to ""
+    when content is empty."""
+    import asyncio
+    from unittest.mock import patch
+
+    from sessionfs.cli.cmd_rules import _api_request
+
+    class _FakeResponse:
+        status_code = 204
+        content = b""
+        headers = {"content-type": "application/json"}
+
+        def json(self):
+            raise AssertionError(
+                "resp.json() must not be called on empty body — "
+                "the helper short-circuits before calling .json()"
+            )
+
+        @property
+        def text(self):
+            return ""
+
+    class _FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return None
+
+        async def request(self, method, url, *, headers=None, json=None):
+            return _FakeResponse()
+
+    with patch("httpx.AsyncClient", return_value=_FakeClient()):
+        status, body, _ = asyncio.run(
+            _api_request(
+                "DELETE",
+                "/foo",
+                "http://api.test",
+                "k",
+                json_data={"reason": "x"},
+            )
+        )
+
+    assert status == 204
+    assert body == ""
