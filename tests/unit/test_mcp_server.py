@@ -703,6 +703,116 @@ class TestNewToolDispatch:
         result = await mcp_server._handle_promote_entry({})
         assert "error" in result and "positive integer" in result["error"]
 
+    # ── tk_97b693793c814f4d — dispatch tests for promote_eligible_entries ──
+
+    @pytest.mark.asyncio
+    async def test_dispatch_promote_eligible_entries_default_dry_run(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        """Default args: no min_length / min_confidence / set_confidence
+        / entry_type. Body should only carry dry_run=True (the default).
+        URL should be the bulk-promote endpoint under the resolved
+        project."""
+        await mcp_server._handle_promote_eligible_entries({})
+        assert captured["method"] == "POST"
+        assert captured["url"] == (
+            "https://api.test/api/v1/projects/proj_test/entries/bulk-promote"
+        )
+        assert captured["json"] == {"dry_run": True}
+
+    @pytest.mark.asyncio
+    async def test_dispatch_promote_eligible_entries_forwards_all_args(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        await mcp_server._handle_promote_eligible_entries({
+            "min_length": 100,
+            "min_confidence": 0.9,
+            "set_confidence": 0.95,
+            "entry_type": "decision",
+            "dry_run": False,
+        })
+        body = captured["json"]
+        assert body["min_length"] == 100
+        assert body["min_confidence"] == 0.9
+        assert body["set_confidence"] == 0.95
+        assert body["entry_type"] == "decision"
+        assert body["dry_run"] is False
+
+    @pytest.mark.asyncio
+    async def test_dispatch_promote_eligible_entries_validates_min_length(
+        self, fake_resolver, fake_httpx
+    ):
+        # Out of range
+        result = await mcp_server._handle_promote_eligible_entries({
+            "min_length": 0,
+        })
+        assert "error" in result and "min_length" in result["error"]
+        result = await mcp_server._handle_promote_eligible_entries({
+            "min_length": 20_000,
+        })
+        assert "error" in result and "min_length" in result["error"]
+        # Non-int
+        result = await mcp_server._handle_promote_eligible_entries({
+            "min_length": "fifty",
+        })
+        assert "error" in result and "min_length" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_dispatch_promote_eligible_entries_validates_confidence_range(
+        self, fake_resolver, fake_httpx
+    ):
+        result = await mcp_server._handle_promote_eligible_entries({
+            "min_confidence": 1.5,
+        })
+        assert "error" in result and "min_confidence" in result["error"]
+        result = await mcp_server._handle_promote_eligible_entries({
+            "set_confidence": -0.1,
+        })
+        assert "error" in result and "set_confidence" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_dispatch_promote_eligible_entries_rejects_boolean_confidence(
+        self, fake_resolver, fake_httpx
+    ):
+        """Python's bool is an int subclass — without explicit rejection,
+        True would be coerced to 1.0 (or set_confidence interpreted as
+        'use the max gate'). Reject the type ambiguity at the boundary."""
+        for arg in ("min_confidence", "set_confidence"):
+            result = await mcp_server._handle_promote_eligible_entries({arg: True})
+            assert "error" in result and arg in result["error"], (
+                f"boolean {arg} must be rejected"
+            )
+
+    @pytest.mark.asyncio
+    async def test_dispatch_promote_eligible_entries_rejects_blank_entry_type(
+        self, fake_resolver, fake_httpx
+    ):
+        for bad in ("", "   ", 42):
+            result = await mcp_server._handle_promote_eligible_entries({
+                "entry_type": bad,
+            })
+            assert "error" in result and "entry_type" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_dispatch_promote_eligible_entries_validates_dry_run_type(
+        self, fake_resolver, fake_httpx
+    ):
+        result = await mcp_server._handle_promote_eligible_entries({
+            "dry_run": "true",  # string, not bool
+        })
+        assert "error" in result and "dry_run" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_dispatch_promote_eligible_entries_strips_entry_type_whitespace(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        """Leading/trailing whitespace on entry_type would silently miss
+        the server-side equality check, so we strip at the boundary."""
+        await mcp_server._handle_promote_eligible_entries({
+            "entry_type": "  decision  ",
+        })
+        assert captured["json"]["entry_type"] == "decision"
+
     @pytest.mark.asyncio
     async def test_complete_ticket_only_unlinks_own_bundle(
         self, fake_resolver, fake_httpx, monkeypatch, tmp_path

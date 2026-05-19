@@ -732,11 +732,19 @@ async def get_ticket_review_state(
     await _get_project_or_404(project_id, db, user.id)
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
 
+    # tk_33a25a12a5cf4dc3 — Shield-SR LOW follow-up from v0.10.11.
+    # Cap row count for DoS defense, matching list_ticket_comments
+    # (also 500). Review threads cap at ~20-50 comments in practice;
+    # 500 is a defensive ceiling, not an expected limit. If a thread
+    # ever exceeds it, the oldest comments win — the earliest rounds
+    # are what callers care about for the "open findings" picture.
+    _REVIEW_STATE_COMMENT_LIMIT = 500
     rows = (
         await db.execute(
             select(TicketComment)
             .where(TicketComment.ticket_id == ticket.id)
             .order_by(TicketComment.created_at, TicketComment.id)
+            .limit(_REVIEW_STATE_COMMENT_LIMIT)
         )
     ).scalars().all()
 
