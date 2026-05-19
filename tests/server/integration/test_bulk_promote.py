@@ -341,6 +341,45 @@ async def test_in_run_promoted_competes_for_duplicate(
 
 
 @pytest.mark.asyncio
+async def test_dry_run_predicts_confirm_for_in_run_duplicates(
+    db_session: AsyncSession,
+):
+    """Codex R1 MEDIUM on tk_03263e280f4b4732: dry-run MUST faithfully
+    predict the confirmed run, including in-run duplicate suppression.
+    Two near-duplicate eligible notes: BOTH dry-run AND confirm must
+    return promoted=1, duplicate=1. The earlier implementation only
+    appended to the comparison set on the not-dry-run path, so dry-run
+    reported promoted=2 while confirm correctly reported 1 — breaking
+    the inspect-then-mutate safety contract."""
+    user = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    base = "the migration uses sqlalchemy core for raw sql performance reasons"
+    note1 = await _add_note(
+        db_session, project=project, user=user, content=base
+    )
+    note2 = await _add_note(
+        db_session, project=project, user=user, content=base + " more"
+    )
+
+    dry = await promote_eligible_notes(
+        db_session, project.id, user_id=user.id, dry_run=True
+    )
+    assert dry.promoted == 1
+    assert dry.reasons["duplicate"] == 1
+    # First eligible entry wins; second is the duplicate.
+    assert dry.promoted_ids == [note1.id]
+
+    # Confirm path must report the same shape — that's the contract.
+    await db_session.refresh(note2)
+    confirmed = await promote_eligible_notes(
+        db_session, project.id, user_id=user.id, dry_run=False
+    )
+    assert confirmed.promoted == dry.promoted
+    assert confirmed.reasons["duplicate"] == dry.reasons["duplicate"]
+    assert confirmed.promoted_ids == dry.promoted_ids
+
+
+@pytest.mark.asyncio
 async def test_to_dict_shape_for_json(db_session: AsyncSession):
     import json
 

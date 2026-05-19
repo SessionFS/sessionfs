@@ -1566,7 +1566,10 @@ class BulkPromoteRequest(BaseModel):
     """v0.10.12 tk_c64915570f4d4042 — body for bulk-promote."""
 
     min_length: int = Field(50, ge=1, le=10_000)
-    min_confidence: float = Field(0.85, ge=0.0, le=1.0)
+    # Codex R1 LOW (tk_03263e280f4b4732): parity with the single-entry
+    # promote gate (also 0.8). A 0.85 default would skip entries that
+    # PUT /entries/{id}/promote would happily accept one-by-one.
+    min_confidence: float = Field(0.8, ge=0.0, le=1.0)
     set_confidence: float | None = Field(None, ge=0.0, le=1.0)
     entry_type: str | None = Field(None, max_length=64)
     dry_run: bool = True

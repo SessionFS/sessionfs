@@ -365,8 +365,12 @@ def project_promote_eligible(
         help="Skip entries shorter than this. Matches the single-entry gate by default.",
     ),
     min_confidence: float = typer.Option(
-        0.85, "--min-confidence",
-        help="Only honored when --confidence is omitted. Skip entries below this confidence.",
+        0.8, "--min-confidence",
+        help=(
+            "Only honored when --confidence is omitted. Skip entries "
+            "below this confidence. Default 0.8 (parity with the "
+            "single-entry promote gate)."
+        ),
     ),
     set_confidence: float | None = typer.Option(
         None, "--confidence",

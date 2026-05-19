@@ -1369,10 +1369,10 @@ _TOOLS = [
                 },
                 "min_confidence": {
                     "type": "number",
-                    "description": "Only honored when `set_confidence` is omitted. Skip entries below this confidence. Default 0.85.",
+                    "description": "Only honored when `set_confidence` is omitted. Skip entries below this confidence. Default 0.8 (parity with the single-entry promote gate).",
                     "minimum": 0.0,
                     "maximum": 1.0,
-                    "default": 0.85,
+                    "default": 0.8,
                 },
                 "set_confidence": {
                     "type": "number",

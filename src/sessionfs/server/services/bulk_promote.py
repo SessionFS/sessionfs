@@ -203,6 +203,13 @@ async def promote_eligible_notes(
         # All gates passed — promote (or pretend to in dry-run).
         result.promoted += 1
         result.promoted_ids.append(entry.id)
+        # Codex R1 MEDIUM (tk_03263e280f4b4732): the eligible entry
+        # joins the comparison set regardless of dry_run so subsequent
+        # candidates in this pass see the same duplicate-suppression
+        # behaviour. Otherwise a dry-run with two near-duplicate notes
+        # would report both as promoted while the confirmed run would
+        # skip one — breaking the "inspect-then-mutate" safety contract.
+        existing_claim_texts.append(entry.content)
         if not dry_run:
             if set_confidence is not None and (
                 entry.confidence is None or entry.confidence < set_confidence
@@ -211,11 +218,6 @@ async def promote_eligible_notes(
             entry.claim_class = "claim"
             entry.promoted_at = now
             entry.promoted_by = user_id
-            # Newly promoted entry now competes for near-duplicate
-            # against subsequent candidates in this same pass. Add to
-            # the comparison set so we don't promote two near-duplicate
-            # notes in one bulk run.
-            existing_claim_texts.append(entry.content)
 
     if not dry_run and result.promoted > 0:
         await db.commit()
