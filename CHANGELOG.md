@@ -5,6 +5,58 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.11] - 2026-05-19
+
+### Added
+
+**CLI for v0.10.10 scoped service keys** (parent tk_e0d7db15ff814c0a, Codex R1+R2 VERIFIED-CLEAN on tk_53e042ecee7e43ff) — closes the human-facing surface gap so issuing, listing, rotating, and revoking keys no longer requires curl.
+
+- `sfs admin service-keys list|create|revoke|rotate|scopes` — org admin + Team+ tier required for mutations. Raw key prints to stdout exactly once on create + rotate with a `Save this — you won't see it again.` warning on stderr.
+- `sfs auth keys list|create|revoke` — any logged-in user, personal-key surface.
+- `--output-key` flag on create + rotate emits ONLY the raw key for `KEY=$(sfs admin service-keys create ... --output-key)` CI capture. Mirrors `--output-id` on `ticket create`.
+- Local scope validation against `VALID_SCOPES` (imported from server schemas, single source of truth). Unknown scopes and `*` wildcard for service keys fail with exit 2 before any network call.
+- Structured error codes from the server (insufficient_scope, cross_org_denied, etc.) are surfaced verbatim via `_parse_error` covering all 4 FastAPI envelope shapes ({"error": {...}}, {"detail": {...}}, {"detail": "string"}, {"detail": [validation_list]}).
+- All commands inherit `SESSIONFS_API_KEY` / `SESSIONFS_API_URL` env-var auth via the shared `_get_api_config` helper.
+
+**`docs/api-keys.md`** (tk_522991717c6446c9, Codex R1+R2 VERIFIED-CLEAN on tk_ee765a03b69045eb) — public reference covering both kinds of keys, the 14-scope vocabulary with current opt-in status (handoffs:write and agent_runs:write live today; remaining 12 scopes reserved for Phase 3 route opt-in), service-key lifecycle, cloud-agent integration recipes (Bedrock, Vertex, GitHub Actions, GitLab MR), rotation policy guidance, and complete structured error code reference. `docs/cli-reference.md` gains full option tables for `sfs auth keys` and `sfs admin service-keys`.
+
+**Per-ticket review-state derivation** (tk_e025375272b84a95, Codex R1 VERIFIED-CLEAN on first round on tk_d7354a8032e8443b) — compact summary of open findings, closed findings, last verdict, and severity counts for long review threads. No new schema or stored state — computed at read time from existing TicketComment rows.
+
+- `GET /api/v1/projects/{pid}/tickets/{tid}/review-state` — same auth as get_ticket (project membership + agent_tickets feature). Cross-project access denied by `_get_project_or_404`. Returns `review_state: null` for tickets without any codex-reviewer comments.
+- `get_ticket_review_state` MCP tool (56 → 57 total tools) — wraps the endpoint. Description steers agents away from scraping comments themselves.
+- `sfs ticket review-state <id>` CLI command — renders verdict + severity counts header, Rounds table, Open + Closed finding lists.
+- Parser (`src/sessionfs/server/services/review_state.py`) extracts findings from Codex's consistent comment shape (`Codex R{N} review on tk_X: VERDICT` header + `• SEVERITY — text` bullets). Closure rule: findings raised in round N close when any subsequent round has VERIFIED-CLEAN verdict. Reopens not modeled (rare and fragile to text-match). 14 unit tests + 4 integration tests.
+
+### Fixed
+
+**`sfs ticket watch` DNS error** (tk_aeb8580706d84e2e, Codex R1 VERIFIED-CLEAN on first round on tk_d611718c24944110) — caught by Codex during v0.10.9 review when its sandbox got a raw `[Errno 8] nodename nor servname provided, or not known` traceback. The shared `_api_request` helper now catches `httpx.RequestError` (parent of ConnectError, TimeoutException, NetworkError, SSL errors — but NOT HTTPStatusError) and exits 1 with an actionable `Configure cloud auth first: sfs auth login --url ... or set SESSIONFS_API_URL / SESSIONFS_API_KEY` message. Every CLI command using `_api_request` benefits — not just ticket watch/comments.
+
+**Shared `_api_request` helper** — two regression fixes from the service-keys CLI work:
+- DELETE method now forwards `json_data` via `client.request("DELETE", ..., json=...)`. Httpx's `client.delete()` doesn't accept a `json` kwarg, so v0.10.10 revoke endpoints (which require a `RevokeKeyRequest` body) were dropping the reason and 422-ing.
+- 204 No Content responses no longer crash `resp.json()` even when content-type is `application/json` — short-circuits to empty string when `resp.content` is empty.
+
+**Manifest schema `retrieval_audit_id`** (tk_c19f7694009e4723) — `src/sessionfs/spec/schemas/manifest.schema.json` now allows the `retrieval_audit_id` field added in v0.10.4 (migration 039). `test_full_capture_pipeline` was failing because `additionalProperties: false` at root rejected valid manifests. Schema fixed inline before this release.
+
+**Dashboard footer version** (commit e87953d, posted earlier) — Layout.tsx no longer hardcodes a version string. Vite reads from a new `dashboard/VERSION` file (or SFS_VERSION env / pyproject.toml fallbacks) at build time. `/release` skill now bumps `dashboard/VERSION` alongside pyproject and Chart.yaml.
+
+### Reviews
+
+Five separate Codex review threads, all VERIFIED-CLEAN:
+- Service-keys CLI: tk_53e042ecee7e43ff (R1 1 MEDIUM + 1 LOW → R2 CLEAN)
+- docs/api-keys.md: tk_ee765a03b69045eb (R1 1 MEDIUM + 3 LOW → R2 CLEAN)
+- DNS error catch: tk_d611718c24944110 (R1 CLEAN first round)
+- Review-state: tk_d7354a8032e8443b (R1 CLEAN first round)
+- Update-entry-confidence + promote-entry MCP tools (tk_44bc8c8862304051) bundled from earlier in same cycle (R2 CLEAN)
+
+Shield-SR pre-release security review: 0 critical / 0 high / 0 medium new findings — release approved. One LOW noted as Atlas follow-up (`tk_33a25a12a5cf4dc3`: cap row count on review-state endpoint).
+
+### Notes
+
+- **Tests:** 1871 backend + 186 dashboard passing (+52 net over v0.10.10). 2 xfail-strict pre-existing migration-003 PG-syntax (`tk_7dc9e8764a5a4297`).
+- **MCP tools:** 54 → 57 (+3: `update_entry_confidence`, `promote_entry`, `get_ticket_review_state`).
+- **Migrations:** 001–042 (no new migrations this release).
+- **Phase 3 route opt-in for service keys still deferred** to v0.10.12+ — TicketComment / KnowledgeEntry / RetrievalAuditEvent write routes remain on plain `get_current_user` and reject service keys. Scopes are defined but reserved.
+
 ## [0.10.10] - 2026-05-18
 
 ### Added

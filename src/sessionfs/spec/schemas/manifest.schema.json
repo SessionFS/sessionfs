@@ -109,6 +109,11 @@
       "type": ["string", "null"],
       "description": "Internal marker carried by sfs resume for parent-session lineage. Not part of the public spec.",
       "default": null
+    },
+    "retrieval_audit_id": {
+      "type": ["string", "null"],
+      "description": "v0.10.4 — retrieval-audit context id linking this session to the structured context-load trace (RetrievalAuditContext + RetrievalAuditEvent rows). Written by watchers/active_ticket_annot.py when an active ticket is in progress and the audit bundle is present.",
+      "default": null
     }
   },
   "$defs": {
