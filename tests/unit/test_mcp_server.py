@@ -276,10 +276,10 @@ class TestToolRegistryV0996:
     (create/claim/get/list_inbox/list_sent/revoke/decline/comment = 8).
     Total: 53."""
 
-    def test_tool_count_is_56(self):
+    def test_tool_count_is_57(self):
         from sessionfs.mcp.server import _TOOLS
-        assert len(_TOOLS) == 56, (
-            f"Expected 56 MCP tools after tk_a253102a20c148a9 added update_entry_confidence + promote_entry, got {len(_TOOLS)}"
+        assert len(_TOOLS) == 57, (
+            f"Expected 57 MCP tools after tk_e025375272b84a95 added get_ticket_review_state, got {len(_TOOLS)}"
         )
 
     def test_new_tools_registered(self):
@@ -317,6 +317,8 @@ class TestToolRegistryV0996:
             # v0.10.10 KB write API gap (tk_a253102a20c148a9)
             "update_entry_confidence",
             "promote_entry",
+            # v0.10.11 review-state summary (tk_e025375272b84a95)
+            "get_ticket_review_state",
         ):
             assert new_tool in names, f"Missing MCP tool: {new_tool}"
 

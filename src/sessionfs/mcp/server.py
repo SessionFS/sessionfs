@@ -823,6 +823,36 @@ _TOOLS = [
         },
     ),
     Tool(
+        name="get_ticket_review_state",
+        description=(
+            "Compact summary of a review ticket's open findings, closed "
+            "findings, last verdict, and severity counts — derived from "
+            "the comment thread without re-reading every comment.\n\n"
+            "Use this on Codex review tickets when picking up an "
+            "in-progress review loop, or polling for the latest verdict. "
+            "Far cheaper context than `list_ticket_comments` on a long "
+            "thread.\n\n"
+            "Returns `review_state: null` for non-review tickets (no "
+            "codex-reviewer comments). When present, the shape is:\n"
+            "  - open_findings: [{severity, text, round, raised_comment_id}]\n"
+            "  - closed_findings: [{severity, text, round, closed_round, ...}]\n"
+            "  - last_verdict: 'VERIFIED-CLEAN' or 'CHANGES_REQUESTED'\n"
+            "  - severity_counts: {CRITICAL, HIGH, MEDIUM, LOW} over OPEN findings\n"
+            "  - last_review_comment_id / last_implementer_comment_id\n"
+            "  - rounds: [{round, verdict, timestamp, findings_raised}]\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs ticket review-state` or scraping comments yourself."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "ticket_id": {"type": "string", "description": "Ticket id"},
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+            "required": ["ticket_id"],
+        },
+    ),
+    Tool(
         name="start_ticket",
         description=(
             "Start working on a ticket. Returns the compiled persona + "
@@ -1608,6 +1638,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_get_ticket(arguments)
         elif name == "list_ticket_comments":
             result = await _handle_list_ticket_comments(arguments)
+        elif name == "get_ticket_review_state":
+            result = await _handle_get_ticket_review_state(arguments)
         elif name == "start_ticket":
             result = await _handle_start_ticket(arguments)
         elif name == "create_ticket":
@@ -3072,6 +3104,36 @@ async def _handle_get_ticket(args: dict) -> dict:
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/projects/{project_id}/tickets/{ticket_id}",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code == 404:
+        return {"error": f"Ticket '{ticket_id}' not found"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_get_ticket_review_state(args: dict) -> dict:
+    """Wrap GET /api/v1/projects/{project_id}/tickets/{ticket_id}/review-state.
+
+    v0.10.11 tk_e025375272b84a95 — compact derived review state for
+    long review threads. Returns `{"ticket_id": ..., "review_state": ...}`
+    where review_state is null for non-review tickets.
+    """
+    ticket_id = args.get("ticket_id", "")
+    if not ticket_id:
+        return {"error": "ticket_id is required"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/projects/{project_id}/tickets/{ticket_id}/review-state",
             headers={"Authorization": f"Bearer {api_key}"},
         )
     if resp.status_code == 404:

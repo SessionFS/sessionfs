@@ -704,6 +704,55 @@ async def get_ticket(
     return _to_response(ticket, deps)
 
 
+@router.get(
+    "/{project_id}/tickets/{ticket_id}/review-state",
+)
+async def get_ticket_review_state(
+    project_id: str,
+    ticket_id: str,
+    user: User = Depends(get_current_user),
+    ctx: UserContext = Depends(get_user_context),
+    db: AsyncSession = Depends(get_db),
+):
+    """v0.10.11 tk_e025375272b84a95 — structured review-state derived
+    from the ticket's comment thread.
+
+    Returns null when the ticket has no codex-reviewer comments. For
+    review tickets, returns a `ReviewState` dict with open_findings,
+    closed_findings, severity_counts, last_verdict, etc. — see
+    `sessionfs.server.services.review_state` for the shape.
+
+    Auth: same as `GET /tickets/{id}` — project membership required.
+    Cross-project access is denied by `_get_project_or_404` before
+    we touch the comments table.
+    """
+    from sessionfs.server.services.review_state import compute_review_state
+
+    check_feature(ctx, "agent_tickets")
+    await _get_project_or_404(project_id, db, user.id)
+    ticket = await _get_ticket_or_404(project_id, ticket_id, db)
+
+    rows = (
+        await db.execute(
+            select(TicketComment)
+            .where(TicketComment.ticket_id == ticket.id)
+            .order_by(TicketComment.created_at, TicketComment.id)
+        )
+    ).scalars().all()
+
+    comments = [
+        {
+            "id": r.id,
+            "author_persona": r.author_persona,
+            "content": r.content,
+            "created_at": r.created_at,
+        }
+        for r in rows
+    ]
+    state = compute_review_state(comments)
+    return {"ticket_id": ticket.id, "review_state": state.to_dict() if state else None}
+
+
 @router.post(
     "/{project_id}/tickets",
     response_model=TicketResponse,
