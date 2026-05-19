@@ -209,24 +209,40 @@ async def _api_request(
     if extra_headers:
         headers.update(extra_headers)
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        if method == "GET":
-            resp = await client.get(url, headers=headers)
-        elif method == "POST":
-            resp = await client.post(url, headers=headers, json=json_data)
-        elif method == "PUT":
-            resp = await client.put(url, headers=headers, json=json_data)
-        elif method == "DELETE":
-            # httpx.AsyncClient.delete() does not accept a json kwarg —
-            # use the lower-level request() so DELETE-with-body endpoints
-            # (e.g. v0.10.11 service-keys revoke with a required reason)
-            # can forward their payload. Existing DELETE callers pass
-            # json_data=None which is a no-op.
-            resp = await client.request(
-                "DELETE", url, headers=headers, json=json_data
-            )
-        else:
-            raise ValueError(f"Unsupported method: {method}")
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            if method == "GET":
+                resp = await client.get(url, headers=headers)
+            elif method == "POST":
+                resp = await client.post(url, headers=headers, json=json_data)
+            elif method == "PUT":
+                resp = await client.put(url, headers=headers, json=json_data)
+            elif method == "DELETE":
+                # httpx.AsyncClient.delete() does not accept a json kwarg —
+                # use the lower-level request() so DELETE-with-body endpoints
+                # (e.g. v0.10.11 service-keys revoke with a required reason)
+                # can forward their payload. Existing DELETE callers pass
+                # json_data=None which is a no-op.
+                resp = await client.request(
+                    "DELETE", url, headers=headers, json=json_data
+                )
+            else:
+                raise ValueError(f"Unsupported method: {method}")
+    except httpx.RequestError as exc:
+        # tk_aeb8580706d84e2e — DNS / connection / timeout / SSL errors
+        # surface as actionable messages instead of raw Python tracebacks.
+        # `RequestError` is the parent of ConnectError, TimeoutException,
+        # NetworkError, etc. — but NOT HTTPStatusError, so non-2xx
+        # responses still flow through the normal branch below.
+        err_console.print(
+            f"[red]Can't reach the SessionFS API at {api_url}.[/red]\n"
+            f"[dim]  ({type(exc).__name__}: {exc})[/dim]\n"
+            "[yellow]Configure cloud auth first:[/yellow]\n"
+            "  sfs auth login --url https://api.sessionfs.dev\n"
+            "or set [bold]SESSIONFS_API_URL[/bold] and "
+            "[bold]SESSIONFS_API_KEY[/bold] in your environment."
+        )
+        raise typer.Exit(1) from exc
 
     # 204 No Content (and any other empty-body response) — return an
     # empty string rather than calling resp.json() on b"". Some FastAPI

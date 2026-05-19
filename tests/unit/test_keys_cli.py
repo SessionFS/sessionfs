@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 from unittest.mock import patch
 
+import pytest
 from typer.testing import CliRunner
 
 from sessionfs.cli.cmd_keys import auth_keys_app, service_keys_app
@@ -615,6 +616,133 @@ def test_api_request_delete_forwards_json_body():
     assert captured["method"] == "DELETE"
     assert captured["json"] == {"reason": "rotated"}
     assert captured["headers"]["Authorization"] == "Bearer secret"
+
+
+def test_api_request_dns_error_raises_typer_exit_with_actionable_message(capsys):
+    """tk_aeb8580706d84e2e — DNS / connection failures must surface as
+    a clear 'configure auth' hint, not a raw Python traceback.
+
+    Codex's sandbox hit this when running `sfs ticket watch` without
+    a valid `~/.sessionfs/config.toml` — httpx raised ConnectError
+    `[Errno 8] nodename nor servname provided, or not known` which
+    bubbled up as a traceback. The helper now catches httpx.RequestError
+    (parent of ConnectError, TimeoutException, NetworkError) and
+    raises typer.Exit(1) with the actionable message."""
+    import asyncio
+    from unittest.mock import patch
+
+    import httpx
+    import typer
+
+    from sessionfs.cli.cmd_rules import _api_request
+
+    class _FailingClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return None
+
+        async def get(self, url, *, headers=None):
+            raise httpx.ConnectError(
+                "[Errno 8] nodename nor servname provided, or not known"
+            )
+
+    with patch("httpx.AsyncClient", return_value=_FailingClient()):
+        with pytest.raises(typer.Exit) as exc_info:
+            asyncio.run(
+                _api_request(
+                    "GET",
+                    "/api/v1/anything",
+                    "http://invalid-dns-test.example.invalid",
+                    "sk_fake",
+                )
+            )
+
+    assert exc_info.value.exit_code == 1
+    captured = capsys.readouterr()
+    err_text = captured.err + captured.out
+    # The message must point users at the remediation, not just say
+    # "DNS failure". The CEO-mandated phrasing in the ticket spec.
+    assert "Can't reach the SessionFS API" in err_text
+    assert "sfs auth login" in err_text
+    # And it must mention the URL that failed so users can correlate
+    # against their config.
+    assert "invalid-dns-test.example.invalid" in err_text
+
+
+def test_api_request_timeout_also_surfaces_actionable_message(capsys):
+    """Timeouts go through the same httpx.RequestError catch path —
+    not a different branch — so users on slow networks see the same
+    'configure auth or check connectivity' guidance."""
+    import asyncio
+    from unittest.mock import patch
+
+    import httpx
+    import typer
+
+    from sessionfs.cli.cmd_rules import _api_request
+
+    class _TimeoutClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return None
+
+        async def get(self, url, *, headers=None):
+            raise httpx.ConnectTimeout("Read timed out")
+
+    with patch("httpx.AsyncClient", return_value=_TimeoutClient()):
+        with pytest.raises(typer.Exit):
+            asyncio.run(
+                _api_request("GET", "/x", "https://api.test", "k")
+            )
+    captured = capsys.readouterr()
+    assert "Can't reach the SessionFS API" in (captured.err + captured.out)
+
+
+def test_api_request_does_not_catch_http_status_errors(capsys):
+    """A 4xx/5xx response from the server is NOT a RequestError —
+    it goes through the normal status_code/body branch so callers
+    can render a specific message (404 'not found', 422 'validation',
+    etc.). Only network-level failures get the connectivity hint."""
+    import asyncio
+    from unittest.mock import patch
+
+    from sessionfs.cli.cmd_rules import _api_request
+
+    class _Resp:
+        status_code = 404
+        content = b'{"detail":"Not found"}'
+        headers = {"content-type": "application/json"}
+
+        def json(self):
+            return {"detail": "Not found"}
+
+        @property
+        def text(self):
+            return self.content.decode()
+
+    class _OkClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return None
+
+        async def get(self, url, *, headers=None):
+            return _Resp()
+
+    with patch("httpx.AsyncClient", return_value=_OkClient()):
+        status, body, _ = asyncio.run(
+            _api_request("GET", "/x", "https://api.test", "k")
+        )
+
+    assert status == 404
+    assert body == {"detail": "Not found"}
+    # No connectivity hint was printed — caller handles the 404.
+    assert "Can't reach" not in capsys.readouterr().err
 
 
 def test_api_request_empty_body_with_json_content_type_returns_empty_string():
