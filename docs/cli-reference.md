@@ -1267,6 +1267,44 @@ Show current authentication status.
 sfs auth status
 ```
 
+### `sfs auth keys list`
+
+List your personal API keys. Prints id, name, key prefix, expires_at, last_used_at, and active state.
+
+```
+sfs auth keys list
+```
+
+### `sfs auth keys create`
+
+Mint a personal API key. The raw key is printed to stdout exactly once — capture it immediately.
+
+```
+sfs auth keys create --name NAME [--expires-days N] [--output-key]
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--name`, `-n` | string | required | Human label (e.g. `macbook16-laptop`) |
+| `--expires-days` | int | none | Key lifetime in days (1–730). Omit for no expiry. |
+| `--output-key` | flag | false | Print ONLY the raw key to stdout (no decorations). Use `KEY=$(sfs auth keys create ... --output-key)` in CI. |
+
+### `sfs auth keys revoke`
+
+Revoke a personal API key. Soft delete with required audit reason.
+
+```
+sfs auth keys revoke KEY_ID --reason "..."
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `KEY_ID` | yes | Personal key id (from `sfs auth keys list`) |
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--reason`, `-r` | string | required | Why this key is being revoked (audit trail) |
+
 ---
 
 ## `sfs org`
@@ -1503,6 +1541,89 @@ sfs admin revoke LICENSE_ID
 | Argument | Required | Description |
 |----------|----------|-------------|
 | `LICENSE_ID` | yes | License ID to revoke |
+
+---
+
+## `sfs admin service-keys`
+
+*v0.10.11+ — org-scoped service key management. Org admin + Team-or-above tier required.*
+
+See [API Keys](./api-keys.md) for the conceptual guide, scope vocabulary, and integration recipes.
+
+### `sfs admin service-keys list`
+
+List service keys in an org. Shows id, name, key prefix, scopes, project allowlist, expires_at, and active state.
+
+```
+sfs admin service-keys list --org ORG_ID
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--org`, `-o` | string | required | Organization id (e.g. `org_9e39b81833e6fdd5`) |
+
+### `sfs admin service-keys create`
+
+Mint a new scoped service key. The raw key is printed to stdout exactly once — capture it immediately.
+
+```
+sfs admin service-keys create --org ORG_ID --name NAME --scope SCOPE [--scope SCOPE]... [--expires-days N] [--project PID]... [--output-key]
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--org`, `-o` | string | required | Organization id |
+| `--name`, `-n` | string | required | Human label (e.g. `github-actions-review-bot`) |
+| `--scope`, `-s` | string | required, repeatable | Capability scope. Run `sfs admin service-keys scopes` for the full vocab. Wildcard `*` is rejected — service keys must enumerate scopes. |
+| `--expires-days` | int | none | Key lifetime in days (1–730). Omit for no expiry. |
+| `--project`, `-p` | string | none, repeatable | Per-key project allowlist. Omit to allow all projects in the org. |
+| `--output-key` | flag | false | Print ONLY the raw key to stdout (no decorations). CI-safe — use `KEY=$(sfs admin service-keys create ... --output-key)`. |
+
+Local validation: unknown scopes and `*` exit with code 2 before the network call.
+
+### `sfs admin service-keys rotate`
+
+Issue a new raw secret for an existing service key. The old key is revoked atomically in the same transaction with `revoke_reason="rotated by <user>"`. Scopes, expiry policy, and project allowlist are preserved.
+
+```
+sfs admin service-keys rotate KEY_ID --org ORG_ID [--output-key]
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `KEY_ID` | yes | Service key id |
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--org`, `-o` | string | required | Organization id |
+| `--output-key` | flag | false | Print ONLY the new raw key to stdout (no decorations) |
+
+Rotating a key that's already revoked returns 409 with a friendly hint to `create` a fresh one.
+
+### `sfs admin service-keys revoke`
+
+Soft-delete a service key with a required audit reason.
+
+```
+sfs admin service-keys revoke KEY_ID --org ORG_ID --reason "..."
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `KEY_ID` | yes | Service key id |
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--org`, `-o` | string | required | Organization id |
+| `--reason`, `-r` | string | required | Why this key is being revoked (audit trail; non-blank) |
+
+### `sfs admin service-keys scopes`
+
+Print the live 14-scope vocabulary (sourced from the server's `VALID_SCOPES` set so it always reflects the running version).
+
+```
+sfs admin service-keys scopes
+```
 
 ---
 
