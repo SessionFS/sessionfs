@@ -358,6 +358,113 @@ def project_compile() -> None:
         console.print(f"Project context updated. [bold]{entries_compiled}[/bold] entries compiled.")
 
 
+@project_app.command("promote-eligible")
+def project_promote_eligible(
+    min_length: int = typer.Option(
+        50, "--min-length",
+        help="Skip entries shorter than this. Matches the single-entry gate by default.",
+    ),
+    min_confidence: float = typer.Option(
+        0.85, "--min-confidence",
+        help="Only honored when --confidence is omitted. Skip entries below this confidence.",
+    ),
+    set_confidence: float | None = typer.Option(
+        None, "--confidence",
+        help=(
+            "Override each candidate's confidence to this value before "
+            "the near-duplicate check. Use when bulk-asserting that "
+            "stuck notes should clear the 0.8 promotion gate."
+        ),
+    ),
+    entry_type: str | None = typer.Option(
+        None, "--entry-type",
+        help="Optional filter — only promote this entry_type (decision, pattern, etc.).",
+    ),
+    confirm: bool = typer.Option(
+        False, "--confirm",
+        help=(
+            "Actually mutate. The default is dry-run — without this flag "
+            "the command shows what WOULD be promoted but writes nothing."
+        ),
+    ),
+) -> None:
+    """Bulk-promote eligible note entries to claim class.
+
+    Default is dry-run. Use --confirm to actually mutate the KB.
+
+    The v0.10.10 confidence-clamp bug left many production KBs with
+    hundreds of stuck note entries. This command is the practical
+    repair path — per-entry confidence + promote round trips don't
+    scale past ~5 entries.
+    """
+    git_remote = _get_git_remote()
+    if not git_remote:
+        err_console.print("[red]Not a git repository.[/red]")
+        raise typer.Exit(1)
+
+    normalized = _normalize_remote(git_remote)
+    api_url, api_key = _get_project_client()
+
+    project = asyncio.run(
+        _api_request("GET", f"/api/v1/projects/{normalized}", api_url, api_key)
+    )
+    if project.get("_status") == 404:
+        err_console.print("[yellow]No project found. Run 'sfs project init' first.[/yellow]")
+        raise typer.Exit(1)
+
+    project_id = project["id"]
+    body: dict = {
+        "min_length": min_length,
+        "min_confidence": min_confidence,
+        "dry_run": not confirm,
+    }
+    if set_confidence is not None:
+        body["set_confidence"] = set_confidence
+    if entry_type is not None:
+        body["entry_type"] = entry_type
+
+    result = asyncio.run(_api_request(
+        "POST", f"/api/v1/projects/{project_id}/entries/bulk-promote",
+        api_url, api_key, json_data=body,
+    ))
+    if result.get("_status") in (404, 409) or "_status" in result:
+        raise typer.Exit(1)
+
+    promoted = int(result.get("promoted", 0))
+    skipped = int(result.get("skipped", 0))
+    reasons = result.get("reasons") or {}
+    dry = bool(result.get("dry_run", True))
+
+    header = "[bold yellow]DRY RUN[/bold yellow]" if dry else "[bold green]COMMITTED[/bold green]"
+    verb = "would promote" if dry else "promoted"
+    console.print(
+        f"{header}  {verb} [bold cyan]{promoted}[/bold cyan] entries  "
+        f"(skipped {skipped})"
+    )
+
+    if reasons:
+        from rich.table import Table
+        ordered = ("too_short", "low_confidence", "duplicate", "dismissed", "superseded", "wrong_type", "already_claim")
+        table = Table(title="Skipped — reason breakdown")
+        table.add_column("Reason")
+        table.add_column("Count", justify="right")
+        any_row = False
+        for r in ordered:
+            n = int(reasons.get(r, 0))
+            if n:
+                table.add_row(r, str(n))
+                any_row = True
+        if any_row:
+            console.print(table)
+
+    if dry and promoted > 0:
+        console.print(
+            "\n[dim]Re-run with [bold]--confirm[/bold] to actually promote, "
+            "then [bold]sfs project compile[/bold] to fold the new claims "
+            "into the project context.[/dim]"
+        )
+
+
 @project_app.command("entries")
 def project_entries(
     pending: bool = typer.Option(False, help="Show only pending entries"),

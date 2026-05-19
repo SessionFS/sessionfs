@@ -1,25 +1,40 @@
 # SessionFS Agent Team
 
-Eight specialized agent personas for building SessionFS with AI coding agents.
+Specialized agent personas for building and operating SessionFS with AI coding agents.
+
+The server-side persona store is authoritative. Local `.agents/*.md` files are checkout conveniences for tools that read persona files directly. Use `sfs persona pull --all --force` to refresh local copies after server-side persona edits.
 
 ## Agents
 
 | Agent | File | Use For |
 |-------|------|---------|
-| **Atlas** (Backend Architect) | `atlas-backend.md` | API server, daemon, watchers, session spec, CLI, sync protocol, database |
-| **Sentinel** (Security Engineer) | `sentinel-security.md` | Auth, threat modeling, encryption, access control, audit logging, data governance |
-| **Forge** (DevOps Engineer) | `forge-devops.md` | CI/CD, Docker, Helm, GitHub Actions, package distribution, self-hosted deploy |
-| **Prism** (Frontend Engineer) | `prism-frontend.md` | Web dashboard, VS Code extension, landing page |
-| **Scribe** (Technical Writer) | `scribe-docs.md` | Documentation, quickstart guides, API reference, README, blog posts |
-| **Ledger** (Revenue Engineer) | `ledger-revenue.md` | Stripe billing, pricing tiers, usage metering, subscription management |
-| **Shield** (Compliance Officer) | `shield-compliance.md` | Data governance, compliance certifications, privacy, regulatory requirements |
-| **Vault** (Licensing Architect) | `vault-licensing.md` | Open source licensing, IP protection, commercial licensing, contributor agreements |
+| **Atlas** (Backend Architect) | `atlas-backend.md` | API server, daemon, sync, MCP/API/CLI parity, migrations, database |
+| **Codex Reviewer** (Product Reviewer) | server-only | Release and implementation review for SessionFS itself |
+| **Sentinel** (Security Engineer) | `sentinel-security.md` | Auth, threat modeling, tenant isolation, secrets, rate limits, API keys |
+| **Forge** (DevOps and Platform Engineer) | `forge-devops.md` | CI/CD, Docker, Helm, GCP, release gates, observability, deployment safety |
+| **Prism** (Product UI and Frontend Lead) | `prism-frontend.md` | Dashboard, site implementation, frontend API integration, product UX |
+| **Scribe** (Documentation and Positioning Lead) | `scribe-docs.md` | Docs, API references, changelogs, release notes, source-backed claims |
+| **Herald** (Marketing Strategy and Growth Lead) | `herald-marketing.md` | Positioning, launches, growth experiments, developer relations, copy strategy |
+| **Relay** (Customer Success and Support Lead) | `relay-customer.md` | Onboarding, support triage, health checks, renewals, customer feedback |
+| **Ledger** (Revenue and Entitlements Engineer) | `ledger-revenue.md` | Stripe billing, tiers, entitlements, metering, subscription lifecycle |
+| **Steward** (Finance and Operations Lead) | `steward-finance.md` | Finance snapshots, runway, costs, vendor ops, fundraising prep, equity scenarios |
+| **Shield** (Compliance and Governance Lead) | `shield-compliance.md` | DLP policy, audit evidence, compliance posture, retention, governance language |
+| **Vault** (Licensing and IP Protection Lead) | `vault-licensing.md` | Open-core boundaries, licensing, packaging, IP protection, commercial artifacts |
+| **Counsel** (Startup IP and Legal Strategy Lead) | `counsel-startup.md` | Legal research prep, IP evidence packets, contract review notes, attorney questions |
 
 ## How to Use
 
-1. Pick the agent that matches your task (see assignment matrix below)
-2. Copy the agent's `.md` file content as the system prompt or prepend it to your task
-3. Add your specific task brief after the agent persona
+Preferred:
+
+1. Create or pick up a SessionFS ticket assigned to the right persona.
+2. Run `sfs ticket start <ticket_id>` or the MCP `start_ticket` tool.
+3. Let SessionFS load the assigned persona, ticket context, KB claims, rules, dependencies, and recent comments.
+
+Fallback for tools without SessionFS integration:
+
+1. Pick the agent that matches your task.
+2. Copy the agent's `.md` file content as the system prompt or prepend it to your task.
+3. Add your specific task brief after the agent persona.
 
 **Format for task briefs:**
 
@@ -33,42 +48,32 @@ CONTEXT: [Relevant background — paste PDD sections, prior spike results, etc.]
 DELIVERABLES: [Concrete outputs with acceptance criteria]
 ```
 
-## Phase 0 Assignment Matrix
-
-| Task | Agent | Priority |
-|------|-------|----------|
-| Spike 1A: Claude Code session read | Atlas | P0 — Critical path |
-| Spike 1B: Codex session read | Atlas | P0 — Critical path |
-| Spike 2A: Claude Code session write-back | Atlas | P0 — Critical path |
-| Spike 2B: Codex session write-back | Atlas | P0 — Critical path |
-| Spike 3: Concurrent read during active session | Atlas | P0 — Critical path |
-| Session spec JSON schema + validation | Atlas | P1 |
-| FastAPI scaffold (auth + CRUD + PostgreSQL + S3) | Atlas | P1 |
-| Threat model for daemon + sync architecture | Sentinel | P1 |
-| GitHub repo setup + CI pipeline | Forge | P1 |
-| Landing page | Prism | P2 |
-| README.md + landing page copy | Scribe | P2 |
-
-## Phase 1-3 Assignment Matrix
+## Assignment Matrix
 
 | Task | Agent |
 |------|-------|
-| Daemon with Claude Code + Codex watchers | Atlas |
-| CLI (list, show, pull, resume, import, export) | Atlas |
-| Auth implementation (API keys + OAuth) | Sentinel |
-| Homebrew / PyPI distribution | Forge |
-| Quickstart guide + spec reference + CLI reference | Scribe |
-| Handoff workflow (CLI + email) | Atlas |
-| Web dashboard v1 | Prism |
-| Team workspaces + access control | Atlas + Sentinel |
-| Stripe integration | Atlas |
-| Audit logging | Sentinel |
-| Docker Compose for self-hosted | Forge |
-| Team handoff guide + dashboard docs | Scribe |
-| Cursor + Gemini CLI watchers | Atlas |
-| VS Code extension | Prism |
-| Helm chart for Kubernetes | Forge |
-| Watcher dev guide + self-hosting guide | Scribe |
+| Backend routes, migrations, sync, MCP/API/CLI behavior | Atlas |
+| Implementation or release review | Codex Reviewer |
+| Security model, auth, API keys, tenant isolation | Sentinel |
+| GCP, Cloud Run, Helm, CI/CD, release automation | Forge |
+| Dashboard, site UI, product UX | Prism |
+| Docs, changelog, API reference, release notes | Scribe |
+| Positioning, launch, developer relations, campaigns | Herald |
+| Customer onboarding, support, renewals, feedback | Relay |
+| Billing, Stripe, tiers, entitlement enforcement | Ledger |
+| Finance, runway, costs, fundraising prep | Steward |
+| Compliance evidence, DLP policy, audit posture | Shield |
+| Licensing, open-core boundary, packaging/IP | Vault |
+| Legal research prep, contracts, trademark/patent evidence | Counsel |
+
+## Persona Hygiene
+
+Keep reusable personas durable and low-risk:
+
+- Personas should contain role behavior, ownership, invariants, handoff rules, and deliverable contracts.
+- Volatile facts belong in KB entries, tickets, account dossiers, or finance reports.
+- Do not embed customer hostnames, user names, license keys, private pricing exceptions, cash/runway numbers, legal strategy, or contract terms in reusable persona files.
+- If a persona needs current facts, it should explicitly load scoped context through `get_ticket`, `search_project_knowledge`, or dedicated customer/finance/legal tickets.
 
 ## Adapted From
 

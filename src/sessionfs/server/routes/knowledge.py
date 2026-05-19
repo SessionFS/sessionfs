@@ -1562,6 +1562,50 @@ async def promote_entry(
     )
 
 
+class BulkPromoteRequest(BaseModel):
+    """v0.10.12 tk_c64915570f4d4042 — body for bulk-promote."""
+
+    min_length: int = Field(50, ge=1, le=10_000)
+    min_confidence: float = Field(0.85, ge=0.0, le=1.0)
+    set_confidence: float | None = Field(None, ge=0.0, le=1.0)
+    entry_type: str | None = Field(None, max_length=64)
+    dry_run: bool = True
+
+
+@router.post(
+    "/{project_id}/entries/bulk-promote",
+)
+async def bulk_promote_entries(
+    project_id: str,
+    body: BulkPromoteRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """v0.10.12 tk_c64915570f4d4042 — promote eligible KB notes to
+    claims in one operation. The v0.10.10 confidence-clamp bug left
+    many production projects with hundreds of stuck note entries;
+    this is the practical repair path.
+
+    `dry_run=true` (default) computes the decision but writes nothing.
+    Returns `{promoted, skipped, reasons, promoted_ids, dry_run}`.
+    """
+    await _get_project_or_404(project_id, db, user.id)
+
+    from sessionfs.server.services.bulk_promote import promote_eligible_notes
+
+    result = await promote_eligible_notes(
+        db,
+        project_id,
+        user_id=user.id,
+        min_length=body.min_length,
+        min_confidence=body.min_confidence,
+        set_confidence=body.set_confidence,
+        entry_type=body.entry_type,
+        dry_run=body.dry_run,
+    )
+    return result.to_dict()
+
+
 @router.put(
     "/{project_id}/entries/{entry_id}/confidence",
     response_model=KnowledgeEntryResponse,

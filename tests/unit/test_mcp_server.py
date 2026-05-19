@@ -276,10 +276,10 @@ class TestToolRegistryV0996:
     (create/claim/get/list_inbox/list_sent/revoke/decline/comment = 8).
     Total: 53."""
 
-    def test_tool_count_is_57(self):
+    def test_tool_count_is_58(self):
         from sessionfs.mcp.server import _TOOLS
-        assert len(_TOOLS) == 57, (
-            f"Expected 57 MCP tools after tk_e025375272b84a95 added get_ticket_review_state, got {len(_TOOLS)}"
+        assert len(_TOOLS) == 58, (
+            f"Expected 58 MCP tools after tk_c64915570f4d4042 added promote_eligible_entries, got {len(_TOOLS)}"
         )
 
     def test_new_tools_registered(self):
@@ -319,6 +319,8 @@ class TestToolRegistryV0996:
             "promote_entry",
             # v0.10.11 review-state summary (tk_e025375272b84a95)
             "get_ticket_review_state",
+            # v0.10.12 bulk KB repair (tk_c64915570f4d4042)
+            "promote_eligible_entries",
         ):
             assert new_tool in names, f"Missing MCP tool: {new_tool}"
 
