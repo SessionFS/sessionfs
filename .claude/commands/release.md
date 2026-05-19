@@ -306,27 +306,41 @@ PyPI's index can lag a minute or two behind the release workflow — the loop re
 VERSION=<the version you just shipped, e.g. 0.10.12>
 
 # Throwaway venv so the install doesn't touch the dev env.
+# MUST use python3.10+ — sessionfs requires-python >= 3.10. On macOS,
+# `python3` alone is 3.9 which silently fails ALL pip resolves with the
+# misleading "no matching distribution" (real cause: the wheel's
+# python_requires excludes 3.9). Pick the highest 3.x explicitly.
 SMOKE_DIR=$(mktemp -d)
-python3 -m venv "$SMOKE_DIR/venv"
-"$SMOKE_DIR/venv/bin/pip" install --quiet --upgrade pip
+PY=$(command -v python3.12 || command -v python3.11 || command -v python3.10)
+[ -z "$PY" ] && { echo "ERROR: need python3.10+ on PATH for the smoke test"; rm -rf "$SMOKE_DIR"; exit 1; }
+"$PY" -m venv "$SMOKE_DIR/venv"
+"$SMOKE_DIR/venv/bin/pip" install --quiet --upgrade pip >/dev/null 2>&1
 
 # Retry until the published wheel is installable (~3 min ceiling).
+# Important: capture pip's actual exit code, not `tail`'s — piping pip
+# output through `| tail` breaks the conditional and makes the retry
+# loop short-circuit on a "successful tail" of a failed install. We
+# learned this the hard way during the v0.10.12 release.
+INSTALL_OK=
 for attempt in 1 2 3 4 5 6; do
-  if "$SMOKE_DIR/venv/bin/pip" install --quiet "sessionfs==${VERSION}"; then
+  if "$SMOKE_DIR/venv/bin/pip" install --quiet "sessionfs==${VERSION}" 2>/tmp/pip_smoke_err; then
+    echo "PyPI install ok (attempt $attempt)"
+    INSTALL_OK=1
     break
   fi
-  echo "PyPI not ready yet (attempt $attempt); sleeping 30s..."
-  sleep 30
+  echo "PyPI not ready (attempt $attempt): $(tail -1 /tmp/pip_smoke_err)"
+  [ "$attempt" -lt 6 ] && sleep 30
 done
+[ -z "$INSTALL_OK" ] && { echo "SMOKE FAIL: install never succeeded after 6 attempts"; rm -rf "$SMOKE_DIR"; exit 1; }
 
-# Smoke: version reports right + a representative new command's help works.
+# Smoke: version reports right + sfs --help shape + new command help.
 "$SMOKE_DIR/venv/bin/python" -c "import sessionfs; assert sessionfs.__version__ == '${VERSION}', f'expected ${VERSION}, got {sessionfs.__version__}'; print('version ok')"
-"$SMOKE_DIR/venv/bin/sfs" --help | grep -q "SessionFS — Portable AI coding sessions" || { echo "sfs --help shape regressed"; exit 1; }
+"$SMOKE_DIR/venv/bin/sfs" --help 2>&1 | grep -q "Portable AI coding sessions" || { echo "sfs --help shape regressed"; rm -rf "$SMOKE_DIR"; exit 1; }
 
 # If this release added a new command/subcommand, check its help renders.
 # Replace the example with the actual new commands shipped this cycle.
 # Example for v0.10.12:
-#   "$SMOKE_DIR/venv/bin/sfs" project promote-eligible --help | grep -q "min-length"
+#   "$SMOKE_DIR/venv/bin/sfs" project promote-eligible --help 2>&1 | grep -q "min-length"
 
 rm -rf "$SMOKE_DIR"
 echo "Post-PyPI smoke: clean."
