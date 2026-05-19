@@ -759,3 +759,229 @@ async def test_compile_noop_returns_explanatory_reason(
     # fix.
     assert "confidence" in body["noop_reason"].lower() or "promote" in body["noop_reason"].lower()
 
+
+
+# ── v0.10.12 tk_c64915570f4d4042 — bulk-promote endpoint ──
+
+
+@pytest.mark.asyncio
+async def test_bulk_promote_dry_run_makes_no_writes(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession,
+    test_user: User, test_project: Project,
+):
+    entry = KnowledgeEntry(
+        project_id=test_project.id, session_id="ses_x", user_id=test_user.id,
+        entry_type="decision",
+        content="x" * 60, confidence=0.9, claim_class="note",
+    )
+    db_session.add(entry)
+    await db_session.commit()
+    await db_session.refresh(entry)
+
+    resp = await client.post(
+        f"/api/v1/projects/{test_project.id}/entries/bulk-promote",
+        json={},  # dry_run defaults to True
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["dry_run"] is True
+    assert body["promoted"] == 1
+    assert entry.id in body["promoted_ids"]
+
+    await db_session.refresh(entry)
+    assert entry.claim_class == "note"
+    assert entry.promoted_at is None
+
+
+@pytest.mark.asyncio
+async def test_bulk_promote_confirm_actually_promotes(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession,
+    test_user: User, test_project: Project,
+):
+    entry = KnowledgeEntry(
+        project_id=test_project.id, session_id="ses_x", user_id=test_user.id,
+        entry_type="decision",
+        content="x" * 60, confidence=0.9, claim_class="note",
+    )
+    db_session.add(entry)
+    await db_session.commit()
+    await db_session.refresh(entry)
+
+    resp = await client.post(
+        f"/api/v1/projects/{test_project.id}/entries/bulk-promote",
+        json={"dry_run": False},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["promoted"] == 1
+    assert body["dry_run"] is False
+
+    await db_session.refresh(entry)
+    assert entry.claim_class == "claim"
+    assert entry.promoted_at is not None
+    assert entry.promoted_by == test_user.id
+
+
+@pytest.mark.asyncio
+async def test_bulk_promote_set_confidence_overrides_low(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession,
+    test_user: User, test_project: Project,
+):
+    entry = KnowledgeEntry(
+        project_id=test_project.id, session_id="ses_x", user_id=test_user.id,
+        entry_type="decision",
+        content="x" * 60, confidence=0.5, claim_class="note",
+    )
+    db_session.add(entry)
+    await db_session.commit()
+    await db_session.refresh(entry)
+
+    resp = await client.post(
+        f"/api/v1/projects/{test_project.id}/entries/bulk-promote",
+        json={"dry_run": False, "set_confidence": 0.9},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["promoted"] == 1
+    await db_session.refresh(entry)
+    assert entry.confidence == 0.9
+    assert entry.claim_class == "claim"
+
+
+@pytest.mark.asyncio
+async def test_bulk_promote_per_reason_breakdown(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession,
+    test_user: User, test_project: Project,
+):
+    # 2 eligible, 1 too short, 1 dismissed, 1 low confidence
+    db_session.add_all([
+        KnowledgeEntry(
+            project_id=test_project.id, session_id="ses_a", user_id=test_user.id,
+            entry_type="decision",
+            content="x" * 60, confidence=0.9, claim_class="note",
+        ),
+        KnowledgeEntry(
+            project_id=test_project.id, session_id="ses_b", user_id=test_user.id,
+            entry_type="decision",
+            content="y" * 60, confidence=0.9, claim_class="note",
+        ),
+        KnowledgeEntry(
+            project_id=test_project.id, session_id="ses_c", user_id=test_user.id,
+            entry_type="decision",
+            content="z" * 10, confidence=0.9, claim_class="note",  # too short
+        ),
+        KnowledgeEntry(
+            project_id=test_project.id, session_id="ses_d", user_id=test_user.id,
+            entry_type="decision",
+            content="w" * 60, confidence=0.9, claim_class="note",
+            dismissed=True,
+        ),
+        KnowledgeEntry(
+            project_id=test_project.id, session_id="ses_e", user_id=test_user.id,
+            entry_type="decision",
+            content="v" * 60, confidence=0.3, claim_class="note",
+        ),
+    ])
+    await db_session.commit()
+
+    resp = await client.post(
+        f"/api/v1/projects/{test_project.id}/entries/bulk-promote",
+        json={"dry_run": True, "min_confidence": 0.85},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["promoted"] == 2
+    assert body["skipped"] == 3
+    assert body["reasons"]["too_short"] == 1
+    assert body["reasons"]["dismissed"] == 1
+    assert body["reasons"]["low_confidence"] == 1
+
+
+@pytest.mark.asyncio
+async def test_bulk_promote_validates_min_length_range(
+    client: AsyncClient, auth_headers: dict, test_project: Project,
+):
+    resp = await client.post(
+        f"/api/v1/projects/{test_project.id}/entries/bulk-promote",
+        json={"min_length": 0},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_bulk_promote_validates_confidence_range(
+    client: AsyncClient, auth_headers: dict, test_project: Project,
+):
+    resp = await client.post(
+        f"/api/v1/projects/{test_project.id}/entries/bulk-promote",
+        json={"set_confidence": 1.5},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_bulk_promote_cross_project_denied(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession,
+    test_user: User,
+):
+    """A user cannot bulk-promote entries in a project they don't own."""
+    # Make a project owned by a different user.
+    other_user = User(
+        id=str(uuid.uuid4()),
+        email="other@example.com", display_name="Other",
+        tier="pro", email_verified=True,
+        created_at=datetime.now(timezone.utc),
+    )
+    db_session.add(other_user)
+    await db_session.commit()
+    other_project = Project(
+        id=f"proj_{uuid.uuid4().hex[:16]}",
+        name="Other", git_remote_normalized="github.com/other/repo",
+        context_document="", owner_id=other_user.id,
+    )
+    db_session.add(other_project)
+    await db_session.commit()
+
+    resp = await client.post(
+        f"/api/v1/projects/{other_project.id}/entries/bulk-promote",
+        json={"dry_run": True},
+        headers=auth_headers,
+    )
+    # _get_project_or_404 returns 403 or 404 for non-owners — either is
+    # acceptable existence-hiding.
+    assert resp.status_code in (403, 404)
+
+
+@pytest.mark.asyncio
+async def test_bulk_promote_entry_type_filter(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession,
+    test_user: User, test_project: Project,
+):
+    db_session.add_all([
+        KnowledgeEntry(
+            project_id=test_project.id, session_id="ses_d", user_id=test_user.id,
+            entry_type="decision",
+            content="x" * 60, confidence=0.9, claim_class="note",
+        ),
+        KnowledgeEntry(
+            project_id=test_project.id, session_id="ses_p", user_id=test_user.id,
+            entry_type="pattern",
+            content="y" * 60, confidence=0.9, claim_class="note",
+        ),
+    ])
+    await db_session.commit()
+
+    resp = await client.post(
+        f"/api/v1/projects/{test_project.id}/entries/bulk-promote",
+        json={"dry_run": False, "entry_type": "decision"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["promoted"] == 1
+    assert body["reasons"]["wrong_type"] == 1

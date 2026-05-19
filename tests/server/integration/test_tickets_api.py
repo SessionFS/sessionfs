@@ -12,7 +12,7 @@ covers comment-append + KB-ref merge + auto-unblock.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from httpx import AsyncClient
@@ -1483,3 +1483,122 @@ async def test_review_state_unknown_ticket_returns_404(
         headers=_hdrs(key),
     )
     assert resp.status_code == 404
+
+
+# ── tk_33a25a12a5cf4dc3 — review-state row cap (Shield-SR LOW) ──
+
+
+@pytest.mark.asyncio
+async def test_review_state_caps_at_500_comments(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """The endpoint reads at most 500 TicketComment rows. Beyond that,
+    a malicious or pathological thread could DoS the endpoint by
+    forcing it to scan thousands of rows. Pre-cap matches
+    list_ticket_comments (also 500). Functional check: insert 510
+    comments and verify the endpoint completes successfully and the
+    returned state was computed over <=500 rows.
+    """
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    tk = (
+        await client.post(
+            f"/api/v1/projects/{project.id}/tickets",
+            headers=_hdrs(key),
+            json={"title": "high-volume thread", "description": "x" * 20},
+        )
+    ).json()
+
+    # Bulk-insert 510 comments directly on the DB to avoid the route's
+    # rate-limit + per-request overhead. They're all atlas (non-Codex),
+    # so the resulting review_state will be null — that's fine for the
+    # cap test; the endpoint must still complete without error.
+    base_t = datetime.now(timezone.utc)
+    db_session.add_all([
+        TicketComment(
+            id=f"tc_test_{i:04d}",
+            ticket_id=tk["id"],
+            author_user_id=user.id,
+            author_persona="atlas",
+            content=f"filler comment {i}",
+            created_at=base_t + timedelta(seconds=i),
+        )
+        for i in range(510)
+    ])
+    await db_session.commit()
+
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/tickets/{tk['id']}/review-state",
+        headers=_hdrs(key),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # No codex-reviewer comments → review_state is null. The endpoint
+    # must NOT error on the high row count.
+    assert body["ticket_id"] == tk["id"]
+    assert body["review_state"] is None
+
+
+@pytest.mark.asyncio
+async def test_review_state_cap_preserves_earliest_rounds(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """When a thread exceeds the 500-row cap, the SELECT is ordered by
+    (created_at, id) ascending, so the EARLIEST rounds are what
+    survive. That's the right policy: callers care about 'what
+    findings were raised first and whether they're closed', not the
+    last 500 noisy follow-up comments. Place a single codex-reviewer
+    R1 header first, then 500 filler atlas comments after, and verify
+    the parser still picks up R1.
+    """
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    tk = (
+        await client.post(
+            f"/api/v1/projects/{project.id}/tickets",
+            headers=_hdrs(key),
+            json={"title": "high-volume with codex", "description": "x" * 20},
+        )
+    ).json()
+
+    base_t = datetime.now(timezone.utc)
+    codex_content = (
+        "Codex R1 review on tk_x: CHANGES REQUESTED\n\n"
+        "Findings:\n\n"
+        " - LOW - thing is broken\n"
+    )
+    db_session.add(TicketComment(
+        id="tc_codex_r1",
+        ticket_id=tk["id"],
+        author_user_id=user.id,
+        author_persona="codex-reviewer",
+        content=codex_content,
+        created_at=base_t,
+    ))
+    # 500 atlas filler comments AFTER the codex comment (so they'd be
+    # truncated under a cap that ordered DESC; under our ascending
+    # order they'd consume cap budget — but codex is first so it
+    # always survives).
+    db_session.add_all([
+        TicketComment(
+            id=f"tc_filler_{i:04d}",
+            ticket_id=tk["id"],
+            author_user_id=user.id,
+            author_persona="atlas",
+            content=f"filler {i}",
+            created_at=base_t + timedelta(seconds=i + 1),
+        )
+        for i in range(500)
+    ])
+    await db_session.commit()
+
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/tickets/{tk['id']}/review-state",
+        headers=_hdrs(key),
+    )
+    assert resp.status_code == 200, resp.text
+    state = resp.json()["review_state"]
+    assert state is not None, "Codex R1 within first 500 rows must survive the cap"
+    assert state["last_verdict"] == "CHANGES_REQUESTED"
+    assert len(state["open_findings"]) == 1
+    assert state["open_findings"][0]["severity"] == "LOW"

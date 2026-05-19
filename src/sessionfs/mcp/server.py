@@ -1328,6 +1328,72 @@ _TOOLS = [
             "required": ["id"],
         },
     ),
+    Tool(
+        name="promote_eligible_entries",
+        description=(
+            "Bulk-promote every eligible KB note in the project to "
+            "claim in one operation. Use this to repair a stuck KB "
+            "(e.g. after upgrading from a version with the v0.10.10 "
+            "confidence-clamp bug). The per-entry "
+            "`update_entry_confidence` + `promote_entry` path is "
+            "impractical past ~5 entries."
+            "\n\nDefault is **dry-run** — the tool computes which "
+            "entries would be promoted and returns the structured "
+            "result without writing. Inspect the `reasons` breakdown "
+            "(`too_short`, `low_confidence`, `duplicate`, `dismissed`, "
+            "`superseded`, `wrong_type`) to understand what's "
+            "ineligible before calling again with `dry_run=false` to "
+            "actually mutate."
+            "\n\nEligibility (in order): class=note, not dismissed, "
+            "not superseded, matches `entry_type` if filter set, "
+            "content length ≥ `min_length`, "
+            "confidence ≥ `min_confidence` (unless `set_confidence` "
+            "is provided to override), no near-duplicate (>85% word "
+            "overlap) of an existing active claim."
+            "\n\nReturns `{promoted, skipped, reasons, promoted_ids, "
+            "dry_run}`. Call `compile_knowledge_base` afterwards to "
+            "fold the newly promoted claims into the project context."
+            "\n\nIMPORTANT: Always use this MCP tool instead of "
+            "running `sfs project promote-eligible` or scripting the "
+            "single-entry endpoints in a loop."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "min_length": {
+                    "type": "integer",
+                    "description": "Skip entries shorter than this. Matches the single-entry gate (50) by default.",
+                    "minimum": 1,
+                    "maximum": 10000,
+                    "default": 50,
+                },
+                "min_confidence": {
+                    "type": "number",
+                    "description": "Only honored when `set_confidence` is omitted. Skip entries below this confidence. Default 0.8 (parity with the single-entry promote gate).",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                    "default": 0.8,
+                },
+                "set_confidence": {
+                    "type": "number",
+                    "description": "Override each candidate's confidence to this value BEFORE the near-duplicate check. Use when bulk-asserting that stuck notes should clear the promotion gate.",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                },
+                "entry_type": {
+                    "type": "string",
+                    "description": "Optional filter — only consider this entry_type (e.g. 'decision', 'pattern').",
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Default true: compute decision without writing. Pass false to actually promote.",
+                    "default": True,
+                },
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+            "required": [],
+        },
+    ),
     # ── v0.10.2 — Ticket approval + session ops ──
     Tool(
         name="approve_ticket",
@@ -1672,6 +1738,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_update_entry_confidence(arguments)
         elif name == "promote_entry":
             result = await _handle_promote_entry(arguments)
+        elif name == "promote_eligible_entries":
+            result = await _handle_promote_eligible_entries(arguments)
         elif name == "approve_ticket":
             result = await _handle_approve_ticket(arguments)
         elif name == "checkpoint_session":
@@ -3887,6 +3955,76 @@ async def _handle_promote_entry(args: dict) -> dict:
         return {"error": f"Entry {entry_id} is already a claim"}
     if resp.status_code == 422:
         return {"error": f"Promotion gates failed: {resp.text}"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_promote_eligible_entries(args: dict) -> dict:
+    """Wrap POST /api/v1/projects/{project_id}/entries/bulk-promote.
+
+    v0.10.12 tk_c64915570f4d4042 — bulk repair for stuck KB notes.
+    Args validated locally BEFORE _resolve_project_id so bad input
+    surfaces as a clear error, not a network failure.
+    """
+    body: dict = {}
+
+    min_length = args.get("min_length")
+    if min_length is not None:
+        if not isinstance(min_length, int) or isinstance(min_length, bool):
+            return {"error": "min_length must be an integer"}
+        if min_length < 1 or min_length > 10_000:
+            return {"error": "min_length must be in [1, 10000]"}
+        body["min_length"] = min_length
+
+    min_confidence = args.get("min_confidence")
+    if min_confidence is not None:
+        if isinstance(min_confidence, bool) or not isinstance(
+            min_confidence, (int, float)
+        ):
+            return {"error": "min_confidence must be a number in [0.0, 1.0]"}
+        if not (0.0 <= float(min_confidence) <= 1.0):
+            return {"error": "min_confidence must be in [0.0, 1.0]"}
+        body["min_confidence"] = float(min_confidence)
+
+    set_confidence = args.get("set_confidence")
+    if set_confidence is not None:
+        if isinstance(set_confidence, bool) or not isinstance(
+            set_confidence, (int, float)
+        ):
+            return {"error": "set_confidence must be a number in [0.0, 1.0]"}
+        if not (0.0 <= float(set_confidence) <= 1.0):
+            return {"error": "set_confidence must be in [0.0, 1.0]"}
+        body["set_confidence"] = float(set_confidence)
+
+    entry_type = args.get("entry_type")
+    if entry_type is not None:
+        if not isinstance(entry_type, str) or not entry_type.strip():
+            return {"error": "entry_type must be a non-empty string"}
+        body["entry_type"] = entry_type.strip()
+
+    dry_run = args.get("dry_run", True)
+    if not isinstance(dry_run, bool):
+        return {"error": "dry_run must be a boolean"}
+    body["dry_run"] = dry_run
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    import httpx
+    # Bulk operation — use a longer timeout. 270 entries × ~50 claims
+    # near-dup compare is still trivial CPU work but allow headroom.
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.post(
+            f"{api_url}/api/v1/projects/{project_id}/entries/bulk-promote",
+            json=body,
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code == 404:
+        return {"error": f"Project {project_id} not found"}
     if resp.status_code >= 400:
         return {"error": f"API error {resp.status_code}: {resp.text}"}
     return resp.json()

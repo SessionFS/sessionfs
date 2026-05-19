@@ -216,7 +216,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
-**v0.10.11 — Public Beta.** 1871 backend tests + 186 dashboard tests passing. 42 database migrations. 57 MCP tools. v0.10.11 adds the human-facing CLI for v0.10.10 scoped service keys (`sfs admin service-keys` + `sfs auth keys`), `docs/api-keys.md` public reference covering the 14-scope vocabulary with current opt-in status, per-ticket review-state derivation for long Codex review threads (new endpoint + `get_ticket_review_state` MCP tool + `sfs ticket review-state` CLI), and an actionable DNS/network-error message in the shared `_api_request` helper covering every CLI that talks to the API.
+**v0.10.12 — Public Beta.** 1912 backend tests + 186 dashboard tests passing. 42 database migrations. 58 MCP tools. v0.10.12 adds **bulk-promote** for stuck KB notes (`sfs project promote-eligible` + `promote_eligible_entries` MCP tool + new endpoint) — the practical repair path after the v0.10.10 confidence bug. Plus a 500-row cap on the review-state endpoint, release-process hardening (pinned mypy version, deterministic sanitize helper, post-PyPI smoke test), and security upgrades closing 9 dependency CVEs.
 
 ### Session capture, resume, and search
 
