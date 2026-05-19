@@ -34,8 +34,8 @@ The 14 capability scopes defined at v0.10.11. The `*` wildcard is **reserved for
 
 | Scope | Status today | Routes that accept it |
 |---|---|---|
-| `handoffs:write` | ✅ live | `POST /handoffs`, `POST /{id}/claim`, `POST /{id}/revoke`, `POST /{id}/decline`, `POST /{id}/comments` |
-| `agent_runs:write` | ✅ live | `POST /agent-runs`, `POST /agent-runs/{id}/complete` |
+| `handoffs:write` | ✅ live | `POST /api/v1/handoffs`, `POST /api/v1/handoffs/{id}/claim`, `POST /api/v1/handoffs/{id}/revoke`, `POST /api/v1/handoffs/{id}/decline`, `POST /api/v1/handoffs/{id}/comments` |
+| `agent_runs:write` | ✅ live | `POST /api/v1/projects/{project_id}/agent-runs`, `POST /api/v1/projects/{project_id}/agent-runs/{run_id}/complete` |
 | `sessions:read` | reserved | — |
 | `handoffs:read` | reserved | — |
 | `tickets:read` | reserved | — |
@@ -77,7 +77,7 @@ Raw key: sk_sfs_584c9d12e7f3a8b4c2... (full key)
 Save this key now — it will not be shown again.
 ```
 
-The raw key is returned **exactly once** — on `create` and on `rotate`. Every subsequent `list` or `get` only returns the `key_prefix` (first 12 chars). The CEO-mandated rule for any non-human caller: capture the raw key into the CI secret store / vault on the same machine that minted it, then never echo it again.
+The raw key is returned **exactly once** — on `create` and on `rotate`. Every subsequent read response only exposes `key_prefix` (first 12 chars). The CEO-mandated rule for any non-human caller: capture the raw key into the CI secret store / vault on the same machine that minted it, then never echo it again.
 
 For CI runners, use `--output-key` to emit only the raw key on stdout (no decorations, no warning):
 
@@ -165,14 +165,14 @@ The same raw-key-once + `--output-key` semantics as service keys apply.
 Why use a service key over a personal key for non-human callers? Three reasons:
 
 1. **Scope reduction.** A service key with `tickets:read, handoffs:write` cannot escalate into your billing, your other orgs, or your KB writes. A personal user key carries the full ambient authority of the user it was minted by.
-2. **Org-bound audit.** Service-key writes attach `actor_type=service`, `service_key_id`, `service_key_name` to every audit row (TicketComment, KnowledgeEntry, AgentRun, RetrievalAuditEvent, HandoffEvent). Personal keys show up as the user.
+2. **Org-bound audit.** Live service-key writes today stamp `actor_type=service_key`, `service_key_id`, and `service_key_name` on `HandoffEvent` and `AgentRun` rows. `TicketComment`, `KnowledgeEntry`, and `RetrievalAuditEvent` already carry the same provenance columns ready for the Phase 3 route opt-in, but those write routes are not service-key opted in yet. Personal keys show up as the user across all of these.
 3. **Cross-org safety.** Service keys are pinned to an `org_id`. A leaked service key cannot accidentally write into the wrong org.
 
 ---
 
 ## Errors
 
-All key-related errors return structured JSON bodies with a stable `error` code field. The CLI surfaces these verbatim (`<code>: <message>`) so you can grep on the code without parsing prose.
+Most service-key authorization failures return structured JSON bodies with a stable `error` code field. The CLI surfaces these verbatim (`<code>: <message>`) so you can grep on the code without parsing prose. A few legacy paths (e.g. plain `Invalid API key`) still use FastAPI's unstructured `detail` string — these are called out explicitly in the table below.
 
 | HTTP | Code | When | Remediation |
 |---|---|---|---|
