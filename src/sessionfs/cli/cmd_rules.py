@@ -217,12 +217,26 @@ async def _api_request(
         elif method == "PUT":
             resp = await client.put(url, headers=headers, json=json_data)
         elif method == "DELETE":
-            resp = await client.delete(url, headers=headers)
+            # httpx.AsyncClient.delete() does not accept a json kwarg —
+            # use the lower-level request() so DELETE-with-body endpoints
+            # (e.g. v0.10.11 service-keys revoke with a required reason)
+            # can forward their payload. Existing DELETE callers pass
+            # json_data=None which is a no-op.
+            resp = await client.request(
+                "DELETE", url, headers=headers, json=json_data
+            )
         else:
             raise ValueError(f"Unsupported method: {method}")
 
-    if resp.headers.get("content-type", "").startswith("application/json"):
-        body: Any = resp.json()
+    # 204 No Content (and any other empty-body response) — return an
+    # empty string rather than calling resp.json() on b"". Some FastAPI
+    # 204 responses still set content-type: application/json which would
+    # otherwise crash with JSONDecodeError. Empty body is meaningful
+    # for DELETE; callers branch on status_code, not body content.
+    if not resp.content:
+        body: Any = ""
+    elif resp.headers.get("content-type", "").startswith("application/json"):
+        body = resp.json()
     else:
         body = resp.text
     return resp.status_code, body, dict(resp.headers)
