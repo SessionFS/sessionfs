@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.12] - 2026-05-19
+
+### Added
+
+**Bulk-promote eligible KB notes to claims** (parent `tk_c64915570f4d4042`, Codex R1+R2 VERIFIED-CLEAN on `tk_03263e280f4b4732`) — the v0.10.10 confidence-clamp bug (fixed in v0.10.10) left many production KBs with hundreds of stuck note-class entries. The per-entry repair path (`PUT /entries/{id}/confidence` + `PUT /entries/{id}/promote` × N) doesn't scale past ~5 entries. SessionFS dev had 270 stuck notes; Baptist Health has the same problem. This release ships the practical bulk repair surface.
+
+- New service `src/sessionfs/server/services/bulk_promote.py:promote_eligible_notes()` — pure-Python eligibility filter (class=note, not dismissed, not superseded, optional entry_type filter, ≥ `min_length` chars, ≥ `min_confidence` unless caller overrides via `set_confidence`, no near-duplicate against active claims). Pre-fetches active claims once; in-run promotions join the compare set so two near-duplicate notes can't both promote. Dry-run is the default and makes zero writes.
+- New endpoint `POST /api/v1/projects/{pid}/entries/bulk-promote` — same auth as the single-entry promote (project membership via `_get_project_or_404`). `BulkPromoteRequest` validates `min_length∈[1, 10000]`, `min_confidence`/`set_confidence∈[0.0, 1.0]`, optional `entry_type` ≤ 64 chars. Returns `{promoted, skipped, reasons, promoted_ids, dry_run}` with a stable per-reason breakdown (`too_short`, `low_confidence`, `duplicate`, `dismissed`, `superseded`, `wrong_type`, `already_claim`).
+- New MCP tool `promote_eligible_entries` (57 → 58 tools) — wraps the endpoint with local arg validation BEFORE the network call (boolean rejection on numeric fields, blank-string rejection on `entry_type`, range bounds on every numeric). 60s httpx timeout for the bulk operation.
+- New CLI `sfs project promote-eligible --min-length N --min-confidence N --confidence N --entry-type X --confirm` — dry-run is the default; `--confirm` is required to mutate. Renders a verdict header + Skipped-by-reason rich table.
+
+**Per-ticket review-state endpoint row cap** (`tk_33a25a12a5cf4dc3`, Shield-SR LOW follow-up from v0.10.11) — `GET /api/v1/projects/{pid}/tickets/{tid}/review-state` now caps `TicketComment` fetch at 500 rows (parity with `list_ticket_comments`). `ORDER BY (created_at, id) ASC` ensures the earliest review rounds always survive the cap on long threads — callers care about "what was raised first and is it closed", not the latest 500 noisy comments.
+
+**Release-process hardening** — three improvements informed by the v0.10.11 post-mortem:
+
+- **Pinned mypy >= 1.20** (`tk_cd196cf0421b4a6e`) in `pyproject.toml` dev extras. v0.10.11 CI on main failed because local mypy 1.19.1 missed 11 union-attr errors that CI's 1.20.2 caught. The pin is the narrowest fix for the entire class of "green local / red on main" surprises. Local now reports 1.20.2 on `pip install -e .[dev]`.
+- **`.release/sanitize_main.py`** (`tk_b9b6eb47685e4916`) — deterministic Python helper for stripping private files during the develop → main merge. Reads `.release/private-files.txt`; supports `--dry-run` (default) and `--apply`; exits non-zero on residual leaks. Replaces the prior 14-chained-shell-command sweep. 8 unit tests in `tests/unit/test_sanitize_main.py` (parser + leak-finder); tests skip cleanly when `.release/` is stripped on main.
+- **Post-PyPI smoke step** (`tk_4698db39fb0248b3`) — new release skill step 12b runs a fresh-venv `pip install sessionfs==X.Y.Z` + `sfs --help` shape check + new-command help check with 6×30s retry for PyPI index lag. Catches "wheel published but ships wrong contents" before users do.
+
+**MCP handler dispatch tests** for `promote_eligible_entries` (`tk_97b693793c814f4d`, Codex R2 residual-risk follow-up) — 8 new tests in `tests/unit/test_mcp_server.py` mirroring the `update_entry_confidence` pattern: URL routing, body forwarding for all 5 args, range validation, boolean rejection on numeric fields, blank-string and non-string `entry_type` rejection, `dry_run`-must-be-bool, entry_type whitespace stripping.
+
+### Fixed
+
+**Codex R1 fixes on bulk-promote** (in `5a41085` on develop):
+- **MEDIUM** — Dry-run/confirm asymmetry on in-run duplicates. The original implementation only appended eligible content to the compare set inside `if not dry_run`, so a dry-run with two near-duplicate notes reported both as promoted while the confirmed run correctly skipped one. Fix: append unconditionally; only the field writes stay gated on `not dry_run`. The "inspect-then-mutate" safety contract now holds. New regression test pins the parity.
+- **LOW** — Boundary defaults disagreed with the service constant. The API/CLI/MCP defaulted to `min_confidence=0.85` but the single-entry promote gate and the service constant are 0.8 — entries at [0.80, 0.85) would promote one-by-one but skip in bulk. Lowered all three boundary defaults to 0.8 for parity.
+
+### Security
+
+- Auto-upgraded dependencies during Shield-SR audit: `cryptography` 46.0.5 → 48.0.0 (pin widened to `>=46.0.7`), `idna` 3.11 → 3.15, `mako` 1.3.10 → 1.3.12, `pygments` 2.19.2 → 2.20.0, `urllib3` 2.6.3 → 2.7.0, `pip` 26.0 → 26.1.1. Closes 9 HIGH/MEDIUM CVEs.
+
+### Reviews
+
+- Bulk-promote: `tk_03263e280f4b4732` R1 (1 MEDIUM + 1 LOW) → R2 **VERIFIED-CLEAN**
+- v0.10.12 follow-ups (row cap + MCP dispatch tests): `tk_bf4c08059e1e42c1` — administratively closed per CEO (pure test-hardening + 1-line LIMIT guard; Codex itself pre-flagged as non-blocking residual-risk on the parent reviews)
+
+Shield-SR pre-release security review: 0 critical / 0 high / 0 medium new findings. Release approved.
+
+### Notes
+
+- **Tests:** 1912 backend + 186 dashboard passing (+41 net over v0.10.11). 2 xfail-strict pre-existing migration-003 PG-syntax (`tk_7dc9e8764a5a4297`).
+- **MCP tools:** 57 → 58 (+1: `promote_eligible_entries`).
+- **Migrations:** 001–042 (no new migrations).
+
 ## [0.10.11] - 2026-05-19
 
 ### Added
