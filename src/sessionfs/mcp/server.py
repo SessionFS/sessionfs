@@ -283,6 +283,18 @@ _TOOLS = [
             "conventions, bugs, or dependencies during a session. "
             "Entries default to 'note' class and auto-promote to 'claim' "
             "when quality gates pass (confidence >= 0.8, content >= 50 chars)."
+            "\n\nConfidence handling: omit `confidence` to let the server "
+            "default it by source — manual/cli-ask entries (no `session_id` "
+            "or `session_id='manual'`) default to 0.7, session-derived "
+            "entries default to 1.0. If you want a claim-eligible score, "
+            "pass `confidence: 0.9` (or 1.0) explicitly. The default does "
+            "NOT clear the 0.8 promotion gate, so a manual entry stays a "
+            "note until you raise its confidence."
+            "\n\nFull MCP workflow when starting from low confidence: "
+            "`add_knowledge` (creates note) → verify the claim against "
+            "stronger evidence → `update_entry_confidence` (raise above "
+            "0.8) → `promote_entry` (note → claim transition) → "
+            "`compile_knowledge_base` (refresh project context)."
             "\n\nIMPORTANT: Always use this MCP tool instead of running "
             "`sfs project add-entry` or any other sfs CLI command. This tool "
             "connects directly to the API and is more reliable than shelling "
@@ -306,7 +318,13 @@ _TOOLS = [
                 },
                 "confidence": {
                     "type": "number",
-                    "description": "Confidence score 0.0–1.0 (default: 1.0)",
+                    "description": (
+                        "Confidence score 0.0–1.0. Optional — when omitted "
+                        "the server defaults by source: manual/cli-ask "
+                        "entries → 0.7 (note, below the 0.8 promotion gate), "
+                        "session-derived entries → 1.0 (auto-promotable). "
+                        "Pass an explicit value (e.g. 0.9) to override."
+                    ),
                 },
                 "entity_ref": {
                     "type": "string",
