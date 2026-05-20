@@ -1456,3 +1456,218 @@ async def test_auto_generate_concepts_existing_page_skips_malformed_links(
         assert survivor is not None, (
             "concept page wrongly deleted via existing-page branch crash"
         )
+
+
+@pytest.mark.asyncio
+async def test_auto_supersede_idempotent_on_existing_contradicts_link(
+    db_engine, db_session: AsyncSession, test_user: User, test_project: Project,
+    monkeypatch,
+):
+    """tk_09d8bdf4f6374a13 regression — _auto_supersede previously created
+    a 'contradicts' KnowledgeLink on every compile pass without checking
+    whether a link for the same (source_id, target_id) pair already existed.
+    The supersedes path was self-gating via `superseded_by`, but contradicts
+    had no such gate. Each subsequent /compile triggered a UniqueViolationError
+    on uq_kl_link at autoflush time. The error bubbled up uncaught past
+    FastAPI middleware (the route has no try/except around
+    compile_project_context), Starlette returned its default 21-byte
+    text/plain 'Internal Server Error' 500, and ops misread the response
+    as a Cloud Run worker kill — the bug that hit proj_c0242b0fccbd48b4 on
+    2026-05-20 after v0.10.13 R5 restore.
+
+    Codex R1 MEDIUM 2 — force the contradicts branch deterministically by
+    monkeypatching word_overlap to return 0.75 (in the 0.5–0.9 contradicts
+    band). Without this monkeypatch the test content could cross the
+    overlap > 0.9 threshold and use the supersedes branch, which is already
+    self-gating and wouldn't actually exercise the original failure mode.
+
+    The fix prefetches existing entry→entry link pairs (source_id, target_id)
+    — NOT including link_type, because uq_kl_link is on the pair only
+    (Codex R1 HIGH catch) — and skips db.add(link) when the pair already
+    exists. Second compile must NOT raise IntegrityError.
+    """
+    from sessionfs.server.db.models import KnowledgeLink
+    from sessionfs.server.services import knowledge as knowledge_mod
+    from sessionfs.server.services.compiler import _auto_supersede
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    # Force the contradicts branch by pinning word_overlap to 0.75 (Codex R1
+    # MEDIUM 2). The compiler module imports word_overlap inside the
+    # function body via a local `from ... import` re-bind, so we patch the
+    # source module — that's where `_wo` actually resolves.
+    monkeypatch.setattr(knowledge_mod, "word_overlap", lambda *a, **k: 0.75)
+
+    older = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_a",
+        user_id=test_user.id,
+        entry_type="decision",
+        content="Use PostgreSQL with read replicas and connection pooling enabled.",
+        confidence=0.9,
+        claim_class="claim",
+        dismissed=False,
+        entity_ref="src/db.py",
+        freshness_class="current",
+    )
+    newer = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_b",
+        user_id=test_user.id,
+        entry_type="decision",
+        content="Use PostgreSQL with hot standby replicas configured for failover.",
+        confidence=0.9,
+        claim_class="claim",
+        dismissed=False,
+        entity_ref="src/db.py",
+        freshness_class="current",
+    )
+    db_session.add(older)
+    await db_session.commit()
+    await db_session.refresh(older)
+    db_session.add(newer)
+    await db_session.commit()
+    await db_session.refresh(newer)
+    project_id = test_project.id
+    await db_session.close()
+
+    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+
+    # First compile: creates the contradicts link. word_overlap pinned to 0.75
+    # forces this branch.
+    async with factory() as s1:
+        await _auto_supersede(project_id, s1)
+        await s1.commit()
+
+    # Verify a contradicts link got created (proves we hit the failure branch)
+    async with factory() as verify:
+        links = (
+            await verify.execute(
+                select(KnowledgeLink).where(
+                    KnowledgeLink.project_id == project_id,
+                    KnowledgeLink.source_type == "entry",
+                    KnowledgeLink.target_type == "entry",
+                )
+            )
+        ).scalars().all()
+        assert len(links) == 1, f"expected 1 link, got {len(links)}"
+        assert links[0].link_type == "contradicts", (
+            f"expected contradicts branch, got link_type={links[0].link_type!r}"
+        )
+        initial_link_count = len(links)
+
+    # Second compile on the SAME data shape: must NOT raise UniqueViolation.
+    # Pre-fix this raised IntegrityError → Starlette 21-byte text/plain 500.
+    async with factory() as s2:
+        await _auto_supersede(project_id, s2)
+        await s2.commit()
+
+    # Verify no duplicate links were created (count stayed flat)
+    async with factory() as verify2:
+        links = (
+            await verify2.execute(
+                select(KnowledgeLink).where(
+                    KnowledgeLink.project_id == project_id,
+                    KnowledgeLink.source_type == "entry",
+                    KnowledgeLink.target_type == "entry",
+                )
+            )
+        ).scalars().all()
+        assert len(links) == initial_link_count, (
+            "_auto_supersede must be idempotent — second pass should not "
+            f"create duplicate links (saw {len(links)} vs initial {initial_link_count})"
+        )
+
+
+@pytest.mark.asyncio
+async def test_auto_supersede_skips_when_other_link_type_already_exists(
+    db_engine, db_session: AsyncSession, test_user: User, test_project: Project,
+    monkeypatch,
+):
+    """Codex R1 HIGH (tk_09d8bdf4f6374a13) regression — uq_kl_link is on
+    (project_id, source_type, source_id, target_type, target_id), NOT on
+    link_type. So if an existing KnowledgeLink for the same source→target
+    pair has any link_type, a new add() for that pair MUST be skipped even
+    if it would use a DIFFERENT link_type.
+
+    Mixed-link-type case: seed an existing 'related' link between two entries,
+    then run _auto_supersede with overlap forced into the contradicts band.
+    Pre-fix: tried to add 'contradicts' on top, IntegrityError. Post-fix:
+    pair-level prefetch sees the existing row and skips.
+    """
+    from sessionfs.server.db.models import KnowledgeLink
+    from sessionfs.server.services import knowledge as knowledge_mod
+    from sessionfs.server.services.compiler import _auto_supersede
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    monkeypatch.setattr(knowledge_mod, "word_overlap", lambda *a, **k: 0.75)
+
+    older = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_a",
+        user_id=test_user.id,
+        entry_type="decision",
+        content="Use PostgreSQL with read replicas and connection pooling enabled.",
+        confidence=0.9,
+        claim_class="claim",
+        dismissed=False,
+        entity_ref="src/db.py",
+        freshness_class="current",
+    )
+    newer = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_b",
+        user_id=test_user.id,
+        entry_type="decision",
+        content="Use PostgreSQL with hot standby replicas configured for failover.",
+        confidence=0.9,
+        claim_class="claim",
+        dismissed=False,
+        entity_ref="src/db.py",
+        freshness_class="current",
+    )
+    db_session.add(older)
+    await db_session.commit()
+    await db_session.refresh(older)
+    db_session.add(newer)
+    await db_session.commit()
+    await db_session.refresh(newer)
+
+    # Seed an existing 'related' link for the same pair (different link_type)
+    db_session.add(KnowledgeLink(
+        project_id=test_project.id,
+        source_type="entry",
+        source_id=str(newer.id),
+        target_type="entry",
+        target_id=str(older.id),
+        link_type="related",
+    ))
+    await db_session.commit()
+    project_id = test_project.id
+    await db_session.close()
+
+    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+
+    # _auto_supersede must see the existing 'related' link and skip adding
+    # a 'contradicts' for the same pair. No IntegrityError.
+    async with factory() as s1:
+        await _auto_supersede(project_id, s1)
+        await s1.commit()
+
+    # Verify still exactly one link, still 'related'
+    async with factory() as verify:
+        links = (
+            await verify.execute(
+                select(KnowledgeLink).where(
+                    KnowledgeLink.project_id == project_id,
+                    KnowledgeLink.source_type == "entry",
+                    KnowledgeLink.target_type == "entry",
+                )
+            )
+        ).scalars().all()
+        assert len(links) == 1, (
+            f"pair-level dedup should leave count at 1, got {len(links)}"
+        )
+        assert links[0].link_type == "related", (
+            f"original 'related' link must survive, got {links[0].link_type!r}"
+        )
+

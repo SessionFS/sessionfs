@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.15] - 2026-05-20
+
+Hotfix release. Fixes the ACTUAL `/compile` 500 on proj_c0242b0fccbd48b4 — the v0.10.14 fix closed an audited crash class but turned out not to be the bug crashing prod.
+
+### Fixed
+
+**`/compile` 500 on projects with stable `contradicts` KnowledgeLinks** (`tk_09d8bdf4f6374a13`) — `_auto_supersede` in `src/sessionfs/server/services/compiler.py` was creating `KnowledgeLink` rows with `link_type='contradicts'` on every `/compile` pass without checking whether the same `(project_id, source_type, source_id, target_type, target_id)` tuple already existed. The `supersedes` path was self-gating via `older.superseded_by is not None: continue`, but `contradicts` had no such gate. Every subsequent `/compile` against a project with stable contradicts links queued a duplicate insert that SQLAlchemy autoflush surfaced on the next `db.execute()` (the decay UPDATE), raising `asyncpg.exceptions.UniqueViolationError` on `uq_kl_link`. The IntegrityError bubbled up uncaught past FastAPI's middleware, and Starlette returned its default `PlainTextResponse("Internal Server Error", status_code=500)` — exactly 21 bytes of text/plain. The v0.10.14 release notes misdiagnosed this response shape as a Cloud Run worker kill; the worker stays alive, only the request fails.
+
+Root cause confirmed from Cloud Run logs (revision `sessionfs-api-00132-f2p`):
+
+```
+sqlalchemy.dialects.postgresql.asyncpg.AsyncAdapt_asyncpg_dbapi.IntegrityError:
+<class 'asyncpg.exceptions.UniqueViolationError'>:
+duplicate key value violates unique constraint "uq_kl_link"
+```
+
+Fix: prefetch all existing entry→entry link tuples `(source_id, target_id, link_type)` for the project ONCE at the top of `_auto_supersede`, then check the in-memory set before `db.add(link)` for both the supersedes and contradicts branches. In-run additions also join the set so two compiles in the same transaction can't double-add. New regression test `test_auto_supersede_idempotent_on_existing_contradicts_link` seeds the failure shape (two entries with same entity_ref + overlap in the contradicts band), calls `_auto_supersede` twice on fresh sessions, asserts no exception + flat link count across passes.
+
+### Notes
+
+- **Tests:** 1928 backend + 186 dashboard passing (+1 net regression test). 2 xfail-strict pre-existing.
+- **MCP tools:** 58 (unchanged).
+- **Migrations:** 001–042 (no new migrations).
+- **v0.10.14 stays merged.** The `_safe_entry_link_ids` helper closes a real audited crash class for the malformed-link path. The two regression tests added for it remain valid.
+- **My v0.10.14 root-cause writeup was wrong about "Cloud Run worker kill / GFE 21-byte text/plain 500".** The 21-byte body is Starlette's default `PlainTextResponse` for uncaught exceptions with `debug=False`. The worker stays alive between requests; only the failing request bubbles. Updated knowledge entry 408 in proj_c0242b0fccbd48b4 to reflect this.
+
 ## [0.10.14] - 2026-05-20
 
 Hotfix release. Fixes the `/compile` availability bug that hit proj_c0242b0fccbd48b4 immediately after the v0.10.13 R5 metadata restore.
