@@ -216,7 +216,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
-**v0.10.15 — Public Beta.** 1928 backend tests + 186 dashboard tests passing. 42 database migrations. 58 MCP tools. v0.10.15 is the real fix for the `/compile` 500 incident: `_auto_supersede` was queuing `contradicts` KnowledgeLink rows on every compile pass without an existence check, so each subsequent run violated the `uq_kl_link` unique constraint and Starlette returned its default 21-byte plain-text 500. Now prefetches existing entry→entry link tuples and skips duplicates. The v0.10.14 defensive `int(lk.source_id)` helper stays merged (real fix for a different crash class). v0.10.13's fail-closed contract held throughout — every failed `/compile` left zero DB drift.
+**v0.10.16 — Public Beta.** 1930 backend tests + 186 dashboard tests passing. 42 database migrations. 58 MCP tools. v0.10.16 closes the second `uq_kl_link` violation site at `auto_generate_concepts` — the existing-page branch deleted prefetched links and immediately re-added them with the same composite key, and SQLAlchemy's UnitOfWork orders INSERTs ahead of DELETEs. Now explicit-flushes after the delete loop. Adds `db.rollback()` in the route's exception handler so a future commit failure can't poison the session for downstream `_count_pages` calls. The v0.10.15 pair-level dedup in `_auto_supersede` stays merged.
 
 ### Session capture, resume, and search
 

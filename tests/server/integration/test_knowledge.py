@@ -1671,3 +1671,131 @@ async def test_auto_supersede_skips_when_other_link_type_already_exists(
             f"original 'related' link must survive, got {links[0].link_type!r}"
         )
 
+
+@pytest.mark.asyncio
+async def test_auto_generate_concepts_flushes_delete_before_insert(
+    db_engine, db_session: AsyncSession, test_user: User, test_project: Project,
+    monkeypatch,
+):
+    """tk_09d8bdf4f6374a13 R2-followup regression — auto_generate_concepts'
+    existing-page branch deletes prefetched entry→page links and then
+    immediately adds new ones for the same (entry_id, page_id) pairs.
+    SQLAlchemy UnitOfWork orders INSERTs ahead of DELETEs for the same
+    table by default, so on commit the INSERT for entry1→page1 fires
+    while the old entry1→page1 row is still present, violating uq_kl_link.
+    The IntegrityError bubbles past the route's try/except, leaves the
+    session in PendingRollback state, and the next _count_pages call
+    surfaces a Starlette text/plain 500.
+
+    The fix calls `await db.flush()` after the delete loop and before
+    the add loop so DELETEs land in the transaction (still rollbackable)
+    ahead of INSERTs.
+    """
+    from sessionfs.server.db.models import KnowledgeLink, KnowledgePage
+    from sessionfs.server.services import compiler as compiler_mod
+    from sessionfs.server.services.compiler import auto_generate_concepts
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    # Seed enough active claims to clear concept candidacy + an existing
+    # concept page with a "contributes" link to one of the entries. The
+    # candidate-forcing path will hit the existing-page branch and try to
+    # delete-and-re-add the link for the same (entry, page) pair.
+    entry = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_concept",
+        user_id=test_user.id,
+        entry_type="pattern",
+        content=(
+            "All converters follow the pattern: parse native format then "
+            "translate to canonical .sfs then write. Workspace-relative paths only."
+        ),
+        confidence=0.9,
+        claim_class="claim",
+        dismissed=False,
+        freshness_class="current",
+    )
+    db_session.add(entry)
+    await db_session.commit()
+    await db_session.refresh(entry)
+
+    page = KnowledgePage(
+        id=f"kp_{uuid.uuid4().hex[:16]}",
+        project_id=test_project.id,
+        slug="concept/converter-pattern",
+        title="Converter Pattern",
+        page_type="concept",
+        content="# Converter Pattern\n\n- placeholder",
+        word_count=3,
+        entry_count=1,
+        auto_generated=True,
+    )
+    db_session.add(page)
+    await db_session.commit()
+    await db_session.refresh(page)
+
+    db_session.add(KnowledgeLink(
+        project_id=test_project.id,
+        source_type="entry",
+        source_id=str(entry.id),
+        target_type="page",
+        target_id=page.id,
+        link_type="contributes",
+        confidence=1.0,
+    ))
+    await db_session.commit()
+    project_id = test_project.id
+    entry_id = entry.id
+    page_id = page.id
+    await db_session.close()
+
+    # Force the candidate to match the existing page slug AND have enough
+    # entry growth that the regenerate path fires (matched_entries >
+    # 1.5 * existing_page.entry_count).
+    async def _fake_candidates(*args, **kwargs):
+        return [{
+            "slug": "converter-pattern",
+            "topic": "converter pattern",
+            "entry_count": 5,
+            "summary": "Pattern across converters",
+        }]
+    monkeypatch.setattr(compiler_mod, "check_concept_candidates", _fake_candidates)
+
+    # Bypass LLM article generation; return deterministic content.
+    async def _fake_article(*args, **kwargs):
+        return "# Converter Pattern\n\n- Updated content"
+    monkeypatch.setattr(compiler_mod, "generate_concept_article", _fake_article)
+
+    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with factory() as session:
+        # Pre-fix: this raised IntegrityError on commit (uq_kl_link)
+        # because INSERT for (entry_id → page_id, contributes) fired
+        # before DELETE for the same row. Post-fix: flush serialises
+        # the delete and the new link inserts cleanly.
+        result = await auto_generate_concepts(
+            project_id, test_user.id, session,
+        )
+        assert isinstance(result, list)
+
+    # Verify the page survived and there's no duplicate link
+    async with factory() as verify:
+        page_row = (
+            await verify.execute(
+                select(KnowledgePage).where(KnowledgePage.id == page_id)
+            )
+        ).scalar_one_or_none()
+        assert page_row is not None, "page wrongly deleted"
+        links = (
+            await verify.execute(
+                select(KnowledgeLink).where(
+                    KnowledgeLink.project_id == project_id,
+                    KnowledgeLink.target_id == page_id,
+                    KnowledgeLink.source_id == str(entry_id),
+                )
+            )
+        ).scalars().all()
+        # Exactly one link for (entry, page) — old deleted, new inserted
+        assert len(links) == 1, (
+            f"expected exactly 1 (entry, page) link after delete+re-add, got {len(links)}"
+        )
+
+
