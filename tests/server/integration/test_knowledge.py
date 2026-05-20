@@ -985,3 +985,200 @@ async def test_bulk_promote_entry_type_filter(
     body = resp.json()
     assert body["promoted"] == 1
     assert body["reasons"]["wrong_type"] == 1
+
+
+# ── tk_bc3c02a63e994717 — fail-closed /rebuild + /compile rollback regressions ──
+#
+# These tests pin the v0.10.13 contract: any failure inside
+# compile_project_context (including the destructive force_rebuild path)
+# rolls back ALL writes. The prior good projection survives a crash.
+#
+# This is the test that would have caught the 2026-05-20 incident on
+# proj_c0242b0fccbd48b4 where /rebuild wiped context_document + compiled_at
+# in committed transactions BEFORE the recompile crashed.
+
+
+@pytest.mark.asyncio
+async def test_rebuild_rollback_on_compile_crash_preserves_prior_state(
+    db_engine, db_session: AsyncSession, test_user: User,
+    test_project: Project, monkeypatch,
+):
+    """The headline regression. Seed a project with a compiled context
+    + claims at compiled_at != NULL. Patch _simple_compile to raise.
+    Call compile_project_context(force_rebuild=True). Expect RuntimeError;
+    AFTER the crash, project.context_document is unchanged AND every
+    claim's compiled_at is still NOT NULL.
+
+    Before tk_bc3c02a63e994717, both would have been wiped to '' / NULL by
+    the destructive resets the /rebuild route committed before the failing
+    recompile. That was the 2026-05-20 data-loss bug on proj_c0242b0fccbd48b4.
+
+    Verification uses a FRESH session because the test-session's
+    transaction state is unrecoverable in async context after the
+    in-function crash (greenlet teardown).
+    """
+    from sessionfs.server.services import compiler
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    prior_context = "# Prior Compiled Context\n\nThis is the good state we must preserve.\n"
+    test_project.context_document = prior_context
+    prior_compile_ts = datetime.now(timezone.utc)
+    claims = [
+        KnowledgeEntry(
+            project_id=test_project.id, session_id=f"ses_{i}",
+            user_id=test_user.id, entry_type="decision",
+            content="x" * 60, confidence=0.9, claim_class="claim",
+            compiled_at=prior_compile_ts,
+        )
+        for i in range(3)
+    ]
+    db_session.add_all(claims)
+    await db_session.commit()
+    for c in claims:
+        await db_session.refresh(c)
+    prior_ids = [c.id for c in claims]
+    project_id = test_project.id
+    await db_session.close()
+
+    # Run compile on its own session — same engine, same in-memory DB —
+    # so a crash here doesn't poison the verification path.
+    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("simulated crash inside the compile pipeline")
+    monkeypatch.setattr(compiler, "_simple_compile", boom)
+
+    async with factory() as crash_session:
+        with pytest.raises(RuntimeError, match="simulated crash"):
+            await compiler.compile_project_context(
+                project_id=project_id,
+                user_id=test_user.id,
+                db=crash_session,
+                force_rebuild=True,
+            )
+
+    # Verify rollback contract via a third fresh session.
+    async with factory() as verify_session:
+        refreshed_project = (await verify_session.execute(
+            select(Project).where(Project.id == project_id)
+        )).scalar_one()
+        assert refreshed_project.context_document == prior_context, (
+            "context_document was wiped — the destructive reset escaped "
+            "the rollback. This is exactly the 2026-05-20 data-loss bug."
+        )
+
+        for cid in prior_ids:
+            c = (await verify_session.execute(
+                select(KnowledgeEntry).where(KnowledgeEntry.id == cid)
+            )).scalar_one()
+            assert c.compiled_at is not None, (
+                f"compiled_at was nulled on entry {cid} despite the "
+                f"recompile failing — the force_rebuild reset escaped "
+                f"the rollback."
+            )
+
+
+@pytest.mark.asyncio
+async def test_compile_rollback_on_inner_crash_preserves_prior_state(
+    db_engine, db_session: AsyncSession, test_user: User,
+    test_project: Project, monkeypatch,
+):
+    """Same contract for the non-force-rebuild path. A crash inside the
+    compile pipeline must roll back any housekeeping writes (freshness /
+    decay / auto-promote / mark-compiled) as well as the projection.
+    Before v0.10.13's single-commit collapse, the housekeeping was
+    committed at line 419 before the section-page work at line 522,
+    opening a partial-success window."""
+    from sessionfs.server.services import compiler
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    prior_context = "# Prior\n"
+    test_project.context_document = prior_context
+
+    pending_claim = KnowledgeEntry(
+        project_id=test_project.id, session_id="ses_pending",
+        user_id=test_user.id, entry_type="decision",
+        content="x" * 60, confidence=0.9, claim_class="claim",
+        compiled_at=None,  # pending
+    )
+    db_session.add(pending_claim)
+    await db_session.commit()
+    await db_session.refresh(pending_claim)
+    pending_id = pending_claim.id
+    project_id = test_project.id
+    await db_session.close()
+
+    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("simulated crash inside simple_compile")
+    monkeypatch.setattr(compiler, "_simple_compile", boom)
+
+    async with factory() as crash_session:
+        with pytest.raises(RuntimeError, match="simulated crash"):
+            await compiler.compile_project_context(
+                project_id=project_id,
+                user_id=test_user.id,
+                db=crash_session,
+            )
+
+    async with factory() as verify_session:
+        refreshed_project = (await verify_session.execute(
+            select(Project).where(Project.id == project_id)
+        )).scalar_one()
+        assert refreshed_project.context_document == prior_context
+
+        refreshed_pending = (await verify_session.execute(
+            select(KnowledgeEntry).where(KnowledgeEntry.id == pending_id)
+        )).scalar_one()
+        assert refreshed_pending.compiled_at is None, (
+            "compiled_at was set on the pending entry despite the compile "
+            "crashing — the mark-compiled write escaped the rollback."
+        )
+
+
+@pytest.mark.asyncio
+async def test_rebuild_happy_path_direct_call_succeeds(
+    db_engine, db_session: AsyncSession, test_user: User, test_project: Project,
+):
+    """Smoke: after the v0.10.13 refactor, compile_project_context with
+    force_rebuild=True still produces a valid context document from a
+    project with active claims. No LLM, no monkeypatch — exercises the
+    real compile path end-to-end with the new single-commit shape."""
+    from sessionfs.server.services import compiler
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    db_session.add_all([
+        KnowledgeEntry(
+            project_id=test_project.id, session_id=f"ses_{i}",
+            user_id=test_user.id, entry_type="decision",
+            content=f"Decision entry {i} with enough words to exceed the fifty character minimum gate.",
+            confidence=0.9, claim_class="claim",
+            compiled_at=datetime.now(timezone.utc),
+        )
+        for i in range(3)
+    ])
+    await db_session.commit()
+    project_id = test_project.id
+    await db_session.close()
+
+    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with factory() as compile_session:
+        compilation = await compiler.compile_project_context(
+            project_id=project_id,
+            user_id=test_user.id,
+            db=compile_session,
+            force_rebuild=True,
+        )
+        assert compilation is not None
+        assert compilation.entries_compiled == 3
+
+    async with factory() as verify_session:
+        refreshed = (await verify_session.execute(
+            select(Project).where(Project.id == project_id)
+        )).scalar_one()
+        assert refreshed.context_document
+        # _simple_compile writes the content into a "## Recent Changes"
+        # section or per-type sections — exact wording varies; just
+        # verify SOME claim text made it in.
+        assert "Decision" in refreshed.context_document or "decision" in refreshed.context_document.lower()

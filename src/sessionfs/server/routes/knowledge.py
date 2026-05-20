@@ -1671,7 +1671,22 @@ async def rebuild_project(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> RebuildResponse:
-    """Idempotent rebuild: refresh freshness, recompile context + pages from active claims."""
+    """Atomic rebuild: refresh freshness, recompile context + pages from all
+    active claims. Equivalent to compile() with every active claim treated
+    as pending.
+
+    tk_bc3c02a63e994717 — v0.10.13 fail-closed refactor. The destructive
+    reset (NULL compiled_at + clear context_document on every active
+    claim) now happens INSIDE compile_project_context under
+    `force_rebuild=True`, joined to the same atomic commit as the
+    recompile. If the LLM call or any downstream step fails, the wipe
+    rolls back too — the prior good projection survives.
+
+    Before v0.10.13, this route committed the wipe BEFORE calling
+    compile, so a compile crash left the project's context document
+    empty AND every claim's compiled_at NULL. That was the
+    2026-05-20 data-loss vector on proj_c0242b0fccbd48b4.
+    """
     await _get_project_or_404(project_id, db, user.id)
 
     from sessionfs.server.services.freshness import refresh_freshness_classes
@@ -1680,35 +1695,13 @@ async def rebuild_project(
         compile_project_context,
     )
 
-    # Step 1: Refresh freshness
+    # Freshness counts are surfaced in the response shape — compute by
+    # calling the same refresh function compile uses, but the actual
+    # freshness UPDATE that lands in the DB is the one inside
+    # compile_project_context (single atomic commit). This call returns
+    # the projected count without committing.
     freshness_updated = await refresh_freshness_classes(project_id, db)
 
-    # Step 2: Reset compiled_at on ALL active claims so the compiler treats
-    # them as pending. Without this, compile_project_context() exits early
-    # on settled projects because all claims already have compiled_at set.
-    # This is the key difference between compile (incremental) and rebuild
-    # (full recompute).
-    await db.execute(
-        update(KnowledgeEntry)
-        .where(
-            KnowledgeEntry.project_id == project_id,
-            KnowledgeEntry.claim_class == "claim",
-            KnowledgeEntry.dismissed == False,  # noqa: E712
-            KnowledgeEntry.superseded_by.is_(None),
-        )
-        .values(compiled_at=None)
-        .execution_options(synchronize_session=False)
-    )
-    await db.commit()
-
-    # Step 3: Also clear the existing context doc so compile writes fresh
-    project_reset = await db.execute(select(Project).where(Project.id == project_id))
-    proj = project_reset.scalar_one_or_none()
-    if proj:
-        proj.context_document = ""
-        await db.commit()
-
-    # Step 4: Recompile from all active claims (now all pending)
     body = body or CompileRequest()
     compilation = await compile_project_context(
         project_id=project_id,
@@ -1718,6 +1711,7 @@ async def rebuild_project(
         model=body.model or "claude-sonnet-4",
         provider=body.provider,
         base_url=body.base_url,
+        force_rebuild=True,
     )
 
     entries_compiled = compilation.entries_compiled if compilation else 0
