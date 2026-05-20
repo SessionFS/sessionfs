@@ -216,7 +216,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
-**v0.10.14 — Public Beta.** 1926 backend tests + 186 dashboard tests passing. 42 database migrations. 58 MCP tools. v0.10.14 is a hotfix for the `/compile` availability bug surfaced after v0.10.13's safety release: `_prune_dead_concept_pages` did `int(lk.source_id)` without a guard, so a single malformed `KnowledgeLink` row crashed the request. Mirrors the existing sibling guard in `auto_generate_concepts`. v0.10.13's fail-closed contract masked the bug from causing data loss; this hotfix restores availability.
+**v0.10.15 — Public Beta.** 1928 backend tests + 186 dashboard tests passing. 42 database migrations. 58 MCP tools. v0.10.15 is the real fix for the `/compile` 500 incident: `_auto_supersede` was queuing `contradicts` KnowledgeLink rows on every compile pass without an existence check, so each subsequent run violated the `uq_kl_link` unique constraint and Starlette returned its default 21-byte plain-text 500. Now prefetches existing entry→entry link tuples and skips duplicates. The v0.10.14 defensive `int(lk.source_id)` helper stays merged (real fix for a different crash class). v0.10.13's fail-closed contract held throughout — every failed `/compile` left zero DB drift.
 
 ### Session capture, resume, and search
 

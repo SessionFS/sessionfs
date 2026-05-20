@@ -117,6 +117,14 @@ async def _auto_supersede(project_id: str, db: AsyncSession) -> int:
 
     If overlap is between 0.5 and 0.9, creates a 'contradicts' link instead.
     Returns the number of entries superseded.
+
+    tk_09d8bdf4f6374a13 — prefetch existing entry→entry links once and skip
+    add() when the 5-tuple already exists. Without this, every subsequent
+    /compile re-creates the same 'contradicts' link (the supersedes path is
+    self-gating via `superseded_by`, but contradicts has no such gate) and
+    asyncpg raises UniqueViolationError on uq_kl_link at autoflush, which
+    bubbles up uncaught and crashes /compile with the Starlette default
+    21-byte 500.
     """
     from sessionfs.server.services.knowledge import word_overlap as _wo
 
@@ -135,6 +143,25 @@ async def _auto_supersede(project_id: str, db: AsyncSession) -> int:
     for e in entries:
         if e.entity_ref:
             groups[(e.entity_ref, e.entry_type)].append(e)
+
+    # Bulk-fetch existing entry→entry link tuples so we can skip duplicates.
+    # uq_kl_link is (project_id, source_type, source_id, target_type, target_id).
+    # We hold project_id and source_type='entry' / target_type='entry' fixed,
+    # so the in-memory dedup key is (source_id, target_id, link_type).
+    existing_link_keys: set[tuple[str, str, str]] = set()
+    existing_result = await db.execute(
+        select(
+            KnowledgeLink.source_id,
+            KnowledgeLink.target_id,
+            KnowledgeLink.link_type,
+        ).where(
+            KnowledgeLink.project_id == project_id,
+            KnowledgeLink.source_type == "entry",
+            KnowledgeLink.target_type == "entry",
+        )
+    )
+    for src, tgt, lt in existing_result.all():
+        existing_link_keys.add((src, tgt, lt))
 
     superseded_count = 0
     for (_ref, _type), group in groups.items():
@@ -159,30 +186,36 @@ async def _auto_supersede(project_id: str, db: AsyncSession) -> int:
                     older.superseded_by = newer.id
                     older.supersession_reason = "Auto-superseded: same entity, high overlap"
                     older.freshness_class = "superseded"
-                    link = KnowledgeLink(
-                        project_id=project_id,
-                        source_type="entry",
-                        source_id=str(newer.id),
-                        target_type="entry",
-                        target_id=str(older.id),
-                        link_type="supersedes",
-                        confidence=overlap,
-                    )
-                    db.add(link)
+                    link_key = (str(newer.id), str(older.id), "supersedes")
+                    if link_key not in existing_link_keys:
+                        link = KnowledgeLink(
+                            project_id=project_id,
+                            source_type="entry",
+                            source_id=str(newer.id),
+                            target_type="entry",
+                            target_id=str(older.id),
+                            link_type="supersedes",
+                            confidence=overlap,
+                        )
+                        db.add(link)
+                        existing_link_keys.add(link_key)
                     superseded_count += 1
                     break  # This older entry is done
                 elif overlap > 0.5:
                     # Create contradicts link (don't supersede)
-                    link = KnowledgeLink(
-                        project_id=project_id,
-                        source_type="entry",
-                        source_id=str(newer.id),
-                        target_type="entry",
-                        target_id=str(older.id),
-                        link_type="contradicts",
-                        confidence=overlap,
-                    )
-                    db.add(link)
+                    link_key = (str(newer.id), str(older.id), "contradicts")
+                    if link_key not in existing_link_keys:
+                        link = KnowledgeLink(
+                            project_id=project_id,
+                            source_type="entry",
+                            source_id=str(newer.id),
+                            target_type="entry",
+                            target_id=str(older.id),
+                            link_type="contradicts",
+                            confidence=overlap,
+                        )
+                        db.add(link)
+                        existing_link_keys.add(link_key)
 
     if superseded_count:
         await db.flush()

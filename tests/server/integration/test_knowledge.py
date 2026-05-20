@@ -1456,3 +1456,115 @@ async def test_auto_generate_concepts_existing_page_skips_malformed_links(
         assert survivor is not None, (
             "concept page wrongly deleted via existing-page branch crash"
         )
+
+
+@pytest.mark.asyncio
+async def test_auto_supersede_idempotent_on_existing_contradicts_link(
+    db_engine, db_session: AsyncSession, test_user: User, test_project: Project,
+):
+    """tk_09d8bdf4f6374a13 regression — _auto_supersede previously created
+    a 'contradicts' KnowledgeLink on every compile pass without checking
+    whether the same (source_id, target_id, 'contradicts') tuple already
+    existed. The supersedes path was self-gating via `superseded_by`, but
+    contradicts had no such gate. Each subsequent /compile triggered a
+    UniqueViolationError on uq_kl_link at autoflush time. The error bubbled
+    up uncaught (the route had no try/except around compile_project_context),
+    Starlette returned its default 21-byte text/plain 'Internal Server Error'
+    500, and ops misread the response as a Cloud Run worker kill — the bug
+    that hit proj_c0242b0fccbd48b4 on 2026-05-20 after v0.10.13 R5 restore.
+
+    The fix prefetches existing entry→entry link tuples (source_id, target_id,
+    link_type) for the project ONCE and skips db.add(link) when the tuple
+    already exists. Second compile must NOT raise IntegrityError.
+    """
+    from sessionfs.server.db.models import KnowledgeLink
+    from sessionfs.server.services.compiler import _auto_supersede
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    # Seed two entries with the same entity_ref + entry_type and content
+    # overlap in the "contradicts" band (0.5 < overlap <= 0.9). The shared
+    # vocabulary triggers _auto_supersede's contradicts-link branch.
+    older = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_a",
+        user_id=test_user.id,
+        entry_type="decision",
+        content=(
+            "Use PostgreSQL for the primary database backend, "
+            "with read replicas and connection pooling enabled."
+        ),
+        confidence=0.9,
+        claim_class="claim",
+        dismissed=False,
+        entity_ref="src/db.py",
+        freshness_class="current",
+    )
+    newer = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_b",
+        user_id=test_user.id,
+        entry_type="decision",
+        content=(
+            "Use PostgreSQL for the primary database backend, "
+            "with hot standby replicas configured for failover."
+        ),
+        confidence=0.9,
+        claim_class="claim",
+        dismissed=False,
+        entity_ref="src/db.py",
+        freshness_class="current",
+    )
+    db_session.add(older)
+    await db_session.commit()
+    await db_session.refresh(older)
+    # Stagger created_at so newer.id > older.id maps to newer.created_at > older.created_at
+    db_session.add(newer)
+    await db_session.commit()
+    await db_session.refresh(newer)
+    project_id = test_project.id
+    await db_session.close()
+
+    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+
+    # First compile: creates the contradicts link (or supersedes — depends on
+    # overlap). Either path must not raise.
+    async with factory() as s1:
+        await _auto_supersede(project_id, s1)
+        await s1.commit()
+
+    # Verify at least one entry→entry KnowledgeLink got created
+    async with factory() as verify:
+        links = (
+            await verify.execute(
+                select(KnowledgeLink).where(
+                    KnowledgeLink.project_id == project_id,
+                    KnowledgeLink.source_type == "entry",
+                    KnowledgeLink.target_type == "entry",
+                )
+            )
+        ).scalars().all()
+        assert len(links) >= 1, "_auto_supersede should have created at least one link"
+        initial_link_count = len(links)
+
+    # Second compile on the SAME data shape: must NOT raise UniqueViolation.
+    # Pre-fix this raised IntegrityError → Starlette 21-byte text/plain 500.
+    # Post-fix the prefetch-and-skip path keeps it idempotent.
+    async with factory() as s2:
+        await _auto_supersede(project_id, s2)
+        await s2.commit()
+
+    # Verify no duplicate links were created (count stayed flat)
+    async with factory() as verify2:
+        links = (
+            await verify2.execute(
+                select(KnowledgeLink).where(
+                    KnowledgeLink.project_id == project_id,
+                    KnowledgeLink.source_type == "entry",
+                    KnowledgeLink.target_type == "entry",
+                )
+            )
+        ).scalars().all()
+        assert len(links) == initial_link_count, (
+            "_auto_supersede must be idempotent — second pass should not "
+            f"create duplicate links (saw {len(links)} vs initial {initial_link_count})"
+        )
