@@ -1337,6 +1337,14 @@ async def auto_generate_concepts(
             for old_link in links_by_page.get(page_id, []):
                 await db.delete(old_link)
             links_by_page[page_id] = []
+            # tk_09d8bdf4f6374a13 R2 follow-up — flush the DELETEs before the
+            # next loop adds new links for the SAME (entry_id → page_id) pairs.
+            # Without this, SQLAlchemy UnitOfWork orders INSERTs ahead of
+            # DELETEs by default, so the INSERT for entry1→page1 fires while
+            # the old entry1→page1 row is still in the DB, violating uq_kl_link.
+            # An explicit flush serialises the DELETEs to the open transaction
+            # (still rollbackable) so the INSERTs that follow see a clean slate.
+            await db.flush()
         else:
             # Create knowledge page
             page_id = f"page_{uuid.uuid4().hex[:16]}"

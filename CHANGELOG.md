@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.16] - 2026-05-20
+
+Follow-on hotfix. v0.10.15 closed one `uq_kl_link` violation site (`_auto_supersede`) but production exposed a SECOND site at `auto_generate_concepts`'s existing-page branch where `KnowledgeLink` rows are deleted-and-re-inserted with the same composite key in a single transaction. SQLAlchemy's UnitOfWork orders INSERTs ahead of DELETEs by default, so the INSERT fires while the old row is still present, violating `uq_kl_link`. The IntegrityError bubbles past the route's try/except, the session enters PendingRollback, and the next `_count_pages` call surfaces a Starlette text/plain 500.
+
+### Fixed
+
+**`/compile` 500 from delete+insert race in `auto_generate_concepts`** (`tk_09d8bdf4f6374a13`, R2 follow-up) — added explicit `await db.flush()` after the delete loop at `src/sessionfs/server/services/compiler.py:1346` and before the new-link add loop. This serialises the DELETEs to the open transaction (still rollbackable) so the INSERTs that follow see a clean slate. Plus belt-and-suspenders `await db.rollback()` in the `/compile` route's exception handler at `src/sessionfs/server/routes/knowledge.py:976-987` so a future commit failure in `auto_generate_concepts` no longer poisons the session for downstream calls like `_count_pages`.
+
+New regression test `test_auto_generate_concepts_flushes_delete_before_insert` seeds a concept page + entry-link for the same pair, monkeypatches `check_concept_candidates` + `generate_concept_article` to force the regenerate branch, and asserts exactly one (entry, page) link survives the delete+re-add cycle.
+
+### Notes
+
+- **Tests:** 1930 backend + 186 dashboard passing (+1 net new regression test). 2 xfail-strict pre-existing.
+- **MCP tools:** 58 (unchanged).
+- **Migrations:** 001–042 (no new migrations).
+- **v0.10.15 stays merged.** The pair-level dedup in `_auto_supersede` is correct and necessary. v0.10.16 closes the second site.
+- **Cloud Run log diagnosis FTW.** The first attempt at v0.10.15 (commit `4d7f1f7` before the R1 fix) was based on a misdiagnosis. Reading the actual asyncpg traceback from `gcloud logging read` revealed the precise table, constraint, and stack — turning a "the worker is being killed somehow" theory into a deterministic fix at the right line.
+
 ## [0.10.15] - 2026-05-20
 
 Hotfix release. Fixes the ACTUAL `/compile` 500 on proj_c0242b0fccbd48b4 — the v0.10.14 fix closed an audited crash class but turned out not to be the bug crashing prod.

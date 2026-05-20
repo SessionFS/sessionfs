@@ -975,6 +975,16 @@ async def compile_context(
         )
     except Exception:
         logger.warning("Concept auto-generation/cleanup failed (non-fatal)", exc_info=True)
+        # tk_09d8bdf4f6374a13 R2 follow-up — clear the session state so
+        # downstream calls (_count_pages, etc.) don't trip
+        # PendingRollbackError. Without this, an IntegrityError from
+        # auto_generate_concepts's commit leaves the AsyncSession in a
+        # "pending rollback" state; the next db.execute() raises
+        # PendingRollbackError uncaught, FastAPI middleware surfaces it
+        # as Starlette's default text/plain 500, and the compile route
+        # appears to crash even though compile_project_context already
+        # committed its work successfully.
+        await db.rollback()
 
     # Helper: count current section + concept pages so the structured
     # response gives the MCP caller a useful "what changed" footprint.
