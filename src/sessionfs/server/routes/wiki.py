@@ -599,13 +599,23 @@ async def regenerate_page(
 
     entries: list = []
     if links:
-        entry_ids = [int(lnk.source_id) for lnk in links]
-        entries_result = await db.execute(
-            select(KnowledgeEntry).where(
-                KnowledgeEntry.id.in_(entry_ids),
+        entry_ids: list[int] = []
+        for lnk in links:
+            try:
+                entry_ids.append(int(lnk.source_id))
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Skipping malformed KnowledgeLink: source_type=entry "
+                    "but source_id=%r is not int-castable (page=%s)",
+                    lnk.source_id, page.slug,
+                )
+        if entry_ids:
+            entries_result = await db.execute(
+                select(KnowledgeEntry).where(
+                    KnowledgeEntry.id.in_(entry_ids),
+                )
             )
-        )
-        entries = list(entries_result.scalars().all())
+            entries = list(entries_result.scalars().all())
 
     # If no linked entries, search by page title
     if not entries:

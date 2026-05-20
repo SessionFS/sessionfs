@@ -8,6 +8,7 @@ import re
 import secrets
 import uuid
 from collections import defaultdict
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
@@ -1041,6 +1042,38 @@ async def generate_concept_article(
     return "\n".join(lines)
 
 
+def _safe_entry_link_ids(
+    links: Iterable[KnowledgeLink],
+    *,
+    page_slug: str | None = None,
+) -> list[int]:
+    """Cast entry-source KnowledgeLink.source_id to int, skipping malformed rows.
+
+    KnowledgeLink.source_id is a String(64) column. Convention is
+    str(KnowledgeEntry.id) when source_type='entry', but legacy rows may carry
+    non-numeric values (concept slugs, UUIDs, malformed migration data). Without
+    this guard a single bad row raises ValueError; the route's try/except
+    catches it but the SQLAlchemy session is left poisoned from partial
+    in-progress deletes, and subsequent db.execute calls die uncaught → Cloud
+    Run worker kill → plain-text 500. Used across _prune_dead_concept_pages,
+    the auto_generate_concepts dismissed-id prepass, and the per-existing-page
+    deletion check.
+    """
+    ids: list[int] = []
+    for lk in links:
+        if lk.source_type != "entry":
+            continue
+        try:
+            ids.append(int(lk.source_id))
+        except (TypeError, ValueError):
+            logger.warning(
+                "Skipping malformed KnowledgeLink: source_type=entry "
+                "but source_id=%r is not int-castable (page=%s)",
+                lk.source_id, page_slug,
+            )
+    return ids
+
+
 async def _prune_dead_concept_pages(project_id: str, db: AsyncSession) -> int:
     """Delete concept pages whose linked entries have ALL been dismissed.
 
@@ -1077,28 +1110,7 @@ async def _prune_dead_concept_pages(project_id: str, db: AsyncSession) -> int:
             logger.info("Pruned orphaned concept page %s", page.slug)
             continue
 
-        # tk_d92434fe63564c06 — defensive int() cast. KnowledgeLink.source_id
-        # is a string column; convention is str(KnowledgeEntry.id) when
-        # source_type='entry', but legacy rows may have non-numeric values
-        # (e.g. concept slugs, UUIDs). Without the guard a single bad row
-        # raises ValueError here, the route's try/except catches it but the
-        # SQLAlchemy session is left in a poisoned state (partial in-progress
-        # delete writes), and subsequent db.execute calls in the route die
-        # uncaught → Cloud Run worker kill → plain-text 500. Matches the
-        # sibling guard at compiler.py auto_generate_concepts loop.
-        linked_entry_ids = []
-        for lk in links:
-            if lk.source_type != "entry":
-                continue
-            try:
-                linked_entry_ids.append(int(lk.source_id))
-            except (TypeError, ValueError):
-                logger.warning(
-                    "Skipping malformed KnowledgeLink: source_type=entry "
-                    "but source_id=%r is not int-castable (page=%s)",
-                    lk.source_id, page.slug,
-                )
-                continue
+        linked_entry_ids = _safe_entry_link_ids(links, page_slug=page.slug)
         if not linked_entry_ids:
             continue
 
@@ -1211,12 +1223,7 @@ async def auto_generate_concepts(
     # all pages) so the per-page "all dismissed?" check is a dict lookup.
     all_linked_entry_ids: set[int] = set()
     for lks in links_by_page.values():
-        for lk in lks:
-            if lk.source_type == "entry":
-                try:
-                    all_linked_entry_ids.add(int(lk.source_id))
-                except (TypeError, ValueError):
-                    continue
+        all_linked_entry_ids.update(_safe_entry_link_ids(lks))
     dismissed_entry_ids: set[int] = set()
     if all_linked_entry_ids:
         dismissed_result = await db.execute(
@@ -1246,9 +1253,7 @@ async def auto_generate_concepts(
             # the page should be deleted (all linked entries dismissed).
             linked = links_by_page.get(existing_page.id, [])
             if linked:
-                linked_entry_ids = [
-                    int(lk.source_id) for lk in linked if lk.source_type == "entry"
-                ]
+                linked_entry_ids = _safe_entry_link_ids(linked, page_slug=concept_slug)
                 if linked_entry_ids:
                     dismissed_count = sum(
                         1 for eid in linked_entry_ids if eid in dismissed_entry_ids
