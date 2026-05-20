@@ -410,17 +410,27 @@ async def compile_project_context(
         grouped[entry.entry_type].append(entry.content)
 
     # 4. Call LLM to merge
-    context_before = project.context_document or ""
+    # Codex R1 HIGH on tk_879dbd5a5a034d0e — force_rebuild MUST compile
+    # from an empty base, otherwise stale/dismissed/superseded text from
+    # the prior context_document can survive a "rebuild" forever. The
+    # compiled_at reset alone wasn't enough — _simple_compile and the
+    # LLM prompt both merge new claims INTO the base context. We
+    # preserve previous_context for the audit trail (ContextCompilation.
+    # context_before) but feed the compile pipeline the empty string
+    # when force_rebuild is set.
+    previous_context = project.context_document or ""
+    context_before = previous_context
+    compile_base_context = "" if force_rebuild else previous_context
 
     max_context_words = getattr(project, "kb_max_context_words", 2000) or 2000
 
     if not api_key:
         # Without an API key, do a simple append-based compilation
-        context_after = _simple_compile(context_before, grouped, entries=pending, max_context_words=max_context_words)
+        context_after = _simple_compile(compile_base_context, grouped, entries=pending, max_context_words=max_context_words)
     else:
         from sessionfs.judge.providers import call_llm
 
-        prompt = _build_compile_prompt(context_before, grouped)
+        prompt = _build_compile_prompt(compile_base_context, grouped)
         try:
             context_after = await call_llm(
                 model=model,
@@ -444,7 +454,7 @@ async def compile_project_context(
                     context_after += "\n"
         except Exception:
             logger.warning("LLM compilation failed, falling back to simple compile", exc_info=True)
-            context_after = _simple_compile(context_before, grouped, entries=pending, max_context_words=max_context_words)
+            context_after = _simple_compile(compile_base_context, grouped, entries=pending, max_context_words=max_context_words)
 
     # 5. Save updated context
     now = datetime.now(timezone.utc)

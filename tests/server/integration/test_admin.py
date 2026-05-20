@@ -707,3 +707,41 @@ async def test_restore_from_compilation_validates_compilation_id(
         headers=admin_headers,
     )
     assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_restore_from_compilation_rejects_boolean_compilation_id(
+    client: AsyncClient, admin_headers: dict,
+):
+    """Codex R1 MEDIUM regression on tk_879dbd5a5a034d0e — Python's bool
+    is an int subclass, so a malformed admin body like
+    {"compilation_id": true} would otherwise coerce to compilation_id=1
+    and target the wrong row. Explicit rejection at the boundary."""
+    for bad in (True, False):
+        resp = await client.post(
+            "/api/v1/admin/projects/proj_anything/restore-from-compilation",
+            json={"compilation_id": bad, "dry_run": True},
+            headers=admin_headers,
+        )
+        assert resp.status_code == 422, (
+            f"compilation_id={bad} (bool) must be rejected with 422; "
+            f"got {resp.status_code}: {resp.text}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_restore_from_compilation_rejects_non_bool_dry_run(
+    client: AsyncClient, admin_headers: dict,
+):
+    """Non-bool dry_run values must be rejected so a body like
+    {"dry_run": "false"} doesn't surprise via Python truthiness."""
+    for bad in ("false", "true", 0, 1):
+        resp = await client.post(
+            "/api/v1/admin/projects/proj_anything/restore-from-compilation",
+            json={"compilation_id": 1, "dry_run": bad},
+            headers=admin_headers,
+        )
+        assert resp.status_code == 422, (
+            f"dry_run={bad!r} ({type(bad).__name__}) must be rejected; "
+            f"got {resp.status_code}: {resp.text}"
+        )

@@ -808,10 +808,23 @@ async def restore_project_from_compilation(
         Project,
     )
 
+    # Codex R1 MEDIUM on tk_879dbd5a5a034d0e — Python's bool is an int
+    # subclass, so a malformed body like {"compilation_id": true} would
+    # otherwise coerce to compilation_id=1 and target the wrong row.
+    # Reject bool explicitly. Same defensive shape on dry_run so a body
+    # like {"dry_run": "false"} doesn't surprise via Python truthiness.
     compilation_id = body.get("compilation_id")
-    dry_run = bool(body.get("dry_run", True))
-    if not isinstance(compilation_id, int) or compilation_id <= 0:
+    if (
+        isinstance(compilation_id, bool)
+        or not isinstance(compilation_id, int)
+        or compilation_id <= 0
+    ):
         raise HTTPException(422, "compilation_id must be a positive integer")
+
+    dry_run_raw = body.get("dry_run", True)
+    if not isinstance(dry_run_raw, bool):
+        raise HTTPException(422, "dry_run must be a boolean")
+    dry_run = dry_run_raw
 
     # Fetch project + compilation. Cross-project safety: the compilation
     # row's project_id must match the path parameter.

@@ -1182,3 +1182,76 @@ async def test_rebuild_happy_path_direct_call_succeeds(
         # section or per-type sections — exact wording varies; just
         # verify SOME claim text made it in.
         assert "Decision" in refreshed.context_document or "decision" in refreshed.context_document.lower()
+
+
+@pytest.mark.asyncio
+async def test_force_rebuild_drops_stale_text_from_prior_context(
+    db_engine, db_session: AsyncSession, test_user: User, test_project: Project,
+):
+    """Codex R1 HIGH regression on tk_879dbd5a5a034d0e — force_rebuild
+    must compile from an empty base, not merge new claims INTO the
+    prior context_document. Otherwise stale/dismissed/superseded text
+    can survive a full rebuild forever, defeating the whole point of
+    the route.
+
+    Seed: project.context_document contains a marker phrase that is
+    NOT represented by any active claim (e.g. text for an entry that
+    was later dismissed). Add one active claim with different content.
+    Call compile_project_context(force_rebuild=True). Assert the stale
+    marker is GONE from the new context_document.
+    """
+    from sessionfs.server.services import compiler
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    STALE_MARKER = "This stale text must not survive a force_rebuild."
+    test_project.context_document = (
+        f"# Prior Context\n\n## Old Section\n- {STALE_MARKER}\n"
+    )
+
+    db_session.add(KnowledgeEntry(
+        project_id=test_project.id, session_id="ses_active",
+        user_id=test_user.id, entry_type="decision",
+        content="This active claim about a fresh architectural decision should appear.",
+        confidence=0.9, claim_class="claim",
+        compiled_at=datetime.now(timezone.utc),
+    ))
+    await db_session.commit()
+    project_id = test_project.id
+    await db_session.close()
+
+    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with factory() as compile_session:
+        compilation = await compiler.compile_project_context(
+            project_id=project_id,
+            user_id=test_user.id,
+            db=compile_session,
+            force_rebuild=True,
+        )
+        assert compilation is not None
+
+    async with factory() as verify_session:
+        refreshed = (await verify_session.execute(
+            select(Project).where(Project.id == project_id)
+        )).scalar_one()
+        # The new active claim should appear.
+        assert "architectural" in refreshed.context_document.lower()
+        # The stale marker MUST be gone.
+        assert STALE_MARKER not in refreshed.context_document, (
+            f"force_rebuild preserved stale text from the prior "
+            f"context_document. This is the Codex R1 HIGH regression "
+            f"on tk_879dbd5a5a034d0e — force_rebuild=True must compile "
+            f"from an empty base, not merge into the existing document. "
+            f"Got context_document:\n{refreshed.context_document}"
+        )
+
+    # The compilation row's context_before still preserves the prior
+    # text for the audit trail — that's the "preserve for audit" half
+    # of the fix.
+    async with factory() as audit_session:
+        from sessionfs.server.db.models import ContextCompilation
+        comp = (await audit_session.execute(
+            select(ContextCompilation).where(
+                ContextCompilation.id == compilation.id
+            )
+        )).scalar_one()
+        assert STALE_MARKER in (comp.context_before or "")
