@@ -144,24 +144,27 @@ async def _auto_supersede(project_id: str, db: AsyncSession) -> int:
         if e.entity_ref:
             groups[(e.entity_ref, e.entry_type)].append(e)
 
-    # Bulk-fetch existing entry→entry link tuples so we can skip duplicates.
-    # uq_kl_link is (project_id, source_type, source_id, target_type, target_id).
-    # We hold project_id and source_type='entry' / target_type='entry' fixed,
-    # so the in-memory dedup key is (source_id, target_id, link_type).
-    existing_link_keys: set[tuple[str, str, str]] = set()
+    # Bulk-fetch existing entry→entry link pairs so we can skip duplicates.
+    # uq_kl_link is (project_id, source_type, source_id, target_type, target_id)
+    # — link_type is NOT part of the unique key (Codex R1 HIGH catch). With
+    # project_id and source_type='entry' / target_type='entry' fixed, the
+    # in-memory dedup key is just (source_id, target_id). If any entry→entry
+    # link already exists for the pair (regardless of link_type), we must
+    # skip — the DB constraint will reject a second insert even if the
+    # link_type differs.
+    existing_link_pairs: set[tuple[str, str]] = set()
     existing_result = await db.execute(
         select(
             KnowledgeLink.source_id,
             KnowledgeLink.target_id,
-            KnowledgeLink.link_type,
         ).where(
             KnowledgeLink.project_id == project_id,
             KnowledgeLink.source_type == "entry",
             KnowledgeLink.target_type == "entry",
         )
     )
-    for src, tgt, lt in existing_result.all():
-        existing_link_keys.add((src, tgt, lt))
+    for src, tgt in existing_result.all():
+        existing_link_pairs.add((src, tgt))
 
     superseded_count = 0
     for (_ref, _type), group in groups.items():
@@ -186,8 +189,8 @@ async def _auto_supersede(project_id: str, db: AsyncSession) -> int:
                     older.superseded_by = newer.id
                     older.supersession_reason = "Auto-superseded: same entity, high overlap"
                     older.freshness_class = "superseded"
-                    link_key = (str(newer.id), str(older.id), "supersedes")
-                    if link_key not in existing_link_keys:
+                    link_pair = (str(newer.id), str(older.id))
+                    if link_pair not in existing_link_pairs:
                         link = KnowledgeLink(
                             project_id=project_id,
                             source_type="entry",
@@ -198,13 +201,16 @@ async def _auto_supersede(project_id: str, db: AsyncSession) -> int:
                             confidence=overlap,
                         )
                         db.add(link)
-                        existing_link_keys.add(link_key)
+                        existing_link_pairs.add(link_pair)
                     superseded_count += 1
                     break  # This older entry is done
                 elif overlap > 0.5:
-                    # Create contradicts link (don't supersede)
-                    link_key = (str(newer.id), str(older.id), "contradicts")
-                    if link_key not in existing_link_keys:
+                    # Create contradicts link (don't supersede). Dedup is
+                    # pair-only — if a supersedes (or any other) link already
+                    # exists for this pair, skip; the DB constraint covers
+                    # link_type-agnostic uniqueness.
+                    link_pair = (str(newer.id), str(older.id))
+                    if link_pair not in existing_link_pairs:
                         link = KnowledgeLink(
                             project_id=project_id,
                             source_type="entry",
@@ -215,7 +221,7 @@ async def _auto_supersede(project_id: str, db: AsyncSession) -> int:
                             confidence=overlap,
                         )
                         db.add(link)
-                        existing_link_keys.add(link_key)
+                        existing_link_pairs.add(link_pair)
 
     if superseded_count:
         await db.flush()

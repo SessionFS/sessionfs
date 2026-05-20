@@ -1150,6 +1150,17 @@ class KnowledgeLink(Base):
     __table_args__ = (
         Index("idx_kl_source", "project_id", "source_type", "source_id"),
         Index("idx_kl_target", "project_id", "target_type", "target_id"),
+        # uq_kl_link is declared in migration 019 (`019_wiki_pages.py`).
+        # Mirror it on the ORM model so SQLite test schemas built via
+        # `Base.metadata.create_all` enforce the same uniqueness as
+        # production PostgreSQL. tk_09d8bdf4f6374a13 — without this,
+        # idempotency regression tests for _auto_supersede are weaker
+        # than prod and can claim "no IntegrityError" while the migrated
+        # schema would still raise.
+        UniqueConstraint(
+            "project_id", "source_type", "source_id", "target_type", "target_id",
+            name="uq_kl_link",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
