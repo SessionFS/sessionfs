@@ -216,7 +216,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
-**v0.10.13 — Public Beta.** 1925 backend tests + 186 dashboard tests passing. 42 database migrations. 58 MCP tools. v0.10.13 is an incident-driven safety release: `/rebuild` and `/compile` are now **fail-closed** — they previously committed destructive resets BEFORE the recompile ran, so a crash mid-flight could destroy the prior projection. Refactored to a single atomic commit at the end of `compile_project_context` with shadow-write semantics; any failure rolls back the entire pipeline. Plus a new admin repair endpoint (`POST /api/v1/admin/projects/{id}/restore-from-compilation`) that restores `project.context_document` AND the `compiled_at` metadata on participating entries from a chosen `ContextCompilation` snapshot — the recovery tool we needed during the 2026-05-20 dev incident.
+**v0.10.14 — Public Beta.** 1926 backend tests + 186 dashboard tests passing. 42 database migrations. 58 MCP tools. v0.10.14 is a hotfix for the `/compile` availability bug surfaced after v0.10.13's safety release: `_prune_dead_concept_pages` did `int(lk.source_id)` without a guard, so a single malformed `KnowledgeLink` row crashed the request. Mirrors the existing sibling guard in `auto_generate_concepts`. v0.10.13's fail-closed contract masked the bug from causing data loss; this hotfix restores availability.
 
 ### Session capture, resume, and search
 
