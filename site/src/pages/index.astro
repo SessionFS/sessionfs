@@ -1,7 +1,7 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
 ---
-<BaseLayout title="SessionFS — The memory layer for AI coding agents" description="Memory, identity, and coordination for AI coding agents. Agents remember past work, rules follow every tool, and teams coordinate through personas and tickets. Your team today. AI agents tomorrow.">
+<BaseLayout title="SessionFS — The memory layer for AI coding agents" description="A shared control plane for AI coding agents. SessionFS gives Claude Code, Codex, Cursor, Gemini, Bedrock, and Vertex common memory, governed instructions, tickets, and audit.">
 
 
   <!-- ========== 1. HERO ========== -->
@@ -20,7 +20,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
           The memory layer<br>for AI coding agents.
         </h1>
         <p class="fade-up text-lg sm:text-xl text-muted leading-relaxed max-w-xl mx-auto lg:mx-0 mb-8">
-          Agents remember past work. Rules follow every tool. Teams coordinate through personas and tickets. Your team today &mdash; AI agents tomorrow.
+          SessionFS gives every coding agent your team uses one shared control plane: memory, rules, tickets, and audit. Your team today &mdash; AI agents tomorrow.
         </p>
         <div class="fade-up inline-flex items-center gap-3 bg-surface border border-border rounded-lg px-5 py-3 mb-8 font-mono text-sm">
           <span class="text-muted-dim select-none">$</span>
@@ -32,8 +32,8 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             Get Started
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
           </a>
-          <a href="https://github.com/SessionFS/sessionfs" class="inline-flex items-center justify-center gap-2 border border-border text-txt font-semibold rounded-lg px-7 py-3 hover:border-muted transition">
-            View on GitHub
+          <a href="/enterprise/" class="inline-flex items-center justify-center gap-2 border border-border text-txt font-semibold rounded-lg px-7 py-3 hover:border-muted transition">
+            Enterprise
           </a>
         </div>
       </div>
@@ -48,26 +48,17 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <span class="ml-3 text-muted-dim text-[13px] font-mono">~/ terminal</span>
           </div>
           <div class="p-4 sm:p-5 font-mono text-sm leading-relaxed overflow-x-auto">
-            <div class="text-muted-dim">$ <span class="text-accent">sfs list</span></div>
-            <div class="mt-3 text-muted-dim text-sm uppercase tracking-wider">Sessions (8)</div>
-            <table class="w-full mt-2 text-sm sm:text-sm">
-              <thead><tr class="text-muted-dim text-left border-b border-border">
-                <th class="pr-2 pb-1.5 font-medium">ID</th>
-                <th class="pr-2 pb-1.5 font-medium">Tool</th>
-                <th class="pr-2 pb-1.5 font-medium text-right">Msgs</th>
-                <th class="pb-1.5 font-medium hidden sm:table-cell">Title</th>
-              </tr></thead>
-              <tbody class="text-txt">
-                <tr><td class="pr-2 py-1 text-brand">ses_a1b2</td><td class="pr-2 text-muted-dim">claude-code</td><td class="pr-2 text-right">47</td><td class="hidden sm:table-cell text-muted">Debug auth token refresh</td></tr>
-                <tr><td class="pr-2 py-1 text-brand">ses_c3d4</td><td class="pr-2 text-muted-dim">codex</td><td class="pr-2 text-right">31</td><td class="hidden sm:table-cell text-muted">Refactor database schema</td></tr>
-                <tr><td class="pr-2 py-1 text-brand">ses_e5f6</td><td class="pr-2 text-muted-dim">gemini</td><td class="pr-2 text-right">23</td><td class="hidden sm:table-cell text-muted">Add rate limiting middleware</td></tr>
-                <tr><td class="pr-2 py-1 text-brand">ses_g7h8</td><td class="pr-2 text-muted-dim">copilot</td><td class="pr-2 text-right">15</td><td class="hidden sm:table-cell text-muted">Fix CI pipeline YAML</td></tr>
-                <tr><td class="pr-2 py-1 text-brand">ses_i9j0</td><td class="pr-2 text-muted-dim">cursor</td><td class="pr-2 text-right">52</td><td class="hidden sm:table-cell text-muted">Implement OAuth2 flow</td></tr>
-                <tr><td class="pr-2 py-1 text-brand">ses_k1l2</td><td class="pr-2 text-muted-dim">amp</td><td class="pr-2 text-right">18</td><td class="hidden sm:table-cell text-muted">Write migration script</td></tr>
-                <tr><td class="pr-2 py-1 text-brand">ses_m3n4</td><td class="pr-2 text-muted-dim">cline</td><td class="pr-2 text-right">9</td><td class="hidden sm:table-cell text-muted">Setup Docker compose</td></tr>
-                <tr><td class="pr-2 py-1 text-brand">ses_o5p6</td><td class="pr-2 text-muted-dim">roo-code</td><td class="pr-2 text-right">27</td><td class="hidden sm:table-cell text-muted">API endpoint tests</td></tr>
-              </tbody>
-            </table>
+            <div class="text-muted-dim">$ <span class="text-accent">sfs ticket start tk_184</span></div>
+            <div class="mt-3 text-muted-dim text-sm uppercase tracking-wider">Loaded context</div>
+            <div class="mt-2 text-txt">Persona: <span class="text-brand">Atlas</span> <span class="text-muted-dim">(Backend Architect)</span></div>
+            <div class="text-txt">Ticket: <span class="text-muted">Review PR #184 auth changes</span></div>
+            <div class="border-t border-border mt-3 pt-3 space-y-1">
+              <div class="text-muted"><span class="text-accent">&#10003;</span> Project rules compiled for Codex</div>
+              <div class="text-muted"><span class="text-accent">&#10003;</span> 6 relevant KB claims loaded</div>
+              <div class="text-muted"><span class="text-accent">&#10003;</span> Acceptance criteria attached</div>
+              <div class="text-muted"><span class="text-accent">&#10003;</span> Session provenance active</div>
+            </div>
+            <div class="border-t border-border mt-3 pt-3 text-accent">Ready. Working as Atlas.</div>
           </div>
         </div>
       </div>
@@ -97,7 +88,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
         <img src="https://img.shields.io/github/stars/SessionFS/sessionfs?style=flat&color=30363d&labelColor=161b22&logo=github&logoColor=e6edf3" alt="GitHub stars" class="h-5 shrink-0">
         <div class="border-l border-border h-4 hidden sm:block"></div>
         <span class="font-mono text-muted text-sm">1,819 backend + 186 UI tests</span>
-        <span class="text-muted-dim text-sm">Deployed at a major healthcare system on AWS EKS</span>
+        <span class="text-muted-dim text-sm">Enterprise-tested in healthcare on AWS EKS</span>
       </div>
     </div>
   </section>
@@ -114,7 +105,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <div class="text-sm font-mono text-accent uppercase tracking-wider mb-3">Memory</div>
             <h3 class="font-heading font-semibold text-xl mb-3 group-hover:text-brand transition-colors">Agents remember every session</h3>
           </div>
-          <p class="text-muted text-base leading-relaxed mb-4">Every captured session distills into knowledge claims, project context, and a wiki your agents read &mdash; and write back to. Cross-tool resume keeps the conversation alive when an engineer switches from Claude Code to Codex.</p>
+          <p class="text-muted text-base leading-relaxed mb-4">Every captured session distills into knowledge claims, project context, and a wiki your agents read &mdash; and write back to. When a developer or agent switches tools, the team memory comes with them.</p>
           <div class="font-mono text-sm text-accent">Learn more &rarr;</div>
         </a>
 
@@ -124,7 +115,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <div class="text-sm font-mono text-brand uppercase tracking-wider mb-3">Identity</div>
             <h3 class="font-heading font-semibold text-xl mb-3 group-hover:text-brand transition-colors">Rules follow every tool</h3>
           </div>
-          <p class="text-muted text-base leading-relaxed mb-4">One canonical rules document compiles to CLAUDE.md, codex.md, .cursorrules, copilot-instructions.md, and GEMINI.md. Agent personas (atlas, sentinel, scribe&hellip;) give each role a portable identity with instruction provenance on every session.</p>
+          <p class="text-muted text-base leading-relaxed mb-4">One canonical rules document compiles to CLAUDE.md, codex.md, .cursorrules, copilot-instructions.md, and GEMINI.md. Agent personas give each role a portable identity with the same instructions in every runtime.</p>
           <div class="font-mono text-sm text-brand">Learn more &rarr;</div>
         </a>
 
@@ -134,7 +125,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <div class="text-sm font-mono text-brand uppercase tracking-wider mb-3">Coordination</div>
             <h3 class="font-heading font-semibold text-xl mb-3 group-hover:text-brand transition-colors">Teams coordinate through tickets</h3>
           </div>
-          <p class="text-muted text-base leading-relaxed mb-4">Tickets carry the work, personas claim it, AgentRuns enforce CI policy on the way out. Team handoff moves context between teammates &mdash; today engineers operate; tomorrow agents do, on the same tickets and the same knowledge.</p>
+          <p class="text-muted text-base leading-relaxed mb-4">Tickets carry the work, personas claim it, and AgentRuns record what happened. The same workflow supports human-operated agents today and autonomous review or CI agents tomorrow.</p>
           <div class="font-mono text-sm text-brand">Learn more &rarr;</div>
         </a>
 
@@ -257,14 +248,14 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <!-- ========== 6. HOW IT WORKS ========== -->
   <section class="relative py-20 sm:py-28 px-5 bg-surface/50 noise">
     <div class="max-w-5xl mx-auto">
-      <h2 class="fade-up font-heading text-3xl sm:text-4xl font-bold text-center mb-4">How it works</h2>
-      <p class="fade-up text-muted text-center mb-14 max-w-md mx-auto leading-relaxed">Three commands. Under a minute. Zero behavior change.</p>
+      <h2 class="fade-up font-heading text-3xl sm:text-4xl font-bold text-center mb-4">From session to governed workflow</h2>
+      <p class="fade-up text-muted text-center mb-14 max-w-xl mx-auto leading-relaxed">SessionFS starts with capture, then turns that work into reusable context, assigned tasks, and auditable agent runs.</p>
       <div class="grid md:grid-cols-3 gap-8">
         <!-- Step 1 -->
         <div class="fade-up">
           <div class="flex items-center gap-3 mb-5">
             <span class="flex items-center justify-center w-9 h-9 rounded-full bg-brand/10 text-brand text-sm font-bold border border-brand/20">1</span>
-            <h3 class="font-heading font-semibold text-lg">Capture</h3>
+            <h3 class="font-heading font-semibold text-lg">Capture the work</h3>
           </div>
           <div class="term text-sm">
             <div class="term-bar"><div class="term-dot bg-[#ff5f57]"></div><div class="term-dot bg-[#febc2e]"></div><div class="term-dot bg-[#28c840]"></div></div>
@@ -275,41 +266,40 @@ import BaseLayout from '../layouts/BaseLayout.astro';
               <div class="text-muted">copilot <span class="text-accent">&#10003;</span> cursor <span class="text-accent">&#10003;</span> amp <span class="text-accent">&#10003;</span></div>
             </div>
           </div>
-          <p class="text-muted text-base mt-4 leading-relaxed">Sessions captured from 9 tools automatically. No config needed.</p>
+          <p class="text-muted text-base mt-4 leading-relaxed">Sessions are captured from 9 tools automatically. The raw work becomes the evidence trail.</p>
         </div>
         <!-- Step 2 -->
         <div class="fade-up">
           <div class="flex items-center gap-3 mb-5">
             <span class="flex items-center justify-center w-9 h-9 rounded-full bg-brand/10 text-brand text-sm font-bold border border-brand/20">2</span>
-            <h3 class="font-heading font-semibold text-lg">Browse</h3>
+            <h3 class="font-heading font-semibold text-lg">Load shared context</h3>
           </div>
           <div class="term text-sm">
             <div class="term-bar"><div class="term-dot bg-[#ff5f57]"></div><div class="term-dot bg-[#febc2e]"></div><div class="term-dot bg-[#28c840]"></div></div>
             <div class="p-4 font-mono">
-              <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs list</span></div>
-              <div class="text-muted-dim mt-2">ID&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Tool&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Msgs</div>
-              <div class="text-txt">ses_a1b2 claude-code  47</div>
-              <div class="text-txt">ses_c3d4 codex&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;31</div>
-              <div class="text-txt">ses_e5f6 gemini&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;23</div>
+              <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs ticket start tk_184</span></div>
+              <div class="text-muted mt-2">Loading persona: Atlas</div>
+              <div class="text-muted">KB claims: 6 relevant</div>
+              <div class="text-accent">Rules + criteria ready.</div>
             </div>
           </div>
-          <p class="text-muted text-base mt-4 leading-relaxed">Browse sessions across all tools in one unified view.</p>
+          <p class="text-muted text-base mt-4 leading-relaxed">The agent receives the right persona, project knowledge, rules, file refs, and acceptance criteria before it starts.</p>
         </div>
         <!-- Step 3 -->
         <div class="fade-up">
           <div class="flex items-center gap-3 mb-5">
             <span class="flex items-center justify-center w-9 h-9 rounded-full bg-brand/10 text-brand text-sm font-bold border border-brand/20">3</span>
-            <h3 class="font-heading font-semibold text-lg">Resume</h3>
+            <h3 class="font-heading font-semibold text-lg">Enforce the outcome</h3>
           </div>
           <div class="term text-sm">
             <div class="term-bar"><div class="term-dot bg-[#ff5f57]"></div><div class="term-dot bg-[#febc2e]"></div><div class="term-dot bg-[#28c840]"></div></div>
             <div class="p-4 font-mono">
-              <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs resume ses_d20e --in gemini</span></div>
-              <div class="text-muted mt-2">Converting claude-code -> gemini...</div>
-              <div class="text-accent mt-1">Session resumed. 47 messages loaded.</div>
+              <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs agent run codex-reviewer --fail-on high</span></div>
+              <div class="text-muted mt-2">Reviewing PR #184...</div>
+              <div class="text-accent mt-1">PASSED — medium severity</div>
             </div>
           </div>
-          <p class="text-muted text-base mt-4 leading-relaxed">Resume any session in any supported tool. Full context preserved.</p>
+          <p class="text-muted text-base mt-4 leading-relaxed">AgentRuns record severity, findings, policy result, and exit code so CI and humans can trust the result.</p>
         </div>
       </div>
     </div>
@@ -417,12 +407,12 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <!-- ========== 9. PRICING ========== -->
   <section id="pricing" class="relative py-20 sm:py-28 px-5 noise">
     <div class="max-w-2xl mx-auto text-center">
-      <h2 class="fade-up font-heading text-3xl sm:text-5xl font-bold mb-6">Free during beta.</h2>
+      <h2 class="fade-up font-heading text-3xl sm:text-5xl font-bold mb-6">Start free. Scale into governed agent operations.</h2>
       <p class="fade-up text-lg text-muted mb-4 max-w-lg mx-auto leading-relaxed">
-        Local capture, cloud sync, team handoff, knowledge base, MCP, and LLM Judge &mdash; all included. No credit card required.
+        Use SessionFS locally at no cost. Add cloud sync, shared knowledge, tickets, AgentRuns, service keys, and enterprise deployment as your team adopts AI agents.
       </p>
       <p class="fade-up text-base text-muted-dim mb-10 leading-relaxed">
-        Paid plans with storage-based pricing are coming after beta.
+        Transparent pricing for solo developers, teams, and self-hosted enterprise deployments.
       </p>
       <div class="fade-up flex flex-col sm:flex-row gap-3 justify-center">
         <a href="/quickstart/" class="inline-flex items-center justify-center gap-2 bg-brand text-white font-semibold rounded-lg px-7 py-3 hover:brightness-110 transition">
@@ -430,7 +420,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
         </a>
         <a href="mailto:enterprise@sessionfs.dev?subject=SessionFS%20Demo%20Request" class="inline-flex items-center justify-center border border-border text-txt font-medium rounded-lg px-7 py-3 hover:border-muted transition">
-          Book a Demo
+          Book architecture review
         </a>
       </div>
     </div>
