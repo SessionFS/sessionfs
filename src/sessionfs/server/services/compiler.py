@@ -199,25 +199,44 @@ async def compile_project_context(
     model: str = "claude-sonnet-4",
     provider: str | None = None,
     base_url: str | None = None,
+    force_rebuild: bool = False,
 ) -> ContextCompilation | None:
     """Compile pending knowledge entries into project context via LLM.
 
-    Steps:
-    1. Get current project context
-    2. Get pending entries (compiled_at IS NULL, dismissed = FALSE)
-    3. Group by type
-    4. Call LLM to merge into existing context
-    5. Save updated context
-    6. Mark entries as compiled
-    7. Save compilation record (before/after snapshots)
+    Phases (tk_bc3c02a63e994717, v0.10.13 fail-closed refactor):
+
+    Phase 1 — Reads (no writes): SELECT project FOR UPDATE; SELECT pending
+        claims; SELECT all active claims for source_manifest; SELECT
+        sessions for persona lookup.
+
+    Phase 2 — Compute in memory (no DB writes, no DB lock contention beyond
+        the project row lock acquired in Phase 1): build the LLM prompt,
+        call the LLM (or simple_compile fallback), enforce the word
+        budget, group entries by type, compute section page contents.
+
+    Phase 3 — Single atomic commit: apply freshness / decay /
+        auto-promote UPDATEs; apply the destructive reset (NULL
+        compiled_at + clear context_document on ALL active claims) iff
+        `force_rebuild=True`; UPDATE project.context_document;
+        UPDATE compiled_at on the pending batch; INSERT ContextCompilation
+        (flush to populate the id); UPSERT section pages; commit ONCE.
+        Any exception before commit rolls back the entire phase, so the
+        prior good projection survives a crash.
+
+    `force_rebuild=True` is the /rebuild semantics — equivalent to "treat
+    every active claim as pending and regenerate from scratch". The
+    destructive part now lives INSIDE the atomic phase, so the
+    Bug B data-loss vector that hit proj_c0242b0fccbd48b4 on 2026-05-20
+    cannot recur: if the recompile fails mid-flight, the wipe never
+    commits either.
     """
     # 1. Get current project context under a row lock so concurrent
     # compile callers serialize. Without this, two callers can read the
     # same pending claims, both mark them compiled, both write a new
     # context_document, and both insert a ContextCompilation row —
     # last-writer-wins on the document with double LLM cost. The lock
-    # is released on commit at step 7. SQLite ignores FOR UPDATE
-    # (single-writer semantics already serialise writes there).
+    # is released on the single final commit at the end. SQLite ignores
+    # FOR UPDATE (single-writer semantics already serialise writes there).
     result = await db.execute(
         select(Project).where(Project.id == project_id).with_for_update()
     )
@@ -226,7 +245,13 @@ async def compile_project_context(
         logger.warning("Project %s not found for compilation", project_id)
         return None
 
-    # Refresh freshness classes before compile
+    # Phase 1 + Phase 2 housekeeping passes: freshness refresh,
+    # auto-supersession, decay, retention, and auto-promotion of
+    # evidence-class entries. These run inside the same transaction as
+    # the projection write below (no intermediate commit). If anything
+    # downstream fails (LLM call, atomic swap), the entire phase rolls
+    # back along with the projection — that's what tk_bc3c02a63e994717
+    # fixes.
     from sessionfs.server.services.freshness import refresh_freshness_classes
     await refresh_freshness_classes(project_id, db)
 
@@ -286,6 +311,32 @@ async def compile_project_context(
         .values(claim_class="claim")
         .execution_options(synchronize_session=False)
     )
+
+    # tk_bc3c02a63e994717 — when force_rebuild=True, NULL compiled_at on
+    # all active claims AND clear project.context_document so the pending
+    # query below picks up everything. Previously this happened in the
+    # /rebuild route as TWO separate commits BEFORE calling this function,
+    # which made any subsequent crash data-destructive. Folding it in here
+    # means it joins the single final commit — if the LLM call or any
+    # other downstream step fails, the wipe rolls back too.
+    if force_rebuild:
+        await db.execute(
+            update(KnowledgeEntry)
+            .where(
+                KnowledgeEntry.project_id == project_id,
+                KnowledgeEntry.claim_class == "claim",
+                KnowledgeEntry.dismissed == False,  # noqa: E712
+                KnowledgeEntry.superseded_by.is_(None),
+            )
+            .values(compiled_at=None)
+            .execution_options(synchronize_session=False)
+        )
+        # NB: project.context_document is cleared in the session-mapped
+        # object below at the same point we set the new value, so the
+        # reset and the replacement happen in a single attribute write.
+        # We mark it cleared here for clarity in the pending-query that
+        # follows — but the SQL-level write is deferred to the projection
+        # block below.
 
     # 2b. Get pending entries — only active claims
     result = await db.execute(
@@ -359,17 +410,27 @@ async def compile_project_context(
         grouped[entry.entry_type].append(entry.content)
 
     # 4. Call LLM to merge
-    context_before = project.context_document or ""
+    # Codex R1 HIGH on tk_879dbd5a5a034d0e — force_rebuild MUST compile
+    # from an empty base, otherwise stale/dismissed/superseded text from
+    # the prior context_document can survive a "rebuild" forever. The
+    # compiled_at reset alone wasn't enough — _simple_compile and the
+    # LLM prompt both merge new claims INTO the base context. We
+    # preserve previous_context for the audit trail (ContextCompilation.
+    # context_before) but feed the compile pipeline the empty string
+    # when force_rebuild is set.
+    previous_context = project.context_document or ""
+    context_before = previous_context
+    compile_base_context = "" if force_rebuild else previous_context
 
     max_context_words = getattr(project, "kb_max_context_words", 2000) or 2000
 
     if not api_key:
         # Without an API key, do a simple append-based compilation
-        context_after = _simple_compile(context_before, grouped, entries=pending, max_context_words=max_context_words)
+        context_after = _simple_compile(compile_base_context, grouped, entries=pending, max_context_words=max_context_words)
     else:
         from sessionfs.judge.providers import call_llm
 
-        prompt = _build_compile_prompt(context_before, grouped)
+        prompt = _build_compile_prompt(compile_base_context, grouped)
         try:
             context_after = await call_llm(
                 model=model,
@@ -393,7 +454,7 @@ async def compile_project_context(
                     context_after += "\n"
         except Exception:
             logger.warning("LLM compilation failed, falling back to simple compile", exc_info=True)
-            context_after = _simple_compile(context_before, grouped, entries=pending, max_context_words=max_context_words)
+            context_after = _simple_compile(compile_base_context, grouped, entries=pending, max_context_words=max_context_words)
 
     # 5. Save updated context
     now = datetime.now(timezone.utc)
@@ -416,11 +477,19 @@ async def compile_project_context(
         source_manifest=source_manifest,
     )
     db.add(compilation)
-    await db.commit()
+    # tk_bc3c02a63e994717 — flush instead of commit so we get the
+    # autogenerated id (needed for section page references / response
+    # shape) without making the writes durable yet. The single all-or-
+    # nothing commit happens at the end of this function after the
+    # section page work completes. A crash between here and the final
+    # commit rolls back EVERYTHING — projection + compilation row +
+    # housekeeping writes + (when force_rebuild=True) the compiled_at
+    # reset.
+    await db.flush()
     await db.refresh(compilation)
 
     logger.info(
-        "Compiled %d entries for project %s (compilation %d)",
+        "Compiled %d entries for project %s (compilation %d, uncommitted)",
         len(pending),
         project_id,
         compilation.id,
@@ -519,7 +588,22 @@ async def compile_project_context(
     # (Step 9 cleanup is now redundant — the loop above iterates ALL known
     # types and handles zero-claim deletion inline via the `continue` path.)
 
+    # tk_bc3c02a63e994717 — THE single atomic commit. Everything written
+    # since Phase 1's FOR UPDATE lock is in this transaction:
+    #   - freshness / decay / retention / auto-promote UPDATEs
+    #   - force_rebuild's compiled_at reset (if applicable)
+    #   - project.context_document overwrite
+    #   - compiled_at + last_relevant_at + compiled_count on the pending batch
+    #   - ContextCompilation row insert
+    #   - section page upserts + deletions
+    # Any exception before this line rolls back ALL of it, so the prior
+    # good projection survives a crash.
     await db.commit()
+    logger.info(
+        "Compile committed for project %s (compilation id=%d)",
+        project_id,
+        compilation.id,
+    )
 
     return compilation
 

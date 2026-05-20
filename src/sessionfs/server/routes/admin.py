@@ -756,3 +756,178 @@ async def purge_deleted(
     await db.commit()
 
     return {"purged": purged, "bytes_reclaimed": bytes_reclaimed}
+
+
+# ---------------------------------------------------------------------------
+# Project context repair — restore from a ContextCompilation snapshot
+# tk_dd3ba7082ef0432e (v0.10.13)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/projects/{project_id}/restore-from-compilation")
+async def restore_project_from_compilation(
+    project_id: str,
+    body: dict,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Restore a project's context document AND the compiled_at metadata
+    on participating entries from a specific ContextCompilation snapshot.
+
+    Background: when /rebuild crashed before tk_bc3c02a63e994717 was
+    fixed, it left projects with empty `context_document` and NULL
+    `compiled_at` on every active claim. The public `PUT
+    /projects/{git_remote}/context` endpoint can restore the document
+    text alone (R1), but not the metadata. This endpoint closes that
+    gap by parsing `source_manifest` (the per-compilation provenance
+    JSON) and restoring `compiled_at` on the exact entries that
+    participated in the chosen compilation.
+
+    Body:
+        compilation_id (int, required) — id of the row in
+            context_compilations to restore from. Must belong to this
+            project.
+        dry_run (bool, optional, default true) — when true, reports
+            counts only and writes nothing.
+
+    Returns:
+        {
+            "project_id": str,
+            "compilation_id": int,
+            "compiled_at": ISO ts of the snapshot,
+            "context_words_restored": int,
+            "entries_compiled_at_restored": int,
+            "dry_run": bool,
+        }
+
+    All writes commit in a single transaction. Failure rolls back.
+    """
+    from sessionfs.server.db.models import (
+        ContextCompilation,
+        KnowledgeEntry,
+        Project,
+    )
+
+    # Codex R1 MEDIUM on tk_879dbd5a5a034d0e — Python's bool is an int
+    # subclass, so a malformed body like {"compilation_id": true} would
+    # otherwise coerce to compilation_id=1 and target the wrong row.
+    # Reject bool explicitly. Same defensive shape on dry_run so a body
+    # like {"dry_run": "false"} doesn't surprise via Python truthiness.
+    compilation_id = body.get("compilation_id")
+    if (
+        isinstance(compilation_id, bool)
+        or not isinstance(compilation_id, int)
+        or compilation_id <= 0
+    ):
+        raise HTTPException(422, "compilation_id must be a positive integer")
+
+    dry_run_raw = body.get("dry_run", True)
+    if not isinstance(dry_run_raw, bool):
+        raise HTTPException(422, "dry_run must be a boolean")
+    dry_run = dry_run_raw
+
+    # Fetch project + compilation. Cross-project safety: the compilation
+    # row's project_id must match the path parameter.
+    project = (
+        await db.execute(select(Project).where(Project.id == project_id))
+    ).scalar_one_or_none()
+    if project is None:
+        raise HTTPException(404, f"Project {project_id} not found")
+
+    compilation = (
+        await db.execute(
+            select(ContextCompilation).where(
+                ContextCompilation.id == compilation_id,
+                ContextCompilation.project_id == project_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if compilation is None:
+        raise HTTPException(
+            404,
+            f"Compilation {compilation_id} not found in project {project_id}",
+        )
+
+    if not compilation.context_after:
+        raise HTTPException(
+            422,
+            f"Compilation {compilation_id} has empty context_after — "
+            f"nothing to restore from this row",
+        )
+
+    # Parse source_manifest. Schema:
+    #   {section_slug: [{kb_entry_id, created_by_user_id, ...}, ...], ...}
+    # We just need the kb_entry_id set for compiled_at restoration.
+    entry_ids: set[int] = set()
+    if compilation.source_manifest:
+        try:
+            manifest = json.loads(compilation.source_manifest)
+        except json.JSONDecodeError:
+            manifest = {}
+        if isinstance(manifest, dict):
+            for section_entries in manifest.values():
+                if isinstance(section_entries, list):
+                    for entry in section_entries:
+                        if isinstance(entry, dict):
+                            eid = entry.get("kb_entry_id")
+                            if isinstance(eid, int):
+                                entry_ids.add(eid)
+
+    context_words_restored = len(compilation.context_after.split())
+
+    if dry_run:
+        return {
+            "project_id": project_id,
+            "compilation_id": compilation_id,
+            "compiled_at": (
+                compilation.compiled_at.isoformat()
+                if compilation.compiled_at
+                else None
+            ),
+            "context_words_restored": context_words_restored,
+            "entries_compiled_at_restored": len(entry_ids),
+            "dry_run": True,
+        }
+
+    # Apply: restore context_document + compiled_at, then commit once.
+    # tk_bc3c02a63e994717 pattern: single atomic transaction, all-or-nothing.
+    project.context_document = compilation.context_after
+    project.updated_at = datetime.now(timezone.utc)
+
+    if entry_ids:
+        await db.execute(
+            update(KnowledgeEntry)
+            .where(
+                KnowledgeEntry.project_id == project_id,
+                KnowledgeEntry.id.in_(entry_ids),
+            )
+            .values(compiled_at=compilation.compiled_at)
+            .execution_options(synchronize_session=False)
+        )
+
+    await _log_action(
+        db,
+        admin.id,
+        "restore_from_compilation",
+        "project",
+        project_id,
+        {
+            "compilation_id": compilation_id,
+            "context_words_restored": context_words_restored,
+            "entries_compiled_at_restored": len(entry_ids),
+        },
+    )
+    await db.commit()
+
+    return {
+        "project_id": project_id,
+        "compilation_id": compilation_id,
+        "compiled_at": (
+            compilation.compiled_at.isoformat()
+            if compilation.compiled_at
+            else None
+        ),
+        "context_words_restored": context_words_restored,
+        "entries_compiled_at_restored": len(entry_ids),
+        "dry_run": False,
+    }

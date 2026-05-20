@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.13] - 2026-05-20
+
+Incident-driven safety release. No new features. Forced by the 2026-05-20 incident on the SessionFS dev project where `/rebuild` wiped `project.context_document` and every active claim's `compiled_at` when the recompile crashed mid-flight. Two related fixes ship together.
+
+### Fixed
+
+**Fail-closed `/rebuild` and `/compile`** (`tk_bc3c02a63e994717`, CRITICAL) — `compile_project_context` previously committed twice inside the function (lines 419 + 522) and the `/rebuild` route added two more commits BEFORE calling it for the destructive resets. Four transaction boundaries through one logical compile, with the destructive resets in the first two — any crash after them was data-destructive. Refactored to a single atomic commit at the end of `compile_project_context`:
+
+- Phase 1 (reads only): SELECT project FOR UPDATE + pending claims + active claims for source_manifest + sessions for persona lookup. No writes.
+- Phase 2 (compute in memory, no DB writes during LLM call): build LLM prompt, call LLM (or `_simple_compile` fallback), enforce word budget, group entries, compute section page contents.
+- Phase 3 (single atomic transaction): apply freshness / decay / retention / auto-promote UPDATEs; apply destructive reset if `force_rebuild=True`; update `project.context_document`; mark pending entries compiled; INSERT `ContextCompilation` (flush only — committed at end); upsert section pages; **commit once.** Any exception before the final commit rolls back everything.
+
+New `force_rebuild: bool = False` parameter on `compile_project_context`. The `/rebuild` route is now a thin wrapper calling `compile_project_context(force_rebuild=True)`. The destructive reset (NULL `compiled_at` on every active claim, clear `context_document`) now runs INSIDE the same atomic transaction.
+
+Codex R1 caught a related correctness bug: `force_rebuild=True` was nulling `compiled_at` but the compile still read `context_before = project.context_document` and merged new claims INTO that stale text — so dismissed/superseded/aging entries' content could survive a "rebuild" forever. Fixed by splitting the variable: `previous_context` preserves the prior document for the audit trail (`ContextCompilation.context_before` is unchanged), `compile_base_context` becomes `""` when `force_rebuild=True` so the merge genuinely starts from scratch.
+
+3 new rollback regression tests in `tests/server/integration/test_knowledge.py`, including the headline `test_rebuild_rollback_on_compile_crash_preserves_prior_state` — the test that would have caught the 2026-05-20 incident if it had existed.
+
+### Added
+
+**Admin repair endpoint** (`tk_dd3ba7082ef0432e`, HIGH) — `POST /api/v1/admin/projects/{project_id}/restore-from-compilation` recovers a project's `context_document` AND the `compiled_at` metadata on participating entries from a chosen `ContextCompilation` snapshot. Body `{compilation_id: int, dry_run: bool = true}`. Reads the row, parses `source_manifest` for participating entry ids, restores both the document text and the per-entry `compiled_at` in a single atomic transaction. Admin-gated (`require_admin`); audit-logged via `AdminAction`. Codex R1 caught Python's bool-is-int trap (a body `{"compilation_id": true}` would coerce to `compilation_id=1`); fixed with explicit `isinstance(x, bool)` rejection on both `compilation_id` and `dry_run`.
+
+Closes the metadata gap left by the v0.10.12 R1 emergency restore (which only repaired the document text via the public `PUT /context` endpoint). Provides a safe operator tool for future incidents.
+
+9 integration tests in `tests/server/integration/test_admin.py` cover dry-run/apply, 404 on unknown compilation_id, 404 on cross-project compilation_id, non-admin 401/403, empty `context_after` 422, non-integer compilation_id 422, bool/string `dry_run` 422.
+
+### Reviews
+
+Codex single review thread `tk_879dbd5a5a034d0e`: R1 1 HIGH (force_rebuild empty-base) + 1 MEDIUM (strict bool rejection) → **R2 VERIFIED-CLEAN**.
+
+Shield-SR pre-release security review: 0 critical / 0 high / 0 medium new findings. Release approved.
+
+### Notes
+
+- **Tests:** 1925 backend + 186 dashboard passing (+13 net over v0.10.12). 2 xfail-strict pre-existing migration-003 PG-syntax (`tk_7dc9e8764a5a4297`).
+- **MCP tools:** 58 (unchanged from v0.10.12).
+- **Migrations:** 001–042 (no new migrations).
+- **New endpoint:** 1 (admin restore-from-compilation).
+- **Non-blocking follow-ups deferred:** Duplicate freshness pass in `/rebuild` (cosmetic, can return count from `compile_project_context` later) and pre-existing duplicate concept generation in `/compile` route — both flagged by Codex as out of scope for the safety release.
+
 ## [0.10.12] - 2026-05-19
 
 ### Added

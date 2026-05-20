@@ -216,7 +216,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
-**v0.10.12 — Public Beta.** 1912 backend tests + 186 dashboard tests passing. 42 database migrations. 58 MCP tools. v0.10.12 adds **bulk-promote** for stuck KB notes (`sfs project promote-eligible` + `promote_eligible_entries` MCP tool + new endpoint) — the practical repair path after the v0.10.10 confidence bug. Plus a 500-row cap on the review-state endpoint, release-process hardening (pinned mypy version, deterministic sanitize helper, post-PyPI smoke test), and security upgrades closing 9 dependency CVEs.
+**v0.10.13 — Public Beta.** 1925 backend tests + 186 dashboard tests passing. 42 database migrations. 58 MCP tools. v0.10.13 is an incident-driven safety release: `/rebuild` and `/compile` are now **fail-closed** — they previously committed destructive resets BEFORE the recompile ran, so a crash mid-flight could destroy the prior projection. Refactored to a single atomic commit at the end of `compile_project_context` with shadow-write semantics; any failure rolls back the entire pipeline. Plus a new admin repair endpoint (`POST /api/v1/admin/projects/{id}/restore-from-compilation`) that restores `project.context_document` AND the `compiled_at` metadata on participating entries from a chosen `ContextCompilation` snapshot — the recovery tool we needed during the 2026-05-20 dev incident.
 
 ### Session capture, resume, and search
 
