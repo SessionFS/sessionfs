@@ -1255,3 +1255,100 @@ async def test_force_rebuild_drops_stale_text_from_prior_context(
             )
         )).scalar_one()
         assert STALE_MARKER in (comp.context_before or "")
+
+
+@pytest.mark.asyncio
+async def test_prune_dead_concept_pages_skips_malformed_links(
+    db_engine, db_session: AsyncSession, test_user: User, test_project: Project,
+):
+    """tk_d92434fe63564c06 regression — _prune_dead_concept_pages used
+    to do `int(lk.source_id)` without a try/except. A KnowledgeLink row
+    with source_type='entry' but a non-numeric source_id (e.g. a slug
+    from a manual seed, a UUID from a future schema, a malformed
+    migration row) raises ValueError → the route's try/except catches
+    it but the SQLAlchemy session is left in a poisoned state (partial
+    in-progress delete writes) → subsequent db.execute calls in the
+    route die uncaught → Cloud Run worker kill → 21-byte plain-text
+    500 from Google Frontend.
+
+    This was the underlying bug behind the post-v0.10.13 incident on
+    proj_c0242b0fccbd48b4 where /compile returned 500 in 0.5s while
+    bulk-promote on the same project returned 200. The data shape
+    (concept page + KnowledgeLink with non-int source_id under
+    source_type='entry') triggers the crash deterministically.
+
+    The fix mirrors the sibling guard at compiler.py auto_generate_concepts
+    line ~1198: skip malformed rows + log a warning.
+    """
+    from sessionfs.server.db.models import KnowledgeLink, KnowledgePage
+    from sessionfs.server.services.compiler import _prune_dead_concept_pages
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    # Seed a concept page with a malformed source_id link
+    page = KnowledgePage(
+        id=f"kp_{uuid.uuid4().hex[:16]}",
+        project_id=test_project.id,
+        slug="concept/test-malformed",
+        title="Test Malformed",
+        page_type="concept",
+        content="# Test\n\n- foo",
+        word_count=2,
+        entry_count=1,
+        auto_generated=True,
+    )
+    db_session.add(page)
+    await db_session.commit()
+    await db_session.refresh(page)
+
+    # Link with source_type='entry' but a non-int source_id (slug-like)
+    db_session.add(KnowledgeLink(
+        project_id=test_project.id,
+        source_type="entry",
+        source_id="not-an-int-slug",  # <- the trap
+        target_type="page",
+        target_id=page.id,
+        link_type="related",
+    ))
+    # Add another valid link so the function has work to do post-guard
+    valid_entry = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_x",
+        user_id=test_user.id,
+        entry_type="decision",
+        content="x" * 60,
+        confidence=0.9,
+        claim_class="claim",
+        dismissed=False,
+    )
+    db_session.add(valid_entry)
+    await db_session.commit()
+    await db_session.refresh(valid_entry)
+    db_session.add(KnowledgeLink(
+        project_id=test_project.id,
+        source_type="entry",
+        source_id=str(valid_entry.id),
+        target_type="page",
+        target_id=page.id,
+        link_type="related",
+    ))
+    await db_session.commit()
+    project_id = test_project.id
+    await db_session.close()
+
+    # Call _prune_dead_concept_pages on a fresh session. Before the fix
+    # this raised ValueError; after the fix it skips the malformed row.
+    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with factory() as session:
+        deleted = await _prune_dead_concept_pages(project_id, session)
+        # The malformed link is skipped, the valid one is kept. The
+        # valid entry is NOT dismissed, so dismissed_count != linked
+        # count → page is NOT pruned. deleted == 0 is the contract here.
+        assert deleted == 0
+
+    # Verify the page survived (not deleted by partial work)
+    async with factory() as verify:
+        result = await verify.execute(
+            select(KnowledgePage).where(KnowledgePage.id == page.id)
+        )
+        survivor = result.scalar_one_or_none()
+        assert survivor is not None, "concept page wrongly deleted during malformed-row crash recovery"

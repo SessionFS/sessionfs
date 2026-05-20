@@ -1077,9 +1077,28 @@ async def _prune_dead_concept_pages(project_id: str, db: AsyncSession) -> int:
             logger.info("Pruned orphaned concept page %s", page.slug)
             continue
 
-        linked_entry_ids = [
-            int(lk.source_id) for lk in links if lk.source_type == "entry"
-        ]
+        # tk_d92434fe63564c06 — defensive int() cast. KnowledgeLink.source_id
+        # is a string column; convention is str(KnowledgeEntry.id) when
+        # source_type='entry', but legacy rows may have non-numeric values
+        # (e.g. concept slugs, UUIDs). Without the guard a single bad row
+        # raises ValueError here, the route's try/except catches it but the
+        # SQLAlchemy session is left in a poisoned state (partial in-progress
+        # delete writes), and subsequent db.execute calls in the route die
+        # uncaught → Cloud Run worker kill → plain-text 500. Matches the
+        # sibling guard at compiler.py auto_generate_concepts loop.
+        linked_entry_ids = []
+        for lk in links:
+            if lk.source_type != "entry":
+                continue
+            try:
+                linked_entry_ids.append(int(lk.source_id))
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Skipping malformed KnowledgeLink: source_type=entry "
+                    "but source_id=%r is not int-castable (page=%s)",
+                    lk.source_id, page.slug,
+                )
+                continue
         if not linked_entry_ids:
             continue
 
