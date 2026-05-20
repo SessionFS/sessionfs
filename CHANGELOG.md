@@ -15,13 +15,18 @@ Hotfix release. Fixes the `/compile` availability bug that hit proj_c0242b0fccbd
 
 Diagnosed via: `bulk-promote` on the same project returned 200 while `/compile` returned 500 in 0.5s. The fast-fail signature ruled out timeout / OOM / LLM. Diffing `_prune_dead_concept_pages` against its sibling code in `auto_generate_concepts` (line ~1198) showed the latter has the exact `try/except (TypeError, ValueError) → continue` pattern this site was missing.
 
-Fix: mirror the sibling guard. Malformed rows now skip with a warning log instead of crashing the request. New regression test `test_prune_dead_concept_pages_skips_malformed_links` pins the failure shape — seeds a concept page with one valid + one malformed link, calls `_prune_dead_concept_pages` directly, asserts no exception + page survives.
+Fix shipped in two rounds:
+
+- **R0** (`tk_d92434fe63564c06`) — mirror the sibling guard at `_prune_dead_concept_pages`. Malformed rows skip with a warning log instead of crashing.
+- **R1** (Codex review `tk_e5185f5d432243f2`, HIGH) — Codex widened the audit and surfaced a remaining unguarded `int(lk.source_id)` at the per-existing-page deletion check in `auto_generate_concepts` (compiler.py:1247-1251 pre-fix), and a 4th site outside compiler.py at `src/sessionfs/server/routes/wiki.py:602` (page regenerate route). Refactored to extract `_safe_entry_link_ids(links, *, page_slug=None) -> list[int]` helper at module scope and route all 3 compiler sites through it; wiki.py:602 gets the matching inline guard. Final grep confirms only the helper's own (guarded) cast remains.
+
+Two regression tests pin the failure shapes: `test_prune_dead_concept_pages_skips_malformed_links` (direct call path) and `test_auto_generate_concepts_existing_page_skips_malformed_links` (monkeypatches `check_concept_candidates` to force the existing-page branch where R1 HIGH lived).
 
 This bug was masked before v0.10.13 by the destructive `/rebuild` data-loss bug (`tk_bc3c02a63e994717`): both ran together and the destructive resets ate the projection before the prune crash could be observed independently. v0.10.13's fail-closed contract isolated this one to "availability only" — zero DB drift on each failed `/compile`, confirmed in production.
 
 ### Notes
 
-- **Tests:** 1926 backend + 186 dashboard passing (+1 net regression test). 2 xfail-strict pre-existing.
+- **Tests:** 1927 backend + 186 dashboard passing (+2 net regression tests). 2 xfail-strict pre-existing.
 - **MCP tools:** 58 (unchanged).
 - **Migrations:** 001–042 (no new migrations).
 - **No new endpoints.** Single-file backend fix.
