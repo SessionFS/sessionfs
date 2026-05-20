@@ -1696,13 +1696,15 @@ async def test_auto_generate_concepts_flushes_delete_before_insert(
     from sessionfs.server.services.compiler import auto_generate_concepts
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
-    # Seed enough active claims to clear concept candidacy + an existing
-    # concept page with a "contributes" link to one of the entries. The
-    # candidate-forcing path will hit the existing-page branch and try to
-    # delete-and-re-add the link for the same (entry, page) pair.
-    entry = KnowledgeEntry(
+    # Seed TWO active claims with topic-matching content so matched_entries
+    # has length 2 (Codex R3 MEDIUM — with a single entry and entry_count=1
+    # on the page, the growth guard `len(matched_entries) <= old_count * 1.5`
+    # evaluates `1 <= 1.5` and `continue`s before article generation, link
+    # deletion, db.flush(), or link re-add — the regenerate branch never
+    # actually runs and the test is a false positive).
+    entry_a = KnowledgeEntry(
         project_id=test_project.id,
-        session_id="ses_concept",
+        session_id="ses_concept_a",
         user_id=test_user.id,
         entry_type="pattern",
         content=(
@@ -1714,9 +1716,25 @@ async def test_auto_generate_concepts_flushes_delete_before_insert(
         dismissed=False,
         freshness_class="current",
     )
-    db_session.add(entry)
+    entry_b = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_concept_b",
+        user_id=test_user.id,
+        entry_type="pattern",
+        content=(
+            "Each converter normalises its native session format into the "
+            "canonical .sfs converter pipeline before disk write."
+        ),
+        confidence=0.9,
+        claim_class="claim",
+        dismissed=False,
+        freshness_class="current",
+    )
+    db_session.add(entry_a)
+    db_session.add(entry_b)
     await db_session.commit()
-    await db_session.refresh(entry)
+    await db_session.refresh(entry_a)
+    await db_session.refresh(entry_b)
 
     page = KnowledgePage(
         id=f"kp_{uuid.uuid4().hex[:16]}",
@@ -1733,10 +1751,12 @@ async def test_auto_generate_concepts_flushes_delete_before_insert(
     await db_session.commit()
     await db_session.refresh(page)
 
+    # Pre-existing link for (entry_a, page). The regenerate branch must
+    # delete this link and re-add it — the failure mode under uq_kl_link.
     db_session.add(KnowledgeLink(
         project_id=test_project.id,
         source_type="entry",
-        source_id=str(entry.id),
+        source_id=str(entry_a.id),
         target_type="page",
         target_id=page.id,
         link_type="contributes",
@@ -1744,13 +1764,11 @@ async def test_auto_generate_concepts_flushes_delete_before_insert(
     ))
     await db_session.commit()
     project_id = test_project.id
-    entry_id = entry.id
+    entry_a_id = entry_a.id
+    entry_b_id = entry_b.id
     page_id = page.id
     await db_session.close()
 
-    # Force the candidate to match the existing page slug AND have enough
-    # entry growth that the regenerate path fires (matched_entries >
-    # 1.5 * existing_page.entry_count).
     async def _fake_candidates(*args, **kwargs):
         return [{
             "slug": "converter-pattern",
@@ -1767,16 +1785,24 @@ async def test_auto_generate_concepts_flushes_delete_before_insert(
 
     factory = async_sessionmaker(db_engine, expire_on_commit=False)
     async with factory() as session:
-        # Pre-fix: this raised IntegrityError on commit (uq_kl_link)
-        # because INSERT for (entry_id → page_id, contributes) fired
-        # before DELETE for the same row. Post-fix: flush serialises
-        # the delete and the new link inserts cleanly.
+        # Pre-fix: this raised IntegrityError on commit (uq_kl_link) because
+        # INSERT for (entry_a, page, contributes) fired before DELETE for the
+        # same row. Post-fix: flush serialises the delete ahead of the new
+        # link inserts cleanly.
         result = await auto_generate_concepts(
             project_id, test_user.id, session,
         )
-        assert isinstance(result, list)
 
-    # Verify the page survived and there's no duplicate link
+    # Codex R3 MEDIUM — assert the regenerate branch actually ran. result
+    # must contain the concept page, the page content must be the fake
+    # article (proves regenerate path completed), and both new links must
+    # exist (proves re-add succeeded).
+    assert isinstance(result, list)
+    assert any(c["slug"] == "concept/converter-pattern" for c in result), (
+        f"regenerate branch did not run — concept/converter-pattern not in "
+        f"result: {result}"
+    )
+
     async with factory() as verify:
         page_row = (
             await verify.execute(
@@ -1784,18 +1810,37 @@ async def test_auto_generate_concepts_flushes_delete_before_insert(
             )
         ).scalar_one_or_none()
         assert page_row is not None, "page wrongly deleted"
-        links = (
+        assert page_row.content == "# Converter Pattern\n\n- Updated content", (
+            f"regenerate branch did not write the fake article content; "
+            f"page.content={page_row.content!r}"
+        )
+
+        # Exactly one (entry_a, page) link survives the delete+re-add cycle.
+        links_a = (
             await verify.execute(
                 select(KnowledgeLink).where(
                     KnowledgeLink.project_id == project_id,
                     KnowledgeLink.target_id == page_id,
-                    KnowledgeLink.source_id == str(entry_id),
+                    KnowledgeLink.source_id == str(entry_a_id),
                 )
             )
         ).scalars().all()
-        # Exactly one link for (entry, page) — old deleted, new inserted
-        assert len(links) == 1, (
-            f"expected exactly 1 (entry, page) link after delete+re-add, got {len(links)}"
+        assert len(links_a) == 1, (
+            f"expected exactly 1 (entry_a, page) link after delete+re-add, "
+            f"got {len(links_a)}"
+        )
+        # entry_b's new link must also be present (proves re-add ran)
+        links_b = (
+            await verify.execute(
+                select(KnowledgeLink).where(
+                    KnowledgeLink.project_id == project_id,
+                    KnowledgeLink.target_id == page_id,
+                    KnowledgeLink.source_id == str(entry_b_id),
+                )
+            )
+        ).scalars().all()
+        assert len(links_b) == 1, (
+            f"expected exactly 1 (entry_b, page) new link, got {len(links_b)}"
         )
 
 
