@@ -268,14 +268,14 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ### Security, compliance, and billing
 
-- **DLP / Secret Scrubbing** — 14 PHI patterns + 22 secret patterns, BLOCK/REDACT/WARN modes, server-side scan of all archive files, `sfs dlp scan/policy`, dashboard settings tab
+- **DLP / Secret Scrubbing** — 14 PHI patterns + 19 secret patterns, BLOCK/REDACT/WARN modes, server-side scan of all archive files, `sfs dlp scan/policy`, dashboard settings tab
 - **`sfs init` wizard** with auto-detection of 9 tools and optional sync setup
 - **`sfs security scan/fix`** for config permissions, API key exposure, dependency audit
 - **Security pipeline** — pip-audit, Trivy (rendered Helm chart), Bandit, Dependabot, SECURITY.md; CRITICAL/HIGH blocks the pipeline
 - **FSL licensing** with open-source core and enterprise extensions
 - **Self-hosted license lifecycle** with grace periods, admin CLI, dashboard licenses tab
 - **Server-side tier gating** — 6 tiers (free, starter, pro, team, business, enterprise), 30+ gated features
-- **Stripe billing** with org-isolated checkout, org-first webhook handling, subscription_id disambiguation
+- **Hosted billing** with org-isolated checkout and subscription management
 - **Organization management** (`sfs org` commands)
 
 ### Self-hosted deployment

@@ -73,7 +73,7 @@ export default defineConfig({
           items: [
             { label: 'Dashboard', slug: 'dashboard' },
             { label: 'Organizations', slug: 'organizations' },
-            { label: 'Billing & Tiers', slug: 'billing' },
+            { label: 'Plans & Billing', slug: 'billing' },
           ],
         },
         {
