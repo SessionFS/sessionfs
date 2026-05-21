@@ -160,6 +160,41 @@ grep -rn "sfs pull --handoff\|alwaysnix\|Dropbox" README.md docs/ landing/ src/ 
 ```
 Must return zero results (except troubleshooting doc warning).
 
+#### 6h. Public docs positioning + operator-leak audit
+
+The public site must sell the hosted cloud product and explain customer-facing setup. It must not expose internal operator runbooks or imply that customers should wire SessionFS billing infrastructure themselves.
+
+Run this scan against public-facing docs and site pages:
+
+```bash
+rg -n \
+  "Free during beta|pricing at v1\.0|Beta mode|all features are available regardless of tier|Stripe|stripe|webhooks/stripe|checkout\.session\.completed|customer\.subscription\.(updated|deleted)|SFS_STRIPE_|billing portal|hosted checkout|checkout session|Customer Portal|connect(ed)? Stripe to a self-hosted|self-hosted deployments that have not connected Stripe|Without all five variables" \
+  README.md site/src docs/
+```
+
+This must return zero results unless the match is code/dependency metadata or private/internal release material that will never ship to `main`. If it finds a public page:
+- Rewrite the page from the buyer/customer point of view.
+- Drive users to hosted signup: `https://app.sessionfs.dev/login?mode=signup`.
+- Keep self-hosted copy enterprise-oriented: license / contract / support boundary, not payment processor setup or internal SaaS operations.
+- Move true operator details to private docs or keep them out of the public site.
+
+Manually inspect these high-risk pages every release:
+
+| File | What to check |
+|------|---------------|
+| `site/src/content/docs/billing.mdx` | Cloud signup, plans, customer billing only; no payment-processor setup |
+| `site/src/content/docs/environment.mdx` | No hosted-only secrets presented as customer self-host requirements |
+| `site/src/content/docs/self-hosted.mdx` | Deployment guidance only; no SaaS billing internals |
+| `site/src/content/docs/organizations.mdx` | Customer-facing org billing language; no webhook/customer-transfer implementation details |
+| `site/src/pages/pricing.astro` | Current prices, no beta pricing copy, clear cloud CTA |
+| `site/src/pages/index.astro` | Cloud signup CTA visible above the fold |
+
+Also search for implementation-flavored billing terms and rewrite them unless they are code/dependency metadata:
+
+```bash
+rg -n "Stripe customer|org-first webhook|subscription_id disambiguation|webhook handling" README.md site/src docs/
+```
+
 ### 7. Update landing page content (if features changed)
 - Verify tool count in all `<meta>` descriptions (og, twitter)
 - Verify pricing section matches current tiers

@@ -92,15 +92,9 @@ All SessionFS server environment variables use the `SFS_` prefix.
 |----------|-------------|---------|
 | `SFS_GITLAB_WEBHOOK_SECRET` | GitLab webhook token for MR events | — |
 
-## Stripe
+## Hosted billing
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `SFS_STRIPE_SECRET_KEY` | Stripe API secret key | — |
-| `SFS_STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret | — |
-| `SFS_STRIPE_PRICE_STARTER` | Stripe Price ID for Starter tier | — |
-| `SFS_STRIPE_PRICE_PRO` | Stripe Price ID for Pro tier | — |
-| `SFS_STRIPE_PRICE_TEAM` | Stripe Price ID for Team tier | — |
+Hosted billing configuration is SessionFS Cloud infrastructure only. Self-hosted customer deployments should not configure payment processors; enterprise licensing is handled through the SessionFS agreement and license system.
 
 ## URLs
 

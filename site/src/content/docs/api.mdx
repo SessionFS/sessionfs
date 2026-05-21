@@ -170,8 +170,8 @@ Available scopes: `sessions:read`, `handoffs:read`, `handoffs:write`, `tickets:r
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/api/v1/billing/status` | Bearer | Current subscription status, tier, storage usage |
-| POST | `/api/v1/billing/checkout` | Bearer | Create a Stripe Checkout session (body: `tier`, `seats`) |
-| POST | `/api/v1/billing/portal` | Bearer | Create a Stripe Customer Portal session for self-service management |
+| POST | `/api/v1/billing/checkout` | Bearer | Start a SessionFS Cloud plan checkout (body: `tier`, `seats`) |
+| POST | `/api/v1/billing/portal` | Bearer | Open the SessionFS Cloud subscription page |
 
 ### Health
 

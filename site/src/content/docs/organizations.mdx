@@ -28,9 +28,9 @@ POST /api/v1/org
 
 Slugs must be lowercase alphanumeric with hyphens, at least 3 characters, and unique across all orgs. The creator automatically becomes an admin.
 
-When the org is created, your Stripe customer and subscription are transferred to the org. This prevents billing confusion between personal and org subscriptions.
+When the org is created, billing moves to the organization so seats, storage, and tier access are managed centrally.
 
-Seat count is derived from your Stripe subscription quantity. Defaults: 5 seats for Team, 25 for Enterprise.
+Seat count is derived from the organization's subscription. Defaults: 5 seats for Team, 25 for Enterprise.
 
 A user can only belong to one organization at a time.
 
@@ -40,7 +40,7 @@ Organizations have two roles:
 
 | Role | Capabilities |
 |------|-------------|
-| **admin** | Invite/remove members, change roles, manage billing via Stripe portal, view all org settings |
+| **admin** | Invite/remove members, change roles, manage billing, view all org settings |
 | **member** | Use all features included in the org tier, view org info |
 
 Admins cannot change their own role. This prevents accidental last-admin lockout.
@@ -107,11 +107,11 @@ Returns the org details, full member list, and the current user's role. Non-org 
 
 ## Org billing
 
-The organization has its own Stripe customer, separate from any member's personal billing. When an admin creates a checkout session for a Team or Enterprise plan, the charge goes to the org's Stripe customer.
+The organization owns the subscription for all members. Admins manage seats, payment, invoices, upgrades, downgrades, and cancellation from the dashboard billing page.
 
-- **Admins** access the Stripe Customer Portal to manage the org subscription (upgrade seats, change payment method, cancel).
+- **Admins** access the subscription page to manage the org subscription.
 - **Members** cannot purchase individual plans while in an org. Their tier is determined entirely by the org.
-- If a member had a personal subscription before joining, it remains accessible via the portal with `scope: "personal"`.
+- If a member had a personal subscription before joining, it remains separate from the organization subscription and can be managed from the subscription page.
 
 ## Storage
 
@@ -124,7 +124,7 @@ Storage is pooled across all org members. The `GET /api/v1/org` response include
 
 ## Dashboard
 
-Org settings are in **Settings > Organization** in the web dashboard. From there, admins can view members, send invites, and access the billing portal. Members see the org info and their role but cannot modify settings.
+Org settings are in **Settings > Organization** in the web dashboard. From there, admins can view members, send invites, and access subscription management. Members see the org info and their role but cannot modify settings.
 
 ## Multi-org membership (v0.10.0)
 

@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from './AuthContext';
 import { signup, ApiError } from '../api/client';
 import { loginSchema, signupSchema, fieldErrorsFromZod, type FieldErrors } from '../utils/validation';
@@ -9,7 +9,10 @@ import Wordmark from '../components/Wordmark';
 export default function LoginPage() {
   const { login } = useAuth();
   const navigate = useNavigate();
-  const [mode, setMode] = useState<'login' | 'signup'>('login');
+  const [searchParams] = useSearchParams();
+  const [mode, setMode] = useState<'login' | 'signup'>(
+    searchParams.get('mode') === 'signup' ? 'signup' : 'login',
+  );
   const [baseUrl, setBaseUrl] = useState(() => {
     // 1. Build-time env var wins
     if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL;

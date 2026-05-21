@@ -83,4 +83,16 @@ describe('LoginPage', () => {
       expect(mockNavigate).toHaveBeenCalledWith('/getting-started', { state: { apiKey: 'sk_sfs_test123' } });
     });
   });
+
+  it('opens directly in signup mode when requested by site CTA', () => {
+    render(
+      <MemoryRouter initialEntries={['/login?mode=signup']}>
+        <LoginPage />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText('Create a new account')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('you@example.com')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /create account/i })).toBeInTheDocument();
+  });
 });
