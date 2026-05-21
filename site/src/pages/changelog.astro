@@ -17,14 +17,37 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.10.10 -->
+      <!-- v0.10.17 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.10.17</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">May 21, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Knowledge Health Fix &mdash; <span class="font-mono text-accent text-sm">pending_entries</span> Now Matches the Compile Pipeline + Two New Counters</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong><span class="font-mono text-accent text-sm">pending_entries</span> overcount + counterpart undercount fixed</strong> (<span class="font-mono">tk_935a4eb62be94676</span>). The count used to be a generalized "uncompiled non-dismissed claims" &mdash; it counted superseded / stale claims that compile skips, and missed auto-promotable evidence that compile processes. Operators got "Run compile to process N pending entries" advice that lied in both directions: stayed flat after a successful compile, and reported 0 for projects with only eligible evidence. <span class="font-mono text-accent text-sm">pending_entries</span> now mirrors the compile pipeline's Phase 2b select EXACTLY: <span class="font-mono text-accent text-sm">claim_class='claim'</span> AND <span class="font-mono text-accent text-sm">compiled_at IS NULL</span> AND not dismissed AND <span class="font-mono text-accent text-sm">freshness_class IN ('current', 'aging')</span> AND <span class="font-mono text-accent text-sm">superseded_by IS NULL</span>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>New <span class="font-mono text-accent text-sm">auto_promotable_evidence</span> field.</strong> Surfaces evidence rows the compiler's Phase 2a will auto-promote AND that survive Phase 2b post-promotion: <span class="font-mono text-accent text-sm">claim_class='evidence'</span> AND <span class="font-mono text-accent text-sm">confidence &gt;= 0.5</span> AND <span class="font-mono text-accent text-sm">length(content) &gt;= 30</span> AND not dismissed AND <span class="font-mono text-accent text-sm">compiled_at IS NULL</span> AND current/aging AND no superseder.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>New <span class="font-mono text-accent text-sm">uncompiled_notes</span> field.</strong> Counts notes that need <span class="font-mono text-accent text-sm">bulk_promote</span> first &mdash; notes do not auto-promote on compile.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong><span class="font-mono text-accent text-sm">potentially_stale</span> flag honest again.</strong> Now uses the same compile-eligible predicate as <span class="font-mono text-accent text-sm">pending_entries</span> &mdash; notes / superseded claims with novel terms can no longer drive a false-positive "Context may be stale" warning.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Smarter "run compile" recommendation.</strong> Drives off <span class="font-mono text-accent text-sm">compile_work_total = pending_entries + auto_promotable_evidence</span>. Structured breakdown below threshold ("3 pending claims + 1 auto-promotable evidence row &mdash; run compile"); single-line above threshold ("Run compile to process N entries (P pending claims, Q auto-promotable evidence)"). "No compilations yet" recommendation now gated on <span class="font-mono text-accent text-sm">compile_work_total &gt; 0</span>; notes-only fresh projects get "No compile-eligible entries yet &mdash; add claims (or promote evidence) before running compile". New "N uncompiled notes &mdash; call <span class="font-mono text-accent text-sm">bulk_promote</span>..." recommendation fires whenever notes exist.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>MCP <span class="font-mono text-accent text-sm">get_knowledge_health</span> description rewritten.</strong> Documents each field with its exact filter clause so MCP agents read the same contract the route enforces. Schema unchanged.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>5 new regression tests pin each surface</strong> &mdash; <span class="font-mono text-accent text-sm">test_health_pending_entries_matches_compile_filter</span>, <span class="font-mono text-accent text-sm">test_health_counts_auto_promotable_evidence</span>, <span class="font-mono text-accent text-sm">test_health_potentially_stale_ignores_notes_and_superseded</span>, <span class="font-mono text-accent text-sm">test_health_auto_promotable_excludes_stale_and_superseded_evidence</span>, <span class="font-mono text-accent text-sm">test_health_no_compile_advice_when_only_notes_exist</span>. Toggle-tested: temporarily disabling the new filter clauses reproduces the original overcount shape and the regression test fails with the exact pre-fix count.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">1,935 backend + 186 dashboard UI tests passing (was 1,930 + 186 at v0.10.16) &middot; 42 migrations (no new) &middot; 58 MCP tools (description rewritten, schema unchanged). Backward-compatible additive API change &mdash; <span class="font-mono">uncompiled_notes</span> and <span class="font-mono">auto_promotable_evidence</span> are optional on the dashboard <span class="font-mono">ProjectHealthResponse</span> interface so older self-hosted servers still parse.</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.10.10 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
             <span class="text-brand font-semibold">v0.10.10</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">May 18, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Scoped Service API Keys &mdash; Cloud Agents, CI Runners, and Integration Partners Get Capability-Restricted Tokens</h2>
         <ul class="space-y-2 text-base text-muted">
