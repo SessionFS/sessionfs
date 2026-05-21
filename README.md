@@ -216,7 +216,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
-**v0.10.16 — Public Beta.** 1930 backend tests + 186 dashboard tests passing. 42 database migrations. 58 MCP tools. v0.10.16 closes the second `uq_kl_link` violation site at `auto_generate_concepts` — the existing-page branch deleted prefetched links and immediately re-added them with the same composite key, and SQLAlchemy's UnitOfWork orders INSERTs ahead of DELETEs. Now explicit-flushes after the delete loop. Adds `db.rollback()` in the route's exception handler so a future commit failure can't poison the session for downstream `_count_pages` calls. The v0.10.15 pair-level dedup in `_auto_supersede` stays merged.
+**v0.10.17 — Public Beta.** 1935 backend tests + 186 dashboard tests passing. 42 database migrations. 58 MCP tools. v0.10.17 fixes `knowledge_health.pending_entries` to mirror the compile pipeline exactly + adds `auto_promotable_evidence` (evidence the compiler auto-promotes) and `uncompiled_notes` (notes needing `bulk_promote`) fields. Recommendations no longer mislead — "Run compile" only fires when compile will actually do work; notes-only projects get bulk_promote guidance instead.
 
 ### Session capture, resume, and search
 

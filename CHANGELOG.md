@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.17] - 2026-05-21
+
+`knowledge_health` API + MCP fix. The `pending_entries` count was a generalized "uncompiled non-dismissed claims" — it counted superseded/stale claims (compile skips) and missed auto-promotable evidence (compile processes). Operators got "Run compile to process N pending entries" advice that lied in both directions: stayed flat after a successful compile, and reported 0 for projects with only eligible evidence.
+
+### Fixed
+
+**`knowledge_health.pending_entries` overcount + counterpart undercount** (`tk_935a4eb62be94676`):
+
+- `pending_entries` now mirrors the compile pipeline's Phase 2b select EXACTLY: `claim_class='claim'` AND `compiled_at IS NULL` AND not dismissed AND `freshness_class IN ('current', 'aging')` AND `superseded_by IS NULL`.
+- New `auto_promotable_evidence` field surfaces evidence rows the compiler's Phase 2a will auto-promote AND that survive Phase 2b post-promotion (`claim_class='evidence'` AND `confidence >= 0.5` AND `length(content) >= 30` AND not dismissed AND `compiled_at IS NULL` AND current/aging AND no superseder).
+- New `uncompiled_notes` field counts notes that need `bulk_promote` first.
+- `potentially_stale` flag uses the same compile-eligible predicate as `pending_entries` so notes / superseded claims with novel terms can't drive a false-positive "Context may be stale" warning.
+- "Run compile" recommendation now drives off `compile_work_total = pending_entries + auto_promotable_evidence`. Structured breakdown below threshold: "3 pending claims + 1 auto-promotable evidence row — run compile". Single-line above threshold: "Run compile to process N entries (P pending claims, Q auto-promotable evidence)".
+- "No compilations yet — run compile to build context" recommendation now gated on `compile_work_total > 0`. Notes-only fresh projects get "No compile-eligible entries yet — add claims (or promote evidence) before running compile".
+- New "N uncompiled notes — call bulk_promote..." recommendation fires whenever notes exist.
+
+MCP `get_knowledge_health` tool description rewritten to document each field with its exact filter clause so MCP agents read the same contract the route enforces.
+
+5 new regression tests pin each surface:
+- `test_health_pending_entries_matches_compile_filter`
+- `test_health_counts_auto_promotable_evidence`
+- `test_health_potentially_stale_ignores_notes_and_superseded`
+- `test_health_auto_promotable_excludes_stale_and_superseded_evidence`
+- `test_health_no_compile_advice_when_only_notes_exist`
+
+Toggle-tested: temporarily disabling the new filter clauses produces the original overcount shape and the regression test fails with the exact pre-fix count.
+
+### Notes
+
+- **Tests**: 1935 backend + 186 dashboard passing (+5 net new). 2 xfail-strict pre-existing.
+- **MCP tools**: 58 (unchanged — `get_knowledge_health` description rewritten, schema unchanged).
+- **Migrations**: 001–042 (no new migrations).
+- **API contract**: backward-compatible additive change. `uncompiled_notes` and `auto_promotable_evidence` are optional on the dashboard `ProjectHealthResponse` interface so older self-hosted servers still parse.
+- **No site changes** — site already cloud-first as of yesterday's pivot.
+
 ## [0.10.16] - 2026-05-20
 
 Follow-on hotfix. v0.10.15 closed one `uq_kl_link` violation site (`_auto_supersede`) but production exposed a SECOND site at `auto_generate_concepts`'s existing-page branch where `KnowledgeLink` rows are deleted-and-re-inserted with the same composite key in a single transaction. SQLAlchemy's UnitOfWork orders INSERTs ahead of DELETEs by default, so the INSERT fires while the old row is still present, violating `uq_kl_link`. The IntegrityError bubbles past the route's try/except, the session enters PendingRollback, and the next `_count_pages` call surfaces a Starlette text/plain 500.
