@@ -418,6 +418,177 @@ async def test_health_pending_entries_matches_compile_filter(
 
 
 @pytest.mark.asyncio
+async def test_health_counts_auto_promotable_evidence(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession,
+    test_user: User, test_project: Project,
+):
+    """tk_935a4eb62be94676 R1 MEDIUM 1 regression — health must surface
+    auto-promotable evidence so the operator knows /compile will do work
+    even when pending_entries is 0.
+
+    The compiler's Phase 2a auto-promotes evidence (claim_class='evidence'
+    AND confidence >= 0.5 AND length(content) >= 30 AND not dismissed)
+    to claim BEFORE the pending-claim select. Pre-R1 fix, health reported
+    pending_entries=0 for a project containing only eligible evidence and
+    issued no recommendation — but /compile would have processed those
+    rows. That's the inverse false-negative of the original bug.
+    """
+    eligible_evidence = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_ae1",
+        user_id=test_user.id,
+        entry_type="discovery",
+        content="X" * 60,  # >= 30 chars
+        confidence=0.7,  # >= 0.5
+        claim_class="evidence",
+        freshness_class="current",
+    )
+    short_evidence = KnowledgeEntry(  # too short — must NOT count
+        project_id=test_project.id,
+        session_id="ses_ae2",
+        user_id=test_user.id,
+        entry_type="discovery",
+        content="too short",  # < 30 chars
+        confidence=0.7,
+        claim_class="evidence",
+        freshness_class="current",
+    )
+    low_conf_evidence = KnowledgeEntry(  # below confidence floor — must NOT count
+        project_id=test_project.id,
+        session_id="ses_ae3",
+        user_id=test_user.id,
+        entry_type="discovery",
+        content="Y" * 60,
+        confidence=0.3,  # < 0.5
+        claim_class="evidence",
+        freshness_class="current",
+    )
+    dismissed_evidence = KnowledgeEntry(  # dismissed — must NOT count
+        project_id=test_project.id,
+        session_id="ses_ae4",
+        user_id=test_user.id,
+        entry_type="discovery",
+        content="Z" * 60,
+        confidence=0.7,
+        claim_class="evidence",
+        freshness_class="current",
+        dismissed=True,
+    )
+    db_session.add_all([eligible_evidence, short_evidence, low_conf_evidence, dismissed_evidence])
+    await db_session.commit()
+
+    resp = await client.get(
+        f"/api/v1/projects/{test_project.id}/health",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+
+    # Only the eligible row counts. pending_entries stays at 0 because
+    # these are evidence rows, not claims yet.
+    assert data["pending_entries"] == 0
+    assert data["auto_promotable_evidence"] == 1, (
+        f"expected 1 auto-promotable evidence row "
+        f"(eligible_evidence), got {data['auto_promotable_evidence']}"
+    )
+
+    # Recommendation must fire — "Run compile" predicts /compile will
+    # process the auto-promotable evidence even though pending_entries=0.
+    rec_text = " ".join(data["recommendations"])
+    assert "1 auto-promotable" in rec_text, (
+        f"missing auto-promotable evidence recommendation: "
+        f"{data['recommendations']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_health_potentially_stale_ignores_notes_and_superseded(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession,
+    test_user: User, test_project: Project,
+):
+    """tk_935a4eb62be94676 R1 MEDIUM 2 regression — potentially_stale must
+    use the same compile-eligible filter as pending_entries. Pre-R1 fix,
+    a project where the compile-eligible claim was already represented
+    in the context document could still flag potentially_stale=True if an
+    uncompiled note or a superseded claim contained terms missing from
+    the doc — driving a false-positive "Context may be stale" warning.
+    """
+    # Set up a project with a compile-eligible claim whose content is
+    # already represented in the context document.
+    test_project.context_document = "# Project Context\n\nPostgreSQL is the chosen database."
+    db_session.add(test_project)
+    await db_session.commit()
+
+    represented_claim = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_rep",
+        user_id=test_user.id,
+        entry_type="decision",
+        content="PostgreSQL database choice for the project",
+        confidence=0.9,
+        claim_class="claim",
+        freshness_class="current",
+    )
+    # An uncompiled note with terms NOT in the doc — must NOT drive stale.
+    unrepresented_note = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_note",
+        user_id=test_user.id,
+        entry_type="pattern",
+        content="Kubernetes deployment topology with helm charts",
+        confidence=0.7,
+        claim_class="note",
+        freshness_class="current",
+    )
+    # A superseded claim with novel terms — must NOT drive stale.
+    superseder_for_test = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_super",
+        user_id=test_user.id,
+        entry_type="decision",
+        content="Newer database choice info",
+        confidence=0.9,
+        claim_class="claim",
+        freshness_class="current",
+    )
+    db_session.add(superseder_for_test)
+    await db_session.commit()
+    await db_session.refresh(superseder_for_test)
+    superseded_with_novel_terms = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_supt",
+        user_id=test_user.id,
+        entry_type="decision",
+        content="Cassandra wide-column distributed storage",
+        confidence=0.8,
+        claim_class="claim",
+        freshness_class="superseded",
+        superseded_by=superseder_for_test.id,
+    )
+    db_session.add_all([represented_claim, unrepresented_note, superseded_with_novel_terms])
+    await db_session.commit()
+
+    resp = await client.get(
+        f"/api/v1/projects/{test_project.id}/health",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+
+    # The compile-eligible claim ("represented_claim" + "superseder_for_test")
+    # are both represented in the doc OR have generic terms that overlap.
+    # The note about Kubernetes and the superseded Cassandra claim contain
+    # novel terms but compile WON'T process them, so they must NOT trigger
+    # the stale flag.
+    assert data["potentially_stale"] is False, (
+        f"potentially_stale must ignore notes + superseded claims; "
+        f"pending_entries={data['pending_entries']}, "
+        f"uncompiled_notes={data['uncompiled_notes']}, "
+        f"recommendations={data['recommendations']}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_search_entries_with_query(
     client: AsyncClient, auth_headers: dict, db_session: AsyncSession,
     test_user: User, test_project: Project,

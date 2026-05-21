@@ -233,6 +233,12 @@ class HealthResponse(BaseModel):
     # /entries/bulk-promote). Separate from pending_entries to avoid the
     # historical inflation bug where this count was lumped into "pending".
     uncompiled_notes: int = 0
+    # auto_promotable_evidence — evidence (claim_class='evidence') that
+    # the compiler's Phase 2a auto-promotion will convert to claims and
+    # then compile. Criteria: confidence >= 0.5 AND len(content) >= 30
+    # AND not dismissed. /compile WILL process these even though
+    # pending_entries skips them at audit time. tk_935a4eb62be94676 R1.
+    auto_promotable_evidence: int = 0
     compiled_entries: int
     dismissed_entries: int
     total_compilations: int
@@ -1286,6 +1292,26 @@ async def project_health(
     )
     uncompiled_notes = uncompiled_notes_result.scalar() or 0
 
+    # Auto-promotable evidence — tk_935a4eb62be94676 R1 MEDIUM 1. The
+    # compiler's Phase 2a auto-promotes evidence rows that meet
+    # confidence >= 0.5 AND length(content) >= 30 BEFORE the pending-claim
+    # select, so an eligible evidence row WILL be compiled even though
+    # health's pending_entries count sees claim_class='evidence' and skips
+    # it. Without this count, a project with only eligible evidence reads
+    # as "nothing to compile" but /compile would process the rows. Mirror
+    # the Phase 2a UPDATE filter so the recommendation can predict whether
+    # compile will do useful work.
+    auto_promotable_result = await db.execute(
+        select(func.count(KnowledgeEntry.id)).where(
+            KnowledgeEntry.project_id == project_id,
+            KnowledgeEntry.claim_class == "evidence",
+            KnowledgeEntry.dismissed == False,  # noqa: E712
+            KnowledgeEntry.confidence >= 0.5,
+            func.length(KnowledgeEntry.content) >= 30,
+        )
+    )
+    auto_promotable_evidence = auto_promotable_result.scalar() or 0
+
     # Compiled entries
     compiled_result = await db.execute(
         select(func.count(KnowledgeEntry.id)).where(
@@ -1326,13 +1352,20 @@ async def project_health(
     word_count = len(context_doc.split()) if context_doc.strip() else 0
     section_count = sum(1 for line in context_doc.splitlines() if line.startswith("## "))
 
-    # Staleness detection: check if pending entries mention numbers/terms not in the doc
+    # Staleness detection: check if compile-eligible claims mention terms
+    # not yet in the doc. tk_935a4eb62be94676 R1 MEDIUM 2 — must use the
+    # SAME filter as pending_entries, otherwise notes / superseded / stale
+    # claims drive a false-positive "Context may be stale" warning when
+    # the compile-eligible pending set is actually represented in the doc.
     potentially_stale = False
     if pending_entries > 0 and context_doc.strip():
         pending_stmt = select(KnowledgeEntry.content).where(
             KnowledgeEntry.project_id == project_id,
             KnowledgeEntry.compiled_at.is_(None),
             KnowledgeEntry.dismissed == False,  # noqa: E712
+            KnowledgeEntry.claim_class == "claim",
+            KnowledgeEntry.freshness_class.in_(["current", "aging"]),
+            KnowledgeEntry.superseded_by.is_(None),
         )
         pending_result_entries = await db.execute(pending_stmt)
         pending_contents = [row[0] for row in pending_result_entries.all()]
@@ -1396,19 +1429,29 @@ async def project_health(
             f"{low_confidence_count} low-confidence entries may be auto-dismissed on next compile"
         )
     # Compile is a human-driven action — there is no scheduler. Surface
-    # a recommendation as soon as there are pending claims, not just when
-    # the queue is large, so the dashboard / agent can prompt the user
-    # before the working set drifts from the compiled context. The
-    # message intensifies for larger queues.
-    if pending_entries > 20:
+    # a recommendation as soon as there are pending claims OR
+    # auto-promotable evidence (R1 MEDIUM 1 — the compiler's Phase 2a
+    # auto-promotion means /compile will do work even when pending_entries
+    # is 0 if there's eligible evidence). The message intensifies for
+    # larger queues.
+    compile_work_total = pending_entries + auto_promotable_evidence
+    if compile_work_total > 20:
         recommendations.append(
-            f"Run compile to process {pending_entries} pending entries"
+            f"Run compile to process {compile_work_total} entries "
+            f"({pending_entries} pending claims, "
+            f"{auto_promotable_evidence} auto-promotable evidence)"
         )
-    elif pending_entries > 0:
-        plural = "entry" if pending_entries == 1 else "entries"
+    elif compile_work_total > 0:
+        parts: list[str] = []
+        if pending_entries > 0:
+            plural = "claim" if pending_entries == 1 else "claims"
+            parts.append(f"{pending_entries} pending {plural}")
+        if auto_promotable_evidence > 0:
+            plural = "evidence row" if auto_promotable_evidence == 1 else "evidence rows"
+            parts.append(f"{auto_promotable_evidence} auto-promotable {plural}")
         recommendations.append(
-            f"{pending_entries} pending {plural} — run compile to fold "
-            f"them into the project context"
+            f"{' + '.join(parts)} — run compile to fold them into "
+            f"the project context"
         )
     # Notes never auto-promote — surface a separate hint so the operator
     # knows to call bulk_promote (or update_entry_confidence + promote_entry).
@@ -1436,6 +1479,7 @@ async def project_health(
         total_entries=total_entries,
         pending_entries=pending_entries,
         uncompiled_notes=uncompiled_notes,
+        auto_promotable_evidence=auto_promotable_evidence,
         compiled_entries=compiled_entries,
         dismissed_entries=dismissed_entries,
         total_compilations=total_compilations,

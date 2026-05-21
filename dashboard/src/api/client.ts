@@ -312,6 +312,7 @@ export interface ProjectHealthResponse {
   total_entries: number;
   pending_entries: number;
   uncompiled_notes?: number;
+  auto_promotable_evidence?: number;
   compiled_entries: number;
   dismissed_entries: number;
   total_compilations: number;
