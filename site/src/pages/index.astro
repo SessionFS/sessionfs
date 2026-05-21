@@ -1,7 +1,7 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
 ---
-<BaseLayout title="SessionFS — The memory layer for AI coding agents" description="A shared control plane for AI coding agents. SessionFS gives Claude Code, Codex, Cursor, Gemini, Bedrock, and Vertex common memory, governed instructions, tickets, and audit.">
+<BaseLayout title="SessionFS — Portable memory for AI coding agents" description="Capture, resume, and hand off AI coding sessions across Claude Code, Codex, Cursor, Gemini, and more. SessionFS turns portable sessions into shared memory, rules, tickets, and audit.">
 
 
   <!-- ========== 1. HERO ========== -->
@@ -17,10 +17,10 @@ import BaseLayout from '../layouts/BaseLayout.astro';
           </svg>
         </div>
         <h1 class="fade-up font-heading text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight leading-[1.1] mb-6">
-          The memory layer<br>for AI coding agents.
+          Capture every session.<br>Carry it across tools.
         </h1>
         <p class="fade-up text-lg sm:text-xl text-muted leading-relaxed max-w-xl mx-auto lg:mx-0 mb-8">
-          SessionFS gives every coding agent your team uses one shared control plane: memory, rules, tickets, and audit. Easy handoffs from humans to agents.
+          SessionFS records AI coding work as portable <span class="font-mono text-txt">.sfs</span> sessions so teams can resume in another tool, hand work to a teammate or agent, and turn every session into shared memory, rules, tickets, and audit.
         </p>
         <div class="fade-up inline-flex items-center gap-3 bg-surface border border-border rounded-lg px-5 py-3 mb-8 font-mono text-sm">
           <span class="text-muted-dim select-none">$</span>
@@ -48,17 +48,19 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <span class="ml-3 text-muted-dim text-[13px] font-mono">~/ terminal</span>
           </div>
           <div class="p-4 sm:p-5 font-mono text-sm leading-relaxed overflow-x-auto">
-            <div class="text-muted-dim">$ <span class="text-accent">sfs ticket start tk_184</span></div>
-            <div class="mt-3 text-muted-dim text-sm uppercase tracking-wider">Loaded context</div>
-            <div class="mt-2 text-txt">Persona: <span class="text-brand">Atlas</span> <span class="text-muted-dim">(Backend Architect)</span></div>
-            <div class="text-txt">Ticket: <span class="text-muted">Review PR #184 auth changes</span></div>
+            <div class="text-muted-dim">$ <span class="text-accent">sfs list --today</span></div>
+            <div class="mt-3 text-muted"><span class="text-brand">ses_a1b2</span> Claude Code&nbsp; "Debug auth middleware"&nbsp; 47 msgs</div>
+            <div class="text-muted"><span class="text-brand">ses_c3d4</span> Codex&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; "Refactor schema"&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 31 msgs</div>
             <div class="border-t border-border mt-3 pt-3 space-y-1">
-              <div class="text-muted"><span class="text-accent">&#10003;</span> Project rules compiled for Codex</div>
-              <div class="text-muted"><span class="text-accent">&#10003;</span> 6 relevant KB claims loaded</div>
-              <div class="text-muted"><span class="text-accent">&#10003;</span> Acceptance criteria attached</div>
-              <div class="text-muted"><span class="text-accent">&#10003;</span> Session provenance active</div>
+              <div class="text-muted-dim">$ <span class="text-accent">sfs resume ses_a1b2 --in codex</span></div>
+              <div class="text-muted"><span class="text-accent">&#10003;</span> Transcript converted for Codex</div>
+              <div class="text-muted"><span class="text-accent">&#10003;</span> Workspace + git snapshot attached</div>
+              <div class="text-muted"><span class="text-accent">&#10003;</span> Rules synced to codex.md</div>
             </div>
-            <div class="border-t border-border mt-3 pt-3 text-accent">Ready. Working as Atlas.</div>
+            <div class="border-t border-border mt-3 pt-3">
+              <div class="text-muted-dim">$ <span class="text-accent">sfs handoff ses_a1b2 --to sarah@company.dev</span></div>
+              <div class="text-accent mt-1">Secure handoff created.</div>
+            </div>
           </div>
         </div>
       </div>
@@ -99,33 +101,33 @@ import BaseLayout from '../layouts/BaseLayout.astro';
     <div class="max-w-5xl mx-auto">
       <div class="grid md:grid-cols-3 gap-5">
 
-        <!-- Memory -->
-        <a href="/features/knowledge-base/" class="glass fade-up p-6 block group" style="border-top: 3px solid #3ddc84;">
+        <!-- Portability -->
+        <a href="/features/" class="glass fade-up p-6 block group" style="border-top: 3px solid #3ddc84;">
           <div class="mb-4">
-            <div class="text-sm font-mono text-accent uppercase tracking-wider mb-3">Memory</div>
-            <h3 class="font-heading font-semibold text-xl mb-3 group-hover:text-brand transition-colors">Agents remember every session</h3>
+            <div class="text-sm font-mono text-accent uppercase tracking-wider mb-3">Portability</div>
+            <h3 class="font-heading font-semibold text-xl mb-3 group-hover:text-brand transition-colors">Capture once. Resume anywhere.</h3>
           </div>
-          <p class="text-muted text-base leading-relaxed mb-4">Every captured session distills into knowledge claims, project context, and a wiki your agents read &mdash; and write back to. When a developer or agent switches tools, the team memory comes with them.</p>
+          <p class="text-muted text-base leading-relaxed mb-4">SessionFS captures AI coding sessions from 9 tools into a portable <span class="font-mono text-txt">.sfs</span> record. Switch machines, switch tools, or come back tomorrow without rebuilding context from scratch.</p>
           <div class="font-mono text-sm text-accent">Learn more &rarr;</div>
         </a>
 
-        <!-- Identity -->
-        <a href="/rules/" class="glass fade-up p-6 block group" style="border-top: 3px solid #4f9cf7;">
+        <!-- Memory -->
+        <a href="/features/knowledge-base/" class="glass fade-up p-6 block group" style="border-top: 3px solid #4f9cf7;">
           <div class="mb-4">
-            <div class="text-sm font-mono text-brand uppercase tracking-wider mb-3">Identity</div>
-            <h3 class="font-heading font-semibold text-xl mb-3 group-hover:text-brand transition-colors">Rules follow every tool</h3>
+            <div class="text-sm font-mono text-brand uppercase tracking-wider mb-3">Memory</div>
+            <h3 class="font-heading font-semibold text-xl mb-3 group-hover:text-brand transition-colors">Captured work becomes team memory</h3>
           </div>
-          <p class="text-muted text-base leading-relaxed mb-4">One canonical rules document compiles to CLAUDE.md, codex.md, .cursorrules, copilot-instructions.md, and GEMINI.md. Agent personas give each role a portable identity with the same instructions in every runtime.</p>
+          <p class="text-muted text-base leading-relaxed mb-4">The raw session becomes summaries, claims, project context, wiki pages, rules provenance, and agent write-back. Memory is built on evidence your team can inspect.</p>
           <div class="font-mono text-sm text-brand">Learn more &rarr;</div>
         </a>
 
-        <!-- Coordination -->
-        <a href="/integrations/ci-integration/" class="glass fade-up p-6 block group" style="border-top: 3px solid #4f9cf7;">
+        <!-- Handoff -->
+        <a href="/features/handoff/" class="glass fade-up p-6 block group" style="border-top: 3px solid #4f9cf7;">
           <div class="mb-4">
-            <div class="text-sm font-mono text-brand uppercase tracking-wider mb-3">Coordination</div>
-            <h3 class="font-heading font-semibold text-xl mb-3 group-hover:text-brand transition-colors">Teams coordinate through tickets</h3>
+            <div class="text-sm font-mono text-brand uppercase tracking-wider mb-3">Handoff</div>
+            <h3 class="font-heading font-semibold text-xl mb-3 group-hover:text-brand transition-colors">Move work with full context</h3>
           </div>
-          <p class="text-muted text-base leading-relaxed mb-4">Tickets carry the work, personas claim it, and AgentRuns record what happened. The same workflow supports human-operated agents today and autonomous review or CI agents tomorrow.</p>
+          <p class="text-muted text-base leading-relaxed mb-4">Send a session to a teammate, another machine, or an agent persona. The recipient gets the conversation, files, git state, rules, ticket, and provenance instead of a pasted summary.</p>
           <div class="font-mono text-sm text-brand">Learn more &rarr;</div>
         </a>
 
@@ -164,8 +166,9 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-20 sm:py-28 px-5 bg-surface/50 noise">
     <div class="max-w-5xl mx-auto flex flex-col lg:flex-row items-center gap-12">
       <div class="lg:w-1/2 fade-up">
-        <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-5">Your team's AI gets smarter with every session.</h2>
-        <p class="text-muted text-lg mb-4 leading-relaxed">Every captured session is automatically distilled into knowledge entries — architecture decisions, debugging patterns, API contracts, and environment quirks. Your codebase builds its own documentation over time.</p>
+        <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-5">Memory starts with a portable session.</h2>
+        <p class="text-muted text-lg mb-4 leading-relaxed">SessionFS captures the raw evidence first: transcript, tool, workspace state, git snapshot, rules, persona, and ticket provenance. That portable record is what makes resume, handoff, audit, and memory reliable.</p>
+        <p class="text-muted text-lg mb-4 leading-relaxed">Then every captured session is distilled into knowledge entries — architecture decisions, debugging patterns, API contracts, and environment quirks. Your codebase builds its own documentation over time.</p>
         <p class="text-muted text-lg mb-6 leading-relaxed">AI agents don't just read the knowledge base — they write back. When an agent discovers something new during a session, it adds the finding automatically via MCP. The next agent picks it up.</p>
         <div class="flex flex-wrap gap-2 mb-6">
           <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-3 py-1 text-sm font-mono text-muted">58 MCP tools</span>

@@ -599,6 +599,7 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       last_client_device: string | null;
       last_sync_at: string | null;
       latest_version: string;
+      default_org_id: string | null;
     }>('/api/v1/auth/me'),
 
     listSessions: (params: {

@@ -1,16 +1,16 @@
 ---
 import BaseLayout from '../../layouts/BaseLayout.astro';
 ---
-<BaseLayout title="Features — SessionFS" activeNav="features" description="Memory, Identity, Coordination, and Governance for AI coding agents.">
+<BaseLayout title="Features — SessionFS" activeNav="features" description="Session portability, capture, handoff, memory, identity, coordination, and governance for AI coding agents.">
 
   <!-- Hero -->
   <section class="relative pt-32 sm:pt-40 pb-16 px-5 noise">
     <div class="max-w-4xl mx-auto text-center">
       <h1 class="fade-up font-heading text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight leading-[1.1] mb-6">
-        Memory. Identity. Coordination.
+        Capture. Resume. Handoff. Remember.
       </h1>
       <p class="fade-up text-lg sm:text-xl text-muted leading-relaxed max-w-xl mx-auto">
-        Agents remember every session, follow the same rules across every tool, and coordinate as a team. Enterprise governance is built in.
+        SessionFS starts with portable AI coding sessions: capture the work, resume it in another tool, hand it to a teammate or agent, then distil it into shared memory and audit.
       </p>
     </div>
   </section>
@@ -20,9 +20,31 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
   <!-- Pillar: Memory -->
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-5xl mx-auto">
-      <div class="fade-up text-sm font-mono text-accent uppercase tracking-wider mb-2">Memory</div>
-      <p class="fade-up text-muted text-base leading-relaxed mb-8 max-w-2xl">Every captured session becomes structured knowledge the next agent can read.</p>
+      <div class="fade-up text-sm font-mono text-accent uppercase tracking-wider mb-2">Session Portability + Memory</div>
+      <p class="fade-up text-muted text-base leading-relaxed mb-8 max-w-2xl">The foundation is the portable <span class="font-mono text-txt">.sfs</span> session: captured from local tools, resumable across runtimes, shareable with teammates, and compiled into knowledge.</p>
       <div class="grid sm:grid-cols-2 gap-5">
+
+        <div class="glass fade-up p-6 block">
+          <div class="flex items-start gap-4">
+            <div class="shrink-0"><svg class="w-8 h-8" fill="none" stroke="#3ddc84" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z"/></svg></div>
+            <div class="flex-1">
+              <h3 class="font-heading font-semibold text-lg mb-2">Session Capture</h3>
+              <p class="text-muted text-base mb-4 leading-relaxed">Background daemon captures every session from 9 local tools &mdash; Claude Code, Codex, Gemini, Copilot, Cursor, Amp, Cline, Roo Code, Kilo Code &mdash; into the portable <span class="font-mono text-txt">.sfs</span> format. Zero developer behaviour change.</p>
+              <div class="font-mono text-sm text-accent bg-bg/50 rounded px-3 py-2">sfs daemon start</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="glass fade-up p-6 block">
+          <div class="flex items-start gap-4">
+            <div class="shrink-0"><svg class="w-8 h-8" fill="none" stroke="#3ddc84" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0011.667 0l3.181-3.183m-4.991-2.696v.001M12 21V9"/></svg></div>
+            <div class="flex-1">
+              <h3 class="font-heading font-semibold text-lg mb-2">Cross-Tool Resume</h3>
+              <p class="text-muted text-base mb-4 leading-relaxed">Start in Claude Code, resume in Codex. Auto-launch + full transcript via <code class="font-mono text-xs">--append-system-prompt-file</code>. Four-tool resume; 9-tool capture.</p>
+              <div class="font-mono text-sm text-accent bg-bg/50 rounded px-3 py-2">sfs resume ses_d20e --in gemini</div>
+            </div>
+          </div>
+        </div>
 
         <a href="/features/knowledge-base/" class="glass fade-up p-6 block group">
           <div class="flex items-start gap-4">
@@ -45,28 +67,6 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
             </div>
           </div>
         </a>
-
-        <div class="glass fade-up p-6 block">
-          <div class="flex items-start gap-4">
-            <div class="shrink-0"><svg class="w-8 h-8" fill="none" stroke="#3ddc84" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z"/></svg></div>
-            <div class="flex-1">
-              <h3 class="font-heading font-semibold text-lg mb-2">Session Capture</h3>
-              <p class="text-muted text-base mb-4 leading-relaxed">Background daemon captures every session from 9 local tools &mdash; Claude Code, Codex, Gemini, Copilot, Cursor, Amp, Cline, Roo Code, Kilo Code &mdash; into the portable .sfs format. Zero developer behaviour change.</p>
-              <div class="font-mono text-sm text-accent bg-bg/50 rounded px-3 py-2">sfs daemon start</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="glass fade-up p-6 block">
-          <div class="flex items-start gap-4">
-            <div class="shrink-0"><svg class="w-8 h-8" fill="none" stroke="#3ddc84" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0011.667 0l3.181-3.183m-4.991-2.696v.001M12 21V9"/></svg></div>
-            <div class="flex-1">
-              <h3 class="font-heading font-semibold text-lg mb-2">Cross-Tool Resume</h3>
-              <p class="text-muted text-base mb-4 leading-relaxed">Start in Claude Code, resume in Codex. Auto-launch + full transcript via <code class="font-mono text-xs">--append-system-prompt-file</code>. Four-tool resume; eight-tool capture.</p>
-              <div class="font-mono text-sm text-accent bg-bg/50 rounded px-3 py-2">sfs resume ses_d20e --in gemini</div>
-            </div>
-          </div>
-        </div>
 
       </div>
     </div>
@@ -124,7 +124,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-5xl mx-auto">
       <div class="fade-up text-sm font-mono text-brand uppercase tracking-wider mb-2">Coordination</div>
-      <p class="fade-up text-muted text-base leading-relaxed mb-8 max-w-2xl">Tickets carry the work. Personas claim it. AgentRuns enforce CI policy on the way out.</p>
+      <p class="fade-up text-muted text-base leading-relaxed mb-8 max-w-2xl">Handoffs move captured sessions between people and agents. Tickets carry the work, personas claim it, and AgentRuns enforce CI policy on the way out.</p>
       <div class="grid sm:grid-cols-2 gap-5">
 
         <div class="glass fade-up p-6 block">
