@@ -14,7 +14,22 @@ const NAV_LINKS = [
   { to: '/projects', label: 'Projects', match: (p: string) => p.startsWith('/projects') },
   { to: '/handoffs', label: 'Handoffs', match: (p: string) => p.startsWith('/handoffs') },
   { to: '/transfers', label: 'Transfers', match: (p: string) => p.startsWith('/transfers') },
-  { to: '/settings', label: 'Settings', match: (p: string) => p.startsWith('/settings') && p !== '/settings/billing' },
+  // Settings catches /settings AND any /settings/* EXCEPT /settings/billing
+  // and /settings/organization which have their own nav entries.
+  {
+    to: '/settings',
+    label: 'Settings',
+    match: (p: string) =>
+      p.startsWith('/settings') && p !== '/settings/billing' && p !== '/settings/organization',
+  },
+  {
+    to: '/settings/organization',
+    label: 'Organization',
+    match: (p: string) => p === '/settings/organization',
+    // Visible only when the user has a default org. Free-tier solo users
+    // don't see Organization in the nav at all.
+    orgOnly: true,
+  },
   { to: '/settings/billing', label: 'Billing', match: (p: string) => p === '/settings/billing' },
 ];
 
@@ -65,7 +80,7 @@ export default function Layout() {
   }, [drawerOpen]);
 
   const allNavLinks = [
-    ...NAV_LINKS,
+    ...NAV_LINKS.filter((link) => !link.orgOnly || !!me.data?.default_org_id),
     ...(isAdmin ? [{ to: '/admin', label: 'Admin', match: (p: string) => p === '/admin' }] : []),
     { to: '/help', label: 'Help', match: (p: string) => p === '/help' },
   ];
@@ -109,7 +124,7 @@ export default function Layout() {
 
         {/* Center: Nav links (desktop only) */}
         <nav className="hidden md:flex items-center gap-1 text-[14px] overflow-x-auto whitespace-nowrap">
-          {NAV_LINKS.map(({ to, label, match }) => {
+          {NAV_LINKS.filter((link) => !link.orgOnly || !!me.data?.default_org_id).map(({ to, label, match }) => {
             const active = match(location.pathname);
             return (
               <Link
