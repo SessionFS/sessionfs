@@ -46,7 +46,7 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy import and_, insert, literal, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sessionfs.server.auth.dependencies import get_current_user
+from sessionfs.server.auth.dependencies import AuthContext, get_current_user, require_scope
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import (
     AgentPersona,
@@ -333,6 +333,7 @@ async def _assert_lease_required_mode(
     project_id: str,
     db: AsyncSession,
     lease_epoch: int | None,
+    auth: AuthContext | None = None,
 ) -> None:
     """v0.10.7 — defense-in-depth: enforce org-level lease_epoch requirement.
 
@@ -347,10 +348,17 @@ async def _assert_lease_required_mode(
     project = (
         await db.execute(select(Project).where(Project.id == project_id))
     ).scalar_one_or_none()
-    if project is None or project.org_id is None:
+    if project is None:
+        return
+    org_id = (
+        auth.org_id
+        if auth is not None and auth.key_kind == "service"
+        else project.org_id
+    )
+    if org_id is None:
         return
     org = (
-        await db.execute(select(Organization).where(Organization.id == project.org_id))
+        await db.execute(select(Organization).where(Organization.id == org_id))
     ).scalar_one_or_none()
     if org is None:
         return
@@ -654,12 +662,17 @@ async def list_tickets(
     assigned_to: str | None = None,
     status: str | None = None,
     priority: str | None = None,
-    user: User = Depends(get_current_user),
+    auth: AuthContext = Depends(require_scope("tickets:read")),
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> list[TicketResponse]:
+    user = auth.user
     check_feature(ctx, "agent_tickets")
-    await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_or_404(project_id, db, user.id)
+    from sessionfs.server.auth.dependencies import (
+        assert_service_key_can_access_project,
+    )
+    await assert_service_key_can_access_project(db, auth, project)
 
     stmt = select(Ticket).where(Ticket.project_id == project_id)
     if assigned_to is not None:
@@ -693,12 +706,17 @@ async def list_tickets(
 async def get_ticket(
     project_id: str,
     ticket_id: str,
-    user: User = Depends(get_current_user),
+    auth: AuthContext = Depends(require_scope("tickets:read")),
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> TicketResponse:
+    user = auth.user
     check_feature(ctx, "agent_tickets")
-    await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_or_404(project_id, db, user.id)
+    from sessionfs.server.auth.dependencies import (
+        assert_service_key_can_access_project,
+    )
+    await assert_service_key_can_access_project(db, auth, project)
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
     deps = await _ticket_dependencies(db, ticket.id)
     return _to_response(ticket, deps)
@@ -710,7 +728,7 @@ async def get_ticket(
 async def get_ticket_review_state(
     project_id: str,
     ticket_id: str,
-    user: User = Depends(get_current_user),
+    auth: AuthContext = Depends(require_scope("tickets:read")),
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ):
@@ -728,8 +746,13 @@ async def get_ticket_review_state(
     """
     from sessionfs.server.services.review_state import compute_review_state
 
+    user = auth.user
     check_feature(ctx, "agent_tickets")
-    await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_or_404(project_id, db, user.id)
+    from sessionfs.server.auth.dependencies import (
+        assert_service_key_can_access_project,
+    )
+    await assert_service_key_can_access_project(db, auth, project)
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
 
     # tk_33a25a12a5cf4dc3 — Shield-SR LOW follow-up from v0.10.11.
@@ -907,7 +930,7 @@ async def start_ticket(
     ticket_id: str,
     force: bool = False,
     tool: str = "generic",
-    user: User = Depends(get_current_user),
+    auth: AuthContext = Depends(require_scope("tickets:write")),
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> StartTicketResponse:
@@ -920,8 +943,13 @@ async def start_ticket(
     as a recovery path. `tool` parameter sizes the compiled context
     to the target tool's token budget (claude-code=16k, codex=8k, etc).
     """
+    user = auth.user
     check_feature(ctx, "agent_tickets")
-    await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_or_404(project_id, db, user.id)
+    from sessionfs.server.auth.dependencies import (
+        assert_service_key_can_access_project,
+    )
+    await assert_service_key_can_access_project(db, auth, project)
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
 
     # Validate that the assigned persona exists at start time
@@ -1004,14 +1032,19 @@ async def complete_ticket(
     project_id: str,
     ticket_id: str,
     body: CompleteTicketRequest,
-    user: User = Depends(get_current_user),
+    auth: AuthContext = Depends(require_scope("tickets:write")),
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> TicketResponse:
     """Move ticket from in_progress → review."""
+    user = auth.user
     check_feature(ctx, "agent_tickets")
-    await _get_project_or_404(project_id, db, user.id)
-    await _assert_lease_required_mode(project_id, db, body.lease_epoch)
+    project = await _get_project_or_404(project_id, db, user.id)
+    from sessionfs.server.auth.dependencies import (
+        assert_service_key_can_access_project,
+    )
+    await assert_service_key_can_access_project(db, auth, project)
+    await _assert_lease_required_mode(project_id, db, body.lease_epoch, auth=auth)
     now = datetime.now(timezone.utc)
     result = await db.execute(
         update(Ticket)
@@ -1370,7 +1403,7 @@ async def list_ticket_comments(
         ),
     ),
     limit: int = Query(200, ge=1, le=500, description="Max comments to return (1-500)."),
-    user: User = Depends(get_current_user),
+    auth: AuthContext = Depends(require_scope("tickets:read")),
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> list[CommentResponse]:
@@ -1384,8 +1417,13 @@ async def list_ticket_comments(
     a created_at (Codex review #1 fix — without the id tiebreaker, a
     same-timestamp poll could permanently skip one of two siblings).
     """
+    user = auth.user
     check_feature(ctx, "agent_tickets")
-    await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_or_404(project_id, db, user.id)
+    from sessionfs.server.auth.dependencies import (
+        assert_service_key_can_access_project,
+    )
+    await assert_service_key_can_access_project(db, auth, project)
     await _get_ticket_or_404(project_id, ticket_id, db)  # validates ticket
     query = (
         select(TicketComment)
@@ -1437,13 +1475,18 @@ async def create_ticket_comment(
     project_id: str,
     ticket_id: str,
     body: CommentCreate,
-    user: User = Depends(get_current_user),
+    auth: AuthContext = Depends(require_scope("tickets:write")),
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> CommentResponse:
+    user = auth.user
     check_feature(ctx, "agent_tickets")
-    await _get_project_or_404(project_id, db, user.id)
-    await _assert_lease_required_mode(project_id, db, body.lease_epoch)
+    project = await _get_project_or_404(project_id, db, user.id)
+    from sessionfs.server.auth.dependencies import (
+        assert_service_key_can_access_project,
+    )
+    await assert_service_key_can_access_project(db, auth, project)
+    await _assert_lease_required_mode(project_id, db, body.lease_epoch, auth=auth)
     comment_id = f"tc_{uuid.uuid4().hex[:16]}"
     now = datetime.now(timezone.utc)
     source = select(
@@ -1454,6 +1497,9 @@ async def create_ticket_comment(
         literal(body.content),
         literal(body.session_id),
         literal(now),
+        literal(auth.actor_type),
+        literal(auth.service_key_id),
+        literal(auth.service_key_name),
     ).where(
         Ticket.id == ticket_id,
         Ticket.project_id == project_id,
@@ -1474,6 +1520,9 @@ async def create_ticket_comment(
                 "content",
                 "session_id",
                 "created_at",
+                "actor_type",
+                "service_key_id",
+                "service_key_name",
             ],
             source,
         )

@@ -44,6 +44,8 @@ from sessionfs.server.db.models import (
     ApiKey,
     OrgMember,
     Organization,
+    Project,
+    Ticket,
     User,
 )
 
@@ -142,6 +144,80 @@ async def _create_service_key(
     await db_session.commit()
     await db_session.refresh(row)
     return row, raw
+
+
+async def _make_org_project(
+    db_session: AsyncSession,
+    org: Organization,
+    owner: User,
+) -> "Project":
+    project = Project(
+        id=f"proj_{uuid.uuid4().hex[:12]}",
+        name=f"svc-ticket-{uuid.uuid4().hex[:6]}",
+        git_remote_normalized=f"github.com/sessionfs/{uuid.uuid4().hex[:8]}",
+        owner_id=owner.id,
+        org_id=org.id,
+        context_document="",
+        created_at=datetime.now(timezone.utc),
+    )
+    db_session.add(project)
+    await db_session.commit()
+    await db_session.refresh(project)
+    return project
+
+
+async def _make_ticket(
+    db_session: AsyncSession,
+    project: "Project",
+    owner: User,
+    *,
+    status: str = "open",
+    assigned_to: str | None = None,
+) -> "Ticket":
+    ticket = Ticket(
+        id=f"tk_{uuid.uuid4().hex[:16]}",
+        project_id=project.id,
+        title=f"svc ticket {uuid.uuid4().hex[:6]}",
+        description="service key route coverage",
+        priority="medium",
+        assigned_to=assigned_to,
+        created_by_user_id=owner.id,
+        status=status,
+        context_refs="[]",
+        file_refs="[]",
+        related_sessions="[]",
+        acceptance_criteria="[]",
+        changed_files="[]",
+        knowledge_entry_ids="[]",
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    db_session.add(ticket)
+    await db_session.commit()
+    await db_session.refresh(ticket)
+    return ticket
+
+
+async def _make_persona(
+    db_session: AsyncSession,
+    project_id: str,
+    owner: User,
+    name: str = "atlas",
+) -> None:
+    from sessionfs.server.db.models import AgentPersona
+
+    db_session.add(
+        AgentPersona(
+            id=f"per_{uuid.uuid4().hex[:12]}",
+            project_id=project_id,
+            name=name,
+            role="Backend",
+            created_by=owner.id,
+            is_active=True,
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+    await db_session.commit()
 
 
 def _hdrs(raw_key: str) -> dict[str, str]:
@@ -919,3 +995,328 @@ async def test_org_admin_cannot_list_other_org_keys(
         f"/api/v1/orgs/{org_b.id}/service-keys", headers=_hdrs(raw_a)
     )
     assert resp.status_code == 404
+
+
+# ── v0.10.10 Phase 3: ticket routes opt into service-key scopes ──
+
+
+@pytest.mark.asyncio
+async def test_service_key_tickets_read_routes_allowed(
+    client: AsyncClient, db_session: AsyncSession
+):
+    from sessionfs.server.db.models import TicketComment
+
+    org, admin, _ = await _make_org_with_admin(db_session, slug="tickets-read")
+    project = await _make_org_project(db_session, org, admin)
+    ticket = await _make_ticket(db_session, project, admin)
+    db_session.add(
+        TicketComment(
+            id=f"tc_{uuid.uuid4().hex[:16]}",
+            ticket_id=ticket.id,
+            author_user_id=admin.id,
+            content="ready for polling",
+        )
+    )
+    await db_session.commit()
+    _row, svc_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["tickets:read"],
+        project_ids=[project.id],
+    )
+
+    list_resp = await client.get(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(svc_key),
+    )
+    assert list_resp.status_code == 200, list_resp.text
+    assert [row["id"] for row in list_resp.json()] == [ticket.id]
+
+    get_resp = await client.get(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}",
+        headers=_hdrs(svc_key),
+    )
+    assert get_resp.status_code == 200, get_resp.text
+    assert get_resp.json()["id"] == ticket.id
+
+    comments_resp = await client.get(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/comments",
+        headers=_hdrs(svc_key),
+    )
+    assert comments_resp.status_code == 200, comments_resp.text
+    assert comments_resp.json()[0]["content"] == "ready for polling"
+
+    review_resp = await client.get(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/review-state",
+        headers=_hdrs(svc_key),
+    )
+    assert review_resp.status_code == 200, review_resp.text
+    assert review_resp.json() == {"ticket_id": ticket.id, "review_state": None}
+
+
+@pytest.mark.asyncio
+async def test_service_key_tickets_write_routes_allowed_and_comment_audited(
+    client: AsyncClient, db_session: AsyncSession
+):
+    from sessionfs.server.db.models import TicketComment
+    from sqlalchemy import select as _sel
+
+    org, admin, _ = await _make_org_with_admin(db_session, slug="tickets-write")
+    project = await _make_org_project(db_session, org, admin)
+    await _make_persona(db_session, project.id, admin)
+    ticket = await _make_ticket(db_session, project, admin, assigned_to="atlas")
+    svc_row, svc_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["tickets:write"],
+        project_ids=[project.id],
+    )
+
+    comment_resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/comments",
+        headers=_hdrs(svc_key),
+        json={"content": "triage says start this", "author_persona": "n8n"},
+    )
+    assert comment_resp.status_code == 201, comment_resp.text
+    comment = (
+        await db_session.execute(
+            _sel(TicketComment).where(TicketComment.id == comment_resp.json()["id"])
+        )
+    ).scalar_one()
+    assert comment.actor_type == "service_key"
+    assert comment.service_key_id == svc_row.id
+    assert comment.service_key_name == svc_row.service_key_name
+
+    start_resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/start",
+        headers=_hdrs(svc_key),
+    )
+    assert start_resp.status_code == 200, start_resp.text
+    lease_epoch = start_resp.json()["ticket"]["lease_epoch"]
+
+    complete_resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/complete",
+        headers=_hdrs(svc_key),
+        json={"notes": "finished", "lease_epoch": lease_epoch},
+    )
+    assert complete_resp.status_code == 200, complete_resp.text
+    assert complete_resp.json()["status"] == "review"
+
+
+@pytest.mark.asyncio
+async def test_service_key_tickets_insufficient_scope_denied(
+    client: AsyncClient, db_session: AsyncSession
+):
+    org, admin, _ = await _make_org_with_admin(db_session, slug="ticket-scope")
+    project = await _make_org_project(db_session, org, admin)
+    ticket = await _make_ticket(db_session, project, admin)
+    _row, svc_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["tickets:read"],
+        project_ids=[project.id],
+    )
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/comments",
+        headers=_hdrs(svc_key),
+        json={"content": "should not write"},
+    )
+    assert resp.status_code == 403, resp.text
+    structured = _structured_error(resp.json())
+    assert structured.get("error") == "insufficient_scope", resp.json()
+    assert structured.get("required") == ["tickets:write"]
+    assert structured.get("current") == ["tickets:read"]
+
+
+@pytest.mark.asyncio
+async def test_service_key_tickets_project_allowlist_denied_before_write(
+    client: AsyncClient, db_session: AsyncSession
+):
+    from sessionfs.server.db.models import TicketComment
+    from sqlalchemy import func, select as _sel
+
+    org, admin, _ = await _make_org_with_admin(db_session, slug="ticket-allow")
+    allowed_project = await _make_org_project(db_session, org, admin)
+    denied_project = await _make_org_project(db_session, org, admin)
+    denied_ticket = await _make_ticket(db_session, denied_project, admin)
+    _row, svc_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["tickets:read", "tickets:write"],
+        project_ids=[allowed_project.id],
+    )
+
+    read_resp = await client.get(
+        f"/api/v1/projects/{denied_project.id}/tickets",
+        headers=_hdrs(svc_key),
+    )
+    assert read_resp.status_code == 403, read_resp.text
+    structured = _structured_error(read_resp.json())
+    assert structured.get("error") == "project_not_in_allowlist", read_resp.json()
+
+    before = (
+        await db_session.execute(_sel(func.count(TicketComment.id)))
+    ).scalar()
+    write_resp = await client.post(
+        f"/api/v1/projects/{denied_project.id}/tickets/{denied_ticket.id}/comments",
+        headers=_hdrs(svc_key),
+        json={"content": "must not land"},
+    )
+    assert write_resp.status_code == 403, write_resp.text
+    structured = _structured_error(write_resp.json())
+    assert structured.get("error") == "project_not_in_allowlist", write_resp.json()
+    after = (
+        await db_session.execute(_sel(func.count(TicketComment.id)))
+    ).scalar()
+    assert after == before
+
+
+@pytest.mark.asyncio
+async def test_service_key_ticket_lease_required_mode_and_stale_fence(
+    client: AsyncClient, db_session: AsyncSession
+):
+    import json as _json
+
+    org, admin, _ = await _make_org_with_admin(db_session, slug="ticket-lease")
+    org.settings = _json.dumps({"require_lease_epoch_on_ticket_writes": True})
+    project = await _make_org_project(db_session, org, admin)
+    await _make_persona(db_session, project.id, admin)
+    ticket = await _make_ticket(db_session, project, admin, assigned_to="atlas")
+    _row, svc_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["tickets:write"],
+        project_ids=[project.id],
+    )
+
+    start_resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/start",
+        headers=_hdrs(svc_key),
+    )
+    assert start_resp.status_code == 200, start_resp.text
+    lease_epoch = start_resp.json()["ticket"]["lease_epoch"]
+
+    no_lease_comment = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/comments",
+        headers=_hdrs(svc_key),
+        json={"content": "no lease"},
+    )
+    assert no_lease_comment.status_code == 422, no_lease_comment.text
+
+    with_lease_comment = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/comments",
+        headers=_hdrs(svc_key),
+        json={"content": "with lease", "lease_epoch": lease_epoch},
+    )
+    assert with_lease_comment.status_code == 201, with_lease_comment.text
+
+    no_lease_complete = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/complete",
+        headers=_hdrs(svc_key),
+        json={"notes": "no lease"},
+    )
+    assert no_lease_complete.status_code == 422, no_lease_complete.text
+
+    stale_complete = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/complete",
+        headers=_hdrs(svc_key),
+        json={"notes": "stale", "lease_epoch": lease_epoch - 1},
+    )
+    assert stale_complete.status_code == 409, stale_complete.text
+
+    complete_resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/complete",
+        headers=_hdrs(svc_key),
+        json={"notes": "done", "lease_epoch": lease_epoch},
+    )
+    assert complete_resp.status_code == 200, complete_resp.text
+    assert complete_resp.json()["status"] == "review"
+
+
+@pytest.mark.asyncio
+async def test_service_key_still_denied_on_unconverted_ticket_route(
+    client: AsyncClient, db_session: AsyncSession
+):
+    org, admin, _ = await _make_org_with_admin(db_session, slug="ticket-deny")
+    project = await _make_org_project(db_session, org, admin)
+    ticket = await _make_ticket(db_session, project, admin, status="review")
+    _row, svc_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["tickets:write"],
+        project_ids=[project.id],
+    )
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/accept",
+        headers=_hdrs(svc_key),
+    )
+    assert resp.status_code == 403, resp.text
+    structured = _structured_error(resp.json())
+    assert structured.get("error") == "service_key_not_allowed", resp.json()
+
+
+@pytest.mark.asyncio
+async def test_user_key_regression_on_converted_ticket_routes(
+    client: AsyncClient, db_session: AsyncSession
+):
+    from sessionfs.server.db.models import TicketComment
+    from sqlalchemy import select as _sel
+
+    org, admin, user_key = await _make_org_with_admin(db_session, slug="ticket-user")
+    project = await _make_org_project(db_session, org, admin)
+    await _make_persona(db_session, project.id, admin)
+    ticket = await _make_ticket(db_session, project, admin, assigned_to="atlas")
+
+    list_resp = await client.get(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(user_key),
+    )
+    assert list_resp.status_code == 200, list_resp.text
+
+    get_resp = await client.get(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}",
+        headers=_hdrs(user_key),
+    )
+    assert get_resp.status_code == 200, get_resp.text
+
+    comment_resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/comments",
+        headers=_hdrs(user_key),
+        json={"content": "still a user-key comment"},
+    )
+    assert comment_resp.status_code == 201, comment_resp.text
+    comment = (
+        await db_session.execute(
+            _sel(TicketComment).where(TicketComment.id == comment_resp.json()["id"])
+        )
+    ).scalar_one()
+    assert comment.actor_type == "user"
+    assert comment.service_key_id is None
+
+    comments_resp = await client.get(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/comments",
+        headers=_hdrs(user_key),
+    )
+    assert comments_resp.status_code == 200, comments_resp.text
+
+    start_resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/start",
+        headers=_hdrs(user_key),
+    )
+    assert start_resp.status_code == 200, start_resp.text
+    lease_epoch = start_resp.json()["ticket"]["lease_epoch"]
+
+    complete_resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/complete",
+        headers=_hdrs(user_key),
+        json={"notes": "done by user", "lease_epoch": lease_epoch},
+    )
+    assert complete_resp.status_code == 200, complete_resp.text
