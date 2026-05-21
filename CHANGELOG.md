@@ -5,6 +5,58 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.18] - 2026-05-21
+
+Opts ticket routes into service-key auth (v0.10.10 Phase 3). Unblocks the n8n triage agent and every future CI/cloud-agent integration that touches tickets.
+
+### Added
+
+**Service-key access to ticket routes** (`tk_1ea90b1d210d40a8`). 7 ticket routes converted to `require_scope` dependencies, mirroring the v0.10.10 agent_runs/handoffs pattern exactly:
+
+READ (`require_scope("tickets:read")`):
+- `GET /projects/{pid}/tickets` (list)
+- `GET /projects/{pid}/tickets/{tid}`
+- `GET /projects/{pid}/tickets/{tid}/comments`
+- `GET /projects/{pid}/tickets/{tid}/review-state`
+
+WRITE (`require_scope("tickets:write")`):
+- `POST /projects/{pid}/tickets/{tid}/comments`
+- `POST /projects/{pid}/tickets/{tid}/start`
+- `POST /projects/{pid}/tickets/{tid}/complete`
+
+For every converted route: `assert_service_key_can_access_project(db, auth, project)` runs before any DB work — enforces both the org boundary (`service_key.org_id == project.org_id`) and the optional per-key project allowlist. For write routes: `TicketComment` audit rows now populate `actor_type` / `service_key_id` / `service_key_name` from `AuthContext` so service keys never silently impersonate humans in provenance.
+
+Lease-epoch fencing on `/comments` and `/complete` preserved under service-key callers. `_assert_lease_required_mode` accepts the new `AuthContext` and sources `require_lease_epoch_on_ticket_writes` from `auth.org_id` (the service key's bound org), falling back to `project.org_id` for legacy user-key paths. Stale-lease fence still uses the row-count atomic-UPDATE pattern (unchanged).
+
+Resolve/escalate/approve/dismiss/create routes intentionally NOT converted — out of scope per the ticket. User keys with the `*` wildcard scope continue to work on all converted routes.
+
+`docs/api-keys.md` updated: `tickets:read` + `tickets:write` moved from "reserved for Phase 3 route opt-in" to "✅ live" with full endpoint lists. New triage-bot persona example added to "When to mint one".
+
+### Tests
+
+7 new regression tests in `tests/server/integration/test_scoped_service_keys.py`:
+- `test_service_key_can_list_tickets_with_read_scope`
+- `test_service_key_can_read_ticket_detail_and_comments_and_review_state`
+- `test_service_key_can_start_complete_and_comment_with_write_scope` (asserts `actor_type='service_key'` + key id/name populated on the comment row)
+- `test_service_key_tickets_insufficient_scope_denied` (asserts `insufficient_scope` 403 with `required` + `current` arrays)
+- `test_service_key_tickets_project_allowlist_denied_before_write` (asserts `project_not_in_allowlist` and pre-write denial with `COUNT(comments)` unchanged)
+- `test_service_key_still_denied_on_unconverted_ticket_route` (POST /accept still rejects with `service_key_not_allowed`)
+- `test_service_key_ticket_lease_required_mode_and_stale_fence` (422 on missing lease, 409 on stale lease, 200/201 on valid lease)
+- `test_user_key_regression_on_converted_ticket_routes` (user keys still 200, audit row `actor_type='user'`)
+
+### Notes
+
+- **Tests:** 1942 backend + 186 dashboard passing (+7 net new). 2 xfail-strict pre-existing.
+- **MCP tools:** 58 (unchanged).
+- **Migrations:** 001–042 (no new — migration 042 already added the `actor_type` / `service_key_id` / `service_key_name` columns on `TicketComment`).
+- **No new endpoints.** Pure auth-boundary widening on existing routes.
+- **Compatibility:** Additive. User keys continue to authorize identically. Service keys gain access to the converted ticket routes; all other ticket routes (`resolve`, `escalate`, `approve`, `dismiss`, `accept`, `POST /tickets`) still reject service keys with `service_key_not_allowed`.
+
+### Process notes
+
+- **AgentRun pattern miss documented for follow-up.** The work shape (orchestrator spawns Codex CLI as Atlas with a ticket-scoped prompt → Codex edits + tests + reports) is exactly what v0.10.2's AgentRun + CI Integration was designed to capture. This release bypassed it (no `create_agent_run` record exists for the Codex session that did the implementation). Atlas/Forge follow-up: document the orchestrator pattern in `docs/integrations/cloud-agents.mdx` so the next external-agent spawn uses AgentRun for provenance.
+- **Persona name case-sensitivity bug surfaced.** The ticket was assigned to `Atlas` (capitalized) but the active persona record is `atlas`. MCP `start_ticket` rejects with 400 because the match is case-sensitive. Worked around via `assign_persona` to `atlas`. Atlas to file a follow-up ticket: either match case-insensitively in the persona resolver or validate against the persona registry at ticket-create / assign-time.
+
 ## [0.10.17] - 2026-05-21
 
 `knowledge_health` API + MCP fix. The `pending_entries` count was a generalized "uncompiled non-dismissed claims" — it counted superseded/stale claims (compile skips) and missed auto-promotable evidence (compile processes). Operators got "Run compile to process N pending entries" advice that lied in both directions: stayed flat after a successful compile, and reported 0 for projects with only eligible evidence.
