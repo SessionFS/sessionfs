@@ -17,14 +17,36 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.10.17 -->
+      <!-- v0.10.18 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
-            <span class="text-brand font-semibold">v0.10.17</span>
+            <span class="text-brand font-semibold">v0.10.18</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">May 21, 2026</span>
           <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Ticket Routes Opt Into Service-Key Auth &mdash; <span class="font-mono text-accent text-sm">tickets:read</span> + <span class="font-mono text-accent text-sm">tickets:write</span> Now Live</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>v0.10.10 Phase 3 route opt-in for the ticket surface</strong> (<span class="font-mono">tk_1ea90b1d210d40a8</span>). Unblocks the n8n triage agent build and every future CI / cloud-agent integration that touches tickets. Mirrors the v0.10.10 <span class="font-mono text-accent text-sm">agent_runs</span> + <span class="font-mono text-accent text-sm">handoffs</span> conversion pattern exactly.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>READ routes converted to <span class="font-mono text-accent text-sm">require_scope('tickets:read')</span></strong>: <span class="font-mono text-accent text-sm">GET /projects/&#123;pid&#125;/tickets</span>, <span class="font-mono text-accent text-sm">GET /projects/&#123;pid&#125;/tickets/&#123;tid&#125;</span>, <span class="font-mono text-accent text-sm">GET /projects/&#123;pid&#125;/tickets/&#123;tid&#125;/comments</span>, <span class="font-mono text-accent text-sm">GET /projects/&#123;pid&#125;/tickets/&#123;tid&#125;/review-state</span>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>WRITE routes converted to <span class="font-mono text-accent text-sm">require_scope('tickets:write')</span></strong>: <span class="font-mono text-accent text-sm">POST /projects/&#123;pid&#125;/tickets/&#123;tid&#125;/comments</span>, <span class="font-mono text-accent text-sm">POST /projects/&#123;pid&#125;/tickets/&#123;tid&#125;/start</span>, <span class="font-mono text-accent text-sm">POST /projects/&#123;pid&#125;/tickets/&#123;tid&#125;/complete</span>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Cross-org safety</strong> &mdash; every converted route runs <span class="font-mono text-accent text-sm">assert_service_key_can_access_project(db, auth, project)</span> before any DB work. <span class="font-mono text-accent text-sm">TicketComment</span> audit rows now populate <span class="font-mono text-accent text-sm">actor_type</span>, <span class="font-mono text-accent text-sm">service_key_id</span>, and <span class="font-mono text-accent text-sm">service_key_name</span> from <span class="font-mono text-accent text-sm">AuthContext</span> so service keys never silently impersonate humans. Lease-epoch fencing on <span class="font-mono text-accent text-sm">complete</span> / <span class="font-mono text-accent text-sm">comment</span> preserved.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Out of scope this release</strong> &mdash; <span class="font-mono text-accent text-sm">resolve</span> / <span class="font-mono text-accent text-sm">escalate</span> / <span class="font-mono text-accent text-sm">approve</span> / <span class="font-mono text-accent text-sm">dismiss</span> / <span class="font-mono text-accent text-sm">create</span> stay on the legacy <span class="font-mono text-accent text-sm">get_current_user</span> dependency and continue to reject service keys with <span class="font-mono text-accent text-sm">service_key_not_allowed</span>. User keys continue to work on all converted routes.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong><span class="font-mono text-accent text-sm">docs/api-keys.md</span> updated</strong> &mdash; <span class="font-mono text-accent text-sm">tickets:read</span> + <span class="font-mono text-accent text-sm">tickets:write</span> moved from the "reserved" rows to "&#9989; live" with the exact endpoint lists. New triage-bot persona example added to the "When to mint one" section.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">1,942 backend + 186 dashboard UI tests passing (was 1,935 + 186 at v0.10.17; +7 net new) &middot; 42 migrations (no new) &middot; 58 MCP tools (unchanged) &middot; no new endpoints &middot; no schema changes. Backend test additions live in <span class="font-mono text-accent text-sm">tests/server/integration/test_scoped_service_keys.py</span> covering ticket scope acceptance + cross-org denial + insufficient-scope rejection + audit-row provenance.</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.10.17 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.10.17</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">May 21, 2026</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Knowledge Health Fix &mdash; <span class="font-mono text-accent text-sm">pending_entries</span> Now Matches the Compile Pipeline + Two New Counters</h2>
         <ul class="space-y-2 text-base text-muted">

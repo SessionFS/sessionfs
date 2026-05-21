@@ -216,7 +216,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
-**v0.10.17 — Public Beta.** 1935 backend tests + 186 dashboard tests passing. 42 database migrations. 58 MCP tools. v0.10.17 fixes `knowledge_health.pending_entries` to mirror the compile pipeline exactly + adds `auto_promotable_evidence` (evidence the compiler auto-promotes) and `uncompiled_notes` (notes needing `bulk_promote`) fields. Recommendations no longer mislead — "Run compile" only fires when compile will actually do work; notes-only projects get bulk_promote guidance instead.
+**v0.10.18 — Public Beta.** 1942 backend tests + 186 dashboard tests passing. 42 database migrations. 58 MCP tools. v0.10.18 opts the ticket routes into v0.10.10 service-key auth (Phase 3): 7 routes converted to `require_scope("tickets:read")` / `require_scope("tickets:write")`, with `assert_service_key_can_access_project` enforcing org boundary + per-key project allowlist, `TicketComment` audit rows stamped with service-key provenance, and lease-epoch fencing preserved under service-key callers. `tickets:read` / `tickets:write` move from "reserved" to "live". Unblocks n8n triage agents and every CI/cloud-agent integration that touches tickets.
 
 ### Session capture, resume, and search
 

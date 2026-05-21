@@ -17,12 +17,13 @@ The CEO-mandated rule: **service keys are the recommended credential for any non
 
 ### When to mint one
 
-At v0.10.11 the two live capabilities are **handoff lifecycle** and **CI agent runs** (see [Scope vocabulary](#scope-vocabulary) for the current opt-in status):
+At v0.10.11 the live capabilities are **handoff lifecycle**, **CI agent runs**, and **ticket triage** (see [Scope vocabulary](#scope-vocabulary) for the current opt-in status):
 
 - A cloud agent (Bedrock action group, Vertex function calling) that sends and claims handoffs on behalf of users — give it `handoffs:write`.
 - A GitHub Actions or GitLab MR runner that reports build/review findings — give it `agent_runs:write`. The same key can also `POST /handoffs/{id}/comments` if you add `handoffs:write`.
+- A triage or workflow bot that polls tickets, reads comments/review state, posts triage comments, and moves tickets through start/complete — give it `tickets:read` and `tickets:write`.
 
-For workloads that depend on the reserved scopes (KB writes, ticket comments, persona/rules updates), continue using personal user keys until the Phase 3 route opt-in lands. The bookkeeping is identical — `SESSIONFS_API_KEY` works for either kind — so the eventual migration is just one line per CI job (the mint command's `--scope` flags).
+For workloads that depend on the remaining reserved scopes (KB writes, persona/rules updates, read-side handoffs/sessions/agent-runs), continue using personal user keys until their Phase 3 route opt-in lands. The bookkeeping is identical — `SESSIONFS_API_KEY` works for either kind — so the eventual migration is just one line per CI job (the mint command's `--scope` flags).
 
 Service keys live on an organization, are minted by an org admin, and are enforced **deny-by-default**: a service key can only call routes that explicitly opted in via `require_scope(...)` and only when one of the route's required scopes is in the key's scope list. Every other route (read-side, dashboard, billing, ungated writes) rejects service keys with `service_key_not_allowed` (see [Errors](#errors) below).
 
@@ -36,10 +37,10 @@ The 14 capability scopes defined at v0.10.11. The `*` wildcard is **reserved for
 |---|---|---|
 | `handoffs:write` | ✅ live | `POST /api/v1/handoffs`, `POST /api/v1/handoffs/{id}/claim`, `POST /api/v1/handoffs/{id}/revoke`, `POST /api/v1/handoffs/{id}/decline`, `POST /api/v1/handoffs/{id}/comments` |
 | `agent_runs:write` | ✅ live | `POST /api/v1/projects/{project_id}/agent-runs`, `POST /api/v1/projects/{project_id}/agent-runs/{run_id}/complete` |
+| `tickets:read` | ✅ live | `GET /api/v1/projects/{project_id}/tickets`, `GET /api/v1/projects/{project_id}/tickets/{ticket_id}`, `GET /api/v1/projects/{project_id}/tickets/{ticket_id}/comments`, `GET /api/v1/projects/{project_id}/tickets/{ticket_id}/review-state` |
+| `tickets:write` | ✅ live | `POST /api/v1/projects/{project_id}/tickets/{ticket_id}/comments`, `POST /api/v1/projects/{project_id}/tickets/{ticket_id}/start`, `POST /api/v1/projects/{project_id}/tickets/{ticket_id}/complete` |
 | `sessions:read` | reserved | — |
 | `handoffs:read` | reserved | — |
-| `tickets:read` | reserved | — |
-| `tickets:write` | reserved | — |
 | `personas:read` | reserved | — |
 | `personas:write` | reserved | — |
 | `knowledge:read` | reserved | — |
@@ -50,7 +51,7 @@ The 14 capability scopes defined at v0.10.11. The `*` wildcard is **reserved for
 | `retrieval_audit:read` | reserved | — |
 | `admin:*` | reserved | — |
 
-Practically, this means today's service keys are useful for **handoff lifecycle automation** (Bedrock/Vertex bots sending and claiming handoffs, GitHub Actions / GitLab MR runners posting handoff comments) and **CI agent runs** (test runners reporting findings). Reserved scopes are safe to include on a key — they just won't unlock any routes until the Phase 3 opt-in lands. The key reject-by-default posture means a leak today exposes only the live scope surface.
+Practically, this means today's service keys are useful for **handoff lifecycle automation** (Bedrock/Vertex bots sending and claiming handoffs, GitHub Actions / GitLab MR runners posting handoff comments), **CI agent runs** (test runners reporting findings), and **ticket triage automation** (bots polling tickets, reading review state, posting comments, and moving assigned tickets through start/complete). Reserved scopes are safe to include on a key — they just won't unlock any routes until the Phase 3 opt-in lands. The key reject-by-default posture means a leak today exposes only the live scope surface.
 
 List the live vocabulary from the CLI: `sfs admin service-keys scopes`.
 
@@ -109,6 +110,29 @@ sfs admin service-keys create \
 ```
 
 The key will be rejected with `project_not_in_allowlist` if it tries to act on `proj_backend`. Useful for siloing CI jobs to a specific repo cluster within a multi-project org.
+
+### Ticket triage example
+
+```bash
+TRIAGE_KEY=$(sfs admin service-keys create \
+  --org org_9e39b81833e6fdd5 \
+  --name "n8n-triage-agent" \
+  --scope tickets:read \
+  --scope tickets:write \
+  --project proj_c0242b0fccbd48b4 \
+  --expires-days 90 \
+  --output-key)
+
+curl -sS \
+  -H "Authorization: Bearer $TRIAGE_KEY" \
+  "https://api.sessionfs.dev/api/v1/projects/proj_c0242b0fccbd48b4/tickets?status=open"
+
+curl -sS -X POST \
+  -H "Authorization: Bearer $TRIAGE_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"content":"Queued by n8n triage.","author_persona":"n8n-triage"}' \
+  "https://api.sessionfs.dev/api/v1/projects/proj_c0242b0fccbd48b4/tickets/tk_123/comments"
+```
 
 ### List, rotate, revoke
 
