@@ -589,6 +589,141 @@ async def test_health_potentially_stale_ignores_notes_and_superseded(
 
 
 @pytest.mark.asyncio
+async def test_health_auto_promotable_excludes_stale_and_superseded_evidence(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession,
+    test_user: User, test_project: Project,
+):
+    """tk_935a4eb62be94676 R2 LOW 1 regression — auto_promotable_evidence
+    must filter on the SAME post-promotion predicates Phase 2b uses
+    (compiled_at IS NULL, current/aging freshness, no superseder).
+    Otherwise we count rows that promote to claim but Phase 2b skips,
+    and the operator gets misleading "run compile to fold them into
+    context" advice.
+    """
+    eligible = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_ok",
+        user_id=test_user.id,
+        entry_type="discovery",
+        content="A" * 60,
+        confidence=0.7,
+        claim_class="evidence",
+        freshness_class="current",
+    )
+    stale_evidence = KnowledgeEntry(  # stale — Phase 2b would skip
+        project_id=test_project.id,
+        session_id="ses_stale",
+        user_id=test_user.id,
+        entry_type="discovery",
+        content="B" * 60,
+        confidence=0.7,
+        claim_class="evidence",
+        freshness_class="stale",
+    )
+    already_compiled_evidence = KnowledgeEntry(  # compiled — Phase 2b skips
+        project_id=test_project.id,
+        session_id="ses_comp",
+        user_id=test_user.id,
+        entry_type="discovery",
+        content="C" * 60,
+        confidence=0.7,
+        claim_class="evidence",
+        freshness_class="current",
+        compiled_at=datetime.now(timezone.utc),
+    )
+    # Superseded evidence — Phase 2b skips
+    superseder_claim = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_sup_a",
+        user_id=test_user.id,
+        entry_type="discovery",
+        content="D" * 60,
+        confidence=0.9,
+        claim_class="claim",
+        freshness_class="current",
+    )
+    db_session.add(superseder_claim)
+    await db_session.commit()
+    await db_session.refresh(superseder_claim)
+    superseded_evidence = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_sup_b",
+        user_id=test_user.id,
+        entry_type="discovery",
+        content="E" * 60,
+        confidence=0.7,
+        claim_class="evidence",
+        freshness_class="superseded",
+        superseded_by=superseder_claim.id,
+    )
+    db_session.add_all([eligible, stale_evidence, already_compiled_evidence, superseded_evidence])
+    await db_session.commit()
+
+    resp = await client.get(
+        f"/api/v1/projects/{test_project.id}/health",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+
+    # Only `eligible` matches Phase 2a + survives Phase 2b
+    assert data["auto_promotable_evidence"] == 1, (
+        f"expected exactly 1 auto-promotable evidence (eligible only — "
+        f"stale + already-compiled + superseded must be excluded), "
+        f"got {data['auto_promotable_evidence']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_health_no_compile_advice_when_only_notes_exist(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession,
+    test_user: User, test_project: Project,
+):
+    """tk_935a4eb62be94676 R2 LOW 2 regression — the "No compilations yet"
+    recommendation must not fire for a project that has entries but no
+    compile-eligible work. A fresh project with only notes or ineligible
+    evidence should get bulk_promote / claim-creation guidance, not run-
+    compile advice that would no-op.
+    """
+    note = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_note_only",
+        user_id=test_user.id,
+        entry_type="pattern",
+        content="Manual note that needs promotion",
+        confidence=0.7,
+        claim_class="note",
+        freshness_class="current",
+    )
+    db_session.add(note)
+    await db_session.commit()
+
+    resp = await client.get(
+        f"/api/v1/projects/{test_project.id}/health",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+
+    assert data["pending_entries"] == 0
+    assert data["auto_promotable_evidence"] == 0
+    assert data["uncompiled_notes"] == 1
+    assert data["total_compilations"] == 0
+
+    rec_text = " ".join(data["recommendations"])
+    # MUST NOT advise "run compile to build context" — there's nothing
+    # for compile to do.
+    assert "No compilations yet — run compile" not in rec_text, (
+        f"misleading 'run compile to build context' fired with no "
+        f"compile-eligible work: {data['recommendations']}"
+    )
+    # MUST surface the bulk_promote hint instead
+    assert "1 uncompiled note" in rec_text, (
+        f"missing bulk_promote hint: {data['recommendations']}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_search_entries_with_query(
     client: AsyncClient, auth_headers: dict, db_session: AsyncSession,
     test_user: User, test_project: Project,

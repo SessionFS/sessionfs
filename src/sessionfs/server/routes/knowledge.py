@@ -1292,15 +1292,16 @@ async def project_health(
     )
     uncompiled_notes = uncompiled_notes_result.scalar() or 0
 
-    # Auto-promotable evidence — tk_935a4eb62be94676 R1 MEDIUM 1. The
-    # compiler's Phase 2a auto-promotes evidence rows that meet
-    # confidence >= 0.5 AND length(content) >= 30 BEFORE the pending-claim
-    # select, so an eligible evidence row WILL be compiled even though
-    # health's pending_entries count sees claim_class='evidence' and skips
-    # it. Without this count, a project with only eligible evidence reads
-    # as "nothing to compile" but /compile would process the rows. Mirror
-    # the Phase 2a UPDATE filter so the recommendation can predict whether
-    # compile will do useful work.
+    # Auto-promotable evidence — tk_935a4eb62be94676 R1 MEDIUM 1 + R2
+    # LOW 1. The count must represent evidence that will (a) auto-promote
+    # in compiler.py Phase 2a (claim_class='evidence' AND confidence >= 0.5
+    # AND length(content) >= 30 AND not dismissed) AND (b) survive Phase 2b
+    # after promotion (compiled_at IS NULL AND current/aging freshness AND
+    # superseded_by IS NULL). Otherwise we count rows that promote to claim
+    # but Phase 2b skips, and the operator gets "run compile to fold them
+    # into context" advice that's wrong. Promotion does NOT mutate
+    # compiled_at / freshness_class / superseded_by, so the predicates we
+    # check now match what Phase 2b will see post-promotion.
     auto_promotable_result = await db.execute(
         select(func.count(KnowledgeEntry.id)).where(
             KnowledgeEntry.project_id == project_id,
@@ -1308,6 +1309,9 @@ async def project_health(
             KnowledgeEntry.dismissed == False,  # noqa: E712
             KnowledgeEntry.confidence >= 0.5,
             func.length(KnowledgeEntry.content) >= 30,
+            KnowledgeEntry.compiled_at.is_(None),
+            KnowledgeEntry.freshness_class.in_(["current", "aging"]),
+            KnowledgeEntry.superseded_by.is_(None),
         )
     )
     auto_promotable_evidence = auto_promotable_result.scalar() or 0
@@ -1469,10 +1473,24 @@ async def project_health(
         recommendations.append(
             f"Context document is {word_count} words — approaching {max_budget:,} word budget"
         )
+    # R2 LOW 2 — gate the no-compilations hint on whether compile would
+    # actually do work. Previously this fired for any project with entries
+    # but no compilations, so a fresh project with only notes or ineligible
+    # evidence would still get told to run compile (which would no-op) when
+    # the correct action is bulk_promote / add claim-eligible entries first.
     if total_entries > 0 and total_compilations == 0:
-        recommendations.append(
-            "No compilations yet — run compile to build context"
-        )
+        if compile_work_total > 0:
+            recommendations.append(
+                "No compilations yet — run compile to build context"
+            )
+        elif uncompiled_notes > 0:
+            # Notes-hint already added above; no extra advice needed here
+            pass
+        else:
+            recommendations.append(
+                "No compile-eligible entries yet — add claims (or promote "
+                "evidence) before running compile"
+            )
 
     return HealthResponse(
         project_id=project_id,
