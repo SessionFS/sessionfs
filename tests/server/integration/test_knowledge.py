@@ -272,6 +272,152 @@ async def test_health_endpoint(
 
 
 @pytest.mark.asyncio
+async def test_health_pending_entries_matches_compile_filter(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession,
+    test_user: User, test_project: Project,
+):
+    """tk_935a4eb62be94676 regression — `pending_entries` must mirror the
+    compile pipeline's eligibility filter EXACTLY:
+        claim_class='claim' AND compiled_at IS NULL AND not dismissed
+        AND freshness_class IN ('current', 'aging') AND superseded_by IS NULL
+
+    Pre-fix the count filtered only on claim_class='claim' + dismissed=False
+    + compiled_at IS NULL, so it overcounted superseded claims and stale
+    claims that compile would skip. The "Run compile to process N pending
+    entries" recommendation lied — users would compile, see entries_compiled=0,
+    and the count would stay flat.
+
+    `uncompiled_notes` must surface the note-class count separately, so the
+    operator knows to call bulk_promote instead of compile.
+    """
+    eligible_claim = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_a",
+        user_id=test_user.id,
+        entry_type="decision",
+        content="Eligible — current claim, no compiled_at",
+        confidence=0.9,
+        claim_class="claim",
+        freshness_class="current",
+    )
+    aging_claim = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_b",
+        user_id=test_user.id,
+        entry_type="decision",
+        content="Eligible — aging claim, no compiled_at",
+        confidence=0.85,
+        claim_class="claim",
+        freshness_class="aging",
+    )
+    # Stale claim — compile will SKIP this. Must NOT count as pending.
+    stale_claim = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_c",
+        user_id=test_user.id,
+        entry_type="decision",
+        content="Stale claim — compile skips",
+        confidence=0.6,
+        claim_class="claim",
+        freshness_class="stale",
+    )
+    # Superseded claim — compile will SKIP this. Must NOT count as pending.
+    superseder = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_d1",
+        user_id=test_user.id,
+        entry_type="decision",
+        content="Superseder",
+        confidence=0.9,
+        claim_class="claim",
+        freshness_class="current",
+    )
+    db_session.add(superseder)
+    await db_session.commit()
+    await db_session.refresh(superseder)
+    superseded_claim = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_d2",
+        user_id=test_user.id,
+        entry_type="decision",
+        content="Superseded — compile skips",
+        confidence=0.8,
+        claim_class="claim",
+        freshness_class="superseded",
+        superseded_by=superseder.id,
+    )
+    # Note — needs promotion. Must surface as uncompiled_notes, NOT pending.
+    note_1 = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_e1",
+        user_id=test_user.id,
+        entry_type="pattern",
+        content="Manual note — not auto-compileable",
+        confidence=0.7,
+        claim_class="note",
+        freshness_class="current",
+    )
+    note_2 = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_e2",
+        user_id=test_user.id,
+        entry_type="pattern",
+        content="Another manual note",
+        confidence=0.7,
+        claim_class="note",
+        freshness_class="current",
+    )
+    db_session.add_all([eligible_claim, aging_claim, stale_claim, superseded_claim, note_1, note_2])
+    await db_session.commit()
+
+    resp = await client.get(
+        f"/api/v1/projects/{test_project.id}/health",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+
+    # Total includes everything (6 net new + 1 superseder)
+    assert data["total_entries"] == 7
+
+    # pending_entries: only the 2 compile-eligible (current + aging) claims.
+    # NOT the stale, NOT the superseded, NOT the 2 notes, NOT the superseder
+    # (current — wait, the superseder IS eligible). Let me recount:
+    # - eligible_claim: current claim, no compiled_at → COUNTS
+    # - aging_claim: aging claim, no compiled_at → COUNTS
+    # - superseder: current claim, no compiled_at → COUNTS
+    # - stale_claim: stale → SKIP
+    # - superseded_claim: superseded_by set → SKIP
+    # - note_1, note_2: claim_class='note' → SKIP
+    # = 3 compile-eligible claims
+    assert data["pending_entries"] == 3, (
+        f"pending_entries must mirror compile filter — expected 3 "
+        f"(eligible_claim + aging_claim + superseder, skipping stale "
+        f"+ superseded + 2 notes), got {data['pending_entries']}"
+    )
+
+    # uncompiled_notes: only the 2 notes
+    assert data["uncompiled_notes"] == 2, (
+        f"uncompiled_notes must count claim_class='note' entries with "
+        f"compiled_at IS NULL and not dismissed, expected 2, got "
+        f"{data['uncompiled_notes']}"
+    )
+
+    # compiled_entries / dismissed_entries unchanged behavior (0 each here)
+    assert data["compiled_entries"] == 0
+    assert data["dismissed_entries"] == 0
+
+    # Recommendations must reflect the corrected counts. With 3 pending
+    # claims (<= 20) the message is the "pending N — run compile" variant.
+    # The new uncompiled_notes hint must also fire.
+    rec_text = " ".join(data["recommendations"])
+    assert "3 pending" in rec_text, f"missing pending recommendation: {data['recommendations']}"
+    assert "2 uncompiled notes" in rec_text, (
+        f"missing uncompiled_notes recommendation: {data['recommendations']}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_search_entries_with_query(
     client: AsyncClient, auth_headers: dict, db_session: AsyncSession,
     test_user: User, test_project: Project,

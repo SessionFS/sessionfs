@@ -311,6 +311,7 @@ export interface ProjectHealthResponse {
   project_id: string;
   total_entries: number;
   pending_entries: number;
+  uncompiled_notes?: number;
   compiled_entries: number;
   dismissed_entries: number;
   total_compilations: number;

@@ -221,7 +221,18 @@ class ConfidenceUpdateRequest(BaseModel):
 class HealthResponse(BaseModel):
     project_id: str
     total_entries: int
+    # pending_entries mirrors the compile pipeline's eligibility filter
+    # EXACTLY: claim_class='claim' AND compiled_at IS NULL AND not dismissed
+    # AND freshness_class IN ('current', 'aging') AND superseded_by IS NULL.
+    # If this surface widens, the compile filter has widened too — keep
+    # them in lockstep. tk_935a4eb62be94676.
     pending_entries: int
+    # uncompiled_notes — notes (claim_class='note') that aren't compiled
+    # and aren't dismissed. These are NOT compile-eligible — they need
+    # promotion to claim first (via /entries/{id}/promote or
+    # /entries/bulk-promote). Separate from pending_entries to avoid the
+    # historical inflation bug where this count was lumped into "pending".
+    uncompiled_notes: int = 0
     compiled_entries: int
     dismissed_entries: int
     total_compilations: int
@@ -1244,19 +1255,36 @@ async def project_health(
     )
     total_entries = total_result.scalar() or 0
 
-    # Pending entries — only count claims (not notes/evidence).
-    # Notes are intentionally never compiled, so counting them as
-    # "pending" gives a permanently inflated number and a misleading
-    # "Run compile" recommendation that does nothing.
+    # Pending entries — count must match the compile pipeline's eligibility
+    # filter EXACTLY (tk_935a4eb62be94676), otherwise the "Run compile to
+    # process N pending entries" recommendation lies. Notes are not
+    # compileable. Superseded or stale claims are deliberately skipped by
+    # the compiler (see services/compiler.py compile_project_context Phase
+    # 1 select). The mirror of those filters lives here.
     pending_result = await db.execute(
         select(func.count(KnowledgeEntry.id)).where(
             KnowledgeEntry.project_id == project_id,
             KnowledgeEntry.compiled_at.is_(None),
             KnowledgeEntry.dismissed == False,  # noqa: E712
             KnowledgeEntry.claim_class == "claim",
+            KnowledgeEntry.freshness_class.in_(["current", "aging"]),
+            KnowledgeEntry.superseded_by.is_(None),
         )
     )
     pending_entries = pending_result.scalar() or 0
+
+    # Uncompiled notes — separate count so the operator can see "0 claims
+    # eligible, 33 notes need promotion" instead of one undifferentiated
+    # number. Surfaced in HealthResponse for the dashboard / agents.
+    uncompiled_notes_result = await db.execute(
+        select(func.count(KnowledgeEntry.id)).where(
+            KnowledgeEntry.project_id == project_id,
+            KnowledgeEntry.compiled_at.is_(None),
+            KnowledgeEntry.dismissed == False,  # noqa: E712
+            KnowledgeEntry.claim_class == "note",
+        )
+    )
+    uncompiled_notes = uncompiled_notes_result.scalar() or 0
 
     # Compiled entries
     compiled_result = await db.execute(
@@ -1382,6 +1410,17 @@ async def project_health(
             f"{pending_entries} pending {plural} — run compile to fold "
             f"them into the project context"
         )
+    # Notes never auto-promote — surface a separate hint so the operator
+    # knows to call bulk_promote (or update_entry_confidence + promote_entry).
+    # tk_935a4eb62be94676 — previously these were lumped into pending_entries
+    # and the "Run compile" recommendation fired when there was nothing for
+    # compile to do.
+    if uncompiled_notes > 0:
+        plural = "note" if uncompiled_notes == 1 else "notes"
+        recommendations.append(
+            f"{uncompiled_notes} uncompiled {plural} — call bulk_promote "
+            f"to convert eligible notes into claims, then compile"
+        )
     max_budget = getattr(project, "kb_max_context_words", 8000) or 8000
     if word_count > int(max_budget * 0.75):
         recommendations.append(
@@ -1396,6 +1435,7 @@ async def project_health(
         project_id=project_id,
         total_entries=total_entries,
         pending_entries=pending_entries,
+        uncompiled_notes=uncompiled_notes,
         compiled_entries=compiled_entries,
         dismissed_entries=dismissed_entries,
         total_compilations=total_compilations,
