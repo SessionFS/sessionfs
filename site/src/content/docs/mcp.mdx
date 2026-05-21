@@ -187,7 +187,15 @@ Return one knowledge entry's full record, including `last_relevant_at` for stale
 
 #### `get_knowledge_health`
 
-One call for the dashboard banner data — pending, compiled, dismissed, and total counts; stale and low-confidence counts; word count for the compiled context; recommended next actions.
+One call for the dashboard banner data — counts and recommended next actions. Each count mirrors a precise compile-pipeline filter so MCP agents read the same contract the route enforces:
+
+- `pending_entries` — uncompiled claims the next compile will process. Filter: `claim_class='claim'` AND `compiled_at IS NULL` AND not dismissed AND `freshness_class IN ('current', 'aging')` AND `superseded_by IS NULL`.
+- `auto_promotable_evidence` (v0.10.17+) — evidence rows the compiler's auto-promotion phase will promote AND that survive the post-promotion claim filter. Filter: `claim_class='evidence'` AND `confidence >= 0.5` AND `length(content) >= 30` AND not dismissed AND `compiled_at IS NULL` AND current/aging AND no superseder.
+- `uncompiled_notes` (v0.10.17+) — notes that need a `bulk_promote` call before they can compile.
+- `compiled_entries`, `dismissed_entries`, `total_entries` — straightforward counts.
+- `stale_entries`, `low_confidence_entries`, `potentially_stale` — review surfaces. `potentially_stale` uses the same compile-eligible predicate as `pending_entries` (notes / superseded claims with novel terms can't trigger a false-positive "Context may be stale" warning).
+- `word_count` — current compiled context size.
+- `recommendations` — strings driven by `compile_work_total = pending_entries + auto_promotable_evidence`. Notes-only fresh projects get "No compile-eligible entries yet — add claims (or promote evidence) before running compile" instead of a "compile to build context" pointer.
 
 No parameters required.
 
