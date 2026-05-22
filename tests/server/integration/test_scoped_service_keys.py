@@ -1735,3 +1735,176 @@ async def test_user_key_regression_on_converted_knowledge_routes(
     assert promote_entry.service_key_id is None
     assert superseding_entry.actor_type == "user"
     assert superseding_entry.service_key_id is None
+
+
+@pytest.mark.asyncio
+async def test_service_key_knowledge_read_cannot_mutate_freshness_counters(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Codex R1 HIGH 1 — knowledge:read service key must not mutate
+    used_in_answer_count, last_relevant_at, or retrieved_count via the
+    search side-effect path on GET /entries. A service key with both
+    knowledge:read AND knowledge:write keeps the existing telemetry
+    behavior. User keys are unaffected.
+    """
+    org, admin, _ = await _make_org_with_admin(db_session, slug="kb-readonly")
+    project = await _make_org_project(db_session, org, admin)
+
+    keyword = uuid.uuid4().hex[:10]
+    entry = await _make_knowledge_entry(
+        db_session,
+        project,
+        admin,
+        claim_class="claim",
+        confidence=0.95,
+        content=(
+            f"src/scout/{keyword}.py owns the telemetry-mutation regression "
+            "for knowledge:read service keys, covering the search side-effect "
+            "path explicitly."
+        ),
+    )
+    initial_used = entry.used_in_answer_count
+    initial_retrieved = entry.retrieved_count
+    initial_relevant = entry.last_relevant_at
+
+    _ro_row, ro_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["knowledge:read"],
+        project_ids=[project.id],
+    )
+
+    # Strong-signal path (used_in_answer=true) must NOT mutate.
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/entries",
+        headers=_hdrs(ro_key),
+        params={"search": keyword, "used_in_answer": "true"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert any(row["id"] == entry.id for row in resp.json())
+    await db_session.refresh(entry)
+    assert entry.used_in_answer_count == initial_used
+    assert entry.retrieved_count == initial_retrieved
+    assert entry.last_relevant_at == initial_relevant
+
+    # Weak-signal path (search only) must NOT mutate retrieved_count either.
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/entries",
+        headers=_hdrs(ro_key),
+        params={"search": keyword},
+    )
+    assert resp.status_code == 200, resp.text
+    await db_session.refresh(entry)
+    assert entry.retrieved_count == initial_retrieved
+    assert entry.used_in_answer_count == initial_used
+    assert entry.last_relevant_at == initial_relevant
+
+    # A read+write key DOES update telemetry (regression on the gate).
+    _rw_row, rw_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["knowledge:read", "knowledge:write"],
+        project_ids=[project.id],
+    )
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/entries",
+        headers=_hdrs(rw_key),
+        params={"search": keyword, "used_in_answer": "true"},
+    )
+    assert resp.status_code == 200, resp.text
+    await db_session.refresh(entry)
+    assert entry.used_in_answer_count == initial_used + 1
+    assert entry.last_relevant_at is not None
+    if initial_relevant is not None:
+        assert entry.last_relevant_at > initial_relevant
+
+
+@pytest.mark.asyncio
+async def test_service_key_can_act_on_org_project_owned_by_other_member(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Codex R1 MEDIUM 1 — service key minted by an org admin must work
+    on a project owned by a DIFFERENT org member, even when the admin has
+    no captured Session row matching the project's git_remote. The legacy
+    `_get_project_or_404(project_id, db, user.id)` user-access gate must
+    NOT block service-key requests; only the org/allowlist check (via
+    `assert_service_key_can_access_project`) should apply.
+    """
+    org, admin, _ = await _make_org_with_admin(db_session, slug="kb-other-owner")
+    other_member, _other_raw = await _make_user_with_key(
+        db_session, f"member-{uuid.uuid4().hex[:6]}@x.com"
+    )
+    db_session.add(
+        OrgMember(
+            org_id=org.id,
+            user_id=other_member.id,
+            role="member",
+            joined_at=datetime.now(timezone.utc),
+        )
+    )
+    await db_session.commit()
+
+    project = await _make_org_project(db_session, org, other_member)
+    # Confirm the gate condition the bug depended on: admin is NOT
+    # project owner and has no Session row on project's git_remote.
+    assert project.owner_id != admin.id
+
+    # tickets:write service key minted by admin, scoped to that project.
+    tk_row, tk_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["tickets:write"],
+        project_ids=[project.id],
+    )
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(tk_key),
+        json={
+            "title": "Scout cross-owner ticket",
+            "description": (
+                "src/scout/cross_owner.py opens a ticket for a project "
+                "owned by another org member; the legacy user-access "
+                "gate must not block this service key."
+            ),
+            "priority": "medium",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    ticket_id = resp.json()["id"]
+    from sessionfs.server.db.models import Ticket
+    ticket_row = await db_session.get(Ticket, ticket_id)
+    assert ticket_row is not None
+    assert ticket_row.actor_type == "service_key"
+    assert ticket_row.service_key_id == tk_row.id
+
+    # knowledge:write service key on the same other-owner project.
+    kb_row, kb_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["knowledge:write"],
+        project_ids=[project.id],
+    )
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/entries/add",
+        headers=_hdrs(kb_key),
+        json={
+            "entry_type": "discovery",
+            "content": (
+                "src/scout/cross_owner.py adds a finding to a project "
+                "owned by a different org member, exercising the v0.10.19 "
+                "service-key project-load branch."
+            ),
+            "confidence": 0.9,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    kb_entry_id = resp.json()["id"]
+    kb_entry = await db_session.get(KnowledgeEntry, kb_entry_id)
+    assert kb_entry is not None
+    assert kb_entry.actor_type == "service_key"
+    assert kb_entry.service_key_id == kb_row.id

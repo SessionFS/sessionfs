@@ -278,6 +278,30 @@ async def _get_project_or_404(project_id: str, db: AsyncSession, user_id: str | 
     return project
 
 
+async def _get_project_for_auth(
+    project_id: str, db: AsyncSession, auth: "AuthContext"
+) -> Project:
+    """Load project enforcing the right boundary for the auth principal.
+
+    Codex R1 MEDIUM 1 — for service keys, skip the legacy user-owner gate
+    in `_get_project_or_404` (which 403s when the backing org admin user
+    has not personally captured a session on the project's git_remote).
+    The org/allowlist boundary is enforced separately via
+    `assert_service_key_can_access_project(db, auth, project)`, which the
+    caller MUST invoke before any side effects.
+
+    For user keys, keep the legacy fetch-with-access-gate semantics so
+    existing behavior is unchanged.
+    """
+    if auth.key_kind == "service":
+        result = await db.execute(select(Project).where(Project.id == project_id))
+        project = result.scalar_one_or_none()
+        if not project:
+            raise HTTPException(404, "Project not found")
+        return project
+    return await _get_project_or_404(project_id, db, auth.user.id)
+
+
 _VALID_CLAIM_CLASSES = {"evidence", "claim", "note"}
 _VALID_FRESHNESS_CLASSES = {"current", "aging", "stale", "superseded"}
 _VALID_SORTS = {
@@ -334,8 +358,7 @@ async def list_entries(
     session_id, and pending status. Default sort is `created_at_desc`
     (matches the pre-v0.9.9.6 behavior so existing callers don't shift).
     """
-    user = auth.user
-    project = await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_for_auth(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
@@ -464,8 +487,15 @@ async def list_entries(
     ):
         response.headers["X-Next-Cursor"] = str(entries[-1].id)
 
-    # Track retrieval when entries are returned via search
-    if search and entries:
+    # Track retrieval when entries are returned via search.
+    # Codex R1 HIGH 1 — knowledge:read is a pure-read scope; a service
+    # key without knowledge:write must not mutate freshness/decay
+    # counters (used_in_answer_count, last_relevant_at, retrieved_count).
+    # User keys keep the existing telemetry behavior.
+    _is_service_key_readonly = (
+        auth.key_kind == "service" and "knowledge:write" not in auth.scopes
+    )
+    if search and entries and not _is_service_key_readonly:
         entry_ids = [e.id for e in entries]
         if used_in_answer:
             # Strong signal: entry was used to answer a question (ask_project flow).
@@ -535,8 +565,7 @@ async def get_entry(
     Includes `last_relevant_at` so callers can decide whether to refresh
     a stale entry without a separate query.
     """
-    user = auth.user
-    project = await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_for_auth(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
@@ -601,7 +630,7 @@ async def add_entry(
     Set force_claim=True to attempt claim classification (still enforces quality gates).
     """
     user = auth.user
-    project = await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_for_auth(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
@@ -816,7 +845,7 @@ async def dismiss_entry(
     dismissed entry is a no-op (returns 200 with the existing audit row).
     """
     user = auth.user
-    project = await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_for_auth(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
@@ -907,8 +936,7 @@ async def refresh_entry(
     and recompute freshness_class to 'current'. Used by the stale review
     queue's "Still Valid" action.
     """
-    user = auth.user
-    project = await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_for_auth(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
@@ -1568,8 +1596,7 @@ async def supersede_entry(
     """Mark an entry as superseded by another entry."""
     from sessionfs.server.db.models import KnowledgeLink
 
-    user = auth.user
-    project = await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_for_auth(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
@@ -1642,7 +1669,7 @@ async def promote_entry(
 ) -> KnowledgeEntryResponse:
     """Promote a note to claim if quality gates pass."""
     user = auth.user
-    project = await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_for_auth(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
