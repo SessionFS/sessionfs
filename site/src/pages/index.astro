@@ -1,7 +1,7 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
 ---
-<BaseLayout title="SessionFS — Portable memory for AI coding agents" description="Capture, resume, and hand off AI coding sessions across Claude Code, Codex, Cursor, Gemini, and more. SessionFS turns portable sessions into shared memory, rules, tickets, and audit.">
+<BaseLayout title="SessionFS — The AI memory layer for coding agents" description="The AI memory layer for coding agents. Capture, resume, and hand off AI coding sessions across Claude Code, Codex, Cursor, Gemini, and more.">
 
 
   <!-- ========== 1. HERO ========== -->
@@ -17,10 +17,10 @@ import BaseLayout from '../layouts/BaseLayout.astro';
           </svg>
         </div>
         <h1 class="fade-up font-heading text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight leading-[1.1] mb-6">
-          Capture every session.<br>Carry it across tools.
+          The AI memory layer<br>for coding agents.
         </h1>
         <p class="fade-up text-lg sm:text-xl text-muted leading-relaxed max-w-xl mx-auto lg:mx-0 mb-8">
-          SessionFS records AI coding work as portable <span class="font-mono text-txt">.sfs</span> sessions so teams can resume in another tool, hand work to a teammate or agent, and turn every session into shared memory, rules, tickets, and audit.
+          Capture every AI coding session, resume it in another tool, hand it to a teammate or agent, and turn the work into shared memory, rules, tickets, and audit.
         </p>
         <div class="fade-up inline-flex items-center gap-3 bg-surface border border-border rounded-lg px-5 py-3 mb-8 font-mono text-sm">
           <span class="text-muted-dim select-none">$</span>
@@ -89,7 +89,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
       <div class="flex flex-col sm:flex-row items-center justify-center gap-3 sm:gap-5">
         <img src="https://img.shields.io/github/stars/SessionFS/sessionfs?style=flat&color=30363d&labelColor=161b22&logo=github&logoColor=e6edf3" alt="GitHub stars" class="h-5 shrink-0">
         <div class="border-l border-border h-4 hidden sm:block"></div>
-        <span class="font-mono text-muted text-sm">1,942 backend + 186 UI tests</span>
+        <span class="font-mono text-muted text-sm">1,952 backend + 187 UI tests</span>
         <span class="text-muted-dim text-sm">Enterprise-tested in healthcare on AWS EKS</span>
       </div>
     </div>
@@ -101,24 +101,24 @@ import BaseLayout from '../layouts/BaseLayout.astro';
     <div class="max-w-5xl mx-auto">
       <div class="grid md:grid-cols-3 gap-5">
 
+        <!-- Memory -->
+        <a href="/features/knowledge-base/" class="glass fade-up p-6 block group" style="border-top: 3px solid #4f9cf7;">
+          <div class="mb-4">
+            <div class="text-sm font-mono text-brand uppercase tracking-wider mb-3">Memory</div>
+            <h3 class="font-heading font-semibold text-xl mb-3 group-hover:text-brand transition-colors">Agents remember what the team learned.</h3>
+          </div>
+          <p class="text-muted text-base leading-relaxed mb-4">Every captured session becomes durable knowledge: decisions, patterns, project context, wiki pages, rules provenance, and agent write-back built from inspectable evidence.</p>
+          <div class="font-mono text-sm text-brand">Learn more &rarr;</div>
+        </a>
+
         <!-- Portability -->
         <a href="/features/" class="glass fade-up p-6 block group" style="border-top: 3px solid #3ddc84;">
           <div class="mb-4">
             <div class="text-sm font-mono text-accent uppercase tracking-wider mb-3">Portability</div>
             <h3 class="font-heading font-semibold text-xl mb-3 group-hover:text-brand transition-colors">Capture once. Resume anywhere.</h3>
           </div>
-          <p class="text-muted text-base leading-relaxed mb-4">SessionFS captures AI coding sessions from 9 tools into a portable <span class="font-mono text-txt">.sfs</span> record. Switch machines, switch tools, or come back tomorrow without rebuilding context from scratch.</p>
+          <p class="text-muted text-base leading-relaxed mb-4">SessionFS captures AI coding sessions from 9 tools into a portable <span class="font-mono text-txt">.sfs</span> record. Switch machines, switch tools, or come back tomorrow without rebuilding context.</p>
           <div class="font-mono text-sm text-accent">Learn more &rarr;</div>
-        </a>
-
-        <!-- Memory -->
-        <a href="/features/knowledge-base/" class="glass fade-up p-6 block group" style="border-top: 3px solid #4f9cf7;">
-          <div class="mb-4">
-            <div class="text-sm font-mono text-brand uppercase tracking-wider mb-3">Memory</div>
-            <h3 class="font-heading font-semibold text-xl mb-3 group-hover:text-brand transition-colors">Captured work becomes team memory</h3>
-          </div>
-          <p class="text-muted text-base leading-relaxed mb-4">The raw session becomes summaries, claims, project context, wiki pages, rules provenance, and agent write-back. Memory is built on evidence your team can inspect.</p>
-          <div class="font-mono text-sm text-brand">Learn more &rarr;</div>
         </a>
 
         <!-- Handoff -->

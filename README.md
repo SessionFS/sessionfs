@@ -216,7 +216,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
-**v0.10.18 — Public Beta.** 1942 backend tests + 186 dashboard tests passing. 42 database migrations. 58 MCP tools. v0.10.18 opts the ticket routes into v0.10.10 service-key auth (Phase 3): 7 routes converted to `require_scope("tickets:read")` / `require_scope("tickets:write")`, with `assert_service_key_can_access_project` enforcing org boundary + per-key project allowlist, `TicketComment` audit rows stamped with service-key provenance, and lease-epoch fencing preserved under service-key callers. `tickets:read` / `tickets:write` move from "reserved" to "live". Unblocks n8n triage agents and every CI/cloud-agent integration that touches tickets.
+**v0.10.19 — Public Beta.** 1952 backend tests + 187 dashboard tests passing. 43 database migrations. 58 MCP tools. v0.10.19 is Phase 3.5 of the service-key opt-in: 8 routes converted (`POST /tickets`, `GET/POST/PUT /entries{/...}`) into `require_scope("tickets:write")` / `require_scope("knowledge:read")` / `require_scope("knowledge:write")`. Migration 043 adds the 3-column audit triple to Ticket (mirrors v0.10.10 migration 042 shape). New `_get_project_for_auth` helper lets service keys minted by org admins act on projects owned by other org members. `GET /entries` telemetry mutation now gated on `knowledge:write` so read-only service keys cannot alter freshness/decay state. `knowledge:read` / `knowledge:write` move from "reserved" to "live". Tier C (`compile`, `rebuild`, `dismiss-stale`, `health`, `compilations`) remains user-key only by design. Unblocks the n8n Scout agent and every future autonomous discovery/research agent.
 
 ### Session capture, resume, and search
 
