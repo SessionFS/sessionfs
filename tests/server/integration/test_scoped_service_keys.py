@@ -1884,6 +1884,77 @@ async def test_list_entries_filter_by_source_filter_substring(
 
 
 @pytest.mark.asyncio
+async def test_list_entries_source_filter_treats_like_wildcards_as_literal(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Codex R1 LOW: source_filter must use literal substring match, not
+    SQL LIKE wildcards. `%` and `_` in the user input must match as data,
+    not glob across rows.
+    """
+    org, admin, user_key = await _make_org_with_admin(
+        db_session, slug="kb-source-literal"
+    )
+    project = await _make_org_project(db_session, org, admin)
+    with_percent = await _make_knowledge_entry(
+        db_session,
+        project,
+        admin,
+        content=(
+            "src/scout/percent.py records that 100%% load events use a "
+            "literal percent sign in the source context label."
+        ),
+        source_context="Scout 100% load alert",
+    )
+    with_underscore = await _make_knowledge_entry(
+        db_session,
+        project,
+        admin,
+        content=(
+            "src/scout/underscore.py records that snake_case source labels "
+            "must not be matched by an unescaped underscore wildcard."
+        ),
+        source_context="Scout snake_case run",
+    )
+    plain = await _make_knowledge_entry(
+        db_session,
+        project,
+        admin,
+        content=(
+            "src/scout/plain.py records that wildcard-free source filters "
+            "still resolve to a literal substring match."
+        ),
+        source_context="Scout plain analyst",
+    )
+
+    # `%` is a LIKE wildcard. If unescaped, it would match every row with
+    # any non-NULL source_context. Verify it matches only the row whose
+    # source_context literally contains "100%".
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/entries",
+        headers=_hdrs(user_key),
+        params={"source_filter": "100%"},
+    )
+    assert resp.status_code == 200, resp.text
+    ids = {row["id"] for row in resp.json()}
+    assert with_percent.id in ids
+    assert with_underscore.id not in ids
+    assert plain.id not in ids
+
+    # `_` is a LIKE single-char wildcard. If unescaped, "snake_case" would
+    # match "snake?case" for any character. Verify literal underscore.
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/entries",
+        headers=_hdrs(user_key),
+        params={"source_filter": "snake_case"},
+    )
+    assert resp.status_code == 200, resp.text
+    ids = {row["id"] for row in resp.json()}
+    assert with_underscore.id in ids
+    assert with_percent.id not in ids
+    assert plain.id not in ids
+
+
+@pytest.mark.asyncio
 async def test_list_entries_filters_compose(
     client: AsyncClient, db_session: AsyncSession
 ):

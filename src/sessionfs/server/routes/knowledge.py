@@ -460,7 +460,13 @@ async def list_entries(
     if author_class is not None:
         stmt = stmt.where(KnowledgeEntry.author_class == author_class)
     if source_filter is not None:
-        stmt = stmt.where(KnowledgeEntry.source_context.like(f"%{source_filter}%"))
+        # Codex R1 LOW: literal-substring contract — escape % and _ so they
+        # match as data characters, not LIKE wildcards. `contains(...,
+        # autoescape=True)` adds an ESCAPE clause that turns `%` and `_` in
+        # the user input into literal matches.
+        stmt = stmt.where(
+            KnowledgeEntry.source_context.contains(source_filter, autoescape=True)
+        )
 
     # KnowledgeEntry.id.desc() is the absolute final tiebreak in every
     # sort mode. Without it, entries with identical sort-key values can
