@@ -52,6 +52,7 @@ from sessionfs.server.auth.dependencies import (
 )
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import AgentPersona, AgentRun, Ticket, User
+from sessionfs.server.routes.knowledge import _get_project_for_auth
 from sessionfs.server.routes.tickets import _compile_persona_context
 from sessionfs.server.routes.wiki import _get_project_or_404
 from sessionfs.server.tier_gate import UserContext, check_feature, get_user_context
@@ -422,12 +423,22 @@ async def list_agent_runs(
     trigger_source: str | None = Query(None),
     ticket_id: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
-    user: User = Depends(get_current_user),
+    auth: AuthContext = Depends(require_scope("agent_runs:read")),
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> list[AgentRunResponse]:
+    """v0.10.21 (tk_31b87575d5534d00) — opted into agent_runs:read for
+    service keys. Lets continuous agents (n8n Scout, future
+    Sentinel-watch / Ledger-monitor, dashboard surfaces) inspect run
+    state without using a human user key.
+    """
     check_feature(ctx, "agent_runs")
-    await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_for_auth(project_id, db, auth)
+    # Cross-org / cross-project boundary BEFORE returning any rows.
+    from sessionfs.server.auth.dependencies import (
+        assert_service_key_can_access_project,
+    )
+    await assert_service_key_can_access_project(db, auth, project)
 
     stmt = select(AgentRun).where(AgentRun.project_id == project_id)
     if persona_name:
@@ -451,12 +462,17 @@ async def list_agent_runs(
 async def get_agent_run(
     project_id: str,
     run_id: str,
-    user: User = Depends(get_current_user),
+    auth: AuthContext = Depends(require_scope("agent_runs:read")),
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> AgentRunResponse:
+    """v0.10.21 (tk_31b87575d5534d00) — opted into agent_runs:read."""
     check_feature(ctx, "agent_runs")
-    await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_for_auth(project_id, db, auth)
+    from sessionfs.server.auth.dependencies import (
+        assert_service_key_can_access_project,
+    )
+    await assert_service_key_can_access_project(db, auth, project)
     return _row_to_response(await _get_run_or_404(project_id, run_id, db))
 
 

@@ -2815,3 +2815,270 @@ async def test_agent_run_response_user_key_carries_actor_type_user(
     assert body["actor_type"] == "user"
     assert body["service_key_id"] is None
     assert body["service_key_name"] is None
+
+
+# v0.10.21 (tk_31b87575d5534d00) — agent_runs:read service-key opt-in
+# for GET /agent-runs (list) + GET /agent-runs/{id}. Lets continuous
+# agents and dashboard surfaces inspect AgentRun state without using
+# a human user key. Write routes remain on agent_runs:write.
+
+
+@pytest.mark.asyncio
+async def test_service_key_can_list_agent_runs_with_read_scope(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Happy path: service key with agent_runs:read can list runs in
+    a project it has allowlist access to."""
+    from sessionfs.server.db.models import AgentPersona
+
+    org, admin, _ = await _make_org_with_admin(db_session, slug="ar-read-allow")
+    project = await _make_org_project(db_session, org, admin)
+    db_session.add(
+        AgentPersona(
+            id=f"per_{uuid.uuid4().hex[:8]}",
+            project_id=project.id,
+            name="scout",
+            role="Competitive Intelligence Analyst",
+            created_by=admin.id,
+        )
+    )
+    await db_session.commit()
+    # Mint a write-scoped key to create a run, then a read-only key
+    # to verify the read path admits agent_runs:read.
+    _w_row, w_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["agent_runs:write"],
+        project_ids=[project.id],
+    )
+    create_resp = await client.post(
+        f"/api/v1/projects/{project.id}/agent-runs",
+        headers=_hdrs(w_key),
+        json={"persona_name": "scout", "tool": "n8n", "trigger_source": "scheduled"},
+    )
+    assert create_resp.status_code == 201
+    run_id = create_resp.json()["id"]
+
+    _r_row, r_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["agent_runs:read"],
+        project_ids=[project.id],
+    )
+
+    list_resp = await client.get(
+        f"/api/v1/projects/{project.id}/agent-runs?persona_name=scout&limit=5",
+        headers=_hdrs(r_key),
+    )
+    assert list_resp.status_code == 200, list_resp.text
+    list_body = list_resp.json()
+    assert any(r["id"] == run_id for r in list_body)
+
+    get_resp = await client.get(
+        f"/api/v1/projects/{project.id}/agent-runs/{run_id}",
+        headers=_hdrs(r_key),
+    )
+    assert get_resp.status_code == 200, get_resp.text
+    assert get_resp.json()["id"] == run_id
+
+
+@pytest.mark.asyncio
+async def test_service_key_agent_runs_read_insufficient_scope_denied(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Service key with only knowledge:read (no agent_runs:read) gets
+    structured insufficient_scope error on GET /agent-runs."""
+    org, admin, _ = await _make_org_with_admin(db_session, slug="ar-read-scope")
+    project = await _make_org_project(db_session, org, admin)
+    _row, svc_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["knowledge:read"],
+        project_ids=[project.id],
+    )
+
+    list_resp = await client.get(
+        f"/api/v1/projects/{project.id}/agent-runs",
+        headers=_hdrs(svc_key),
+    )
+    assert list_resp.status_code == 403, list_resp.text
+    structured = _structured_error(list_resp.json())
+    assert structured.get("error") == "insufficient_scope", list_resp.json()
+    assert structured.get("required") == ["agent_runs:read"]
+    assert structured.get("current") == ["knowledge:read"]
+
+    get_resp = await client.get(
+        f"/api/v1/projects/{project.id}/agent-runs/run_nonexistent",
+        headers=_hdrs(svc_key),
+    )
+    assert get_resp.status_code == 403, get_resp.text
+    assert _structured_error(get_resp.json()).get("error") == "insufficient_scope"
+
+
+@pytest.mark.asyncio
+async def test_service_key_agent_runs_read_cross_project_denied(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """A service key with agent_runs:read scoped to project A cannot
+    list or get runs in project B, even when both projects belong to
+    the same org and the backing user owns both."""
+    from sessionfs.server.db.models import AgentPersona
+
+    org, admin, _ = await _make_org_with_admin(db_session, slug="ar-read-cross")
+    project_a = await _make_org_project(db_session, org, admin)
+    project_b = await _make_org_project(db_session, org, admin)
+    db_session.add(
+        AgentPersona(
+            id=f"per_{uuid.uuid4().hex[:8]}",
+            project_id=project_b.id,
+            name="scout",
+            role="Competitive Intelligence Analyst",
+            created_by=admin.id,
+        )
+    )
+    await db_session.commit()
+
+    # Create a run in project B using a write key scoped to B.
+    _w_row, w_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["agent_runs:write"],
+        project_ids=[project_b.id],
+    )
+    create_resp = await client.post(
+        f"/api/v1/projects/{project_b.id}/agent-runs",
+        headers=_hdrs(w_key),
+        json={"persona_name": "scout", "tool": "n8n", "trigger_source": "scheduled"},
+    )
+    assert create_resp.status_code == 201
+    run_b_id = create_resp.json()["id"]
+
+    # Service key scoped ONLY to project A. Even though backing user
+    # owns B, the service-key project allowlist excludes B.
+    _r_row, r_a_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["agent_runs:read"],
+        project_ids=[project_a.id],
+    )
+
+    list_resp = await client.get(
+        f"/api/v1/projects/{project_b.id}/agent-runs",
+        headers=_hdrs(r_a_key),
+    )
+    assert list_resp.status_code == 403, list_resp.text
+    assert (
+        _structured_error(list_resp.json()).get("error")
+        == "project_not_in_allowlist"
+    )
+
+    get_resp = await client.get(
+        f"/api/v1/projects/{project_b.id}/agent-runs/{run_b_id}",
+        headers=_hdrs(r_a_key),
+    )
+    assert get_resp.status_code == 403, get_resp.text
+    assert (
+        _structured_error(get_resp.json()).get("error")
+        == "project_not_in_allowlist"
+    )
+
+
+@pytest.mark.asyncio
+async def test_service_key_agent_runs_read_cross_org_denied(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """A service key bound to org_A cannot read runs in org_B even when
+    backing user has org_B access."""
+    from sessionfs.server.db.models import AgentPersona
+
+    org_a, admin_a, _ = await _make_org_with_admin(db_session, slug="ar-read-orga")
+    org_b, _admin_b, _ = await _make_org_with_admin(db_session, slug="ar-read-orgb")
+    from sessionfs.server.db.models import Project
+    project_b = Project(
+        id=f"proj_b_{uuid.uuid4().hex[:8]}",
+        name="org-b project",
+        git_remote_normalized=f"github.com/b/{uuid.uuid4().hex[:6]}",
+        owner_id=admin_a.id,  # backing user owns the project
+        org_id=org_b.id,
+        context_document="",
+        created_at=datetime.now(timezone.utc),
+    )
+    db_session.add(project_b)
+    db_session.add(
+        AgentPersona(
+            id=f"per_{uuid.uuid4().hex[:8]}",
+            project_id=project_b.id,
+            name="scout",
+            role="Competitive Intelligence Analyst",
+            created_by=admin_a.id,
+        )
+    )
+    await db_session.commit()
+
+    _r_row, svc_key = await _create_service_key(
+        db_session, org_a.id, admin_a, scopes=["agent_runs:read"]
+    )
+
+    list_resp = await client.get(
+        f"/api/v1/projects/{project_b.id}/agent-runs",
+        headers=_hdrs(svc_key),
+    )
+    assert list_resp.status_code == 403, list_resp.text
+    structured = _structured_error(list_resp.json())
+    assert structured.get("error") == "cross_org_denied", list_resp.json()
+
+
+@pytest.mark.asyncio
+async def test_user_key_agent_runs_read_still_works(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """User keys (wildcard `*` scope) continue to work on the converted
+    read routes without explicit `agent_runs:read` membership —
+    backward compat invariant."""
+    from sessionfs.server.db.models import AgentPersona
+
+    org, admin, user_key = await _make_org_with_admin(
+        db_session, slug="ar-read-userkey"
+    )
+    project = await _make_org_project(db_session, org, admin)
+    db_session.add(
+        AgentPersona(
+            id=f"per_{uuid.uuid4().hex[:8]}",
+            project_id=project.id,
+            name="atlas",
+            role="Backend",
+            created_by=admin.id,
+        )
+    )
+    await db_session.commit()
+
+    create_resp = await client.post(
+        f"/api/v1/projects/{project.id}/agent-runs",
+        headers=_hdrs(user_key),
+        json={
+            "persona_name": "atlas",
+            "tool": "claude-code",
+            "trigger_source": "manual",
+        },
+    )
+    assert create_resp.status_code == 201
+    run_id = create_resp.json()["id"]
+
+    list_resp = await client.get(
+        f"/api/v1/projects/{project.id}/agent-runs",
+        headers=_hdrs(user_key),
+    )
+    assert list_resp.status_code == 200, list_resp.text
+    assert any(r["id"] == run_id for r in list_resp.json())
+
+    get_resp = await client.get(
+        f"/api/v1/projects/{project.id}/agent-runs/{run_id}",
+        headers=_hdrs(user_key),
+    )
+    assert get_resp.status_code == 200
+    assert get_resp.json()["id"] == run_id

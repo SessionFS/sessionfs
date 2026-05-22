@@ -66,13 +66,14 @@ scopes — `agent_runs:write` (covers create + start + complete) and
 `agent_runs:list`. If you see a reference to `:list` in older
 proposals or AC drafts, it maps to `agent_runs:read`.
 
-### Scopes Scout deliberately does NOT need
+### Scopes Scout deliberately does NOT need (v4)
 
-- `agent_runs:read` — service-key reads on `/agent-runs` are reserved
-  (Phase 4+). The Scout workflow tracks its own execution state in n8n
-  and never needs to list past runs from the API. If you later add a
-  dashboard or admin surface that lists Scout runs, it should hit the
-  API as a user key.
+- `agent_runs:read` — **live as of v0.10.21 (tk_31b87575d5534d00)**,
+  but Scout v4 doesn't request it because the workflow tracks its
+  own execution state in n8n and dedupes via the KB's
+  `source_filter` query. Add this scope when a future Scout variant
+  (or any continuous agent that wants to consult its own run
+  history) needs `GET /agent-runs` from inside the workflow itself.
 - `personas:write` — Scout doesn't create or mutate personas at
   runtime. The `scout` persona must already exist before the workflow
   runs (created once by a human via `sfs persona create` or via the
@@ -557,11 +558,14 @@ them today:
   Scout reasoning loop without per-source forks of this
   workflow. Until that lands, build one workflow per source and
   let the LLM read across them via the KB.
-- **`agent_runs:read` for service keys**: would let Scout
-  consult its own run history before reasoning ("did the last
-  run already cover this signal?"). Today the same question
-  is answered via the KB's `source_filter` query, which is
-  cheaper and more direct.
+- **Scout consulting its own AgentRun history**: now possible —
+  `agent_runs:read` for service keys went live in v0.10.21
+  (tk_31b87575d5534d00). Scout v4 still skips this scope because
+  the KB's `source_filter` query answers "did the last run already
+  cover this signal?" more directly. A later Scout variant that
+  wants run-level metadata (severity trends, fail-on threshold
+  history) can opt in by adding `agent_runs:read` to its service
+  key.
 - **Per-persona compile retrieval channel**: when `/compile`
   decides which entries enter the project context document,
   it could weight or exclude based on `author_class`. Today

@@ -48,7 +48,7 @@ The 15 capability scopes defined for service keys. The `*` wildcard is **reserve
 | `handoffs:read` | reserved | — |
 | `rules:read` | reserved | — |
 | `rules:write` | reserved | — |
-| `agent_runs:read` | reserved | — |
+| `agent_runs:read` | ✅ live | `GET /api/v1/projects/{project_id}/agent-runs`, `GET /api/v1/projects/{project_id}/agent-runs/{run_id}` |
 | `retrieval_audit:read` | reserved | — |
 | `admin:*` | reserved | — |
 
