@@ -42,9 +42,17 @@ def upgrade() -> None:
                 server_default="human",
             )
         )
+        # NB: index columns intentionally use plain string `"created_at"`
+        # rather than `sa.text("created_at DESC")`. Both PostgreSQL and
+        # SQLite can walk an ascending index in reverse for
+        # ORDER BY created_at DESC queries, so an ASC composite index
+        # serves the Scout v4 per-persona recent-retrieval path equally
+        # well. The TextClause form was also flagged by CI mypy (list-item
+        # 2 has incompatible type "TextClause"; expected "str") so the
+        # plain-string form is both portable and type-clean.
         batch.create_index(
             "idx_knowledge_persona_recent",
-            ["project_id", "persona_name", sa.text("created_at DESC")],
+            ["project_id", "persona_name", "created_at"],
         )
 
 
