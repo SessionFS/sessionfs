@@ -30,7 +30,7 @@ Service keys live on an organization, are minted by an org admin, and are enforc
 
 ### Scope vocabulary
 
-The 14 capability scopes defined for service keys. The `*` wildcard is **reserved for legacy personal user keys** and is rejected at create time for service keys.
+The 15 capability scopes defined for service keys. The `*` wildcard is **reserved for legacy personal user keys** and is rejected at create time for service keys.
 
 **Route opt-in is incremental.** v0.10.10 shipped the auth machinery (`require_scope(...)` decorator + `AuthContext`) and converted a first wave of write routes. Later releases opted in ticket read/write, ticket create, the Scout knowledge intake routes, and persona CRUD. Remaining read-side routes and higher-trust write surfaces stay on the legacy `get_current_user` dependency for now and reject service keys with `service_key_not_allowed`.
 
