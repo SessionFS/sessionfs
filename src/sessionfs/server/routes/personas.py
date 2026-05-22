@@ -44,10 +44,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 # start-to-end so empty + over-long inputs both fail.
 _PERSONA_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,50}$")
 
-from sessionfs.server.auth.dependencies import get_current_user
+from sessionfs.server.auth.dependencies import (
+    AuthContext,
+    assert_service_key_can_access_project,
+    require_scope,
+)
 from sessionfs.server.db.engine import get_db
-from sessionfs.server.db.models import AgentPersona, Ticket, User
-from sessionfs.server.routes.wiki import _get_project_or_404
+from sessionfs.server.db.models import AgentPersona, Ticket
+from sessionfs.server.routes.knowledge import _get_project_for_auth
 from sessionfs.server.tier_gate import UserContext, check_feature, get_user_context
 
 router = APIRouter(prefix="/api/v1/projects", tags=["personas"])
@@ -150,13 +154,14 @@ def _to_response(p: AgentPersona) -> PersonaResponse:
 async def list_personas(
     project_id: str,
     include_inactive: bool = False,
-    user: User = Depends(get_current_user),
+    auth: AuthContext = Depends(require_scope("personas:read")),
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> list[PersonaResponse]:
     """List personas in this project. Defaults to active only."""
     check_feature(ctx, "agent_personas")
-    await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_for_auth(project_id, db, auth)
+    await assert_service_key_can_access_project(db, auth, project)
 
     stmt = select(AgentPersona).where(AgentPersona.project_id == project_id)
     if not include_inactive:
@@ -172,13 +177,14 @@ async def list_personas(
 async def get_persona(
     project_id: str,
     name: str,
-    user: User = Depends(get_current_user),
+    auth: AuthContext = Depends(require_scope("personas:read")),
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> PersonaResponse:
     """Fetch a single persona. Returns 404 if not found or inactive."""
     check_feature(ctx, "agent_personas")
-    await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_for_auth(project_id, db, auth)
+    await assert_service_key_can_access_project(db, auth, project)
 
     row = (
         await db.execute(
@@ -202,7 +208,7 @@ async def get_persona(
 async def create_persona(
     project_id: str,
     body: PersonaCreate,
-    user: User = Depends(get_current_user),
+    auth: AuthContext = Depends(require_scope("personas:write")),
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> PersonaResponse:
@@ -211,8 +217,10 @@ async def create_persona(
     UNIQUE index covers is_active=false rows too, so name reservation
     survives a delete). Caller can PUT to reactivate the existing row
     instead of recreating."""
+    user = auth.user
     check_feature(ctx, "agent_personas")
-    await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_for_auth(project_id, db, auth)
+    await assert_service_key_can_access_project(db, auth, project)
 
     # v0.10.1 Phase 2 Round 2 (KB 322) — pre-check by (project_id, name)
     # so the 409 path is reachable WITHOUT relying on IntegrityError
@@ -251,6 +259,9 @@ async def create_persona(
         content=body.content,
         specializations=json.dumps(body.specializations),
         created_by=user.id,
+        actor_type=auth.actor_type,
+        service_key_id=auth.service_key_id,
+        service_key_name=auth.service_key_name,
     )
     db.add(persona)
     try:
@@ -282,7 +293,7 @@ async def update_persona(
     project_id: str,
     name: str,
     body: PersonaUpdate,
-    user: User = Depends(get_current_user),
+    auth: AuthContext = Depends(require_scope("personas:write")),
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> PersonaResponse:
@@ -291,7 +302,8 @@ async def update_persona(
     this to reactivate a soft-deleted persona by setting
     `is_active=true`."""
     check_feature(ctx, "agent_personas")
-    await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_for_auth(project_id, db, auth)
+    await assert_service_key_can_access_project(db, auth, project)
 
     persona = (
         await db.execute(
@@ -325,6 +337,9 @@ async def update_persona(
         # persona content (CLI/MCP). Bump only on actual mutations so
         # a no-op PUT doesn't bust caches.
         persona.version = persona.version + 1
+        persona.actor_type = auth.actor_type
+        persona.service_key_id = auth.service_key_id
+        persona.service_key_name = auth.service_key_name
     await db.commit()
     await db.refresh(persona)
     return _to_response(persona)
@@ -346,7 +361,7 @@ async def delete_persona(
         "Stranded tickets would otherwise need reassignment before they "
         "can be started."
     )),
-    user: User = Depends(get_current_user),
+    auth: AuthContext = Depends(require_scope("personas:write")),
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> None:
@@ -362,7 +377,8 @@ async def delete_persona(
     persona, leaving no supported workflow to recover.
     """
     check_feature(ctx, "agent_personas")
-    await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_for_auth(project_id, db, auth)
+    await assert_service_key_can_access_project(db, auth, project)
 
     persona = (
         await db.execute(
@@ -398,4 +414,7 @@ async def delete_persona(
 
     persona.is_active = False
     persona.version = persona.version + 1
+    persona.actor_type = auth.actor_type
+    persona.service_key_id = auth.service_key_id
+    persona.service_key_name = auth.service_key_name
     await db.commit()

@@ -1220,6 +1220,14 @@ class AgentPersona(Base):
     )
     version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     created_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    # v0.10.19 Phase 3.6 — service-key provenance for persona writes.
+    # Nullable for pre-migration rows; persona create/update/delete routes
+    # populate this from AuthContext for both user keys and service keys.
+    actor_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    service_key_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    service_key_name: Mapped[str | None] = mapped_column(
+        String(100), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
