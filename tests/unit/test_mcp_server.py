@@ -1797,3 +1797,278 @@ async def _async_value(value):
     """Helper: coerce a sync value into an awaitable used by
     monkeypatched async functions."""
     return value
+
+
+class TestAddKnowledgeAttribution:
+    """v0.10.21 Phase 4a (tk_8028c79963fe4dc7) — MCP `add_knowledge`
+    forwards persona_name + author_class and auto-threads the active
+    ticket bundle's persona when project_id matches.
+    """
+
+    @pytest.fixture
+    def fake_resolver(self, monkeypatch):
+        async def _fake(_git_remote: str = ""):
+            return ("https://api.test", "test-key", "proj_test")
+
+        monkeypatch.setattr(mcp_server, "_resolve_project_id", _fake)
+
+    @pytest.fixture
+    def captured(self):
+        return {}
+
+    @pytest.fixture
+    def fake_httpx_kb_add(self, monkeypatch, captured):
+        """Patch httpx so POST /entries/add returns a Phase-4a-shaped
+        201 body with whatever attribution arrived in the payload.
+        That lets tests assert both the outgoing payload and the
+        message returned to the caller.
+        """
+        import httpx
+
+        class _FakeResponse:
+            def __init__(self, status_code, body):
+                self.status_code = status_code
+                self._body = body
+                self.text = json.dumps(body)
+
+            def json(self):
+                return self._body
+
+        class _FakeClient:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def post(self, url, *, json=None, headers=None):
+                captured["url"] = url
+                captured["json"] = json
+                # Echo the attribution back in the response so the
+                # handler can format it into the user-facing message.
+                # Server-side anti-spoof is independent — covered in
+                # tests/server/integration/test_scoped_service_keys.py
+                # by test_service_key_cannot_spoof_author_class_human.
+                resp_body = {
+                    "id": 42,
+                    "claim_class": "note",
+                    "persona_name": (json or {}).get("persona_name"),
+                    "author_class": (json or {}).get("author_class")
+                    or "human",
+                }
+                return _FakeResponse(201, resp_body)
+
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+    @pytest.mark.asyncio
+    async def test_explicit_persona_name_is_forwarded(
+        self, fake_resolver, fake_httpx_kb_add, captured
+    ):
+        """Caller passes persona_name explicitly → payload carries it."""
+        result = await mcp_server._handle_add_knowledge({
+            "content": "Scout HN: feature flag plateau",
+            "entry_type": "discovery",
+            "persona_name": "scout",
+        })
+        assert captured["url"].endswith("/projects/proj_test/entries/add")
+        assert captured["json"]["persona_name"] == "scout"
+        assert "persona: scout" in result
+
+    @pytest.mark.asyncio
+    async def test_explicit_author_class_is_forwarded(
+        self, fake_resolver, fake_httpx_kb_add, captured
+    ):
+        """author_class=agent flows through to the server payload."""
+        result = await mcp_server._handle_add_knowledge({
+            "content": "Atlas writes on behalf of scout persona",
+            "entry_type": "discovery",
+            "persona_name": "scout",
+            "author_class": "agent",
+        })
+        assert captured["json"]["author_class"] == "agent"
+        assert "author_class: agent" in result
+
+    @pytest.mark.asyncio
+    async def test_auto_threads_persona_from_active_ticket_bundle(
+        self, fake_resolver, fake_httpx_kb_add, captured, monkeypatch, tmp_path
+    ):
+        """When persona_name is not supplied AND the active ticket
+        bundle's project_id matches the resolved project, the handler
+        threads bundle.persona_name into the payload. Mirrors
+        update_wiki_page behavior (v0.10.7).
+
+        Codex R1 MEDIUM: bundle auto-thread must ALSO default
+        author_class='agent' so the resulting row is retrievable via
+        GET /entries?persona_name=...&author_class=agent — without
+        this, the server defaults to 'human' and the agent-memory
+        loop misses bundle-attributed writes.
+        """
+        bundle = tmp_path / "active.json"
+        bundle.write_text(json.dumps({
+            "ticket_id": "tk_active",
+            "persona_name": "scout",
+            "project_id": "proj_test",
+            "started_at": "2026-05-22T00:00:00Z",
+        }))
+        from sessionfs import active_ticket as _at
+        monkeypatch.setattr(_at, "bundle_path", lambda: bundle)
+
+        await mcp_server._handle_add_knowledge({
+            "content": "Auto-threaded persona via bundle",
+            "entry_type": "discovery",
+        })
+        assert captured["json"]["persona_name"] == "scout"
+        # Codex R1 MEDIUM: bundle path defaults author_class to "agent".
+        assert captured["json"]["author_class"] == "agent"
+
+    @pytest.mark.asyncio
+    async def test_explicit_author_class_overrides_bundle_agent_default(
+        self, fake_resolver, fake_httpx_kb_add, captured, monkeypatch, tmp_path
+    ):
+        """Even when bundle auto-thread fires, an explicit
+        `author_class` from the caller wins over the 'agent' default
+        (Codex R1 MEDIUM safety rail — humans can still attribute on
+        behalf of a persona)."""
+        bundle = tmp_path / "active.json"
+        bundle.write_text(json.dumps({
+            "ticket_id": "tk_active",
+            "persona_name": "scout",
+            "project_id": "proj_test",
+            "started_at": "2026-05-22T00:00:00Z",
+        }))
+        from sessionfs import active_ticket as _at
+        monkeypatch.setattr(_at, "bundle_path", lambda: bundle)
+
+        await mcp_server._handle_add_knowledge({
+            "content": "Human attributing on behalf of the persona",
+            "entry_type": "discovery",
+            "author_class": "human",
+        })
+        assert captured["json"]["persona_name"] == "scout"
+        assert captured["json"]["author_class"] == "human"
+
+    @pytest.mark.asyncio
+    async def test_explicit_persona_overrides_bundle(
+        self, fake_resolver, fake_httpx_kb_add, captured, monkeypatch, tmp_path
+    ):
+        """If both an explicit persona_name and a matching bundle are
+        present, the explicit arg wins."""
+        bundle = tmp_path / "active.json"
+        bundle.write_text(json.dumps({
+            "ticket_id": "tk_active",
+            "persona_name": "scout",
+            "project_id": "proj_test",
+            "started_at": "2026-05-22T00:00:00Z",
+        }))
+        from sessionfs import active_ticket as _at
+        monkeypatch.setattr(_at, "bundle_path", lambda: bundle)
+
+        await mcp_server._handle_add_knowledge({
+            "content": "Explicit persona wins over the bundle",
+            "entry_type": "discovery",
+            "persona_name": "atlas",
+        })
+        assert captured["json"]["persona_name"] == "atlas"
+
+    @pytest.mark.asyncio
+    async def test_bundle_ignored_when_project_mismatch(
+        self, fake_resolver, fake_httpx_kb_add, captured, monkeypatch, tmp_path
+    ):
+        """A bundle for a different project must NOT contribute persona
+        attribution — provenance is project-scoped."""
+        bundle = tmp_path / "active.json"
+        bundle.write_text(json.dumps({
+            "ticket_id": "tk_other_project",
+            "persona_name": "scout",
+            "project_id": "proj_OTHER",
+            "started_at": "2026-05-22T00:00:00Z",
+        }))
+        from sessionfs import active_ticket as _at
+        monkeypatch.setattr(_at, "bundle_path", lambda: bundle)
+
+        await mcp_server._handle_add_knowledge({
+            "content": "Cross-project bundle must not leak persona",
+            "entry_type": "discovery",
+        })
+        assert "persona_name" not in captured["json"]
+
+    @pytest.mark.asyncio
+    async def test_no_bundle_preserves_legacy_behavior(
+        self, fake_resolver, fake_httpx_kb_add, captured, monkeypatch, tmp_path
+    ):
+        """When no bundle exists and no persona is supplied, payload
+        carries no persona_name (legacy behavior preserved for plain
+        manual writes)."""
+        from sessionfs import active_ticket as _at
+        monkeypatch.setattr(_at, "bundle_path", lambda: tmp_path / "missing.json")
+
+        await mcp_server._handle_add_knowledge({
+            "content": "Plain manual entry without persona attribution",
+            "entry_type": "discovery",
+        })
+        assert "persona_name" not in captured["json"]
+        assert "author_class" not in captured["json"]
+
+    @pytest.mark.asyncio
+    async def test_service_key_author_class_human_is_forwarded_server_overrides(
+        self, fake_resolver, captured, monkeypatch
+    ):
+        """The MCP handler is a plumbing layer — it forwards whatever
+        author_class the caller passes. Server-side anti-spoof is
+        authoritative: when auth.actor_type='service_key', the server
+        forces author_class='agent' regardless of payload. This test
+        proves the MCP layer (a) forwards author_class='human' as-is
+        and (b) the user-facing response surfaces whatever attribution
+        the server actually persisted.
+
+        Server-side enforcement is covered by
+        test_service_key_cannot_spoof_author_class_human in
+        tests/server/integration/test_scoped_service_keys.py.
+        """
+        import httpx
+
+        class _FakeResp:
+            def __init__(self, body):
+                self.status_code = 201
+                self._body = body
+                self.text = json.dumps(body)
+
+            def json(self):
+                return self._body
+
+        class _FakeClient:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def post(self, url, *, json=None, headers=None):
+                captured["url"] = url
+                captured["json"] = json
+                # Simulate the server overriding author_class='agent'
+                # for the service-key principal.
+                return _FakeResp({
+                    "id": 99,
+                    "claim_class": "note",
+                    "persona_name": (json or {}).get("persona_name"),
+                    "author_class": "agent",
+                })
+
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+        result = await mcp_server._handle_add_knowledge({
+            "content": "Service-key caller attempts to spoof human",
+            "entry_type": "discovery",
+            "author_class": "human",
+        })
+        # Forwarded as-is.
+        assert captured["json"]["author_class"] == "human"
+        # But the user-facing message reflects what the server persisted.
+        assert "author_class: agent" in result

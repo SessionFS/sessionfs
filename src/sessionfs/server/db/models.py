@@ -909,6 +909,12 @@ class KnowledgeEntry(Base):
             "project_id",
             "created_at",
         ),
+        Index(
+            "idx_knowledge_persona_recent",
+            "project_id",
+            "persona_name",
+            text("created_at DESC"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -919,6 +925,10 @@ class KnowledgeEntry(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     confidence: Mapped[float] = mapped_column(Float, default=1.0, server_default="1.0")
     source_context: Mapped[str | None] = mapped_column(Text, nullable=True)
+    persona_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    author_class: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="human", server_default="human"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

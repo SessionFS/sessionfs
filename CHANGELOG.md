@@ -5,6 +5,63 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.21] - 2026-05-22
+
+**Phase 4a + the continuous-agent stack.** This release lands the agent-authored KB attribution model (Phase 4a), the MCP write-path equivalent, the full Scout v4 n8n integration contract, AgentRun provenance exposure, and an `agent_runs:read` service-key opt-in — five tickets that together unblock continuous autonomous agents on SessionFS for the first time. Plus a transitive starlette CVE pin caught by Shield-SR.
+
+### Added
+
+**`persona_name` + `author_class` on KnowledgeEntry** (`tk_f5ae3eea92934add`, commits `dfbd215` + `e8b9297`). Migration 045 strictly additive:
+- `persona_name VARCHAR(64) NULL` — validated against `agent_personas` for the same project on write (mirrors v0.10.7 wiki page-write policy); unknown personas return 422.
+- `author_class VARCHAR(16) NOT NULL DEFAULT 'human'` — every existing row backfills to `'human'` via the column default; new writes default to `'human'` for user keys, `'agent'` for service keys.
+- Composite index `idx_knowledge_persona_recent (project_id, persona_name, created_at DESC)` for Scout v4's per-persona retrieval.
+
+Anti-spoof invariant: `POST /entries/add` forces `author_class = "agent"` whenever `auth.actor_type == "service_key"`, regardless of request body. The DB-level regression `test_service_key_cannot_spoof_author_class_human` asserts at row level after `db_session.refresh(entry)`.
+
+`GET /entries` gains three new query params with AND-composition against the existing filters:
+- `persona_name` — exact match (max 64 chars)
+- `author_class` — `Literal["human", "agent"]`
+- `source_filter` — literal substring match via `.contains(value, autoescape=True)`; `%` and `_` in user input escaped so they match as data characters, not LIKE wildcards (Codex R1 LOW fix, commit `e8b9297`).
+
+`KnowledgeEntryResponse` exposes both fields on every read path (list, get, dismiss, refresh, promote, supersede).
+
+**MCP `add_knowledge` persona attribution** (`tk_8028c79963fe4dc7`, commits `73ee0ab` + `9c479c8`). MCP input schema gains `persona_name` (max 64) and `author_class` (`human|agent`). When `persona_name` is omitted AND the active-ticket bundle's `project_id` matches the resolved project (mirroring `update_wiki_page` v0.10.7), the handler auto-threads `bundle.persona_name` AND defaults `author_class` to `"agent"` — without this default the bundle path would land rows as `human` and miss the agent retrieval channel (Codex R1 MEDIUM). Explicit args win in both directions. The tool response surfaces the attribution that actually landed so callers can detect server-side overrides (anti-spoof). 8 regression tests.
+
+**Scout v4 n8n workflow contract** (`tk_d8e02fb02d874b3f`, commits `9544c99` + `4f96e23` + `cbaf702` + `99e1fcd` + `20615b1`). New `docs/integrations/scout-n8n.md` (~620 lines) is the full contract for running Scout as a continuous analyst from n8n via the direct HTTP API. Covers the scope matrix, durable `trigger_ref` via a `Build trigger_ref` Set node using documented n8n primitives (`$exec.id` + `String.hash('sha256')`), persona preflight failure path (no AgentRun to complete on 404), POST /agent-runs flow with `/start` explicitly skipped (user-key only), KB writes with stable `source_context` format `scout:n8n:<workflow_id>:<exec_id>:<signal_id>`, dedupe + retry caps (`MAX_KB_WRITES_PER_RUN=20`, `MAX_TICKET_CREATES_PER_RUN=5`, `MAX_RETRY_PER_SIGNAL=1`), failure-branch severity matrix, and a run-N + run-N+1 smoke-test procedure that verifies the agent-memory loop end-to-end. No platform changes — uses existing v0.10.21 endpoints only. Three rounds of polling-Codex review + one n8n-engineer human review.
+
+**`AgentRunResponse` exposes service-key audit triple** (`tk_a77b671fd86a42fb`, commit `e61d38b`). `actor_type`, `service_key_id`, `service_key_name` (v0.10.10 migration 042 columns) now serialize on every AgentRun read path (create, list, get, start, complete, cancel) via the shared `_row_to_response` helper. No DB migration. Scout n8n smoke-test (§6.1) now verifies provenance directly via `GET /agent-runs` instead of routing through the KB attribution fallback. 3 regression tests including the backward-compat invariant (user-key rows return `actor_type='user'` + null service-key fields).
+
+**`agent_runs:read` service-key opt-in** (`tk_31b87575d5534d00`, commits `f4cded5` + `20615b1`). `GET /agent-runs` and `GET /agent-runs/{run_id}` converted from `get_current_user` to `require_scope("agent_runs:read")`, routed through `_get_project_for_auth` (v0.10.19 helper that branches on `auth.key_kind`) followed by `assert_service_key_can_access_project`. Write routes untouched — `agent_runs:write` remains required for create + complete; `/start` and `/cancel` stay user-key only by design. The scope catalog in `docs/api-keys.md` flips `agent_runs:read` from "reserved" to **✅ live**. 5 regression tests covering allow, deny, missing-scope, cross-project (`project_not_in_allowlist`), cross-org (`cross_org_denied`), and user-key backward compatibility.
+
+### Security
+
+**`starlette>=1.0.1` pin** (commit `3775ce0`) to close GHSA-86qp-5c8j-p5mr (host-header URL reconstruction → potential auth bypass). Shield-SR caught this during the initial v0.10.21 review; FastAPI 0.135+ requires only `starlette>=0.46.0` so the floor pin prevents the resolver from landing on a vulnerable transitive version on the next deploy.
+
+### Verification
+
+- `pytest tests/ -x -q` → **1985 passed + 2 xfailed** (was 1959 + 2 baseline at v0.10.20; +26 net new across the five tickets).
+- `pytest tests/server/integration/test_scoped_service_keys.py tests/server/integration/test_agent_runs_api.py -q` → **78 passed** (was 42 + 18 = 60 at v0.10.20).
+- `pytest tests/unit/test_mcp_server.py -q` → 104 passed (was 96; +8 for MCP add_knowledge attribution).
+- Dashboard `npm test` → **187 passed** (unchanged — no frontend changes).
+- `ruff check src/` → clean.
+- `mypy src/sessionfs/server/routes/{knowledge,agent_runs,personas,tickets}.py src/sessionfs/mcp/server.py` → clean.
+- `helm lint charts/sessionfs` → clean.
+- `pip-audit` → **0 vulnerabilities** (after starlette pin).
+- `npm audit` (dashboard + site) → **0 vulnerabilities**.
+- bandit → 0 HIGH / 0 new MEDIUM (pre-existing MEDIUM not in v0.10.21 files).
+- Migration smoke: isolated 044 → 045 → 044 SQLite upgrade/downgrade with legacy-row backfill regression → clean.
+- Codex review threads — all VERIFIED-CLEAN after fixes:
+  - `tk_f5ae3eea92934add` R1 LOW (source_filter wildcards) → resolved in `e8b9297`.
+  - `tk_8028c79963fe4dc7` R1 MEDIUM (bundle author_class default) → resolved in `9c479c8`, R2 VERIFIED-CLEAN.
+  - `tk_d8e02fb02d874b3f` R1 → R2 → R3 cycle (2 MEDIUM + 2 LOW, then 1 MEDIUM on n8n expression primitives) → R3 VERIFIED-CLEAN, plus a separate R1 LOW caught after `agent_runs:read` landed fixed in `20615b1`.
+  - `tk_a77b671fd86a42fb` R1 VERIFIED-CLEAN first round.
+  - `tk_31b87575d5534d00` R1 LOW (scope-coverage doc) → R2 VERIFIED-CLEAN.
+- Shield-SR independent pre-release security review on the initial Phase 4a slice — APPROVED 0/0/0/0 (caught + fixed the starlette CVE).
+
+### Scout v4 unblock
+
+After v0.10.21 deploys, Scout v4 can run as a continuous autonomous analyst from n8n with a least-privilege service key. Each execution loads its own prior findings via `GET /entries?persona_name=scout&author_class=agent&limit=30`, writes new findings with `persona_name=scout` + a stable `source_context`, wraps everything in an `AgentRun` that surfaces service-key provenance in read responses, and runs without needing a CEO personal key for the runtime persona load. The same loop unblocks every future autonomous agent on the SessionFS fleet (Sentinel-watch, Ledger-monitor, Relay-listener).
+
 ## [0.10.20] - 2026-05-22
 
 Phase 3.6 service-key opt-in: persona CRUD routes. Unblocks the n8n Scout agent's runtime persona load and every future autonomous agent that needs to fetch the actual persona doc as its system prompt at runtime.

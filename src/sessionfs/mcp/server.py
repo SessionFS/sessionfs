@@ -338,6 +338,30 @@ _TOOLS = [
                     "type": "boolean",
                     "description": "Attempt claim classification (still enforces quality gates)",
                 },
+                "persona_name": {
+                    "type": "string",
+                    "maxLength": 64,
+                    "description": (
+                        "Optional persona attribution (e.g. 'scout', 'atlas'). "
+                        "When omitted, the handler auto-threads the active "
+                        "ticket bundle's persona if its project_id matches the "
+                        "resolved project (mirrors update_wiki_page). The "
+                        "server validates the name against agent_personas for "
+                        "the project — unknown personas return 422. Use this "
+                        "so autonomous agents can retrieve their own prior "
+                        "findings via GET /entries?persona_name=<name>."
+                    ),
+                },
+                "author_class": {
+                    "type": "string",
+                    "enum": ["human", "agent"],
+                    "description": (
+                        "Optional author class. User keys may set 'human' or "
+                        "'agent'. Service-key callers cannot spoof 'human' — "
+                        "the server forces author_class='agent' for service "
+                        "keys regardless of this value."
+                    ),
+                },
                 "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
             },
             "required": ["content", "entry_type"],
@@ -2372,7 +2396,20 @@ async def _resolve_project_id(git_remote: str = "") -> tuple[str, str, str]:
 
 
 async def _handle_add_knowledge(args: dict) -> str:
-    """Add a knowledge entry via the cloud API."""
+    """Add a knowledge entry via the cloud API.
+
+    v0.10.21 Phase 4a (tk_8028c79963fe4dc7) — forwards `persona_name` and
+    `author_class` so MCP-authored entries are first-class citizens in the
+    KB just like direct API writes. When `persona_name` is not explicitly
+    supplied, auto-threads from `~/.sessionfs/active_ticket.json` if the
+    bundle's project_id matches the resolved project (mirrors
+    `update_wiki_page`). Explicit args win over the bundle.
+
+    Anti-spoof note: `author_class` is forwarded as-is to the server,
+    which is authoritative — for service-key callers, the server forces
+    `author_class='agent'` regardless of payload. The MCP layer just
+    plumbs the field through; it does not (and cannot) enforce auth.
+    """
     content = args.get("content", "")
     entry_type = args.get("entry_type", "discovery")
     session_id = args.get("session_id")
@@ -2388,6 +2425,8 @@ async def _handle_add_knowledge(args: dict) -> str:
     entity_ref = args.get("entity_ref")
     entity_type = args.get("entity_type")
     force_claim = args.get("force_claim", False)
+    persona_name = args.get("persona_name")
+    author_class = args.get("author_class")
     git_remote = args.get("git_remote", "")
 
     if not content:
@@ -2395,6 +2434,41 @@ async def _handle_add_knowledge(args: dict) -> str:
 
     try:
         api_url, api_key, project_id = await _resolve_project_id(git_remote)
+
+        # v0.10.21 — when persona_name isn't explicit, auto-thread from
+        # the active-ticket bundle if it matches this project. Mirrors
+        # the v0.10.7 update_wiki_page pattern. Explicit args win.
+        bundle_threaded_persona = False
+        if not persona_name:
+            try:
+                from sessionfs.active_ticket import read_bundle
+
+                bundle = read_bundle()
+                if (
+                    isinstance(bundle, dict)
+                    and bundle.get("project_id") == project_id
+                ):
+                    bundle_persona = bundle.get("persona_name")
+                    if bundle_persona:
+                        persona_name = bundle_persona
+                        bundle_threaded_persona = True
+            except Exception:
+                # Bundle read is best-effort — don't fail KB write
+                # because the local provenance file is corrupt.
+                pass
+
+        # Codex R1 MEDIUM (tk_8028c79963fe4dc7): when the persona came
+        # from the active-ticket bundle (i.e. the caller is operating
+        # as that persona) and the caller did not explicitly set
+        # author_class, default to 'agent'. Without this, the bundle
+        # path produces `persona_name=scout, author_class=human` which
+        # the GET /entries?persona_name=scout&author_class=agent
+        # retrieval channel — the whole point of Phase 4a — misses.
+        # Explicit `author_class` always wins; the no-bundle / no-
+        # persona legacy path continues to omit the field so the
+        # server applies its own default.
+        if bundle_threaded_persona and not author_class:
+            author_class = "agent"
 
         import httpx
         payload: dict = {
@@ -2411,6 +2485,10 @@ async def _handle_add_knowledge(args: dict) -> str:
             payload["entity_type"] = entity_type
         if force_claim:
             payload["force_claim"] = True
+        if persona_name:
+            payload["persona_name"] = persona_name
+        if author_class:
+            payload["author_class"] = author_class
 
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(
@@ -2422,7 +2500,23 @@ async def _handle_add_knowledge(args: dict) -> str:
             data = resp.json()
             claim_class = data.get("claim_class", "note")
             tip = data.get("tip")
-            msg = f"Knowledge entry added (id: {data['id']}, type: {entry_type}, class: {claim_class})."
+            msg = (
+                f"Knowledge entry added (id: {data['id']}, "
+                f"type: {entry_type}, class: {claim_class})."
+            )
+            # v0.10.21 — surface the attribution that landed so callers
+            # can confirm persona/author_class made it through and the
+            # server didn't reject or override (e.g. service-key
+            # author_class=human → server forces 'agent').
+            persisted_persona = data.get("persona_name")
+            persisted_author = data.get("author_class")
+            attribution_bits = []
+            if persisted_persona:
+                attribution_bits.append(f"persona: {persisted_persona}")
+            if persisted_author:
+                attribution_bits.append(f"author_class: {persisted_author}")
+            if attribution_bits:
+                msg += "\nAttribution: " + ", ".join(attribution_bits)
             if tip:
                 msg += f"\nTip: {tip}"
             return msg

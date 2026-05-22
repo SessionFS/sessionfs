@@ -48,7 +48,17 @@ Org-scoped, scope-restricted API keys for cloud agents, CI runners, and integrat
 | DELETE | `/api/v1/orgs/{org_id}/service-keys/{id}` | Bearer (org admin) | Revoke a service key (body: optional `revoke_reason`) |
 | POST | `/api/v1/orgs/{org_id}/service-keys/{id}/rotate` | Bearer (org admin) | Issue a new raw secret for an existing key |
 
-Available scopes: `sessions:read`, `handoffs:read`, `handoffs:write`, `tickets:read`, `tickets:write`, `personas:read`, `personas:write`, `knowledge:read`, `knowledge:write`, `rules:read`, `rules:write`, `agent_runs:read`, `agent_runs:write`, `retrieval_audit:read`, `admin:*`. The `*` wildcard is reserved for legacy user/admin keys; service keys must enumerate explicitly.
+Available scopes (the `*` wildcard is reserved for legacy user/admin keys; service keys must enumerate explicitly):
+
+| Scope | Status | Routes opted in |
+|-------|--------|-----------------|
+| `handoffs:read`, `handoffs:write` | ✅ live (v0.10.10) | Handoff create/claim/revoke/decline + comments + events |
+| `agent_runs:write` | ✅ live (v0.10.10) | `POST /agent-runs`, `POST /agent-runs/{id}/complete` |
+| `tickets:read`, `tickets:write` | ✅ live (v0.10.18) | Ticket list/get/comments/review-state + start/complete/comment |
+| `knowledge:read`, `knowledge:write` | ✅ live (v0.10.19) | `GET /entries`, `GET /entries/{id}`, `POST /entries/add`, `PUT /entries/{id}` (dismiss/update/refresh/promote/supersede) |
+| `personas:read`, `personas:write` | ✅ live (v0.10.20) | Persona list/get + create/update/delete |
+| `agent_runs:read` | ✅ live (v0.10.21) | `GET /agent-runs`, `GET /agent-runs/{run_id}` |
+| `sessions:read`, `rules:read`, `rules:write`, `retrieval_audit:read`, `admin:*` | Reserved | Not yet opted in on any route |
 
 ### Sessions
 

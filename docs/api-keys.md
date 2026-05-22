@@ -48,7 +48,7 @@ The 15 capability scopes defined for service keys. The `*` wildcard is **reserve
 | `handoffs:read` | reserved | — |
 | `rules:read` | reserved | — |
 | `rules:write` | reserved | — |
-| `agent_runs:read` | reserved | — |
+| `agent_runs:read` | ✅ live | `GET /api/v1/projects/{project_id}/agent-runs`, `GET /api/v1/projects/{project_id}/agent-runs/{run_id}` |
 | `retrieval_audit:read` | reserved | — |
 | `admin:*` | reserved | — |
 
@@ -141,6 +141,46 @@ curl -sS -X POST \
 
 ### Scout knowledge intake example
 
+> **Building a full n8n Scout workflow?** The complete contract —
+> startup sequence, AgentRun wrap, failure branch, dedupe via
+> `source_context`, scope matrix, and a live smoke-test procedure
+> — lives in [`integrations/scout-n8n.md`](integrations/scout-n8n.md).
+> This section covers just the request shape for a single KB write.
+
+`POST /api/v1/projects/{project_id}/entries/add` accepts the usual
+knowledge fields plus optional `persona_name` and `author_class`.
+`persona_name` is caller-supplied and is not auto-derived by the server;
+after checking the v0.10.7 wiki provenance path, it follows the same
+policy and must match a persona in the project. `author_class` is
+`human` or `agent`; service keys are always forced to `agent` even if
+the request body sends `"author_class": "human"`.
+
+`GET /api/v1/projects/{project_id}/entries` can filter Scout retrieval
+with `persona_name=<exact>`, `author_class=human|agent`, and
+`source_filter=<substring of source_context>`. These compose with the
+existing `claim_class`, `freshness_class`, `dismissed`, `session_id`,
+`search`, and pagination parameters.
+
+The MCP `add_knowledge` tool exposes the same attribution surface:
+`persona_name` and `author_class` are optional inputs that forward to
+`POST /entries/add`. When `persona_name` is not explicitly supplied,
+the handler auto-threads the active-ticket bundle's persona
+(`~/.sessionfs/active_ticket.json`) when its `project_id` matches the
+resolved project — this mirrors the v0.10.7 `update_wiki_page`
+provenance pattern so an agent that has started a ticket gets free
+attribution on every KB write inside that ticket's project. When
+bundle auto-threading fires AND `author_class` was not explicitly
+supplied, the handler defaults `author_class` to `"agent"` so the
+write lands in the `GET /entries?persona_name=<name>&author_class=agent`
+retrieval channel — without this, the server's `human` default would
+silently exclude bundle-attributed writes from the agent-memory loop.
+Explicit args always win: callers can pass `author_class: "human"`
+to attribute a manual write on a persona's behalf while the bundle
+is active. The server-side anti-spoof rule is authoritative: an MCP
+caller authenticated as a service key cannot persist
+`author_class: "human"` regardless of payload — the tool response
+surfaces the attribution that actually landed so callers can verify.
+
 ```bash
 SCOUT_KEY=$(sfs admin service-keys create \
   --org org_9e39b81833e6fdd5 \
@@ -161,6 +201,10 @@ curl -sS \
   -H "Authorization: Bearer $SCOUT_KEY" \
   "https://api.sessionfs.dev/api/v1/projects/proj_c0242b0fccbd48b4/entries?search=auth&limit=10"
 
+curl -sS \
+  -H "Authorization: Bearer $SCOUT_KEY" \
+  "https://api.sessionfs.dev/api/v1/projects/proj_c0242b0fccbd48b4/entries?persona_name=scout&limit=30"
+
 curl -sS -X POST \
   -H "Authorization: Bearer $SCOUT_KEY" \
   -H "Content-Type: application/json" \
@@ -168,7 +212,10 @@ curl -sS -X POST \
     "entry_type": "discovery",
     "content": "src/sessionfs/server/routes/knowledge.py supports service-key add-entry for Scout research intake.",
     "confidence": 0.9,
-    "session_id": "scout-auth-pass"
+    "session_id": "scout-auth-pass",
+    "source_context": "Scout HN auth-route scan",
+    "persona_name": "scout",
+    "author_class": "agent"
   }' \
   "https://api.sessionfs.dev/api/v1/projects/proj_c0242b0fccbd48b4/entries/add"
 
