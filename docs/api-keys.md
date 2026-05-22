@@ -155,6 +155,20 @@ with `persona_name=<exact>`, `author_class=human|agent`, and
 existing `claim_class`, `freshness_class`, `dismissed`, `session_id`,
 `search`, and pagination parameters.
 
+The MCP `add_knowledge` tool exposes the same attribution surface:
+`persona_name` and `author_class` are optional inputs that forward to
+`POST /entries/add`. When `persona_name` is not explicitly supplied,
+the handler auto-threads the active-ticket bundle's persona
+(`~/.sessionfs/active_ticket.json`) when its `project_id` matches the
+resolved project — this mirrors the v0.10.7 `update_wiki_page`
+provenance pattern so an agent that has started a ticket gets free
+attribution on every KB write inside that ticket's project. Explicit
+args always win over the bundle. The server-side anti-spoof rule is
+authoritative: an MCP caller authenticated as a service key cannot
+persist `author_class: "human"` regardless of payload — the tool
+response surfaces the attribution that actually landed so callers
+can verify.
+
 ```bash
 SCOUT_KEY=$(sfs admin service-keys create \
   --org org_9e39b81833e6fdd5 \
