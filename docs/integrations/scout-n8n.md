@@ -15,6 +15,16 @@ This contract assumes v0.10.21+ (Phase 4a). Earlier versions don't
 support `persona_name` / `author_class` on knowledge entries and Scout
 attribution will silently fall back to the user-row default.
 
+**Scope of this contract (v4): continuity only.** v4 fixes the agent-
+memory loop — Scout reads its own prior findings, writes attributed
+entries, and wraps each execution in an AgentRun. Multi-source
+ingestion (HN + GitHub + Reddit + pricing pages + Discord per
+`.agents/scout`) is **NOT** in scope here. A future Phase 4c will
+introduce a uniform signal-shape adapter so Scout doesn't need to be
+rebuilt for each new source. Until then, the working assumption is
+one source per workflow (Hacker News for the v4 build); the contract
+shapes below apply equally to whichever single source you wire in.
+
 ---
 
 ## 1. Service-key scopes Scout needs
@@ -49,6 +59,12 @@ Store the raw key in n8n's credential store as an `HTTP Header Auth`
 credential with name `Authorization` and value `Bearer ${SCOUT_KEY}`.
 The raw key is only visible at create / rotate time — there is no
 recovery path.
+
+**Scope-name clarification:** the catalog has only two agent-run
+scopes — `agent_runs:write` (covers create + start + complete) and
+`agent_runs:read` (covers list + get + status). There is no separate
+`agent_runs:list`. If you see a reference to `:list` in older
+proposals or AC drafts, it maps to `agent_runs:read`.
 
 ### Scopes Scout deliberately does NOT need
 
@@ -127,9 +143,28 @@ Content-Type: application/json
   Use `scheduled` for cron-driven n8n triggers and `webhook` for
   inbound-webhook triggers. Anything else returns 422.
 - **`trigger_ref`**: a stable, human-readable string tying this run
-  back to its n8n execution. Use the format
-  `n8n:<workflow_id>:<execution_id>` — both IDs come from n8n's
-  `$workflow.id` and `$execution.id` expression variables.
+  back to its n8n execution. **Use a durable composite** so the
+  pointer survives n8n's execution-history retention window
+  (default ~10 days; configurable but rarely tuned):
+
+  ```
+  trigger_ref = "n8n:<workflow_id>:<iso_timestamp>:<short_hash>"
+  ```
+
+  - `workflow_id` from `$workflow.id` (durable; survives purge).
+  - `iso_timestamp` is `$now.toISO()` rounded to seconds — stable
+    across the execution, doesn't depend on n8n's internal ids.
+  - `short_hash` is an 8-char hex digest of `(workflow_id +
+    execution_id + iso_timestamp)` — enough entropy to disambiguate
+    same-second triggers and to fingerprint a single execution
+    without leaning on the soon-to-be-purged `execution_id`.
+
+  Avoid the bare `n8n:<workflow_id>:<execution_id>` shape — after
+  n8n's retention window the `execution_id` becomes a dangling
+  pointer and you lose the audit trail from `trigger_ref` back to
+  the running history. Keep `execution_id` inside `source_context`
+  on KB writes (§3.1) where it's only a dedupe handle and doesn't
+  need to outlive the execution.
 - **`fail_on`**: `none | low | medium | high | critical`. Use `high`
   for production Scout — runs with severity ≥ high get
   `policy_result=fail` even if the workflow itself completed cleanly.
@@ -255,12 +290,21 @@ opening duplicate tickets.
 
 ### 4.1 Bounded entries per run
 
-Cap KB writes at **5–10 entries per execution**. If the LLM identifies
-20 signals, Scout should consolidate them into a handful of
-higher-density entries rather than spam the KB. A useful pattern: one
-KB entry per upstream-source bucket (HN top stories, GitHub trending,
-Reddit /r/programming) summarizing the day's signal in that bucket,
-not one entry per item.
+Hard caps enforced by the workflow (so two correct Scout
+implementations don't diverge by an order of magnitude):
+
+| Constant | Limit | Rationale |
+|----------|-------|-----------|
+| `MAX_KB_WRITES_PER_RUN` | **20** | If the LLM identifies more than 20 signals worth persisting, log the overflow and drop the lowest-signal-strength items. Anything beyond 20 is almost certainly bucket-spam that the KB's semantic dedup will collapse anyway. |
+| `MAX_TICKET_CREATES_PER_RUN` | **5** | Tickets are higher-trust than KB notes — they enter humans' inboxes and trigger work. A run that wants to open more than 5 is almost always misclassifying signals as escalations. |
+| `MAX_RETRY_PER_SIGNAL` | **1** | One retry on signal-level write failure (HTTP 5xx, timeout). Beyond that, the failure branch should record the signal as part of the AgentRun's `result_summary` and skip — not loop. |
+
+When more than 20 signals look interesting, prefer **consolidation**:
+one KB entry per upstream-source bucket (HN top stories, GitHub
+trending, Reddit /r/programming) summarizing the day's signal in that
+bucket, not one entry per item. The bucket entry's `source_context`
+stays stable (`scout:n8n:<workflow_id>:<execution_id>:bucket:hn`) so
+the next run can find and supersede it.
 
 ### 4.2 Stable `source_context` is the dedupe primitive
 
@@ -454,6 +498,14 @@ A few decisions worth flagging:
 The following are deliberately deferred — Scout v4 works without
 them today:
 
+- **Phase 4c: multi-source signal adapter.** v4 covers exactly
+  one upstream source per workflow. Phase 4c will introduce a
+  uniform signal-shape contract (canonical `{source, signal_id,
+  content, observed_at, ...}` envelope) so HN, GitHub trending,
+  Reddit, pricing-page scrapers, and Discord can share the same
+  Scout reasoning loop without per-source forks of this
+  workflow. Until that lands, build one workflow per source and
+  let the LLM read across them via the KB.
 - **`agent_runs:read` for service keys**: would let Scout
   consult its own run history before reasoning ("did the last
   run already cover this signal?"). Today the same question
@@ -467,6 +519,14 @@ them today:
   command could provision the service key + write the n8n
   credential automatically. Manual mint + paste works fine for
   the first few agents.
+- **First-class `n8n-engineer` persona**: the role that owns
+  building and maintaining the n8n workflows (this doc, the
+  workflow JSON files, the service-key rotation cycle) is
+  currently implicit. Registering `n8n-engineer` as a project
+  persona (`sfs persona create --name n8n-engineer
+  --role "n8n Agent Engineering Lead"`) lets future KB writes,
+  tickets, and review comments from that role land with the
+  same Phase 4a attribution Scout itself uses.
 
 Open a follow-up ticket if Scout's workflow hits a wall any of
 these features would solve.
