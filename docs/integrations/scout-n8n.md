@@ -116,11 +116,31 @@ Authorization: Bearer ${SCOUT_KEY}
 ```
 
 - **200** → persona exists; capture `content` as the persona prompt
-  body (this is what feeds the LLM as its system message).
-- **404** → persona missing. Fail-fast: complete the AgentRun (created
-  in step 2.2) with `status=errored`, `severity=critical`,
-  `result_summary="scout persona not registered in project"`. Do NOT
-  proceed.
+  body (this is what feeds the LLM as its system message). Proceed
+  to §2.2.
+- **404** → persona missing. **Preflight failure — no AgentRun is
+  created.** `POST /agent-runs` validates `persona_name` against
+  `agent_personas` for the project before insert, so the create call
+  would return 422 (not 201) and no `run_id` would exist to
+  complete. Instead:
+  1. Surface an ops-visible failure: write to n8n's execution log
+     with severity `critical`, post a Slack/email alert via your
+     standard ops channel, and **stop the workflow execution**.
+  2. Do NOT call any `/agent-runs` endpoint. There's nothing to
+     close.
+  3. Open a follow-up ticket via `POST /tickets` (uses your
+     existing `tickets:write` scope) tagged `priority=high`,
+     `assigned_to=atlas`, `title="Scout persona missing on
+     <project_id>"`, so a human registers the persona via
+     `sfs persona create`.
+
+  This pattern preserves the "every AgentRun reaches a terminal
+  state" invariant from §5 (which only applies to runs that were
+  successfully created) while still leaving a durable audit handle
+  via the follow-up ticket. If a future Phase 4d wants to record
+  failed preflights as `AgentRun` rows, it needs platform changes
+  (relax `_validate_active_persona` or add a queued-without-persona
+  state) — out of scope here.
 
 ### 2.2 Create the AgentRun (queued)
 
@@ -133,7 +153,7 @@ Content-Type: application/json
   "persona_name": "scout",
   "tool": "n8n",
   "trigger_source": "scheduled",
-  "trigger_ref": "n8n:{{ $workflow.id }}:{{ $execution.id }}",
+  "trigger_ref": "n8n:{{ $workflow.id }}:{{ $now.toISO() }}:{{ $crypto.createHash('sha256').update($workflow.id + $execution.id + $now.toISO()).digest('hex').substring(0, 8) }}",
   "fail_on": "high",
   "triggered_by_persona": "scout"
 }
@@ -412,8 +432,15 @@ verification once to confirm the loop:
      "https://api.sessionfs.dev/api/v1/projects/proj_c0242b0fccbd48b4/agent-runs?persona_name=scout&limit=1"
    ```
    - Expect: 1 row with `status=passed`, `trigger_source=scheduled`,
-     `trigger_ref` matching `n8n:<workflow_id>:<execution_id>`,
-     `actor_type=service_key`, `service_key_name=n8n-scout-agent`.
+     and `trigger_ref` matching the durable composite shape
+     `n8n:<workflow_id>:<iso_timestamp>:<short_hash>` per §2.2.
+   - Service-key provenance (`actor_type=service_key`,
+     `service_key_name=n8n-scout-agent`) is persisted on the row but
+     NOT yet exposed in the `AgentRunResponse` shape this endpoint
+     returns. See §8 future work for the follow-up to surface those
+     fields in reads; until then, verify provenance via the KB
+     attribution check (step 3 below), which does expose
+     `persona_name` + `author_class`.
 3. Verify KB attribution:
    ```bash
    curl -sS -H "Authorization: Bearer $USER_KEY" \
@@ -443,13 +470,17 @@ verification once to confirm the loop:
 
 ### 6.3 Common loop-broken symptoms
 
-- **No prior findings retrieved**: check that the §3.1 writes
-  actually set `persona_name=scout` AND `author_class=agent`. A
-  service key writing without explicit `author_class` will land
-  rows as `author_class=human` (the server default for omitted
-  field on user-keyed writes... but service keys always force
-  `agent` via anti-spoof — so this is more likely a
-  `persona_name` typo).
+- **No prior findings retrieved**: service-key writes always land
+  as `author_class=agent` (the server forces this regardless of
+  payload), so the symptom is almost never an `author_class`
+  problem. The likely causes are, in order: (a) `persona_name`
+  typo on the write — the server validates against
+  `agent_personas` and returns 422 on mismatch, so check n8n's
+  failure log for a recent 422 from `POST /entries/add`; (b) the
+  retrieval query is hitting the wrong project (verify
+  `project_id` in the URL); (c) the retrieval is filtering by
+  `claim_class=claim` somewhere and missing the note-class rows
+  Scout actually writes — re-read §2.3.
 - **Findings present but agent ignores them**: the persona prompt
   (§2.1) is missing the "Always read 'Scout's prior signals'
   section before reasoning" instruction. Fix the persona body
@@ -511,6 +542,16 @@ them today:
   run already cover this signal?"). Today the same question
   is answered via the KB's `source_filter` query, which is
   cheaper and more direct.
+- **Service-key audit fields on `AgentRunResponse`**: the row
+  stores `actor_type`, `service_key_id`, and `service_key_name`
+  (v0.10.10 audit triple) but `AgentRunResponse` doesn't include
+  them in read payloads. That means the §6.1 smoke test cannot
+  verify service-key provenance directly from
+  `GET /agent-runs` — operators currently confirm provenance via
+  the KB attribution check (which DOES expose `persona_name` +
+  `author_class`). Surfacing the audit triple in
+  `AgentRunResponse` is additive and trivial; deferred only
+  because no live consumer needs it yet.
 - **Per-persona compile retrieval channel**: when `/compile`
   decides which entries enter the project context document,
   it could weight or exclude based on `author_class`. Today
