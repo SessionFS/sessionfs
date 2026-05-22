@@ -141,6 +141,12 @@ curl -sS -X POST \
 
 ### Scout knowledge intake example
 
+> **Building a full n8n Scout workflow?** The complete contract —
+> startup sequence, AgentRun wrap, failure branch, dedupe via
+> `source_context`, scope matrix, and a live smoke-test procedure
+> — lives in [`integrations/scout-n8n.md`](integrations/scout-n8n.md).
+> This section covers just the request shape for a single KB write.
+
 `POST /api/v1/projects/{project_id}/entries/add` accepts the usual
 knowledge fields plus optional `persona_name` and `author_class`.
 `persona_name` is caller-supplied and is not auto-derived by the server;
