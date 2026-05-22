@@ -792,7 +792,7 @@ async def get_ticket_review_state(
 async def create_ticket(
     project_id: str,
     body: TicketCreate,
-    user: User = Depends(get_current_user),
+    auth: AuthContext = Depends(require_scope("tickets:write")),
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> TicketResponse:
@@ -802,8 +802,13 @@ async def create_ticket(
     - source='agent': status='suggested', acceptance criteria required,
       description >=20 chars, max 3 per session.
     """
+    user = auth.user
     check_feature(ctx, "agent_tickets")
-    await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_or_404(project_id, db, user.id)
+    from sessionfs.server.auth.dependencies import (
+        assert_service_key_can_access_project,
+    )
+    await assert_service_key_can_access_project(db, auth, project)
 
     # Agent-created quality gates.
     if body.source == "agent":
@@ -849,6 +854,9 @@ async def create_ticket(
         file_refs=json.dumps(body.file_refs),
         related_sessions=json.dumps(body.related_sessions),
         acceptance_criteria=json.dumps(body.acceptance_criteria),
+        actor_type=auth.actor_type,
+        service_key_id=auth.service_key_id,
+        service_key_name=auth.service_key_name,
     )
     db.add(ticket)
     await db.flush()

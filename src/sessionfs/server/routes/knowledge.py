@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sessionfs.server.auth.dependencies import get_current_user
+from sessionfs.server.auth.dependencies import AuthContext, get_current_user, require_scope
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import ContextCompilation, KnowledgeEntry, Project, User
 from sessionfs.server.tier_gate import get_effective_tier
@@ -315,7 +315,7 @@ async def list_entries(
     ),
     used_in_answer: bool = Query(False, description="Mark matched entries as used in answer (strong signal — updates last_relevant_at)"),
     limit: int = Query(50, ge=1, le=200),
-    user: User = Depends(get_current_user),
+    auth: AuthContext = Depends(require_scope("knowledge:read")),
     db: AsyncSession = Depends(get_db),
 ) -> list[KnowledgeEntryResponse]:
     """List knowledge entries for a project.
@@ -334,7 +334,12 @@ async def list_entries(
     session_id, and pending status. Default sort is `created_at_desc`
     (matches the pre-v0.9.9.6 behavior so existing callers don't shift).
     """
-    await _get_project_or_404(project_id, db, user.id)
+    user = auth.user
+    project = await _get_project_or_404(project_id, db, user.id)
+    from sessionfs.server.auth.dependencies import (
+        assert_service_key_can_access_project,
+    )
+    await assert_service_key_can_access_project(db, auth, project)
 
     if claim_class is not None and claim_class not in _VALID_CLAIM_CLASSES:
         raise HTTPException(
@@ -522,7 +527,7 @@ async def list_entries(
 async def get_entry(
     project_id: str,
     entry_id: int,
-    user: User = Depends(get_current_user),
+    auth: AuthContext = Depends(require_scope("knowledge:read")),
     db: AsyncSession = Depends(get_db),
 ) -> KnowledgeEntryResponse:
     """Get a single knowledge entry's full record by ID.
@@ -530,7 +535,12 @@ async def get_entry(
     Includes `last_relevant_at` so callers can decide whether to refresh
     a stale entry without a separate query.
     """
-    await _get_project_or_404(project_id, db, user.id)
+    user = auth.user
+    project = await _get_project_or_404(project_id, db, user.id)
+    from sessionfs.server.auth.dependencies import (
+        assert_service_key_can_access_project,
+    )
+    await assert_service_key_can_access_project(db, auth, project)
 
     result = await db.execute(
         select(KnowledgeEntry).where(
@@ -576,7 +586,7 @@ async def get_entry(
 async def add_entry(
     project_id: str,
     body: AddEntryRequest,
-    user: User = Depends(get_current_user),
+    auth: AuthContext = Depends(require_scope("knowledge:write")),
     db: AsyncSession = Depends(get_db),
 ) -> AddEntryResponse:
     """Create a single knowledge entry (used by MCP tools and external clients).
@@ -590,7 +600,12 @@ async def add_entry(
 
     Set force_claim=True to attempt claim classification (still enforces quality gates).
     """
-    await _get_project_or_404(project_id, db, user.id)
+    user = auth.user
+    project = await _get_project_or_404(project_id, db, user.id)
+    from sessionfs.server.auth.dependencies import (
+        assert_service_key_can_access_project,
+    )
+    await assert_service_key_can_access_project(db, auth, project)
 
     valid_types = {"decision", "pattern", "discovery", "convention", "bug", "dependency"}
     if body.entry_type not in valid_types:
@@ -752,6 +767,9 @@ async def add_entry(
         claim_class=claim_class,
         entity_ref=body.entity_ref,
         entity_type=body.entity_type,
+        actor_type=auth.actor_type,
+        service_key_id=auth.service_key_id,
+        service_key_name=auth.service_key_name,
     )
     db.add(entry)
     await db.commit()
@@ -786,7 +804,7 @@ async def dismiss_entry(
     project_id: str,
     entry_id: int,
     body: DismissRequest,
-    user: User = Depends(get_current_user),
+    auth: AuthContext = Depends(require_scope("knowledge:write")),
     db: AsyncSession = Depends(get_db),
 ) -> KnowledgeEntryResponse:
     """Dismiss or un-dismiss a knowledge entry.
@@ -797,7 +815,12 @@ async def dismiss_entry(
     state, not its dismissal history. Idempotent: re-dismissing an already
     dismissed entry is a no-op (returns 200 with the existing audit row).
     """
-    await _get_project_or_404(project_id, db, user.id)
+    user = auth.user
+    project = await _get_project_or_404(project_id, db, user.id)
+    from sessionfs.server.auth.dependencies import (
+        assert_service_key_can_access_project,
+    )
+    await assert_service_key_can_access_project(db, auth, project)
 
     if body.reason is not None and len(body.reason) > _DISMISS_REASON_MAX:
         raise HTTPException(
@@ -843,6 +866,9 @@ async def dismiss_entry(
         # original timestamp + dismisser. Useful for "I dismissed this
         # earlier; here's why" workflows.
         entry.dismissed_reason = body.reason
+    entry.actor_type = auth.actor_type
+    entry.service_key_id = auth.service_key_id
+    entry.service_key_name = auth.service_key_name
     await db.commit()
     await db.refresh(entry)
 
@@ -874,14 +900,19 @@ async def dismiss_entry(
 async def refresh_entry(
     project_id: str,
     entry_id: int,
-    user: User = Depends(get_current_user),
+    auth: AuthContext = Depends(require_scope("knowledge:write")),
     db: AsyncSession = Depends(get_db),
 ):
     """Mark a stale entry as 'still valid': update last_relevant_at to now
     and recompute freshness_class to 'current'. Used by the stale review
     queue's "Still Valid" action.
     """
-    await _get_project_or_404(project_id, db, user.id)
+    user = auth.user
+    project = await _get_project_or_404(project_id, db, user.id)
+    from sessionfs.server.auth.dependencies import (
+        assert_service_key_can_access_project,
+    )
+    await assert_service_key_can_access_project(db, auth, project)
 
     result = await db.execute(
         select(KnowledgeEntry).where(
@@ -896,6 +927,9 @@ async def refresh_entry(
     now = datetime.now(timezone.utc)
     entry.last_relevant_at = now
     entry.freshness_class = "current"
+    entry.actor_type = auth.actor_type
+    entry.service_key_id = auth.service_key_id
+    entry.service_key_name = auth.service_key_name
     await db.commit()
     await db.refresh(entry)
 
@@ -1528,13 +1562,18 @@ async def supersede_entry(
     project_id: str,
     entry_id: int,
     body: SupersedeRequest,
-    user: User = Depends(get_current_user),
+    auth: AuthContext = Depends(require_scope("knowledge:write")),
     db: AsyncSession = Depends(get_db),
 ):
     """Mark an entry as superseded by another entry."""
     from sessionfs.server.db.models import KnowledgeLink
 
-    await _get_project_or_404(project_id, db, user.id)
+    user = auth.user
+    project = await _get_project_or_404(project_id, db, user.id)
+    from sessionfs.server.auth.dependencies import (
+        assert_service_key_can_access_project,
+    )
+    await assert_service_key_can_access_project(db, auth, project)
 
     # Validate old entry
     old_result = await db.execute(
@@ -1565,6 +1604,9 @@ async def supersede_entry(
     old_entry.superseded_by = body.superseding_id
     old_entry.supersession_reason = body.reason
     old_entry.freshness_class = "superseded"
+    old_entry.actor_type = auth.actor_type
+    old_entry.service_key_id = auth.service_key_id
+    old_entry.service_key_name = auth.service_key_name
 
     # Create a 'supersedes' link
     link = KnowledgeLink(
@@ -1595,11 +1637,16 @@ async def supersede_entry(
 async def promote_entry(
     project_id: str,
     entry_id: int,
-    user: User = Depends(get_current_user),
+    auth: AuthContext = Depends(require_scope("knowledge:write")),
     db: AsyncSession = Depends(get_db),
 ) -> KnowledgeEntryResponse:
     """Promote a note to claim if quality gates pass."""
-    await _get_project_or_404(project_id, db, user.id)
+    user = auth.user
+    project = await _get_project_or_404(project_id, db, user.id)
+    from sessionfs.server.auth.dependencies import (
+        assert_service_key_can_access_project,
+    )
+    await assert_service_key_can_access_project(db, auth, project)
 
     result = await db.execute(
         select(KnowledgeEntry).where(
@@ -1646,6 +1693,9 @@ async def promote_entry(
     entry.claim_class = "claim"
     entry.promoted_at = now
     entry.promoted_by = user.id
+    entry.actor_type = auth.actor_type
+    entry.service_key_id = auth.service_key_id
+    entry.service_key_name = auth.service_key_name
     await db.commit()
     await db.refresh(entry)
 
