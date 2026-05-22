@@ -454,15 +454,13 @@ verification once to confirm the loop:
      "https://api.sessionfs.dev/api/v1/projects/proj_c0242b0fccbd48b4/agent-runs?persona_name=scout&limit=1"
    ```
    - Expect: 1 row with `status=passed`, `trigger_source=scheduled`,
-     and `trigger_ref` matching the durable composite shape
-     `n8n:<workflow_id>:<iso_timestamp>:<short_hash>` per §2.2.
-   - Service-key provenance (`actor_type=service_key`,
-     `service_key_name=n8n-scout-agent`) is persisted on the row but
-     NOT yet exposed in the `AgentRunResponse` shape this endpoint
-     returns. See §8 future work for the follow-up to surface those
-     fields in reads; until then, verify provenance via the KB
-     attribution check (step 3 below), which does expose
-     `persona_name` + `author_class`.
+     `trigger_ref` matching the durable composite shape
+     `n8n:<workflow_id>:<iso_timestamp>:<short_hash>` per §2.2,
+     `actor_type=service_key`, and
+     `service_key_name=n8n-scout-agent`. The audit triple is
+     surfaced on every AgentRun read response as of v0.10.21
+     (tk_a77b671fd86a42fb), so this single curl confirms both the
+     run's terminal state and the service key that owned it.
 3. Verify KB attribution:
    ```bash
    curl -sS -H "Authorization: Bearer $USER_KEY" \
@@ -564,16 +562,6 @@ them today:
   run already cover this signal?"). Today the same question
   is answered via the KB's `source_filter` query, which is
   cheaper and more direct.
-- **Service-key audit fields on `AgentRunResponse`**: the row
-  stores `actor_type`, `service_key_id`, and `service_key_name`
-  (v0.10.10 audit triple) but `AgentRunResponse` doesn't include
-  them in read payloads. That means the §6.1 smoke test cannot
-  verify service-key provenance directly from
-  `GET /agent-runs` — operators currently confirm provenance via
-  the KB attribution check (which DOES expose `persona_name` +
-  `author_class`). Surfacing the audit triple in
-  `AgentRunResponse` is additive and trivial; deferred only
-  because no live consumer needs it yet.
 - **Per-persona compile retrieval channel**: when `/compile`
   decides which entries enter the project context document,
   it could weight or exclude based on `author_class`. Today

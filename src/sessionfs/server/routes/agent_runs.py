@@ -197,6 +197,15 @@ class AgentRunResponse(BaseModel):
     session_id: str | None
     triggered_by_user_id: str | None
     triggered_by_persona: str | None
+    # v0.10.21 (tk_a77b671fd86a42fb) — service-key provenance triple,
+    # populated at create time (v0.10.10 migration 042 columns). Reads
+    # expose them additively so dashboards and the Scout v4 n8n smoke
+    # test can verify which key minted/completed a run without DB
+    # access. actor_type is "service_key" for service-key-minted runs
+    # and "user" for legacy user-key runs.
+    actor_type: str | None = None
+    service_key_id: str | None = None
+    service_key_name: str | None = None
     created_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
@@ -239,6 +248,9 @@ def _row_to_response(row: AgentRun) -> AgentRunResponse:
         session_id=row.session_id,
         triggered_by_user_id=row.triggered_by_user_id,
         triggered_by_persona=row.triggered_by_persona,
+        actor_type=row.actor_type,
+        service_key_id=row.service_key_id,
+        service_key_name=row.service_key_name,
         created_at=row.created_at,
         started_at=row.started_at,
         completed_at=row.completed_at,

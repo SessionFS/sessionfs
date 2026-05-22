@@ -2624,3 +2624,194 @@ async def test_service_key_can_act_on_org_project_owned_by_other_member(
     assert kb_entry is not None
     assert kb_entry.actor_type == "service_key"
     assert kb_entry.service_key_id == kb_row.id
+
+
+# v0.10.21 (tk_a77b671fd86a42fb) — AgentRunResponse surfaces the
+# service-key audit triple so dashboards and the Scout v4 n8n smoke
+# test can verify provenance via reads instead of DB access.
+
+
+@pytest.mark.asyncio
+async def test_agent_run_response_exposes_service_key_audit_fields(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """A service-key-created AgentRun must return actor_type='service_key'
+    plus the minted service_key_id + service_key_name on the create
+    response. The list and get reads must surface the same triple."""
+    from sessionfs.server.db.models import AgentPersona
+
+    org, admin, user_key = await _make_org_with_admin(
+        db_session, slug="ar-svc-audit"
+    )
+    project = await _make_org_project(db_session, org, admin)
+    db_session.add(
+        AgentPersona(
+            id=f"per_{uuid.uuid4().hex[:8]}",
+            project_id=project.id,
+            name="scout",
+            role="Competitive Intelligence Analyst",
+            created_by=admin.id,
+        )
+    )
+    await db_session.commit()
+    svc_row, svc_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["agent_runs:write"],
+        project_ids=[project.id],
+    )
+
+    # Create — service key calls via require_scope("agent_runs:write").
+    create_resp = await client.post(
+        f"/api/v1/projects/{project.id}/agent-runs",
+        headers=_hdrs(svc_key),
+        json={
+            "persona_name": "scout",
+            "tool": "n8n",
+            "trigger_source": "scheduled",
+            "trigger_ref": "n8n:wf_smoke:2026-05-22T20:00:00Z:abcd1234",
+            "fail_on": "high",
+        },
+    )
+    assert create_resp.status_code == 201, create_resp.text
+    body = create_resp.json()
+    run_id = body["id"]
+    assert body["actor_type"] == "service_key"
+    assert body["service_key_id"] == svc_row.id
+    assert body["service_key_name"] == svc_row.service_key_name
+
+    # Get + list use the admin user key — GET /agent-runs and
+    # GET /agent-runs/{id} are user-key-only today (agent_runs:read
+    # service-key scope is reserved). This mirrors the Scout v4
+    # smoke-test which queries reads as the user, not the service
+    # key. The point of this ticket is to surface the audit triple
+    # in the response shape, regardless of who reads it.
+    get_resp = await client.get(
+        f"/api/v1/projects/{project.id}/agent-runs/{run_id}",
+        headers=_hdrs(user_key),
+    )
+    assert get_resp.status_code == 200, get_resp.text
+    get_body = get_resp.json()
+    assert get_body["actor_type"] == "service_key"
+    assert get_body["service_key_id"] == svc_row.id
+    assert get_body["service_key_name"] == svc_row.service_key_name
+
+    list_resp = await client.get(
+        f"/api/v1/projects/{project.id}/agent-runs?persona_name=scout&limit=5",
+        headers=_hdrs(user_key),
+    )
+    assert list_resp.status_code == 200, list_resp.text
+    list_body = list_resp.json()
+    assert len(list_body) >= 1
+    matching = next(r for r in list_body if r["id"] == run_id)
+    assert matching["actor_type"] == "service_key"
+    assert matching["service_key_id"] == svc_row.id
+    assert matching["service_key_name"] == svc_row.service_key_name
+
+
+@pytest.mark.asyncio
+async def test_agent_run_complete_response_keeps_service_key_audit_fields(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Completing a service-key-created run keeps the audit triple on
+    the response — the audit fields are immutable post-create. The
+    Scout v4 smoke test relies on this to assert provenance after the
+    workflow's terminal `complete` call."""
+    from sessionfs.server.db.models import AgentPersona
+
+    org, admin, _ = await _make_org_with_admin(db_session, slug="ar-svc-complete")
+    project = await _make_org_project(db_session, org, admin)
+    db_session.add(
+        AgentPersona(
+            id=f"per_{uuid.uuid4().hex[:8]}",
+            project_id=project.id,
+            name="scout",
+            role="Competitive Intelligence Analyst",
+            created_by=admin.id,
+        )
+    )
+    await db_session.commit()
+    svc_row, svc_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["agent_runs:write"],
+        project_ids=[project.id],
+    )
+
+    create_resp = await client.post(
+        f"/api/v1/projects/{project.id}/agent-runs",
+        headers=_hdrs(svc_key),
+        json={
+            "persona_name": "scout",
+            "tool": "n8n",
+            "trigger_source": "scheduled",
+        },
+    )
+    assert create_resp.status_code == 201, create_resp.text
+    run_id = create_resp.json()["id"]
+
+    complete_resp = await client.post(
+        f"/api/v1/projects/{project.id}/agent-runs/{run_id}/complete",
+        headers=_hdrs(svc_key),
+        json={
+            "status": "passed",
+            "severity": "none",
+            "result_summary": "Reviewed 5 signals, wrote 3 KB entries.",
+        },
+    )
+    assert complete_resp.status_code == 200, complete_resp.text
+    cbody = complete_resp.json()
+    assert cbody["status"] == "passed"
+    # Audit triple must survive the queued/running → terminal transition.
+    assert cbody["actor_type"] == "service_key"
+    assert cbody["service_key_id"] == svc_row.id
+    assert cbody["service_key_name"] == svc_row.service_key_name
+
+
+@pytest.mark.asyncio
+async def test_agent_run_response_user_key_carries_actor_type_user(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """User-key-created AgentRun rows must serialize
+    `actor_type='user'` with null service_key_id/service_key_name —
+    backward-compatible exposure (the column has server_default='user',
+    so legacy rows + user-key writes both land as 'user')."""
+    from sessionfs.server.db.models import AgentPersona
+
+    org, admin, user_key = await _make_org_with_admin(
+        db_session, slug="ar-userkey"
+    )
+    project = await _make_org_project(db_session, org, admin)
+    db_session.add(
+        AgentPersona(
+            id=f"per_{uuid.uuid4().hex[:8]}",
+            project_id=project.id,
+            name="atlas",
+            role="Backend",
+            created_by=admin.id,
+        )
+    )
+    await db_session.commit()
+
+    create_resp = await client.post(
+        f"/api/v1/projects/{project.id}/agent-runs",
+        headers=_hdrs(user_key),
+        json={
+            "persona_name": "atlas",
+            "tool": "claude-code",
+            "trigger_source": "manual",
+        },
+    )
+    assert create_resp.status_code == 201, create_resp.text
+    body = create_resp.json()
+    # User-key writes — audit triple must be present and indicate
+    # actor_type='user' with null service-key fields. This is the
+    # backward-compat invariant: clients reading the AgentRun
+    # response see the same shape regardless of whether the row was
+    # created by a user key or a service key, and dashboards can
+    # safely render `actor_type` without checking for missing keys.
+    assert body["actor_type"] == "user"
+    assert body["service_key_id"] is None
+    assert body["service_key_name"] is None
