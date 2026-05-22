@@ -141,6 +141,20 @@ curl -sS -X POST \
 
 ### Scout knowledge intake example
 
+`POST /api/v1/projects/{project_id}/entries/add` accepts the usual
+knowledge fields plus optional `persona_name` and `author_class`.
+`persona_name` is caller-supplied and is not auto-derived by the server;
+after checking the v0.10.7 wiki provenance path, it follows the same
+policy and must match a persona in the project. `author_class` is
+`human` or `agent`; service keys are always forced to `agent` even if
+the request body sends `"author_class": "human"`.
+
+`GET /api/v1/projects/{project_id}/entries` can filter Scout retrieval
+with `persona_name=<exact>`, `author_class=human|agent`, and
+`source_filter=<substring of source_context>`. These compose with the
+existing `claim_class`, `freshness_class`, `dismissed`, `session_id`,
+`search`, and pagination parameters.
+
 ```bash
 SCOUT_KEY=$(sfs admin service-keys create \
   --org org_9e39b81833e6fdd5 \
@@ -161,6 +175,10 @@ curl -sS \
   -H "Authorization: Bearer $SCOUT_KEY" \
   "https://api.sessionfs.dev/api/v1/projects/proj_c0242b0fccbd48b4/entries?search=auth&limit=10"
 
+curl -sS \
+  -H "Authorization: Bearer $SCOUT_KEY" \
+  "https://api.sessionfs.dev/api/v1/projects/proj_c0242b0fccbd48b4/entries?persona_name=scout&limit=30"
+
 curl -sS -X POST \
   -H "Authorization: Bearer $SCOUT_KEY" \
   -H "Content-Type: application/json" \
@@ -168,7 +186,10 @@ curl -sS -X POST \
     "entry_type": "discovery",
     "content": "src/sessionfs/server/routes/knowledge.py supports service-key add-entry for Scout research intake.",
     "confidence": 0.9,
-    "session_id": "scout-auth-pass"
+    "session_id": "scout-auth-pass",
+    "source_context": "Scout HN auth-route scan",
+    "persona_name": "scout",
+    "author_class": "agent"
   }' \
   "https://api.sessionfs.dev/api/v1/projects/proj_c0242b0fccbd48b4/entries/add"
 

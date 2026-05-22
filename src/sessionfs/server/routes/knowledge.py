@@ -6,6 +6,7 @@ import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field, field_validator
@@ -14,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import AuthContext, get_current_user, require_scope
 from sessionfs.server.db.engine import get_db
-from sessionfs.server.db.models import ContextCompilation, KnowledgeEntry, Project, User
+from sessionfs.server.db.models import AgentPersona, ContextCompilation, KnowledgeEntry, Project, User
 from sessionfs.server.tier_gate import get_effective_tier
 
 logger = logging.getLogger("sessionfs.api")
@@ -47,6 +48,8 @@ class KnowledgeEntryResponse(BaseModel):
     content: str
     confidence: float
     source_context: str | None = None
+    persona_name: str | None = None
+    author_class: str = "human"
     created_at: datetime
     compiled_at: datetime | None = None
     dismissed: bool = False
@@ -89,6 +92,8 @@ def _entry_to_response(entry: KnowledgeEntry) -> "KnowledgeEntryResponse":
         content=entry.content,
         confidence=entry.confidence,
         source_context=entry.source_context,
+        persona_name=getattr(entry, "persona_name", None),
+        author_class=getattr(entry, "author_class", "human"),
         created_at=entry.created_at,
         compiled_at=entry.compiled_at,
         dismissed=entry.dismissed,
@@ -151,6 +156,17 @@ class CompileRequest(BaseModel):
 
 
 class AddEntryRequest(BaseModel):
+    """Create one KB entry.
+
+    `persona_name`, when supplied, mirrors the v0.10.7 wiki revision
+    provenance policy: it must name an existing persona in this project.
+    This intentionally differs from the free-text option proposed for
+    Phase 4a after checking the shipped wiki pattern.
+
+    `author_class` may be passed by user keys. Service keys are always
+    forced to `agent` server-side and cannot spoof `human`.
+    """
+
     content: str
     entry_type: str = "discovery"
     session_id: str | None = None
@@ -164,6 +180,8 @@ class AddEntryRequest(BaseModel):
     source_context: str | None = None
     entity_ref: str | None = None
     entity_type: str | None = None
+    persona_name: Optional[str] = Field(None, max_length=64)
+    author_class: Optional[Literal["human", "agent"]] = None
     force_claim: bool = False
 
 
@@ -177,6 +195,8 @@ class AddEntryResponse(BaseModel):
     content: str
     confidence: float
     source_context: str | None = None
+    persona_name: str | None = None
+    author_class: str = "human"
     created_at: datetime
     compiled_at: datetime | None = None
     dismissed: bool = False
@@ -322,6 +342,9 @@ async def list_entries(
     freshness_class: str | None = Query(None, description="Filter by freshness class (current|aging|stale|superseded)"),
     dismissed: bool | None = Query(None, description="Filter by dismissed status"),
     session_id: str | None = Query(None, description="Filter to entries created in this session"),
+    persona_name: str | None = Query(None, max_length=64, description="Exact-match filter by attributed persona name"),
+    author_class: Literal["human", "agent"] | None = Query(None, description="Filter by author class"),
+    source_filter: str | None = Query(None, max_length=200, description="Substring filter on source_context"),
     sort: str = Query("created_at_desc", description="Sort order: created_at_desc | last_relevant_at_desc | confidence_desc"),
     page: int = Query(1, ge=1, description="Page number (1-indexed). Ignored when `cursor` is set."),
     cursor: int | None = Query(
@@ -355,8 +378,9 @@ async def list_entries(
       `X-Next-Cursor` carries the cursor for the next page.
 
     Supports filtering by type, claim_class, freshness_class, dismissed,
-    session_id, and pending status. Default sort is `created_at_desc`
-    (matches the pre-v0.9.9.6 behavior so existing callers don't shift).
+    session_id, persona_name, author_class, source_context substring,
+    and pending status. Default sort is `created_at_desc` (matches the
+    pre-v0.9.9.6 behavior so existing callers don't shift).
     """
     project = await _get_project_for_auth(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
@@ -431,6 +455,12 @@ async def list_entries(
         stmt = stmt.where(KnowledgeEntry.dismissed == False)  # noqa: E712
     if session_id is not None:
         stmt = stmt.where(KnowledgeEntry.session_id == session_id)
+    if persona_name is not None:
+        stmt = stmt.where(KnowledgeEntry.persona_name == persona_name)
+    if author_class is not None:
+        stmt = stmt.where(KnowledgeEntry.author_class == author_class)
+    if source_filter is not None:
+        stmt = stmt.where(KnowledgeEntry.source_context.like(f"%{source_filter}%"))
 
     # KnowledgeEntry.id.desc() is the absolute final tiebreak in every
     # sort mode. Without it, entries with identical sort-key values can
@@ -520,37 +550,7 @@ async def list_entries(
             )
         await db.commit()
 
-    return [
-        KnowledgeEntryResponse(
-            id=e.id,
-            project_id=e.project_id,
-            session_id=e.session_id,
-            user_id=e.user_id,
-            entry_type=e.entry_type,
-            content=e.content,
-            confidence=e.confidence,
-            source_context=e.source_context,
-            created_at=e.created_at,
-            compiled_at=e.compiled_at,
-            dismissed=e.dismissed,
-            claim_class=getattr(e, "claim_class", "claim"),
-            entity_ref=getattr(e, "entity_ref", None),
-            entity_type=getattr(e, "entity_type", None),
-            freshness_class=getattr(e, "freshness_class", "current"),
-            superseded_by=e.superseded_by,
-            supersession_reason=getattr(e, "supersession_reason", None),
-            promoted_at=getattr(e, "promoted_at", None),
-            promoted_by=getattr(e, "promoted_by", None),
-            retrieved_count=getattr(e, "retrieved_count", 0),
-            used_in_answer_count=getattr(e, "used_in_answer_count", 0),
-            compiled_count=getattr(e, "compiled_count", 0),
-            last_relevant_at=getattr(e, "last_relevant_at", None),
-            dismissed_at=getattr(e, "dismissed_at", None),
-            dismissed_by=getattr(e, "dismissed_by", None),
-            dismissed_reason=getattr(e, "dismissed_reason", None),
-        )
-        for e in entries
-    ]
+    return [_entry_to_response(e) for e in entries]
 
 
 @router.get("/{project_id}/entries/{entry_id}", response_model=KnowledgeEntryResponse)
@@ -581,34 +581,7 @@ async def get_entry(
     if not entry:
         raise HTTPException(404, "Entry not found")
 
-    return KnowledgeEntryResponse(
-        id=entry.id,
-        project_id=entry.project_id,
-        session_id=entry.session_id,
-        user_id=entry.user_id,
-        entry_type=entry.entry_type,
-        content=entry.content,
-        confidence=entry.confidence,
-        source_context=entry.source_context,
-        created_at=entry.created_at,
-        compiled_at=entry.compiled_at,
-        dismissed=entry.dismissed,
-        claim_class=getattr(entry, "claim_class", "claim"),
-        entity_ref=getattr(entry, "entity_ref", None),
-        entity_type=getattr(entry, "entity_type", None),
-        freshness_class=getattr(entry, "freshness_class", "current"),
-        superseded_by=entry.superseded_by,
-        supersession_reason=getattr(entry, "supersession_reason", None),
-        promoted_at=getattr(entry, "promoted_at", None),
-        promoted_by=getattr(entry, "promoted_by", None),
-        retrieved_count=getattr(entry, "retrieved_count", 0),
-        used_in_answer_count=getattr(entry, "used_in_answer_count", 0),
-        compiled_count=getattr(entry, "compiled_count", 0),
-        last_relevant_at=getattr(entry, "last_relevant_at", None),
-        dismissed_at=getattr(entry, "dismissed_at", None),
-        dismissed_by=getattr(entry, "dismissed_by", None),
-        dismissed_reason=getattr(entry, "dismissed_reason", None),
-    )
+    return _entry_to_response(entry)
 
 
 @router.post("/{project_id}/entries/add", response_model=AddEntryResponse, status_code=201)
@@ -643,6 +616,27 @@ async def add_entry(
     # Gate 1: Minimum content length
     if len(body.content) < 20:
         raise HTTPException(422, "Content too short — minimum 20 characters required")
+
+    if body.persona_name is not None:
+        persona = (
+            await db.execute(
+                select(AgentPersona.id).where(
+                    AgentPersona.project_id == project_id,
+                    AgentPersona.name == body.persona_name,
+                )
+            )
+        ).scalar_one_or_none()
+        if persona is None:
+            raise HTTPException(
+                422,
+                f"persona_name {body.persona_name!r} not found in this project",
+            )
+
+    # Codex review concern #2 — service keys cannot spoof author_class=human
+    if auth.actor_type == "service_key":
+        author_class = "agent"
+    else:
+        author_class = body.author_class or "human"
 
     session_id = body.session_id or "manual"
 
@@ -793,6 +787,8 @@ async def add_entry(
         content=body.content,
         confidence=confidence,
         source_context=body.source_context,
+        persona_name=body.persona_name,
+        author_class=author_class,
         claim_class=claim_class,
         entity_ref=body.entity_ref,
         entity_type=body.entity_type,
@@ -813,6 +809,8 @@ async def add_entry(
         content=entry.content,
         confidence=entry.confidence,
         source_context=entry.source_context,
+        persona_name=entry.persona_name,
+        author_class=entry.author_class,
         created_at=entry.created_at,
         compiled_at=entry.compiled_at,
         dismissed=entry.dismissed,
@@ -901,28 +899,7 @@ async def dismiss_entry(
     await db.commit()
     await db.refresh(entry)
 
-    return KnowledgeEntryResponse(
-        id=entry.id,
-        project_id=entry.project_id,
-        session_id=entry.session_id,
-        user_id=entry.user_id,
-        entry_type=entry.entry_type,
-        content=entry.content,
-        confidence=entry.confidence,
-        source_context=entry.source_context,
-        created_at=entry.created_at,
-        compiled_at=entry.compiled_at,
-        dismissed=entry.dismissed,
-        claim_class=getattr(entry, "claim_class", "claim"),
-        entity_ref=getattr(entry, "entity_ref", None),
-        entity_type=getattr(entry, "entity_type", None),
-        freshness_class=getattr(entry, "freshness_class", "current"),
-        superseded_by=entry.superseded_by,
-        supersession_reason=getattr(entry, "supersession_reason", None),
-        dismissed_at=getattr(entry, "dismissed_at", None),
-        dismissed_by=getattr(entry, "dismissed_by", None),
-        dismissed_reason=getattr(entry, "dismissed_reason", None),
-    )
+    return _entry_to_response(entry)
 
 
 @router.put("/{project_id}/entries/{entry_id}/refresh")
@@ -1726,29 +1703,7 @@ async def promote_entry(
     await db.commit()
     await db.refresh(entry)
 
-    return KnowledgeEntryResponse(
-        id=entry.id,
-        project_id=entry.project_id,
-        session_id=entry.session_id,
-        user_id=entry.user_id,
-        entry_type=entry.entry_type,
-        content=entry.content,
-        confidence=entry.confidence,
-        source_context=entry.source_context,
-        created_at=entry.created_at,
-        compiled_at=entry.compiled_at,
-        dismissed=entry.dismissed,
-        claim_class=entry.claim_class,
-        entity_ref=getattr(entry, "entity_ref", None),
-        entity_type=getattr(entry, "entity_type", None),
-        freshness_class=getattr(entry, "freshness_class", "current"),
-        superseded_by=entry.superseded_by,
-        promoted_at=entry.promoted_at,
-        promoted_by=entry.promoted_by,
-        dismissed_at=getattr(entry, "dismissed_at", None),
-        dismissed_by=getattr(entry, "dismissed_by", None),
-        dismissed_reason=getattr(entry, "dismissed_reason", None),
-    )
+    return _entry_to_response(entry)
 
 
 class BulkPromoteRequest(BaseModel):

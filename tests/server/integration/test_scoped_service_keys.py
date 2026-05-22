@@ -30,6 +30,7 @@ Critical properties under test:
 from __future__ import annotations
 
 import io
+import importlib
 import json
 import logging
 import uuid
@@ -209,6 +210,9 @@ async def _make_knowledge_entry(
     claim_class: str = "note",
     confidence: float = 0.9,
     freshness_class: str = "current",
+    source_context: str | None = None,
+    persona_name: str | None = None,
+    author_class: str = "human",
 ) -> "KnowledgeEntry":
     entry = KnowledgeEntry(
         project_id=project.id,
@@ -221,6 +225,9 @@ async def _make_knowledge_entry(
             "knowledge route regression coverage with durable detail."
         ),
         confidence=confidence,
+        source_context=source_context,
+        persona_name=persona_name,
+        author_class=author_class,
         claim_class=claim_class,
         freshness_class=freshness_class,
         dismissed=False,
@@ -1648,6 +1655,375 @@ async def test_service_key_can_list_and_get_knowledge_entries_with_read_scope(
     )
     assert get_resp.status_code == 200, get_resp.text
     assert get_resp.json()["id"] == entry.id
+
+
+@pytest.mark.asyncio
+async def test_user_key_can_set_persona_name_and_author_class(
+    client: AsyncClient, db_session: AsyncSession
+):
+    from sqlalchemy import select as _sel
+
+    org, admin, user_key = await _make_org_with_admin(db_session, slug="kb-user-author")
+    project = await _make_org_project(db_session, org, admin)
+    await _make_persona(db_session, project.id, admin, name="orchestrator")
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/entries/add",
+        headers=_hdrs(user_key),
+        json={
+            "entry_type": "discovery",
+            "content": (
+                "src/scout/orchestrator.py records a delegated knowledge "
+                "finding on behalf of a project persona."
+            ),
+            "confidence": 0.91,
+            "persona_name": "orchestrator",
+            "author_class": "agent",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["persona_name"] == "orchestrator"
+    assert resp.json()["author_class"] == "agent"
+
+    entry = (
+        await db_session.execute(
+            _sel(KnowledgeEntry).where(KnowledgeEntry.id == resp.json()["id"])
+        )
+    ).scalar_one()
+    assert entry.persona_name == "orchestrator"
+    assert entry.author_class == "agent"
+
+
+@pytest.mark.asyncio
+async def test_service_key_cannot_spoof_author_class_human(
+    client: AsyncClient, db_session: AsyncSession
+):
+    from sqlalchemy import select as _sel
+
+    org, admin, _ = await _make_org_with_admin(db_session, slug="kb-svc-spoof")
+    project = await _make_org_project(db_session, org, admin)
+    _svc_row, svc_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["knowledge:write"],
+        project_ids=[project.id],
+    )
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/entries/add",
+        headers=_hdrs(svc_key),
+        json={
+            "entry_type": "discovery",
+            "content": (
+                "src/scout/spoof_guard.py proves service-key knowledge "
+                "writers cannot mark agent-authored rows as human."
+            ),
+            "confidence": 0.92,
+            "author_class": "human",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    entry = (
+        await db_session.execute(
+            _sel(KnowledgeEntry).where(KnowledgeEntry.id == resp.json()["id"])
+        )
+    ).scalar_one()
+    await db_session.refresh(entry)
+    assert entry.author_class == "agent"
+    assert resp.json()["author_class"] == "agent"
+
+
+@pytest.mark.asyncio
+async def test_service_key_default_author_class_is_agent(
+    client: AsyncClient, db_session: AsyncSession
+):
+    org, admin, _ = await _make_org_with_admin(db_session, slug="kb-svc-agent")
+    project = await _make_org_project(db_session, org, admin)
+    _svc_row, svc_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["knowledge:write"],
+        project_ids=[project.id],
+    )
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/entries/add",
+        headers=_hdrs(svc_key),
+        json={
+            "entry_type": "discovery",
+            "content": (
+                "src/scout/default_agent.py records the default author "
+                "class for scoped service-key knowledge writes."
+            ),
+            "confidence": 0.92,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    entry = await db_session.get(KnowledgeEntry, resp.json()["id"])
+    assert entry is not None
+    assert entry.author_class == "agent"
+
+
+@pytest.mark.asyncio
+async def test_user_key_default_author_class_is_human(
+    client: AsyncClient, db_session: AsyncSession
+):
+    org, admin, user_key = await _make_org_with_admin(db_session, slug="kb-user-human")
+    project = await _make_org_project(db_session, org, admin)
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/entries/add",
+        headers=_hdrs(user_key),
+        json={
+            "entry_type": "discovery",
+            "content": (
+                "src/scout/default_human.py records the default author "
+                "class for ordinary user-key knowledge writes."
+            ),
+            "confidence": 0.92,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    entry = await db_session.get(KnowledgeEntry, resp.json()["id"])
+    assert entry is not None
+    assert entry.author_class == "human"
+
+
+@pytest.mark.asyncio
+async def test_list_entries_filter_by_persona_name(
+    client: AsyncClient, db_session: AsyncSession
+):
+    org, admin, user_key = await _make_org_with_admin(db_session, slug="kb-persona-filter")
+    project = await _make_org_project(db_session, org, admin)
+    scout_1 = await _make_knowledge_entry(
+        db_session, project, admin, persona_name="scout"
+    )
+    scout_2 = await _make_knowledge_entry(
+        db_session,
+        project,
+        admin,
+        persona_name="scout",
+        content="src/scout/filter_b.py owns a second Scout persona filter row.",
+    )
+    atlas = await _make_knowledge_entry(
+        db_session, project, admin, persona_name="atlas"
+    )
+
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/entries",
+        headers=_hdrs(user_key),
+        params={"persona_name": "scout"},
+    )
+    assert resp.status_code == 200, resp.text
+    ids = {row["id"] for row in resp.json()}
+    assert {scout_1.id, scout_2.id}.issubset(ids)
+    assert atlas.id not in ids
+    assert {row["persona_name"] for row in resp.json()} == {"scout"}
+
+
+@pytest.mark.asyncio
+async def test_list_entries_filter_by_author_class(
+    client: AsyncClient, db_session: AsyncSession
+):
+    org, admin, user_key = await _make_org_with_admin(db_session, slug="kb-author-filter")
+    project = await _make_org_project(db_session, org, admin)
+    agent = await _make_knowledge_entry(
+        db_session, project, admin, author_class="agent"
+    )
+    human = await _make_knowledge_entry(
+        db_session,
+        project,
+        admin,
+        author_class="human",
+        content="src/human/filter.py owns the human author-class filter row.",
+    )
+
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/entries",
+        headers=_hdrs(user_key),
+        params={"author_class": "agent"},
+    )
+    assert resp.status_code == 200, resp.text
+    ids = {row["id"] for row in resp.json()}
+    assert agent.id in ids
+    assert human.id not in ids
+    assert {row["author_class"] for row in resp.json()} == {"agent"}
+
+
+@pytest.mark.asyncio
+async def test_list_entries_filter_by_source_filter_substring(
+    client: AsyncClient, db_session: AsyncSession
+):
+    org, admin, user_key = await _make_org_with_admin(db_session, slug="kb-source-filter")
+    project = await _make_org_project(db_session, org, admin)
+    matching = await _make_knowledge_entry(
+        db_session,
+        project,
+        admin,
+        source_context="Scout HN morning analyst run",
+    )
+    other = await _make_knowledge_entry(
+        db_session,
+        project,
+        admin,
+        content="src/scout/reddit.py owns a non-HN source filter row.",
+        source_context="Scout Reddit analyst run",
+    )
+
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/entries",
+        headers=_hdrs(user_key),
+        params={"source_filter": "Scout HN"},
+    )
+    assert resp.status_code == 200, resp.text
+    ids = {row["id"] for row in resp.json()}
+    assert matching.id in ids
+    assert other.id not in ids
+
+
+@pytest.mark.asyncio
+async def test_list_entries_filters_compose(
+    client: AsyncClient, db_session: AsyncSession
+):
+    org, admin, user_key = await _make_org_with_admin(db_session, slug="kb-compose")
+    project = await _make_org_project(db_session, org, admin)
+    target = await _make_knowledge_entry(
+        db_session,
+        project,
+        admin,
+        persona_name="scout",
+        author_class="agent",
+        claim_class="note",
+    )
+    await _make_knowledge_entry(
+        db_session,
+        project,
+        admin,
+        persona_name="scout",
+        author_class="human",
+        claim_class="note",
+        content="src/scout/human.py fails the composed author-class filter.",
+    )
+    await _make_knowledge_entry(
+        db_session,
+        project,
+        admin,
+        persona_name="atlas",
+        author_class="agent",
+        claim_class="note",
+        content="src/atlas/agent.py fails the composed persona-name filter.",
+    )
+    await _make_knowledge_entry(
+        db_session,
+        project,
+        admin,
+        persona_name="scout",
+        author_class="agent",
+        claim_class="claim",
+        content="src/scout/claim.py fails the composed claim-class filter.",
+    )
+
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/entries",
+        headers=_hdrs(user_key),
+        params={
+            "persona_name": "scout",
+            "claim_class": "note",
+            "author_class": "agent",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert {row["id"] for row in resp.json()} == {target.id}
+
+
+@pytest.mark.asyncio
+async def test_existing_entries_backfill_to_human_author_class(
+    client: AsyncClient, db_session: AsyncSession, tmp_path
+):
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy import create_engine, inspect, text
+
+    migration = importlib.import_module(
+        "sessionfs.server.db.migrations.versions.045_kb_agent_author_attribution"
+    )
+    engine = create_engine(f"sqlite:///{tmp_path / 'kb_045.db'}")
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE knowledge_entries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id VARCHAR(64) NOT NULL,
+                    session_id VARCHAR(64) NOT NULL,
+                    user_id VARCHAR(64) NOT NULL,
+                    entry_type VARCHAR(20) NOT NULL,
+                    content TEXT NOT NULL,
+                    confidence FLOAT DEFAULT 1.0,
+                    source_context TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO knowledge_entries (
+                    project_id, session_id, user_id, entry_type, content
+                ) VALUES (
+                    'proj_legacy', 'manual', 'user_legacy', 'discovery',
+                    'src/legacy.py predates migration 045 attribution fields.'
+                )
+                """
+            )
+        )
+        context = MigrationContext.configure(conn)
+        with Operations.context(context):
+            migration.upgrade()
+
+        columns = {col["name"]: col for col in inspect(conn).get_columns("knowledge_entries")}
+        assert columns["persona_name"]["nullable"] is True
+        assert columns["author_class"]["nullable"] is False
+        author_class = conn.execute(
+            text("SELECT author_class FROM knowledge_entries WHERE id = 1")
+        ).scalar_one()
+        assert author_class == "human"
+        indexes = {idx["name"] for idx in inspect(conn).get_indexes("knowledge_entries")}
+        assert "idx_knowledge_persona_recent" in indexes
+
+        with Operations.context(context):
+            migration.downgrade()
+        columns_after = {
+            col["name"] for col in inspect(conn).get_columns("knowledge_entries")
+        }
+        assert "persona_name" not in columns_after
+        assert "author_class" not in columns_after
+        indexes_after = {
+            idx["name"] for idx in inspect(conn).get_indexes("knowledge_entries")
+        }
+        assert "idx_knowledge_persona_recent" not in indexes_after
+
+    org, admin, user_key = await _make_org_with_admin(db_session, slug="kb-backfill")
+    project = await _make_org_project(db_session, org, admin)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/entries/add",
+        headers=_hdrs(user_key),
+        json={
+            "entry_type": "discovery",
+            "content": (
+                "src/scout/backfill.py records that legacy-style user "
+                "writes default to human author class."
+            ),
+            "confidence": 0.92,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    entry = await db_session.get(KnowledgeEntry, resp.json()["id"])
+    assert entry is not None
+    assert entry.author_class == "human"
 
 
 @pytest.mark.asyncio
