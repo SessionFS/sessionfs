@@ -2438,6 +2438,7 @@ async def _handle_add_knowledge(args: dict) -> str:
         # v0.10.21 — when persona_name isn't explicit, auto-thread from
         # the active-ticket bundle if it matches this project. Mirrors
         # the v0.10.7 update_wiki_page pattern. Explicit args win.
+        bundle_threaded_persona = False
         if not persona_name:
             try:
                 from sessionfs.active_ticket import read_bundle
@@ -2447,11 +2448,27 @@ async def _handle_add_knowledge(args: dict) -> str:
                     isinstance(bundle, dict)
                     and bundle.get("project_id") == project_id
                 ):
-                    persona_name = bundle.get("persona_name")
+                    bundle_persona = bundle.get("persona_name")
+                    if bundle_persona:
+                        persona_name = bundle_persona
+                        bundle_threaded_persona = True
             except Exception:
                 # Bundle read is best-effort — don't fail KB write
                 # because the local provenance file is corrupt.
                 pass
+
+        # Codex R1 MEDIUM (tk_8028c79963fe4dc7): when the persona came
+        # from the active-ticket bundle (i.e. the caller is operating
+        # as that persona) and the caller did not explicitly set
+        # author_class, default to 'agent'. Without this, the bundle
+        # path produces `persona_name=scout, author_class=human` which
+        # the GET /entries?persona_name=scout&author_class=agent
+        # retrieval channel — the whole point of Phase 4a — misses.
+        # Explicit `author_class` always wins; the no-bundle / no-
+        # persona legacy path continues to omit the field so the
+        # server applies its own default.
+        if bundle_threaded_persona and not author_class:
+            author_class = "agent"
 
         import httpx
         payload: dict = {

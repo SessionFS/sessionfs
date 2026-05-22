@@ -162,12 +162,18 @@ the handler auto-threads the active-ticket bundle's persona
 (`~/.sessionfs/active_ticket.json`) when its `project_id` matches the
 resolved project — this mirrors the v0.10.7 `update_wiki_page`
 provenance pattern so an agent that has started a ticket gets free
-attribution on every KB write inside that ticket's project. Explicit
-args always win over the bundle. The server-side anti-spoof rule is
-authoritative: an MCP caller authenticated as a service key cannot
-persist `author_class: "human"` regardless of payload — the tool
-response surfaces the attribution that actually landed so callers
-can verify.
+attribution on every KB write inside that ticket's project. When
+bundle auto-threading fires AND `author_class` was not explicitly
+supplied, the handler defaults `author_class` to `"agent"` so the
+write lands in the `GET /entries?persona_name=<name>&author_class=agent`
+retrieval channel — without this, the server's `human` default would
+silently exclude bundle-attributed writes from the agent-memory loop.
+Explicit args always win: callers can pass `author_class: "human"`
+to attribute a manual write on a persona's behalf while the bundle
+is active. The server-side anti-spoof rule is authoritative: an MCP
+caller authenticated as a service key cannot persist
+`author_class: "human"` regardless of payload — the tool response
+surfaces the attribution that actually landed so callers can verify.
 
 ```bash
 SCOUT_KEY=$(sfs admin service-keys create \

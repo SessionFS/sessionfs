@@ -1898,7 +1898,14 @@ class TestAddKnowledgeAttribution:
         """When persona_name is not supplied AND the active ticket
         bundle's project_id matches the resolved project, the handler
         threads bundle.persona_name into the payload. Mirrors
-        update_wiki_page behavior (v0.10.7)."""
+        update_wiki_page behavior (v0.10.7).
+
+        Codex R1 MEDIUM: bundle auto-thread must ALSO default
+        author_class='agent' so the resulting row is retrievable via
+        GET /entries?persona_name=...&author_class=agent — without
+        this, the server defaults to 'human' and the agent-memory
+        loop misses bundle-attributed writes.
+        """
         bundle = tmp_path / "active.json"
         bundle.write_text(json.dumps({
             "ticket_id": "tk_active",
@@ -1914,6 +1921,34 @@ class TestAddKnowledgeAttribution:
             "entry_type": "discovery",
         })
         assert captured["json"]["persona_name"] == "scout"
+        # Codex R1 MEDIUM: bundle path defaults author_class to "agent".
+        assert captured["json"]["author_class"] == "agent"
+
+    @pytest.mark.asyncio
+    async def test_explicit_author_class_overrides_bundle_agent_default(
+        self, fake_resolver, fake_httpx_kb_add, captured, monkeypatch, tmp_path
+    ):
+        """Even when bundle auto-thread fires, an explicit
+        `author_class` from the caller wins over the 'agent' default
+        (Codex R1 MEDIUM safety rail — humans can still attribute on
+        behalf of a persona)."""
+        bundle = tmp_path / "active.json"
+        bundle.write_text(json.dumps({
+            "ticket_id": "tk_active",
+            "persona_name": "scout",
+            "project_id": "proj_test",
+            "started_at": "2026-05-22T00:00:00Z",
+        }))
+        from sessionfs import active_ticket as _at
+        monkeypatch.setattr(_at, "bundle_path", lambda: bundle)
+
+        await mcp_server._handle_add_knowledge({
+            "content": "Human attributing on behalf of the persona",
+            "entry_type": "discovery",
+            "author_class": "human",
+        })
+        assert captured["json"]["persona_name"] == "scout"
+        assert captured["json"]["author_class"] == "human"
 
     @pytest.mark.asyncio
     async def test_explicit_persona_overrides_bundle(
