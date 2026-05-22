@@ -17,22 +17,22 @@ The CEO-mandated rule: **service keys are the recommended credential for any non
 
 ### When to mint one
 
-At v0.10.18 the live capabilities are **handoff lifecycle**, **CI agent runs**, **ticket triage**, and **Scout knowledge intake** (see [Scope vocabulary](#scope-vocabulary) for the current opt-in status):
+At v0.10.19 the live capabilities are **handoff lifecycle**, **CI agent runs**, **ticket triage**, **Scout knowledge intake**, and **Scout runtime persona load** (see [Scope vocabulary](#scope-vocabulary) for the current opt-in status):
 
 - A cloud agent (Bedrock action group, Vertex function calling) that sends and claims handoffs on behalf of users — give it `handoffs:write`.
 - A GitHub Actions or GitLab MR runner that reports build/review findings — give it `agent_runs:write`. The same key can also `POST /handoffs/{id}/comments` if you add `handoffs:write`.
 - A triage or workflow bot that polls tickets, creates tickets, reads comments/review state, posts triage comments, and moves tickets through start/complete — give it `tickets:read` and `tickets:write`.
-- An n8n Scout-style research agent that searches project knowledge, adds findings, and opens follow-up tickets — give it `knowledge:read`, `knowledge:write`, and `tickets:write`.
+- An n8n Scout-style research agent that loads its runtime persona, searches project knowledge, adds findings, and opens follow-up tickets — give it `personas:read`, `knowledge:read`, `knowledge:write`, and `tickets:write`.
 
-For workloads that depend on the remaining reserved scopes (persona/rules updates, read-side handoffs/sessions/agent-runs), continue using personal user keys until their route opt-in lands. The bookkeeping is identical — `SESSIONFS_API_KEY` works for either kind — so the eventual migration is just one line per CI job (the mint command's `--scope` flags).
+For workloads that depend on the remaining reserved scopes (rules updates, read-side handoffs/sessions/agent-runs), continue using personal user keys until their route opt-in lands. The bookkeeping is identical — `SESSIONFS_API_KEY` works for either kind — so the eventual migration is just one line per CI job (the mint command's `--scope` flags).
 
 Service keys live on an organization, are minted by an org admin, and are enforced **deny-by-default**: a service key can only call routes that explicitly opted in via `require_scope(...)` and only when one of the route's required scopes is in the key's scope list. Every other route (read-side, dashboard, billing, ungated writes) rejects service keys with `service_key_not_allowed` (see [Errors](#errors) below).
 
 ### Scope vocabulary
 
-The 14 capability scopes defined for service keys. The `*` wildcard is **reserved for legacy personal user keys** and is rejected at create time for service keys.
+The 15 capability scopes defined for service keys. The `*` wildcard is **reserved for legacy personal user keys** and is rejected at create time for service keys.
 
-**Route opt-in is incremental.** v0.10.10 shipped the auth machinery (`require_scope(...)` decorator + `AuthContext`) and converted a first wave of write routes. Later releases opted in ticket read/write, ticket create, and the Scout knowledge intake routes. Remaining read-side routes and higher-trust write surfaces stay on the legacy `get_current_user` dependency for now and reject service keys with `service_key_not_allowed`.
+**Route opt-in is incremental.** v0.10.10 shipped the auth machinery (`require_scope(...)` decorator + `AuthContext`) and converted a first wave of write routes. Later releases opted in ticket read/write, ticket create, the Scout knowledge intake routes, and persona CRUD. Remaining read-side routes and higher-trust write surfaces stay on the legacy `get_current_user` dependency for now and reject service keys with `service_key_not_allowed`.
 
 | Scope | Status today | Routes that accept it |
 |---|---|---|
@@ -42,19 +42,21 @@ The 14 capability scopes defined for service keys. The `*` wildcard is **reserve
 | `tickets:write` | ✅ live | `POST /api/v1/projects/{project_id}/tickets`, `POST /api/v1/projects/{project_id}/tickets/{ticket_id}/comments`, `POST /api/v1/projects/{project_id}/tickets/{ticket_id}/start`, `POST /api/v1/projects/{project_id}/tickets/{ticket_id}/complete` |
 | `knowledge:read` | ✅ live | `GET /api/v1/projects/{project_id}/entries`, `GET /api/v1/projects/{project_id}/entries/{entry_id}` |
 | `knowledge:write` | ✅ live | `POST /api/v1/projects/{project_id}/entries/add`, `PUT /api/v1/projects/{project_id}/entries/{entry_id}`, `PUT /api/v1/projects/{project_id}/entries/{entry_id}/refresh`, `PUT /api/v1/projects/{project_id}/entries/{entry_id}/promote`, `PUT /api/v1/projects/{project_id}/entries/{entry_id}/supersede` |
+| `personas:read` | ✅ live | `GET /api/v1/projects/{project_id}/personas`, `GET /api/v1/projects/{project_id}/personas/{name}` |
+| `personas:write` | ✅ live | `POST /api/v1/projects/{project_id}/personas`, `PUT /api/v1/projects/{project_id}/personas/{name}`, `DELETE /api/v1/projects/{project_id}/personas/{name}` |
 | `sessions:read` | reserved | — |
 | `handoffs:read` | reserved | — |
-| `personas:read` | reserved | — |
-| `personas:write` | reserved | — |
 | `rules:read` | reserved | — |
 | `rules:write` | reserved | — |
 | `agent_runs:read` | reserved | — |
 | `retrieval_audit:read` | reserved | — |
 | `admin:*` | reserved | — |
 
-Practically, this means today's service keys are useful for **handoff lifecycle automation** (Bedrock/Vertex bots sending and claiming handoffs, GitHub Actions / GitLab MR runners posting handoff comments), **CI agent runs** (test runners reporting findings), **ticket triage automation** (bots polling tickets, creating follow-ups, reading review state, posting comments, and moving assigned tickets through start/complete), and **Scout knowledge intake** (bots searching existing knowledge, adding new entries, and opening tickets for follow-up work). Reserved scopes are safe to include on a key — they just won't unlock any routes until their opt-in lands. The key reject-by-default posture means a leak today exposes only the live scope surface.
+Practically, this means today's service keys are useful for **handoff lifecycle automation** (Bedrock/Vertex bots sending and claiming handoffs, GitHub Actions / GitLab MR runners posting handoff comments), **CI agent runs** (test runners reporting findings), **ticket triage automation** (bots polling tickets, creating follow-ups, reading review state, posting comments, and moving assigned tickets through start/complete), **Scout knowledge intake** (bots searching existing knowledge, adding new entries, and opening tickets for follow-up work), and **Scout persona management** (bots loading runtime persona content and, when explicitly trusted, creating/updating/deactivating project personas). Reserved scopes are safe to include on a key — they just won't unlock any routes until their opt-in lands. The key reject-by-default posture means a leak today exposes only the live scope surface.
 
 The following knowledge endpoints remain user-key only because they are higher-trust, heavier, or dashboard-oriented operations: `POST /api/v1/projects/{project_id}/compile`, `POST /api/v1/projects/{project_id}/rebuild`, `POST /api/v1/projects/{project_id}/entries/dismiss-stale`, `GET /api/v1/projects/{project_id}/health`, and `GET /api/v1/projects/{project_id}/compilations`.
+
+The local session-state persona commands remain user-key only: `sfs persona assume`, `sfs persona forget`, and the MCP `assume_persona` / `forget_persona` tools mutate the caller's local provenance bundle rather than a project row. Use `GET /api/v1/projects/{project_id}/personas/{name}` with `personas:read` when an n8n or cloud agent only needs to load persona content at runtime.
 
 List the live vocabulary from the CLI: `sfs admin service-keys scopes`.
 
@@ -143,12 +145,17 @@ curl -sS -X POST \
 SCOUT_KEY=$(sfs admin service-keys create \
   --org org_9e39b81833e6fdd5 \
   --name "n8n-scout-agent" \
+  --scope personas:read \
   --scope knowledge:read \
   --scope knowledge:write \
   --scope tickets:write \
   --project proj_c0242b0fccbd48b4 \
   --expires-days 90 \
   --output-key)
+
+curl -sS \
+  -H "Authorization: Bearer $SCOUT_KEY" \
+  "https://api.sessionfs.dev/api/v1/projects/proj_c0242b0fccbd48b4/personas/scout"
 
 curl -sS \
   -H "Authorization: Bearer $SCOUT_KEY" \

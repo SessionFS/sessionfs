@@ -41,6 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.keys import generate_api_key, hash_api_key
 from sessionfs.server.db.models import (
+    AgentPersona,
     ApiKey,
     KnowledgeEntry,
     OrgMember,
@@ -1306,6 +1307,274 @@ async def test_service_key_ticket_lease_required_mode_and_stale_fence(
     )
     assert complete_resp.status_code == 200, complete_resp.text
     assert complete_resp.json()["status"] == "review"
+
+
+# ── v0.10.19 Phase 3.6: persona routes opt into service-key scopes ──
+
+
+@pytest.mark.asyncio
+async def test_service_key_can_create_persona_with_write_scope(
+    client: AsyncClient, db_session: AsyncSession
+):
+    from sqlalchemy import select as _sel
+
+    org, admin, _ = await _make_org_with_admin(db_session, slug="persona-create")
+    project = await _make_org_project(db_session, org, admin)
+    svc_row, svc_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["personas:write"],
+        project_ids=[project.id],
+    )
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/personas",
+        headers=_hdrs(svc_key),
+        json={
+            "name": "scout",
+            "role": "Research Agent",
+            "content": "Runtime persona loaded by an n8n workflow.",
+            "specializations": ["research", "triage"],
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    persona = (
+        await db_session.execute(
+            _sel(AgentPersona).where(AgentPersona.id == resp.json()["id"])
+        )
+    ).scalar_one()
+    assert persona.actor_type == "service_key"
+    assert persona.service_key_id == svc_row.id
+    assert persona.service_key_name == svc_row.service_key_name
+
+
+@pytest.mark.asyncio
+async def test_service_key_can_list_and_get_personas_with_read_scope(
+    client: AsyncClient, db_session: AsyncSession
+):
+    org, admin, _ = await _make_org_with_admin(db_session, slug="persona-read")
+    project = await _make_org_project(db_session, org, admin)
+    await _make_persona(db_session, project.id, admin, name="atlas")
+    await _make_persona(db_session, project.id, admin, name="scout")
+    _row, svc_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["personas:read"],
+        project_ids=[project.id],
+    )
+
+    list_resp = await client.get(
+        f"/api/v1/projects/{project.id}/personas",
+        headers=_hdrs(svc_key),
+    )
+    assert list_resp.status_code == 200, list_resp.text
+    assert [row["name"] for row in list_resp.json()] == ["atlas", "scout"]
+
+    get_resp = await client.get(
+        f"/api/v1/projects/{project.id}/personas/scout",
+        headers=_hdrs(svc_key),
+    )
+    assert get_resp.status_code == 200, get_resp.text
+    assert get_resp.json()["name"] == "scout"
+
+
+@pytest.mark.asyncio
+async def test_service_key_can_update_and_delete_persona_with_write_scope(
+    client: AsyncClient, db_session: AsyncSession
+):
+    from sqlalchemy import select as _sel
+
+    org, admin, _ = await _make_org_with_admin(db_session, slug="persona-write")
+    project = await _make_org_project(db_session, org, admin)
+    await _make_persona(db_session, project.id, admin, name="scout")
+    svc_row, svc_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["personas:write"],
+        project_ids=[project.id],
+    )
+
+    update_resp = await client.put(
+        f"/api/v1/projects/{project.id}/personas/scout",
+        headers=_hdrs(svc_key),
+        json={
+            "role": "Runtime Scout",
+            "content": "Updated by service-key workflow.",
+        },
+    )
+    assert update_resp.status_code == 200, update_resp.text
+    assert update_resp.json()["version"] == 2
+    persona = (
+        await db_session.execute(
+            _sel(AgentPersona).where(
+                AgentPersona.project_id == project.id,
+                AgentPersona.name == "scout",
+            )
+        )
+    ).scalar_one()
+    assert persona.actor_type == "service_key"
+    assert persona.service_key_id == svc_row.id
+    assert persona.service_key_name == svc_row.service_key_name
+
+    delete_resp = await client.delete(
+        f"/api/v1/projects/{project.id}/personas/scout",
+        headers=_hdrs(svc_key),
+    )
+    assert delete_resp.status_code == 204, delete_resp.text
+    await db_session.refresh(persona)
+    assert persona.is_active is False
+    assert persona.version == 3
+    assert persona.actor_type == "service_key"
+    assert persona.service_key_id == svc_row.id
+    assert persona.service_key_name == svc_row.service_key_name
+
+
+@pytest.mark.asyncio
+async def test_service_key_personas_insufficient_scope_denied(
+    client: AsyncClient, db_session: AsyncSession
+):
+    org, admin, _ = await _make_org_with_admin(db_session, slug="persona-scope")
+    project = await _make_org_project(db_session, org, admin)
+    _row, svc_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["personas:read"],
+        project_ids=[project.id],
+    )
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/personas",
+        headers=_hdrs(svc_key),
+        json={"name": "scout", "role": "Research Agent"},
+    )
+    assert resp.status_code == 403, resp.text
+    structured = _structured_error(resp.json())
+    assert structured.get("error") == "insufficient_scope", resp.json()
+    assert structured.get("required") == ["personas:write"]
+    assert structured.get("current") == ["personas:read"]
+
+
+@pytest.mark.asyncio
+async def test_service_key_personas_project_allowlist_denied_before_write(
+    client: AsyncClient, db_session: AsyncSession
+):
+    from sqlalchemy import func, select as _sel
+
+    org, admin, _ = await _make_org_with_admin(db_session, slug="persona-allow")
+    allowed_project = await _make_org_project(db_session, org, admin)
+    denied_project = await _make_org_project(db_session, org, admin)
+    _row, svc_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["personas:write"],
+        project_ids=[allowed_project.id],
+    )
+
+    before = (
+        await db_session.execute(_sel(func.count(AgentPersona.id)))
+    ).scalar()
+    resp = await client.post(
+        f"/api/v1/projects/{denied_project.id}/personas",
+        headers=_hdrs(svc_key),
+        json={"name": "scout", "role": "Research Agent"},
+    )
+    assert resp.status_code == 403, resp.text
+    structured = _structured_error(resp.json())
+    assert structured.get("error") == "project_not_in_allowlist", resp.json()
+    after = (
+        await db_session.execute(_sel(func.count(AgentPersona.id)))
+    ).scalar()
+    assert after == before
+
+
+@pytest.mark.asyncio
+async def test_service_key_personas_cross_org_denied(
+    client: AsyncClient, db_session: AsyncSession
+):
+    org_a, admin_a, _ = await _make_org_with_admin(db_session, slug="persona-a")
+    org_b, admin_b, _ = await _make_org_with_admin(db_session, slug="persona-b")
+    project_b = await _make_org_project(db_session, org_b, admin_b)
+    _row, svc_key = await _create_service_key(
+        db_session,
+        org_a.id,
+        admin_a,
+        scopes=["personas:read"],
+    )
+
+    resp = await client.get(
+        f"/api/v1/projects/{project_b.id}/personas",
+        headers=_hdrs(svc_key),
+    )
+    assert resp.status_code == 403, resp.text
+    structured = _structured_error(resp.json())
+    assert structured.get("error") == "cross_org_denied", resp.json()
+
+
+@pytest.mark.asyncio
+async def test_user_key_regression_on_converted_persona_routes(
+    client: AsyncClient, db_session: AsyncSession
+):
+    from sqlalchemy import select as _sel
+
+    org, admin, user_key = await _make_org_with_admin(db_session, slug="persona-user")
+    project = await _make_org_project(db_session, org, admin)
+
+    create_resp = await client.post(
+        f"/api/v1/projects/{project.id}/personas",
+        headers=_hdrs(user_key),
+        json={
+            "name": "atlas",
+            "role": "Backend Architect",
+            "content": "User-key persona creation still works.",
+        },
+    )
+    assert create_resp.status_code == 201, create_resp.text
+    persona = (
+        await db_session.execute(
+            _sel(AgentPersona).where(AgentPersona.id == create_resp.json()["id"])
+        )
+    ).scalar_one()
+    assert persona.actor_type == "user"
+    assert persona.service_key_id is None
+    assert persona.service_key_name is None
+
+    list_resp = await client.get(
+        f"/api/v1/projects/{project.id}/personas",
+        headers=_hdrs(user_key),
+    )
+    assert list_resp.status_code == 200, list_resp.text
+    assert [row["name"] for row in list_resp.json()] == ["atlas"]
+
+    get_resp = await client.get(
+        f"/api/v1/projects/{project.id}/personas/atlas",
+        headers=_hdrs(user_key),
+    )
+    assert get_resp.status_code == 200, get_resp.text
+
+    update_resp = await client.put(
+        f"/api/v1/projects/{project.id}/personas/atlas",
+        headers=_hdrs(user_key),
+        json={"role": "Senior Backend Architect"},
+    )
+    assert update_resp.status_code == 200, update_resp.text
+    await db_session.refresh(persona)
+    assert persona.actor_type == "user"
+    assert persona.service_key_id is None
+
+    delete_resp = await client.delete(
+        f"/api/v1/projects/{project.id}/personas/atlas",
+        headers=_hdrs(user_key),
+    )
+    assert delete_resp.status_code == 204, delete_resp.text
+    await db_session.refresh(persona)
+    assert persona.is_active is False
+    assert persona.actor_type == "user"
+    assert persona.service_key_id is None
 
 
 # ── v0.10.18 Phase 3.5: knowledge routes opt into service-key scopes ──

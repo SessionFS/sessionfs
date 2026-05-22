@@ -5,6 +5,52 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.20] - 2026-05-22
+
+Phase 3.6 service-key opt-in: persona CRUD routes. Unblocks the n8n Scout agent's runtime persona load and every future autonomous agent that needs to fetch the actual persona doc as its system prompt at runtime.
+
+### Added
+
+**Service-key access to persona routes** (`tk_4d932478298b4e27`). 5 routes converted to `require_scope`, mirroring the v0.10.18 + v0.10.19 conversion pattern exactly:
+
+READ (`require_scope("personas:read")`):
+- `GET /projects/{pid}/personas` (list)
+- `GET /projects/{pid}/personas/{name}` (detail — the route the n8n Scout's "Get Scout Persona" node calls)
+
+WRITE (`require_scope("personas:write")`):
+- `POST /projects/{pid}/personas` (create)
+- `PUT /projects/{pid}/personas/{name}` (update)
+- `DELETE /projects/{pid}/personas/{name}` (soft-delete via is_active=False)
+
+Tier C (`assume_persona`, `forget_persona` — session-state mutators) intentionally NOT touched. Those mutate the caller's local provenance bundle, not a project row, and remain user-key only.
+
+**AgentPersona audit-row columns (migration 044)**. Migration 042 (v0.10.10) added `actor_type` / `service_key_id` / `service_key_name` to 5 audit tables; v0.10.19 migration 043 added them to Ticket. AgentPersona was excluded. v0.10.20 closes that gap with a strictly-additive migration mirroring 043 exactly (nullable cols, no defaults, no constraints, no indexes, no FKs). create/update/delete persona writes now stamp the triple from `AuthContext` so the audit row records the service-key principal.
+
+**Cross-route helper reuse**: persona routes import `_get_project_for_auth` from `knowledge.py` (mirrors `wiki._get_project_or_404` cross-route import). Service keys load by id only; user keys keep the legacy owner/session gate. `assert_service_key_can_access_project(db, auth, project)` enforces the org+allowlist boundary AFTER the helper returns at all 5 sites.
+
+### Changed
+
+**`docs/api-keys.md`**: `personas:read` and `personas:write` moved from "reserved" to **✅ live** with full endpoint lists. Scope-vocabulary count corrected from 14 → 15 (Codex R1 LOW fix). Scout pattern example extended to include the runtime persona-load step. New explicit note that `assume_persona`/`forget_persona` remain user-key only.
+
+### Verification
+
+- pytest tests/ -x -q → **1959 passed + 2 xfailed** (was 1952 + 2; +7 new regression tests)
+- pytest tests/server/integration/test_scoped_service_keys.py -q → **42 passed** (was 35; +7 new)
+- dashboard `npm test` → **187 passed** (unchanged)
+- ruff check src/ → clean
+- mypy src/sessionfs/server/routes/personas.py → clean
+- helm lint charts/sessionfs → clean
+- pip-audit → **0 vulnerabilities**
+- npm audit (dashboard + site) → **0 vulnerabilities**
+- bandit → 0 HIGH / 0 new MEDIUM (all existing MEDIUM are pre-existing)
+- Migration smoke: isolated 043 → 044 → 043 SQLite upgrade/downgrade → clean
+- Polling Codex review thread on `tk_4d932478298b4e27` — R1 1 LOW (scope-count typo) → **resolved** in commit `cbcd0c6`. No behavioral findings.
+- Shield-SR independent pre-release security review — **APPROVED, 0 CRITICAL / 0 HIGH / 0 MEDIUM / 0 LOW**
+
+### Scout agent unblock
+
+After v0.10.20 deploys, the stopgap "CEO Personal Key" credential in the n8n Scout workflow can be removed and the "Get Scout Persona" node rewired back to the org-bound service key (now scoped `[personas:read, knowledge:read, knowledge:write, tickets:write]`). Every future n8n agent — Sentinel-watch, Ledger-monitor, Relay-listener — can now operate as a least-privilege service key with runtime persona load.
+
 ## [0.10.19] - 2026-05-21
 
 Phase 3.5 service-key opt-in: ticket CREATE + knowledge routes. Unblocks the n8n Scout agent and every future autonomous discovery/research agent that gathers external signals and writes them back as KB entries + new tickets.

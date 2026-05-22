@@ -17,14 +17,37 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.10.19 -->
+      <!-- v0.10.20 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.10.20</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">May 22, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Persona Routes Opt Into Service-Key Auth &mdash; <span class="font-mono text-accent text-sm">personas:read</span> + <span class="font-mono text-accent text-sm">personas:write</span> Now Live</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Phase 3.6 service-key opt-in for persona CRUD routes</strong> (<span class="font-mono">tk_4d932478298b4e27</span>). Unblocks the n8n Scout agent's runtime persona load and every future autonomous agent that needs to fetch the actual persona doc as its system prompt at runtime. Mirrors the v0.10.18 + v0.10.19 conversion pattern exactly: <span class="font-mono text-accent text-sm">require_scope(...)</span> on opted-in routes, deny-by-default on the rest.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>READ routes converted to <span class="font-mono text-accent text-sm">require_scope('personas:read')</span></strong>: <span class="font-mono text-accent text-sm">GET /projects/&#123;pid&#125;/personas</span> (list) and <span class="font-mono text-accent text-sm">GET /projects/&#123;pid&#125;/personas/&#123;name&#125;</span> (detail &mdash; the route the n8n Scout's "Get Scout Persona" node calls).</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>WRITE routes converted to <span class="font-mono text-accent text-sm">require_scope('personas:write')</span></strong>: <span class="font-mono text-accent text-sm">POST /projects/&#123;pid&#125;/personas</span> (create), <span class="font-mono text-accent text-sm">PUT /projects/&#123;pid&#125;/personas/&#123;name&#125;</span> (update), and <span class="font-mono text-accent text-sm">DELETE /projects/&#123;pid&#125;/personas/&#123;name&#125;</span> (soft-delete via <span class="font-mono text-accent text-sm">is_active=False</span>).</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Tier C MCP tools intentionally NOT touched.</strong> <span class="font-mono text-accent text-sm">assume_persona</span> and <span class="font-mono text-accent text-sm">forget_persona</span> mutate the caller's local provenance bundle (not a project row) and remain user-key only.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Migration 044 &mdash; AgentPersona audit-row columns.</strong> Strictly-additive migration mirroring 042 + 043 exactly: <span class="font-mono text-accent text-sm">agent_personas</span> gains nullable <span class="font-mono text-accent text-sm">actor_type</span> / <span class="font-mono text-accent text-sm">service_key_id</span> / <span class="font-mono text-accent text-sm">service_key_name</span> columns (no defaults, no constraints, no indexes, no FKs). create / update / delete persona writes stamp the triple from <span class="font-mono text-accent text-sm">AuthContext</span> so audit rows record the service-key principal.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Cross-route helper reuse.</strong> Persona routes import <span class="font-mono text-accent text-sm">_get_project_for_auth</span> from <span class="font-mono text-accent text-sm">knowledge.py</span> (mirrors <span class="font-mono text-accent text-sm">wiki._get_project_or_404</span> cross-route import). Service keys load the project by id only; user keys keep the legacy owner / session gate. <span class="font-mono text-accent text-sm">assert_service_key_can_access_project</span> enforces the org + allowlist boundary AFTER the helper returns at all 5 sites.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong><span class="font-mono text-accent text-sm">docs/api-keys.md</span> updated</strong> &mdash; <span class="font-mono text-accent text-sm">personas:read</span> + <span class="font-mono text-accent text-sm">personas:write</span> moved from "reserved" to "&#9989; live" with full endpoint lists. Scope-vocabulary count corrected from 14 &rarr; 15 (Codex R1 LOW fix). Scout pattern example extended to include the runtime persona-load step. New explicit note that <span class="font-mono text-accent text-sm">assume_persona</span> / <span class="font-mono text-accent text-sm">forget_persona</span> remain user-key only.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">1,959 backend + 187 dashboard UI tests passing (was 1,952 + 187 at v0.10.19; +7 net new in <span class="font-mono text-accent text-sm">tests/server/integration/test_scoped_service_keys.py</span>) &middot; 44 migrations (migration 044 strictly-additive) &middot; 58 MCP tools (unchanged) &middot; no new endpoints. Codex review on <span class="font-mono">tk_4d932478298b4e27</span>: R1 1 LOW (scope-count typo) &rarr; resolved in commit <span class="font-mono">cbcd0c6</span>, no behavioral findings. Shield-SR independent pre-release review APPROVED, 0 CRITICAL / 0 HIGH / 0 MEDIUM / 0 LOW.</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.10.19 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
             <span class="text-brand font-semibold">v0.10.19</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">May 21, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Ticket CREATE + Knowledge Routes Opt Into Service-Key Auth &mdash; <span class="font-mono text-accent text-sm">knowledge:read</span> + <span class="font-mono text-accent text-sm">knowledge:write</span> Now Live</h2>
         <ul class="space-y-2 text-base text-muted">
