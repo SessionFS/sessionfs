@@ -61,10 +61,13 @@ The raw key is only visible at create / rotate time — there is no
 recovery path.
 
 **Scope-name clarification:** the catalog has only two agent-run
-scopes — `agent_runs:write` (covers create + start + complete) and
+scopes — `agent_runs:write` (covers create + complete) and
 `agent_runs:read` (covers list + get + status). There is no separate
 `agent_runs:list`. If you see a reference to `:list` in older
-proposals or AC drafts, it maps to `agent_runs:read`.
+proposals or AC drafts, it maps to `agent_runs:read`. **`/start`
+and `/cancel` are user-key only today** and are NOT covered by
+either service-key scope; Scout v4 explicitly skips `/start` (§2.2)
+so this gap doesn't affect the workflow.
 
 ### Scopes Scout deliberately does NOT need (v4)
 
