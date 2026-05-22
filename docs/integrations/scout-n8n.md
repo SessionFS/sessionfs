@@ -153,7 +153,7 @@ Content-Type: application/json
   "persona_name": "scout",
   "tool": "n8n",
   "trigger_source": "scheduled",
-  "trigger_ref": "n8n:{{ $workflow.id }}:{{ $now.toISO() }}:{{ $crypto.createHash('sha256').update($workflow.id + $execution.id + $now.toISO()).digest('hex').substring(0, 8) }}",
+  "trigger_ref": "{{ $('Build trigger_ref').item.json.trigger_ref }}",
   "fail_on": "high",
   "triggered_by_persona": "scout"
 }
@@ -172,17 +172,39 @@ Content-Type: application/json
   ```
 
   - `workflow_id` from `$workflow.id` (durable; survives purge).
-  - `iso_timestamp` is `$now.toISO()` rounded to seconds — stable
-    across the execution, doesn't depend on n8n's internal ids.
+  - `iso_timestamp` rounded to seconds, stable across the
+    execution.
   - `short_hash` is an 8-char hex digest of `(workflow_id +
-    execution_id + iso_timestamp)` — enough entropy to disambiguate
+    exec_id + iso_timestamp)` — enough entropy to disambiguate
     same-second triggers and to fingerprint a single execution
-    without leaning on the soon-to-be-purged `execution_id`.
+    without leaning on the soon-to-be-purged `exec_id`.
 
-  Avoid the bare `n8n:<workflow_id>:<execution_id>` shape — after
-  n8n's retention window the `execution_id` becomes a dangling
+  **Don't try to inline the hash construction inside the HTTP
+  Request JSON body** — the n8n expression engine doesn't expose
+  Node's `$crypto.*` API. The reliable pattern is a preceding
+  **Set** (or **Code**) node that pre-computes `trigger_ref` and
+  the HTTP body just references it:
+
+  In an n8n **Set** node named exactly `Build trigger_ref`, set a
+  single field `trigger_ref` (type: string) to:
+
+  ```
+  ={{ "n8n:" + $workflow.id + ":" + $now.toISO() + ":"
+       + ($workflow.id + $exec.id + $now.toISO())
+           .hash('sha256').substring(0, 8) }}
+  ```
+
+  This uses two documented n8n expression primitives:
+  `$exec.id` (current execution id) and `String.prototype.hash`
+  (e.g. `String.hash('sha256')` returns a hex digest). The
+  downstream HTTP Request body then references the pre-computed
+  value via `{{ $('Build trigger_ref').item.json.trigger_ref }}`
+  as shown above — clean, no exotic helpers, paste-ready.
+
+  Avoid the bare `n8n:<workflow_id>:<exec_id>` shape — after
+  n8n's retention window the `exec_id` becomes a dangling
   pointer and you lose the audit trail from `trigger_ref` back to
-  the running history. Keep `execution_id` inside `source_context`
+  the running history. Keep `exec_id` inside `source_context`
   on KB writes (§3.1) where it's only a dedupe handle and doesn't
   need to outlive the execution.
 - **`fail_on`**: `none | low | medium | high | critical`. Use `high`
@@ -251,7 +273,7 @@ Content-Type: application/json
   "confidence": 0.7,
   "persona_name": "scout",
   "author_class": "agent",
-  "source_context": "scout:n8n:{{ $workflow.id }}:{{ $execution.id }}:{{ $signal_id }}",
+  "source_context": "scout:n8n:{{ $workflow.id }}:{{ $exec.id }}:{{ $signal_id }}",
   "entity_ref": "<optional canonical id, e.g. hn:38291847>",
   "entity_type": "<optional, e.g. 'hn_story'>"
 }
