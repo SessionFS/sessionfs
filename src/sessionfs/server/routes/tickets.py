@@ -59,6 +59,7 @@ from sessionfs.server.db.models import (
     TicketDependency,
     User,
 )
+from sessionfs.server.routes.knowledge import _get_project_for_auth
 from sessionfs.server.routes.wiki import _get_project_or_404
 from sessionfs.server.tier_gate import UserContext, check_feature, get_user_context
 
@@ -666,9 +667,8 @@ async def list_tickets(
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> list[TicketResponse]:
-    user = auth.user
     check_feature(ctx, "agent_tickets")
-    project = await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_for_auth(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
@@ -710,9 +710,8 @@ async def get_ticket(
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> TicketResponse:
-    user = auth.user
     check_feature(ctx, "agent_tickets")
-    project = await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_for_auth(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
@@ -746,9 +745,8 @@ async def get_ticket_review_state(
     """
     from sessionfs.server.services.review_state import compute_review_state
 
-    user = auth.user
     check_feature(ctx, "agent_tickets")
-    project = await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_for_auth(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
@@ -792,7 +790,7 @@ async def get_ticket_review_state(
 async def create_ticket(
     project_id: str,
     body: TicketCreate,
-    user: User = Depends(get_current_user),
+    auth: AuthContext = Depends(require_scope("tickets:write")),
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> TicketResponse:
@@ -802,8 +800,13 @@ async def create_ticket(
     - source='agent': status='suggested', acceptance criteria required,
       description >=20 chars, max 3 per session.
     """
+    user = auth.user
     check_feature(ctx, "agent_tickets")
-    await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_for_auth(project_id, db, auth)
+    from sessionfs.server.auth.dependencies import (
+        assert_service_key_can_access_project,
+    )
+    await assert_service_key_can_access_project(db, auth, project)
 
     # Agent-created quality gates.
     if body.source == "agent":
@@ -849,6 +852,9 @@ async def create_ticket(
         file_refs=json.dumps(body.file_refs),
         related_sessions=json.dumps(body.related_sessions),
         acceptance_criteria=json.dumps(body.acceptance_criteria),
+        actor_type=auth.actor_type,
+        service_key_id=auth.service_key_id,
+        service_key_name=auth.service_key_name,
     )
     db.add(ticket)
     await db.flush()
@@ -945,7 +951,7 @@ async def start_ticket(
     """
     user = auth.user
     check_feature(ctx, "agent_tickets")
-    project = await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_for_auth(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
@@ -1039,7 +1045,7 @@ async def complete_ticket(
     """Move ticket from in_progress → review."""
     user = auth.user
     check_feature(ctx, "agent_tickets")
-    project = await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_for_auth(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
@@ -1417,9 +1423,8 @@ async def list_ticket_comments(
     a created_at (Codex review #1 fix — without the id tiebreaker, a
     same-timestamp poll could permanently skip one of two siblings).
     """
-    user = auth.user
     check_feature(ctx, "agent_tickets")
-    project = await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_for_auth(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
@@ -1481,7 +1486,7 @@ async def create_ticket_comment(
 ) -> CommentResponse:
     user = auth.user
     check_feature(ctx, "agent_tickets")
-    project = await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_for_auth(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )

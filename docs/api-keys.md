@@ -17,41 +17,44 @@ The CEO-mandated rule: **service keys are the recommended credential for any non
 
 ### When to mint one
 
-At v0.10.11 the live capabilities are **handoff lifecycle**, **CI agent runs**, and **ticket triage** (see [Scope vocabulary](#scope-vocabulary) for the current opt-in status):
+At v0.10.18 the live capabilities are **handoff lifecycle**, **CI agent runs**, **ticket triage**, and **Scout knowledge intake** (see [Scope vocabulary](#scope-vocabulary) for the current opt-in status):
 
 - A cloud agent (Bedrock action group, Vertex function calling) that sends and claims handoffs on behalf of users — give it `handoffs:write`.
 - A GitHub Actions or GitLab MR runner that reports build/review findings — give it `agent_runs:write`. The same key can also `POST /handoffs/{id}/comments` if you add `handoffs:write`.
-- A triage or workflow bot that polls tickets, reads comments/review state, posts triage comments, and moves tickets through start/complete — give it `tickets:read` and `tickets:write`.
+- A triage or workflow bot that polls tickets, creates tickets, reads comments/review state, posts triage comments, and moves tickets through start/complete — give it `tickets:read` and `tickets:write`.
+- An n8n Scout-style research agent that searches project knowledge, adds findings, and opens follow-up tickets — give it `knowledge:read`, `knowledge:write`, and `tickets:write`.
 
-For workloads that depend on the remaining reserved scopes (KB writes, persona/rules updates, read-side handoffs/sessions/agent-runs), continue using personal user keys until their Phase 3 route opt-in lands. The bookkeeping is identical — `SESSIONFS_API_KEY` works for either kind — so the eventual migration is just one line per CI job (the mint command's `--scope` flags).
+For workloads that depend on the remaining reserved scopes (persona/rules updates, read-side handoffs/sessions/agent-runs), continue using personal user keys until their route opt-in lands. The bookkeeping is identical — `SESSIONFS_API_KEY` works for either kind — so the eventual migration is just one line per CI job (the mint command's `--scope` flags).
 
 Service keys live on an organization, are minted by an org admin, and are enforced **deny-by-default**: a service key can only call routes that explicitly opted in via `require_scope(...)` and only when one of the route's required scopes is in the key's scope list. Every other route (read-side, dashboard, billing, ungated writes) rejects service keys with `service_key_not_allowed` (see [Errors](#errors) below).
 
 ### Scope vocabulary
 
-The 14 capability scopes defined at v0.10.11. The `*` wildcard is **reserved for legacy personal user keys** and is rejected at create time for service keys.
+The 14 capability scopes defined for service keys. The `*` wildcard is **reserved for legacy personal user keys** and is rejected at create time for service keys.
 
-**Route opt-in is incremental.** v0.10.10 shipped the auth machinery (`require_scope(...)` decorator + `AuthContext`) and converted a first wave of write routes. Read-side routes and the rest of the write surface stay on the legacy `get_current_user` dependency for now and reject service keys with `service_key_not_allowed`. The remaining scopes are reserved for the Phase 3 route opt-in (deferred from v0.10.10 to v0.10.11+ — see `tk_e0d7db15ff814c0a` and forward).
+**Route opt-in is incremental.** v0.10.10 shipped the auth machinery (`require_scope(...)` decorator + `AuthContext`) and converted a first wave of write routes. Later releases opted in ticket read/write, ticket create, and the Scout knowledge intake routes. Remaining read-side routes and higher-trust write surfaces stay on the legacy `get_current_user` dependency for now and reject service keys with `service_key_not_allowed`.
 
 | Scope | Status today | Routes that accept it |
 |---|---|---|
 | `handoffs:write` | ✅ live | `POST /api/v1/handoffs`, `POST /api/v1/handoffs/{id}/claim`, `POST /api/v1/handoffs/{id}/revoke`, `POST /api/v1/handoffs/{id}/decline`, `POST /api/v1/handoffs/{id}/comments` |
 | `agent_runs:write` | ✅ live | `POST /api/v1/projects/{project_id}/agent-runs`, `POST /api/v1/projects/{project_id}/agent-runs/{run_id}/complete` |
 | `tickets:read` | ✅ live | `GET /api/v1/projects/{project_id}/tickets`, `GET /api/v1/projects/{project_id}/tickets/{ticket_id}`, `GET /api/v1/projects/{project_id}/tickets/{ticket_id}/comments`, `GET /api/v1/projects/{project_id}/tickets/{ticket_id}/review-state` |
-| `tickets:write` | ✅ live | `POST /api/v1/projects/{project_id}/tickets/{ticket_id}/comments`, `POST /api/v1/projects/{project_id}/tickets/{ticket_id}/start`, `POST /api/v1/projects/{project_id}/tickets/{ticket_id}/complete` |
+| `tickets:write` | ✅ live | `POST /api/v1/projects/{project_id}/tickets`, `POST /api/v1/projects/{project_id}/tickets/{ticket_id}/comments`, `POST /api/v1/projects/{project_id}/tickets/{ticket_id}/start`, `POST /api/v1/projects/{project_id}/tickets/{ticket_id}/complete` |
+| `knowledge:read` | ✅ live | `GET /api/v1/projects/{project_id}/entries`, `GET /api/v1/projects/{project_id}/entries/{entry_id}` |
+| `knowledge:write` | ✅ live | `POST /api/v1/projects/{project_id}/entries/add`, `PUT /api/v1/projects/{project_id}/entries/{entry_id}`, `PUT /api/v1/projects/{project_id}/entries/{entry_id}/refresh`, `PUT /api/v1/projects/{project_id}/entries/{entry_id}/promote`, `PUT /api/v1/projects/{project_id}/entries/{entry_id}/supersede` |
 | `sessions:read` | reserved | — |
 | `handoffs:read` | reserved | — |
 | `personas:read` | reserved | — |
 | `personas:write` | reserved | — |
-| `knowledge:read` | reserved | — |
-| `knowledge:write` | reserved | — |
 | `rules:read` | reserved | — |
 | `rules:write` | reserved | — |
 | `agent_runs:read` | reserved | — |
 | `retrieval_audit:read` | reserved | — |
 | `admin:*` | reserved | — |
 
-Practically, this means today's service keys are useful for **handoff lifecycle automation** (Bedrock/Vertex bots sending and claiming handoffs, GitHub Actions / GitLab MR runners posting handoff comments), **CI agent runs** (test runners reporting findings), and **ticket triage automation** (bots polling tickets, reading review state, posting comments, and moving assigned tickets through start/complete). Reserved scopes are safe to include on a key — they just won't unlock any routes until the Phase 3 opt-in lands. The key reject-by-default posture means a leak today exposes only the live scope surface.
+Practically, this means today's service keys are useful for **handoff lifecycle automation** (Bedrock/Vertex bots sending and claiming handoffs, GitHub Actions / GitLab MR runners posting handoff comments), **CI agent runs** (test runners reporting findings), **ticket triage automation** (bots polling tickets, creating follow-ups, reading review state, posting comments, and moving assigned tickets through start/complete), and **Scout knowledge intake** (bots searching existing knowledge, adding new entries, and opening tickets for follow-up work). Reserved scopes are safe to include on a key — they just won't unlock any routes until their opt-in lands. The key reject-by-default posture means a leak today exposes only the live scope surface.
+
+The following knowledge endpoints remain user-key only because they are higher-trust, heavier, or dashboard-oriented operations: `POST /api/v1/projects/{project_id}/compile`, `POST /api/v1/projects/{project_id}/rebuild`, `POST /api/v1/projects/{project_id}/entries/dismiss-stale`, `GET /api/v1/projects/{project_id}/health`, and `GET /api/v1/projects/{project_id}/compilations`.
 
 List the live vocabulary from the CLI: `sfs admin service-keys scopes`.
 
@@ -134,6 +137,48 @@ curl -sS -X POST \
   "https://api.sessionfs.dev/api/v1/projects/proj_c0242b0fccbd48b4/tickets/tk_123/comments"
 ```
 
+### Scout knowledge intake example
+
+```bash
+SCOUT_KEY=$(sfs admin service-keys create \
+  --org org_9e39b81833e6fdd5 \
+  --name "n8n-scout-agent" \
+  --scope knowledge:read \
+  --scope knowledge:write \
+  --scope tickets:write \
+  --project proj_c0242b0fccbd48b4 \
+  --expires-days 90 \
+  --output-key)
+
+curl -sS \
+  -H "Authorization: Bearer $SCOUT_KEY" \
+  "https://api.sessionfs.dev/api/v1/projects/proj_c0242b0fccbd48b4/entries?search=auth&limit=10"
+
+curl -sS -X POST \
+  -H "Authorization: Bearer $SCOUT_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "entry_type": "discovery",
+    "content": "src/sessionfs/server/routes/knowledge.py supports service-key add-entry for Scout research intake.",
+    "confidence": 0.9,
+    "session_id": "scout-auth-pass"
+  }' \
+  "https://api.sessionfs.dev/api/v1/projects/proj_c0242b0fccbd48b4/entries/add"
+
+curl -sS -X POST \
+  -H "Authorization: Bearer $SCOUT_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Follow up on Scout auth-route finding",
+    "description": "Scout found an auth-route follow-up that needs backend review.",
+    "priority": "medium",
+    "source": "agent",
+    "created_by_persona": "n8n-scout",
+    "acceptance_criteria": ["Backend owner triages the finding"]
+  }' \
+  "https://api.sessionfs.dev/api/v1/projects/proj_c0242b0fccbd48b4/tickets"
+```
+
 ### List, rotate, revoke
 
 ```bash
@@ -189,7 +234,7 @@ The same raw-key-once + `--output-key` semantics as service keys apply.
 Why use a service key over a personal key for non-human callers? Three reasons:
 
 1. **Scope reduction.** A service key with `tickets:read, handoffs:write` cannot escalate into your billing, your other orgs, or your KB writes. A personal user key carries the full ambient authority of the user it was minted by.
-2. **Org-bound audit.** Live service-key writes today stamp `actor_type=service_key`, `service_key_id`, and `service_key_name` on `HandoffEvent` and `AgentRun` rows. `TicketComment`, `KnowledgeEntry`, and `RetrievalAuditEvent` already carry the same provenance columns ready for the Phase 3 route opt-in, but those write routes are not service-key opted in yet. Personal keys show up as the user across all of these.
+2. **Org-bound audit.** Live service-key writes today stamp `actor_type=service_key`, `service_key_id`, and `service_key_name` on `HandoffEvent`, `AgentRun`, `Ticket`, `TicketComment`, and `KnowledgeEntry` rows where those routes are opted in. `RetrievalAuditEvent` already carries the same provenance columns for its route opt-in. Personal keys show up as the user across all of these.
 3. **Cross-org safety.** Service keys are pinned to an `org_id`. A leaked service key cannot accidentally write into the wrong org.
 
 ---

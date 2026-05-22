@@ -42,6 +42,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sessionfs.server.auth.keys import generate_api_key, hash_api_key
 from sessionfs.server.db.models import (
     ApiKey,
+    KnowledgeEntry,
     OrgMember,
     Organization,
     Project,
@@ -196,6 +197,37 @@ async def _make_ticket(
     await db_session.commit()
     await db_session.refresh(ticket)
     return ticket
+
+
+async def _make_knowledge_entry(
+    db_session: AsyncSession,
+    project: "Project",
+    owner: User,
+    *,
+    content: str | None = None,
+    claim_class: str = "note",
+    confidence: float = 0.9,
+    freshness_class: str = "current",
+) -> "KnowledgeEntry":
+    entry = KnowledgeEntry(
+        project_id=project.id,
+        session_id=f"ses_{uuid.uuid4().hex[:12]}",
+        user_id=owner.id,
+        entry_type="discovery",
+        content=content
+        or (
+            f"src/service/{uuid.uuid4().hex[:8]}.py owns scoped-key "
+            "knowledge route regression coverage with durable detail."
+        ),
+        confidence=confidence,
+        claim_class=claim_class,
+        freshness_class=freshness_class,
+        dismissed=False,
+    )
+    db_session.add(entry)
+    await db_session.commit()
+    await db_session.refresh(entry)
+    return entry
 
 
 async def _make_persona(
@@ -1056,6 +1088,43 @@ async def test_service_key_tickets_read_routes_allowed(
 
 
 @pytest.mark.asyncio
+async def test_service_key_can_create_ticket_with_write_scope(
+    client: AsyncClient, db_session: AsyncSession
+):
+    from sqlalchemy import select as _sel
+
+    org, admin, _ = await _make_org_with_admin(db_session, slug="ticket-create")
+    project = await _make_org_project(db_session, org, admin)
+    svc_row, svc_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["tickets:write"],
+        project_ids=[project.id],
+    )
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(svc_key),
+        json={
+            "title": "Scout surfaced a backend follow-up",
+            "description": "Created by scoped service key",
+            "priority": "medium",
+            "acceptance_criteria": ["route accepts scoped key"],
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    ticket = (
+        await db_session.execute(
+            _sel(Ticket).where(Ticket.id == resp.json()["id"])
+        )
+    ).scalar_one()
+    assert ticket.actor_type == "service_key"
+    assert ticket.service_key_id == svc_row.id
+    assert ticket.service_key_name == svc_row.service_key_name
+
+
+@pytest.mark.asyncio
 async def test_service_key_tickets_write_routes_allowed_and_comment_audited(
     client: AsyncClient, db_session: AsyncSession
 ):
@@ -1239,6 +1308,254 @@ async def test_service_key_ticket_lease_required_mode_and_stale_fence(
     assert complete_resp.json()["status"] == "review"
 
 
+# ── v0.10.18 Phase 3.5: knowledge routes opt into service-key scopes ──
+
+
+@pytest.mark.asyncio
+async def test_service_key_can_add_knowledge_entry_with_write_scope(
+    client: AsyncClient, db_session: AsyncSession
+):
+    from sqlalchemy import select as _sel
+
+    org, admin, _ = await _make_org_with_admin(db_session, slug="kb-add")
+    project = await _make_org_project(db_session, org, admin)
+    svc_row, svc_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["knowledge:write"],
+        project_ids=[project.id],
+    )
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/entries/add",
+        headers=_hdrs(svc_key),
+        json={
+            "entry_type": "discovery",
+            "content": (
+                "src/server/routes/knowledge.py accepts scoped service "
+                "keys for Scout add-entry workflows."
+            ),
+            "confidence": 0.95,
+            "session_id": "ses_scout_add",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    entry = (
+        await db_session.execute(
+            _sel(KnowledgeEntry).where(KnowledgeEntry.id == resp.json()["id"])
+        )
+    ).scalar_one()
+    assert entry.actor_type == "service_key"
+    assert entry.service_key_id == svc_row.id
+    assert entry.service_key_name == svc_row.service_key_name
+
+
+@pytest.mark.asyncio
+async def test_service_key_can_list_and_get_knowledge_entries_with_read_scope(
+    client: AsyncClient, db_session: AsyncSession
+):
+    org, admin, _ = await _make_org_with_admin(db_session, slug="kb-read")
+    project = await _make_org_project(db_session, org, admin)
+    entry = await _make_knowledge_entry(db_session, project, admin, claim_class="claim")
+    _row, svc_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["knowledge:read"],
+        project_ids=[project.id],
+    )
+
+    list_resp = await client.get(
+        f"/api/v1/projects/{project.id}/entries",
+        headers=_hdrs(svc_key),
+    )
+    assert list_resp.status_code == 200, list_resp.text
+    assert entry.id in {row["id"] for row in list_resp.json()}
+
+    get_resp = await client.get(
+        f"/api/v1/projects/{project.id}/entries/{entry.id}",
+        headers=_hdrs(svc_key),
+    )
+    assert get_resp.status_code == 200, get_resp.text
+    assert get_resp.json()["id"] == entry.id
+
+
+@pytest.mark.asyncio
+async def test_service_key_can_update_promote_supersede_refresh_knowledge_entries_with_write_scope(
+    client: AsyncClient, db_session: AsyncSession
+):
+    org, admin, _ = await _make_org_with_admin(db_session, slug="kb-write")
+    project = await _make_org_project(db_session, org, admin)
+    old_entry = await _make_knowledge_entry(
+        db_session,
+        project,
+        admin,
+        claim_class="note",
+        confidence=0.95,
+        content=(
+            "src/server/routes/knowledge.py has an explicit scoped "
+            "write path for promote refresh and supersede coverage."
+        ),
+    )
+    new_entry = await _make_knowledge_entry(
+        db_session,
+        project,
+        admin,
+        claim_class="claim",
+        confidence=0.95,
+        content=(
+            "docs/api-keys.md records the Scout knowledge service-key "
+            "contract with a different concrete identifier."
+        ),
+    )
+    svc_row, svc_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["knowledge:write"],
+        project_ids=[project.id],
+    )
+
+    refresh_resp = await client.put(
+        f"/api/v1/projects/{project.id}/entries/{old_entry.id}/refresh",
+        headers=_hdrs(svc_key),
+    )
+    assert refresh_resp.status_code == 200, refresh_resp.text
+    assert refresh_resp.json()["freshness_class"] == "current"
+
+    promote_resp = await client.put(
+        f"/api/v1/projects/{project.id}/entries/{old_entry.id}/promote",
+        headers=_hdrs(svc_key),
+    )
+    assert promote_resp.status_code == 200, promote_resp.text
+    assert promote_resp.json()["claim_class"] == "claim"
+
+    supersede_resp = await client.put(
+        f"/api/v1/projects/{project.id}/entries/{old_entry.id}/supersede",
+        headers=_hdrs(svc_key),
+        json={"superseding_id": new_entry.id, "reason": "newer Scout evidence"},
+    )
+    assert supersede_resp.status_code == 200, supersede_resp.text
+
+    dismiss_resp = await client.put(
+        f"/api/v1/projects/{project.id}/entries/{new_entry.id}",
+        headers=_hdrs(svc_key),
+        json={"dismissed": True, "reason": "covered by supersession test"},
+    )
+    assert dismiss_resp.status_code == 200, dismiss_resp.text
+    assert dismiss_resp.json()["dismissed"] is True
+
+    await db_session.refresh(old_entry)
+    await db_session.refresh(new_entry)
+    assert old_entry.actor_type == "service_key"
+    assert old_entry.service_key_id == svc_row.id
+    assert old_entry.service_key_name == svc_row.service_key_name
+    assert new_entry.actor_type == "service_key"
+    assert new_entry.service_key_id == svc_row.id
+    assert new_entry.service_key_name == svc_row.service_key_name
+
+
+@pytest.mark.asyncio
+async def test_service_key_knowledge_insufficient_scope_denied(
+    client: AsyncClient, db_session: AsyncSession
+):
+    org, admin, _ = await _make_org_with_admin(db_session, slug="kb-scope")
+    project = await _make_org_project(db_session, org, admin)
+    _row, svc_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["tickets:read"],
+        project_ids=[project.id],
+    )
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/entries/add",
+        headers=_hdrs(svc_key),
+        json={
+            "content": "src/server/routes/knowledge.py must require write scope.",
+            "confidence": 0.9,
+        },
+    )
+    assert resp.status_code == 403, resp.text
+    structured = _structured_error(resp.json())
+    assert structured.get("error") == "insufficient_scope", resp.json()
+    assert structured.get("required") == ["knowledge:write"]
+    assert structured.get("current") == ["tickets:read"]
+
+
+@pytest.mark.asyncio
+async def test_service_key_knowledge_project_allowlist_denied_before_write(
+    client: AsyncClient, db_session: AsyncSession
+):
+    from sqlalchemy import func, select as _sel
+
+    org, admin, _ = await _make_org_with_admin(db_session, slug="kb-allow")
+    allowed_project = await _make_org_project(db_session, org, admin)
+    denied_project = await _make_org_project(db_session, org, admin)
+    _row, svc_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["knowledge:write"],
+        project_ids=[allowed_project.id],
+    )
+
+    before = (
+        await db_session.execute(_sel(func.count(KnowledgeEntry.id)))
+    ).scalar()
+    resp = await client.post(
+        f"/api/v1/projects/{denied_project.id}/entries/add",
+        headers=_hdrs(svc_key),
+        json={
+            "content": (
+                "src/server/routes/knowledge.py must not write before "
+                "the service-key project allowlist check."
+            ),
+            "confidence": 0.9,
+        },
+    )
+    assert resp.status_code == 403, resp.text
+    structured = _structured_error(resp.json())
+    assert structured.get("error") == "project_not_in_allowlist", resp.json()
+    after = (
+        await db_session.execute(_sel(func.count(KnowledgeEntry.id)))
+    ).scalar()
+    assert after == before
+
+
+@pytest.mark.asyncio
+async def test_service_key_still_denied_on_compile_rebuild_dismiss_stale(
+    client: AsyncClient, db_session: AsyncSession
+):
+    org, admin, _ = await _make_org_with_admin(db_session, slug="kb-tier-c")
+    project = await _make_org_project(db_session, org, admin)
+    _row, svc_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["knowledge:read", "knowledge:write"],
+        project_ids=[project.id],
+    )
+
+    requests = [
+        ("post", f"/api/v1/projects/{project.id}/entries/dismiss-stale", None),
+        ("post", f"/api/v1/projects/{project.id}/compile", {}),
+        ("post", f"/api/v1/projects/{project.id}/rebuild", {}),
+        ("get", f"/api/v1/projects/{project.id}/health", None),
+        ("get", f"/api/v1/projects/{project.id}/compilations", None),
+    ]
+    for method, url, body in requests:
+        if method == "post":
+            resp = await client.post(url, headers=_hdrs(svc_key), json=body)
+        else:
+            resp = await client.get(url, headers=_hdrs(svc_key))
+        assert resp.status_code == 403, resp.text
+        structured = _structured_error(resp.json())
+        assert structured.get("error") == "service_key_not_allowed", resp.json()
+
+
 @pytest.mark.asyncio
 async def test_service_key_still_denied_on_unconverted_ticket_route(
     client: AsyncClient, db_session: AsyncSession
@@ -1320,3 +1637,274 @@ async def test_user_key_regression_on_converted_ticket_routes(
         json={"notes": "done by user", "lease_epoch": lease_epoch},
     )
     assert complete_resp.status_code == 200, complete_resp.text
+
+
+@pytest.mark.asyncio
+async def test_user_key_regression_on_converted_knowledge_routes(
+    client: AsyncClient, db_session: AsyncSession
+):
+    org, admin, user_key = await _make_org_with_admin(db_session, slug="kb-user")
+    project = await _make_org_project(db_session, org, admin)
+
+    add_resp = await client.post(
+        f"/api/v1/projects/{project.id}/entries/add",
+        headers=_hdrs(user_key),
+        json={
+            "entry_type": "discovery",
+            "content": (
+                "src/server/routes/knowledge.py continues to accept "
+                "personal user keys after require_scope conversion."
+            ),
+            "confidence": 0.95,
+            "session_id": "ses_user_kb",
+        },
+    )
+    assert add_resp.status_code == 201, add_resp.text
+    added_id = add_resp.json()["id"]
+    added_entry = await db_session.get(KnowledgeEntry, added_id)
+    assert added_entry is not None
+    assert added_entry.actor_type == "user"
+    assert added_entry.service_key_id is None
+
+    list_resp = await client.get(
+        f"/api/v1/projects/{project.id}/entries",
+        headers=_hdrs(user_key),
+    )
+    assert list_resp.status_code == 200, list_resp.text
+    assert added_id in {row["id"] for row in list_resp.json()}
+
+    get_resp = await client.get(
+        f"/api/v1/projects/{project.id}/entries/{added_id}",
+        headers=_hdrs(user_key),
+    )
+    assert get_resp.status_code == 200, get_resp.text
+    assert get_resp.json()["id"] == added_id
+
+    promote_entry = await _make_knowledge_entry(
+        db_session,
+        project,
+        admin,
+        claim_class="note",
+        confidence=0.95,
+        content=(
+            "src/server/routes/knowledge.py user-key promote coverage "
+            "uses a concrete route path and enough content."
+        ),
+    )
+    superseding_entry = await _make_knowledge_entry(
+        db_session,
+        project,
+        admin,
+        claim_class="claim",
+        confidence=0.95,
+        content=(
+            "docs/api-keys.md user-key regression coverage uses a separate "
+            "concrete identifier for supersession."
+        ),
+    )
+
+    refresh_resp = await client.put(
+        f"/api/v1/projects/{project.id}/entries/{promote_entry.id}/refresh",
+        headers=_hdrs(user_key),
+    )
+    assert refresh_resp.status_code == 200, refresh_resp.text
+
+    promote_resp = await client.put(
+        f"/api/v1/projects/{project.id}/entries/{promote_entry.id}/promote",
+        headers=_hdrs(user_key),
+    )
+    assert promote_resp.status_code == 200, promote_resp.text
+
+    supersede_resp = await client.put(
+        f"/api/v1/projects/{project.id}/entries/{promote_entry.id}/supersede",
+        headers=_hdrs(user_key),
+        json={"superseding_id": superseding_entry.id, "reason": "user regression"},
+    )
+    assert supersede_resp.status_code == 200, supersede_resp.text
+
+    dismiss_resp = await client.put(
+        f"/api/v1/projects/{project.id}/entries/{superseding_entry.id}",
+        headers=_hdrs(user_key),
+        json={"dismissed": True, "reason": "user-key regression"},
+    )
+    assert dismiss_resp.status_code == 200, dismiss_resp.text
+
+    await db_session.refresh(promote_entry)
+    await db_session.refresh(superseding_entry)
+    assert promote_entry.actor_type == "user"
+    assert promote_entry.service_key_id is None
+    assert superseding_entry.actor_type == "user"
+    assert superseding_entry.service_key_id is None
+
+
+@pytest.mark.asyncio
+async def test_service_key_knowledge_read_cannot_mutate_freshness_counters(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Codex R1 HIGH 1 — knowledge:read service key must not mutate
+    used_in_answer_count, last_relevant_at, or retrieved_count via the
+    search side-effect path on GET /entries. A service key with both
+    knowledge:read AND knowledge:write keeps the existing telemetry
+    behavior. User keys are unaffected.
+    """
+    org, admin, _ = await _make_org_with_admin(db_session, slug="kb-readonly")
+    project = await _make_org_project(db_session, org, admin)
+
+    keyword = uuid.uuid4().hex[:10]
+    entry = await _make_knowledge_entry(
+        db_session,
+        project,
+        admin,
+        claim_class="claim",
+        confidence=0.95,
+        content=(
+            f"src/scout/{keyword}.py owns the telemetry-mutation regression "
+            "for knowledge:read service keys, covering the search side-effect "
+            "path explicitly."
+        ),
+    )
+    initial_used = entry.used_in_answer_count
+    initial_retrieved = entry.retrieved_count
+    initial_relevant = entry.last_relevant_at
+
+    _ro_row, ro_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["knowledge:read"],
+        project_ids=[project.id],
+    )
+
+    # Strong-signal path (used_in_answer=true) must NOT mutate.
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/entries",
+        headers=_hdrs(ro_key),
+        params={"search": keyword, "used_in_answer": "true"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert any(row["id"] == entry.id for row in resp.json())
+    await db_session.refresh(entry)
+    assert entry.used_in_answer_count == initial_used
+    assert entry.retrieved_count == initial_retrieved
+    assert entry.last_relevant_at == initial_relevant
+
+    # Weak-signal path (search only) must NOT mutate retrieved_count either.
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/entries",
+        headers=_hdrs(ro_key),
+        params={"search": keyword},
+    )
+    assert resp.status_code == 200, resp.text
+    await db_session.refresh(entry)
+    assert entry.retrieved_count == initial_retrieved
+    assert entry.used_in_answer_count == initial_used
+    assert entry.last_relevant_at == initial_relevant
+
+    # A read+write key DOES update telemetry (regression on the gate).
+    _rw_row, rw_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["knowledge:read", "knowledge:write"],
+        project_ids=[project.id],
+    )
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/entries",
+        headers=_hdrs(rw_key),
+        params={"search": keyword, "used_in_answer": "true"},
+    )
+    assert resp.status_code == 200, resp.text
+    await db_session.refresh(entry)
+    assert entry.used_in_answer_count == initial_used + 1
+    assert entry.last_relevant_at is not None
+    if initial_relevant is not None:
+        assert entry.last_relevant_at > initial_relevant
+
+
+@pytest.mark.asyncio
+async def test_service_key_can_act_on_org_project_owned_by_other_member(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Codex R1 MEDIUM 1 — service key minted by an org admin must work
+    on a project owned by a DIFFERENT org member, even when the admin has
+    no captured Session row matching the project's git_remote. The legacy
+    `_get_project_or_404(project_id, db, user.id)` user-access gate must
+    NOT block service-key requests; only the org/allowlist check (via
+    `assert_service_key_can_access_project`) should apply.
+    """
+    org, admin, _ = await _make_org_with_admin(db_session, slug="kb-other-owner")
+    other_member, _other_raw = await _make_user_with_key(
+        db_session, f"member-{uuid.uuid4().hex[:6]}@x.com"
+    )
+    db_session.add(
+        OrgMember(
+            org_id=org.id,
+            user_id=other_member.id,
+            role="member",
+            joined_at=datetime.now(timezone.utc),
+        )
+    )
+    await db_session.commit()
+
+    project = await _make_org_project(db_session, org, other_member)
+    # Confirm the gate condition the bug depended on: admin is NOT
+    # project owner and has no Session row on project's git_remote.
+    assert project.owner_id != admin.id
+
+    # tickets:write service key minted by admin, scoped to that project.
+    tk_row, tk_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["tickets:write"],
+        project_ids=[project.id],
+    )
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(tk_key),
+        json={
+            "title": "Scout cross-owner ticket",
+            "description": (
+                "src/scout/cross_owner.py opens a ticket for a project "
+                "owned by another org member; the legacy user-access "
+                "gate must not block this service key."
+            ),
+            "priority": "medium",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    ticket_id = resp.json()["id"]
+    from sessionfs.server.db.models import Ticket
+    ticket_row = await db_session.get(Ticket, ticket_id)
+    assert ticket_row is not None
+    assert ticket_row.actor_type == "service_key"
+    assert ticket_row.service_key_id == tk_row.id
+
+    # knowledge:write service key on the same other-owner project.
+    kb_row, kb_key = await _create_service_key(
+        db_session,
+        org.id,
+        admin,
+        scopes=["knowledge:write"],
+        project_ids=[project.id],
+    )
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/entries/add",
+        headers=_hdrs(kb_key),
+        json={
+            "entry_type": "discovery",
+            "content": (
+                "src/scout/cross_owner.py adds a finding to a project "
+                "owned by a different org member, exercising the v0.10.19 "
+                "service-key project-load branch."
+            ),
+            "confidence": 0.9,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    kb_entry_id = resp.json()["id"]
+    kb_entry = await db_session.get(KnowledgeEntry, kb_entry_id)
+    assert kb_entry is not None
+    assert kb_entry.actor_type == "service_key"
+    assert kb_entry.service_key_id == kb_row.id

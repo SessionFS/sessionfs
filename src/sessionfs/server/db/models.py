@@ -1278,6 +1278,12 @@ class Ticket(Base):
     created_by_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     created_by_session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_by_persona: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # v0.10.18 Phase 3.5 — service-key provenance for ticket creation.
+    # Nullable for pre-migration rows; create_ticket populates this from
+    # AuthContext for both user keys and service keys.
+    actor_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    service_key_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    service_key_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     # Status FSM.
     status: Mapped[str] = mapped_column(

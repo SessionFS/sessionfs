@@ -5,6 +5,58 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.19] - 2026-05-21
+
+Phase 3.5 service-key opt-in: ticket CREATE + knowledge routes. Unblocks the n8n Scout agent and every future autonomous discovery/research agent that gathers external signals and writes them back as KB entries + new tickets.
+
+### Added
+
+**Service-key access to ticket CREATE + knowledge routes** (`tk_65a096acf57946eb`). 8 new routes converted to `require_scope`, mirroring the v0.10.18 ticket-route conversion exactly:
+
+WRITE (`require_scope("tickets:write")`):
+- `POST /projects/{pid}/tickets` (ticket create — the entrypoint Scout uses to open follow-up tickets)
+
+READ (`require_scope("knowledge:read")`):
+- `GET /projects/{pid}/entries` (list/search)
+- `GET /projects/{pid}/entries/{eid}` (detail)
+
+WRITE (`require_scope("knowledge:write")`):
+- `POST /projects/{pid}/entries/add`
+- `PUT /projects/{pid}/entries/{eid}` (dismiss/update)
+- `PUT /projects/{pid}/entries/{eid}/refresh`
+- `PUT /projects/{pid}/entries/{eid}/promote`
+- `PUT /projects/{pid}/entries/{eid}/supersede`
+
+Tier C routes (`compile`, `rebuild`, `dismiss-stale`, `health`, `compilations`) deliberately NOT touched — they remain user-key only. A regression test (`test_service_key_still_denied_on_compile_rebuild_dismiss_stale`) pins the deny-by-default contract so a future Phase 4 must opt them in explicitly.
+
+**Ticket audit-row columns (migration 043)**. Migration 042 (v0.10.10) added `actor_type` / `service_key_id` / `service_key_name` to 5 tables (TicketComment, KnowledgeEntry, AgentRun, RetrievalAuditEvent, HandoffEvent) but Ticket itself was excluded. v0.10.19 closes that audit gap with a strictly-additive migration mirroring 042 exactly (nullable cols, no defaults, no constraints, no indexes). `create_ticket` populates the columns from `AuthContext`. KnowledgeEntry mutators (dismiss/update/refresh/promote/supersede) now stamp the same triple on every write path so the audit row records the service-key principal.
+
+**`_get_project_for_auth` helper** (Codex R1 MEDIUM 1). Service keys minted by an org admin against a project owned by a different org member previously 403'd on the legacy `_get_project_or_404(project_id, db, user.id)` user-owner / captured-session gate before the org/allowlist boundary could evaluate. The new helper branches on `auth.key_kind`: service keys load the project by id (404 only); user keys keep the legacy gate. Replaced across all 7 converted knowledge.py call sites + 8 converted tickets.py call sites. `assert_service_key_can_access_project(db, auth, project)` continues to enforce the org+allowlist boundary AFTER the helper returns.
+
+**`knowledge:read` is now truly read-only for service keys** (Codex R1 HIGH 1). The `GET /entries` search side-effect path previously mutated `used_in_answer_count` / `last_relevant_at` / `retrieved_count` whenever the search matched. A service key with only `knowledge:read` could therefore alter freshness/decay state. v0.10.19 gates the telemetry UPDATE on `auth.key_kind == "service" and "knowledge:write" not in auth.scopes`: service keys with read-only scope no longer mutate counters; service keys with read+write keep the existing telemetry; user keys are unaffected (key_kind="user" short-circuits the AND).
+
+### Changed
+
+**`docs/api-keys.md`** — `knowledge:read` and `knowledge:write` moved from the "reserved for Phase 3" list to **✅ live** with full endpoint lists. New Scout-pattern example added (`search_project_knowledge` → `add_knowledge` → `create_ticket` curl flow). Audit-row narrative updated to include Ticket alongside the other 5 audit tables. Tier C remains explicitly called out as user-key only.
+
+### Verification
+
+- pytest tests/ -x -q → **1952 passed + 2 xfailed** (was 1950 + 2 xfailed; +2 new regression tests in this release)
+- pytest tests/server/integration/test_scoped_service_keys.py -q → **35 passed** (was 33; +2 new — knowledge:read freshness gate + cross-owner project access)
+- dashboard `npm test` → **187 passed**
+- ruff check src/ → clean
+- mypy src/sessionfs/server/routes/tickets.py src/sessionfs/server/routes/knowledge.py → clean
+- helm lint charts/sessionfs → clean
+- pip-audit → **0 vulnerabilities**
+- npm audit (dashboard + site) → **0 vulnerabilities**
+- Migration smoke: isolated 042 → 043 → 042 SQLite upgrade/downgrade → clean
+- Codex independent review thread on `tk_65a096acf57946eb` — R1 NEEDS-FIXES (HIGH + MEDIUM) → R2 **VERIFIED-CLEAN** on commit `adf4955`
+- Shield-SR independent pre-release security review — **APPROVED, 0 CRITICAL / 0 HIGH / 0 MEDIUM / 0 LOW**
+
+### Scout agent unblock
+
+After v0.10.19 deploys, the n8n Scout service key on `proj_c0242b0fccbd48b4` will be reminted with scopes `[tickets:read, tickets:write, knowledge:read, knowledge:write, agent_runs:read, agent_runs:write]` and Scout will start operating with a least-privilege org-bound key (no more CEO personal key for autonomous discovery agents).
+
 ## [0.10.18] - 2026-05-21
 
 Opts ticket routes into service-key auth (v0.10.10 Phase 3). Unblocks the n8n triage agent and every future CI/cloud-agent integration that touches tickets.
