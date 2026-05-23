@@ -122,6 +122,47 @@ def handoff_comment_email(
     )
 
 
+def org_invite_email(
+    *,
+    org_name: str,
+    inviter_name: str,
+    inviter_email: str,
+    role: str,
+    accept_url: str,
+    expires_at_human: str,
+) -> str:
+    """Email sent to a user invited to join an organization.
+
+    Lives in the v0.10.9 lifecycle-shell family; the accept_url is the
+    dashboard's `/invites/<invite_id>` landing page (Atlas + Prism wired
+    together in v0.10.22 — tk_6afbcfefe5804c1d). The recipient clicks,
+    logs in if needed, then sees a one-click Accept CTA.
+    """
+    org = _html.escape(org_name)
+    inviter_disp = _html.escape(inviter_name or inviter_email)
+    role_disp = _html.escape(role)
+    expires_disp = _html.escape(expires_at_human)
+    # accept_url is server-built, not user-supplied — quoteattr-style
+    # escape still applied for defense in depth.
+    safe_url = _html.escape(accept_url, quote=True)
+    return (
+        _shell()
+        + "<h2 style='margin: 0 0 8px 0; color: #e6edf3;'>"
+        + f"You're invited to {org}</h2>"
+        + "<p style='color: #8b949e;'>"
+        + f"{inviter_disp} invited you to join the <strong>{org}</strong> "
+        + f"organization on SessionFS as a <strong>{role_disp}</strong>.</p>"
+        + "<p style='margin-top: 20px;'>"
+        + f"<a href='{safe_url}' style='display: inline-block; background: #4f9cf7; "
+        + "color: white; padding: 10px 24px; border-radius: 6px; text-decoration: none; "
+        + "font-weight: 500;'>Accept invite</a></p>"
+        + "<p style='color: #8b949e; font-size: 13px; margin-top: 16px;'>"
+        + f"This invite expires {expires_disp}. If you don't recognize this "
+        + "organization, you can safely ignore the email.</p>"
+        + _footer()
+    )
+
+
 def handoff_email(
     *,
     sender_email: str,

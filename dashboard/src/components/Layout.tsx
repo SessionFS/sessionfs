@@ -4,6 +4,7 @@ import { useAuth } from '../auth/AuthContext';
 import { useHandoffInbox } from '../hooks/useHandoffs';
 import { useMe } from '../hooks/useMe';
 import { useTransfers } from '../transfers/useTransfers';
+import { useMyInvites } from '../invites/useInvites';
 import SearchBar from './SearchBar';
 import ThemeToggle from './ThemeToggle';
 import { Badge } from './Badge';
@@ -14,6 +15,11 @@ const NAV_LINKS = [
   { to: '/projects', label: 'Projects', match: (p: string) => p.startsWith('/projects') },
   { to: '/handoffs', label: 'Handoffs', match: (p: string) => p.startsWith('/handoffs') },
   { to: '/transfers', label: 'Transfers', match: (p: string) => p.startsWith('/transfers') },
+  // v0.10.22 — pending OrgInvites for this user (matched on email).
+  // Renders the badge from useMyInvites; the nav row stays visible
+  // even when zero so users can find the page if an admin later
+  // sends an invite that arrives while they're already logged in.
+  { to: '/invites', label: 'Invites', match: (p: string) => p.startsWith('/invites') },
   // Settings catches /settings AND any /settings/* EXCEPT /settings/billing
   // and /settings/organization which have their own nav entries.
   {
@@ -50,6 +56,8 @@ export default function Layout() {
   const pendingCount = inbox.data?.handoffs.filter((h) => h.status === 'pending').length ?? 0;
   const incomingTransfers = useTransfers('incoming', 'pending');
   const transfersPendingCount = incomingTransfers.data?.transfers.length ?? 0;
+  const myInvites = useMyInvites();
+  const invitesPendingCount = myInvites.data?.invites.length ?? 0;
 
   const [avatarOpen, setAvatarOpen] = useState(false);
   const avatarRef = useRef<HTMLDivElement>(null);
@@ -161,6 +169,19 @@ export default function Layout() {
                     aria-label={`${transfersPendingCount} pending transfer${transfersPendingCount === 1 ? '' : 's'}`}
                   >
                     {transfersPendingCount}
+                  </span>
+                )}
+                {label === 'Invites' && invitesPendingCount > 0 && (
+                  <span
+                    className="ml-1 px-1.5 py-0.5 text-xs rounded-full font-medium"
+                    style={{
+                      backgroundColor: 'rgba(240,192,64,0.15)',
+                      color: 'var(--warning)',
+                    }}
+                    role="status"
+                    aria-label={`${invitesPendingCount} pending invite${invitesPendingCount === 1 ? '' : 's'}`}
+                  >
+                    {invitesPendingCount}
                   </span>
                 )}
               </Link>
@@ -315,6 +336,19 @@ export default function Layout() {
                       aria-label={`${transfersPendingCount} pending transfer${transfersPendingCount === 1 ? '' : 's'}`}
                     >
                       {transfersPendingCount}
+                    </span>
+                  )}
+                  {label === 'Invites' && invitesPendingCount > 0 && (
+                    <span
+                      className="px-1.5 py-0.5 text-xs rounded-full font-medium"
+                      style={{
+                        backgroundColor: 'rgba(240,192,64,0.15)',
+                        color: 'var(--warning)',
+                      }}
+                      role="status"
+                      aria-label={`${invitesPendingCount} pending invite${invitesPendingCount === 1 ? '' : 's'}`}
+                    >
+                      {invitesPendingCount}
                     </span>
                   )}
                 </Link>

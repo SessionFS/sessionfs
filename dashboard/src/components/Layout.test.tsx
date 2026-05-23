@@ -33,6 +33,13 @@ vi.mock('../transfers/useTransfers', () => ({
   useTransfers: () => ({ data: { transfers: [] }, isLoading: false, error: null }),
 }));
 
+// v0.10.22 — Invites nav link reads from useMyInvites; stub here so the
+// layout shell test doesn't need a QueryClientProvider just for the
+// pending-count badge.
+vi.mock('../invites/useInvites', () => ({
+  useMyInvites: () => ({ data: { invites: [] }, isLoading: false, error: null }),
+}));
+
 vi.mock('./SearchBar', () => ({
   default: () => <div data-testid="search-bar">Search</div>,
 }));

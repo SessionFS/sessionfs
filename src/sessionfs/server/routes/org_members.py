@@ -42,7 +42,7 @@ import secrets
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, field_validator
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -357,6 +357,7 @@ async def list_members(
 async def invite_member(
     org_id: str,
     data: InviteRequest,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> InviteResponse:
@@ -411,18 +412,33 @@ async def invite_member(
             raise HTTPException(409, "This user is already a member")
 
     invite_id = f"inv_{secrets.token_hex(8)}"
-    db.add(
-        OrgInvite(
-            id=invite_id,
-            org_id=org_id,
-            email=data.email,
-            role=data.role,
-            invited_by=user.id,
-            created_at=_now(),
-            expires_at=_now().replace(microsecond=0) + _invite_ttl(),
-        )
+    invite = OrgInvite(
+        id=invite_id,
+        org_id=org_id,
+        email=data.email,
+        role=data.role,
+        invited_by=user.id,
+        created_at=_now(),
+        expires_at=_now().replace(microsecond=0) + _invite_ttl(),
     )
+    db.add(invite)
     await db.commit()
+    await db.refresh(invite)
+
+    # v0.10.22 (tk_6afbcfefe5804c1d) — best-effort email send. The
+    # invite row is already durable; a transient email failure logs
+    # but does not 500 the route (admin can resend later via the
+    # /invites/{invite_id}/resend endpoint below).
+    from sessionfs.server.services.invite_helpers import dispatch_invite_email
+
+    await dispatch_invite_email(
+        request=request,
+        db=db,
+        invite=invite,
+        org=org,
+        inviter=user,
+    )
+
     return InviteResponse(invite_id=invite_id, email=data.email, role=data.role)
 
 
@@ -431,6 +447,77 @@ def _invite_ttl():
     from datetime import timedelta
 
     return timedelta(days=7)
+
+
+class ResendInviteResponse(BaseModel):
+    invite_id: str
+    email: str
+    last_emailed_at: datetime | None
+    sent: bool
+
+
+@router.post(
+    "/{org_id}/invites/{invite_id}/resend",
+    response_model=ResendInviteResponse,
+)
+async def resend_invite(
+    org_id: str,
+    invite_id: str,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ResendInviteResponse:
+    """Re-fire the invite email without creating a new invite row.
+
+    Admin-only. Refuses if the invite has already been accepted/declined
+    or has expired — those are operator errors that should land as a
+    fresh invite, not a resend. v0.10.22 — tk_6afbcfefe5804c1d.
+    """
+    org = await _org_or_404(db, org_id)
+    await _require_admin(db, user, org_id)
+
+    invite = (
+        await db.execute(
+            select(OrgInvite).where(
+                OrgInvite.id == invite_id,
+                OrgInvite.org_id == org_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if invite is None:
+        raise HTTPException(404, "Invite not found")
+    if invite.accepted_at is not None:
+        raise HTTPException(409, "Invite already accepted")
+    if invite.declined_at is not None:
+        raise HTTPException(409, "Invite was declined")
+    # SQLite roundtrips DateTime(timezone=True) as naive; PG keeps the
+    # tzinfo. Coerce to tz-aware before comparing to avoid
+    # offset-naive/offset-aware errors in tests + on SQLite-backed
+    # Helm deployments.
+    expires = invite.expires_at
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    if expires < _now():
+        raise HTTPException(
+            409, "Invite expired — create a fresh invite instead of resending"
+        )
+
+    from sessionfs.server.services.invite_helpers import dispatch_invite_email
+
+    sent = await dispatch_invite_email(
+        request=request,
+        db=db,
+        invite=invite,
+        org=org,
+        inviter=user,
+    )
+    await db.refresh(invite)
+    return ResendInviteResponse(
+        invite_id=invite.id,
+        email=invite.email,
+        last_emailed_at=invite.last_emailed_at,
+        sent=sent,
+    )
 
 
 async def perform_role_change(
