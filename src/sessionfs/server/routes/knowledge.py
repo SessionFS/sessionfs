@@ -278,24 +278,19 @@ from sessionfs.server.services.rules import split_context_sections as _split_con
 
 
 async def _get_project_or_404(project_id: str, db: AsyncSession, user_id: str | None = None) -> Project:
-    """Get project by ID, verify access, or raise 404/403."""
-    result = await db.execute(select(Project).where(Project.id == project_id))
-    project = result.scalar_one_or_none()
-    if not project:
-        raise HTTPException(404, "Project not found")
+    """Get project by ID, verify access, or raise 404/403.
 
-    # Enforce access control if user_id provided
-    if user_id and project.owner_id != user_id:
-        from sessionfs.server.db.models import Session
-        access = await db.execute(
-            select(Session.id)
-            .where(Session.user_id == user_id, Session.git_remote_normalized == project.git_remote_normalized)
-            .limit(1)
-        )
-        if access.scalar_one_or_none() is None:
-            raise HTTPException(403, "No access to this project")
+    Thin wrapper around `auth.project_access.load_project_for_user` —
+    kept as the public name so the existing in-module + cross-route
+    importers (wiki, tickets, agent_runs, retrieval_audit) don't have
+    to change. The access predicate now honors OrgMember (v0.10.22 fix
+    for `tk_7a457574c5624e12`); previously it only checked owner or
+    captured-session-on-git-remote, locking new org members out of
+    every org-scoped artifact.
+    """
+    from sessionfs.server.auth.project_access import load_project_for_user
 
-    return project
+    return await load_project_for_user(project_id, db, user_id)
 
 
 async def _get_project_for_auth(

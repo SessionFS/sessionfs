@@ -88,8 +88,21 @@ async def list_projects(
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> list[ProjectResponse]:
-    """List all projects the user has access to (owner or has sessions in repo)."""
+    """List all projects the user has access to.
+
+    Access predicate (mirrors `auth.project_access.user_can_access_project`):
+      - owner
+      - member of the project's org (v0.10.22 fix — tk_7a457574c5624e12;
+        previously the listing ignored OrgMember entirely so new org
+        members saw an empty `GET /api/v1/projects` for projects they
+        had every right to read)
+      - has captured a session on the project's git remote (legacy
+        fallback so personal projects still surface for teammates who
+        synced on the same repo)
+    """
     from sqlalchemy import distinct, func, or_
+
+    from sessionfs.server.db.models import OrgMember
 
     # Get git remotes from user's sessions
     session_remotes_stmt = select(distinct(Session.git_remote_normalized)).where(
@@ -100,8 +113,13 @@ async def list_projects(
     result = await db.execute(session_remotes_stmt)
     user_remotes = {r[0] for r in result.all()}
 
-    # Get projects: owned by user OR matching user's session remotes
-    conditions = [Project.owner_id == user.id]
+    # Get projects: owned by user OR scoped to an org the user is a
+    # member of OR matching user's session remotes.
+    user_org_ids_stmt = select(OrgMember.org_id).where(OrgMember.user_id == user.id)
+    conditions = [
+        Project.owner_id == user.id,
+        Project.org_id.in_(user_org_ids_stmt),
+    ]
     if user_remotes:
         conditions.append(Project.git_remote_normalized.in_(user_remotes))
     stmt = select(Project).where(or_(*conditions)).order_by(Project.updated_at.desc())
@@ -349,20 +367,20 @@ async def get_project(
 ) -> ProjectResponse:
     """Get a project context by git remote.
 
-    User must have at least one session with this git remote
-    or be the project owner.
+    User must be the project owner, a member of the project's org
+    (v0.10.22 — tk_7a457574c5624e12), or have captured at least one
+    session on this git remote.
     """
+    from sessionfs.server.auth.project_access import user_can_access_project
+
     stmt = select(Project).where(Project.git_remote_normalized == git_remote_normalized)
     result = await db.execute(stmt)
     project = result.scalar_one_or_none()
     if not project:
         raise HTTPException(404, "No project context found")
 
-    # Access check: owner or has sessions in this repo
-    if project.owner_id != user.id:
-        has_access = await _check_repo_access(db, user.id, git_remote_normalized)
-        if not has_access:
-            raise HTTPException(403, "No sessions found for this repository")
+    if not await user_can_access_project(db, user.id, project):
+        raise HTTPException(403, "No access to this project")
 
     return ProjectResponse(
         id=project.id,
@@ -387,17 +405,16 @@ async def update_project_context(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Update the project context document."""
+    from sessionfs.server.auth.project_access import user_can_access_project
+
     stmt = select(Project).where(Project.git_remote_normalized == git_remote_normalized)
     result = await db.execute(stmt)
     project = result.scalar_one_or_none()
     if not project:
         raise HTTPException(404, "No project context found")
 
-    # Access check: owner or has sessions in this repo
-    if project.owner_id != user.id:
-        has_access = await _check_repo_access(db, user.id, git_remote_normalized)
-        if not has_access:
-            raise HTTPException(403, "No sessions found for this repository")
+    if not await user_can_access_project(db, user.id, project):
+        raise HTTPException(403, "No access to this project")
 
     project.context_document = body.context_document
     project.updated_at = datetime.now(timezone.utc)
