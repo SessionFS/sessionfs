@@ -281,20 +281,22 @@ NOT a downstream payload:
 1. **Strip `raw` before the LLM reasoning step.** The Phase 4c
    workflow diagram (§8) includes an explicit `Code: strip raw`
    node between `IF (not already persisted)` and the LLM call.
-   That node is mandatory — without it, every normalized item
-   feeds the upstream's full untruncated payload into the model,
-   blowing the token budget and (for Reddit) routing unscrubbed
-   `selftext` straight into the prompt despite §5.
+   That node is mandatory — token budget alone justifies it
+   (a multi-source run with 30 signals at full raw payload is
+   easily 100k+ extra tokens before any reasoning starts), and
+   it is the canonical place to enforce downstream minimalism.
 2. **Strip `raw` before `POST /entries/add`.** Same reason — KB
    entries are dense by design, and the raw upstream JSON has no
    purpose inside a knowledge claim.
-3. **UGC adapters MUST scrub `raw` BEFORE emitting**, not just
-   trust the strip step. The Reddit adapter's `raw` block has the
-   same `selftext` + `author` fields the `content`/`author`
-   scrubbers ran on; emit a sanitized copy (`@-mentions`
-   replaced, original username dropped from `raw.author`) so even
-   a misconfigured workflow that forgets the strip node cannot
-   leak PII.
+3. **UGC adapters MUST emit sanitized `raw`**, not just trust the
+   strip step. This is defense in depth: if a future workflow
+   author wires a new branch that forgets the strip node, a
+   sanitized `raw` cannot leak PII into the prompt or KB. The
+   bundled `reddit.js` adapter is the reference implementation —
+   it drops `selftext` entirely (the scrubbed copy lives in
+   `content`) and rewrites `raw.author` to the `u/`-prefixed
+   form before emit, so even an unstripped Reddit item is safe
+   to forward.
 4. **For non-UGC adapters (HN, GH, RSS)** `raw` is public
    structured data with no privacy concern — leave it untouched
    for debugging. The strip rule still applies for token-budget
