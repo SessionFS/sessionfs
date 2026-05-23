@@ -553,14 +553,18 @@ A few decisions worth flagging:
 The following are deliberately deferred — Scout v4 works without
 them today:
 
-- **Phase 4c: multi-source signal adapter.** v4 covers exactly
-  one upstream source per workflow. Phase 4c will introduce a
-  uniform signal-shape contract (canonical `{source, signal_id,
-  content, observed_at, ...}` envelope) so HN, GitHub trending,
-  Reddit, pricing-page scrapers, and Discord can share the same
-  Scout reasoning loop without per-source forks of this
-  workflow. Until that lands, build one workflow per source and
-  let the LLM read across them via the KB.
+- **Multi-source signal-shape contract — SHIPPED in Phase 4c.**
+  See [`scout-signal-shape.md`](scout-signal-shape.md) for the
+  canonical `{source, source_id, title, url, content, posted_at,
+  author, signal_strength, raw}` envelope and the four reference
+  normalizer templates in [`n8n-source-adapters/`](n8n-source-adapters/)
+  (HN Algolia, GitHub Releases, Reddit, generic RSS). v5 workflows
+  use a Merge-after-fetch-and-normalize pattern so the dedup,
+  reason, and write steps documented above are unchanged. The
+  Scout v4 single-source contract in this file is still the
+  starting point — Phase 4c just adds parallel sources before the
+  `Fetch Prior Findings` step joins them all back into the same
+  loop.
 - **Scout consulting its own AgentRun history**: now possible —
   `agent_runs:read` for service keys went live in v0.10.21
   (tk_31b87575d5534d00). Scout v4 still skips this scope because
