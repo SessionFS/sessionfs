@@ -88,6 +88,18 @@ if (post.author && post.author !== '[deleted]') {
 const numComments = Number(post.num_comments) || 0;
 const signal_strength = Math.min(1.0, (score + 2 * numComments) / 200);
 
+// Sanitized `raw`. Per scout-signal-shape.md §5.1, UGC adapters
+// MUST scrub `raw` before emitting — the strip-raw node in the
+// workflow is a token-budget safeguard, NOT a PII safeguard.
+// We drop `selftext` (already scrubbed into `content`) and replace
+// the raw username with the `u/`-prefixed form so even debug logs
+// of `raw` carry the same shape the dashboard renderer can redact.
+const { selftext: _drop_selftext, author: _drop_author, ...rawRest } = post;
+const safeRaw = {
+  ...rawRest,
+  author: author || '[deleted]',
+};
+
 return [{
   json: {
     source: 'reddit',
@@ -98,7 +110,7 @@ return [{
     posted_at,
     author,
     signal_strength,
-    raw: post,
+    raw: safeRaw,
   },
 }];
 
@@ -134,8 +146,21 @@ return [{
 //     "posted_at": "2026-05-22T11:14:00.000Z",
 //     "author": "u/curious_dev",
 //     "signal_strength": 0.2,
-//     "raw": { /* the `data` object above, untouched */ }
+//     "raw": {
+//       "id": "abc1234",
+//       "title": "Is anyone using SessionFS in production?",
+//       "subreddit": "LocalLLaMA",
+//       "score": 24,
+//       "num_comments": 8,
+//       "permalink": "/r/LocalLLaMA/comments/abc1234/is_anyone_using_sessionfs_in_production/",
+//       "created_utc": 1779791640.0,
+//       "url": "https://www.reddit.com/r/LocalLLaMA/comments/abc1234/...",
+//       "author": "u/curious_dev"
+//     }
 //   }
 //
 // (signal_strength = min(1.0, (24 + 2*8) / 200) = 0.20)
-// (`/u/jdoe` in selftext → `[user]`; `u/curious_dev` stays in `author` field only.)
+// (`/u/jdoe` in selftext → `[user]`; `u/curious_dev` stays in `author` field only.
+//  `raw` is scrubbed per §5.1: `selftext` dropped entirely so a forgetful
+//  workflow that skips the strip-raw node still can't leak the body text;
+//  `raw.author` rewritten to the prefixed form for dashboard redaction.)

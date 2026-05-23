@@ -53,7 +53,7 @@ Every source emits items conforming to this exact shape:
 | `posted_at` | string | yes | — | ISO-8601 with `Z` (UTC). If the upstream has no timestamp, use `$now.toISO()`. |
 | `author` | string | yes (may be `""`) | 80 chars | Best-effort display name. **NEVER PII** — see §5. |
 | `signal_strength` | number | yes | — | `[0.0, 1.0]`. Source-specific heuristic (see §3 + each adapter). |
-| `raw` | object | no | — | Original source payload, untruncated. For debugging + future reprocessing. Stripped before forwarding to the LLM (token cost). |
+| `raw` | object | no | — | Source-native payload for n8n-side debug logs ONLY. **MUST be stripped before LLM forward AND before `POST /entries/add`** — see §5.1 and §8's "Strip `raw`" node. UGC adapters (Reddit, Discord) MUST also scrub PII from `raw` before emitting; do not rely on the strip step for PII safety. |
 
 ### Validation discipline
 
@@ -272,6 +272,38 @@ These rules are enforced at the normalizer; the SessionFS server
 does NOT re-scrub Scout's writes. If the normalizer is wrong,
 the PII leaks into the KB.
 
+### 5.1 `raw` is debug-only — never forward downstream
+
+`raw` exists for n8n-side troubleshooting (inspect what the upstream
+actually sent when a normalizer drops or mis-shapes an item). It is
+NOT a downstream payload:
+
+1. **Strip `raw` before the LLM reasoning step.** The Phase 4c
+   workflow diagram (§8) includes an explicit `Code: strip raw`
+   node between `IF (not already persisted)` and the LLM call.
+   That node is mandatory — without it, every normalized item
+   feeds the upstream's full untruncated payload into the model,
+   blowing the token budget and (for Reddit) routing unscrubbed
+   `selftext` straight into the prompt despite §5.
+2. **Strip `raw` before `POST /entries/add`.** Same reason — KB
+   entries are dense by design, and the raw upstream JSON has no
+   purpose inside a knowledge claim.
+3. **UGC adapters MUST scrub `raw` BEFORE emitting**, not just
+   trust the strip step. The Reddit adapter's `raw` block has the
+   same `selftext` + `author` fields the `content`/`author`
+   scrubbers ran on; emit a sanitized copy (`@-mentions`
+   replaced, original username dropped from `raw.author`) so even
+   a misconfigured workflow that forgets the strip node cannot
+   leak PII.
+4. **For non-UGC adapters (HN, GH, RSS)** `raw` is public
+   structured data with no privacy concern — leave it untouched
+   for debugging. The strip rule still applies for token-budget
+   reasons.
+
+If `raw` is too noisy for your debug needs, omit it entirely from
+the normalizer output. It is `required: no` in §1 for exactly this
+reason.
+
 ### Why these rules and not platform DLP
 
 SessionFS has org-side DLP (the v0.9.x scrubber), but it covers
@@ -320,7 +352,7 @@ shared principle: **shipped > announced > rumored**.
 | Source | Drop if | Keep if |
 |--------|---------|---------|
 | HN | `points < 5` AND no `sessionfs` substring in title | story has clear product-launch / new-tool / model-release shape |
-| GH releases | `draft == true` OR `prerelease == true` (unless explicitly tracked) | `prerelease == false` AND has release notes |
+| GH releases | `draft == true` (always — drafts can leak unreleased work) | both finals (`signal_strength=1.0`) and prereleases (`signal_strength=0.5`); the LLM ranks them via signal strength rather than dropping at the normalizer |
 | Reddit | `score < 3` AND subreddit not in core list | subreddit is `LocalLLaMA`, `programming`, `MachineLearning`, `agi`, `SessionFS`, etc. |
 | RSS | `posted_at` older than `(now - 7 days)` | recent + in tracked feed |
 
@@ -359,6 +391,9 @@ Code: pre-write dedup (GET /entries?source_filter=<source_id>&limit=1)
   ↓
 IF (not already persisted)
   ↓
+Code: strip raw  (REQUIRED — delete the `raw` field from every item
+                  before the LLM sees it AND before the KB write; see §5.1)
+  ↓
 HTTP Request: LLM reasoning (one call per signal OR batched — workflow choice)
   ↓
 Code: parse + enforce MAX_KB_WRITES_PER_RUN=20
@@ -366,7 +401,9 @@ Code: parse + enforce MAX_KB_WRITES_PER_RUN=20
 IF (not noise)
   ↓
 HTTP Request: POST /entries/add (persona_name=scout, author_class=agent,
-                                  source_context=scout:n8n:<wf>:<exec>:<source_id>)
+                                  source_context=scout:n8n:<wf>:<exec>:<source_id>,
+                                  content built from {title, url, content,
+                                  posted_at, author, signal_strength} — NEVER `raw`)
   ↓
 Aggregate Summary (count writes, count tickets, count drops)
   ↓
@@ -381,6 +418,21 @@ HTTP Request: POST /agent-runs/{run_id}/complete (status=passed | errored)
 The reasoning, dedup, write, and complete-AgentRun steps never
 change. This is the abstraction the Phase 4c deliverable
 unlocks.
+
+### `Code: strip raw` node body
+
+Drop this into the Code node between the dedup IF and the LLM
+request. It is two lines and runs `runOnceForEachItem`:
+
+```javascript
+const { raw, ...rest } = $json;
+return [{ json: rest }];
+```
+
+The KB write step downstream constructs its payload from
+`{title, url, content, posted_at, author, signal_strength}` only
+— `raw` is gone by construction, so neither the LLM prompt nor the
+`/entries/add` body can leak it.
 
 ### Merge node configuration
 
