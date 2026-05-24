@@ -70,6 +70,11 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
         # Only set email_service if a real provider is configured
         app.state.email_service = None if isinstance(provider, NullProvider) else provider
 
+        # v0.10.22 — services that need app_url for building dashboard
+        # links (org-invite emails, future handoff deep-links) read from
+        # request.app.state.config rather than re-importing ServerConfig.
+        app.state.config = config
+
         yield
 
         # Shutdown

@@ -728,6 +728,14 @@ class OrgInvite(Base):
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # v0.10.22 tk_6afbcfefe5804c1d — decline + resend lifecycle.
+    # declined_at + accepted_at are mutually exclusive (enforced at the
+    # route layer, not via CHECK constraint, to keep SQLite local-mode
+    # working). last_emailed_at tracks the most recent send so the
+    # dashboard / resend endpoint can show recipients the last nudge.
+    declined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    decline_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_emailed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ProjectTransfer(Base):

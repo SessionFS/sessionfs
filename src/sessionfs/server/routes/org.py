@@ -7,7 +7,7 @@ import re
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, field_validator
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -204,6 +204,7 @@ async def get_organization_info(
 @router.post("/invite", response_model=InviteResponse)
 async def invite_member(
     data: InviteRequest,
+    request: Request,
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ):
@@ -226,12 +227,17 @@ async def invite_member(
             "message": "All seats are in use. Upgrade for more seats.",
         })
 
-    # Check for existing invite
+    # Check for existing ACTIVE invite — must exclude rows the
+    # recipient has already declined or that have expired so the
+    # admin can resend after either of those terminal states. Codex
+    # v0.10.22 R1 MEDIUM (tk_6afbcfefe5804c1d).
     existing = await db.execute(
         select(OrgInvite).where(
             OrgInvite.org_id == ctx.org.id,
             OrgInvite.email == data.email,
             OrgInvite.accepted_at.is_(None),
+            OrgInvite.declined_at.is_(None),
+            OrgInvite.expires_at > datetime.now(timezone.utc),
         )
     )
     if existing.scalar_one_or_none():
@@ -264,13 +270,20 @@ async def invite_member(
     )
     db.add(invite)
     await db.commit()
+    await db.refresh(invite)
 
-    # Send invite email if email service available
-    try:
-        from fastapi import Request as _  # noqa: F401
-        # Email sending delegated to caller/background — keep route fast
-    except Exception:
-        pass
+    # v0.10.22 (tk_6afbcfefe5804c1d) — best-effort email send. The
+    # invite row is already durable; a transient email failure logs
+    # but does not 500 the route (admin can resend later).
+    from sessionfs.server.services.invite_helpers import dispatch_invite_email
+
+    await dispatch_invite_email(
+        request=request,
+        db=db,
+        invite=invite,
+        org=ctx.org,
+        inviter=ctx.user,
+    )
 
     return InviteResponse(invite_id=invite_id, email=data.email, role=role)
 
@@ -291,7 +304,17 @@ async def accept_invite(
         raise HTTPException(404, "Invite not found")
     if invite.accepted_at:
         raise HTTPException(400, "Invite already accepted")
-    if invite.expires_at < datetime.now(timezone.utc):
+    # v0.10.22 — explicit declined check (column added in migration 046).
+    # Without this an accepted invite that was then re-declined elsewhere
+    # would slip through; defense in depth even though the flow normally
+    # writes one or the other.
+    if invite.declined_at:
+        raise HTTPException(400, "Invite was declined")
+    # SQLite naive-aware coercion — see decline_invite for context.
+    expires = invite.expires_at
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    if expires < datetime.now(timezone.utc):
         raise HTTPException(400, "Invite has expired")
     if (invite.email or "").strip().lower() != (user.email or "").strip().lower():
         raise HTTPException(403, "This invite is for a different email address")
@@ -330,14 +353,163 @@ async def accept_invite(
     )
     db.add(member)
 
-    await db.execute(
+    # Atomic gate — must be the last write before commit so a
+    # concurrent /decline (or another /accept) loses the race
+    # cleanly. Codex v0.10.22 R1 MEDIUM (tk_6afbcfefe5804c1d). If
+    # the rowcount is zero, another transition won the race; roll
+    # back the pending OrgMember add and return 409.
+    now_ts = datetime.now(timezone.utc)
+    # synchronize_session=False so the ORM doesn't evaluate the WHERE
+    # clause client-side — that path hits the SQLite naive vs PG
+    # tz-aware datetime mismatch. Server-side evaluation is correct
+    # on both backends.
+    result = await db.execute(
         update(OrgInvite)
-        .where(OrgInvite.id == invite_id)
-        .values(accepted_at=datetime.now(timezone.utc))
+        .where(
+            OrgInvite.id == invite_id,
+            OrgInvite.accepted_at.is_(None),
+            OrgInvite.declined_at.is_(None),
+            OrgInvite.expires_at > now_ts,
+        )
+        .values(accepted_at=now_ts)
+        .execution_options(synchronize_session=False)
     )
+    if result.rowcount != 1:
+        await db.rollback()
+        raise HTTPException(409, "Invite state changed concurrently; reload and retry")
     await db.commit()
 
     return {"org_id": invite.org_id, "role": invite.role}
+
+
+class DeclineInviteRequest(BaseModel):
+    reason: str | None = None
+
+
+@router.post("/invite/{invite_id}/decline")
+async def decline_invite(
+    invite_id: str,
+    body: DeclineInviteRequest | None = None,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Recipient declines an org invite.
+
+    Atomic — refuses if the invite was already accepted/declined/expired.
+    Pairs with the dashboard `/invites` Decline button. v0.10.22 —
+    tk_6afbcfefe5804c1d.
+    """
+    invite = (
+        await db.execute(select(OrgInvite).where(OrgInvite.id == invite_id))
+    ).scalar_one_or_none()
+    if not invite:
+        raise HTTPException(404, "Invite not found")
+    if invite.accepted_at:
+        raise HTTPException(400, "Invite already accepted")
+    if invite.declined_at:
+        raise HTTPException(400, "Invite already declined")
+    # SQLite naive-aware coercion — see resend_invite for context.
+    expires = invite.expires_at
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    if expires < datetime.now(timezone.utc):
+        raise HTTPException(400, "Invite has expired")
+    if (invite.email or "").strip().lower() != (user.email or "").strip().lower():
+        raise HTTPException(403, "This invite is for a different email address")
+
+    reason = (body.reason.strip() if body and body.reason else None) or None
+    if reason and len(reason) > 1000:
+        reason = reason[:1000]
+
+    # Atomic gate — same pattern as /accept. Rowcount-1 guard so a
+    # concurrent /accept (or another /decline) loses the race
+    # cleanly. Codex v0.10.22 R1 MEDIUM (tk_6afbcfefe5804c1d).
+    now_ts = datetime.now(timezone.utc)
+    result = await db.execute(
+        update(OrgInvite)
+        .where(
+            OrgInvite.id == invite_id,
+            OrgInvite.accepted_at.is_(None),
+            OrgInvite.declined_at.is_(None),
+            OrgInvite.expires_at > now_ts,
+        )
+        .values(declined_at=now_ts, decline_reason=reason)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        await db.rollback()
+        raise HTTPException(409, "Invite state changed concurrently; reload and retry")
+    await db.commit()
+
+    return {"invite_id": invite_id, "declined_at": now_ts.isoformat()}
+
+
+class MyInviteEntry(BaseModel):
+    invite_id: str
+    org_id: str
+    org_name: str
+    role: str
+    invited_by_email: str
+    created_at: datetime
+    expires_at: datetime
+
+
+class MyInvitesResponse(BaseModel):
+    invites: list[MyInviteEntry]
+
+
+@router.get("/invites/me", response_model=MyInvitesResponse)
+async def list_my_invites(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> MyInvitesResponse:
+    """Pending org invites for the logged-in user (matched on email).
+
+    Drives the dashboard `/invites` page and the post-login banner.
+    Filters out accepted, declined, and expired rows so the dashboard
+    can render directly without re-filtering. v0.10.22 —
+    tk_6afbcfefe5804c1d.
+    """
+    user_email = (user.email or "").strip().lower()
+    if not user_email:
+        return MyInvitesResponse(invites=[])
+
+    now = datetime.now(timezone.utc)
+    rows = (
+        await db.execute(
+            select(OrgInvite, Organization, User)
+            .join(Organization, OrgInvite.org_id == Organization.id)
+            .join(User, OrgInvite.invited_by == User.id)
+            .where(
+                OrgInvite.email == user_email,
+                OrgInvite.accepted_at.is_(None),
+                OrgInvite.declined_at.is_(None),
+                # Server-side comparison: PG honors timezone, SQLite
+                # stores naive but comparing two columns/values written
+                # in the same dialect roundtrips correctly. The naive-
+                # aware coercion only matters when comparing a DB
+                # value to a Python datetime in route code (see
+                # accept/decline/resend handlers).
+                OrgInvite.expires_at > now,
+            )
+            .order_by(OrgInvite.created_at.desc())
+        )
+    ).all()
+
+    return MyInvitesResponse(
+        invites=[
+            MyInviteEntry(
+                invite_id=invite.id,
+                org_id=org.id,
+                org_name=org.name,
+                role=invite.role,
+                invited_by_email=inviter.email,
+                created_at=invite.created_at,
+                expires_at=invite.expires_at,
+            )
+            for invite, org, inviter in rows
+        ]
+    )
 
 
 @router.put("/members/{user_id}/role")
@@ -404,10 +576,16 @@ async def list_invites(
     if not ctx.org:
         raise HTTPException(400, "You are not in an organization")
 
+    # Codex v0.10.22 R2 LOW (tk_6afbcfefe5804c1d) — declined + expired
+    # rows must not show up under "Pending Invites" in the dashboard.
+    # Stays consistent with the duplicate-active-invite check on the
+    # creation paths and with the new GET /api/v1/org/invites/me filter.
     result = await db.execute(
         select(OrgInvite).where(
             OrgInvite.org_id == ctx.org.id,
             OrgInvite.accepted_at.is_(None),
+            OrgInvite.declined_at.is_(None),
+            OrgInvite.expires_at > datetime.now(timezone.utc),
         )
     )
     invites = result.scalars().all()

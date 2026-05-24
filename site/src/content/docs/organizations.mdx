@@ -64,22 +64,31 @@ Invites expire after **7 days**. The server checks seat capacity at invite time 
 
 You cannot invite someone who is already a member, and duplicate pending invites to the same email are blocked.
 
+Starting in **v0.10.22**, both invite endpoints (`/api/v1/org/invite` and the multi-org `/api/v1/orgs/{org_id}/members/invite`) automatically send a notification email to the invitee through the configured email provider. Email dispatch is best-effort — the invite is created even if email delivery fails, and admins can use the `resend` endpoint below to retry delivery.
+
 ### Listing and revoking invites
 
 ```
-GET  /api/v1/org/invites        # List pending invites (admin only)
-DELETE /api/v1/org/invites/{id}  # Revoke a pending invite (admin only)
+GET    /api/v1/org/invites                                   # List pending invites (admin only)
+GET    /api/v1/org/invites/me                                # List pending invites addressed to me (v0.10.22)
+DELETE /api/v1/org/invites/{id}                              # Revoke a pending invite (admin only)
+POST   /api/v1/orgs/{org_id}/invites/{id}/resend             # Resend the invite email (admin only, v0.10.22)
 ```
 
-## Accepting an invite
+The new `/invites/me` endpoint powers the dashboard `/invites` page where invitees see every org currently waiting on their decision.
+
+## Accepting or declining an invite
 
 ```
 POST /api/v1/org/invite/{invite_id}/accept
+POST /api/v1/org/invite/{invite_id}/decline   # v0.10.22 — optional body: {"decline_reason": "..."}
 ```
 
 The authenticated user's email must match the invite email. Users already in an organization cannot accept a new invite — they must leave their current org first.
 
 Seat capacity is rechecked at acceptance time. If the org filled up between invite and acceptance, the request is rejected.
+
+Both accept and decline are protected by atomic rowcount-1 FSM transitions, so two browser tabs can't both succeed on the same invite. Declining records `declined_at` and the optional `decline_reason` so admins can see why an invite was turned down.
 
 ## Managing members
 

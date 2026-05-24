@@ -121,22 +121,16 @@ class ProjectSettingsRequest(BaseModel):
 
 
 async def _get_project_or_404(project_id: str, db: AsyncSession, user_id: str | None = None) -> Project:
-    result = await db.execute(select(Project).where(Project.id == project_id))
-    project = result.scalar_one_or_none()
-    if not project:
-        raise HTTPException(404, "Project not found")
+    """Thin wrapper around `auth.project_access.load_project_for_user`.
 
-    if user_id and project.owner_id != user_id:
-        from sessionfs.server.db.models import Session as SessionModel
-        access = await db.execute(
-            select(SessionModel.id)
-            .where(SessionModel.user_id == user_id, SessionModel.git_remote_normalized == project.git_remote_normalized)
-            .limit(1)
-        )
-        if access.scalar_one_or_none() is None:
-            raise HTTPException(403, "No access to this project")
+    See `knowledge.py:_get_project_or_404` for the v0.10.22 history
+    (tk_7a457574c5624e12). Both copies now delegate to the same helper
+    so the OrgMember-aware predicate is enforced uniformly across
+    knowledge, wiki, tickets, agent_runs, retrieval_audit, personas.
+    """
+    from sessionfs.server.auth.project_access import load_project_for_user
 
-    return project
+    return await load_project_for_user(project_id, db, user_id)
 
 
 # ---------------------------------------------------------------------------

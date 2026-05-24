@@ -17,14 +17,33 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.10.21 -->
+      <!-- v0.10.22 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.10.22</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">May 24, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Org-Member Project Access Fix &middot; Invite Email + Decline / Resend / <span class="font-mono text-accent text-sm">/invites</span> Page &middot; Scout Multi-Source Signal Contract</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Org-member project access enforced everywhere</strong> (<span class="font-mono">tk_7a457574c5624e12</span>). The v0.10.0 Phase 5 multi-org design said org members could reach personas / KB / wiki / tickets / agent-runs on org-scoped projects without owning the project row &mdash; the model carried the intent, but no route ever enforced it. v0.10.22 ships a shared <span class="font-mono text-accent text-sm">auth.project_access.user_can_access_project(db, user_id, project)</span> helper and threads it through every project-scoped route group. New org members no longer have to clone the repo locally as a workaround just to read the project's persona doc or KB &mdash; their org-membership row is now the authoritative grant. Deny-by-default; helper is the single chokepoint, so a new project-scoped surface that forgets it fails closed.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Org invite email + decline + resend + dashboard <span class="font-mono text-accent text-sm">/invites</span> page</strong> (<span class="font-mono">tk_6afbcfefe5804c1d</span>). Both invite endpoints (legacy <span class="font-mono text-accent text-sm">POST /api/v1/org/invite</span> and multi-org <span class="font-mono text-accent text-sm">POST /api/v1/orgs/&#123;org_id&#125;/members/invite</span>) now dispatch a notification email through the configured provider via <span class="font-mono text-accent text-sm">services/invite_helpers.dispatch_invite_email</span>. Best-effort &mdash; the invite is still created if delivery fails, and the route never returns 500 on an email backend hiccup. New endpoints: <span class="font-mono text-accent text-sm">POST /api/v1/orgs/&#123;org_id&#125;/invites/&#123;invite_id&#125;/resend</span> (admin only), <span class="font-mono text-accent text-sm">POST /api/v1/org/invite/&#123;invite_id&#125;/decline</span> (recipient with optional <span class="font-mono text-accent text-sm">decline_reason</span>), and <span class="font-mono text-accent text-sm">GET /api/v1/org/invites/me</span> (caller's pending-invite list). Accept and decline both use atomic rowcount-1 guarded FSM transitions so two tabs can't both win. New dashboard <span class="font-mono text-accent text-sm">/invites</span> page with a top-nav pending-count badge. Migration 046 is strictly-additive: <span class="font-mono text-accent text-sm">org_invites</span> gains nullable <span class="font-mono text-accent text-sm">declined_at</span>, <span class="font-mono text-accent text-sm">decline_reason</span>, and <span class="font-mono text-accent text-sm">last_emailed_at</span> columns.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Scout multi-source signal-shape contract</strong> (<span class="font-mono">tk_918073e8aa4c4478</span>). Docs-only deliverable that finishes the Scout continuous-agent stack started in v0.10.21. New <span class="font-mono text-accent text-sm">docs/integrations/scout-signal-shape.md</span> (~600 lines) defines the normalized signal envelope every source adapter must emit before the Scout brain sees it, plus four reference n8n Code-node normalizers in <span class="font-mono text-accent text-sm">docs/integrations/n8n-source-adapters/</span> (HN Algolia, GitHub Releases, Reddit, RSS). PII scrubbing is a hard rule &mdash; the Reddit adapter is the reference implementation (drops author handles, hashes anything left). Adding a new source is now 1 normalizer Code node + 1 Merge-node pin, not "extend the Scout brain prompt"; the brain stays source-agnostic.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">2,007 backend + 187 dashboard UI tests passing (was 1,985 + 187 at v0.10.21; +22 net new across the three tickets) &middot; 46 migrations (migration 046 strictly-additive) &middot; 58 MCP tools (unchanged). Shield-SR independent pre-release security review APPROVED 0/0/0/0. pip-audit 0 vulnerabilities; npm audit (dashboard + site) 0 vulnerabilities.</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.10.21 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
             <span class="text-brand font-semibold">v0.10.21</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">May 22, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Phase 4a KB Attribution + Scout v4 Contract + AgentRun Provenance + <span class="font-mono text-accent text-sm">agent_runs:read</span> Now Live</h2>
         <ul class="space-y-2 text-base text-muted">

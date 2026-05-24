@@ -174,6 +174,30 @@ class EmailProvider(ABC):
         ok = await self.send(to_email, subject, html)
         return {"status": "sent" if ok else "failed"}
 
+    async def send_org_invite(
+        self,
+        to_email: str,
+        org_name: str,
+        inviter_name: str,
+        inviter_email: str,
+        role: str,
+        accept_url: str,
+        expires_at_human: str,
+    ) -> dict[str, Any]:
+        from sessionfs.server.email_templates import org_invite_email
+
+        html = org_invite_email(
+            org_name=org_name,
+            inviter_name=inviter_name,
+            inviter_email=inviter_email,
+            role=role,
+            accept_url=accept_url,
+            expires_at_human=expires_at_human,
+        )
+        subject = f"SessionFS: {inviter_name or inviter_email} invited you to {org_name}"
+        ok = await self.send(to_email, subject, html)
+        return {"status": "sent" if ok else "failed"}
+
     async def send_retention_notice(
         self, to_email: str, purged_count: int, session_titles: list[str],
     ) -> dict[str, Any]:
