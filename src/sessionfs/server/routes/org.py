@@ -227,12 +227,17 @@ async def invite_member(
             "message": "All seats are in use. Upgrade for more seats.",
         })
 
-    # Check for existing invite
+    # Check for existing ACTIVE invite — must exclude rows the
+    # recipient has already declined or that have expired so the
+    # admin can resend after either of those terminal states. Codex
+    # v0.10.22 R1 MEDIUM (tk_6afbcfefe5804c1d).
     existing = await db.execute(
         select(OrgInvite).where(
             OrgInvite.org_id == ctx.org.id,
             OrgInvite.email == data.email,
             OrgInvite.accepted_at.is_(None),
+            OrgInvite.declined_at.is_(None),
+            OrgInvite.expires_at > datetime.now(timezone.utc),
         )
     )
     if existing.scalar_one_or_none():
@@ -348,11 +353,30 @@ async def accept_invite(
     )
     db.add(member)
 
-    await db.execute(
+    # Atomic gate — must be the last write before commit so a
+    # concurrent /decline (or another /accept) loses the race
+    # cleanly. Codex v0.10.22 R1 MEDIUM (tk_6afbcfefe5804c1d). If
+    # the rowcount is zero, another transition won the race; roll
+    # back the pending OrgMember add and return 409.
+    now_ts = datetime.now(timezone.utc)
+    # synchronize_session=False so the ORM doesn't evaluate the WHERE
+    # clause client-side — that path hits the SQLite naive vs PG
+    # tz-aware datetime mismatch. Server-side evaluation is correct
+    # on both backends.
+    result = await db.execute(
         update(OrgInvite)
-        .where(OrgInvite.id == invite_id)
-        .values(accepted_at=datetime.now(timezone.utc))
+        .where(
+            OrgInvite.id == invite_id,
+            OrgInvite.accepted_at.is_(None),
+            OrgInvite.declined_at.is_(None),
+            OrgInvite.expires_at > now_ts,
+        )
+        .values(accepted_at=now_ts)
+        .execution_options(synchronize_session=False)
     )
+    if result.rowcount != 1:
+        await db.rollback()
+        raise HTTPException(409, "Invite state changed concurrently; reload and retry")
     await db.commit()
 
     return {"org_id": invite.org_id, "role": invite.role}
@@ -397,11 +421,27 @@ async def decline_invite(
     if reason and len(reason) > 1000:
         reason = reason[:1000]
 
-    invite.declined_at = datetime.now(timezone.utc)
-    invite.decline_reason = reason
+    # Atomic gate — same pattern as /accept. Rowcount-1 guard so a
+    # concurrent /accept (or another /decline) loses the race
+    # cleanly. Codex v0.10.22 R1 MEDIUM (tk_6afbcfefe5804c1d).
+    now_ts = datetime.now(timezone.utc)
+    result = await db.execute(
+        update(OrgInvite)
+        .where(
+            OrgInvite.id == invite_id,
+            OrgInvite.accepted_at.is_(None),
+            OrgInvite.declined_at.is_(None),
+            OrgInvite.expires_at > now_ts,
+        )
+        .values(declined_at=now_ts, decline_reason=reason)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        await db.rollback()
+        raise HTTPException(409, "Invite state changed concurrently; reload and retry")
     await db.commit()
 
-    return {"invite_id": invite.id, "declined_at": invite.declined_at.isoformat()}
+    return {"invite_id": invite_id, "declined_at": now_ts.isoformat()}
 
 
 class MyInviteEntry(BaseModel):

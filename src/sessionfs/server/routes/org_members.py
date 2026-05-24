@@ -383,13 +383,17 @@ async def invite_member(
             },
         )
 
-    # Active invite for the same email?
+    # Active invite for the same email? Excludes declined + expired
+    # rows so the admin can resend after either terminal state.
+    # Codex v0.10.22 R1 MEDIUM (tk_6afbcfefe5804c1d).
     if (
         await db.execute(
             select(OrgInvite).where(
                 OrgInvite.org_id == org_id,
                 OrgInvite.email == data.email,
                 OrgInvite.accepted_at.is_(None),
+                OrgInvite.declined_at.is_(None),
+                OrgInvite.expires_at > _now(),
             )
         )
     ).scalar_one_or_none():

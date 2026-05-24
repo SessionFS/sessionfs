@@ -144,7 +144,15 @@ async def test_multi_org_invite_sends_email(
     assert sent["to"] == "newhire@example.com"
     assert "Admin Person" in sent["subject"]
     assert org.name in sent["subject"]
-    assert "/invites/" in sent["html"]
+    # Accept-link contract: /invites?highlight=<invite_id> (query
+    # string survives the dashboard login redirect — see Codex R1
+    # discussion on the route shape).
+    invite_id = (
+        await db_session.execute(
+            select(OrgInvite.id).where(OrgInvite.email == "newhire@example.com")
+        )
+    ).scalar_one()
+    assert f"/invites?highlight={invite_id}" in sent["html"]
 
     # last_emailed_at stamped on the invite row.
     invite = (
@@ -400,6 +408,91 @@ async def test_list_my_invites_hides_accepted_and_declined(
 
     declined_resp = await client.get("/api/v1/org/invites/me", headers=declined_hdr)
     assert declined_resp.json()["invites"] == []
+
+
+@pytest.mark.asyncio
+async def test_admin_can_reinvite_after_decline(
+    client: AsyncClient, db_session: AsyncSession, recorder: RecordingProvider
+):
+    """Codex v0.10.22 R1 MEDIUM — declined invites must NOT block a
+    fresh invite to the same email; the duplicate-active-invite check
+    has to exclude declined + expired rows so an admin can recover
+    from a recipient declining at the wrong account."""
+    admin, admin_hdr = await _make_user(db_session, email="reinvite-admin@example.com")
+    org = await _make_org_with_admin(db_session, admin)
+
+    target_email = "reinvite-target@example.com"
+    _, target_hdr = await _make_user(db_session, email=target_email, tier="free")
+
+    first = await client.post(
+        f"/api/v1/orgs/{org.id}/members/invite",
+        headers=admin_hdr,
+        json={"email": target_email, "role": "member"},
+    )
+    assert first.status_code == 200
+    first_id = first.json()["invite_id"]
+
+    # Recipient declines.
+    assert (
+        await client.post(
+            f"/api/v1/org/invite/{first_id}/decline", headers=target_hdr
+        )
+    ).status_code == 200
+
+    # Admin re-invites — must succeed with a fresh invite row,
+    # NOT 409 against the declined row.
+    second = await client.post(
+        f"/api/v1/orgs/{org.id}/members/invite",
+        headers=admin_hdr,
+        json={"email": target_email, "role": "member"},
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["invite_id"] != first_id
+
+
+@pytest.mark.asyncio
+async def test_accept_after_concurrent_decline_returns_409(
+    client: AsyncClient, db_session: AsyncSession, recorder: RecordingProvider
+):
+    """Codex v0.10.22 R1 MEDIUM — the accept transition is atomic.
+    Simulate the race by writing declined_at directly into the DB
+    AFTER the route's prechecks would pass; the rowcount-1 guard on
+    the UPDATE must surface as 409 and roll back the pending
+    OrgMember insert."""
+    admin, admin_hdr = await _make_user(db_session, email="atomic-admin@example.com")
+    org = await _make_org_with_admin(db_session, admin)
+
+    target_email = "atomic-target@example.com"
+    _, target_hdr = await _make_user(db_session, email=target_email, tier="free")
+
+    resp = await client.post(
+        f"/api/v1/orgs/{org.id}/members/invite",
+        headers=admin_hdr,
+        json={"email": target_email, "role": "member"},
+    )
+    invite_id = resp.json()["invite_id"]
+
+    # Race winner: another path declines this invite.
+    decline = await client.post(
+        f"/api/v1/org/invite/{invite_id}/decline", headers=target_hdr
+    )
+    assert decline.status_code == 200
+
+    # The atomic gate on accept now refuses; OrgMember NOT created.
+    accept = await client.post(
+        f"/api/v1/org/invite/{invite_id}/accept", headers=target_hdr
+    )
+    assert accept.status_code in (400, 409)  # 400 from precheck if it hits first
+
+    members = (
+        await db_session.execute(
+            select(OrgMember).where(
+                OrgMember.org_id == org.id,
+                OrgMember.user_id != admin.id,
+            )
+        )
+    ).scalars().all()
+    assert members == []
 
 
 @pytest.mark.asyncio
