@@ -168,10 +168,13 @@ Available scopes (the `*` wildcard is reserved for legacy user/admin keys; servi
 |--------|------|------|-------------|
 | POST | `/api/v1/org` | Bearer | Create organization (Team tier or above required) |
 | GET | `/api/v1/org` | Bearer | Get org info, member list, and current user role |
-| POST | `/api/v1/org/invite` | Bearer | Invite a member by email (admin only) |
+| POST | `/api/v1/org/invite` | Bearer | Invite a member by email (admin only). Sends invite email best-effort (v0.10.22). |
 | POST | `/api/v1/org/invite/{invite_id}/accept` | Bearer | Accept an org invite |
+| POST | `/api/v1/org/invite/{invite_id}/decline` | Bearer | Decline a pending invite (recipient only, optional `decline_reason`) — v0.10.22 |
 | GET | `/api/v1/org/invites` | Bearer | List pending invites (admin only) |
+| GET | `/api/v1/org/invites/me` | Bearer | List pending invites addressed to the caller (v0.10.22) |
 | DELETE | `/api/v1/org/invites/{invite_id}` | Bearer | Revoke a pending invite (admin only) |
+| POST | `/api/v1/orgs/{org_id}/invites/{invite_id}/resend` | Bearer | Resend an invite email (admin only) — v0.10.22 |
 | PUT | `/api/v1/org/members/{user_id}/role` | Bearer | Change a member's role (admin only) |
 | DELETE | `/api/v1/org/members/{user_id}` | Bearer | Remove a member from the org (admin only) |
 

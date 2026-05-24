@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.22] - 2026-05-24
+
+**Org-collaboration fixes.** Three tickets that close long-standing operational gaps on the org surface: new org members can finally read org-scoped artifacts without first cloning the repo; invite emails actually send; recipients have a dashboard `/invites` page to accept or decline; and Scout's n8n workflow gets the multi-source signal-shape contract that was deferred from v0.10.21. No platform breakage — one strictly-additive migration (046).
+
+### Added
+
+**Scout multi-source signal-shape contract** (`tk_918073e8aa4c4478`, commits `59812de` + `0589563` + `cb66312`). New `docs/integrations/scout-signal-shape.md` (~600 lines) defines the 9-field canonical envelope (`source`, `source_id`, `title`, `url`, `content`, `posted_at`, `author`, `signal_strength`, `raw`) that every upstream feeds through before Scout's reasoning loop runs. `source_id` is the dedup key and threads into v4's `source_context` format unchanged. Four reference Code-node templates ship in `docs/integrations/n8n-source-adapters/` (HN Algolia, GitHub Releases, Reddit, generic RSS) each with an inline FIXTURE block. PII scrubbing hard rules in §5 + §5.1 with the Reddit adapter as the reference implementation: drops `selftext` from `raw` entirely and rewrites `raw.author` to the `u/`-prefixed form before emit so even a misconfigured workflow can't leak. Mandatory `Code: strip raw` node in the n8n workflow diagram for token-budget discipline. Updates `scout-n8n.md` §8 to point at the new spec and adds `.agents/scout-competitive-intelligence.md` for persona ownership. Adding source N+1 = one normalizer + one Merge-node pin; reasoning, dedup, and write steps unchanged. Three rounds of polling-Codex review → VERIFIED-CLEAN.
+
+**Org-member project access fix** (`tk_7a457574c5624e12`, commit `b469d8d`). New shared helper `src/sessionfs/server/auth/project_access.py` with `user_can_access_project(db, user_id, project) -> bool` returning True for the 3-branch user-key predicate: owner OR member of `project.org_id` OR captured-session-on-git-remote (legacy fallback). Closes the v0.10.0 Phase 5 design intent documented in `db/models.py:187` but never enforced — new org members were getting 403 on every org-scoped artifact (personas, KB, wiki, tickets, agent runs) until they cloned the repo and synced a session. Both `_get_project_or_404` copies (knowledge.py + wiki.py) collapsed to thin wrappers delegating to `load_project_for_user`; 30+ existing importers across tickets, agent_runs, retrieval_audit, personas pick up the fix without call-site changes. `routes/projects.py:list_projects` SQL gains the OrgMember subquery branch so org-scoped projects appear in `GET /api/v1/projects` for the right users. `get_project` and `update_project_context` route through the same helper. `delete_project` intentionally unchanged (owner-or-admin only). Service-key path untouched — `service_key.org_id` remains the only org boundary there. 9 regression tests covering all 6 affected route families + cross-org isolation + personal-project unchanged. Codex R1 first-round VERIFIED-CLEAN.
+
+**Org invite email + dashboard `/invites` page** (`tk_6afbcfefe5804c1d`, commits `4888043` + `91d3522` + `ca30263`). Closes the 2026-05-23 onboarding incident where 4 new SessionFS signups had to be hand-messaged accept URLs because the invite endpoints never fired email.
+
+- **Migration 046** strictly additive: `declined_at`, `decline_reason`, `last_emailed_at` on `org_invites`. No backfill.
+- **`services/invite_helpers.dispatch_invite_email`** shared best-effort helper. Both invite endpoints (`routes/org.py` legacy + `routes/org_members.py` multi-org) + the new resend endpoint route through it. SMTP/Resend failure logs but does not 500 the route.
+- **`email.EmailProvider.send_org_invite` + `email_templates.org_invite_email`** mirror the v0.10.9 handoff lifecycle shapes. Every user-controlled field is `_html.escape`'d.
+- **`app.state.config`** wired in `server/app.py` lifespan so services can read `config.app_url` for dashboard URL building without re-importing `ServerConfig`.
+- **New `POST /api/v1/orgs/{org_id}/invites/{invite_id}/resend`** — admin-only re-fire without creating a new invite row. 409 on already-accepted/declined/expired.
+- **New `POST /api/v1/org/invite/{invite_id}/decline`** — recipient marks the invite refused with optional reason (1000-char cap). Atomic rowcount-1 guarded transition; subsequent `/accept` rejects 400.
+- **New `GET /api/v1/org/invites/me`** — pending invites for the logged-in user, server-filtered to exclude accepted/declined/expired.
+- **Atomic accept + decline FSM transitions** via rowcount-1 guarded conditional UPDATE on `accepted_at IS NULL AND declined_at IS NULL AND expires_at > now()` with `synchronize_session=False` to skip the ORM's client-side WHERE eval (SQLite vs PG datetime safety). On rowcount=0 the session rolls back (dropping any pending OrgMember add for the accept path) and returns 409. Codex R1 MEDIUM fix.
+- **Active-invite predicate** (`accepted_at IS NULL AND declined_at IS NULL AND expires_at > now()`) now consistent across all 5 sites (duplicate-invite check at both creation paths, /invites/me, admin /invites, resend pre-flight). Closes Codex R1 MEDIUM + R2 LOW (predicate drift would otherwise block admin recovery after a decline + surface stale "Pending Invites" rows on the dashboard).
+- **Dashboard `/invites` page** + nav link with pending-count badge in both desktop nav and mobile drawer (`dashboard/src/invites/InvitesPage.tsx` + `useInvites.ts`). Reads `?highlight=<invite_id>` from the email accept link to outline the matching row. Inline reason textarea on decline. Accept invalidates `['my-orgs']` so the org settings page refreshes.
+
+13 regression tests covering both invite endpoints firing email, best-effort behavior under provider failure, resend without new row, resend admin-only + 409 on accepted, decline blocks subsequent accept, decline wrong-email denied, /invites/me filters to current user + hides accepted/declined, atomic accept-after-concurrent-decline returns 409 with no OrgMember leak, admin-can-reinvite-after-decline, admin pending list hides declined + expired. Three Codex review rounds → R3 VERIFIED-CLEAN.
+
+### Verification
+
+- pytest tests/ -x -q → **2007 passed**, 2 xfailed (pre-existing migration-003 chain)
+- ruff check src/ → clean
+- helm lint charts/sessionfs → clean
+- dashboard tsc -b → clean
+- dashboard npm test -- --run → **187 passed**
+- dashboard npm run build → no warnings
+- pip-audit → 0 vulnerabilities (105 deps)
+- npm audit (dashboard + site) → 0 vulnerabilities
+- bandit → 0 HIGH, 17 MEDIUM (all pre-existing baseline; 0 in v0.10.22 files)
+- Shield-SR independent pre-release review → APPROVED 0 CRITICAL / 0 HIGH / 0 NEW MEDIUM
+
+### Authoring + reviews
+
+All 3 tickets implemented directly by Claude (no Codex CLI spawn), per CEO's standing rule. Polling Codex (`author_persona="codex"`) reviewed every commit:
+- tk_918073e8aa4c4478: R1 MEDIUM (raw PII leak) + R1 LOW (GH prerelease policy) → R2 LOW (stale §5.1 prose) → R3 VERIFIED-CLEAN
+- tk_7a457574c5624e12: R1 VERIFIED-CLEAN first round
+- tk_6afbcfefe5804c1d: R1 HIGH (test assertion) + 2 MEDIUMs (reinvite-after-decline + accept/decline race) → R2 LOW (admin list filter) → R3 VERIFIED-CLEAN
+
+### Operational unlock
+
+After this deploys, every future org invite from either endpoint sends an email automatically; recipients see pending invites in `/invites` with a nav badge; admins can resend without re-inviting and recover from a decline by re-inviting; new org members can pull personas + read KB + see project listing without needing to clone the repo first as a workaround. The 2026-05-23 onboarding pain doesn't recur.
+
 ## [0.10.21] - 2026-05-22
 
 **Phase 4a + the continuous-agent stack.** This release lands the agent-authored KB attribution model (Phase 4a), the MCP write-path equivalent, the full Scout v4 n8n integration contract, AgentRun provenance exposure, and an `agent_runs:read` service-key opt-in — five tickets that together unblock continuous autonomous agents on SessionFS for the first time. Plus a transitive starlette CVE pin caught by Shield-SR.
