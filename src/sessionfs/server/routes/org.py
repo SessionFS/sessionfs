@@ -576,10 +576,16 @@ async def list_invites(
     if not ctx.org:
         raise HTTPException(400, "You are not in an organization")
 
+    # Codex v0.10.22 R2 LOW (tk_6afbcfefe5804c1d) — declined + expired
+    # rows must not show up under "Pending Invites" in the dashboard.
+    # Stays consistent with the duplicate-active-invite check on the
+    # creation paths and with the new GET /api/v1/org/invites/me filter.
     result = await db.execute(
         select(OrgInvite).where(
             OrgInvite.org_id == ctx.org.id,
             OrgInvite.accepted_at.is_(None),
+            OrgInvite.declined_at.is_(None),
+            OrgInvite.expires_at > datetime.now(timezone.utc),
         )
     )
     invites = result.scalars().all()

@@ -496,6 +496,70 @@ async def test_accept_after_concurrent_decline_returns_409(
 
 
 @pytest.mark.asyncio
+async def test_admin_list_invites_hides_declined_and_expired(
+    client: AsyncClient, db_session: AsyncSession, recorder: RecordingProvider
+):
+    """Codex v0.10.22 R2 LOW — admin /api/v1/org/invites must filter
+    out declined + expired rows so the dashboard 'Pending Invites'
+    panel stays consistent with the duplicate-invite check on the
+    creation path and the /invites/me filter."""
+    admin, admin_hdr = await _make_user(db_session, email="adm-list@example.com")
+    org = await _make_org_with_admin(db_session, admin)
+
+    declined_email = "adm-declined@example.com"
+    pending_email = "adm-pending@example.com"
+    _, declined_hdr = await _make_user(db_session, email=declined_email, tier="free")
+
+    for email in (declined_email, pending_email):
+        await client.post(
+            f"/api/v1/orgs/{org.id}/members/invite",
+            headers=admin_hdr,
+            json={"email": email, "role": "member"},
+        )
+
+    declined_invite_id = (
+        await db_session.execute(
+            select(OrgInvite.id).where(OrgInvite.email == declined_email)
+        )
+    ).scalar_one()
+    assert (
+        await client.post(
+            f"/api/v1/org/invite/{declined_invite_id}/decline", headers=declined_hdr
+        )
+    ).status_code == 200
+
+    # Synthetically expire a third invite by direct DB write.
+    expired_email = "adm-expired@example.com"
+    await client.post(
+        f"/api/v1/orgs/{org.id}/members/invite",
+        headers=admin_hdr,
+        json={"email": expired_email, "role": "member"},
+    )
+    expired_invite_id = (
+        await db_session.execute(
+            select(OrgInvite.id).where(OrgInvite.email == expired_email)
+        )
+    ).scalar_one()
+    from datetime import timedelta
+
+    expired_invite = (
+        await db_session.execute(
+            select(OrgInvite).where(OrgInvite.id == expired_invite_id)
+        )
+    ).scalar_one()
+    expired_invite.expires_at = _now() - timedelta(hours=1)
+    await db_session.commit()
+
+    resp = await client.get("/api/v1/org/invites", headers=admin_hdr)
+    assert resp.status_code == 200, resp.text
+    rows = resp.json()["invites"]
+    emails = {r["email"] for r in rows}
+    assert pending_email in emails
+    assert declined_email not in emails
+    assert expired_email not in emails
+
+
+@pytest.mark.asyncio
 async def test_resend_refuses_accepted_invite(
     client: AsyncClient, db_session: AsyncSession, recorder: RecordingProvider
 ):
