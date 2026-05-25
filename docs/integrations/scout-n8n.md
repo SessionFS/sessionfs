@@ -264,6 +264,23 @@ your trigger pulls). It produces:
 
 ## 3. Writing findings (steps 3.x run per finding)
 
+### 3.0 Two write patterns — natural findings vs state cache
+
+Scout writes to the KB in two distinct shapes, and they use different
+flags. Get them mixed up and you'll either lose state cache writes
+(default similarity dedup 409s small-delta updates — the
+2026-05-25 Scout incident) or silently dismiss legitimate distinct
+findings (auto-upsert clobbers per-signal entries).
+
+| Pattern | When | `entity_ref` | `upsert` | Behavior |
+|---|---|---|---|---|
+| **Natural finding** | One KB entry per discovered signal | optional canonical id (`hn:38291847`) | **omit / false** | Standard similarity dedup; multiple distinct claims about the same entity coexist; compile-time `_auto_supersede` reasons about them. |
+| **State cache** | LRU map of decisions, signal-id bloom filter, persisted reasoning scratchpad | **required** stable slot id (`scout-state:decisions`) | **true** | Skip similarity dedup; auto-dismiss any prior active entry sharing the slot; response `upserted_from: [prior_ids]` audits the roll-forward. |
+
+Use the state-cache pattern for `scout-state:*` and `sentinel-state:*`
+slots. Use the natural-finding pattern for everything an analyst
+would actually read.
+
 ### 3.1 Persist a finding as a KB entry
 
 ```http
@@ -303,6 +320,39 @@ Content-Type: application/json
   corroborated and Scout itself is sure. Most Scout writes should
   stay below the 0.8 promotion gate so a future Scout run can
   validate or supersede them.
+
+### 3.1.b Persist the state cache (separate POST per run)
+
+Scout's reasoning loop typically maintains an LRU map of "signals
+already classified" so the next run can skip them without
+re-reasoning. Persist it as ONE entry per slot with `upsert: true`:
+
+```http
+POST /api/v1/projects/{project_id}/entries/add
+Authorization: Bearer ${SCOUT_KEY}
+Content-Type: application/json
+
+{
+  "entry_type": "discovery",
+  "content": "<JSON-shaped LRU map, ~15 KB>",
+  "confidence": 0.9,
+  "persona_name": "scout",
+  "author_class": "agent",
+  "entity_ref": "scout-state:decisions",
+  "upsert": true
+}
+```
+
+Each run's small delta against the prior cache (~6%) would otherwise
+trip the 0.85 word-overlap dedup gate and 409 silently. `upsert:
+true` opts out of the gate for this slot only and atomically
+dismisses the prior cache entry on success. Inspect
+`response.upserted_from: [prior_ids]` to confirm the roll-forward.
+
+The same pattern applies to any other continuous-agent state slot:
+`sentinel-state:decisions`, `relay-state:open-tickets`, etc. Pick
+stable slot names with a `<persona>-state:` prefix so dashboards can
+group them.
 
 ### 3.2 Optionally open a follow-up ticket
 

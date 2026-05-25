@@ -732,13 +732,21 @@ async def add_entry(
         )
         prior_active_ids = [row[0] for row in prior_rows.all()]
 
-    is_entity_ref_upsert = bool(prior_active_ids)
+    # Gate the similarity check on explicit intent, NOT on prior
+    # presence. Codex R2 MEDIUM: bool(prior_active_ids) would re-arm
+    # the 409 gate for state-cache BOOTSTRAP writes (first write to a
+    # fresh slot, write to a slot whose prior was user-dismissed,
+    # rename of a slot). The whole API + docs + MCP schema contract
+    # is "upsert=true skips similarity dedup" — that has to be true
+    # whether or not a prior exists, otherwise the caller still hits
+    # the same silent-loss class on the first write of any new slot.
+    skip_similarity_gate = bool(body.upsert and body.entity_ref)
 
     # Gate 3: Similarity check against recent non-dismissed entries.
     # Skipped when the write is an explicit entity_ref upsert (see
     # above). Without this skip, agents using KB entries as durable
     # state caches lose data on any small-delta write.
-    if not is_entity_ref_upsert:
+    if not skip_similarity_gate:
         recent_result = await db.execute(
             select(KnowledgeEntry.content)
             .where(

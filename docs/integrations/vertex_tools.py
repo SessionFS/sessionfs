@@ -168,6 +168,18 @@ FUNCTION_DECLARATIONS: list[dict[str, Any]] = [
                 "entity_ref": {"type": "string"},
                 "entity_type": {"type": "string"},
                 "force_claim": {"type": "boolean"},
+                "upsert": {
+                    "type": "boolean",
+                    "description": (
+                        "State-cache roll-forward. Requires entity_ref. "
+                        "Skips similarity dedup and auto-dismisses any "
+                        "prior active entry sharing the same entity_ref "
+                        "in this project. Use for durable agent state "
+                        "(e.g. an LRU map of already-classified signals). "
+                        "Default false preserves the normal multi-claim "
+                        "entity_ref semantics."
+                    ),
+                },
             },
             "required": ["project_id", "content", "entry_type"],
         },
@@ -300,7 +312,7 @@ DISPATCH: dict[str, tuple[str, str, set[str], set[str], set[str]]] = {
     "createTicket":     ("POST", "/api/v1/projects/{project_id}/tickets",                  {"project_id"}, {"title", "description", "priority", "assigned_to", "acceptance_criteria", "file_refs", "depends_on", "source", "created_by_session_id", "created_by_persona"}, set()),
     "startTicket":      ("POST", "/api/v1/projects/{project_id}/tickets/{ticket_id}/start", {"project_id", "ticket_id"}, set(), {"tool", "force"}),
     "completeTicket":   ("POST", "/api/v1/projects/{project_id}/tickets/{ticket_id}/complete", {"project_id", "ticket_id"}, {"notes", "changed_files", "knowledge_entry_ids", "resolver_session_id"}, set()),
-    "addKnowledge":     ("POST", "/api/v1/projects/{project_id}/entries/add",               {"project_id"}, {"content", "entry_type", "confidence", "session_id", "source_context", "entity_ref", "entity_type", "force_claim"}, set()),
+    "addKnowledge":     ("POST", "/api/v1/projects/{project_id}/entries/add",               {"project_id"}, {"content", "entry_type", "confidence", "session_id", "source_context", "entity_ref", "entity_type", "force_claim", "upsert"}, set()),
     "searchKnowledge":  ("GET",  "/api/v1/projects/{project_id}/entries",                   {"project_id"}, set(), {"search", "type", "claim_class", "freshness_class", "limit"}),
     "getRules":         ("GET",  "/api/v1/projects/{project_id}/rules",                    {"project_id"}, set(), set()),
     "getProjectContext":("GET",  "/api/v1/projects/{git_remote_normalized}",               {"git_remote_normalized"}, set(), set()),

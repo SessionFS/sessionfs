@@ -484,6 +484,16 @@ components:
         force_claim:
           type: boolean
           default: false
+        upsert:
+          type: boolean
+          default: false
+          description: >
+            State-cache roll-forward. Requires entity_ref. When true,
+            the server skips similarity dedup and auto-dismisses any
+            prior active entry sharing the same entity_ref in this
+            project. Use for durable agent state (e.g. an LRU map of
+            already-classified signals). Default false preserves
+            normal multi-claim entity_ref semantics.
     KnowledgeEntry:
       type: object
       required: [id, entry_type, content]

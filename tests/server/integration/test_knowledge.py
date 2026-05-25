@@ -2539,6 +2539,66 @@ async def test_entity_ref_without_upsert_preserves_multi_active(
 
 
 @pytest.mark.asyncio
+async def test_upsert_true_bypasses_similarity_on_fresh_slot(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession,
+    test_user: User, test_project: Project,
+):
+    """Codex R2 MEDIUM — the upsert contract says explicit upsert=true
+    skips similarity dedup, full stop. Pre-fix the route only skipped
+    when a prior active entry existed, so the first write to a fresh
+    slot (or a slot whose prior was user-dismissed, or a renamed
+    slot) could still hit 409 against an UNRELATED active entry. That
+    breaks the state-cache bootstrap and reopens the original silent-
+    loss class.
+
+    Setup: seed an unrelated active KB entry whose content is the
+    near-duplicate trigger. Then POST upsert=true to a FRESH
+    entity_ref with the same content. Pre-fix: 409. Post-fix: 201
+    with upserted_from=[] (no priors to dismiss).
+    """
+    trigger_content = (
+        "Adopt scoped service API keys for cloud agents — user tokens "
+        "too broad for Bedrock/Vertex/CI agents."
+    )
+    seed = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="manual",
+        user_id=test_user.id,
+        entry_type="decision",
+        content=trigger_content,
+        confidence=0.9,
+        # No entity_ref — purely a similarity-gate trigger.
+    )
+    db_session.add(seed)
+    await db_session.commit()
+
+    # Same content, fresh state-cache slot. The fresh slot has no
+    # active prior, but the explicit upsert=true must still bypass
+    # the similarity gate against the unrelated seed row.
+    r = await client.post(
+        f"/api/v1/projects/{test_project.id}/entries/add",
+        headers=auth_headers,
+        json={
+            "content": trigger_content,
+            "entry_type": "decision",
+            "entity_ref": "scout-state:bootstrap-decisions",
+            "session_id": "manual",
+            "confidence": 0.9,
+            "upsert": True,
+        },
+    )
+    assert r.status_code == 201, (
+        f"upsert=true on a fresh slot must bypass similarity dedup "
+        f"even when an unrelated active entry triggers the 0.85 word "
+        f"overlap. Got {r.status_code}: {r.text}"
+    )
+    body = r.json()
+    assert body["upserted_from"] == [], (
+        f"fresh slot → no priors to dismiss. Got {body['upserted_from']}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_upsert_true_without_entity_ref_returns_422(
     client: AsyncClient, auth_headers: dict, db_session: AsyncSession,
     test_user: User, test_project: Project,
