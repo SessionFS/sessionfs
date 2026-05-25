@@ -2072,3 +2072,74 @@ class TestAddKnowledgeAttribution:
         assert captured["json"]["author_class"] == "human"
         # But the user-facing message reflects what the server persisted.
         assert "author_class: agent" in result
+
+    @pytest.mark.asyncio
+    async def test_upsert_flag_is_forwarded(
+        self, fake_resolver, captured, monkeypatch
+    ):
+        """v0.10.23 tk_49db8d2b6c424d35 — explicit upsert opt-in must
+        plumb through the MCP handler to the /entries/add payload, and
+        the response's upserted_from list must surface in the agent-
+        facing message so the caller can audit the roll-forward."""
+        import httpx
+
+        class _FakeResponse:
+            def __init__(self, status_code, body):
+                self.status_code = status_code
+                self._body = body
+                self.text = json.dumps(body)
+
+            def json(self):
+                return self._body
+
+        class _FakeClient:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def post(self, url, *, json=None, headers=None):
+                captured["url"] = url
+                captured["json"] = json
+                return _FakeResponse(201, {
+                    "id": 99,
+                    "claim_class": "note",
+                    "persona_name": (json or {}).get("persona_name"),
+                    "author_class": "agent",
+                    "upserted_from": [42, 17],
+                })
+
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+        result = await mcp_server._handle_add_knowledge({
+            "content": "Scout state cache rolled forward with new signals",
+            "entry_type": "discovery",
+            "entity_ref": "scout-state:decisions",
+            "upsert": True,
+        })
+        # Payload carries the explicit flag.
+        assert captured["json"]["upsert"] is True
+        assert captured["json"]["entity_ref"] == "scout-state:decisions"
+        # User-facing message surfaces the dismissed IDs so the caller
+        # can confirm the roll-forward landed.
+        assert "Upsert" in result
+        assert "[42, 17]" in result
+        assert "scout-state:decisions" in result
+
+    @pytest.mark.asyncio
+    async def test_upsert_omitted_does_not_send_flag(
+        self, fake_resolver, fake_httpx_kb_add, captured
+    ):
+        """When upsert is omitted, the MCP handler must NOT inject it
+        into the payload — preserves the v0.10.22 default behavior
+        where entity_ref does not silently auto-supersede."""
+        await mcp_server._handle_add_knowledge({
+            "content": "Distinct discovery about src/db.py with concrete file refs to clear gates",
+            "entry_type": "discovery",
+            "entity_ref": "src/db.py",
+        })
+        assert "upsert" not in captured["json"]

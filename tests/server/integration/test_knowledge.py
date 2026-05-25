@@ -2326,6 +2326,7 @@ async def test_entity_ref_upsert_skips_similarity_dedup(
                 "entity_ref": entity_ref,
                 "session_id": "manual",
                 "confidence": 0.9,
+                "upsert": True,
             },
         )
         assert r.status_code == 201, (
@@ -2397,6 +2398,7 @@ async def test_entity_ref_upsert_response_empty_when_no_prior(
             "entity_ref": "fresh-state:cache",
             "session_id": "manual",
             "confidence": 0.9,
+            "upsert": True,
         },
     )
     assert r.status_code == 201, r.text
@@ -2467,10 +2469,95 @@ async def test_entity_ref_upsert_skips_dismissed_priors(
             "entity_ref": "reusable-state:slot",
             "session_id": "manual",
             "confidence": 0.9,
+            "upsert": True,
         },
     )
     assert r.status_code == 201
     assert r.json()["upserted_from"] == []
+
+
+@pytest.mark.asyncio
+async def test_entity_ref_without_upsert_preserves_multi_active(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession,
+    test_user: User, test_project: Project,
+):
+    """Codex R1 MEDIUM safety net — entity_ref semantics ('what this
+    claim is about') must survive. Multiple distinct claims about the
+    same file/function/article/etc. must coexist as active rows when
+    the caller has NOT opted into upsert. Compile-time _auto_supersede
+    reasons about these; the Scout n8n docs use entity_ref as a
+    canonical per-signal id (e.g. hn:38291847) — neither pattern
+    should silently dismiss priors."""
+    shared_entity = "src/sessionfs/server/db.py"
+    # Two genuinely different claims about the same file (e.g. two
+    # different discoveries during separate sessions).
+    payload_a = {
+        "content": "db.py uses connection pooling with max=50 by default for Cloud SQL",
+        "entry_type": "discovery",
+        "entity_ref": shared_entity,
+        "session_id": "manual",
+        "confidence": 0.9,
+    }
+    payload_b = {
+        "content": "db.py declares isolation_level=READ COMMITTED via the engine config",
+        "entry_type": "discovery",
+        "entity_ref": shared_entity,
+        "session_id": "manual",
+        "confidence": 0.9,
+    }
+
+    r_a = await client.post(
+        f"/api/v1/projects/{test_project.id}/entries/add",
+        headers=auth_headers,
+        json=payload_a,
+    )
+    assert r_a.status_code == 201, r_a.text
+    assert r_a.json()["upserted_from"] == []
+
+    r_b = await client.post(
+        f"/api/v1/projects/{test_project.id}/entries/add",
+        headers=auth_headers,
+        json=payload_b,
+    )
+    assert r_b.status_code == 201, r_b.text
+    # Both claims active — entry_a NOT dismissed by entry_b's insert.
+    assert r_b.json()["upserted_from"] == []
+
+    rows = (
+        await db_session.execute(
+            select(KnowledgeEntry).where(
+                KnowledgeEntry.project_id == test_project.id,
+                KnowledgeEntry.entity_ref == shared_entity,
+            )
+        )
+    ).scalars().all()
+    active = [r for r in rows if not r.dismissed]
+    assert len(active) == 2, (
+        f"expected both distinct claims active, got {len(active)} "
+        f"(upsert=False must preserve multi-claim entity_ref)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_upsert_true_without_entity_ref_returns_422(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession,
+    test_user: User, test_project: Project,
+):
+    """upsert=True with no entity_ref is a contract violation — no
+    slot to roll forward. Server must reject 422 before any side
+    effects."""
+    r = await client.post(
+        f"/api/v1/projects/{test_project.id}/entries/add",
+        headers=auth_headers,
+        json={
+            "content": "Long enough content with concrete file refs like src/foo.py to clear specificity gate.",
+            "entry_type": "discovery",
+            "session_id": "manual",
+            "confidence": 0.9,
+            "upsert": True,
+        },
+    )
+    assert r.status_code == 422, r.text
 
 
 @pytest.mark.asyncio
@@ -2516,6 +2603,7 @@ async def test_entity_ref_upsert_does_not_leak_across_projects(
             "entity_ref": "shared-ref:slot",
             "session_id": "manual",
             "confidence": 0.9,
+            "upsert": True,
         },
     )
     assert r.status_code == 201

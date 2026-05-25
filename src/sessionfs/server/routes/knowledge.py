@@ -181,6 +181,20 @@ class AddEntryRequest(BaseModel):
     entity_ref: str | None = None
     entity_type: str | None = None
     persona_name: Optional[str] = Field(None, max_length=64)
+    # v0.10.23 tk_49db8d2b6c424d35 — explicit opt-in for entity_ref
+    # upsert semantics (state-cache pattern). When True, requires
+    # entity_ref AND treats any active entry with the same entity_ref
+    # in this project as prior state to supersede (skip similarity
+    # dedup, auto-dismiss the prior(s) on commit). Default False
+    # preserves the original entity_ref semantics ("what this claim
+    # is about" — multiple distinct claims about the same entity are
+    # legitimate; compile-time _auto_supersede reasons about them).
+    # Codex R1 MEDIUM on tk_49db8d2b6c424d35 — automatic-on-match
+    # would clobber distinct-claim entries Scout v4 + compiler depend
+    # on. Explicit opt-in keeps state-cache callers (Scout, Sentinel,
+    # any future continuous agent) safe without breaking the existing
+    # knowledge-base reasoning model.
+    upsert: bool = False
     author_class: Optional[Literal["human", "agent"]] = None
     force_claim: bool = False
 
@@ -690,21 +704,24 @@ async def add_entry(
             headers={"Retry-After": "60"},
         )
 
-    # v0.10.23 tk_49db8d2b6c424d35 — entity_ref upsert detection. When
-    # the caller supplies an entity_ref that already has an active,
-    # non-superseded entry in this project, they are upserting (rolling
-    # a state cache forward), not adding a distinct claim. The pre-fix
-    # similarity gate at 0.85 word_overlap would 409 these writes
-    # silently — observed in production breaking Scout's n8n state
-    # cache (3 duplicate VentureBeat tickets in 18 h). When upsert is
-    # detected, we skip the similarity gate and arrange to dismiss the
-    # prior(s) AFTER the new row commits (see below). Scoped to the
-    # caller's project, so cross-org entity_ref enumeration cannot
-    # silently overwrite another tenant's state — the project gate
-    # above (_get_project_for_auth + assert_service_key_can_access_project)
-    # is the load-bearing isolation, not entity_ref opacity.
+    # v0.10.23 tk_49db8d2b6c424d35 — explicit entity_ref upsert opt-in.
+    # The caller signals "this is a state-cache write, roll the slot
+    # forward" by passing upsert=True. Without the flag, entity_ref
+    # keeps its long-standing semantic ("what this claim is about" —
+    # multiple distinct claims about one entity are intended; the
+    # compile-time _auto_supersede pipeline reasons about them). With
+    # upsert=True we require entity_ref (no slot, no upsert) and treat
+    # every active row sharing the slot as prior state to dismiss.
+    # Codex R1 MEDIUM (auto-on-match would clobber Scout v4's
+    # per-signal entries + compiler regression fixtures); explicit
+    # opt-in is the safe boundary.
+    if body.upsert and not body.entity_ref:
+        raise HTTPException(
+            422,
+            "upsert=true requires entity_ref (no slot to roll forward)",
+        )
     prior_active_ids: list[int] = []
-    if body.entity_ref:
+    if body.upsert and body.entity_ref:
         prior_rows = await db.execute(
             select(KnowledgeEntry.id).where(
                 KnowledgeEntry.project_id == project_id,
@@ -718,7 +735,7 @@ async def add_entry(
     is_entity_ref_upsert = bool(prior_active_ids)
 
     # Gate 3: Similarity check against recent non-dismissed entries.
-    # Skipped when the write is a recognised entity_ref upsert (see
+    # Skipped when the write is an explicit entity_ref upsert (see
     # above). Without this skip, agents using KB entries as durable
     # state caches lose data on any small-delta write.
     if not is_entity_ref_upsert:
