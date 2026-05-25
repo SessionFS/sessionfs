@@ -206,6 +206,13 @@ class AddEntryResponse(BaseModel):
     freshness_class: str = "current"
     classification_reason: str = ""
     tip: str | None = None
+    # v0.10.23 tk_49db8d2b6c424d35 — entity_ref upsert audit. List of
+    # prior active entry IDs that this write superseded, or empty when
+    # the write is a brand-new add (no entity_ref collision). Callers
+    # using KB entries as durable state caches can detect that their
+    # previous version was rolled forward; agents that wrote a distinct
+    # claim see an empty list and know they did not silently overwrite.
+    upserted_from: list[int] = Field(default_factory=list)
 
 
 class DismissRequest(BaseModel):
@@ -683,25 +690,56 @@ async def add_entry(
             headers={"Retry-After": "60"},
         )
 
-    # Gate 3: Similarity check against recent non-dismissed entries
-    recent_result = await db.execute(
-        select(KnowledgeEntry.content)
-        .where(
-            KnowledgeEntry.project_id == project_id,
-            KnowledgeEntry.dismissed == False,  # noqa: E712
+    # v0.10.23 tk_49db8d2b6c424d35 — entity_ref upsert detection. When
+    # the caller supplies an entity_ref that already has an active,
+    # non-superseded entry in this project, they are upserting (rolling
+    # a state cache forward), not adding a distinct claim. The pre-fix
+    # similarity gate at 0.85 word_overlap would 409 these writes
+    # silently — observed in production breaking Scout's n8n state
+    # cache (3 duplicate VentureBeat tickets in 18 h). When upsert is
+    # detected, we skip the similarity gate and arrange to dismiss the
+    # prior(s) AFTER the new row commits (see below). Scoped to the
+    # caller's project, so cross-org entity_ref enumeration cannot
+    # silently overwrite another tenant's state — the project gate
+    # above (_get_project_for_auth + assert_service_key_can_access_project)
+    # is the load-bearing isolation, not entity_ref opacity.
+    prior_active_ids: list[int] = []
+    if body.entity_ref:
+        prior_rows = await db.execute(
+            select(KnowledgeEntry.id).where(
+                KnowledgeEntry.project_id == project_id,
+                KnowledgeEntry.entity_ref == body.entity_ref,
+                KnowledgeEntry.dismissed == False,  # noqa: E712
+                KnowledgeEntry.superseded_by.is_(None),
+            )
         )
-        .order_by(KnowledgeEntry.created_at.desc())
-        .limit(50)
-    )
-    existing_contents = [row[0] for row in recent_result.all()]
-    is_duplicate = False
-    for existing_content in existing_contents:
-        if _word_overlap(body.content, existing_content) > 0.85:
-            is_duplicate = True
-            break
+        prior_active_ids = [row[0] for row in prior_rows.all()]
 
-    if is_duplicate:
-        raise HTTPException(409, "Similar entry already exists")
+    is_entity_ref_upsert = bool(prior_active_ids)
+
+    # Gate 3: Similarity check against recent non-dismissed entries.
+    # Skipped when the write is a recognised entity_ref upsert (see
+    # above). Without this skip, agents using KB entries as durable
+    # state caches lose data on any small-delta write.
+    if not is_entity_ref_upsert:
+        recent_result = await db.execute(
+            select(KnowledgeEntry.content)
+            .where(
+                KnowledgeEntry.project_id == project_id,
+                KnowledgeEntry.dismissed == False,  # noqa: E712
+            )
+            .order_by(KnowledgeEntry.created_at.desc())
+            .limit(50)
+        )
+        existing_contents = [row[0] for row in recent_result.all()]
+        is_duplicate = False
+        for existing_content in existing_contents:
+            if _word_overlap(body.content, existing_content) > 0.85:
+                is_duplicate = True
+                break
+
+        if is_duplicate:
+            raise HTTPException(409, "Similar entry already exists")
 
     # v0.10.10 tk_483cede83deb443b — honor explicit confidence from
     # the caller. Pre-fix this branch did `min(confidence, 0.7)` for
@@ -798,6 +836,43 @@ async def add_entry(
         service_key_name=auth.service_key_name,
     )
     db.add(entry)
+    await db.flush()  # populate entry.id for the supersede update
+
+    # v0.10.23 tk_49db8d2b6c424d35 — atomic upsert finalisation. Use
+    # synchronize_session=False so the ORM doesn't try to evaluate the
+    # WHERE clause client-side (same SQLite-naive-vs-PG-tz pattern used
+    # by v0.10.22's atomic invite transitions). The UPDATE is bounded
+    # to the prior IDs we observed pre-insert, so even if a concurrent
+    # writer landed another active entry against the same entity_ref
+    # between our SELECT and UPDATE, we only dismiss the rows we
+    # intended to roll forward. The next upsert from either branch
+    # cleans up any stragglers.
+    superseded_ids: list[int] = []
+    if prior_active_ids:
+        now_ts = datetime.now(timezone.utc)
+        reason = f"entity_ref upsert: superseded by entry {entry.id}"
+        result = await db.execute(
+            update(KnowledgeEntry)
+            .where(
+                KnowledgeEntry.id.in_(prior_active_ids),
+                KnowledgeEntry.dismissed == False,  # noqa: E712
+                KnowledgeEntry.superseded_by.is_(None),
+            )
+            .values(
+                dismissed=True,
+                dismissed_at=now_ts,
+                dismissed_by=user.id,
+                dismissed_reason=reason,
+                superseded_by=entry.id,
+                supersession_reason="entity_ref upsert",
+            )
+            .execution_options(synchronize_session=False)
+        )
+        # rowcount reports how many of the snapshot IDs actually
+        # transitioned (concurrent dismissal would shrink this).
+        if result.rowcount and result.rowcount > 0:
+            superseded_ids = prior_active_ids[: result.rowcount]
+
     await db.commit()
     await db.refresh(entry)
 
@@ -821,6 +896,7 @@ async def add_entry(
         freshness_class=entry.freshness_class,
         classification_reason=classification_reason,
         tip=tip,
+        upserted_from=superseded_ids,
     )
 
 

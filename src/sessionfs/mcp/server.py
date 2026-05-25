@@ -2517,6 +2517,17 @@ async def _handle_add_knowledge(args: dict) -> str:
                 attribution_bits.append(f"author_class: {persisted_author}")
             if attribution_bits:
                 msg += "\nAttribution: " + ", ".join(attribution_bits)
+            # v0.10.23 tk_49db8d2b6c424d35 — when entity_ref upsert
+            # superseded a prior, surface the dismissed IDs so the
+            # caller knows their state cache was rolled forward (and
+            # didn't silently win a similarity-dedup race against an
+            # unrelated entry).
+            superseded = data.get("upserted_from") or []
+            if superseded:
+                msg += (
+                    f"\nUpsert: superseded prior entries "
+                    f"{superseded} via entity_ref={entity_ref!r}"
+                )
             if tip:
                 msg += f"\nTip: {tip}"
             return msg
