@@ -209,7 +209,7 @@ export default function SessionDetail() {
                   sessionId={session.id}
                   sourceTool={session.source_tool}
                   onRunAudit={() => { setShowMoreMenu(false); setShowAuditModal(true); }}
-                  onEditAlias={() => { setShowMoreMenu(false); handleMetaEdit(); }}
+                  onEditMeta={() => { setShowMoreMenu(false); handleMetaEdit(); }}
                   onDelete={() => {
                     setShowMoreMenu(false);
                     setShowDeleteDialog(true);
@@ -481,14 +481,14 @@ function MoreMenu({
   sessionId,
   sourceTool,
   onRunAudit,
-  onEditAlias,
+  onEditMeta,
   onDelete,
   onClose,
 }: {
   sessionId: string;
   sourceTool: string;
   onRunAudit: () => void;
-  onEditAlias: () => void;
+  onEditMeta: () => void;
   onDelete: () => void;
   onClose: () => void;
 }) {
@@ -520,10 +520,10 @@ function MoreMenu({
           Run Audit
         </button>
         <button
-          onClick={onEditAlias}
+          onClick={onEditMeta}
           className="w-full text-left px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] transition-colors"
         >
-          Edit Alias
+          Rename (Title & Alias)
         </button>
         <div className="border-t border-[var(--border)] my-1" />
         <button

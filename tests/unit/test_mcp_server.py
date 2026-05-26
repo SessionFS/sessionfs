@@ -678,15 +678,150 @@ class TestNewToolDispatch:
         monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
 
         # Alias-clear only (no title change).
-        await mcp_server._handle_rename_session({
+        result = await mcp_server._handle_rename_session({
             "session_id": "ses_xyz",
             "new_alias": "",
         })
         assert captured["delete_url"] == "https://api.test/api/v1/sessions/ses_xyz/alias"
         # PATCH must NOT be called when only clearing alias.
         assert "patch_url" not in captured
-        # Handler re-fetches the row after clear so the caller gets the updated record.
-        assert captured["get_url"] == "https://api.test/api/v1/sessions/ses_xyz"
+        # Codex R1 MEDIUM fix: DELETE response carries the canonical
+        # SessionDetail; handler must NOT issue a follow-up GET that
+        # could 404 if session_id was the just-cleared alias.
+        assert "get_url" not in captured
+        # The returned payload is the DELETE response body.
+        assert result["id"] == "ses_xyz"
+
+    @pytest.mark.asyncio
+    async def test_dispatch_rename_session_alias_clear_via_alias_identifier(self, monkeypatch):
+        """Codex R1 MEDIUM regression: caller passes the alias they're about
+        to clear as `session_id`. Handler must resolve to canonical id from
+        the DELETE response before any follow-up call, and must NOT issue a
+        post-DELETE GET/PATCH against the now-unresolvable alias."""
+        import httpx
+        from types import SimpleNamespace
+
+        fake_config = SimpleNamespace(
+            sync=SimpleNamespace(api_url="https://api.test", api_key="test-key"),
+        )
+        monkeypatch.setattr(mcp_server, "load_config", lambda: fake_config)
+
+        captured: dict[str, list] = {"patch": [], "delete": [], "get": []}
+
+        class _DelResp:
+            status_code = 200
+            text = "{}"
+
+            def json(self):
+                # Server returns the canonical SessionDetail after the clear.
+                return {"id": "ses_abc123", "alias": None, "title": "Original"}
+
+        class _FakeClient:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def patch(self, url, *, json=None, headers=None):
+                captured["patch"].append(url)
+                return _DelResp()
+
+            async def delete(self, url, *, headers=None):
+                captured["delete"].append(url)
+                return _DelResp()
+
+            async def get(self, url, *, headers=None):
+                captured["get"].append(url)
+                return _DelResp()
+
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+        # Caller passes the alias being cleared.
+        result = await mcp_server._handle_rename_session({
+            "session_id": "old-alias",
+            "new_alias": "",
+        })
+        # DELETE goes to the alias-identified URL (server resolves).
+        assert captured["delete"] == ["https://api.test/api/v1/sessions/old-alias/alias"]
+        # PATCH and GET must NOT be issued — DELETE response carries everything.
+        assert captured["patch"] == []
+        assert captured["get"] == []
+        # Handler returns the canonical SessionDetail from DELETE.
+        assert result["id"] == "ses_abc123"
+        assert result["alias"] is None
+
+    @pytest.mark.asyncio
+    async def test_dispatch_rename_session_alias_clear_plus_title_uses_canonical_id(self, monkeypatch):
+        """Codex R1 MEDIUM regression: when caller asks to BOTH clear alias
+        AND set a new title, with session_id being the alias-to-clear, the
+        follow-up PATCH must target the canonical id resolved from the
+        DELETE response — NOT the stale alias identifier."""
+        import httpx
+        from types import SimpleNamespace
+
+        fake_config = SimpleNamespace(
+            sync=SimpleNamespace(api_url="https://api.test", api_key="test-key"),
+        )
+        monkeypatch.setattr(mcp_server, "load_config", lambda: fake_config)
+
+        captured: dict[str, str] = {}
+
+        class _DelResp:
+            status_code = 200
+            text = "{}"
+
+            def json(self):
+                return {"id": "ses_abc123", "alias": None, "title": "Original"}
+
+        class _PatchResp:
+            status_code = 200
+            text = "{}"
+
+            def json(self):
+                return {"id": "ses_abc123", "alias": None, "title": "Renamed"}
+
+        class _FakeClient:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def patch(self, url, *, json=None, headers=None):
+                captured["patch_url"] = url
+                captured["patch_json"] = json
+                return _PatchResp()
+
+            async def delete(self, url, *, headers=None):
+                captured["delete_url"] = url
+                return _DelResp()
+
+            async def get(self, url, *, headers=None):
+                captured["get_url"] = url
+                return _DelResp()
+
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+        result = await mcp_server._handle_rename_session({
+            "session_id": "old-alias",
+            "new_alias": "",
+            "new_title": "Renamed",
+        })
+        # DELETE hits the alias-identified URL.
+        assert captured["delete_url"] == "https://api.test/api/v1/sessions/old-alias/alias"
+        # PATCH must target the canonical id, NOT the stale alias.
+        assert captured["patch_url"] == "https://api.test/api/v1/sessions/ses_abc123"
+        assert captured["patch_json"] == {"title": "Renamed"}
+        # No GET — the PATCH response is what we return.
+        assert "get_url" not in captured
+        assert result["title"] == "Renamed"
 
     @pytest.mark.asyncio
     async def test_dispatch_rename_session_requires_session_id(self):

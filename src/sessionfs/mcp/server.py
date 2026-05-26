@@ -3187,18 +3187,37 @@ async def _handle_rename_session(args: dict) -> dict:
     headers = {"Authorization": f"Bearer {config.sync.api_key}"}
 
     async with httpx.AsyncClient(timeout=15) as client:
-        # First handle the alias-clear case (DELETE) when requested.
+        # Resolve the caller-supplied identifier (which may be an alias)
+        # to the canonical session id BEFORE any mutation. Codex R1
+        # MEDIUM: if the caller passes the alias they're about to clear,
+        # the post-DELETE GET/PATCH would 404 since the alias is no
+        # longer resolvable. Capture the canonical id once up front.
+        canonical_id = session_id
         if new_alias == "":
             del_resp = await client.delete(
                 f"{api_url}/api/v1/sessions/{session_id}/alias",
                 headers=headers,
             )
+            if del_resp.status_code == 404:
+                return {"error": f"Session {session_id} not found"}
             if del_resp.status_code >= 400:
                 return {"error": f"API error {del_resp.status_code}: {del_resp.text}"}
-        # Then handle the PATCH for title and/or non-empty alias.
+            try:
+                del_body = del_resp.json()
+                if isinstance(del_body, dict) and del_body.get("id"):
+                    canonical_id = del_body["id"]
+            except Exception:
+                # If the response isn't JSON, fall back to the caller's
+                # identifier. PATCH/GET below will surface a 404 if that
+                # was the just-cleared alias.
+                pass
+            if not payload:
+                # Alias-clear-only path: DELETE response already carries
+                # the updated SessionDetail. No follow-up call needed.
+                return del_body if isinstance(del_body, dict) else {"id": canonical_id}
         if payload:
             resp = await client.patch(
-                f"{api_url}/api/v1/sessions/{session_id}",
+                f"{api_url}/api/v1/sessions/{canonical_id}",
                 json=payload,
                 headers=headers,
             )
@@ -3207,9 +3226,11 @@ async def _handle_rename_session(args: dict) -> dict:
             if resp.status_code >= 400:
                 return {"error": f"API error {resp.status_code}: {resp.text}"}
             return resp.json()
-        # Alias-only clear path: re-fetch the updated session record.
+        # No mutation requested but caller didn't trigger alias-clear
+        # (defensive — this branch is unreachable given the earlier
+        # at-least-one-of check, kept for safety).
         get_resp = await client.get(
-            f"{api_url}/api/v1/sessions/{session_id}",
+            f"{api_url}/api/v1/sessions/{canonical_id}",
             headers=headers,
         )
         if get_resp.status_code >= 400:
