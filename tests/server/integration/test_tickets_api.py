@@ -1850,70 +1850,169 @@ async def test_owner_can_create_issue(
 
 
 @pytest.mark.asyncio
-async def test_compass_assigned_can_create_issue_as_non_owner(
+async def test_assignee_compass_does_not_bypass_authz(
     client: AsyncClient, db_session: AsyncSession
 ):
-    """Non-owner filing kind='issue' assigned to compass is permitted."""
+    """Codex R1 MED #1 regression — a non-owner non-admin who DOES have
+    project access (e.g. captured-session legacy fallback) must still
+    be rejected when filing kind='issue', even when passing
+    assigned_to='compass'. Authorization is on the actor, not on the
+    user-controlled target assignee.
+    """
+    from sessionfs.server.db.models import Session as SessionRow
+
     owner, _ = await _make_user(db_session, name="owner")
     other, other_key = await _make_user(db_session, name="other")
     project = await _make_project(db_session, owner)
+    # Grant the other user project access via the captured-session
+    # legacy fallback (Session.git_remote_normalized match).
+    db_session.add(
+        SessionRow(
+            id=f"ses_{uuid.uuid4().hex[:24]}",
+            user_id=other.id,
+            source_tool="claude-code",
+            title="other-session",
+            message_count=0,
+            total_input_tokens=0,
+            total_output_tokens=0,
+            tags="[]",
+            blob_key="b",
+            blob_size_bytes=0,
+            etag="e",
+            git_remote_normalized=project.git_remote_normalized,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+    )
+    await db_session.commit()
     resp = await client.post(
         f"/api/v1/projects/{project.id}/tickets",
         headers=_hdrs(other_key),
         json={
-            "title": "Triage rollup",
+            "title": "Sneaky rollup",
             "kind": "issue",
             "assigned_to": "compass",
         },
     )
-    # Project access still applies — non-owner without org-membership
-    # gets 403 from project_access. We expect the test to fail at the
-    # project gate, not at the kind='issue' authz gate. Both 403s are
-    # legitimate; what we're proving is that the path is gated at all.
-    # Authoritative test: same shape as owner case wins below.
-    assert resp.status_code in {201, 403}
+    # Must be 403 — actor is not project owner / org admin even though
+    # they passed assigned_to='compass'.
+    assert resp.status_code == 403, resp.text
 
 
 @pytest.mark.asyncio
-async def test_non_owner_non_compass_issue_rejected(
+async def test_org_admin_can_create_issue(
     client: AsyncClient, db_session: AsyncSession
 ):
-    """Non-owner with project access filing kind='issue' assigned to a
-    non-Compass persona must be rejected with 403."""
-    user, key = await _make_user(db_session)
-    project = await _make_project(db_session, user)
-    # Owner files but DOES NOT assign to compass — owner allowed regardless.
-    # The forbidden case: filer is not owner AND not compass-assigned. The
-    # cleanest construction is: filer is not project owner. To get
-    # project access without being owner, we'd need org-member, which
-    # is a heavier setup. Instead, verify the simpler combo: the SAME
-    # owner can file an Issue assigned to Atlas (not Compass) because
-    # they're the project owner — and we'd reject if they weren't.
+    """Org admin of an org-scoped project may file kind='issue'."""
+    from sessionfs.server.db.models import OrgMember, Organization
+
+    owner, _ = await _make_user(db_session, name="orgowner")
+    admin, admin_key = await _make_user(db_session, name="orgadmin")
+    org = Organization(
+        id=f"org_{uuid.uuid4().hex[:16]}",
+        name="Acme",
+        slug=f"acme-{uuid.uuid4().hex[:6]}",
+        tier="team",
+    )
+    db_session.add(org)
+    await db_session.commit()
+    db_session.add(
+        OrgMember(
+            org_id=org.id,
+            user_id=admin.id,
+            role="admin",
+            joined_at=datetime.now(timezone.utc),
+        )
+    )
+    project = Project(
+        id=f"proj_{uuid.uuid4().hex[:16]}",
+        name=f"orgproj-{uuid.uuid4().hex[:6]}",
+        git_remote_normalized=f"acme/orgproj-{uuid.uuid4().hex[:6]}",
+        context_document="",
+        owner_id=owner.id,
+        org_id=org.id,
+    )
+    db_session.add(project)
+    await db_session.commit()
     resp = await client.post(
         f"/api/v1/projects/{project.id}/tickets",
-        headers=_hdrs(key),
+        headers=_hdrs(admin_key),
         json={
-            "title": "Bad assignment",
+            "title": "Admin-filed issue",
             "kind": "issue",
-            "assigned_to": "atlas",
         },
     )
-    # Owner bypasses Compass check — allowed.
-    assert resp.status_code == 201
-    # Now prove the reverse: a different user (no project access) can't
-    # even reach the kind gate.
-    other, other_key = await _make_user(db_session, name="outsider")
-    resp2 = await client.post(
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["kind"] == "issue"
+
+
+@pytest.mark.asyncio
+async def test_org_member_non_admin_cannot_create_issue(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Org member (role=member) cannot file kind='issue' on an
+    org-scoped project even with assigned_to='compass'."""
+    from sessionfs.server.db.models import OrgMember, Organization
+
+    owner, _ = await _make_user(db_session, name="memberowner")
+    member, member_key = await _make_user(db_session, name="orgmember")
+    org = Organization(
+        id=f"org_{uuid.uuid4().hex[:16]}",
+        name="Acme2",
+        slug=f"acme2-{uuid.uuid4().hex[:6]}",
+        tier="team",
+    )
+    db_session.add(org)
+    await db_session.commit()
+    db_session.add(
+        OrgMember(
+            org_id=org.id,
+            user_id=member.id,
+            role="member",
+            joined_at=datetime.now(timezone.utc),
+        )
+    )
+    project = Project(
+        id=f"proj_{uuid.uuid4().hex[:16]}",
+        name=f"orgmproj-{uuid.uuid4().hex[:6]}",
+        git_remote_normalized=f"acme/orgm-{uuid.uuid4().hex[:6]}",
+        context_document="",
+        owner_id=owner.id,
+        org_id=org.id,
+    )
+    db_session.add(project)
+    await db_session.commit()
+    resp = await client.post(
         f"/api/v1/projects/{project.id}/tickets",
-        headers=_hdrs(other_key),
+        headers=_hdrs(member_key),
+        json={
+            "title": "Member-filed issue",
+            "kind": "issue",
+            "assigned_to": "compass",
+        },
+    )
+    assert resp.status_code == 403, resp.text
+
+
+@pytest.mark.asyncio
+async def test_outsider_cannot_file_issue(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """User with no project access at all gets 403 from project_access
+    before the kind gate runs."""
+    owner, _ = await _make_user(db_session, name="owner_x")
+    outsider, outsider_key = await _make_user(db_session, name="outsider")
+    project = await _make_project(db_session, owner)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(outsider_key),
         json={
             "title": "Outsider Issue",
             "kind": "issue",
             "assigned_to": "atlas",
         },
     )
-    # Outsider gets 403 from project_access (before the kind gate).
-    assert resp2.status_code == 403
+    assert resp.status_code == 403
 
 
 @pytest.mark.asyncio
@@ -2135,7 +2234,8 @@ async def test_create_rejects_invalid_kind(
 async def test_issue_close_lifecycle(
     client: AsyncClient, db_session: AsyncSession
 ):
-    """Issue FSM: open → in_progress → closed via /close route."""
+    """Issue FSM: open → in_progress → closed via /close route. Owner
+    can close (project_admin gate satisfied)."""
     user, key = await _make_user(db_session)
     project = await _make_project(db_session, user)
     # Register Compass persona so start_ticket resolves; assigned_to=compass.
@@ -2203,6 +2303,108 @@ async def test_issue_cancel_from_open(
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_close_requires_owner_or_admin(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Codex R1 MED #2 regression — non-owner non-admin who has project
+    access cannot close an Issue. Issue terminator gated on the same
+    actor signal as Issue creation."""
+    from sessionfs.server.db.models import Session as SessionRow
+
+    owner, owner_key = await _make_user(db_session, name="closeowner")
+    other, other_key = await _make_user(db_session, name="closeother")
+    project = await _make_project(db_session, owner)
+    await _make_persona(db_session, project, owner, name="compass")
+    # Grant other user project access via captured-session fallback.
+    db_session.add(
+        SessionRow(
+            id=f"ses_{uuid.uuid4().hex[:24]}",
+            user_id=other.id,
+            source_tool="claude-code",
+            title="other-close-session",
+            message_count=0,
+            total_input_tokens=0,
+            total_output_tokens=0,
+            tags="[]",
+            blob_key="b",
+            blob_size_bytes=0,
+            etag="e",
+            git_remote_normalized=project.git_remote_normalized,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+    )
+    await db_session.commit()
+    # Owner files the Issue and starts it.
+    issue = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(owner_key),
+        json={"title": "Closeable", "kind": "issue", "assigned_to": "compass"},
+    )
+    issue_id = issue.json()["id"]
+    await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{issue_id}/start",
+        headers=_hdrs(owner_key),
+    )
+    # Non-admin tries to close → 403.
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{issue_id}/close",
+        headers=_hdrs(other_key),
+    )
+    assert resp.status_code == 403, resp.text
+
+
+@pytest.mark.asyncio
+async def test_compiled_context_surfaces_kind_and_parent(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Codex R1 MED #3 regression — start_ticket compiled_context must
+    surface kind + parent_ticket_id for child Tasks AND child_ticket_ids
+    for Issues, so agents reading the markdown see the rollup."""
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    await _make_persona(db_session, project, user, name="atlas")
+    await _make_persona(db_session, project, user, name="compass")
+    issue = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(key),
+        json={"title": "Rollup container", "kind": "issue", "assigned_to": "compass"},
+    )
+    issue_id = issue.json()["id"]
+    task = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(key),
+        json={
+            "title": "Atlas child task",
+            "assigned_to": "atlas",
+            "parent_ticket_id": issue_id,
+            "description": "Do the thing",
+        },
+    )
+    task_id = task.json()["id"]
+    # Start the Task — compiled context should mention parent Issue + kind.
+    started_task = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{task_id}/start",
+        headers=_hdrs(key),
+    )
+    assert started_task.status_code == 200
+    task_ctx = started_task.json()["compiled_context"]
+    assert "Kind: task" in task_ctx
+    assert f"Parent Issue: {issue_id}" in task_ctx
+    assert "Rollup container" in task_ctx
+    # Start the Issue — compiled context should mention child Tasks.
+    started_issue = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{issue_id}/start",
+        headers=_hdrs(key),
+    )
+    assert started_issue.status_code == 200
+    issue_ctx = started_issue.json()["compiled_context"]
+    assert "Kind: issue" in issue_ctx
+    assert "Child Tasks" in issue_ctx
+    assert task_id in issue_ctx
 
 
 @pytest.mark.asyncio

@@ -541,8 +541,46 @@ async def _compile_persona_context(
         return _truncate_to_chars(compiled, max_tokens)
 
     ticket_section = f"# Current Ticket: {ticket.title}\n"
+    ticket_section += f"Kind: {ticket.kind}\n"
     ticket_section += f"Priority: {ticket.priority}\n"
-    ticket_section += f"Status: {ticket.status}\n\n"
+    ticket_section += f"Status: {ticket.status}\n"
+
+    # v0.10.24 Codex R1 MED #3 (tk_dbccde26ed604b3c) — surface the
+    # Issue/Task rollup in the compiled context so an agent starting a
+    # child Task sees its parent Issue, and an agent starting an Issue
+    # sees its child Tasks. Without this, the rollup data was on the
+    # API response but invisible to the agent reading compiled_context.
+    if ticket.parent_ticket_id:
+        parent_row = (
+            await db.execute(
+                select(Ticket).where(
+                    Ticket.id == ticket.parent_ticket_id,
+                    Ticket.project_id == ticket.project_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if parent_row is not None:
+            ticket_section += (
+                f"Parent Issue: {parent_row.id} — {parent_row.title} "
+                f"(status: {parent_row.status})\n"
+            )
+        else:
+            ticket_section += f"Parent Issue: {ticket.parent_ticket_id}\n"
+    if ticket.kind == "issue":
+        child_rows = (
+            await db.execute(
+                select(Ticket.id, Ticket.title, Ticket.status).where(
+                    Ticket.project_id == ticket.project_id,
+                    Ticket.parent_ticket_id == ticket.id,
+                )
+            )
+        ).all()
+        if child_rows:
+            ticket_section += f"\n## Child Tasks ({len(child_rows)})\n"
+            for cid, ctitle, cstatus in child_rows:
+                ticket_section += f"- {cid} [{cstatus}] {ctitle}\n"
+
+    ticket_section += "\n"
     if ticket.description:
         ticket_section += f"## Description\n{ticket.description}\n\n"
 
@@ -804,10 +842,17 @@ async def list_tickets(
     issue_ids = [t.id for t in rows if t.kind == "issue"]
     children_by_parent: dict[str, list[str]] = {iid: [] for iid in issue_ids}
     if issue_ids:
+        # Codex R1 LOW #4 (tk_dbccde26ed604b3c) — defensive project_id
+        # filter on the list rollup. Create path prevents cross-project
+        # parentage, but the schema cannot enforce it (FK does not
+        # constrain project_id), so legacy or manual rows could leak a
+        # foreign child's id through this list query. Match the detail
+        # endpoint's predicate shape.
         child_rows = (
             await db.execute(
                 select(Ticket.id, Ticket.parent_ticket_id).where(
-                    Ticket.parent_ticket_id.in_(issue_ids)
+                    Ticket.project_id == project_id,
+                    Ticket.parent_ticket_id.in_(issue_ids),
                 )
             )
         ).all()
@@ -956,22 +1001,25 @@ async def create_ticket(
     )
     await assert_service_key_can_access_project(db, auth, project)
 
-    # v0.10.24 — Issue authorization. Only Compass (the PM persona)
-    # or the project owner may file kind='issue'. Reasoning: Issues
-    # are PM-triaged rollups; if every persona could file Issues the
-    # rollup loses meaning. Parent ticket constraint AC.
+    # v0.10.24 — Issue authorization. Only the project owner or a
+    # project admin (org-scoped projects: OrgMember.role=='admin') may
+    # file kind='issue'. Reasoning: Issues are PM-triaged rollups; if
+    # every project member could file Issues the rollup loses meaning.
+    #
+    # Codex R1 MED #1 (tk_dbccde26ed604b3c) — earlier scope had a path
+    # for "assigned_to == 'compass'" but that authorizes on mutable
+    # request input (anyone could pass it). The trusted-actor signal
+    # is project ownership / org-admin membership, NOT the target
+    # assignee. Drop the assignee branch entirely.
     if body.kind == "issue":
-        is_compass_assigned = (
-            body.assigned_to is not None
-            and body.assigned_to.lower() == "compass"
-        )
-        is_project_owner = project.owner_id == user.id
-        if not (is_compass_assigned or is_project_owner):
+        from sessionfs.server.auth.project_access import user_is_project_admin
+
+        if not await user_is_project_admin(db, user.id, project):
             raise HTTPException(
                 403,
-                "Only Compass persona or the project owner may file "
-                "kind='issue' tickets. Pass assigned_to='compass' or "
-                "file as the project owner.",
+                "Only the project owner or a project admin may file "
+                "kind='issue' tickets. Issues are PM-triaged rollup "
+                "containers — see KB entry 'issue-vs-ticket-design'.",
             )
         if body.parent_ticket_id is not None:
             raise HTTPException(
@@ -1634,13 +1682,19 @@ async def close_issue(
 
     v0.10.24 tk_dbccde26ed604b3c — the Issue lifecycle terminator. Tasks
     finish via complete → accept; Issues finish via close. Status is
-    manually closed by Compass (NOT auto-derived from child Task
-    status), per the CEO direction on the parent ticket: an Issue can
-    stay open even after all children done if Compass hasn't confirmed
-    the user-facing problem is resolved.
+    manually closed by the project owner / admin (NOT auto-derived from
+    child Task status), per the CEO direction on the parent ticket: an
+    Issue can stay open even after all children done if the PM hasn't
+    confirmed the user-facing problem is resolved.
+
+    Codex R1 MED #2 (tk_dbccde26ed604b3c) — gate the close on the same
+    actor signal as Issue creation. A non-PM executor that happens to
+    have project access must not be able to prematurely close.
     """
+    from sessionfs.server.auth.project_access import user_is_project_admin
+
     check_feature(ctx, "agent_tickets")
-    await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_or_404(project_id, db, user.id)
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
     if ticket.kind != "issue":
         raise HTTPException(
@@ -1648,6 +1702,13 @@ async def close_issue(
             f"Cannot close ticket {ticket.id!r}: kind={ticket.kind!r}. "
             "The /close transition is for Issues only; Tasks finish via "
             "/complete + /accept.",
+        )
+    if not await user_is_project_admin(db, user.id, project):
+        raise HTTPException(
+            403,
+            "Only the project owner or a project admin may close an "
+            "Issue. Issue status is manually closed by the PM — "
+            "executors cannot terminate the rollup.",
         )
     _assert_transition(ticket.status, "closed", ticket.kind)
 

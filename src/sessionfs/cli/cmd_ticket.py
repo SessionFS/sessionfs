@@ -502,7 +502,10 @@ def _notify_macos(title: str, message: str) -> None:
         pass
 
 
-TERMINAL_TICKET_STATUSES = {"done", "cancelled"}
+# v0.10.24 tk_dbccde26ed604b3c — Issues terminate at 'closed' (NOT
+# 'done'). Without 'closed' in this set, `sfs ticket watch --until-
+# closed` against an Issue would never exit after the Issue closes.
+TERMINAL_TICKET_STATUSES = {"done", "cancelled", "closed"}
 
 
 @ticket_app.command("watch")
@@ -525,9 +528,9 @@ def watch_ticket(
         False, "--until-closed",
         help=(
             "Keep watching until the ticket reaches a terminal status "
-            "(done or cancelled), then exit. Natural for multi-round review "
-            "threads where you want to keep seeing follow-up Codex comments "
-            "until the work is resolved."
+            "(done, cancelled, or closed for Issues), then exit. Natural "
+            "for multi-round review threads where you want to keep seeing "
+            "follow-up Codex comments until the work is resolved."
         ),
     ),
     notify: bool = typer.Option(
