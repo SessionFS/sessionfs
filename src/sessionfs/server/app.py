@@ -93,7 +93,7 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
             allow_origins=config.cors_origins,
             allow_credentials=True,
             allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
-            allow_headers=["Content-Type", "Authorization"],
+            allow_headers=["Content-Type", "Authorization", "If-Match", "If-None-Match"],
             max_age=3600,
         )
 
