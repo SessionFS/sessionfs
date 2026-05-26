@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.23] - 2026-05-26
+
+**Bundle release — Scout state-cache fix + ChatGPT MCP hotfix + persona case-sensitivity + release-skill hardening.** Five commits across two operational fixes (entity_ref upsert closing Scout's silent cache loss, MCP `_ConsumedResponse` sentinel restoring tool discovery on ChatGPT/Claude.ai) and three release-hygiene improvements (persona case-insensitive lookup, Scribe-Site gate, merge-conflict docs). No migrations. No new endpoints. 2023 backend tests + 187 dashboard tests passing (+16 backend from v0.10.22 baseline).
+
+### Added
+
+**Opt-in entity_ref upsert on `/entries/add`** (`tk_49db8d2b6c424d35`, commits `7a98f27` + `393b25f` + `a78728d`). New optional `upsert: bool = False` field on `AddEntryRequest`. When `True` AND `entity_ref` is provided, the route looks up the prior active entry by `(project_id, entity_ref, dismissed_at IS NULL, superseded_by_id IS NULL)` and supersedes-in-place rather than running the similarity-based dedup that returns 409 on cache rotations. Closes Scout's state-cache silent loss path (3 duplicate tickets filed in 18 hours on a 6%-delta cache body). Existing callers unaffected — feature is fully opt-in. Cloud agent dispatchers (`bedrock-action-group.yaml`, `vertex_tools.py`) updated to expose `upsert` in their tool schemas. Scout n8n docs (`scout-n8n.md`) updated with the dismiss-then-create workaround pattern for clients pinned to v0.10.22 and the upsert recipe for v0.10.23+. Codex R1 MEDIUM (similarity gate must check intent before bypass) + R1 LOW (test coverage) → R2 VERIFIED-CLEAN.
+
+**ChatGPT / Claude.ai MCP tool-discovery hotfix** (commit `f7fdcc1`). `_ConsumedResponse(Response)` sentinel class in `mcp/remote_server.py` so `handle_mcp` returns a no-op ASGI callable after `transport.handle_request()` consumes the underlying response. Starlette 1.x `Route` wrapper rejects `None` return with `TypeError: 'NoneType' object is not callable`, which truncated the wire response and caused remote MCP clients to see "no tools" after OAuth connect. Auth ordering preserved — Bearer-token validate runs before transport delegation. 4 new unit tests covering the sentinel shape + ASGI no-op semantics + auth gate ordering.
+
+**Persona name case-insensitive lookup + normalize-at-write** (`tk_884b2321fdb74170`, commits `b39f9c9` + `df501b6`). New `_resolve_persona_name(db, project_id, name) -> str | None` helper in `routes/tickets.py` using `func.lower(AgentPersona.name) == name.lower()` with `.order_by(id).first()` (deterministic tiebreaker, won't raise `MultipleResultsFound`). `start_ticket` resolver, `create_ticket`, and `update_ticket` PUT all normalize `assigned_to` through it; unknown names pass through as free-text for back-compat. `list_tickets` filter switched to `func.lower(Ticket.assigned_to) == assigned_to.lower()` so the discovery path also surfaces legacy `Atlas`-cased rows when an agent queries `?assigned_to=atlas`. `create_persona` endpoint rejects case-insensitive duplicates with 409 + explicit "case-insensitive-unique" error message — resolves ambiguity at the source so the resolver tiebreaker stays defensive. Closes the v0.10.18 onboarding pain where `start_ticket` 400'd because `.agents/atlas-backend.md` capitalizes the persona name but `agent_personas.name` stores it lowercase. 6 regression tests. Restored gutted assertion block at the end of `test_review_state_cap_preserves_earliest_rounds` (Codex R1 LOW1 — accidentally removed during the initial edit). Codex R1 1 MED + 2 LOW → R2 VERIFIED-CLEAN.
+
+**Release-skill Scribe-Site gate** (`tk_2cc5bcca97284a91`, commit `a1071de`). Release script step 6f now reads `git diff $(git describe --abbrev=0 --tags)..HEAD -- site/` and skips Scribe-Site invocation + site deploy when `wc -l` returns 0. Saves ~5-10 minutes on backend-only releases without weakening the "no stale site content" invariant (still mandatory when `site/` is touched).
+
+**`.release/README.md` documenting expected develop→main merge conflicts** (`tk_7d3b6b1ac1714c60`, commit `12a58c1`). 71-line pure-docs addition explaining what `.release/` contains, which paths conflict at merge time (`.claude/commands/release.md`, `CLAUDE.md`, `.agents/**`), why we don't use a broad `merge=ours` `.gitattributes` rule (would silently drop legitimate develop-side changes), and the escape valve if conflict-then-sanitize pain returns (narrow per-path `.gitattributes`, never broad).
+
+### Operational closes (no code)
+
+- `tk_c72ad4f99dae404b` — housekeeping close (`sfs ticket watch` shipped earlier in v0.10.7)
+- `tk_12e6d8775eb045a2` — v0.10.5 compile source manifest review (Codex R2 was clean on 2026-05-15; just never got the `resolve_ticket` call)
+- `tk_a1144426a013413c` — v0.10.7 customer-ask provenance fields review (Codex R8 was VERIFIED-CLEAN on 2026-05-17; same)
+
+### Verification
+
+- pytest tests/ -x -q → **2023 passed**, 2 xfailed (pre-existing migration-003 chain)
+- ruff check src/ → clean
+- helm lint charts/sessionfs → clean
+- pip-audit → 0 vulnerabilities
+- npm audit (dashboard + site) → 0 vulnerabilities
+- bandit → 0 HIGH; 11 MEDIUM pre-existing baseline (all in files NOT touched by v0.10.23)
+- Shield-SR independent pre-release review → APPROVED 0 CRITICAL / 0 HIGH / 0 NEW MEDIUM
+
+### Authoring + reviews
+
+All 5 commits implemented directly by Claude (no Codex CLI spawn), per CEO's standing rule. Polling Codex (`author_persona="codex"`) reviewed:
+- tk_49db8d2b6c424d35: R1 MED + R1 LOW → R2 VERIFIED-CLEAN
+- tk_884b2321fdb74170: R1 MED + 2 LOW → R2 VERIFIED-CLEAN
+- f7fdcc1, a1071de, 12a58c1: small targeted changes shipped without review (release-process tooling + ChatGPT outage hotfix)
+
 ## [0.10.22] - 2026-05-24
 
 **Org-collaboration fixes.** Three tickets that close long-standing operational gaps on the org surface: new org members can finally read org-scoped artifacts without first cloning the repo; invite emails actually send; recipients have a dashboard `/invites` page to accept or decline; and Scout's n8n workflow gets the multi-source signal-shape contract that was deferred from v0.10.21. No platform breakage — one strictly-additive migration (046).

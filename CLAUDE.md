@@ -14,9 +14,14 @@ Project-specific agent personas are in `.agents/`. Load the relevant agent for y
 |-------|------|--------|
 | Atlas | `.agents/atlas-backend.md` | Backend, daemon, API, CLI |
 | Sentinel | `.agents/sentinel-security.md` | Security, auth, audit |
+| Bastion | `.agents/bastion-security-auditor.md` | Security posture audit, adversarial verification, service-key route tests |
 | Forge | `.agents/forge-devops.md` | CI/CD, Docker, distribution |
 | Prism | `.agents/prism-frontend.md` | Web dashboard, VS Code extension |
 | Scribe | `.agents/scribe-docs.md` | Documentation |
+| Reach | `.agents/reach-go-to-market.md` | Sales execution, outbound, demos, prospect research |
+| Harbor | `.agents/harbor-customer-success.md` | Customer-facing support execution, onboarding, QBRs |
+| Compass | `.agents/compass-product.md` | Product roadmap, feature specs, prioritization |
+| Onyx | `.agents/onyx-incident-commander.md` | Incident command, status comms, post-mortems |
 | Ledger | `.agents/ledger-revenue.md` | Revenue, billing, Stripe, pricing |
 | Shield | `.agents/shield-compliance.md` | Compliance, data governance, certifications |
 | Shield-SR | `.agents/shield-security-review.md` | Pre-release security review (MANDATORY before every release) |

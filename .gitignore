@@ -49,6 +49,7 @@ landing/
 packaging/
 DOGFOOD.md
 .gemini/
+.codex/
 sessionfs-infra
 .claude/scheduled_tasks.lock
 
