@@ -232,24 +232,37 @@ async def create_persona(
     # concurrency backstop for the slim race window between this
     # pre-check and the commit, but it's now narrowed to the
     # uq_persona_project_name constraint name.
+    # Codex v0.10.23 R1 LOW (tk_884b2321fdb74170) — reject case-
+    # insensitive duplicates too. Without this, a project could hold
+    # both `atlas` and `Atlas` as active personas, and the ticket
+    # resolver `_resolve_persona_name` would have to choose between
+    # them ambiguously. The contract is now "persona names are
+    # case-insensitive-unique per project" — enforced at create so
+    # the ticket-side normalization never sees two rivals.
     existing = (
         await db.execute(
-            select(AgentPersona).where(
+            select(AgentPersona)
+            .where(
                 AgentPersona.project_id == project_id,
-                AgentPersona.name == body.name,
+                func.lower(AgentPersona.name) == body.name.lower(),
             )
+            .order_by(AgentPersona.id)
         )
-    ).scalar_one_or_none()
+    ).scalars().first()
     if existing is not None:
-        raise HTTPException(
-            409,
-            (
-                f"A persona named {body.name!r} already exists in this "
-                "project ("
-                + ("active" if existing.is_active else "soft-deleted")
-                + ")."
-            ),
+        same_case = existing.name == body.name
+        msg = (
+            f"A persona named {existing.name!r} already exists in this "
+            "project ("
+            + ("active" if existing.is_active else "soft-deleted")
+            + ")."
         )
+        if not same_case:
+            msg += (
+                f" Persona names are case-insensitive-unique — "
+                f"{body.name!r} collides with the existing record."
+            )
+        raise HTTPException(409, msg)
 
     persona = AgentPersona(
         id=f"per_{uuid.uuid4().hex[:16]}",

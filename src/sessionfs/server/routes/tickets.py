@@ -100,18 +100,26 @@ async def _resolve_persona_name(
     start_ticket resolver's exact-match lookup against `'atlas'`
     fails. Returns the canonical persona name (whatever case the
     active row stores) if a case-insensitive match exists; else None.
-    Validation at write-time is the safe boundary — the start_ticket
-    resolver also has a case-insensitive fallback for legacy rows.
+
+    Codex R1 LOW (same ticket) — uses `.first()` with deterministic
+    ordering rather than `.scalar_one_or_none()` so the resolver
+    never raises `MultipleResultsFound` even if a project somehow has
+    case-distinct duplicate active personas (e.g. `atlas` AND `Atlas`).
+    The persona-create endpoint also rejects case-insensitive
+    duplicates as a separate guard so this defensive `.first()` only
+    matters for legacy rows.
     """
     row = (
         await db.execute(
-            select(AgentPersona.name).where(
+            select(AgentPersona.name)
+            .where(
                 AgentPersona.project_id == project_id,
                 func.lower(AgentPersona.name) == name.lower(),
                 AgentPersona.is_active.is_(True),
             )
+            .order_by(AgentPersona.id)
         )
-    ).scalar_one_or_none()
+    ).scalars().first()
     return row
 
 
@@ -703,7 +711,16 @@ async def list_tickets(
 
     stmt = select(Ticket).where(Ticket.project_id == project_id)
     if assigned_to is not None:
-        stmt = stmt.where(Ticket.assigned_to == assigned_to)
+        # Codex v0.10.23 R1 MEDIUM (tk_884b2321fdb74170) — discovery
+        # must also be case-insensitive, otherwise an Atlas agent
+        # filtering `list_tickets(assigned_to='atlas')` won't see a
+        # legacy row with `assigned_to='Atlas'`. The start path was
+        # already fixed in this ticket; the list path was the missing
+        # half. Use func.lower() to match the row regardless of stored
+        # case — same predicate shape the start_ticket resolver uses.
+        stmt = stmt.where(
+            func.lower(Ticket.assigned_to) == assigned_to.lower()
+        )
     if status is not None:
         stmt = stmt.where(Ticket.status == status)
     if priority is not None:

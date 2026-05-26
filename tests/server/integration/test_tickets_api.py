@@ -1592,6 +1592,17 @@ async def test_review_state_cap_preserves_earliest_rounds(
     ])
     await db_session.commit()
 
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/tickets/{tk['id']}/review-state",
+        headers=_hdrs(key),
+    )
+    assert resp.status_code == 200, resp.text
+    state = resp.json()["review_state"]
+    assert state is not None, "Codex R1 within first 500 rows must survive the cap"
+    assert state["last_verdict"] == "CHANGES_REQUESTED"
+    assert len(state["open_findings"]) == 1
+    assert state["open_findings"][0]["severity"] == "LOW"
+
 
 # ─────────────────────────────────────────────────────────────────────
 # v0.10.23 tk_884b2321fdb74170 — persona name case normalization
@@ -1719,3 +1730,75 @@ async def test_update_ticket_normalizes_assigned_to(
     )
     assert put_r.status_code == 200, put_r.text
     assert put_r.json()["assigned_to"] == "scribe"
+
+
+@pytest.mark.asyncio
+async def test_list_tickets_case_insensitive_assigned_to_filter(
+    client: AsyncClient, db_session: AsyncSession,
+):
+    """Codex v0.10.23 R1 MEDIUM (tk_884b2321fdb74170) — discovery
+    must match the start fix. A legacy ticket stored with wrong-case
+    `assigned_to='Atlas'` must show up when an Atlas agent filters
+    `?assigned_to=atlas`. Pre-fix, the filter was exact match and
+    the row stayed invisible to the agent's own discovery."""
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+
+    # Inject a legacy ticket with wrong-case assigned_to (skips the
+    # write-time normalize that would have lowered it).
+    legacy = Ticket(
+        id=f"tk_{uuid.uuid4().hex[:16]}",
+        project_id=project.id,
+        title="Legacy wrong-case",
+        description="x",
+        priority="low",
+        assigned_to="Atlas",
+        created_by_user_id=user.id,
+        status="open",
+        context_refs="[]",
+        file_refs="[]",
+        related_sessions="[]",
+        acceptance_criteria="[]",
+    )
+    db_session.add(legacy)
+    await db_session.commit()
+
+    # Filter with lowercase — must find the legacy row.
+    r = await client.get(
+        f"/api/v1/projects/{project.id}/tickets?assigned_to=atlas",
+        headers=_hdrs(key),
+    )
+    assert r.status_code == 200, r.text
+    titles = [t["title"] for t in r.json()]
+    assert "Legacy wrong-case" in titles, (
+        f"case-insensitive filter must surface legacy row; got {titles}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_persona_create_rejects_case_insensitive_duplicate(
+    client: AsyncClient, db_session: AsyncSession,
+):
+    """Codex v0.10.23 R1 LOW (tk_884b2321fdb74170) — persona names
+    are case-insensitive-unique per project. Without this guard, a
+    project could hold both `atlas` and `Atlas` and the ticket
+    resolver's case-insensitive lookup would be ambiguous."""
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+
+    create_a = await client.post(
+        f"/api/v1/projects/{project.id}/personas",
+        headers=_hdrs(key),
+        json={"name": "atlas", "role": "Backend", "content": "# Atlas"},
+    )
+    assert create_a.status_code == 201, create_a.text
+
+    # Same name different case — must 409.
+    create_b = await client.post(
+        f"/api/v1/projects/{project.id}/personas",
+        headers=_hdrs(key),
+        json={"name": "Atlas", "role": "Backend Take 2", "content": "# A2"},
+    )
+    assert create_b.status_code == 409, create_b.text
+    msg = create_b.json()["error"]["message"]
+    assert "case-insensitive" in msg.lower()
