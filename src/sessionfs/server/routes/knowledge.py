@@ -181,6 +181,20 @@ class AddEntryRequest(BaseModel):
     entity_ref: str | None = None
     entity_type: str | None = None
     persona_name: Optional[str] = Field(None, max_length=64)
+    # v0.10.23 tk_49db8d2b6c424d35 — explicit opt-in for entity_ref
+    # upsert semantics (state-cache pattern). When True, requires
+    # entity_ref AND treats any active entry with the same entity_ref
+    # in this project as prior state to supersede (skip similarity
+    # dedup, auto-dismiss the prior(s) on commit). Default False
+    # preserves the original entity_ref semantics ("what this claim
+    # is about" — multiple distinct claims about the same entity are
+    # legitimate; compile-time _auto_supersede reasons about them).
+    # Codex R1 MEDIUM on tk_49db8d2b6c424d35 — automatic-on-match
+    # would clobber distinct-claim entries Scout v4 + compiler depend
+    # on. Explicit opt-in keeps state-cache callers (Scout, Sentinel,
+    # any future continuous agent) safe without breaking the existing
+    # knowledge-base reasoning model.
+    upsert: bool = False
     author_class: Optional[Literal["human", "agent"]] = None
     force_claim: bool = False
 
@@ -206,6 +220,13 @@ class AddEntryResponse(BaseModel):
     freshness_class: str = "current"
     classification_reason: str = ""
     tip: str | None = None
+    # v0.10.23 tk_49db8d2b6c424d35 — entity_ref upsert audit. List of
+    # prior active entry IDs that this write superseded, or empty when
+    # the write is a brand-new add (no entity_ref collision). Callers
+    # using KB entries as durable state caches can detect that their
+    # previous version was rolled forward; agents that wrote a distinct
+    # claim see an empty list and know they did not silently overwrite.
+    upserted_from: list[int] = Field(default_factory=list)
 
 
 class DismissRequest(BaseModel):
@@ -683,25 +704,67 @@ async def add_entry(
             headers={"Retry-After": "60"},
         )
 
-    # Gate 3: Similarity check against recent non-dismissed entries
-    recent_result = await db.execute(
-        select(KnowledgeEntry.content)
-        .where(
-            KnowledgeEntry.project_id == project_id,
-            KnowledgeEntry.dismissed == False,  # noqa: E712
+    # v0.10.23 tk_49db8d2b6c424d35 — explicit entity_ref upsert opt-in.
+    # The caller signals "this is a state-cache write, roll the slot
+    # forward" by passing upsert=True. Without the flag, entity_ref
+    # keeps its long-standing semantic ("what this claim is about" —
+    # multiple distinct claims about one entity are intended; the
+    # compile-time _auto_supersede pipeline reasons about them). With
+    # upsert=True we require entity_ref (no slot, no upsert) and treat
+    # every active row sharing the slot as prior state to dismiss.
+    # Codex R1 MEDIUM (auto-on-match would clobber Scout v4's
+    # per-signal entries + compiler regression fixtures); explicit
+    # opt-in is the safe boundary.
+    if body.upsert and not body.entity_ref:
+        raise HTTPException(
+            422,
+            "upsert=true requires entity_ref (no slot to roll forward)",
         )
-        .order_by(KnowledgeEntry.created_at.desc())
-        .limit(50)
-    )
-    existing_contents = [row[0] for row in recent_result.all()]
-    is_duplicate = False
-    for existing_content in existing_contents:
-        if _word_overlap(body.content, existing_content) > 0.85:
-            is_duplicate = True
-            break
+    prior_active_ids: list[int] = []
+    if body.upsert and body.entity_ref:
+        prior_rows = await db.execute(
+            select(KnowledgeEntry.id).where(
+                KnowledgeEntry.project_id == project_id,
+                KnowledgeEntry.entity_ref == body.entity_ref,
+                KnowledgeEntry.dismissed == False,  # noqa: E712
+                KnowledgeEntry.superseded_by.is_(None),
+            )
+        )
+        prior_active_ids = [row[0] for row in prior_rows.all()]
 
-    if is_duplicate:
-        raise HTTPException(409, "Similar entry already exists")
+    # Gate the similarity check on explicit intent, NOT on prior
+    # presence. Codex R2 MEDIUM: bool(prior_active_ids) would re-arm
+    # the 409 gate for state-cache BOOTSTRAP writes (first write to a
+    # fresh slot, write to a slot whose prior was user-dismissed,
+    # rename of a slot). The whole API + docs + MCP schema contract
+    # is "upsert=true skips similarity dedup" — that has to be true
+    # whether or not a prior exists, otherwise the caller still hits
+    # the same silent-loss class on the first write of any new slot.
+    skip_similarity_gate = bool(body.upsert and body.entity_ref)
+
+    # Gate 3: Similarity check against recent non-dismissed entries.
+    # Skipped when the write is an explicit entity_ref upsert (see
+    # above). Without this skip, agents using KB entries as durable
+    # state caches lose data on any small-delta write.
+    if not skip_similarity_gate:
+        recent_result = await db.execute(
+            select(KnowledgeEntry.content)
+            .where(
+                KnowledgeEntry.project_id == project_id,
+                KnowledgeEntry.dismissed == False,  # noqa: E712
+            )
+            .order_by(KnowledgeEntry.created_at.desc())
+            .limit(50)
+        )
+        existing_contents = [row[0] for row in recent_result.all()]
+        is_duplicate = False
+        for existing_content in existing_contents:
+            if _word_overlap(body.content, existing_content) > 0.85:
+                is_duplicate = True
+                break
+
+        if is_duplicate:
+            raise HTTPException(409, "Similar entry already exists")
 
     # v0.10.10 tk_483cede83deb443b — honor explicit confidence from
     # the caller. Pre-fix this branch did `min(confidence, 0.7)` for
@@ -798,6 +861,43 @@ async def add_entry(
         service_key_name=auth.service_key_name,
     )
     db.add(entry)
+    await db.flush()  # populate entry.id for the supersede update
+
+    # v0.10.23 tk_49db8d2b6c424d35 — atomic upsert finalisation. Use
+    # synchronize_session=False so the ORM doesn't try to evaluate the
+    # WHERE clause client-side (same SQLite-naive-vs-PG-tz pattern used
+    # by v0.10.22's atomic invite transitions). The UPDATE is bounded
+    # to the prior IDs we observed pre-insert, so even if a concurrent
+    # writer landed another active entry against the same entity_ref
+    # between our SELECT and UPDATE, we only dismiss the rows we
+    # intended to roll forward. The next upsert from either branch
+    # cleans up any stragglers.
+    superseded_ids: list[int] = []
+    if prior_active_ids:
+        now_ts = datetime.now(timezone.utc)
+        reason = f"entity_ref upsert: superseded by entry {entry.id}"
+        result = await db.execute(
+            update(KnowledgeEntry)
+            .where(
+                KnowledgeEntry.id.in_(prior_active_ids),
+                KnowledgeEntry.dismissed == False,  # noqa: E712
+                KnowledgeEntry.superseded_by.is_(None),
+            )
+            .values(
+                dismissed=True,
+                dismissed_at=now_ts,
+                dismissed_by=user.id,
+                dismissed_reason=reason,
+                superseded_by=entry.id,
+                supersession_reason="entity_ref upsert",
+            )
+            .execution_options(synchronize_session=False)
+        )
+        # rowcount reports how many of the snapshot IDs actually
+        # transitioned (concurrent dismissal would shrink this).
+        if result.rowcount and result.rowcount > 0:
+            superseded_ids = prior_active_ids[: result.rowcount]
+
     await db.commit()
     await db.refresh(entry)
 
@@ -821,6 +921,7 @@ async def add_entry(
         freshness_class=entry.freshness_class,
         classification_reason=classification_reason,
         tip=tip,
+        upserted_from=superseded_ids,
     )
 
 

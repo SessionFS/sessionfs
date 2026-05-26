@@ -2296,3 +2296,386 @@ async def test_auto_generate_concepts_flushes_delete_before_insert(
         )
 
 
+# ─────────────────────────────────────────────────────────────────────
+# v0.10.23 tk_49db8d2b6c424d35 — entity_ref upsert semantics
+# ─────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_entity_ref_upsert_skips_similarity_dedup(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession,
+    test_user: User, test_project: Project,
+):
+    """Headline repro from the 2026-05-25 Scout cache incident: posting
+    5x to the same entity_ref with ~6% delta each time must persist
+    every write, not 409 on the similarity gate. Pre-fix, runs 650-653
+    of Scout's n8n workflow lost 3 of 4 cache writes silently."""
+    entity_ref = "scout-state:decisions"
+    # Build a fake LRU map so each write differs by ~6% (1 of 16 keys).
+    base = {f"key_{i:03d}": f"signal_id_{i}_classified_as_noise" for i in range(15)}
+
+    last_id = None
+    for i in range(15, 20):  # 5 writes, appending one key each
+        base[f"key_{i:03d}"] = f"signal_id_{i}_classified_as_signal"
+        r = await client.post(
+            f"/api/v1/projects/{test_project.id}/entries/add",
+            headers=auth_headers,
+            json={
+                "content": str(base),  # ~15 KB-ish JSON-shaped string
+                "entry_type": "discovery",
+                "entity_ref": entity_ref,
+                "session_id": "manual",
+                "confidence": 0.9,
+                "upsert": True,
+            },
+        )
+        assert r.status_code == 201, (
+            f"write {i} returned {r.status_code}: {r.text} "
+            f"(entity_ref upsert must bypass similarity dedup)"
+        )
+        body = r.json()
+        if last_id is not None:
+            assert body["upserted_from"] == [last_id], (
+                f"write {i} should report upserted_from=[{last_id}], "
+                f"got {body['upserted_from']}"
+            )
+        last_id = body["id"]
+
+    # Only the latest entry is active.
+    rows = (
+        await db_session.execute(
+            select(KnowledgeEntry).where(
+                KnowledgeEntry.project_id == test_project.id,
+                KnowledgeEntry.entity_ref == entity_ref,
+            )
+        )
+    ).scalars().all()
+    active = [r for r in rows if not r.dismissed]
+    assert len(active) == 1, (
+        f"exactly one active row expected, got {len(active)} "
+        f"(prior writes must be auto-superseded)"
+    )
+    assert active[0].id == last_id
+    # Dismissed rows form a chain: each prior points to its immediate
+    # successor, not necessarily the final active entry. Walk the chain
+    # from the active head backward and confirm every dismissed row is
+    # reachable + carries the audit trail.
+    superseded = sorted([r for r in rows if r.dismissed], key=lambda r: r.id)
+    assert len(superseded) == 4
+    by_id = {r.id: r for r in rows}
+    cursor = active[0]
+    walked = 0
+    while True:
+        prior = next(
+            (r for r in superseded if r.superseded_by == cursor.id),
+            None,
+        )
+        if prior is None:
+            break
+        assert prior.dismissed_reason and "upsert" in prior.dismissed_reason
+        assert prior.supersession_reason == "entity_ref upsert"
+        assert prior.dismissed_by == test_user.id
+        cursor = prior
+        walked += 1
+    assert walked == 4, f"expected to walk all 4 dismissed priors, walked {walked}"
+    # Silence unused-name warning while keeping the lookup map for clarity.
+    assert by_id  # noqa: PT018
+
+
+@pytest.mark.asyncio
+async def test_entity_ref_upsert_response_empty_when_no_prior(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession,
+    test_user: User, test_project: Project,
+):
+    """First write against a fresh entity_ref returns upserted_from=[].
+    Distinguishes 'rolled forward' from 'brand new'."""
+    r = await client.post(
+        f"/api/v1/projects/{test_project.id}/entries/add",
+        headers=auth_headers,
+        json={
+            "content": "Initial scout cache state with several distinct entries to satisfy length gates and so on",
+            "entry_type": "discovery",
+            "entity_ref": "fresh-state:cache",
+            "session_id": "manual",
+            "confidence": 0.9,
+            "upsert": True,
+        },
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["upserted_from"] == []
+
+
+@pytest.mark.asyncio
+async def test_no_entity_ref_still_blocks_near_duplicates(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession,
+    test_user: User, test_project: Project,
+):
+    """The similarity gate is unchanged for adds without entity_ref —
+    the upsert path is opt-in via entity_ref, not a blanket bypass."""
+    payload = {
+        "content": "Adopt scoped service API keys for cloud agents — user tokens too broad",
+        "entry_type": "decision",
+        "session_id": "manual",
+        "confidence": 0.9,
+    }
+    r1 = await client.post(
+        f"/api/v1/projects/{test_project.id}/entries/add",
+        headers=auth_headers,
+        json=payload,
+    )
+    assert r1.status_code == 201
+    # Same content again, no entity_ref → still 409.
+    r2 = await client.post(
+        f"/api/v1/projects/{test_project.id}/entries/add",
+        headers=auth_headers,
+        json=payload,
+    )
+    assert r2.status_code == 409
+    assert "Similar entry" in r2.json()["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_entity_ref_upsert_skips_dismissed_priors(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession,
+    test_user: User, test_project: Project,
+):
+    """A user-dismissed prior with the same entity_ref must NOT count
+    as an active row. The next write to that entity_ref is a 'brand
+    new' add (upserted_from=[]), and the standard similarity gate
+    applies against other active entries."""
+    # Seed a dismissed prior directly (skips the route).
+    prior = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="manual",
+        user_id=test_user.id,
+        entry_type="discovery",
+        content="Prior content that was explicitly dismissed by the user.",
+        confidence=0.9,
+        entity_ref="reusable-state:slot",
+        dismissed=True,
+        dismissed_at=datetime.now(timezone.utc),
+        dismissed_by=test_user.id,
+        dismissed_reason="user dismissed",
+    )
+    db_session.add(prior)
+    await db_session.commit()
+
+    r = await client.post(
+        f"/api/v1/projects/{test_project.id}/entries/add",
+        headers=auth_headers,
+        json={
+            "content": "Fresh content that bears no resemblance to the dismissed prior.",
+            "entry_type": "discovery",
+            "entity_ref": "reusable-state:slot",
+            "session_id": "manual",
+            "confidence": 0.9,
+            "upsert": True,
+        },
+    )
+    assert r.status_code == 201
+    assert r.json()["upserted_from"] == []
+
+
+@pytest.mark.asyncio
+async def test_entity_ref_without_upsert_preserves_multi_active(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession,
+    test_user: User, test_project: Project,
+):
+    """Codex R1 MEDIUM safety net — entity_ref semantics ('what this
+    claim is about') must survive. Multiple distinct claims about the
+    same file/function/article/etc. must coexist as active rows when
+    the caller has NOT opted into upsert. Compile-time _auto_supersede
+    reasons about these; the Scout n8n docs use entity_ref as a
+    canonical per-signal id (e.g. hn:38291847) — neither pattern
+    should silently dismiss priors."""
+    shared_entity = "src/sessionfs/server/db.py"
+    # Two genuinely different claims about the same file (e.g. two
+    # different discoveries during separate sessions).
+    payload_a = {
+        "content": "db.py uses connection pooling with max=50 by default for Cloud SQL",
+        "entry_type": "discovery",
+        "entity_ref": shared_entity,
+        "session_id": "manual",
+        "confidence": 0.9,
+    }
+    payload_b = {
+        "content": "db.py declares isolation_level=READ COMMITTED via the engine config",
+        "entry_type": "discovery",
+        "entity_ref": shared_entity,
+        "session_id": "manual",
+        "confidence": 0.9,
+    }
+
+    r_a = await client.post(
+        f"/api/v1/projects/{test_project.id}/entries/add",
+        headers=auth_headers,
+        json=payload_a,
+    )
+    assert r_a.status_code == 201, r_a.text
+    assert r_a.json()["upserted_from"] == []
+
+    r_b = await client.post(
+        f"/api/v1/projects/{test_project.id}/entries/add",
+        headers=auth_headers,
+        json=payload_b,
+    )
+    assert r_b.status_code == 201, r_b.text
+    # Both claims active — entry_a NOT dismissed by entry_b's insert.
+    assert r_b.json()["upserted_from"] == []
+
+    rows = (
+        await db_session.execute(
+            select(KnowledgeEntry).where(
+                KnowledgeEntry.project_id == test_project.id,
+                KnowledgeEntry.entity_ref == shared_entity,
+            )
+        )
+    ).scalars().all()
+    active = [r for r in rows if not r.dismissed]
+    assert len(active) == 2, (
+        f"expected both distinct claims active, got {len(active)} "
+        f"(upsert=False must preserve multi-claim entity_ref)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_upsert_true_bypasses_similarity_on_fresh_slot(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession,
+    test_user: User, test_project: Project,
+):
+    """Codex R2 MEDIUM — the upsert contract says explicit upsert=true
+    skips similarity dedup, full stop. Pre-fix the route only skipped
+    when a prior active entry existed, so the first write to a fresh
+    slot (or a slot whose prior was user-dismissed, or a renamed
+    slot) could still hit 409 against an UNRELATED active entry. That
+    breaks the state-cache bootstrap and reopens the original silent-
+    loss class.
+
+    Setup: seed an unrelated active KB entry whose content is the
+    near-duplicate trigger. Then POST upsert=true to a FRESH
+    entity_ref with the same content. Pre-fix: 409. Post-fix: 201
+    with upserted_from=[] (no priors to dismiss).
+    """
+    trigger_content = (
+        "Adopt scoped service API keys for cloud agents — user tokens "
+        "too broad for Bedrock/Vertex/CI agents."
+    )
+    seed = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="manual",
+        user_id=test_user.id,
+        entry_type="decision",
+        content=trigger_content,
+        confidence=0.9,
+        # No entity_ref — purely a similarity-gate trigger.
+    )
+    db_session.add(seed)
+    await db_session.commit()
+
+    # Same content, fresh state-cache slot. The fresh slot has no
+    # active prior, but the explicit upsert=true must still bypass
+    # the similarity gate against the unrelated seed row.
+    r = await client.post(
+        f"/api/v1/projects/{test_project.id}/entries/add",
+        headers=auth_headers,
+        json={
+            "content": trigger_content,
+            "entry_type": "decision",
+            "entity_ref": "scout-state:bootstrap-decisions",
+            "session_id": "manual",
+            "confidence": 0.9,
+            "upsert": True,
+        },
+    )
+    assert r.status_code == 201, (
+        f"upsert=true on a fresh slot must bypass similarity dedup "
+        f"even when an unrelated active entry triggers the 0.85 word "
+        f"overlap. Got {r.status_code}: {r.text}"
+    )
+    body = r.json()
+    assert body["upserted_from"] == [], (
+        f"fresh slot → no priors to dismiss. Got {body['upserted_from']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_upsert_true_without_entity_ref_returns_422(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession,
+    test_user: User, test_project: Project,
+):
+    """upsert=True with no entity_ref is a contract violation — no
+    slot to roll forward. Server must reject 422 before any side
+    effects."""
+    r = await client.post(
+        f"/api/v1/projects/{test_project.id}/entries/add",
+        headers=auth_headers,
+        json={
+            "content": "Long enough content with concrete file refs like src/foo.py to clear specificity gate.",
+            "entry_type": "discovery",
+            "session_id": "manual",
+            "confidence": 0.9,
+            "upsert": True,
+        },
+    )
+    assert r.status_code == 422, r.text
+
+
+@pytest.mark.asyncio
+async def test_entity_ref_upsert_does_not_leak_across_projects(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession,
+    test_user: User, test_project: Project,
+):
+    """Same entity_ref in a different project is invisible — the
+    upsert query is scoped by project_id, and the project access gate
+    already isolates the caller. Defense against an attacker who knows
+    a victim project's entity_ref guessing across tenants."""
+    other_project = Project(
+        id=f"proj_{uuid.uuid4().hex[:16]}",
+        name="Other Project",
+        git_remote_normalized=f"github.com/other/{uuid.uuid4().hex[:8]}",
+        owner_id=test_user.id,
+    )
+    db_session.add(other_project)
+    await db_session.commit()
+    await db_session.refresh(other_project)
+
+    # Seed an entity_ref in OTHER project.
+    other_entry = KnowledgeEntry(
+        project_id=other_project.id,
+        session_id="manual",
+        user_id=test_user.id,
+        entry_type="discovery",
+        content="Other project's cached state with rich content for length gating.",
+        confidence=0.9,
+        entity_ref="shared-ref:slot",
+    )
+    db_session.add(other_entry)
+    await db_session.commit()
+    await db_session.refresh(other_entry)
+
+    # Write the same entity_ref in test_project — must not touch other_project.
+    r = await client.post(
+        f"/api/v1/projects/{test_project.id}/entries/add",
+        headers=auth_headers,
+        json={
+            "content": "Distinct content in the caller's own project, sharing only entity_ref by chance.",
+            "entry_type": "discovery",
+            "entity_ref": "shared-ref:slot",
+            "session_id": "manual",
+            "confidence": 0.9,
+            "upsert": True,
+        },
+    )
+    assert r.status_code == 201
+    assert r.json()["upserted_from"] == []
+
+    # The other project's entry MUST still be active.
+    refreshed = (
+        await db_session.execute(
+            select(KnowledgeEntry).where(KnowledgeEntry.id == other_entry.id)
+        )
+    ).scalar_one()
+    assert refreshed.dismissed is False
+    assert refreshed.superseded_by is None
+
+

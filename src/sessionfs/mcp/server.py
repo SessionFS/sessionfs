@@ -338,6 +338,20 @@ _TOOLS = [
                     "type": "boolean",
                     "description": "Attempt claim classification (still enforces quality gates)",
                 },
+                "upsert": {
+                    "type": "boolean",
+                    "description": (
+                        "Treat this write as a state-cache roll-forward. "
+                        "Requires entity_ref. When True, the server skips "
+                        "similarity dedup and auto-dismisses any prior active "
+                        "entry sharing the same entity_ref in this project, "
+                        "surfacing the dismissed IDs in the response. Use for "
+                        "durable append-only agent state (e.g. an LRU map of "
+                        "already-classified signals). Default False preserves "
+                        "the normal multi-claim entity_ref semantics that "
+                        "compile-time _auto_supersede relies on."
+                    ),
+                },
                 "persona_name": {
                     "type": "string",
                     "maxLength": 64,
@@ -2427,6 +2441,12 @@ async def _handle_add_knowledge(args: dict) -> str:
     force_claim = args.get("force_claim", False)
     persona_name = args.get("persona_name")
     author_class = args.get("author_class")
+    # v0.10.23 tk_49db8d2b6c424d35 — explicit opt-in for state-cache
+    # upsert semantics. Requires entity_ref. When True, the server
+    # skips similarity dedup and auto-dismisses any prior active entry
+    # with the same entity_ref in the project, surfacing the
+    # dismissed IDs in the response.
+    upsert = bool(args.get("upsert", False))
     git_remote = args.get("git_remote", "")
 
     if not content:
@@ -2489,6 +2509,8 @@ async def _handle_add_knowledge(args: dict) -> str:
             payload["persona_name"] = persona_name
         if author_class:
             payload["author_class"] = author_class
+        if upsert:
+            payload["upsert"] = True
 
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(
@@ -2517,6 +2539,17 @@ async def _handle_add_knowledge(args: dict) -> str:
                 attribution_bits.append(f"author_class: {persisted_author}")
             if attribution_bits:
                 msg += "\nAttribution: " + ", ".join(attribution_bits)
+            # v0.10.23 tk_49db8d2b6c424d35 — when entity_ref upsert
+            # superseded a prior, surface the dismissed IDs so the
+            # caller knows their state cache was rolled forward (and
+            # didn't silently win a similarity-dedup race against an
+            # unrelated entry).
+            superseded = data.get("upserted_from") or []
+            if superseded:
+                msg += (
+                    f"\nUpsert: superseded prior entries "
+                    f"{superseded} via entity_ref={entity_ref!r}"
+                )
             if tip:
                 msg += f"\nTip: {tip}"
             return msg

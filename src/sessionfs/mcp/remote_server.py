@@ -29,7 +29,7 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
 from sessionfs.mcp.cloud_client import CloudAPIClient
@@ -346,8 +346,40 @@ async def _run_mcp_session(
         await mcp.run(read_stream, write_stream, mcp.create_initialization_options())
 
 
-async def handle_mcp(request: Request):
-    """Handle MCP requests — persistent sessions across requests."""
+class _ConsumedResponse(Response):
+    """Sentinel Response for handlers that have already driven the ASGI
+    send callable directly (e.g. the MCP StreamableHTTPServerTransport).
+
+    Starlette 1.x's Route wrapper unconditionally awaits the return
+    value of a `(request)` handler as `await response(scope, receive,
+    send)`. Returning `None` raises `TypeError: 'NoneType' object is
+    not callable` and truncates the wire response just after the body
+    the transport already wrote — so the client (ChatGPT, Claude.ai
+    web) sees a partial frame and never gets a usable `tools/list`
+    reply. This response no-ops in __call__ so the Route wrapper has
+    something to await without double-sending.
+
+    v0.10.22 hotfix for the regression introduced by the v0.10.21
+    `starlette>=1.0.1` pin (GHSA-86qp-5c8j-p5mr).
+    """
+
+    def __init__(self) -> None:  # noqa: D401
+        # Skip Response.__init__ — we never serialize this.
+        pass
+
+    async def __call__(self, scope, receive, send) -> None:  # noqa: D401
+        return None
+
+
+async def handle_mcp(request: Request) -> Response:
+    """Handle MCP requests — persistent sessions across requests.
+
+    Returns a `_ConsumedResponse` sentinel after delegating to the
+    StreamableHTTPServerTransport so Starlette's Route wrapper has a
+    no-op response to await. Without the sentinel, Starlette tries to
+    call `None` and the wire response gets truncated mid-frame — the
+    visible symptom is "no tools" in browser MCP clients.
+    """
     global _current_api_key
 
     # Authenticate
@@ -369,7 +401,7 @@ async def handle_mcp(request: Request):
     if session_id and session_id in _mcp_sessions:
         transport = _mcp_sessions[session_id]
         await transport.handle_request(request.scope, request.receive, request._send)
-        return
+        return _ConsumedResponse()
 
     # New session — create persistent transport
     transport = StreamableHTTPServerTransport(
@@ -391,6 +423,8 @@ async def handle_mcp(request: Request):
     if transport.mcp_session_id:
         _mcp_sessions[transport.mcp_session_id] = transport
         _session_tasks[transport.mcp_session_id] = task
+
+    return _ConsumedResponse()
 
 
 async def handle_health(request: Request):
