@@ -1155,15 +1155,19 @@ async def update_session(
     session_id: str,
     body: SessionMetadataUpdate,
     user: User = Depends(get_current_user),
+    ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ):
     """Update session title, alias, and/or tags."""
+    if body.title is None and body.alias is None and body.tags is None:
+        raise HTTPException(status_code=400, detail="At least one of title, alias, or tags must be provided")
     _validate_session_id_or_alias(session_id)
     session = await _get_user_session(db, user.id, session_id)
 
     if body.title is not None:
         session.title = _sanitize_string(body.title)
     if body.alias is not None:
+        check_feature(ctx, "aliases_cloud")
         if not _ALIAS_RE.match(body.alias):
             raise HTTPException(status_code=400, detail="Alias must be 3-100 chars, alphanumeric/hyphens/underscores, starting with alphanumeric")
         # Check uniqueness
@@ -1200,9 +1204,11 @@ async def set_alias(
     session_id: str,
     body: SetAliasRequest,
     user: User = Depends(get_current_user),
+    ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ):
     """Set or update a session alias."""
+    check_feature(ctx, "aliases_cloud")
     _validate_session_id_or_alias(session_id)
     session = await _get_user_session(db, user.id, session_id)
 

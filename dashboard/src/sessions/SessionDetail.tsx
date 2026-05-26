@@ -48,39 +48,60 @@ export default function SessionDetail() {
     // Clear after a tick so ConversationView picks it up then resets
     setTimeout(() => setJumpToPage(undefined), 100);
   }
-  const [editingAlias, setEditingAlias] = useState(false);
+  const [editingMeta, setEditingMeta] = useState(false);
+  const [titleInput, setTitleInput] = useState('');
   const [aliasInput, setAliasInput] = useState('');
-  const [aliasError, setAliasError] = useState<string | null>(null);
+  const [metaError, setMetaError] = useState<string | null>(null);
 
-  const handleAliasEdit = useCallback(() => {
+  const handleMetaEdit = useCallback(() => {
+    setTitleInput(session?.title || '');
     setAliasInput(session?.alias || '');
-    setAliasError(null);
-    setEditingAlias(true);
-  }, [session?.alias]);
+    setMetaError(null);
+    setEditingMeta(true);
+  }, [session?.title, session?.alias]);
 
-  const handleAliasSave = useCallback(async () => {
+  const handleMetaSave = useCallback(async () => {
     if (!auth || !session) return;
-    const trimmed = aliasInput.trim();
+    const trimmedTitle = titleInput.trim();
+    const trimmedAlias = aliasInput.trim();
+    const prevTitle = session.title || '';
+    const prevAlias = session.alias || '';
+    const titleChanged = trimmedTitle !== prevTitle;
+    const aliasChanged = trimmedAlias !== prevAlias;
+    if (!titleChanged && !aliasChanged) {
+      setEditingMeta(false);
+      return;
+    }
+    if (titleChanged && !trimmedTitle) {
+      setMetaError('Title cannot be empty');
+      return;
+    }
     try {
-      if (trimmed) {
-        await auth.client.setAlias(session.id, trimmed);
-      } else {
+      if (aliasChanged && !trimmedAlias) {
         await auth.client.clearAlias(session.id);
+        if (titleChanged) {
+          await auth.client.updateSession(session.id, { title: trimmedTitle });
+        }
+      } else {
+        const body: { title?: string; alias?: string } = {};
+        if (titleChanged) body.title = trimmedTitle;
+        if (aliasChanged) body.alias = trimmedAlias;
+        await auth.client.updateSession(session.id, body);
       }
-      setEditingAlias(false);
-      setAliasError(null);
+      setEditingMeta(false);
+      setMetaError(null);
       refetch();
     } catch (err) {
-      setAliasError(String(err));
+      setMetaError(String(err));
     }
-  }, [auth, session, aliasInput, refetch]);
+  }, [auth, session, titleInput, aliasInput, refetch]);
 
-  const handleAliasKeyDown = useCallback(
+  const handleMetaKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      if (e.key === 'Enter') handleAliasSave();
-      if (e.key === 'Escape') setEditingAlias(false);
+      if (e.key === 'Enter') handleMetaSave();
+      if (e.key === 'Escape') setEditingMeta(false);
     },
-    [handleAliasSave],
+    [handleMetaSave],
   );
 
   if (isLoading) {
@@ -188,7 +209,7 @@ export default function SessionDetail() {
                   sessionId={session.id}
                   sourceTool={session.source_tool}
                   onRunAudit={() => { setShowMoreMenu(false); setShowAuditModal(true); }}
-                  onEditAlias={() => { setShowMoreMenu(false); handleAliasEdit(); }}
+                  onEditAlias={() => { setShowMoreMenu(false); handleMetaEdit(); }}
                   onDelete={() => {
                     setShowMoreMenu(false);
                     setShowDeleteDialog(true);
@@ -200,31 +221,69 @@ export default function SessionDetail() {
           </div>
         </div>
 
-        {/* Alias editing */}
-        {editingAlias && (
-          <div className="px-5 mt-2 flex items-center gap-2">
-            <input
-              type="text"
-              value={aliasInput}
-              onChange={(e) => setAliasInput(e.target.value)}
-              onKeyDown={handleAliasKeyDown}
-              onBlur={handleAliasSave}
-              autoFocus
-              placeholder="e.g. auth-debug"
-              className="w-48 px-2 py-1 text-sm bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)]"
-            />
-            {aliasError && (
-              <span className="text-red-400 text-xs">{aliasError}</span>
+        {/* Title + alias editing — side by side */}
+        {editingMeta ? (
+          <div className="px-5 mt-2">
+            <div className="flex items-start gap-3 flex-wrap">
+              <label className="flex-1 min-w-[12rem]">
+                <span className="block text-xs text-[var(--text-tertiary)] mb-1">Title</span>
+                <input
+                  type="text"
+                  value={titleInput}
+                  onChange={(e) => setTitleInput(e.target.value)}
+                  onKeyDown={handleMetaKeyDown}
+                  autoFocus
+                  placeholder="Session title"
+                  aria-label="Session title"
+                  className="w-full px-2 py-1 text-base bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)]"
+                />
+              </label>
+              <label className="w-56">
+                <span className="block text-xs text-[var(--text-tertiary)] mb-1">Alias</span>
+                <input
+                  type="text"
+                  value={aliasInput}
+                  onChange={(e) => setAliasInput(e.target.value)}
+                  onKeyDown={handleMetaKeyDown}
+                  placeholder="e.g. auth-debug"
+                  aria-label="Session alias"
+                  className="w-full px-2 py-1 text-sm bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)]"
+                />
+              </label>
+              <div className="flex items-center gap-2 mt-5">
+                <button
+                  onClick={handleMetaSave}
+                  className="px-3 py-1 text-xs font-semibold bg-[var(--brand)] text-white rounded-lg hover:bg-[var(--brand-hover)]"
+                >
+                  Save
+                </button>
+                <button
+                  onClick={() => setEditingMeta(false)}
+                  className="px-3 py-1 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+            {metaError && (
+              <div className="text-red-400 text-xs mt-1">{metaError}</div>
             )}
           </div>
+        ) : (
+          <div className="px-5 mt-2 group">
+            <h1
+              onClick={handleMetaEdit}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleMetaEdit(); } }}
+              aria-label="Edit title and alias"
+              title="Click to rename title and alias"
+              className="text-2xl font-semibold text-[var(--text-primary)] break-words leading-snug cursor-text hover:underline decoration-[var(--text-tertiary)] decoration-dotted underline-offset-4"
+            >
+              {session.title || 'Untitled session'}
+            </h1>
+          </div>
         )}
-
-        {/* Title */}
-        <div className="px-5 mt-2">
-          <h1 className="text-2xl font-semibold text-[var(--text-primary)] break-words leading-snug">
-            {session.title || 'Untitled session'}
-          </h1>
-        </div>
 
         {/* Metadata pills */}
         <div className="px-5 mt-2 flex flex-wrap items-center gap-2 text-[13px]">

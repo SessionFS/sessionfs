@@ -112,12 +112,14 @@ function renderPage(sessionId = 'ses_abc123') {
 describe('SessionDetail', () => {
   const mockSetAlias = vi.fn();
   const mockClearAlias = vi.fn();
+  const mockUpdateSession = vi.fn();
 
   beforeEach(() => {
     for (const h of Object.values(hooks)) h.mockReset();
     mockAuth.mockReset();
     mockSetAlias.mockReset();
     mockClearAlias.mockReset();
+    mockUpdateSession.mockReset();
 
     // Default: all secondary hooks return empty / ok
     hooks.useMessages.mockReturnValue({ data: { messages: [], total: 0 }, isLoading: false });
@@ -133,6 +135,7 @@ describe('SessionDetail', () => {
         client: {
           setAlias: mockSetAlias,
           clearAlias: mockClearAlias,
+          updateSession: mockUpdateSession,
         },
       },
     });
@@ -223,6 +226,107 @@ describe('SessionDetail', () => {
     await waitFor(() => {
       expect(screen.getByTestId('audit-tab')).toBeInTheDocument();
     });
+  });
+
+  it('clicking the title opens a side-by-side title + alias edit form', async () => {
+    const refetch = vi.fn();
+    hooks.useSession.mockReturnValue({
+      data: baseSession({ title: 'Original title', alias: 'old-alias' }),
+      isLoading: false,
+      error: null,
+      refetch,
+    });
+    renderPage();
+    const user = userEvent.setup();
+
+    // Click the title (rendered as a role=button h1 via aria-label).
+    await user.click(screen.getByRole('button', { name: /edit title and alias/i }));
+
+    // Both inputs visible, side-by-side, prefilled with current values.
+    const titleInput = screen.getByLabelText('Session title') as HTMLInputElement;
+    const aliasInput = screen.getByLabelText('Session alias') as HTMLInputElement;
+    expect(titleInput.value).toBe('Original title');
+    expect(aliasInput.value).toBe('old-alias');
+  });
+
+  it('saving an edited title + alias calls updateSession with both fields', async () => {
+    const refetch = vi.fn();
+    mockUpdateSession.mockResolvedValue({});
+    hooks.useSession.mockReturnValue({
+      data: baseSession({ title: 'Original', alias: 'old' }),
+      isLoading: false,
+      error: null,
+      refetch,
+    });
+    renderPage();
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole('button', { name: /edit title and alias/i }));
+
+    const titleInput = screen.getByLabelText('Session title') as HTMLInputElement;
+    const aliasInput = screen.getByLabelText('Session alias') as HTMLInputElement;
+    await user.clear(titleInput);
+    await user.type(titleInput, 'Renamed title');
+    await user.clear(aliasInput);
+    await user.type(aliasInput, 'new-alias');
+
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateSession).toHaveBeenCalledWith('ses_abc123', {
+        title: 'Renamed title',
+        alias: 'new-alias',
+      });
+    });
+    expect(refetch).toHaveBeenCalled();
+  });
+
+  it('saving an empty title shows an error and does not call updateSession', async () => {
+    const refetch = vi.fn();
+    hooks.useSession.mockReturnValue({
+      data: baseSession({ title: 'Original' }),
+      isLoading: false,
+      error: null,
+      refetch,
+    });
+    renderPage();
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole('button', { name: /edit title and alias/i }));
+
+    const titleInput = screen.getByLabelText('Session title') as HTMLInputElement;
+    await user.clear(titleInput);
+
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    expect(mockUpdateSession).not.toHaveBeenCalled();
+    expect(screen.getByText(/title cannot be empty/i)).toBeInTheDocument();
+  });
+
+  it('clearing an existing alias routes through clearAlias instead of updateSession', async () => {
+    const refetch = vi.fn();
+    mockClearAlias.mockResolvedValue({});
+    hooks.useSession.mockReturnValue({
+      data: baseSession({ title: 'Same title', alias: 'remove-me' }),
+      isLoading: false,
+      error: null,
+      refetch,
+    });
+    renderPage();
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole('button', { name: /edit title and alias/i }));
+
+    const aliasInput = screen.getByLabelText('Session alias') as HTMLInputElement;
+    await user.clear(aliasInput);
+
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => {
+      expect(mockClearAlias).toHaveBeenCalledWith('ses_abc123');
+    });
+    // Title unchanged, so updateSession should NOT be called for title-only no-op.
+    expect(mockUpdateSession).not.toHaveBeenCalled();
   });
 
   it('clicking Hand Off opens the handoff modal', async () => {

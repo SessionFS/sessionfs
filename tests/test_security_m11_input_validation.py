@@ -100,5 +100,13 @@ class TestInputValidation:
     # --- XSS payload tests ---
 
     def test_xss_in_title_stripped(self):
-        update = SessionMetadataUpdate(title='<img src=x onerror="alert(1)">')
+        update = SessionMetadataUpdate(title='Real title <img src=x onerror="alert(1)"> tail')
         assert "<img" not in update.title
+        assert update.title == "Real title  tail"
+
+    def test_xss_only_title_rejected_as_empty(self):
+        """tk_cf9f1691091d4e8e: a title that strips to empty is rejected (422)
+        rather than silently saved as empty."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            SessionMetadataUpdate(title='<img src=x onerror="alert(1)">')

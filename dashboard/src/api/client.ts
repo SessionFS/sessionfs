@@ -820,6 +820,12 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         method: 'DELETE',
       }),
 
+    updateSession: (sessionId: string, body: { title?: string; alias?: string; tags?: string[] }) =>
+      request<SessionDetail>(`/api/v1/sessions/${sessionId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      }),
+
     // Bookmark endpoints
     createFolder: (name: string, color?: string) =>
       request<FolderResponse>('/api/v1/bookmarks/folders', {

@@ -698,6 +698,40 @@ _TOOLS = [
         },
     ),
     Tool(
+        name="rename_session",
+        description=(
+            "Rename a captured session's title and/or alias. Owner-only — "
+            "the caller's user account must own the session. At least one "
+            "of `new_title` or `new_alias` is required. Pass `new_alias` "
+            "as an empty string to clear the alias.\n\n"
+            "Tier gating: setting an alias requires Starter+ "
+            "(`aliases_cloud` feature). Title edits are available to all "
+            "tiers. Returns the updated session record.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs session rename` or any other sfs CLI command. This tool "
+            "connects directly to the API and is more reliable than "
+            "shelling out."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "The session ID (ses_... format) or alias",
+                },
+                "new_title": {
+                    "type": "string",
+                    "description": "New title (≤500 chars, must be non-empty after HTML strip + trim)",
+                },
+                "new_alias": {
+                    "type": "string",
+                    "description": "New alias (3-100 chars, alphanumeric + hyphens/underscores, must start alphanumeric). Empty string clears the alias.",
+                },
+            },
+            "required": ["session_id"],
+        },
+    ),
+    Tool(
         name="get_session_provenance",
         description=(
             "Return the instruction provenance for a session: which rules "
@@ -1746,6 +1780,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_get_knowledge_health(arguments)
         elif name == "get_context_section":
             result = await _handle_get_context_section(arguments)
+        elif name == "rename_session":
+            result = await _handle_rename_session(arguments)
         elif name == "get_session_provenance":
             result = await _handle_get_session_provenance(arguments)
         elif name == "get_session_retrieval_log":
@@ -3110,6 +3146,75 @@ async def _handle_get_context_section(args: dict) -> dict:
     if resp.status_code >= 400:
         return {"error": f"API error {resp.status_code}: {resp.text}"}
     return resp.json()
+
+
+async def _handle_rename_session(args: dict) -> dict:
+    """Wrap PATCH /api/v1/sessions/{session_id} to rename title and/or alias.
+
+    Sessions are user-scoped, not project-scoped, so this does not call
+    `_resolve_project_id`. Auth is the standard bearer-token user gate;
+    the server enforces owner-only via `_get_user_session`. Tier gating
+    on alias is enforced server-side via `check_feature(aliases_cloud)`.
+    """
+    session_id = args.get("session_id", "")
+    if not session_id:
+        return {"error": "session_id is required"}
+
+    new_title = args.get("new_title")
+    new_alias = args.get("new_alias")
+    if new_title is None and new_alias is None:
+        return {"error": "At least one of new_title or new_alias is required"}
+
+    payload: dict = {}
+    if new_title is not None:
+        payload["title"] = new_title
+    if new_alias is not None:
+        # Empty string means "clear the alias" — route the clear path
+        # through DELETE /alias rather than PATCH alias=null, since the
+        # PATCH endpoint validates non-empty against _ALIAS_RE.
+        if new_alias == "":
+            # Handled below as a separate request.
+            pass
+        else:
+            payload["alias"] = new_alias
+
+    config = load_config()
+    if not config.sync.api_key:
+        return {"error": "Not authenticated. Run 'sfs auth login' first."}
+
+    import httpx
+    api_url = config.sync.api_url.rstrip("/")
+    headers = {"Authorization": f"Bearer {config.sync.api_key}"}
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        # First handle the alias-clear case (DELETE) when requested.
+        if new_alias == "":
+            del_resp = await client.delete(
+                f"{api_url}/api/v1/sessions/{session_id}/alias",
+                headers=headers,
+            )
+            if del_resp.status_code >= 400:
+                return {"error": f"API error {del_resp.status_code}: {del_resp.text}"}
+        # Then handle the PATCH for title and/or non-empty alias.
+        if payload:
+            resp = await client.patch(
+                f"{api_url}/api/v1/sessions/{session_id}",
+                json=payload,
+                headers=headers,
+            )
+            if resp.status_code == 404:
+                return {"error": f"Session {session_id} not found"}
+            if resp.status_code >= 400:
+                return {"error": f"API error {resp.status_code}: {resp.text}"}
+            return resp.json()
+        # Alias-only clear path: re-fetch the updated session record.
+        get_resp = await client.get(
+            f"{api_url}/api/v1/sessions/{session_id}",
+            headers=headers,
+        )
+        if get_resp.status_code >= 400:
+            return {"error": f"API error {get_resp.status_code}: {get_resp.text}"}
+        return get_resp.json()
 
 
 async def _handle_get_session_provenance(args: dict) -> dict:

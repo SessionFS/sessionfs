@@ -276,10 +276,10 @@ class TestToolRegistryV0996:
     (create/claim/get/list_inbox/list_sent/revoke/decline/comment = 8).
     Total: 53."""
 
-    def test_tool_count_is_58(self):
+    def test_tool_count_is_59(self):
         from sessionfs.mcp.server import _TOOLS
-        assert len(_TOOLS) == 58, (
-            f"Expected 58 MCP tools after tk_c64915570f4d4042 added promote_eligible_entries, got {len(_TOOLS)}"
+        assert len(_TOOLS) == 59, (
+            f"Expected 59 MCP tools after tk_cf9f1691091d4e8e added rename_session, got {len(_TOOLS)}"
         )
 
     def test_new_tools_registered(self):
@@ -321,6 +321,8 @@ class TestToolRegistryV0996:
             "get_ticket_review_state",
             # v0.10.12 bulk KB repair (tk_c64915570f4d4042)
             "promote_eligible_entries",
+            # v0.10.23 session rename (tk_cf9f1691091d4e8e)
+            "rename_session",
         ):
             assert new_tool in names, f"Missing MCP tool: {new_tool}"
 
@@ -571,6 +573,132 @@ class TestNewToolDispatch:
         result = await mcp_server._handle_get_session_provenance({"session_id": "ses_xyz"})
         assert captured["url"] == "https://api.test/api/v1/sessions/ses_xyz/provenance"
         assert result["rules_version"] == 7
+
+    @pytest.mark.asyncio
+    async def test_dispatch_rename_session_title_and_alias(self, monkeypatch):
+        """rename_session dispatches PATCH /sessions/{id} with title+alias body.
+        Sessions are user-scoped — handler uses load_config, not project resolver."""
+        import httpx
+        from types import SimpleNamespace
+
+        fake_config = SimpleNamespace(
+            sync=SimpleNamespace(api_url="https://api.test", api_key="test-key"),
+        )
+        monkeypatch.setattr(mcp_server, "load_config", lambda: fake_config)
+
+        captured: dict = {}
+
+        class _Resp:
+            status_code = 200
+            text = "{}"
+
+            def json(self):
+                return {"id": "ses_xyz", "title": "New", "alias": "new-alias"}
+
+        class _FakeClient:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def patch(self, url, *, json=None, headers=None):
+                captured["url"] = url
+                captured["json"] = json
+                captured["method"] = "PATCH"
+                return _Resp()
+
+            async def delete(self, url, *, headers=None):
+                captured.setdefault("delete_url", url)
+                return _Resp()
+
+            async def get(self, url, *, headers=None):
+                captured["get_url"] = url
+                return _Resp()
+
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+        result = await mcp_server._handle_rename_session({
+            "session_id": "ses_xyz",
+            "new_title": "New",
+            "new_alias": "new-alias",
+        })
+        assert captured["method"] == "PATCH"
+        assert captured["url"] == "https://api.test/api/v1/sessions/ses_xyz"
+        assert captured["json"] == {"title": "New", "alias": "new-alias"}
+        assert result["title"] == "New"
+        assert result["alias"] == "new-alias"
+
+    @pytest.mark.asyncio
+    async def test_dispatch_rename_session_empty_alias_clears(self, monkeypatch):
+        """Passing new_alias='' routes through DELETE /alias, not PATCH alias=null."""
+        import httpx
+        from types import SimpleNamespace
+
+        fake_config = SimpleNamespace(
+            sync=SimpleNamespace(api_url="https://api.test", api_key="test-key"),
+        )
+        monkeypatch.setattr(mcp_server, "load_config", lambda: fake_config)
+
+        captured: dict = {}
+
+        class _Resp:
+            status_code = 200
+            text = "{}"
+
+            def json(self):
+                return {"id": "ses_xyz", "alias": None}
+
+        class _FakeClient:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def patch(self, url, *, json=None, headers=None):
+                captured["patch_url"] = url
+                captured["patch_json"] = json
+                return _Resp()
+
+            async def delete(self, url, *, headers=None):
+                captured["delete_url"] = url
+                return _Resp()
+
+            async def get(self, url, *, headers=None):
+                captured["get_url"] = url
+                return _Resp()
+
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+        # Alias-clear only (no title change).
+        await mcp_server._handle_rename_session({
+            "session_id": "ses_xyz",
+            "new_alias": "",
+        })
+        assert captured["delete_url"] == "https://api.test/api/v1/sessions/ses_xyz/alias"
+        # PATCH must NOT be called when only clearing alias.
+        assert "patch_url" not in captured
+        # Handler re-fetches the row after clear so the caller gets the updated record.
+        assert captured["get_url"] == "https://api.test/api/v1/sessions/ses_xyz"
+
+    @pytest.mark.asyncio
+    async def test_dispatch_rename_session_requires_session_id(self):
+        result = await mcp_server._handle_rename_session({})
+        assert "error" in result
+        assert "session_id" in result["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_dispatch_rename_session_requires_at_least_one_field(self):
+        result = await mcp_server._handle_rename_session({"session_id": "ses_xyz"})
+        assert "error" in result
+        assert "new_title" in result["error"] or "new_alias" in result["error"]
 
     @pytest.mark.asyncio
     async def test_dispatch_compile_knowledge_base(self, fake_resolver, fake_httpx, captured):
