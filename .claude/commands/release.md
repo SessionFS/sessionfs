@@ -139,9 +139,28 @@ Fix any stale test counts or version numbers.
 | `site/src/pages/changelog.astro` | New version section added |
 | `site/src/pages/pricing.astro` | Tiers match server-side definitions |
 
-#### 6f. MANDATORY: Run Scribe-Site Sync
+#### 6f. MANDATORY: Run Scribe-Site Sync (when `site/` has changes)
 
 **The product site must NEVER be stale after a release.**
+
+**Gate first.** Skip Scribe-Site invocation when `site/` is untouched
+since the last tag — saves the agent invocation (~80k tokens of work)
+on code-only releases like v0.10.11. Check before invoking:
+
+```bash
+LAST_TAG=$(git describe --abbrev=0 --tags)
+SITE_CHANGES=$(git diff --name-only "${LAST_TAG}..HEAD" -- site/ | wc -l | tr -d ' ')
+echo "site/ changes since ${LAST_TAG}: ${SITE_CHANGES}"
+```
+
+If `SITE_CHANGES == 0`, **skip step 6f entirely** and proceed to 6g.
+Even the site deploy below is skipped — Vercel's Deploy Site
+pipeline only fires when `site/` files change in the same push, so
+there's nothing to deploy.
+
+If `SITE_CHANGES > 0`, run the Scribe-Site agent — every changed
+`site/` file (changelog, version refs, test counts, meta tags,
+feature/pricing pages) needs a sync pass:
 
 Load the Scribe-Site agent from `.agents/scribe-site-sync.md` and run the full site sync:
 
@@ -153,6 +172,10 @@ After the agent completes, deploy the site:
 ```bash
 cd site && npx vercel --yes --prod
 ```
+
+**Note: this is still MANDATORY when `SITE_CHANGES > 0`.** The gate
+only short-circuits the zero-change case — never skip Scribe-Site on
+a release that actually touched `site/` files.
 
 #### 6g. Forbidden strings
 ```bash
