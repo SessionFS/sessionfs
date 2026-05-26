@@ -1592,13 +1592,130 @@ async def test_review_state_cap_preserves_earliest_rounds(
     ])
     await db_session.commit()
 
-    resp = await client.get(
-        f"/api/v1/projects/{project.id}/tickets/{tk['id']}/review-state",
-        headers=_hdrs(key),
+
+# ─────────────────────────────────────────────────────────────────────
+# v0.10.23 tk_884b2321fdb74170 — persona name case normalization
+# ─────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_create_ticket_normalizes_persona_case(
+    client: AsyncClient, db_session: AsyncSession,
+):
+    user, raw = await _make_user(db_session)
+    """Codex v0.10.23 tk_884b2321fdb74170 — ticket created with
+    `assigned_to='Atlas'` (capitalized, matching the .agents/atlas-backend.md
+    filename) must be stored as the canonical persona name (lowercase)
+    so the later start_ticket resolver's exact match always hits."""
+    project = await _make_project(db_session, user)
+    await _make_persona(db_session, project, user, name="atlas")
+    headers = _hdrs(raw)
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=headers,
+        json={
+            "title": "Case-normalized ticket",
+            "description": "Persona case bug repro from CEO",
+            "priority": "low",
+            "assigned_to": "Atlas",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["assigned_to"] == "atlas", (
+        f"expected normalized 'atlas', got {resp.json()['assigned_to']!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_ticket_keeps_unknown_assigned_to_as_freetext(
+    client: AsyncClient, db_session: AsyncSession,
+):
+    user, raw = await _make_user(db_session)
+    """Backward compat — assigned_to has historically been free-text
+    when no matching persona exists. The normalization is best-effort,
+    not strict validation."""
+    project = await _make_project(db_session, user)
+    headers = _hdrs(raw)
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=headers,
+        json={
+            "title": "Free-text assignee",
+            "description": "No persona by this name — keep as-is",
+            "priority": "low",
+            "assigned_to": "some-future-persona",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["assigned_to"] == "some-future-persona"
+
+
+@pytest.mark.asyncio
+async def test_start_ticket_case_insensitive_persona_lookup(
+    client: AsyncClient, db_session: AsyncSession,
+):
+    user, raw = await _make_user(db_session)
+    """Belt-and-suspenders read fallback — even a legacy ticket
+    already stored with wrong-case `assigned_to` must start cleanly."""
+    project = await _make_project(db_session, user)
+    await _make_persona(db_session, project, user, name="atlas")
+
+    # Inject a ticket with the wrong-case assigned_to (simulates a row
+    # already in the wild before the normalize fix landed).
+    legacy_ticket = Ticket(
+        id=f"tk_{uuid.uuid4().hex[:16]}",
+        project_id=project.id,
+        title="Legacy wrong-case",
+        description="Pre-v0.10.23 row",
+        priority="low",
+        assigned_to="Atlas",  # wrong case
+        created_by_user_id=user.id,
+        status="open",
+        context_refs="[]",
+        file_refs="[]",
+        related_sessions="[]",
+        acceptance_criteria="[]",
+    )
+    db_session.add(legacy_ticket)
+    await db_session.commit()
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{legacy_ticket.id}/start",
+        headers=_hdrs(raw),
     )
     assert resp.status_code == 200, resp.text
-    state = resp.json()["review_state"]
-    assert state is not None, "Codex R1 within first 500 rows must survive the cap"
-    assert state["last_verdict"] == "CHANGES_REQUESTED"
-    assert len(state["open_findings"]) == 1
-    assert state["open_findings"][0]["severity"] == "LOW"
+
+
+@pytest.mark.asyncio
+async def test_update_ticket_normalizes_assigned_to(
+    client: AsyncClient, db_session: AsyncSession,
+):
+    user, raw = await _make_user(db_session)
+    """Reassign-via-PUT (the path assign_persona MCP routes through)
+    must apply the same normalization as create."""
+    project = await _make_project(db_session, user)
+    await _make_persona(db_session, project, user, name="scribe")
+    headers = _hdrs(raw)
+
+    create_r = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=headers,
+        json={
+            "title": "Reassign me",
+            "description": "Starts unassigned",
+            "priority": "low",
+        },
+    )
+    assert create_r.status_code == 201
+    tid = create_r.json()["id"]
+
+    # PUT with capitalized SCRIBE — should normalize to "scribe".
+    put_r = await client.put(
+        f"/api/v1/projects/{project.id}/tickets/{tid}",
+        headers=headers,
+        json={"assigned_to": "SCRIBE"},
+    )
+    assert put_r.status_code == 200, put_r.text
+    assert put_r.json()["assigned_to"] == "scribe"

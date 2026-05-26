@@ -43,7 +43,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, field_validator
-from sqlalchemy import and_, insert, literal, or_, select, update
+from sqlalchemy import and_, func, insert, literal, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import AuthContext, get_current_user, require_scope
@@ -86,6 +86,33 @@ _VALID_PRIORITIES = {"critical", "high", "medium", "low"}
 
 _AGENT_TICKET_DESC_MIN = 20
 _AGENT_TICKET_PER_SESSION_CAP = 3
+
+
+async def _resolve_persona_name(
+    db: AsyncSession, project_id: str, name: str
+) -> str | None:
+    """Normalize a persona name to the canonical DB-side casing.
+
+    Codex v0.10.23 tk_884b2321fdb74170 — `.agents/*.md` filenames are
+    conventionally capitalized (`atlas-backend.md`) while
+    `agent_personas.name` rows are stored lowercase. Without
+    normalization, tickets land with `assigned_to='Atlas'` and the
+    start_ticket resolver's exact-match lookup against `'atlas'`
+    fails. Returns the canonical persona name (whatever case the
+    active row stores) if a case-insensitive match exists; else None.
+    Validation at write-time is the safe boundary — the start_ticket
+    resolver also has a case-insensitive fallback for legacy rows.
+    """
+    row = (
+        await db.execute(
+            select(AgentPersona.name).where(
+                AgentPersona.project_id == project_id,
+                func.lower(AgentPersona.name) == name.lower(),
+                AgentPersona.is_active.is_(True),
+            )
+        )
+    ).scalar_one_or_none()
+    return row
 
 
 def _legal_next(current: str) -> set[str]:
@@ -837,13 +864,30 @@ async def create_ticket(
 
     initial_status = "suggested" if body.source == "agent" else "open"
 
+    # v0.10.23 tk_884b2321fdb74170 — best-effort normalize assigned_to
+    # to the canonical persona name. If the value matches an active
+    # persona case-insensitively, store the persona's actual `.name`
+    # so the later start_ticket resolver's exact match always hits.
+    # If no persona match exists, keep the value as-is — assigned_to
+    # has historically also been used as a free-text owner field, so
+    # rejecting unknown names would break that contract. start_ticket
+    # also case-insensitive-matches as a belt-and-suspenders read
+    # path for legacy rows.
+    normalized_assigned_to = body.assigned_to
+    if body.assigned_to is not None:
+        canonical = await _resolve_persona_name(
+            db, project_id, body.assigned_to
+        )
+        if canonical is not None:
+            normalized_assigned_to = canonical
+
     ticket = Ticket(
         id=f"tk_{uuid.uuid4().hex[:16]}",
         project_id=project_id,
         title=body.title,
         description=body.description,
         priority=body.priority,
-        assigned_to=body.assigned_to,
+        assigned_to=normalized_assigned_to,
         created_by_user_id=user.id,
         created_by_session_id=body.created_by_session_id,
         created_by_persona=body.created_by_persona,
@@ -908,7 +952,13 @@ async def update_ticket(
     if body.priority is not None:
         ticket.priority = body.priority
     if body.assigned_to is not None:
-        ticket.assigned_to = body.assigned_to
+        # v0.10.23 tk_884b2321fdb74170 — same best-effort normalize as
+        # create. Matches assign_persona MCP path that routes through
+        # this PUT.
+        canonical = await _resolve_persona_name(
+            db, project_id, body.assigned_to
+        )
+        ticket.assigned_to = canonical if canonical is not None else body.assigned_to
     if body.context_refs is not None:
         ticket.context_refs = json.dumps(body.context_refs)
     if body.file_refs is not None:
@@ -960,13 +1010,19 @@ async def start_ticket(
 
     # Validate that the assigned persona exists at start time
     # (suggested→open conversion attribution check is handled in approve).
+    # Codex v0.10.23 tk_884b2321fdb74170 — case-insensitive lookup so
+    # legacy tickets created with `assigned_to='Atlas'` against an
+    # `atlas` persona record start cleanly instead of 400ing. New
+    # writes are normalized to the canonical DB name at create/update
+    # time (see _resolve_persona_name), so this fallback only matters
+    # for rows already in the wild.
     persona: AgentPersona | None = None
     if ticket.assigned_to is not None:
         persona = (
             await db.execute(
                 select(AgentPersona).where(
                     AgentPersona.project_id == project_id,
-                    AgentPersona.name == ticket.assigned_to,
+                    func.lower(AgentPersona.name) == ticket.assigned_to.lower(),
                     AgentPersona.is_active.is_(True),
                 )
             )
