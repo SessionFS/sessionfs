@@ -115,11 +115,20 @@ def list_tickets(
     assigned_to: str | None = typer.Option(None, "--assigned-to", "-a"),
     status: str | None = typer.Option(None, "--status", "-s"),
     priority: str | None = typer.Option(None, "--priority", "-p"),
+    kind: str | None = typer.Option(
+        None, "--kind", "-k",
+        help="Filter by kind: 'issue' (PM rollup container) or 'task' (executor work). Omit for both.",
+    ),
 ) -> None:
     """List tickets in the current project."""
     api_url, api_key, project_id = _resolve_project()
     params = []
-    for k, v in (("assigned_to", assigned_to), ("status", status), ("priority", priority)):
+    for k, v in (
+        ("assigned_to", assigned_to),
+        ("status", status),
+        ("priority", priority),
+        ("kind", kind),
+    ):
         if v:
             params.append(f"{k}={v}")
     suffix = ("?" + "&".join(params)) if params else ""
@@ -154,14 +163,25 @@ def show_ticket(
         err_console.print(f"[red]API error ({s}): {body}[/red]")
         raise typer.Exit(1)
 
+    kind = body.get("kind", "task")
+    kind_label = "[magenta]issue[/magenta]" if kind == "issue" else "task"
     console.print(Panel(
         f"[bold]{body['title']}[/bold]\n"
         f"[dim]{body['id']}[/dim]  "
+        f"kind: {kind_label}  "
         f"[{_status_style(body['status'])}]{body['status']}[/]  "
         f"[{_priority_style(body['priority'])}]{body['priority']}[/]  "
         f"assignee: {body.get('assigned_to') or '—'}",
         expand=False,
     ))
+    parent_id = body.get("parent_ticket_id")
+    if parent_id:
+        console.print(f"[dim]Parent Issue:[/dim] [magenta]{parent_id}[/magenta]")
+    children = body.get("child_ticket_ids") or []
+    if children:
+        console.print(f"\n[bold]Child tasks ({len(children)}):[/bold]")
+        for c in children:
+            console.print(f"  - {c}")
     desc = body.get("description") or ""
     if desc:
         console.print(Markdown(desc))
@@ -193,6 +213,14 @@ def create_ticket(
     criteria: list[str] = typer.Option([], "--criteria", help="Acceptance criterion (repeatable)"),
     file_ref: list[str] = typer.Option([], "--file", "-f", help="File reference (repeatable)"),
     depends_on: list[str] = typer.Option([], "--depends-on", help="Upstream ticket id (repeatable)"),
+    kind: str = typer.Option(
+        "task", "--kind", "-k",
+        help="'task' (default) = executor work. 'issue' = PM rollup container (Compass/owner only).",
+    ),
+    parent: str | None = typer.Option(
+        None, "--parent",
+        help="Optional parent Issue id (only valid when --kind task). Parent must be kind='issue' in this project.",
+    ),
     output_id: bool = typer.Option(
         False, "--output-id",
         help="Print ONLY the new ticket id to stdout (no decorations). "
@@ -208,9 +236,12 @@ def create_ticket(
         "acceptance_criteria": list(criteria),
         "file_refs": list(file_ref),
         "depends_on": list(depends_on),
+        "kind": kind,
     }
     if assigned_to:
         payload["assigned_to"] = assigned_to
+    if parent:
+        payload["parent_ticket_id"] = parent
     s, body, _ = asyncio.run(
         _api_request(
             "POST", f"/api/v1/projects/{project_id}/tickets", api_url, api_key,
@@ -785,6 +816,18 @@ def reopen_ticket_cmd(ticket_id: str = typer.Argument(...)) -> None:
 def approve_ticket_cmd(ticket_id: str = typer.Argument(...)) -> None:
     """Move suggested → open (approve an agent-created ticket)."""
     _post_transition(ticket_id, "approve", "Approved")
+
+
+@ticket_app.command("close")
+@handle_errors
+def close_issue_cmd(ticket_id: str = typer.Argument(...)) -> None:
+    """Move an Issue from in_progress → closed.
+
+    Issue-only terminator. Tasks finish via complete + accept; Issues
+    finish via close. Manual close by the PM — NOT auto-derived from
+    child Task status.
+    """
+    _post_transition(ticket_id, "close", "Closed")
 
 
 @ticket_app.command("dismiss")

@@ -72,7 +72,13 @@ router = APIRouter(prefix="/api/v1/projects", tags=["tickets"])
 # Maps current status → set of legal next statuses. Routes consult
 # this table to validate every transition; a missing key means the
 # starting state has no legal transitions (terminal state).
-_LEGAL_TRANSITIONS: dict[str, set[str]] = {
+#
+# Two FSMs keyed by Ticket.kind (v0.10.24 tk_dbccde26ed604b3c).
+# Tasks keep the full executor FSM; Issues use a simpler container
+# FSM (open → in_progress → closed, cancelled as escape valve).
+# Issue status is manual-close by Compass — NOT auto-derived from
+# children, per CEO direction.
+_LEGAL_TRANSITIONS_TASK: dict[str, set[str]] = {
     "suggested": {"open", "cancelled"},
     "open": {"in_progress", "cancelled"},
     "in_progress": {"blocked", "review"},
@@ -81,7 +87,18 @@ _LEGAL_TRANSITIONS: dict[str, set[str]] = {
     "done": set(),
     "cancelled": set(),
 }
+_LEGAL_TRANSITIONS_ISSUE: dict[str, set[str]] = {
+    "open": {"in_progress", "cancelled"},
+    "in_progress": {"closed", "open", "cancelled"},
+    "closed": set(),
+    "cancelled": set(),
+}
+# Back-compat alias for any caller importing the old name. Tasks are
+# the existing behavior, so `_LEGAL_TRANSITIONS` keeps mapping to the
+# Task FSM.
+_LEGAL_TRANSITIONS = _LEGAL_TRANSITIONS_TASK
 
+_VALID_KINDS = {"issue", "task"}
 _VALID_PRIORITIES = {"critical", "high", "medium", "low"}
 
 _AGENT_TICKET_DESC_MIN = 20
@@ -123,13 +140,16 @@ async def _resolve_persona_name(
     return row
 
 
-def _legal_next(current: str) -> set[str]:
-    return _LEGAL_TRANSITIONS.get(current, set())
+def _legal_next(current: str, kind: str = "task") -> set[str]:
+    table = (
+        _LEGAL_TRANSITIONS_ISSUE if kind == "issue" else _LEGAL_TRANSITIONS_TASK
+    )
+    return table.get(current, set())
 
 
-def _assert_transition(current: str, target: str) -> None:
-    if target not in _legal_next(current):
-        legal = sorted(_legal_next(current)) or ["(none — terminal state)"]
+def _assert_transition(current: str, target: str, kind: str = "task") -> None:
+    if target not in _legal_next(current, kind):
+        legal = sorted(_legal_next(current, kind)) or ["(none — terminal state)"]
         raise HTTPException(
             400,
             f"Cannot transition from {current!r} to {target!r}. "
@@ -158,6 +178,13 @@ class TicketCreate(BaseModel):
     created_by_session_id: str | None = None
     # Optional persona attribution (matches Ticket.created_by_persona).
     created_by_persona: str | None = None
+    # v0.10.24 tk_dbccde26ed604b3c — Issue/Task rollup. `kind` defaults
+    # to 'task' (existing behavior). `parent_ticket_id` links a Task to
+    # its containing Issue. Validated server-side: parent must exist,
+    # must be in the same project, must be kind='issue', and the child
+    # must be kind='task' (no Issue-under-Issue in v1).
+    kind: str = "task"
+    parent_ticket_id: str | None = None
 
     @field_validator("title")
     @classmethod
@@ -183,6 +210,15 @@ class TicketCreate(BaseModel):
     def _source_shape(cls, v: str) -> str:
         if v not in {"human", "agent"}:
             raise ValueError("source must be 'human' or 'agent'")
+        return v
+
+    @field_validator("kind")
+    @classmethod
+    def _kind_shape(cls, v: str) -> str:
+        if v not in _VALID_KINDS:
+            raise ValueError(
+                f"kind must be one of: {sorted(_VALID_KINDS)}"
+            )
         return v
 
 
@@ -247,6 +283,14 @@ class TicketResponse(BaseModel):
     changed_files: list[str]
     knowledge_entry_ids: list[str]
     depends_on: list[str]
+    # v0.10.24 tk_dbccde26ed604b3c — Issue/Task rollup. `kind` is
+    # 'issue' or 'task'; existing rows default to 'task'. `parent_ticket_id`
+    # is set on Tasks filed under an Issue; NULL otherwise. `child_ticket_ids`
+    # is the rollup list for Issues; empty for Tasks (a Task can't have
+    # children in v1).
+    kind: str = "task"
+    parent_ticket_id: str | None = None
+    child_ticket_ids: list[str] = []
     created_at: datetime
     updated_at: datetime
     resolved_at: datetime | None
@@ -322,7 +366,9 @@ async def _ticket_dependencies(db: AsyncSession, ticket_id: str) -> list[str]:
     return list(rows)
 
 
-def _to_response(t: Ticket, deps: list[str]) -> TicketResponse:
+def _to_response(
+    t: Ticket, deps: list[str], child_ticket_ids: list[str] | None = None
+) -> TicketResponse:
     return TicketResponse(
         id=t.id,
         project_id=t.project_id,
@@ -345,6 +391,9 @@ def _to_response(t: Ticket, deps: list[str]) -> TicketResponse:
         changed_files=_loads(t.changed_files),
         knowledge_entry_ids=_loads(t.knowledge_entry_ids),
         depends_on=deps,
+        kind=t.kind,
+        parent_ticket_id=t.parent_ticket_id,
+        child_ticket_ids=child_ticket_ids or [],
         created_at=t.created_at,
         updated_at=t.updated_at,
         resolved_at=t.resolved_at,
@@ -698,6 +747,7 @@ async def list_tickets(
     assigned_to: str | None = None,
     status: str | None = None,
     priority: str | None = None,
+    kind: str | None = None,
     auth: AuthContext = Depends(require_scope("tickets:read")),
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
@@ -708,6 +758,11 @@ async def list_tickets(
         assert_service_key_can_access_project,
     )
     await assert_service_key_can_access_project(db, auth, project)
+
+    if kind is not None and kind not in _VALID_KINDS:
+        raise HTTPException(
+            400, f"kind must be one of: {sorted(_VALID_KINDS)}"
+        )
 
     stmt = select(Ticket).where(Ticket.project_id == project_id)
     if assigned_to is not None:
@@ -725,6 +780,8 @@ async def list_tickets(
         stmt = stmt.where(Ticket.status == status)
     if priority is not None:
         stmt = stmt.where(Ticket.priority == priority)
+    if kind is not None:
+        stmt = stmt.where(Ticket.kind == kind)
     stmt = stmt.order_by(Ticket.created_at.desc())
     rows = (await db.execute(stmt)).scalars().all()
     # Batch-load dependencies for all tickets in one query.
@@ -741,7 +798,27 @@ async def list_tickets(
     deps_by_ticket: dict[str, list[str]] = {tid: [] for tid in ids}
     for tid, dep_id in dep_rows:
         deps_by_ticket[tid].append(dep_id)
-    return [_to_response(t, deps_by_ticket[t.id]) for t in rows]
+    # v0.10.24 — batch-load child ticket ids for any Issues in the
+    # result set so the response includes the rollup. Tasks return
+    # an empty list (they cannot have children in v1).
+    issue_ids = [t.id for t in rows if t.kind == "issue"]
+    children_by_parent: dict[str, list[str]] = {iid: [] for iid in issue_ids}
+    if issue_ids:
+        child_rows = (
+            await db.execute(
+                select(Ticket.id, Ticket.parent_ticket_id).where(
+                    Ticket.parent_ticket_id.in_(issue_ids)
+                )
+            )
+        ).all()
+        for cid, pid in child_rows:
+            children_by_parent.setdefault(pid, []).append(cid)
+    return [
+        _to_response(
+            t, deps_by_ticket[t.id], children_by_parent.get(t.id, [])
+        )
+        for t in rows
+    ]
 
 
 @router.get(
@@ -762,7 +839,21 @@ async def get_ticket(
     await assert_service_key_can_access_project(db, auth, project)
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
     deps = await _ticket_dependencies(db, ticket.id)
-    return _to_response(ticket, deps)
+    child_ticket_ids: list[str] = []
+    if ticket.kind == "issue":
+        # v0.10.24 — rollup query. Single SELECT, indexed by
+        # (project_id, parent_ticket_id). Tasks return empty list
+        # (Tasks cannot have children in v1).
+        child_rows = (
+            await db.execute(
+                select(Ticket.id).where(
+                    Ticket.project_id == project_id,
+                    Ticket.parent_ticket_id == ticket.id,
+                )
+            )
+        ).scalars().all()
+        child_ticket_ids = list(child_rows)
+    return _to_response(ticket, deps, child_ticket_ids)
 
 
 @router.get(
@@ -843,6 +934,19 @@ async def create_ticket(
     - source='human' (default): status='open', no quality gates.
     - source='agent': status='suggested', acceptance criteria required,
       description >=20 chars, max 3 per session.
+
+    v0.10.24 tk_dbccde26ed604b3c — Issue/Task rollup. `kind` defaults
+    to 'task' (existing behavior). When `kind='issue'`:
+      - Authorization gated (Compass-assigned OR project owner).
+      - Suggested-quality gate skipped; Issues start at 'open' regardless
+        of source. Agent-created Issues are still allowed but bypass
+        the acceptance-criteria / 20-char-description / per-session cap
+        because Issues are PM-triaged containers, not executor work.
+      - Cannot have a parent (no Issue-under-Issue in v1).
+    When `parent_ticket_id` is provided:
+      - Parent must exist, be in the same project, and be kind='issue'.
+      - Child must be kind='task' (enforced above).
+      - No self-parent (the new ticket has no id yet so this is implicit).
     """
     user = auth.user
     check_feature(ctx, "agent_tickets")
@@ -852,8 +956,60 @@ async def create_ticket(
     )
     await assert_service_key_can_access_project(db, auth, project)
 
-    # Agent-created quality gates.
-    if body.source == "agent":
+    # v0.10.24 — Issue authorization. Only Compass (the PM persona)
+    # or the project owner may file kind='issue'. Reasoning: Issues
+    # are PM-triaged rollups; if every persona could file Issues the
+    # rollup loses meaning. Parent ticket constraint AC.
+    if body.kind == "issue":
+        is_compass_assigned = (
+            body.assigned_to is not None
+            and body.assigned_to.lower() == "compass"
+        )
+        is_project_owner = project.owner_id == user.id
+        if not (is_compass_assigned or is_project_owner):
+            raise HTTPException(
+                403,
+                "Only Compass persona or the project owner may file "
+                "kind='issue' tickets. Pass assigned_to='compass' or "
+                "file as the project owner.",
+            )
+        if body.parent_ticket_id is not None:
+            raise HTTPException(
+                400,
+                "Issues cannot be nested under other Issues in v1. "
+                "Leave parent_ticket_id null on kind='issue' tickets.",
+            )
+
+    # v0.10.24 — parent validation. If parent_ticket_id is provided,
+    # the parent must exist in the same project AND be kind='issue'.
+    # Cross-project / wrong-kind references are 422.
+    if body.parent_ticket_id is not None:
+        parent = (
+            await db.execute(
+                select(Ticket).where(
+                    Ticket.id == body.parent_ticket_id,
+                    Ticket.project_id == project_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if parent is None:
+            raise HTTPException(
+                422,
+                f"Parent ticket {body.parent_ticket_id!r} not found in "
+                f"project {project_id!r}. Cross-project parent linking "
+                "is rejected.",
+            )
+        if parent.kind != "issue":
+            raise HTTPException(
+                422,
+                f"Parent ticket {body.parent_ticket_id!r} is "
+                f"kind={parent.kind!r}; parent_ticket_id requires the "
+                "parent to be kind='issue'.",
+            )
+
+    # Agent-created quality gates (Task-only — Issues skip these because
+    # they're PM-triaged containers, not executor work units).
+    if body.source == "agent" and body.kind == "task":
         if not body.acceptance_criteria:
             raise HTTPException(
                 400,
@@ -879,7 +1035,12 @@ async def create_ticket(
                     f"Maximum {_AGENT_TICKET_PER_SESSION_CAP} tickets per session",
                 )
 
-    initial_status = "suggested" if body.source == "agent" else "open"
+    # Issues always start 'open' (no suggested-quality gate); Tasks
+    # use the existing source-based default.
+    if body.kind == "issue":
+        initial_status = "open"
+    else:
+        initial_status = "suggested" if body.source == "agent" else "open"
 
     # v0.10.23 tk_884b2321fdb74170 — best-effort normalize assigned_to
     # to the canonical persona name. If the value matches an active
@@ -916,6 +1077,8 @@ async def create_ticket(
         actor_type=auth.actor_type,
         service_key_id=auth.service_key_id,
         service_key_name=auth.service_key_name,
+        kind=body.kind,
+        parent_ticket_id=body.parent_ticket_id,
     )
     db.add(ticket)
     await db.flush()
@@ -1151,7 +1314,7 @@ async def complete_ticket(
         await db.rollback()
         ticket = await _get_ticket_or_404(project_id, ticket_id, db)
         _assert_lease_epoch(ticket, body.lease_epoch)
-        _assert_transition(ticket.status, "review")
+        _assert_transition(ticket.status, "review", ticket.kind)
         raise HTTPException(409, "Cannot complete ticket due to concurrent update")
     await db.commit()
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
@@ -1309,7 +1472,7 @@ async def accept_ticket(
                     f"current lease_epoch={existing.lease_epoch}."
                 ),
             )
-        legal = sorted(_legal_next(existing.status))
+        legal = sorted(_legal_next(existing.status, existing.kind))
         legal_str = ", ".join(legal) if legal else "(none — terminal state)"
         raise HTTPException(
             409,
@@ -1344,7 +1507,7 @@ async def reopen_ticket(
     check_feature(ctx, "agent_tickets")
     await _get_project_or_404(project_id, db, user.id)
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
-    _assert_transition(ticket.status, "open")
+    _assert_transition(ticket.status, "open", ticket.kind)
 
     ticket.status = "open"
     ticket.updated_at = datetime.now(timezone.utc)
@@ -1369,7 +1532,7 @@ async def block_ticket(
     check_feature(ctx, "agent_tickets")
     await _get_project_or_404(project_id, db, user.id)
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
-    _assert_transition(ticket.status, "blocked")
+    _assert_transition(ticket.status, "blocked", ticket.kind)
 
     ticket.status = "blocked"
     ticket.updated_at = datetime.now(timezone.utc)
@@ -1394,7 +1557,7 @@ async def unblock_ticket(
     check_feature(ctx, "agent_tickets")
     await _get_project_or_404(project_id, db, user.id)
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
-    _assert_transition(ticket.status, "in_progress")
+    _assert_transition(ticket.status, "in_progress", ticket.kind)
 
     ticket.status = "in_progress"
     ticket.updated_at = datetime.now(timezone.utc)
@@ -1419,7 +1582,7 @@ async def approve_ticket(
     check_feature(ctx, "agent_tickets")
     await _get_project_or_404(project_id, db, user.id)
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
-    _assert_transition(ticket.status, "open")
+    _assert_transition(ticket.status, "open", ticket.kind)
 
     ticket.status = "open"
     ticket.updated_at = datetime.now(timezone.utc)
@@ -1440,14 +1603,58 @@ async def dismiss_ticket(
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> TicketResponse:
-    """Move suggested/open → cancelled."""
+    """Move suggested/open → cancelled. Issues can also dismiss from
+    in_progress. Both kinds use the Task FSM's 'cancelled' terminal
+    state; the Issue FSM allows cancelled from open AND in_progress."""
     check_feature(ctx, "agent_tickets")
     await _get_project_or_404(project_id, db, user.id)
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
-    _assert_transition(ticket.status, "cancelled")
+    _assert_transition(ticket.status, "cancelled", ticket.kind)
 
     ticket.status = "cancelled"
     ticket.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(ticket)
+    deps = await _ticket_dependencies(db, ticket.id)
+    return _to_response(ticket, deps)
+
+
+@router.post(
+    "/{project_id}/tickets/{ticket_id}/close",
+    response_model=TicketResponse,
+)
+async def close_issue(
+    project_id: str,
+    ticket_id: str,
+    user: User = Depends(get_current_user),
+    ctx: UserContext = Depends(get_user_context),
+    db: AsyncSession = Depends(get_db),
+) -> TicketResponse:
+    """Move an Issue from in_progress → closed.
+
+    v0.10.24 tk_dbccde26ed604b3c — the Issue lifecycle terminator. Tasks
+    finish via complete → accept; Issues finish via close. Status is
+    manually closed by Compass (NOT auto-derived from child Task
+    status), per the CEO direction on the parent ticket: an Issue can
+    stay open even after all children done if Compass hasn't confirmed
+    the user-facing problem is resolved.
+    """
+    check_feature(ctx, "agent_tickets")
+    await _get_project_or_404(project_id, db, user.id)
+    ticket = await _get_ticket_or_404(project_id, ticket_id, db)
+    if ticket.kind != "issue":
+        raise HTTPException(
+            400,
+            f"Cannot close ticket {ticket.id!r}: kind={ticket.kind!r}. "
+            "The /close transition is for Issues only; Tasks finish via "
+            "/complete + /accept.",
+        )
+    _assert_transition(ticket.status, "closed", ticket.kind)
+
+    now = datetime.now(timezone.utc)
+    ticket.status = "closed"
+    ticket.resolved_at = now
+    ticket.updated_at = now
     await db.commit()
     await db.refresh(ticket)
     deps = await _ticket_dependencies(db, ticket.id)

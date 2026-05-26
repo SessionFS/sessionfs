@@ -834,10 +834,17 @@ _TOOLS = [
         name="list_tickets",
         description=(
             "List tickets for this project. Filter by `assigned_to` "
-            "(persona name), `status`, or `priority`. Returns each ticket's "
-            "id, title, assigned persona, status, and priority.\n\n"
-            "Status values: suggested, open, in_progress, blocked, review, "
-            "done, cancelled.\n\n"
+            "(persona name), `status`, `priority`, or `kind`. Returns each "
+            "ticket's id, title, assigned persona, status, priority, kind, "
+            "and parent_ticket_id when set.\n\n"
+            "Status values for tasks: suggested, open, in_progress, "
+            "blocked, review, done, cancelled. Status values for issues: "
+            "open, in_progress, closed, cancelled (no suggested/review/"
+            "blocked — Issues are PM-triaged containers, not executor "
+            "work units).\n\n"
+            "Kind values: 'task' (default — the existing executor unit) "
+            "or 'issue' (a PM-triaged container that rolls up child "
+            "tasks via parent_ticket_id).\n\n"
             "IMPORTANT: Always use this MCP tool instead of running "
             "`sfs ticket list` or any other sfs CLI command."
         ),
@@ -847,6 +854,11 @@ _TOOLS = [
                 "assigned_to": {"type": "string", "description": "Filter by persona name"},
                 "status": {"type": "string", "description": "Filter by status"},
                 "priority": {"type": "string", "description": "Filter by priority"},
+                "kind": {
+                    "type": "string",
+                    "enum": ["issue", "task"],
+                    "description": "Filter by kind. Omit to return both.",
+                },
                 "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
             },
         },
@@ -981,11 +993,27 @@ _TOOLS = [
         description=(
             "Create a new ticket. Can be created by a human or an agent "
             "working on another ticket.\n\n"
-            "Agent-created tickets (source='agent') default to 'suggested' "
+            "**Kind: Issue vs Task** (v0.10.24).\n"
+            "- `kind='task'` (default) — the existing executor work unit. "
+            "Owned by Atlas/Sentinel/Prism/Forge/etc. Tasks finish via "
+            "complete + accept. File a Task for concrete code work.\n"
+            "- `kind='issue'` — a PM-triaged container that rolls up one "
+            "or more child Tasks via `parent_ticket_id`. Owned by "
+            "Compass. Issues finish via /close (manual close by Compass "
+            "— NOT auto-derived from child status). File an Issue when "
+            "a user-reported problem will spawn multiple workstreams "
+            "that need PM-level rollup. Authorization: only Compass-"
+            "assigned or project owner may file Issues.\n\n"
+            "When `parent_ticket_id` is set: parent must exist in this "
+            "project AND be kind='issue'. Single-level nesting only — "
+            "Issues cannot be nested under other Issues.\n\n"
+            "Agent-created Tasks (source='agent') default to 'suggested' "
             "status and require:\n"
             "- acceptance_criteria (at least one)\n"
             "- description >= 20 characters\n"
             "- max 3 per session_id\n\n"
+            "Agent-created Issues bypass the suggested-quality gate "
+            "(Issues are PM-triaged containers, not executor work).\n\n"
             "Human-created tickets (source='human', default) land as "
             "'open' immediately.\n\n"
             "IMPORTANT: Always use this MCP tool instead of running "
@@ -1005,6 +1033,16 @@ _TOOLS = [
                 "source": {"type": "string", "enum": ["human", "agent"], "default": "human"},
                 "created_by_session_id": {"type": "string"},
                 "created_by_persona": {"type": "string"},
+                "kind": {
+                    "type": "string",
+                    "enum": ["issue", "task"],
+                    "default": "task",
+                    "description": "'task' = executor work (default). 'issue' = PM-triaged rollup container.",
+                },
+                "parent_ticket_id": {
+                    "type": "string",
+                    "description": "Optional parent Issue (only valid when kind='task'). Parent must be kind='issue' in this same project.",
+                },
                 "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
             },
             "required": ["title"],
@@ -3412,7 +3450,7 @@ async def _handle_list_tickets(args: dict) -> dict:
         return {"error": str(exc)}
 
     params: dict[str, str] = {}
-    for key in ("assigned_to", "status", "priority"):
+    for key in ("assigned_to", "status", "priority", "kind"):
         val = args.get(key)
         if isinstance(val, str) and val.strip():
             params[key] = val.strip()
@@ -3622,6 +3660,7 @@ async def _handle_create_ticket(args: dict) -> dict:
     for key in (
         "description", "assigned_to", "priority", "source",
         "created_by_session_id", "created_by_persona",
+        "kind", "parent_ticket_id",
     ):
         val = args.get(key)
         if isinstance(val, str) and val.strip():
