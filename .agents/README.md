@@ -22,6 +22,7 @@ The server-side persona store is authoritative. Local `.agents/*.md` files are c
 | **Vault** (Licensing and IP Protection Lead) | `vault-licensing.md` | Open-core boundaries, licensing, packaging, IP protection, commercial artifacts |
 | **Counsel** (Startup IP and Legal Strategy Lead) | `counsel-startup.md` | Legal research prep, IP evidence packets, contract review notes, attorney questions |
 | **Scout** (Competitive Intelligence and Market Analyst) | `scout-competitive-intelligence.md` | Competitor monitoring, market signals, pricing intelligence, threat assessment, multi-source scouting workflows |
+| **Beacon** (BizDev and Partnerships Lead) | `beacon.md` | Platform-partnership discovery, partnership-fit scoring, scoped integration proposals, warm-intro orchestration |
 
 ## How to Use
 
@@ -67,6 +68,7 @@ DELIVERABLES: [Concrete outputs with acceptance criteria]
 | Licensing, open-core boundary, packaging/IP | Vault |
 | Legal research prep, contracts, trademark/patent evidence | Counsel |
 | Competitor monitoring, market signals, pricing intelligence, scout workflows | Scout |
+| Platform partnerships, integration discovery, partnership-fit scoring | Beacon |
 
 ## Persona Hygiene
 

@@ -66,13 +66,41 @@ def handle_errors(func):
     # truly-unexpected stuff.
     import click.exceptions as _click_exc
 
+    # v0.10.26 hotfix: typer 0.26 vendors its own click module —
+    # `typer.BadParameter` is `typer._click.exceptions.BadParameter`,
+    # NOT `click.exceptions.ClickException`. The two class hierarchies
+    # are disjoint as of typer 0.26, so `except click.exceptions
+    # .ClickException` no longer catches typer-raised parameter errors.
+    # Result: typer's BadParameter falls through to the generic
+    # `except Exception` and renders as "Unexpected error: ..."
+    # — exactly the regression the Codex round-2 review on
+    # tk_e025375272b84a95 / v0.10.11 originally fixed.
+    # Collect both ClickException base classes so the except clauses
+    # below catch either family regardless of typer version.
+    _click_exception_bases: tuple = (_click_exc.ClickException,)
+    _click_exit_bases: tuple = (_click_exc.Exit,)
+    _click_abort_bases: tuple = (_click_exc.Abort,)
+    try:
+        from typer._click import exceptions as _typer_click_exc
+        if _typer_click_exc.ClickException not in _click_exception_bases:
+            _click_exception_bases = _click_exception_bases + (
+                _typer_click_exc.ClickException,
+            )
+        if hasattr(_typer_click_exc, "Exit"):
+            _click_exit_bases = _click_exit_bases + (_typer_click_exc.Exit,)
+        if hasattr(_typer_click_exc, "Abort"):
+            _click_abort_bases = _click_abort_bases + (_typer_click_exc.Abort,)
+    except (ImportError, AttributeError):
+        # typer < 0.26 (or future renames) — fall back to standard click.
+        pass
+
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         try:
             return func(*args, **kwargs)
         except SystemExit:
             raise
-        except _click_exc.Exit as exc:
+        except _click_exit_bases as exc:
             # `typer.Exit(code)` raises a `click.exceptions.Exit`, which
             # is a `RuntimeError`, not a `SystemExit`. Without this
             # branch the generic `except Exception` below would swallow
@@ -81,7 +109,7 @@ def handle_errors(func):
             # generic 1. Re-raise as `SystemExit` so callers see the
             # intended code.
             raise SystemExit(exc.exit_code)
-        except _click_exc.ClickException:
+        except _click_exception_bases:
             # Re-raise so Typer's outer handler can render the standard
             # parser-error format ("Usage: ... \n Try '... --help'." +
             # "Error: <message>"). Wrapping this in our friendly
@@ -90,7 +118,7 @@ def handle_errors(func):
         except KeyboardInterrupt:
             err_console.print("\nCancelled.")
             raise SystemExit(130)
-        except _click_exc.Abort:
+        except _click_abort_bases:
             # click.exceptions.Abort inherits from RuntimeError, not
             # ClickException, so the pass-through above misses it. It
             # fires when an interactive prompt (typer.confirm) hits
