@@ -1297,6 +1297,131 @@ class TestNewToolDispatch:
         assert captured.get("params", {}) == {"force": "true"}
 
     @pytest.mark.asyncio
+    async def test_delete_persona_rejects_falsey_strings_as_unforced(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        """Codex R1 MEDIUM regression — `bool("false")` is True in
+        Python; the destructive force path must not accept truthy-string
+        values that mean False. "false", "0", "no" → unforced."""
+        for falsey in ("false", "False", "0", "no", "NO", ""):
+            captured.clear()
+            await mcp_server._handle_delete_persona({
+                "name": "atlas",
+                "force": falsey,
+            })
+            assert captured.get("params", {}) == {}, (
+                f"force={falsey!r} should NOT pass ?force=true"
+            )
+
+    @pytest.mark.asyncio
+    async def test_delete_persona_accepts_truthy_strings_as_forced(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        """Strict allowlist for force=true: only literal True or the
+        narrow truthy-string set ("true", "1", "yes") opts in."""
+        for truthy in ("true", "True", "1", "yes", "YES"):
+            captured.clear()
+            await mcp_server._handle_delete_persona({
+                "name": "atlas",
+                "force": truthy,
+            })
+            assert captured.get("params", {}) == {"force": "true"}, (
+                f"force={truthy!r} should pass ?force=true"
+            )
+
+    @pytest.mark.asyncio
+    async def test_update_persona_surfaces_404_cleanly(self, monkeypatch):
+        """Codex R1 LOW regression (AC) — 404 from the server is
+        translated to a human-readable error string instead of leaking
+        the raw API response text."""
+        async def _resolve_stub(_remote=""):
+            return ("https://api.test", "test-key", "proj_test")
+        monkeypatch.setattr(mcp_server, "_resolve_project_id", _resolve_stub)
+
+        import httpx
+
+        class _Resp404:
+            status_code = 404
+            text = '{"error": {"code": "404", "message": "not found"}}'
+
+            def json(self):
+                return {"error": {"code": "404", "message": "not found"}}
+
+        class _FakeClient:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def put(self, *a, **k):
+                return _Resp404()
+
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+        result = await mcp_server._handle_update_persona({
+            "name": "ghost",
+            "role": "Backend",
+        })
+        assert "error" in result
+        # Must include the persona name + project context so the agent
+        # can recover, not just leak the raw API JSON.
+        assert "ghost" in result["error"]
+        assert "not found" in result["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_delete_persona_surfaces_409_envelope(self, monkeypatch):
+        """Codex R1 LOW regression (AC) — 409 (non-terminal tickets
+        reference the persona) surfaces the structured envelope so
+        callers can decide whether to retry with force=true."""
+        async def _resolve_stub(_remote=""):
+            return ("https://api.test", "test-key", "proj_test")
+        monkeypatch.setattr(mcp_server, "_resolve_project_id", _resolve_stub)
+
+        import httpx
+
+        envelope = {
+            "error": {
+                "code": "persona_has_open_tickets",
+                "message": "atlas is referenced by 3 non-terminal tickets",
+                "details": {"open_ticket_count": 3},
+            }
+        }
+
+        class _Resp409:
+            status_code = 409
+            text = json.dumps(envelope)
+
+            def json(self):
+                return envelope
+
+        class _FakeClient:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def delete(self, *a, **k):
+                return _Resp409()
+
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+        result = await mcp_server._handle_delete_persona({"name": "atlas"})
+        assert result.get("status") == 409
+        # Envelope is surfaced intact so the agent can route on
+        # error.code + read error.details.open_ticket_count to decide
+        # whether to retry with force=true.
+        assert result["error"]["error"]["code"] == "persona_has_open_tickets"
+        assert result["error"]["error"]["details"]["open_ticket_count"] == 3
+
+    @pytest.mark.asyncio
     async def test_assign_persona_sends_put(self, fake_resolver, fake_httpx, captured):
         await mcp_server._handle_assign_persona({
             "ticket_id": "tk_42",

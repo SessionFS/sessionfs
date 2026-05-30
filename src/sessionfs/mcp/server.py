@@ -1171,9 +1171,12 @@ _TOOLS = [
             "still resolve their persona name. The name remains "
             "RESERVED at the case-insensitive uniqueness layer "
             "(v0.10.23 tk_884b2321fdb74170), so you cannot create a "
-            "new persona with the same name (case-insensitive) until "
-            "the soft-deleted row is reactivated via update_persona or "
-            "the row is renamed.\n\n"
+            "new persona with the same name (case-insensitive) while "
+            "the soft-deleted row exists. Reactivation is NOT exposed "
+            "via MCP today — to bring a soft-deleted persona back, an "
+            "operator must use the CLI (`sfs persona edit --restore`) "
+            "or the HTTP API directly. Plan accordingly before "
+            "calling this tool.\n\n"
             "Refuses with 409 when non-terminal tickets (suggested / "
             "open / in_progress / blocked / review) reference this "
             "persona, unless `force=true` is passed. Without the "
@@ -3952,7 +3955,18 @@ async def _handle_delete_persona(args: dict) -> dict:
     name = (args.get("name") or "").strip()
     if not name:
         return {"error": "name is required"}
-    force = bool(args.get("force", False))
+    # Codex R1 MEDIUM (tk_32abb6d0d4744c5d) — `bool("false")` is True
+    # in Python. A destructive path should never accept truthy-string
+    # values as "force". Accept literal True OR a narrow set of
+    # case-insensitive truthy strings ("true", "1", "yes"); anything
+    # else (False, "false", "no", "0", omitted) stays unforced.
+    raw_force = args.get("force", False)
+    if isinstance(raw_force, bool):
+        force = raw_force
+    elif isinstance(raw_force, str):
+        force = raw_force.strip().lower() in {"true", "1", "yes"}
+    else:
+        force = False
 
     git_remote = args.get("git_remote", "")
     try:
