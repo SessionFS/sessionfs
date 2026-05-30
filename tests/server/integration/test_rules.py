@@ -723,7 +723,7 @@ class TestMaxTokensBounds:
         body = resp.json()
         # Structured envelope, NOT bare {"detail": "knowledge_max_tokens out of range"}
         assert "error" in body
-        assert body["error"]["code"] == "max_tokens_out_of_range"
+        assert body["error"]["code"] == "max_tokens_exceeded"
         details = body["error"]["details"]
         assert details["field"] == "knowledge_max_tokens"
         assert details["max"] == 20000
@@ -744,7 +744,7 @@ class TestMaxTokensBounds:
         )
         assert resp.status_code == 422
         body = resp.json()
-        assert body["error"]["code"] == "max_tokens_out_of_range"
+        assert body["error"]["code"] == "max_tokens_exceeded"
         assert body["error"]["details"]["field"] == "context_max_tokens"
         assert body["error"]["details"]["current"] == 99999
 
@@ -777,5 +777,5 @@ class TestMaxTokensBounds:
         )
         assert resp.status_code == 422
         body = resp.json()
-        assert body["error"]["code"] == "max_tokens_out_of_range"
+        assert body["error"]["code"] == "max_tokens_exceeded"
         assert body["error"]["details"]["current"] == -100

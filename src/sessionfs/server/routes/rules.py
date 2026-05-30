@@ -281,7 +281,7 @@ async def update_rules(
             raise HTTPException(
                 status_code=422,
                 detail={
-                    "code": "max_tokens_out_of_range",
+                    "code": "max_tokens_exceeded",
                     "message": (
                         "knowledge_max_tokens must be between 0 and 20000. "
                         f"Got {body.knowledge_max_tokens}."
@@ -307,7 +307,7 @@ async def update_rules(
             raise HTTPException(
                 status_code=422,
                 detail={
-                    "code": "max_tokens_out_of_range",
+                    "code": "max_tokens_exceeded",
                     "message": (
                         "context_max_tokens must be between 0 and 20000. "
                         f"Got {body.context_max_tokens}."
