@@ -18,9 +18,11 @@ import { useToast } from '../hooks/useToast';
 import {
   useAddTicketComment,
   useApproveTicket,
+  useCloseTicket,
   useCreateTicket,
   useDismissTicket,
   useTicket,
+  useTicketChildren,
   useTicketComments,
   useTickets,
 } from '../hooks/useTickets';
@@ -39,7 +41,14 @@ const STATUS_FILTERS: { value: string; label: string }[] = [
   { value: 'blocked', label: 'Blocked' },
   { value: 'review', label: 'Review' },
   { value: 'done', label: 'Done' },
+  { value: 'closed', label: 'Closed' },
   { value: 'cancelled', label: 'Cancelled' },
+];
+
+const KIND_FILTERS: { value: string; label: string }[] = [
+  { value: '', label: 'All' },
+  { value: 'issue', label: 'Issues' },
+  { value: 'task', label: 'Tasks' },
 ];
 
 const STATUS_TONE: Record<string, string> = {
@@ -49,7 +58,13 @@ const STATUS_TONE: Record<string, string> = {
   blocked: 'bg-orange-500/15 text-orange-600',
   review: 'bg-purple-500/15 text-purple-600',
   done: 'bg-emerald-500/15 text-emerald-600',
+  closed: 'bg-emerald-500/15 text-emerald-600',
   cancelled: 'bg-muted/15 text-muted',
+};
+
+const KIND_TONE: Record<string, string> = {
+  issue: 'bg-indigo-500/15 text-indigo-600',
+  task: 'bg-muted/15 text-muted',
 };
 
 const PRIORITY_TONE: Record<string, string> = {
@@ -71,13 +86,40 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
+function KindBadge({ kind }: { kind: string }) {
+  const label = kind === 'issue' ? 'Issue' : 'Task';
+  return (
+    <span
+      className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+        KIND_TONE[kind] ?? KIND_TONE.task
+      }`}
+    >
+      {label}
+    </span>
+  );
+}
+
 export default function TicketsTab({ projectId }: TicketsTabProps) {
   const [statusFilter, setStatusFilter] = useState<string>('');
+  const [kindFilter, setKindFilter] = useState<string>('');
   const { data, isLoading, error } = useTickets(projectId, {
     status: statusFilter || undefined,
+    kind: kindFilter || undefined,
   });
   const [creating, setCreating] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
+
+  /**
+   * Re-target the expanded row to a child Task or parent Issue. Resets
+   * status + kind filters so the navigation target is guaranteed visible
+   * (otherwise clicking the breadcrumb on a Task with a `closed` parent
+   * while filtered to `in_progress` would silently drop the parent row).
+   */
+  function navigateTo(targetId: string) {
+    setStatusFilter('');
+    setKindFilter('');
+    setSelected(targetId);
+  }
 
   if (isLoading) return <p>Loading tickets…</p>;
   if (error) return <p role="alert">Failed to load tickets: {String(error)}</p>;
@@ -93,6 +135,21 @@ export default function TicketsTab({ projectId }: TicketsTabProps) {
           </span>
         </h2>
         <div className="flex items-center gap-2">
+          <label className="text-sm">
+            <span className="sr-only">Filter by kind</span>
+            <select
+              aria-label="Filter by kind"
+              value={kindFilter}
+              onChange={(e) => setKindFilter(e.target.value)}
+              className="px-2 py-1 border border-border rounded text-sm bg-surface"
+            >
+              {KIND_FILTERS.map((k) => (
+                <option key={k.value} value={k.value}>
+                  {k.label}
+                </option>
+              ))}
+            </select>
+          </label>
           <label className="text-sm">
             <span className="sr-only">Filter by status</span>
             <select
@@ -119,22 +176,23 @@ export default function TicketsTab({ projectId }: TicketsTabProps) {
       </div>
 
       {data.length === 0 ? (
-        <div className="border border-border rounded p-6 text-center text-muted">
-          No tickets {statusFilter ? `with status "${statusFilter}"` : 'yet'}.
-        </div>
+        <EmptyState kindFilter={kindFilter} statusFilter={statusFilter} />
       ) : (
         <ul className="border border-border rounded divide-y divide-border">
           {data.map((t) => (
             <li key={t.id}>
               <button
                 type="button"
-                className="w-full text-left px-3 py-2 hover:bg-surface flex items-start gap-3"
+                className={`w-full text-left px-3 py-2 hover:bg-surface flex items-start gap-3 border-l-2 ${
+                  t.kind === 'issue' ? 'border-indigo-500/60' : 'border-transparent'
+                }`}
                 onClick={() => setSelected(selected === t.id ? null : t.id)}
                 aria-expanded={selected === t.id}
               >
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 text-sm">
+                  <div className="flex items-center gap-2 text-sm flex-wrap">
                     <span className="font-mono text-xs text-muted">{t.id}</span>
+                    <KindBadge kind={t.kind} />
                     <StatusBadge status={t.status} />
                     <span className={`text-xs uppercase tracking-wide ${PRIORITY_TONE[t.priority] ?? ''}`}>
                       {t.priority}
@@ -147,6 +205,11 @@ export default function TicketsTab({ projectId }: TicketsTabProps) {
                   <div className="text-xs text-muted">
                     <RelativeDate iso={t.updated_at} /> · {t.acceptance_criteria.length} criteria
                     {t.depends_on.length > 0 ? ` · ${t.depends_on.length} deps` : ''}
+                    {t.kind === 'issue' && t.child_ticket_ids.length > 0
+                      ? ` · ${t.child_ticket_ids.length} child ${
+                          t.child_ticket_ids.length === 1 ? 'task' : 'tasks'
+                        }`
+                      : ''}
                   </div>
                 </div>
               </button>
@@ -155,6 +218,7 @@ export default function TicketsTab({ projectId }: TicketsTabProps) {
                   projectId={projectId}
                   ticketId={t.id}
                   fallback={t}
+                  onNavigate={navigateTo}
                 />
               )}
             </li>
@@ -172,24 +236,62 @@ export default function TicketsTab({ projectId }: TicketsTabProps) {
   );
 }
 
+function EmptyState({
+  kindFilter,
+  statusFilter,
+}: {
+  kindFilter: string;
+  statusFilter: string;
+}) {
+  if (kindFilter === 'issue') {
+    return (
+      <div className="border border-border rounded p-6 text-center text-muted space-y-1">
+        <p className="font-medium text-base">No Issues yet.</p>
+        <p className="text-sm">
+          An Issue is a PM-triaged container that rolls up one or more Tasks.
+          File an Issue when a user-facing problem needs cross-team work;
+          file a Task for a single executor's unit of work.
+        </p>
+      </div>
+    );
+  }
+  return (
+    <div className="border border-border rounded p-6 text-center text-muted">
+      No tickets{' '}
+      {statusFilter ? `with status "${statusFilter}"` : kindFilter ? `of kind "${kindFilter}"` : 'yet'}.
+    </div>
+  );
+}
+
 interface DetailProps {
   projectId: string;
   ticketId: string;
   fallback: Ticket;
+  onNavigate: (targetId: string) => void;
 }
 
-function TicketDetail({ projectId, ticketId, fallback }: DetailProps) {
+type Action = 'approve' | 'dismiss' | 'close' | 'comment';
+
+function TicketDetail({ projectId, ticketId, fallback, onNavigate }: DetailProps) {
   const { data: detail } = useTicket(projectId, ticketId);
   const t = detail ?? fallback;
   const { data: comments } = useTicketComments(projectId, ticketId);
   const approve = useApproveTicket(projectId);
   const dismiss = useDismissTicket(projectId);
+  const close = useCloseTicket(projectId);
   const addComment = useAddTicketComment(projectId);
   const { addToast } = useToast();
   const [draft, setDraft] = useState('');
-  const [submitting, setSubmitting] = useState<'approve' | 'dismiss' | 'comment' | null>(null);
+  const [submitting, setSubmitting] = useState<Action | null>(null);
 
-  async function callAction(action: 'approve' | 'dismiss' | 'comment') {
+  const childIds = t.kind === 'issue' ? t.child_ticket_ids : [];
+  const childQueries = useTicketChildren(projectId, childIds);
+  const { data: parent } = useTicket(
+    projectId,
+    t.parent_ticket_id ?? undefined,
+  );
+
+  async function callAction(action: Action) {
     setSubmitting(action);
     try {
       if (action === 'approve') {
@@ -198,6 +300,9 @@ function TicketDetail({ projectId, ticketId, fallback }: DetailProps) {
       } else if (action === 'dismiss') {
         await dismiss.mutateAsync(ticketId);
         addToast('success', 'Dismissed');
+      } else if (action === 'close') {
+        await close.mutateAsync(ticketId);
+        addToast('success', 'Issue closed');
       } else if (action === 'comment') {
         if (!draft.trim()) return;
         await addComment.mutateAsync({ ticketId, content: draft.trim() });
@@ -213,9 +318,33 @@ function TicketDetail({ projectId, ticketId, fallback }: DetailProps) {
 
   const canApprove = t.status === 'suggested';
   const canDismiss = t.status === 'suggested' || t.status === 'open';
+  // Close is the Issue terminator. Server enforces project owner / org admin
+  // and returns 403 if the actor lacks standing — we surface that via the
+  // toast on the catch above rather than gating client-side.
+  const canClose = t.kind === 'issue' && t.status === 'in_progress';
 
   return (
     <div className="px-3 py-3 bg-surface/50 text-sm space-y-3">
+      {t.kind === 'task' && t.parent_ticket_id && (
+        <div className="text-xs">
+          <button
+            type="button"
+            className="text-brand hover:underline focus:outline-none focus:ring-2 focus:ring-brand/40 rounded"
+            onClick={() => onNavigate(t.parent_ticket_id!)}
+          >
+            ← Back to parent Issue:{' '}
+            <span className="font-mono">{t.parent_ticket_id}</span>
+            {parent ? (
+              <>
+                {' '}
+                — {parent.title}{' '}
+                <span className="text-muted">({parent.status})</span>
+              </>
+            ) : null}
+          </button>
+        </div>
+      )}
+
       <p className="whitespace-pre-wrap">{t.description}</p>
 
       {t.acceptance_criteria.length > 0 && (
@@ -230,6 +359,55 @@ function TicketDetail({ projectId, ticketId, fallback }: DetailProps) {
               </li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {t.kind === 'issue' && (
+        <div>
+          <h4 className="text-xs uppercase tracking-wide text-muted mb-1">
+            Children ({childIds.length})
+          </h4>
+          {childIds.length === 0 ? (
+            <p className="pl-3 text-muted text-xs">
+              No child Tasks yet. File a Task with this Issue as the parent
+              to populate this rollup.
+            </p>
+          ) : (
+            <ul className="space-y-1">
+              {childIds.map((cid, i) => {
+                const q = childQueries[i];
+                const child = q?.data;
+                return (
+                  <li key={cid}>
+                    <button
+                      type="button"
+                      className="w-full text-left flex items-center gap-2 px-2 py-1 rounded hover:bg-bg focus:outline-none focus:ring-2 focus:ring-brand/40"
+                      onClick={() => onNavigate(cid)}
+                    >
+                      <span className="font-mono text-xs text-muted">{cid}</span>
+                      {child ? (
+                        <>
+                          <StatusBadge status={child.status} />
+                          <span className="truncate">{child.title}</span>
+                          {child.assigned_to && (
+                            <span className="text-xs text-muted">
+                              → {child.assigned_to}
+                            </span>
+                          )}
+                        </>
+                      ) : q?.isError ? (
+                        <span className="text-xs text-danger">
+                          (failed to load)
+                        </span>
+                      ) : (
+                        <span className="text-xs text-muted">loading…</span>
+                      )}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
         </div>
       )}
 
@@ -305,6 +483,16 @@ function TicketDetail({ projectId, ticketId, fallback }: DetailProps) {
             {submitting === 'approve' ? 'Approving…' : 'Approve (open)'}
           </button>
         )}
+        {canClose && (
+          <button
+            type="button"
+            disabled={submitting !== null}
+            className="px-3 py-1.5 text-sm rounded bg-emerald-600 text-white hover:brightness-110 disabled:opacity-50"
+            onClick={() => callAction('close')}
+          >
+            {submitting === 'close' ? 'Closing…' : 'Close Issue'}
+          </button>
+        )}
         {canDismiss && (
           <button
             type="button"
@@ -336,7 +524,21 @@ function NewTicketModal({ projectId, onClose }: NewModalProps) {
   const [criteria, setCriteria] = useState('');
   const [priority, setPriority] = useState<'low' | 'medium' | 'high' | 'critical'>('medium');
   const [assignedTo, setAssignedTo] = useState('');
+  const [kind, setKind] = useState<'task' | 'issue'>('task');
+  const [parentTicketId, setParentTicketId] = useState<string>('');
   const [submitting, setSubmitting] = useState(false);
+
+  // Open + in_progress Issues are valid parents. Server enforces same-project
+  // + kind=='issue' on the link; we just narrow the dropdown to useful options.
+  const { data: openIssues } = useTickets(projectId, {
+    kind: 'issue',
+    status: 'open',
+  });
+  const { data: activeIssues } = useTickets(projectId, {
+    kind: 'issue',
+    status: 'in_progress',
+  });
+  const issueOptions = [...(openIssues ?? []), ...(activeIssues ?? [])];
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -345,6 +547,10 @@ function NewTicketModal({ projectId, onClose }: NewModalProps) {
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
+
+  useEffect(() => {
+    if (kind === 'issue' && parentTicketId) setParentTicketId('');
+  }, [kind, parentTicketId]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -360,8 +566,11 @@ function NewTicketModal({ projectId, onClose }: NewModalProps) {
         priority,
         assigned_to: assignedTo.trim() || null,
         acceptance_criteria: acceptanceCriteria,
+        kind,
+        parent_ticket_id:
+          kind === 'task' && parentTicketId ? parentTicketId : null,
       });
-      addToast('success', `Created ticket "${title.trim()}"`);
+      addToast('success', `Created ${kind} "${title.trim()}"`);
       onClose();
     } catch (exc) {
       const msg = exc instanceof ApiError ? `${exc.status}: ${exc.message}` : String(exc);
@@ -384,6 +593,45 @@ function NewTicketModal({ projectId, onClose }: NewModalProps) {
           New ticket
         </h3>
         <form onSubmit={handleSubmit} className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <span className="text-sm text-muted">Kind</span>
+              <select
+                value={kind}
+                onChange={(e) => setKind(e.target.value as 'task' | 'issue')}
+                className="w-full mt-1 px-2 py-1 border border-border rounded text-sm bg-surface"
+                aria-label="Ticket kind"
+              >
+                <option value="task">Task</option>
+                <option value="issue">Issue</option>
+              </select>
+              <span className="block text-xs text-muted mt-1">
+                {kind === 'issue'
+                  ? 'PM-triaged container. Requires project owner or org admin.'
+                  : 'A single executor unit of work.'}
+              </span>
+            </label>
+
+            {kind === 'task' && (
+              <label className="block">
+                <span className="text-sm text-muted">Parent Issue (optional)</span>
+                <select
+                  value={parentTicketId}
+                  onChange={(e) => setParentTicketId(e.target.value)}
+                  className="w-full mt-1 px-2 py-1 border border-border rounded text-sm bg-surface font-mono"
+                  aria-label="Parent Issue"
+                >
+                  <option value="">— none —</option>
+                  {issueOptions.map((iss) => (
+                    <option key={iss.id} value={iss.id}>
+                      {iss.id} · {iss.title.slice(0, 50)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+          </div>
+
           <label className="block">
             <span className="text-sm text-muted">Title</span>
             <input

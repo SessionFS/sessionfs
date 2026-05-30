@@ -6,10 +6,12 @@ const { hooks, mockAddToast } = vi.hoisted(() => ({
   hooks: {
     useTickets: vi.fn(),
     useTicket: vi.fn(),
+    useTicketChildren: vi.fn(),
     useTicketComments: vi.fn(),
     useCreateTicket: vi.fn(),
     useApproveTicket: vi.fn(),
     useDismissTicket: vi.fn(),
+    useCloseTicket: vi.fn(),
     useAddTicketComment: vi.fn(),
   },
   mockAddToast: vi.fn(),
@@ -46,6 +48,9 @@ function ticket(overrides: Record<string, unknown> = {}) {
     created_by_session_id: null,
     created_by_persona: null,
     status: 'suggested',
+    kind: 'task',
+    parent_ticket_id: null,
+    child_ticket_ids: [],
     context_refs: [],
     file_refs: [],
     related_sessions: [],
@@ -66,10 +71,12 @@ function ticket(overrides: Record<string, unknown> = {}) {
 beforeEach(() => {
   hooks.useTickets.mockReturnValue({ data: [ticket()], isLoading: false, error: null });
   hooks.useTicket.mockReturnValue({ data: undefined });
+  hooks.useTicketChildren.mockReturnValue([]);
   hooks.useTicketComments.mockReturnValue({ data: [] });
   hooks.useCreateTicket.mockReturnValue(makeMutation());
   hooks.useApproveTicket.mockReturnValue(makeMutation());
   hooks.useDismissTicket.mockReturnValue(makeMutation());
+  hooks.useCloseTicket.mockReturnValue(makeMutation());
   hooks.useAddTicketComment.mockReturnValue(makeMutation());
 });
 
@@ -124,5 +131,159 @@ describe('TicketsTab', () => {
     fireEvent.click(screen.getByRole('button', { name: /New ticket/i }));
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /New ticket/i })).toBeInTheDocument();
+  });
+
+  it('filters by kind', () => {
+    render(<TicketsTab projectId="proj_1" />);
+    fireEvent.change(screen.getByLabelText(/Filter by kind/i), {
+      target: { value: 'issue' },
+    });
+    expect(hooks.useTickets).toHaveBeenLastCalledWith('proj_1', {
+      status: undefined,
+      kind: 'issue',
+    });
+  });
+
+  it('renders a kind badge on the row', () => {
+    hooks.useTickets.mockReturnValue({
+      data: [ticket({ kind: 'issue', status: 'open' })],
+      isLoading: false,
+      error: null,
+    });
+    render(<TicketsTab projectId="proj_1" />);
+    expect(screen.getByText('Issue')).toBeInTheDocument();
+  });
+
+  it('shows the Issues empty-state explainer when kind=Issues filter has no rows', () => {
+    hooks.useTickets.mockReturnValue({ data: [], isLoading: false, error: null });
+    render(<TicketsTab projectId="proj_1" />);
+    fireEvent.change(screen.getByLabelText(/Filter by kind/i), {
+      target: { value: 'issue' },
+    });
+    expect(screen.getByText(/No Issues yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/PM-triaged container/i)).toBeInTheDocument();
+  });
+
+  it('renders the Children rollup with clickable child links on an expanded Issue', () => {
+    const issue = ticket({
+      id: 'tk_issue',
+      title: 'CORS preflight rejects If-Match',
+      kind: 'issue',
+      status: 'in_progress',
+      child_ticket_ids: ['tk_child_a', 'tk_child_b'],
+    });
+    hooks.useTickets.mockReturnValue({ data: [issue], isLoading: false, error: null });
+    hooks.useTicketChildren.mockReturnValue([
+      {
+        data: ticket({
+          id: 'tk_child_a',
+          title: 'Sentinel header audit',
+          status: 'review',
+          assigned_to: 'sentinel',
+          parent_ticket_id: 'tk_issue',
+        }),
+        isError: false,
+      },
+      {
+        data: ticket({
+          id: 'tk_child_b',
+          title: 'Dashboard kind filter',
+          status: 'in_progress',
+          assigned_to: 'prism',
+          parent_ticket_id: 'tk_issue',
+        }),
+        isError: false,
+      },
+    ]);
+    render(<TicketsTab projectId="proj_1" />);
+    fireEvent.click(screen.getByText('CORS preflight rejects If-Match'));
+    expect(screen.getByText(/Children \(2\)/)).toBeInTheDocument();
+    expect(screen.getByText('Sentinel header audit')).toBeInTheDocument();
+    expect(screen.getByText('Dashboard kind filter')).toBeInTheDocument();
+  });
+
+  it('shows a Back-to-parent breadcrumb on a Task with parent_ticket_id', () => {
+    hooks.useTickets.mockReturnValue({
+      data: [
+        ticket({
+          id: 'tk_child',
+          title: 'Implement filter',
+          status: 'in_progress',
+          kind: 'task',
+          parent_ticket_id: 'tk_issue',
+        }),
+      ],
+      isLoading: false,
+      error: null,
+    });
+    // TicketDetail calls useTicket twice: once for the row detail (tk_child)
+    // and once for the parent breadcrumb (tk_issue). Resolve each by id so
+    // the detail falls back to the row data and the breadcrumb renders.
+    hooks.useTicket.mockImplementation(
+      (_projectId: string, ticketId: string | undefined) => {
+        if (ticketId === 'tk_issue') {
+          return {
+            data: ticket({
+              id: 'tk_issue',
+              title: 'CORS preflight rejects If-Match',
+              kind: 'issue',
+              status: 'in_progress',
+            }),
+          };
+        }
+        return { data: undefined };
+      },
+    );
+    render(<TicketsTab projectId="proj_1" />);
+    fireEvent.click(screen.getByText('Implement filter'));
+    const breadcrumb = screen.getByRole('button', { name: /Back to parent Issue/i });
+    expect(breadcrumb).toBeInTheDocument();
+    expect(breadcrumb).toHaveTextContent('tk_issue');
+    expect(breadcrumb).toHaveTextContent('CORS preflight rejects If-Match');
+  });
+
+  it('shows a Close button on an in_progress Issue and hides it on Tasks', () => {
+    hooks.useTickets.mockReturnValue({
+      data: [
+        ticket({
+          id: 'tk_issue',
+          title: 'CORS issue',
+          kind: 'issue',
+          status: 'in_progress',
+        }),
+      ],
+      isLoading: false,
+      error: null,
+    });
+    const { unmount } = render(<TicketsTab projectId="proj_1" />);
+    fireEvent.click(screen.getByText('CORS issue'));
+    expect(screen.getByRole('button', { name: /Close Issue/i })).toBeInTheDocument();
+    unmount();
+
+    hooks.useTickets.mockReturnValue({
+      data: [
+        ticket({
+          id: 'tk_task',
+          title: 'Plain task',
+          kind: 'task',
+          status: 'in_progress',
+        }),
+      ],
+      isLoading: false,
+      error: null,
+    });
+    render(<TicketsTab projectId="proj_1" />);
+    fireEvent.click(screen.getByText('Plain task'));
+    expect(screen.queryByRole('button', { name: /Close Issue/i })).toBeNull();
+  });
+
+  it('exposes a kind selector and conditional Parent Issue picker in the new ticket modal', () => {
+    render(<TicketsTab projectId="proj_1" />);
+    fireEvent.click(screen.getByRole('button', { name: /New ticket/i }));
+    const kindSelect = screen.getByLabelText(/Ticket kind/i) as HTMLSelectElement;
+    expect(kindSelect.value).toBe('task');
+    expect(screen.getByLabelText(/Parent Issue/i)).toBeInTheDocument();
+    fireEvent.change(kindSelect, { target: { value: 'issue' } });
+    expect(screen.queryByLabelText(/Parent Issue/i)).toBeNull();
   });
 });
