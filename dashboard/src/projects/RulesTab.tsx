@@ -334,7 +334,17 @@ const DebouncedTokenInput = forwardRef<DebouncedTokenInputHandle, DebouncedToken
     // Debounce: schedule a commit 600ms after the user stops typing.
     useEffect(() => {
       const n = parseInt(draft, 10);
-      if (Number.isNaN(n) || n < 0 || n === lastCommittedRef.current) {
+      // v0.10.24 tk_d4a13a68b6724ba6 — pinning the max here too
+      // (not just on the input attribute) because users can paste
+      // values that the up/down arrows would block. Server cap is
+      // 20000; we mirror that here so the debounced PUT never fires
+      // an over-cap request → no opaque 422 toast.
+      if (
+        Number.isNaN(n)
+        || n < 0
+        || n > 20000
+        || n === lastCommittedRef.current
+      ) {
         pendingRef.current = null;
         return;
       }
@@ -366,6 +376,12 @@ const DebouncedTokenInput = forwardRef<DebouncedTokenInputHandle, DebouncedToken
       <input
         type="number"
         min={0}
+        // v0.10.24 tk_d4a13a68b6724ba6 — match the server cap in
+        // routes/rules.py so the browser rejects over-cap values
+        // before the debounced PUT fires. Without this attribute, a
+        // user typing 25000 would round-trip to a 422 with no
+        // actionable feedback.
+        max={20000}
         step={500}
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
