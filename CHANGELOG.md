@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.26] - 2026-05-30
+
+**Hotfix release — fix typer 0.26 BadParameter class hierarchy regression so Deploy API ships.** v0.10.25's `click<8.4` pin installed click 8.3.3 in CI but tests still failed: typer 0.26.3 vendors its own click module (`typer._click`), so `typer.BadParameter` is `typer._click.exceptions.BadParameter`, NOT `click.exceptions.ClickException`. `handle_errors` decorator's `except click.exceptions.ClickException` no longer catches typer-raised parameter errors → they fall through to the generic `except Exception` → render as "Unexpected error: ..." instead of the standard typer parser-error format. Same root cause as the Codex round-2 fix on tk_e025375272b84a95 / v0.10.11, surfaced again by typer's 0.26 refactor.
+
+### Fixed
+
+**`handle_errors` catches both `click.exceptions.ClickException` AND `typer._click.exceptions.ClickException`** (`src/sessionfs/cli/common.py`). Builds a tuple of base classes at import time — best-effort tries `from typer._click import exceptions` and adds typer's `ClickException`/`Exit`/`Abort` classes to the tuples used in `except` clauses. Falls back to standard click on typer <0.26 (or future renames). Inline comment cites the typer 0.26 class-hierarchy split + v0.10.11 Codex precedent.
+
+Click pin removed (`click>=8.0,<8.4` from v0.10.25 is gone; click resolves freely again).
+
+### Verification
+
+- pytest tests/ -x -q with CI's typer 0.26.3 + click 8.3.3 installed locally → 2108 passed (same as v0.10.24), 2 xfailed, 0 regressions
+- `tests/unit/test_autosync.py::TestHandoffIdMisuseRedirect::test_typer_invocation_with_session_id_still_requires_to` → PASS under both typer 0.24 (local default) and 0.26 (CI)
+- `tests/unit/test_cmd_agent.py::test_agent_complete_findings_rejects_non_object_elements` → PASS under both versions
+- ruff check src/ → clean
+- helm lint → clean
+
 ## [0.10.25] - 2026-05-30
 
 **Hotfix release — pin click<8.4 so Deploy API succeeds.** v0.10.24 tagged and Release/MCP/Container-Images pipelines all succeeded, but CI + Deploy API failed on 2 CLI tests that assert click `BadParameter`-derived exit code and output format. Tests pass on local `.venv` (click 8.3.1) but CI installed click 8.4.1 which changed both the exit-code emitted by `ClickException` and the class hierarchy that `handle_errors` decorator passes through. Result: `sfs org create` and other CLI flows reach the generic `except Exception` "Unexpected error" branch instead of click's standard parser-error format. Pinning `click>=8.0,<8.4` restores the v0.10.24 behavior; follow-up ticket will fix the brittle assertions and lift the pin.
