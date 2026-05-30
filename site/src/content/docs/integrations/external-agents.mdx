@@ -1,0 +1,194 @@
+---
+title: External Agent Orchestration
+description: Wrap a spawned CLI agent (Codex CLI, Gemini CLI, Claude Code) in an AgentRun so each external run is tied to a persona, a ticket, and an auditable outcome.
+---
+
+# External Agent Orchestration
+
+You point a coordination layer — a Python script, an n8n flow, a GitHub Action, or even a human-in-the-loop Claude Code session — at an external CLI agent (Codex CLI, Gemini CLI, Claude Code) and tell it to do ticket work. The agent edits files, runs tests, and reports back.
+
+Without provenance, that run is invisible: nothing ties the external agent's session to the persona it acted as, the ticket it worked, or the outcome it produced. **An [AgentRun](/integrations/ci-integration) closes that gap.** Wrap the spawn in `create_agent_run` → run the agent → `complete_agent_run`, and SessionFS records who ran (persona), what they worked (ticket), the result (status + severity + findings), and — when the orchestrator uses a [service key](/integrations/cloud-agents#authentication) — which key minted and completed the run.
+
+## Where this fits
+
+SessionFS has three agent-integration shapes. Pick by **who starts the run**:
+
+| Pattern | Who starts the run | Doc |
+|---|---|---|
+| **Orchestrator-initiated** (this page) | A coordination layer spawns a local/external CLI agent and wraps it | here |
+| Agent-initiated (cloud) | The cloud agent itself calls the REST control plane | [Cloud Agents](/integrations/cloud-agents) |
+| CI gating | A CI job runs a review script and gates the build on the outcome | [CI Integration](/integrations/ci-integration) |
+
+All three write to the **same `AgentRun` record** — the field table, status lifecycle (`queued → running → passed / failed / errored / cancelled`), and policy semantics are documented in [CI Integration](/integrations/ci-integration). This page is about the orchestrator-spawning flow specifically.
+
+> **SessionFS does not spawn the model.** `create_agent_run` records that a run exists and enforces a `fail_on` policy at completion; your orchestrator executes the actual agent (`codex exec`, `gemini`, `claude`, …). AgentRun records the *outcome*, not the model transcript.
+
+## The reference flow
+
+Three steps. Use MCP tools if your orchestrator speaks MCP, the `sfs agent` CLI if it shells out, or REST if it's a script or webhook — all three hit the same API.
+
+1. **Create + start the run.** Returns the run id and the compiled persona + ticket context.
+2. **Spawn the external agent**, feeding it that compiled context as its system prompt.
+3. **Complete the run** with `status`, `severity`, and structured `findings`.
+
+### Via MCP
+
+```text
+create_agent_run(persona_name="atlas", ticket_id="tk_xxx",
+                 tool="codex-cli", trigger_source="manual",
+                 fail_on="high", start_now=true)
+  → returns the run + compiled_context (persona + ticket, as markdown)
+
+# ... orchestrator runs the external agent against compiled_context ...
+
+complete_agent_run(run_id="run_xxx", status="passed", severity="low",
+                   findings=[{...}], session_id="<captured .sfs session, if any>")
+```
+
+`start_now=true` chains create + start in one call. Omit it to create a `queued` run and start it later (`start_agent_run`, or `POST .../start`).
+
+### Via the `sfs` CLI
+
+```bash
+RUN=$(sfs agent run atlas \
+  --ticket tk_xxx \
+  --tool codex-cli \
+  --trigger-source manual \
+  --fail-on high \
+  --context-file .sessionfs/context.md \
+  --output-id)
+
+# ... spawn the agent against .sessionfs/context.md ...
+
+sfs agent complete "$RUN" \
+  --summary "Atlas implemented tk_xxx via Codex CLI." \
+  --severity low \
+  --findings-file .sessionfs/findings.json \
+  --session-id "<captured session id, if any>"
+```
+
+## Worked example — Codex CLI as Atlas on a ticket
+
+This mirrors a real dogfooding shape: an orchestrator spins up Codex CLI to act as the `atlas` persona on a ticket — but with the AgentRun wiring that ties the run to the persona, the ticket, and the result.
+
+```python
+import json
+import subprocess
+
+from sessionfs_client import create_agent_run, complete_agent_run  # your wrapper
+
+REPO = "/path/to/repo"
+TICKET = "tk_xxx"
+
+# 1. Create + start the run. The start response carries the compiled
+#    persona + ticket context (acceptance criteria, dependencies,
+#    recent comments) as markdown.
+run = create_agent_run(
+    persona_name="atlas",         # lowercase — persona names are case-insensitive-unique
+    ticket_id=TICKET,
+    tool="codex-cli",             # token-budget hint; also recorded for audit
+    trigger_source="manual",      # manual / ci / webhook / scheduled / mcp / api
+    fail_on="high",               # policy: non-zero exit if a >=high finding lands
+    start_now=True,
+)
+run_id = run["run"]["id"]
+context_md = run["compiled_context"]
+
+# 2. Spawn Codex CLI with the compiled context as the system prompt.
+#    Codex's runtime is .git-readonly (see "Sandbox limitation" below),
+#    so we ask it to PRINT a unified diff rather than commit.
+prompt = (
+    f"{context_md}\n\n"
+    "Implement this ticket. Run the tests. When done, print a unified "
+    "diff of your changes and a JSON findings array to stdout."
+)
+proc = subprocess.run(
+    ["codex", "exec", "--cd", REPO, prompt],
+    capture_output=True, text=True,
+)
+
+# 3. The orchestrator owns the commit (the sandboxed agent can't).
+#    Parse the agent's diff/findings, apply + commit, then complete.
+findings = parse_findings(proc.stdout)            # your parser → list[dict]
+severity = worst_severity(findings)               # none/low/medium/high/critical
+commit_sha = apply_and_commit(proc.stdout, REPO)  # orchestrator commits
+
+complete_agent_run(
+    run_id=run_id,
+    status="passed" if proc.returncode == 0 else "failed",
+    severity=severity,
+    findings=findings,
+    result_summary=f"Atlas implemented {TICKET} via Codex CLI; commit {commit_sha}.",
+    # session_id="<id of the captured .sfs session, if the daemon watches Codex>",
+)
+```
+
+Notes that keep this accurate:
+
+- **`status` at completion is `passed` / `failed` / `errored`** — not `succeeded`. The orchestrator sets it from the agent's exit; the server may flip `passed → failed` if `severity` trips `fail_on`. Use `errored` when the agent itself crashed (so the run reaches a terminal state instead of hanging in `running`).
+- **`exit_code` is server-derived, not submitted.** SessionFS computes it (`0` pass / `1` fail) from `fail_on` + `severity` and exposes it on the response. `complete_agent_run` takes no `exit_code` argument.
+- **There's no commit field on AgentRun.** Tie the resulting commit into `result_summary` or a finding; record changed files on the *ticket* via `complete_ticket(changed_files=[...])`.
+- **`session_id` links provenance.** If your daemon captures the Codex/Gemini/Claude session as a `.sfs` file, pass its id to `complete_agent_run` so the run points at the transcript.
+
+## Sandbox limitation: who commits
+
+Codex CLI runs with the working tree writable but **`.git` read-only** — the agent can edit files but cannot create commits. Two operational patterns:
+
+1. **Agent prints, orchestrator commits (recommended).** Instruct the agent to print a unified diff to stdout; the orchestrator applies it (`git apply`) and commits on the agent's behalf with your bot author. This keeps commit authorship and signing under the orchestrator's control and is what the example above does.
+2. **Orchestrator commits the dirty tree.** Let the agent edit in place, then `git add -A && git commit` from the orchestrator after the run, reading changed paths from `git status --porcelain`.
+
+Either way, **the orchestrator owns the commit** — never assume the spawned agent left a commit behind. Gemini CLI and Claude Code have their own sandbox postures; treat "the agent may be unable to commit" as the default and have the orchestrator handle it.
+
+## Authentication — scoped service key
+
+An orchestrator that polls tickets and writes runs needs both ticket and agent-run scopes. Mint a [service key](/integrations/cloud-agents#authentication) (v0.10.10+) restricted to exactly that:
+
+```bash
+curl -X POST "$SESSIONFS_API_URL/api/v1/orgs/$ORG_ID/service-keys" \
+  -H "Authorization: Bearer $ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "codex-orchestrator",
+    "scopes": ["tickets:read", "tickets:write",
+               "agent_runs:read", "agent_runs:write"],
+    "expires_at": "2026-12-31T23:59:59Z",
+    "project_ids": ["proj_abc"]
+  }'
+```
+
+`tickets:read` / `tickets:write` went live in v0.10.18, so a Codex/Gemini orchestrator can now poll a ticket, start work, post comments, and complete it — all with a scoped key, no personal bearer token. The raw key is returned **exactly once**; store it in your secret manager.
+
+The same flow over plain REST:
+
+```bash
+# create + start
+RUN=$(curl -s -X POST "$SESSIONFS_API_URL/api/v1/projects/$PROJECT_ID/agent-runs" \
+  -H "Authorization: Bearer $SERVICE_KEY" -H "Content-Type: application/json" \
+  -d '{"persona_name":"atlas","ticket_id":"tk_xxx","tool":"codex-cli","trigger_source":"manual","fail_on":"high"}' \
+  | jq -r .id)
+curl -s -X POST "$SESSIONFS_API_URL/api/v1/projects/$PROJECT_ID/agent-runs/$RUN/start" \
+  -H "Authorization: Bearer $SERVICE_KEY"
+
+# ... run the agent ...
+
+# complete
+curl -s -X POST "$SESSIONFS_API_URL/api/v1/projects/$PROJECT_ID/agent-runs/$RUN/complete" \
+  -H "Authorization: Bearer $SERVICE_KEY" -H "Content-Type: application/json" \
+  -d '{"status":"passed","severity":"low","findings":[],"result_summary":"…"}'
+```
+
+Service-key runs record `actor_type="service_key"`, `service_key_id`, and `service_key_name` on the AgentRun, so an auditor can tell an orchestrated external run from a human one without DB access. See the [Cloud Agents auth section](/integrations/cloud-agents#authentication) for the full service-key model, scope catalogue, and structured error codes.
+
+## What this does NOT do
+
+- **It does not spawn the agent.** Your orchestrator runs `codex exec` / `gemini` / `claude`; SessionFS records the run.
+- **It does not capture the transcript by itself.** AgentRun stores the outcome. If you want the agent's `.sfs` session, run the daemon against that tool and pass the captured `session_id` to `complete_agent_run`.
+- **It does not commit for you.** The orchestrator owns the commit (see Sandbox limitation).
+- **It adds no new endpoints.** Everything here is the v0.10.2 AgentRun API + v0.10.10 service keys + v0.10.18 ticket scopes.
+
+## See also
+
+- [CI Integration (Agent Runs)](/integrations/ci-integration) — the AgentRun field table, lifecycle, policy evaluation, and crash-safety patterns.
+- [Cloud Agent Control Plane](/integrations/cloud-agents) — agent-initiated cloud agents (Bedrock, Vertex) + the full service-key model.
+- [MCP Server](/mcp) — `create_agent_run`, `complete_agent_run`, `list_agent_runs` in the tool catalogue.
+- [CLI reference](/cli) — the `sfs agent` group.
