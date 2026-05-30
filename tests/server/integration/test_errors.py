@@ -18,9 +18,6 @@ Two test layers:
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import IntegrityError
@@ -31,24 +28,28 @@ from sessionfs.server.errors import (
 )
 
 
+class _FakeOrig:
+    """Minimal DBAPI-error shape: carries pgcode + str() returning the
+    driver message. Used to feed _classify_integrity_error without
+    spinning up a real connection."""
+
+    def __init__(self, pgcode: str | None, message: str) -> None:
+        self.pgcode = pgcode
+        self._msg = message
+
+    def __str__(self) -> str:
+        return self._msg
+
+
 def _make_integrity_error(pgcode: str | None, message: str) -> IntegrityError:
     """Construct an IntegrityError that mimics asyncpg/aiosqlite shape.
 
-    SQLAlchemy IntegrityError(statement, params, orig). `orig.pgcode`
-    is the PostgreSQL SQLSTATE; SQLite drivers don't carry it.
+    SQLAlchemy IntegrityError(statement, params, orig). `orig.pgcode` is
+    the PostgreSQL SQLSTATE; SQLite drivers don't carry it.
     """
-    orig = SimpleNamespace(pgcode=pgcode)
-    orig.__str__ = lambda self: message  # type: ignore[assignment]
-    # Subclass to inject __str__ since SimpleNamespace's repr is verbose
-    class _Orig:
-        def __init__(self, pgcode_: str | None, msg: str) -> None:
-            self.pgcode = pgcode_
-            self._msg = msg
-
-        def __str__(self) -> str:
-            return self._msg
-
-    return IntegrityError(statement="SELECT 1", params={}, orig=_Orig(pgcode, message))
+    return IntegrityError(
+        statement="SELECT 1", params={}, orig=_FakeOrig(pgcode, message)
+    )
 
 
 # -- Unit-level classification -----------------------------------------------
