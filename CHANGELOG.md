@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.25] - 2026-05-30
+
+**Hotfix release — pin click<8.4 so Deploy API succeeds.** v0.10.24 tagged and Release/MCP/Container-Images pipelines all succeeded, but CI + Deploy API failed on 2 CLI tests that assert click `BadParameter`-derived exit code and output format. Tests pass on local `.venv` (click 8.3.1) but CI installed click 8.4.1 which changed both the exit-code emitted by `ClickException` and the class hierarchy that `handle_errors` decorator passes through. Result: `sfs org create` and other CLI flows reach the generic `except Exception` "Unexpected error" branch instead of click's standard parser-error format. Pinning `click>=8.0,<8.4` restores the v0.10.24 behavior; follow-up ticket will fix the brittle assertions and lift the pin.
+
+### Fixed
+
+**Pin `click<8.4` in `pyproject.toml`** so CI installs the version `handle_errors` was tested against. Specifically affects `tests/unit/test_autosync.py::TestHandoffIdMisuseRedirect::test_typer_invocation_with_session_id_still_requires_to` (asserts absence of "unexpected error" in CLI output) and `tests/unit/test_cmd_agent.py::test_agent_complete_findings_rejects_non_object_elements` (asserts `exit_code == 2`). Both pass under click 8.3.x; click 8.4.x bumps both expectations. Without this pin, `Deploy API` workflow's pre-deploy test gate fails and the API stays on v0.10.23.
+
+### Verification
+
+- pytest tests/ -x -q → 2108 passed, 2 xfailed (unchanged from v0.10.24)
+- ruff check src/ → clean
+- helm lint → clean
+
+### Out of scope
+
+- Lift the click pin + make the 2 brittle CLI tests resilient to click `BadParameter` exit-code / output-format drift (follow-up ticket).
+
 ## [0.10.24] - 2026-05-30
 
 **Bundle release — Issue/Task rollup + 2 enterprise unblocks (GH #50 + GH #51) + dashboard surface.** Migration 047 adds `kind` + `parent_ticket_id` to tickets so a single user-reported problem can roll up multiple executor workstreams. Two enterprise customer bugs filed by `najitestech` close: `sfs org create` 500 (latent FK ordering since v0.10.0, blocked every manual-license enterprise) and missing MCP `update_persona` / `delete_persona` parity. Plus structured `IntegrityError` envelopes across CLI + dashboard so future opaque 500s become actionable, Rules-page max-tokens UX, session rename, CORS If-Match preflight unblock, and the Prism-side dashboard surface for the rollup. 2108 backend tests + 198 dashboard tests passing (+85 backend / +11 dashboard from v0.10.23 baseline). 1 strictly additive migration.
