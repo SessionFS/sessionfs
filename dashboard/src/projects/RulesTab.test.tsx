@@ -361,6 +361,59 @@ describe('RulesTab', () => {
       });
     });
 
+    it('does not commit values above the 20000 server cap (tk_d4a13a68b6724ba6)', () => {
+      const update = makeMutation();
+      hooks.useUpdateProjectRules.mockReturnValue(update);
+
+      render(<RulesTab projectId="sessionfs/sessionfs" />);
+
+      const input = screen.getByRole('spinbutton', {
+        name: /knowledge injection max tokens/i,
+      }) as HTMLInputElement;
+
+      // input attribute caps at 20000 — UI-level browser validation
+      expect(input.max).toBe('20000');
+
+      // Even if a user pastes 25000 (bypassing up/down arrows), the
+      // debounce logic must reject it before firing PUT. Otherwise the
+      // server returns 422 and the user sees an opaque toast.
+      fireEvent.change(input, { target: { value: '25000' } });
+      act(() => {
+        vi.advanceTimersByTime(600);
+      });
+      expect(update.mutateAsync).not.toHaveBeenCalled();
+
+      // A subsequent in-range edit still commits cleanly.
+      fireEvent.change(input, { target: { value: '15000' } });
+      act(() => {
+        vi.advanceTimersByTime(600);
+      });
+      expect(update.mutateAsync).toHaveBeenCalledTimes(1);
+      expect(update.mutateAsync).toHaveBeenCalledWith({
+        rules: { knowledge_max_tokens: 15000 },
+        etag: 'W/"v3"',
+      });
+    });
+
+    it('context max tokens input also caps at 20000', () => {
+      const update = makeMutation();
+      hooks.useUpdateProjectRules.mockReturnValue(update);
+
+      render(<RulesTab projectId="sessionfs/sessionfs" />);
+
+      const input = screen.getByRole('spinbutton', {
+        name: /context injection max tokens/i,
+      }) as HTMLInputElement;
+
+      expect(input.max).toBe('20000');
+
+      fireEvent.change(input, { target: { value: '50000' } });
+      act(() => {
+        vi.advanceTimersByTime(600);
+      });
+      expect(update.mutateAsync).not.toHaveBeenCalled();
+    });
+
     it('debounces the context injection input independently', () => {
       const update = makeMutation();
       hooks.useUpdateProjectRules.mockReturnValue(update);

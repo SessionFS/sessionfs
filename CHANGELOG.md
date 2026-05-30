@@ -5,6 +5,61 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.24] - 2026-05-30
+
+**Bundle release — Issue/Task rollup + 2 enterprise unblocks (GH #50 + GH #51) + dashboard surface.** Migration 047 adds `kind` + `parent_ticket_id` to tickets so a single user-reported problem can roll up multiple executor workstreams. Two enterprise customer bugs filed by `najitestech` close: `sfs org create` 500 (latent FK ordering since v0.10.0, blocked every manual-license enterprise) and missing MCP `update_persona` / `delete_persona` parity. Plus structured `IntegrityError` envelopes across CLI + dashboard so future opaque 500s become actionable, Rules-page max-tokens UX, session rename, CORS If-Match preflight unblock, and the Prism-side dashboard surface for the rollup. 2108 backend tests + 198 dashboard tests passing (+85 backend / +11 dashboard from v0.10.23 baseline). 1 strictly additive migration.
+
+### Added
+
+**Issue/Task rollup** (`tk_dbccde26ed604b3c` + `tk_5d14f10e489d4361` Prism, commits `0cae114` + `09d0735` + `98d3154`). Compass-scoped Option A from `tk_23f523c1bdd94fc5`: extend `tickets` with `kind` String(10) NOT NULL default 'task' + `parent_ticket_id` String(64) FK ON DELETE SET NULL + composite index on `(project_id, parent_ticket_id)`. NOT a reuse of `TicketDependency` (DAG ordering ≠ container relationship). Forked FSM: Tasks keep the executor lifecycle (suggested → open → in_progress → blocked → review → done); Issues use a simpler manager FSM (open → in_progress → closed + cancelled escape). Issue status is **manually closed by Compass** — NOT auto-derived from child Task status, per CEO direction.
+
+- New `POST /tickets/{tid}/close` Issue terminator. Rejects Tasks with 400 + clear error.
+- `POST /tickets` accepts `kind` + `parent_ticket_id` with full validation: parent must exist + be same-project + be `kind='issue'`; no Issue-under-Issue (single-level only in v1); cross-project parent → 422.
+- `GET /tickets` accepts `kind` query filter (`issue` | `task` | omitted); detail returns `child_ticket_ids: list[str]` for Issues (single SELECT, indexed, project-scoped).
+- **Actor-based authorization** via new `user_is_project_admin(db, user_id, project)` helper in `src/sessionfs/server/auth/project_access.py`. Returns True for project owner OR (org-scoped) `OrgMember.role='admin'`. Drops the `assigned_to=='compass'` user-input-trusting branch entirely (Codex R1 MEDIUM #1 — anyone could pass it). Issue creation AND `/close` both gated on this trusted-actor signal.
+- Compiled persona context now emits `Kind: {kind}`, `Parent Issue: {id} — {title} (status: {status})` when set, and `## Child Tasks (N)` section listing every child with id + status + title (Codex R1 MEDIUM #3 — agents reading the markdown can now see the rollup).
+- MCP `create_ticket` + `list_tickets` tools gain `kind` + `parent_ticket_id` params with docstrings explaining the distinction. `get_ticket` + `start_ticket` compiled_context surface the rollup automatically.
+- CLI: `sfs ticket create --kind issue|task --parent <tk_>`; `sfs ticket list --kind issue|task`; `sfs ticket show` displays kind + parent Issue + child task list; `sfs ticket close <tk_>` Issue terminator. `sfs ticket watch --until-closed` terminal set extended with `closed`.
+
+**Dashboard Issue/Task surface** (Prism, `98d3154`). Single-surface design — no separate IssuesTab. `TicketsTab.tsx` extended with: `KIND_FILTERS` (All / Issues / Tasks) alongside existing status filter; indigo left-edge bar + `KindBadge` on each row for at-a-glance distinction; Issue expand shows a Children section listing child Tasks (id/title/status/assigned_to) as clickable buttons that re-target `selected` in place; Task expand with non-null `parent_ticket_id` shows a Back-to-parent Issue breadcrumb; New Ticket modal gains a kind selector + conditional Parent Issue autocomplete (Task only); Close Issue button on `in_progress` Issues calling the new `closeTicket()` route; STATUS_FILTERS gains `closed` row with emerald STATUS_TONE. `useTickets` hook gains `kind` filter; new `useTicketChildren` parallel-fetches children via `useQueries` with shared `['ticket', projectId, id]` cache keys so direct expand reuses the entry; new `useCloseTicket` mutation. KB entry **#611** documents the UI pattern.
+
+**Session rename** (`tk_cf9f1691091d4e8e`, commits `2ef0335` + `7bb93cd`). Click-to-edit title + alias inline on session detail view, side-by-side per CEO. Title + alias persist via the existing PATCH /sessions/{id} endpoint (hardened: empty-title 422 + `aliases_cloud` tier gate + all-None body 400). New MCP tool `rename_session(session_id, new_title?, new_alias?)` — empty `new_alias=""` routes through DELETE /alias and captures canonical id from the DELETE response so a caller passing the about-to-be-cleared alias as the identifier doesn't 404 on the follow-up (Codex R1 MEDIUM). Three-layer plumbing: server (route hardening), MCP (new tool), dashboard (click-to-edit affordance with side-by-side form + `MoreMenu` "Rename (Title & Alias)" entry, replacing the old alias-only edit).
+
+**Generic `IntegrityError` envelope + structured 5xx hardening** (`tk_e7da4c4508d94bac` / GH #51 ask #2, commits `8a2cb85` + `3576245`). Closes the customer-facing UX failure mode shared by every multi-INSERT bug: bare "Internal Server Error" with no actionable body. New FastAPI exception handler for `sqlalchemy.exc.IntegrityError` classifies by PostgreSQL SQLSTATE (`pgcode`) first, falls back to SQLite message string-matching. Unique violation → 409 `duplicate_resource`; FK violation → 500 `foreign_key_violation` (server-bug class, structured body so triage doesn't lose three releases like 2026-05-20); NOT NULL → 422 `missing_required_field`; CHECK → 422 `check_constraint_violation`; catch-all → 500 `integrity_error`. Handler logs raw DBAPI text at ERROR with request method + path; client envelope intentionally strips column names and row values to avoid PII leak. New CLI helper `format_api_error(body, status)` parses v0.10.x envelope first, falls back to legacy `detail` string + dict shapes, then `str(body)` — wired into `handle_api_response` (the `sfs org create` triggering path), `_api_request` helpers in `cmd_project.py` + `cmd_rules.py`, and all 12 inline "API error" prints in `cmd_ticket.py`. Dashboard `ApiError` class now extracts `code` + `details` + clean `message` from the envelope at construction time, with `raw` preserved for diagnostics; new `parseApiErrorBody` helper exports the same parse for non-throw paths.
+
+**MCP `update_persona` + `delete_persona`** (`tk_32abb6d0d4744c5d` / GH #50, commits `f55fc85` + `030230b` + `fde0f4e`). Closes the 6-of-8 persona-tool gap najitestech surfaced. MCP tool count 59 → 61. `update_persona` wraps PUT /personas/{name} — body sends ONLY fields the caller passed (omitted fields stay unchanged; no silent overwrite); rejects locally if no mutable field provided. `delete_persona` wraps DELETE /personas/{name}?force=... — soft-delete with strict force-parsing (literal `True` OR case-insensitive `{"true", "1", "yes"}` only; `bool("false") == True` Python footgun closed per Codex R1 MEDIUM). 409 surfaces the structured envelope so callers can route on `error.code` + `error.details.open_ticket_count` to decide whether to retry with force=true. 404 surfaces the persona name in a clean error. Tool descriptions reference the v0.10.23 case-insensitive-unique contract and the honest reactivation guidance (R2 fix): "Reactivation is NOT exposed via MCP today — operator must use the HTTP API directly with `is_active=true`."
+
+**Rules page max-tokens UX** (`tk_d4a13a68b6724ba6`, commits `c4c8d02` + `0d9ccf9`). Companion to the v0.10.23 CORS If-Match unblock on the same surface. Dashboard `DebouncedTokenInput` gains `max={20000}` (browser arrows respect the cap) + `n > 20000` debounce gate (defends against paste-bypass since `<input type="number" max=>` accepts pasted out-of-range by spec). Server's both `knowledge_max_tokens` + `context_max_tokens` over-cap branches now raise structured envelope `code: 'max_tokens_exceeded'` with `field`, `min`, `max`, `current` — replaces bare "knowledge_max_tokens out of range".
+
+### Fixed
+
+**`sfs org create` 500 for manual-license enterprise customers** (`tk_17b39010f9a64cba` / GH #51, commit `31cec52`). One-line `await db.flush()` between `db.add(org)` and `db.add(member)` in `routes/org.py:139-160`. Latent since v0.10.0 because SQLAlchemy's unit-of-work doesn't reliably topologically sort two pending INSERTs by FK dependency without an intervening flush. For Stripe-paying users the implicit autoflush triggered by `update(User)` masked the bug; users with no Stripe fields (every manual-license enterprise customer, every user upgraded via admin action without going through Stripe checkout) hit the FK violation → 500. Inline comment cites GH #51 + the autoflush mechanics so a future reader doesn't strip the flush as "unnecessary". New regression `test_create_org_enterprise_user_no_stripe` uses `PRAGMA foreign_keys=ON` on the test session so SQLite enforces FKs like PostgreSQL (otherwise the bug doesn't reproduce in tests).
+
+**CORS preflight `If-Match` allowed** (`febd732`, no parent ticket — direct enterprise repro). Dashboard's `PUT /rules` sends `If-Match: <etag>` for ETag-based optimistic concurrency. Browser preflight requests `Access-Control-Request-Headers: ...if-match` but `CORSMiddleware.allow_headers` was `["Content-Type", "Authorization"]` — `If-Match` not listed → preflight 400 → PUT never fires → dashboard toggle reverts with no error surface. Live-verified via curl on `api.sessionfs.dev`. Added `If-Match` + `If-None-Match` to allow_headers + drift-guard regression test pinning the audited list. Affects every ETag-protected write surfaced via the dashboard.
+
+### Verification
+
+- pytest tests/ -x -q → **2108 passed**, 2 xfailed (pre-existing migration-003 chain)
+- ruff check src/ → clean
+- helm lint charts/sessionfs → clean
+- dashboard npm test -- --run → **198 passed** (was 186)
+- dashboard npm run build → tsc + vite clean
+- pip-audit → 0 vulnerabilities
+- npm audit (dashboard + site) → 0 vulnerabilities
+- bandit → 0 HIGH; 17 MEDIUM pre-existing baseline (none in v0.10.24 files)
+- Shield-SR independent pre-release review → APPROVED 0 CRITICAL / 0 HIGH / 0 NEW MEDIUM
+
+### Codex review cycles
+
+All 8 Atlas+Prism tickets implemented directly by Claude per CEO's standing rule (no Codex CLI spawn). Polling Codex (`author_persona="codex"`) reviewed:
+- tk_cf9f1691091d4e8e: R1 1 MED → R2 CLEAN
+- tk_dbccde26ed604b3c: R1 3 MED + 2 LOW → R2 CLEAN
+- tk_17b39010f9a64cba: R1 CLEAN first round
+- tk_e7da4c4508d94bac: R1 2 MED + 1 LOW → R2 CLEAN
+- tk_d4a13a68b6724ba6: R1 1 LOW → R2 CLEAN
+- tk_32abb6d0d4744c5d: R1 1 MED + 2 LOW → R2 1 LOW → R3 CLEAN
+- tk_5d14f10e489d4361 (Prism): not Codex-reviewed (Compass-scoped, CEO-shipped)
+
 ## [0.10.23] - 2026-05-26
 
 **Bundle release — Scout state-cache fix + ChatGPT MCP hotfix + persona case-sensitivity + release-skill hardening.** Five commits across two operational fixes (entity_ref upsert closing Scout's silent cache loss, MCP `_ConsumedResponse` sentinel restoring tool discovery on ChatGPT/Claude.ai) and three release-hygiene improvements (persona case-insensitive lookup, Scribe-Site gate, merge-conflict docs). No migrations. No new endpoints. 2023 backend tests + 187 dashboard tests passing (+16 backend from v0.10.22 baseline).

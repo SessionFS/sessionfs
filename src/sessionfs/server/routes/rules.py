@@ -272,8 +272,26 @@ async def update_rules(
             rules.knowledge_types = new
             changed = True
     if body.knowledge_max_tokens is not None and body.knowledge_max_tokens != rules.knowledge_max_tokens:
+        # v0.10.24 tk_d4a13a68b6724ba6 — structured envelope so the
+        # dashboard toast surfaces actionable detail instead of a bare
+        # "Bad Request". Same error envelope shape as the rest of the
+        # v0.10.x error surface (ErrorDetail with code + message +
+        # details).
         if body.knowledge_max_tokens < 0 or body.knowledge_max_tokens > 20000:
-            raise HTTPException(422, "knowledge_max_tokens out of range")
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "max_tokens_exceeded",
+                    "message": (
+                        "knowledge_max_tokens must be between 0 and 20000. "
+                        f"Got {body.knowledge_max_tokens}."
+                    ),
+                    "field": "knowledge_max_tokens",
+                    "min": 0,
+                    "max": 20000,
+                    "current": body.knowledge_max_tokens,
+                },
+            )
         rules.knowledge_max_tokens = body.knowledge_max_tokens
         changed = True
     if body.include_context is not None and body.include_context != rules.include_context:
@@ -286,7 +304,20 @@ async def update_rules(
             changed = True
     if body.context_max_tokens is not None and body.context_max_tokens != rules.context_max_tokens:
         if body.context_max_tokens < 0 or body.context_max_tokens > 20000:
-            raise HTTPException(422, "context_max_tokens out of range")
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "max_tokens_exceeded",
+                    "message": (
+                        "context_max_tokens must be between 0 and 20000. "
+                        f"Got {body.context_max_tokens}."
+                    ),
+                    "field": "context_max_tokens",
+                    "min": 0,
+                    "max": 20000,
+                    "current": body.context_max_tokens,
+                },
+            )
         rules.context_max_tokens = body.context_max_tokens
         changed = True
     if body.tool_overrides is not None:

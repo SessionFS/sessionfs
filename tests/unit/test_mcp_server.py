@@ -276,10 +276,11 @@ class TestToolRegistryV0996:
     (create/claim/get/list_inbox/list_sent/revoke/decline/comment = 8).
     Total: 53."""
 
-    def test_tool_count_is_58(self):
+    def test_tool_count_is_61(self):
         from sessionfs.mcp.server import _TOOLS
-        assert len(_TOOLS) == 58, (
-            f"Expected 58 MCP tools after tk_c64915570f4d4042 added promote_eligible_entries, got {len(_TOOLS)}"
+        assert len(_TOOLS) == 61, (
+            f"Expected 61 MCP tools after tk_32abb6d0d4744c5d added "
+            f"update_persona + delete_persona, got {len(_TOOLS)}"
         )
 
     def test_new_tools_registered(self):
@@ -321,6 +322,11 @@ class TestToolRegistryV0996:
             "get_ticket_review_state",
             # v0.10.12 bulk KB repair (tk_c64915570f4d4042)
             "promote_eligible_entries",
+            # v0.10.23 session rename (tk_cf9f1691091d4e8e)
+            "rename_session",
+            # v0.10.24 persona MCP parity (tk_32abb6d0d4744c5d / GH #50)
+            "update_persona",
+            "delete_persona",
         ):
             assert new_tool in names, f"Missing MCP tool: {new_tool}"
 
@@ -469,6 +475,17 @@ class TestNewToolDispatch:
                     "dismissed_reason": "stale",
                 })
 
+            async def delete(self, url, *, params=None, headers=None):
+                # v0.10.24 tk_32abb6d0d4744c5d — delete_persona dispatch
+                # needs a DELETE method on the fake client. Most DELETE
+                # routes in our API return 204 (no body), so the
+                # default response shape is empty + status 204.
+                captured["method"] = "DELETE"
+                captured["url"] = url
+                captured["params"] = params or {}
+                captured["headers"] = headers or {}
+                return _FakeResponse(204, None)
+
         monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
 
     @pytest.mark.asyncio
@@ -571,6 +588,267 @@ class TestNewToolDispatch:
         result = await mcp_server._handle_get_session_provenance({"session_id": "ses_xyz"})
         assert captured["url"] == "https://api.test/api/v1/sessions/ses_xyz/provenance"
         assert result["rules_version"] == 7
+
+    @pytest.mark.asyncio
+    async def test_dispatch_rename_session_title_and_alias(self, monkeypatch):
+        """rename_session dispatches PATCH /sessions/{id} with title+alias body.
+        Sessions are user-scoped — handler uses load_config, not project resolver."""
+        import httpx
+        from types import SimpleNamespace
+
+        fake_config = SimpleNamespace(
+            sync=SimpleNamespace(api_url="https://api.test", api_key="test-key"),
+        )
+        monkeypatch.setattr(mcp_server, "load_config", lambda: fake_config)
+
+        captured: dict = {}
+
+        class _Resp:
+            status_code = 200
+            text = "{}"
+
+            def json(self):
+                return {"id": "ses_xyz", "title": "New", "alias": "new-alias"}
+
+        class _FakeClient:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def patch(self, url, *, json=None, headers=None):
+                captured["url"] = url
+                captured["json"] = json
+                captured["method"] = "PATCH"
+                return _Resp()
+
+            async def delete(self, url, *, headers=None):
+                captured.setdefault("delete_url", url)
+                return _Resp()
+
+            async def get(self, url, *, headers=None):
+                captured["get_url"] = url
+                return _Resp()
+
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+        result = await mcp_server._handle_rename_session({
+            "session_id": "ses_xyz",
+            "new_title": "New",
+            "new_alias": "new-alias",
+        })
+        assert captured["method"] == "PATCH"
+        assert captured["url"] == "https://api.test/api/v1/sessions/ses_xyz"
+        assert captured["json"] == {"title": "New", "alias": "new-alias"}
+        assert result["title"] == "New"
+        assert result["alias"] == "new-alias"
+
+    @pytest.mark.asyncio
+    async def test_dispatch_rename_session_empty_alias_clears(self, monkeypatch):
+        """Passing new_alias='' routes through DELETE /alias, not PATCH alias=null."""
+        import httpx
+        from types import SimpleNamespace
+
+        fake_config = SimpleNamespace(
+            sync=SimpleNamespace(api_url="https://api.test", api_key="test-key"),
+        )
+        monkeypatch.setattr(mcp_server, "load_config", lambda: fake_config)
+
+        captured: dict = {}
+
+        class _Resp:
+            status_code = 200
+            text = "{}"
+
+            def json(self):
+                return {"id": "ses_xyz", "alias": None}
+
+        class _FakeClient:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def patch(self, url, *, json=None, headers=None):
+                captured["patch_url"] = url
+                captured["patch_json"] = json
+                return _Resp()
+
+            async def delete(self, url, *, headers=None):
+                captured["delete_url"] = url
+                return _Resp()
+
+            async def get(self, url, *, headers=None):
+                captured["get_url"] = url
+                return _Resp()
+
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+        # Alias-clear only (no title change).
+        result = await mcp_server._handle_rename_session({
+            "session_id": "ses_xyz",
+            "new_alias": "",
+        })
+        assert captured["delete_url"] == "https://api.test/api/v1/sessions/ses_xyz/alias"
+        # PATCH must NOT be called when only clearing alias.
+        assert "patch_url" not in captured
+        # Codex R1 MEDIUM fix: DELETE response carries the canonical
+        # SessionDetail; handler must NOT issue a follow-up GET that
+        # could 404 if session_id was the just-cleared alias.
+        assert "get_url" not in captured
+        # The returned payload is the DELETE response body.
+        assert result["id"] == "ses_xyz"
+
+    @pytest.mark.asyncio
+    async def test_dispatch_rename_session_alias_clear_via_alias_identifier(self, monkeypatch):
+        """Codex R1 MEDIUM regression: caller passes the alias they're about
+        to clear as `session_id`. Handler must resolve to canonical id from
+        the DELETE response before any follow-up call, and must NOT issue a
+        post-DELETE GET/PATCH against the now-unresolvable alias."""
+        import httpx
+        from types import SimpleNamespace
+
+        fake_config = SimpleNamespace(
+            sync=SimpleNamespace(api_url="https://api.test", api_key="test-key"),
+        )
+        monkeypatch.setattr(mcp_server, "load_config", lambda: fake_config)
+
+        captured: dict[str, list] = {"patch": [], "delete": [], "get": []}
+
+        class _DelResp:
+            status_code = 200
+            text = "{}"
+
+            def json(self):
+                # Server returns the canonical SessionDetail after the clear.
+                return {"id": "ses_abc123", "alias": None, "title": "Original"}
+
+        class _FakeClient:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def patch(self, url, *, json=None, headers=None):
+                captured["patch"].append(url)
+                return _DelResp()
+
+            async def delete(self, url, *, headers=None):
+                captured["delete"].append(url)
+                return _DelResp()
+
+            async def get(self, url, *, headers=None):
+                captured["get"].append(url)
+                return _DelResp()
+
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+        # Caller passes the alias being cleared.
+        result = await mcp_server._handle_rename_session({
+            "session_id": "old-alias",
+            "new_alias": "",
+        })
+        # DELETE goes to the alias-identified URL (server resolves).
+        assert captured["delete"] == ["https://api.test/api/v1/sessions/old-alias/alias"]
+        # PATCH and GET must NOT be issued — DELETE response carries everything.
+        assert captured["patch"] == []
+        assert captured["get"] == []
+        # Handler returns the canonical SessionDetail from DELETE.
+        assert result["id"] == "ses_abc123"
+        assert result["alias"] is None
+
+    @pytest.mark.asyncio
+    async def test_dispatch_rename_session_alias_clear_plus_title_uses_canonical_id(self, monkeypatch):
+        """Codex R1 MEDIUM regression: when caller asks to BOTH clear alias
+        AND set a new title, with session_id being the alias-to-clear, the
+        follow-up PATCH must target the canonical id resolved from the
+        DELETE response — NOT the stale alias identifier."""
+        import httpx
+        from types import SimpleNamespace
+
+        fake_config = SimpleNamespace(
+            sync=SimpleNamespace(api_url="https://api.test", api_key="test-key"),
+        )
+        monkeypatch.setattr(mcp_server, "load_config", lambda: fake_config)
+
+        captured: dict[str, str] = {}
+
+        class _DelResp:
+            status_code = 200
+            text = "{}"
+
+            def json(self):
+                return {"id": "ses_abc123", "alias": None, "title": "Original"}
+
+        class _PatchResp:
+            status_code = 200
+            text = "{}"
+
+            def json(self):
+                return {"id": "ses_abc123", "alias": None, "title": "Renamed"}
+
+        class _FakeClient:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def patch(self, url, *, json=None, headers=None):
+                captured["patch_url"] = url
+                captured["patch_json"] = json
+                return _PatchResp()
+
+            async def delete(self, url, *, headers=None):
+                captured["delete_url"] = url
+                return _DelResp()
+
+            async def get(self, url, *, headers=None):
+                captured["get_url"] = url
+                return _DelResp()
+
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+        result = await mcp_server._handle_rename_session({
+            "session_id": "old-alias",
+            "new_alias": "",
+            "new_title": "Renamed",
+        })
+        # DELETE hits the alias-identified URL.
+        assert captured["delete_url"] == "https://api.test/api/v1/sessions/old-alias/alias"
+        # PATCH must target the canonical id, NOT the stale alias.
+        assert captured["patch_url"] == "https://api.test/api/v1/sessions/ses_abc123"
+        assert captured["patch_json"] == {"title": "Renamed"}
+        # No GET — the PATCH response is what we return.
+        assert "get_url" not in captured
+        assert result["title"] == "Renamed"
+
+    @pytest.mark.asyncio
+    async def test_dispatch_rename_session_requires_session_id(self):
+        result = await mcp_server._handle_rename_session({})
+        assert "error" in result
+        assert "session_id" in result["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_dispatch_rename_session_requires_at_least_one_field(self):
+        result = await mcp_server._handle_rename_session({"session_id": "ses_xyz"})
+        assert "error" in result
+        assert "new_title" in result["error"] or "new_alias" in result["error"]
 
     @pytest.mark.asyncio
     async def test_dispatch_compile_knowledge_base(self, fake_resolver, fake_httpx, captured):
@@ -948,6 +1226,200 @@ class TestNewToolDispatch:
         assert captured["json"]["name"] == "atlas"
         assert captured["json"]["role"] == "Backend Architect"
         assert captured["json"]["specializations"] == ["backend", "api"]
+
+    # ── v0.10.24 tk_32abb6d0d4744c5d / GH #50 — persona MCP parity ──
+
+    @pytest.mark.asyncio
+    async def test_update_persona_requires_name(self, fake_resolver):
+        result = await mcp_server._handle_update_persona({})
+        assert "error" in result
+        assert "name" in result["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_update_persona_requires_at_least_one_field(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        result = await mcp_server._handle_update_persona({"name": "atlas"})
+        # Should reject without firing the PUT — saves a round-trip and
+        # avoids server-side no-op confusion.
+        assert "error" in result
+        assert "role" in result["error"] or "content" in result["error"]
+        assert captured == {} or "method" not in captured
+
+    @pytest.mark.asyncio
+    async def test_update_persona_sends_put_with_only_provided_fields(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        await mcp_server._handle_update_persona({
+            "name": "atlas",
+            "content": "# Atlas\n\nRevised after research.",
+        })
+        assert captured["method"] == "PUT"
+        assert captured["url"] == "https://api.test/api/v1/projects/proj_test/personas/atlas"
+        # Only `content` was passed — body must not include role or
+        # specializations (server treats omitted fields as no-op; sending
+        # defaults would silently overwrite existing values).
+        assert captured["json"] == {"content": "# Atlas\n\nRevised after research."}
+
+    @pytest.mark.asyncio
+    async def test_update_persona_sends_specializations_list(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        await mcp_server._handle_update_persona({
+            "name": "atlas",
+            "specializations": ["fastapi", "alembic"],
+        })
+        assert captured["json"] == {"specializations": ["fastapi", "alembic"]}
+
+    @pytest.mark.asyncio
+    async def test_delete_persona_requires_name(self, fake_resolver):
+        result = await mcp_server._handle_delete_persona({})
+        assert "error" in result
+        assert "name" in result["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_delete_persona_sends_delete_without_force(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        await mcp_server._handle_delete_persona({"name": "atlas"})
+        assert captured["method"] == "DELETE"
+        assert captured["url"] == "https://api.test/api/v1/projects/proj_test/personas/atlas"
+        # No `force` param by default — server's non-terminal-ticket
+        # guard fires unless the caller explicitly opts in.
+        assert captured.get("params", {}) == {}
+
+    @pytest.mark.asyncio
+    async def test_delete_persona_passes_force_when_true(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        await mcp_server._handle_delete_persona({"name": "atlas", "force": True})
+        assert captured["method"] == "DELETE"
+        assert captured.get("params", {}) == {"force": "true"}
+
+    @pytest.mark.asyncio
+    async def test_delete_persona_rejects_falsey_strings_as_unforced(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        """Codex R1 MEDIUM regression — `bool("false")` is True in
+        Python; the destructive force path must not accept truthy-string
+        values that mean False. "false", "0", "no" → unforced."""
+        for falsey in ("false", "False", "0", "no", "NO", ""):
+            captured.clear()
+            await mcp_server._handle_delete_persona({
+                "name": "atlas",
+                "force": falsey,
+            })
+            assert captured.get("params", {}) == {}, (
+                f"force={falsey!r} should NOT pass ?force=true"
+            )
+
+    @pytest.mark.asyncio
+    async def test_delete_persona_accepts_truthy_strings_as_forced(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        """Strict allowlist for force=true: only literal True or the
+        narrow truthy-string set ("true", "1", "yes") opts in."""
+        for truthy in ("true", "True", "1", "yes", "YES"):
+            captured.clear()
+            await mcp_server._handle_delete_persona({
+                "name": "atlas",
+                "force": truthy,
+            })
+            assert captured.get("params", {}) == {"force": "true"}, (
+                f"force={truthy!r} should pass ?force=true"
+            )
+
+    @pytest.mark.asyncio
+    async def test_update_persona_surfaces_404_cleanly(self, monkeypatch):
+        """Codex R1 LOW regression (AC) — 404 from the server is
+        translated to a human-readable error string instead of leaking
+        the raw API response text."""
+        async def _resolve_stub(_remote=""):
+            return ("https://api.test", "test-key", "proj_test")
+        monkeypatch.setattr(mcp_server, "_resolve_project_id", _resolve_stub)
+
+        import httpx
+
+        class _Resp404:
+            status_code = 404
+            text = '{"error": {"code": "404", "message": "not found"}}'
+
+            def json(self):
+                return {"error": {"code": "404", "message": "not found"}}
+
+        class _FakeClient:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def put(self, *a, **k):
+                return _Resp404()
+
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+        result = await mcp_server._handle_update_persona({
+            "name": "ghost",
+            "role": "Backend",
+        })
+        assert "error" in result
+        # Must include the persona name + project context so the agent
+        # can recover, not just leak the raw API JSON.
+        assert "ghost" in result["error"]
+        assert "not found" in result["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_delete_persona_surfaces_409_envelope(self, monkeypatch):
+        """Codex R1 LOW regression (AC) — 409 (non-terminal tickets
+        reference the persona) surfaces the structured envelope so
+        callers can decide whether to retry with force=true."""
+        async def _resolve_stub(_remote=""):
+            return ("https://api.test", "test-key", "proj_test")
+        monkeypatch.setattr(mcp_server, "_resolve_project_id", _resolve_stub)
+
+        import httpx
+
+        envelope = {
+            "error": {
+                "code": "persona_has_open_tickets",
+                "message": "atlas is referenced by 3 non-terminal tickets",
+                "details": {"open_ticket_count": 3},
+            }
+        }
+
+        class _Resp409:
+            status_code = 409
+            text = json.dumps(envelope)
+
+            def json(self):
+                return envelope
+
+        class _FakeClient:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def delete(self, *a, **k):
+                return _Resp409()
+
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+        result = await mcp_server._handle_delete_persona({"name": "atlas"})
+        assert result.get("status") == 409
+        # Envelope is surfaced intact so the agent can route on
+        # error.code + read error.details.open_ticket_count to decide
+        # whether to retry with force=true.
+        assert result["error"]["error"]["code"] == "persona_has_open_tickets"
+        assert result["error"]["error"]["details"]["open_ticket_count"] == 3
 
     @pytest.mark.asyncio
     async def test_assign_persona_sends_put(self, fake_resolver, fake_httpx, captured):

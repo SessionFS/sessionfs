@@ -41,7 +41,7 @@ from sessionfs.cli.cmd_rules import (
     _normalize_remote,
     _resolve_project_id,
 )
-from sessionfs.cli.common import console, err_console, handle_errors
+from sessionfs.cli.common import console, err_console, format_api_error, handle_errors
 
 ticket_app = typer.Typer(
     name="ticket",
@@ -115,11 +115,20 @@ def list_tickets(
     assigned_to: str | None = typer.Option(None, "--assigned-to", "-a"),
     status: str | None = typer.Option(None, "--status", "-s"),
     priority: str | None = typer.Option(None, "--priority", "-p"),
+    kind: str | None = typer.Option(
+        None, "--kind", "-k",
+        help="Filter by kind: 'issue' (PM rollup container) or 'task' (executor work). Omit for both.",
+    ),
 ) -> None:
     """List tickets in the current project."""
     api_url, api_key, project_id = _resolve_project()
     params = []
-    for k, v in (("assigned_to", assigned_to), ("status", status), ("priority", priority)):
+    for k, v in (
+        ("assigned_to", assigned_to),
+        ("status", status),
+        ("priority", priority),
+        ("kind", kind),
+    ):
         if v:
             params.append(f"{k}={v}")
     suffix = ("?" + "&".join(params)) if params else ""
@@ -129,7 +138,7 @@ def list_tickets(
         )
     )
     if s >= 400:
-        err_console.print(f"[red]API error ({s}): {body}[/red]")
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
         raise typer.Exit(1)
     _print_ticket_table(body if isinstance(body, list) else [])
 
@@ -151,17 +160,28 @@ def show_ticket(
         err_console.print(f"[red]Ticket '{ticket_id}' not found.[/red]")
         raise typer.Exit(1)
     if s >= 400 or not isinstance(body, dict):
-        err_console.print(f"[red]API error ({s}): {body}[/red]")
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
         raise typer.Exit(1)
 
+    kind = body.get("kind", "task")
+    kind_label = "[magenta]issue[/magenta]" if kind == "issue" else "task"
     console.print(Panel(
         f"[bold]{body['title']}[/bold]\n"
         f"[dim]{body['id']}[/dim]  "
+        f"kind: {kind_label}  "
         f"[{_status_style(body['status'])}]{body['status']}[/]  "
         f"[{_priority_style(body['priority'])}]{body['priority']}[/]  "
         f"assignee: {body.get('assigned_to') or '—'}",
         expand=False,
     ))
+    parent_id = body.get("parent_ticket_id")
+    if parent_id:
+        console.print(f"[dim]Parent Issue:[/dim] [magenta]{parent_id}[/magenta]")
+    children = body.get("child_ticket_ids") or []
+    if children:
+        console.print(f"\n[bold]Child tasks ({len(children)}):[/bold]")
+        for c in children:
+            console.print(f"  - {c}")
     desc = body.get("description") or ""
     if desc:
         console.print(Markdown(desc))
@@ -193,6 +213,14 @@ def create_ticket(
     criteria: list[str] = typer.Option([], "--criteria", help="Acceptance criterion (repeatable)"),
     file_ref: list[str] = typer.Option([], "--file", "-f", help="File reference (repeatable)"),
     depends_on: list[str] = typer.Option([], "--depends-on", help="Upstream ticket id (repeatable)"),
+    kind: str = typer.Option(
+        "task", "--kind", "-k",
+        help="'task' (default) = executor work. 'issue' = PM rollup container (Compass/owner only).",
+    ),
+    parent: str | None = typer.Option(
+        None, "--parent",
+        help="Optional parent Issue id (only valid when --kind task). Parent must be kind='issue' in this project.",
+    ),
     output_id: bool = typer.Option(
         False, "--output-id",
         help="Print ONLY the new ticket id to stdout (no decorations). "
@@ -208,9 +236,12 @@ def create_ticket(
         "acceptance_criteria": list(criteria),
         "file_refs": list(file_ref),
         "depends_on": list(depends_on),
+        "kind": kind,
     }
     if assigned_to:
         payload["assigned_to"] = assigned_to
+    if parent:
+        payload["parent_ticket_id"] = parent
     s, body, _ = asyncio.run(
         _api_request(
             "POST", f"/api/v1/projects/{project_id}/tickets", api_url, api_key,
@@ -218,7 +249,7 @@ def create_ticket(
         )
     )
     if s >= 400 or not isinstance(body, dict):
-        err_console.print(f"[red]API error ({s}): {body}[/red]")
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
         raise typer.Exit(1)
     if output_id:
         # Machine-safe: stdout = ticket id, nothing else. Confirmation
@@ -268,7 +299,7 @@ def start_ticket(
         )
         raise typer.Exit(1)
     if s >= 400 or not isinstance(body, dict):
-        err_console.print(f"[red]API error ({s}): {body}[/red]")
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
         raise typer.Exit(1)
 
     ticket = body.get("ticket", {})
@@ -352,7 +383,7 @@ def complete_ticket(
         err_console.print(f"[red]Ticket '{ticket_id}' not found.[/red]")
         raise typer.Exit(1)
     if s >= 400 or not isinstance(body, dict):
-        err_console.print(f"[red]API error ({s}): {body}[/red]")
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
         raise typer.Exit(1)
 
     cleared = clear_bundle_if_owned(ticket_id=ticket_id, project_id=project_id)
@@ -401,7 +432,7 @@ def comment_ticket(
         err_console.print(f"[red]Ticket '{ticket_id}' not found.[/red]")
         raise typer.Exit(1)
     if s >= 400 or not isinstance(body, dict):
-        err_console.print(f"[red]API error ({s}): {body}[/red]")
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
         raise typer.Exit(1)
     console.print(f"[green]Commented on {ticket_id}.[/green]")
 
@@ -438,7 +469,7 @@ def list_ticket_comments(
         err_console.print(f"[red]Ticket '{ticket_id}' not found.[/red]")
         raise typer.Exit(1)
     if s >= 400 or not isinstance(body, list):
-        err_console.print(f"[red]API error ({s}): {body}[/red]")
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
         raise typer.Exit(1)
     if not body:
         console.print(f"[dim]No comments on {ticket_id}.[/dim]")
@@ -471,7 +502,10 @@ def _notify_macos(title: str, message: str) -> None:
         pass
 
 
-TERMINAL_TICKET_STATUSES = {"done", "cancelled"}
+# v0.10.24 tk_dbccde26ed604b3c — Issues terminate at 'closed' (NOT
+# 'done'). Without 'closed' in this set, `sfs ticket watch --until-
+# closed` against an Issue would never exit after the Issue closes.
+TERMINAL_TICKET_STATUSES = {"done", "cancelled", "closed"}
 
 
 @ticket_app.command("watch")
@@ -494,9 +528,9 @@ def watch_ticket(
         False, "--until-closed",
         help=(
             "Keep watching until the ticket reaches a terminal status "
-            "(done or cancelled), then exit. Natural for multi-round review "
-            "threads where you want to keep seeing follow-up Codex comments "
-            "until the work is resolved."
+            "(done, cancelled, or closed for Issues), then exit. Natural "
+            "for multi-round review threads where you want to keep seeing "
+            "follow-up Codex comments until the work is resolved."
         ),
     ),
     notify: bool = typer.Option(
@@ -549,7 +583,7 @@ def watch_ticket(
             err_console.print(f"[red]Ticket '{ticket_id}' not found.[/red]")
             raise typer.Exit(1)
         if s >= 400 or not isinstance(body, list):
-            err_console.print(f"[red]API error ({s}): {body}[/red]")
+            err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
             return None
         return body
 
@@ -754,7 +788,7 @@ def _post_transition(ticket_id: str, suffix: str, success_label: str) -> None:
         err_console.print(f"[red]Ticket '{ticket_id}' not found.[/red]")
         raise typer.Exit(1)
     if s >= 400 or not isinstance(body, dict):
-        err_console.print(f"[red]API error ({s}): {body}[/red]")
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
         raise typer.Exit(1)
     console.print(f"[green]{success_label}[/green] {ticket_id}")
 
@@ -787,6 +821,18 @@ def approve_ticket_cmd(ticket_id: str = typer.Argument(...)) -> None:
     _post_transition(ticket_id, "approve", "Approved")
 
 
+@ticket_app.command("close")
+@handle_errors
+def close_issue_cmd(ticket_id: str = typer.Argument(...)) -> None:
+    """Move an Issue from in_progress → closed.
+
+    Issue-only terminator. Tasks finish via complete + accept; Issues
+    finish via close. Manual close by the PM — NOT auto-derived from
+    child Task status.
+    """
+    _post_transition(ticket_id, "close", "Closed")
+
+
 @ticket_app.command("dismiss")
 @handle_errors
 def dismiss_ticket_cmd(ticket_id: str = typer.Argument(...)) -> None:
@@ -814,7 +860,7 @@ def assign_ticket_cmd(
         err_console.print(f"[red]Ticket '{ticket_id}' not found.[/red]")
         raise typer.Exit(1)
     if s >= 400 or not isinstance(body, dict):
-        err_console.print(f"[red]API error ({s}): {body}[/red]")
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
         raise typer.Exit(1)
     console.print(f"[green]Assigned {ticket_id} to {persona}.[/green]")
 
@@ -859,7 +905,7 @@ def resolve_ticket_cmd(
         )
         raise typer.Exit(1)
     if s >= 400 or not isinstance(body, dict):
-        err_console.print(f"[red]API error ({s}): {body}[/red]")
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
         raise typer.Exit(1)
     console.print(f"[green]Resolved {ticket_id}.[/green]")
 
@@ -889,7 +935,7 @@ def escalate_ticket_cmd(
         err_console.print(f"[red]Ticket '{ticket_id}' not found.[/red]")
         raise typer.Exit(1)
     if s >= 400 or not isinstance(body, dict):
-        err_console.print(f"[red]API error ({s}): {body}[/red]")
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
         raise typer.Exit(1)
 
     current = body.get("priority", "medium")

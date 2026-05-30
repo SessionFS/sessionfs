@@ -1277,6 +1277,7 @@ class Ticket(Base):
     __table_args__ = (
         Index("idx_ticket_project_status", "project_id", "status"),
         Index("idx_ticket_assigned", "project_id", "assigned_to", "status"),
+        Index("idx_ticket_project_parent", "project_id", "parent_ticket_id"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -1284,6 +1285,22 @@ class Ticket(Base):
         String(64),
         ForeignKey("projects.id", ondelete="CASCADE"),
         nullable=False,
+    )
+
+    # v0.10.24 tk_dbccde26ed604b3c — Issue/Task rollup (Option A). `kind`
+    # distinguishes PM-triaged Issues from executor-owned Tasks; existing
+    # rows default to 'task' so behavior is unchanged. `parent_ticket_id`
+    # links a Task to its containing Issue (single-level nesting only in
+    # v1 — Issues cannot be nested under other Issues; enforced at the
+    # route layer). NOT a reuse of TicketDependency, which is for DAG
+    # ordering ("A blocks B"), not container rollup ("A rolls up B").
+    kind: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="task", server_default="task"
+    )
+    parent_ticket_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("tickets.id", ondelete="SET NULL"),
+        nullable=True,
     )
 
     # Task

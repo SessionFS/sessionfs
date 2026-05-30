@@ -1802,3 +1802,695 @@ async def test_persona_create_rejects_case_insensitive_duplicate(
     assert create_b.status_code == 409, create_b.text
     msg = create_b.json()["error"]["message"]
     assert "case-insensitive" in msg.lower()
+
+
+# ── v0.10.24 Issue/Task rollup (tk_dbccde26ed604b3c) ────────────
+
+
+@pytest.mark.asyncio
+async def test_default_kind_is_task(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Existing call shape (no `kind`) defaults to 'task' — no regression."""
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(key),
+        json={"title": "Plain task"},
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["kind"] == "task"
+    assert body["parent_ticket_id"] is None
+    assert body["child_ticket_ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_owner_can_create_issue(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Project owner can file kind='issue' tickets directly."""
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(key),
+        json={
+            "title": "Dashboard rules update broken for enterprise",
+            "kind": "issue",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["kind"] == "issue"
+    assert body["status"] == "open"
+    assert body["parent_ticket_id"] is None
+    assert body["child_ticket_ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_assignee_compass_does_not_bypass_authz(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Codex R1 MED #1 regression — a non-owner non-admin who DOES have
+    project access (e.g. captured-session legacy fallback) must still
+    be rejected when filing kind='issue', even when passing
+    assigned_to='compass'. Authorization is on the actor, not on the
+    user-controlled target assignee.
+    """
+    from sessionfs.server.db.models import Session as SessionRow
+
+    owner, _ = await _make_user(db_session, name="owner")
+    other, other_key = await _make_user(db_session, name="other")
+    project = await _make_project(db_session, owner)
+    # Grant the other user project access via the captured-session
+    # legacy fallback (Session.git_remote_normalized match).
+    db_session.add(
+        SessionRow(
+            id=f"ses_{uuid.uuid4().hex[:24]}",
+            user_id=other.id,
+            source_tool="claude-code",
+            title="other-session",
+            message_count=0,
+            total_input_tokens=0,
+            total_output_tokens=0,
+            tags="[]",
+            blob_key="b",
+            blob_size_bytes=0,
+            etag="e",
+            git_remote_normalized=project.git_remote_normalized,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+    )
+    await db_session.commit()
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(other_key),
+        json={
+            "title": "Sneaky rollup",
+            "kind": "issue",
+            "assigned_to": "compass",
+        },
+    )
+    # Must be 403 — actor is not project owner / org admin even though
+    # they passed assigned_to='compass'.
+    assert resp.status_code == 403, resp.text
+
+
+@pytest.mark.asyncio
+async def test_org_admin_can_create_issue(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Org admin of an org-scoped project may file kind='issue'."""
+    from sessionfs.server.db.models import OrgMember, Organization
+
+    owner, _ = await _make_user(db_session, name="orgowner")
+    admin, admin_key = await _make_user(db_session, name="orgadmin")
+    org = Organization(
+        id=f"org_{uuid.uuid4().hex[:16]}",
+        name="Acme",
+        slug=f"acme-{uuid.uuid4().hex[:6]}",
+        tier="team",
+    )
+    db_session.add(org)
+    await db_session.commit()
+    db_session.add(
+        OrgMember(
+            org_id=org.id,
+            user_id=admin.id,
+            role="admin",
+            joined_at=datetime.now(timezone.utc),
+        )
+    )
+    project = Project(
+        id=f"proj_{uuid.uuid4().hex[:16]}",
+        name=f"orgproj-{uuid.uuid4().hex[:6]}",
+        git_remote_normalized=f"acme/orgproj-{uuid.uuid4().hex[:6]}",
+        context_document="",
+        owner_id=owner.id,
+        org_id=org.id,
+    )
+    db_session.add(project)
+    await db_session.commit()
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(admin_key),
+        json={
+            "title": "Admin-filed issue",
+            "kind": "issue",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["kind"] == "issue"
+
+
+@pytest.mark.asyncio
+async def test_org_member_non_admin_cannot_create_issue(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Org member (role=member) cannot file kind='issue' on an
+    org-scoped project even with assigned_to='compass'."""
+    from sessionfs.server.db.models import OrgMember, Organization
+
+    owner, _ = await _make_user(db_session, name="memberowner")
+    member, member_key = await _make_user(db_session, name="orgmember")
+    org = Organization(
+        id=f"org_{uuid.uuid4().hex[:16]}",
+        name="Acme2",
+        slug=f"acme2-{uuid.uuid4().hex[:6]}",
+        tier="team",
+    )
+    db_session.add(org)
+    await db_session.commit()
+    db_session.add(
+        OrgMember(
+            org_id=org.id,
+            user_id=member.id,
+            role="member",
+            joined_at=datetime.now(timezone.utc),
+        )
+    )
+    project = Project(
+        id=f"proj_{uuid.uuid4().hex[:16]}",
+        name=f"orgmproj-{uuid.uuid4().hex[:6]}",
+        git_remote_normalized=f"acme/orgm-{uuid.uuid4().hex[:6]}",
+        context_document="",
+        owner_id=owner.id,
+        org_id=org.id,
+    )
+    db_session.add(project)
+    await db_session.commit()
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(member_key),
+        json={
+            "title": "Member-filed issue",
+            "kind": "issue",
+            "assigned_to": "compass",
+        },
+    )
+    assert resp.status_code == 403, resp.text
+
+
+@pytest.mark.asyncio
+async def test_outsider_cannot_file_issue(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """User with no project access at all gets 403 from project_access
+    before the kind gate runs."""
+    owner, _ = await _make_user(db_session, name="owner_x")
+    outsider, outsider_key = await _make_user(db_session, name="outsider")
+    project = await _make_project(db_session, owner)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(outsider_key),
+        json={
+            "title": "Outsider Issue",
+            "kind": "issue",
+            "assigned_to": "atlas",
+        },
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_task_can_have_issue_parent(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """A Task with parent_ticket_id pointing to an Issue is accepted."""
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    # File the Issue first.
+    issue_resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(key),
+        json={"title": "Rollup", "kind": "issue"},
+    )
+    assert issue_resp.status_code == 201
+    issue_id = issue_resp.json()["id"]
+    # File a Task under it.
+    task_resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(key),
+        json={"title": "Child task", "parent_ticket_id": issue_id},
+    )
+    assert task_resp.status_code == 201, task_resp.text
+    body = task_resp.json()
+    assert body["kind"] == "task"
+    assert body["parent_ticket_id"] == issue_id
+
+
+@pytest.mark.asyncio
+async def test_task_with_task_parent_rejected(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Parent must be kind='issue' — Task-under-Task → 422."""
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    parent_resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(key),
+        json={"title": "Plain task parent"},
+    )
+    parent_id = parent_resp.json()["id"]
+    child = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(key),
+        json={"title": "Child", "parent_ticket_id": parent_id},
+    )
+    assert child.status_code == 422, child.text
+    assert "kind='issue'" in child.text or "issue" in child.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_issue_with_parent_rejected(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """No Issue-under-Issue in v1 — 400."""
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    parent = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(key),
+        json={"title": "Top issue", "kind": "issue"},
+    )
+    parent_id = parent.json()["id"]
+    nested = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(key),
+        json={
+            "title": "Nested issue",
+            "kind": "issue",
+            "parent_ticket_id": parent_id,
+        },
+    )
+    assert nested.status_code == 400, nested.text
+
+
+@pytest.mark.asyncio
+async def test_cross_project_parent_rejected(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """parent_ticket_id from a different project → 422."""
+    user, key = await _make_user(db_session)
+    project_a = await _make_project(db_session, user)
+    project_b = await _make_project(db_session, user)
+    # File an Issue in project A.
+    issue_a = await client.post(
+        f"/api/v1/projects/{project_a.id}/tickets",
+        headers=_hdrs(key),
+        json={"title": "A-Issue", "kind": "issue"},
+    )
+    issue_a_id = issue_a.json()["id"]
+    # Try filing a Task in project B with the A-issue as parent.
+    cross = await client.post(
+        f"/api/v1/projects/{project_b.id}/tickets",
+        headers=_hdrs(key),
+        json={"title": "Cross-project child", "parent_ticket_id": issue_a_id},
+    )
+    assert cross.status_code == 422, cross.text
+
+
+@pytest.mark.asyncio
+async def test_get_issue_includes_child_ticket_ids(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """GET /tickets/{issue_id} returns child_ticket_ids rollup."""
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    issue = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(key),
+        json={"title": "Rollup", "kind": "issue"},
+    )
+    issue_id = issue.json()["id"]
+    child_ids = []
+    for i in range(3):
+        c = await client.post(
+            f"/api/v1/projects/{project.id}/tickets",
+            headers=_hdrs(key),
+            json={"title": f"Child {i}", "parent_ticket_id": issue_id},
+        )
+        child_ids.append(c.json()["id"])
+    # GET the Issue.
+    detail = await client.get(
+        f"/api/v1/projects/{project.id}/tickets/{issue_id}",
+        headers=_hdrs(key),
+    )
+    assert detail.status_code == 200
+    body = detail.json()
+    assert body["kind"] == "issue"
+    assert sorted(body["child_ticket_ids"]) == sorted(child_ids)
+
+
+@pytest.mark.asyncio
+async def test_get_task_has_empty_child_ticket_ids(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Tasks always return empty child_ticket_ids (cannot have children)."""
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    task = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(key),
+        json={"title": "Plain task"},
+    )
+    detail = await client.get(
+        f"/api/v1/projects/{project.id}/tickets/{task.json()['id']}",
+        headers=_hdrs(key),
+    )
+    assert detail.json()["child_ticket_ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_list_filters_by_kind(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """GET /tickets?kind=issue returns only Issues."""
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    issue = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(key),
+        json={"title": "An issue", "kind": "issue"},
+    )
+    task = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(key),
+        json={"title": "A task"},
+    )
+    # All
+    all_resp = await client.get(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(key),
+    )
+    assert {t["id"] for t in all_resp.json()} == {issue.json()["id"], task.json()["id"]}
+    # Issues only
+    only_issues = await client.get(
+        f"/api/v1/projects/{project.id}/tickets?kind=issue",
+        headers=_hdrs(key),
+    )
+    assert [t["id"] for t in only_issues.json()] == [issue.json()["id"]]
+    # Tasks only
+    only_tasks = await client.get(
+        f"/api/v1/projects/{project.id}/tickets?kind=task",
+        headers=_hdrs(key),
+    )
+    assert [t["id"] for t in only_tasks.json()] == [task.json()["id"]]
+
+
+@pytest.mark.asyncio
+async def test_list_filter_rejects_invalid_kind(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """kind=garbage → 400."""
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/tickets?kind=invalid",
+        headers=_hdrs(key),
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_invalid_kind(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Pydantic validator rejects unknown kind at the create endpoint."""
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(key),
+        json={"title": "Wrong kind", "kind": "epic"},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_issue_close_lifecycle(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Issue FSM: open → in_progress → closed via /close route. Owner
+    can close (project_admin gate satisfied)."""
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    # Register Compass persona so start_ticket resolves; assigned_to=compass.
+    await _make_persona(db_session, project, user, name="compass")
+    issue = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(key),
+        json={"title": "Closeable", "kind": "issue", "assigned_to": "compass"},
+    )
+    issue_id = issue.json()["id"]
+    # start: open → in_progress
+    started = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{issue_id}/start",
+        headers=_hdrs(key),
+    )
+    assert started.status_code == 200, started.text
+    assert started.json()["ticket"]["status"] == "in_progress"
+    # close: in_progress → closed
+    closed = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{issue_id}/close",
+        headers=_hdrs(key),
+    )
+    assert closed.status_code == 200, closed.text
+    body = closed.json()
+    assert body["status"] == "closed"
+    assert body["resolved_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_close_rejects_task(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Tasks cannot use /close — explicit 400 with helpful error."""
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    task = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(key),
+        json={"title": "Plain task"},
+    )
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{task.json()['id']}/close",
+        headers=_hdrs(key),
+    )
+    assert resp.status_code == 400
+    assert "Issues only" in resp.text or "kind=" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_issue_cancel_from_open(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Issue FSM allows open → cancelled (filed in error)."""
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    issue = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(key),
+        json={"title": "Filed by mistake", "kind": "issue"},
+    )
+    issue_id = issue.json()["id"]
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{issue_id}/dismiss",
+        headers=_hdrs(key),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_close_requires_owner_or_admin(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Codex R1 MED #2 regression — non-owner non-admin who has project
+    access cannot close an Issue. Issue terminator gated on the same
+    actor signal as Issue creation."""
+    from sessionfs.server.db.models import Session as SessionRow
+
+    owner, owner_key = await _make_user(db_session, name="closeowner")
+    other, other_key = await _make_user(db_session, name="closeother")
+    project = await _make_project(db_session, owner)
+    await _make_persona(db_session, project, owner, name="compass")
+    # Grant other user project access via captured-session fallback.
+    db_session.add(
+        SessionRow(
+            id=f"ses_{uuid.uuid4().hex[:24]}",
+            user_id=other.id,
+            source_tool="claude-code",
+            title="other-close-session",
+            message_count=0,
+            total_input_tokens=0,
+            total_output_tokens=0,
+            tags="[]",
+            blob_key="b",
+            blob_size_bytes=0,
+            etag="e",
+            git_remote_normalized=project.git_remote_normalized,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+    )
+    await db_session.commit()
+    # Owner files the Issue and starts it.
+    issue = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(owner_key),
+        json={"title": "Closeable", "kind": "issue", "assigned_to": "compass"},
+    )
+    issue_id = issue.json()["id"]
+    await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{issue_id}/start",
+        headers=_hdrs(owner_key),
+    )
+    # Non-admin tries to close → 403.
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{issue_id}/close",
+        headers=_hdrs(other_key),
+    )
+    assert resp.status_code == 403, resp.text
+
+
+@pytest.mark.asyncio
+async def test_compiled_context_surfaces_kind_and_parent(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Codex R1 MED #3 regression — start_ticket compiled_context must
+    surface kind + parent_ticket_id for child Tasks AND child_ticket_ids
+    for Issues, so agents reading the markdown see the rollup."""
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    await _make_persona(db_session, project, user, name="atlas")
+    await _make_persona(db_session, project, user, name="compass")
+    issue = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(key),
+        json={"title": "Rollup container", "kind": "issue", "assigned_to": "compass"},
+    )
+    issue_id = issue.json()["id"]
+    task = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(key),
+        json={
+            "title": "Atlas child task",
+            "assigned_to": "atlas",
+            "parent_ticket_id": issue_id,
+            "description": "Do the thing",
+        },
+    )
+    task_id = task.json()["id"]
+    # Start the Task — compiled context should mention parent Issue + kind.
+    started_task = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{task_id}/start",
+        headers=_hdrs(key),
+    )
+    assert started_task.status_code == 200
+    task_ctx = started_task.json()["compiled_context"]
+    assert "Kind: task" in task_ctx
+    assert f"Parent Issue: {issue_id}" in task_ctx
+    assert "Rollup container" in task_ctx
+    # Start the Issue — compiled context should mention child Tasks.
+    started_issue = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{issue_id}/start",
+        headers=_hdrs(key),
+    )
+    assert started_issue.status_code == 200
+    issue_ctx = started_issue.json()["compiled_context"]
+    assert "Kind: issue" in issue_ctx
+    assert "Child Tasks" in issue_ctx
+    assert task_id in issue_ctx
+
+
+@pytest.mark.asyncio
+async def test_issue_cannot_use_block_route(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Issue FSM rejects block — that's a Task-only transition."""
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    await _make_persona(db_session, project, user, name="compass")
+    issue = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(key),
+        json={"title": "I", "kind": "issue", "assigned_to": "compass"},
+    )
+    issue_id = issue.json()["id"]
+    await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{issue_id}/start",
+        headers=_hdrs(key),
+    )
+    # block should be rejected by Issue FSM
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{issue_id}/block",
+        headers=_hdrs(key),
+    )
+    assert resp.status_code == 400, resp.text
+
+
+@pytest.mark.asyncio
+async def test_agent_issue_skips_suggested_gate(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Agent-source Issues bypass the suggested-quality gate — they're
+    PM-triaged containers, not executor work units."""
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    # Source=agent + kind=issue + no acceptance_criteria + short desc:
+    # all the things that would 400 a Task should pass for an Issue.
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(key),
+        json={
+            "title": "Auto-filed issue",
+            "kind": "issue",
+            "source": "agent",
+            "description": "short",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["status"] == "open"  # NOT 'suggested'
+
+
+@pytest.mark.asyncio
+async def test_existing_task_fsm_unchanged(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """The Task FSM keeps the existing executor lifecycle —
+    suggested → open → in_progress → review → done. Issues don't
+    break the Task path."""
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    await _make_persona(db_session, project, user)
+    task = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(key),
+        json={"title": "Task work", "assigned_to": "atlas"},
+    )
+    task_id = task.json()["id"]
+    # start → in_progress
+    started = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{task_id}/start",
+        headers=_hdrs(key),
+    )
+    assert started.status_code == 200
+    # complete → review
+    completed = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{task_id}/complete",
+        headers=_hdrs(key),
+        json={"notes": "done"},
+    )
+    assert completed.status_code == 200
+    assert completed.json()["status"] == "review"
+    # accept → done
+    accepted = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{task_id}/accept",
+        headers=_hdrs(key),
+    )
+    assert accepted.status_code == 200
+    assert accepted.json()["status"] == "done"

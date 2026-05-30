@@ -17,6 +17,44 @@ console = Console()
 err_console = Console(stderr=True)
 
 
+def format_api_error(body: Any, status: int) -> str:
+    """Extract a human-readable error message from a server response body.
+
+    v0.10.24 tk_e7da4c4508d94bac — handles the v0.10.x error envelope
+    shape `{"error": {"code", "message", "details"}}` cleanly and falls
+    back to the raw body for older shapes. Use instead of formatting the
+    raw dict in user-facing error prints — agents and humans both prefer
+    "duplicate_resource: A resource with that value already exists." over
+    "{'error': {'code': 'duplicate_resource', 'message': '...', 'details': {...}}}".
+
+    Returns a single-line string; callers wrap it in their own
+    "API error (status): ..." prefix if they want.
+    """
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict):
+            code = error.get("code") or ""
+            message = error.get("message") or ""
+            if message and code:
+                return f"{code}: {message}"
+            if message:
+                return message
+            if code:
+                return code
+            return str(status)
+        # Legacy `detail` shape (some older routes / FastAPI defaults)
+        detail = body.get("detail")
+        if isinstance(detail, str) and detail:
+            return detail
+        if isinstance(detail, dict):
+            msg = detail.get("message") or detail.get("error") or ""
+            if msg:
+                return str(msg)
+    if isinstance(body, str) and body:
+        return body
+    return str(body)
+
+
 def handle_errors(func):
     """Decorator that catches common exceptions and prints friendly messages."""
     # click.exceptions.ClickException is the base for typer.BadParameter

@@ -445,6 +445,8 @@ export type TicketStatus =
 
 export type TicketPriority = 'low' | 'medium' | 'high' | 'critical';
 
+export type TicketKind = 'task' | 'issue';
+
 export interface Ticket {
   id: string;
   project_id: string;
@@ -456,6 +458,9 @@ export interface Ticket {
   created_by_session_id: string | null;
   created_by_persona: string | null;
   status: TicketStatus | string;
+  kind: TicketKind | string;
+  parent_ticket_id: string | null;
+  child_ticket_ids: string[];
   context_refs: string[];
   file_refs: string[];
   related_sessions: string[];
@@ -481,6 +486,8 @@ export interface TicketCreate {
   file_refs?: string[];
   related_sessions?: string[];
   depends_on?: string[];
+  kind?: TicketKind | string;
+  parent_ticket_id?: string | null;
 }
 
 export interface TicketComment {
@@ -536,10 +543,65 @@ export interface AgentRun {
 
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
-    super(message);
+  /** v0.10.x envelope code, when the response body parses cleanly. */
+  code?: string;
+  /** Structured details from the envelope (e.g. retry hints, bounds). */
+  details?: Record<string, unknown>;
+  /** Raw response body — kept for power-user diagnostics / legacy logging. */
+  raw: string;
+  constructor(status: number, body: string) {
+    // v0.10.24 tk_e7da4c4508d94bac Codex R1 MED #2 — parse the v0.10.x
+    // error envelope so toasts surface "code: message" instead of raw
+    // JSON. Falls back to the body text for legacy / plain-text 5xx
+    // responses so nothing regresses.
+    const parsed = parseApiErrorBody(body, status);
+    super(parsed.message);
     this.status = status;
+    this.code = parsed.code;
+    this.details = parsed.details;
+    this.raw = body;
   }
+}
+
+interface ParsedApiError {
+  code?: string;
+  message: string;
+  details?: Record<string, unknown>;
+}
+
+export function parseApiErrorBody(body: string, status: number): ParsedApiError {
+  if (!body) return { message: `HTTP ${status}` };
+  try {
+    const json = JSON.parse(body);
+    if (json && typeof json === 'object') {
+      const error = (json as Record<string, unknown>).error;
+      if (error && typeof error === 'object') {
+        const e = error as Record<string, unknown>;
+        const code = typeof e.code === 'string' ? e.code : undefined;
+        const message = typeof e.message === 'string' && e.message
+          ? (code ? `${code}: ${e.message}` : e.message)
+          : (code ?? `HTTP ${status}`);
+        const details = e.details && typeof e.details === 'object'
+          ? (e.details as Record<string, unknown>)
+          : undefined;
+        return { code, message, details };
+      }
+      // Legacy `detail` shape (older FastAPI defaults).
+      const detail = (json as Record<string, unknown>).detail;
+      if (typeof detail === 'string' && detail) {
+        return { message: detail };
+      }
+      if (detail && typeof detail === 'object') {
+        const d = detail as Record<string, unknown>;
+        const msg = (typeof d.message === 'string' && d.message)
+          || (typeof d.error === 'string' && d.error);
+        if (msg) return { message: msg as string };
+      }
+    }
+  } catch {
+    // body wasn't JSON — fall through to raw text
+  }
+  return { message: body };
 }
 
 export function createApiClient(baseUrl: string, apiKey: string) {
@@ -818,6 +880,12 @@ export function createApiClient(baseUrl: string, apiKey: string) {
     clearAlias: (sessionId: string) =>
       request<SessionDetail>(`/api/v1/sessions/${sessionId}/alias`, {
         method: 'DELETE',
+      }),
+
+    updateSession: (sessionId: string, body: { title?: string; alias?: string; tags?: string[] }) =>
+      request<SessionDetail>(`/api/v1/sessions/${sessionId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
       }),
 
     // Bookmark endpoints
@@ -1193,12 +1261,19 @@ export function createApiClient(baseUrl: string, apiKey: string) {
     // ── v0.10.1 Tickets (Team+) ──
     listTickets: (
       projectId: string,
-      params: { status?: string; assigned_to?: string; priority?: string; limit?: number } = {},
+      params: {
+        status?: string;
+        assigned_to?: string;
+        priority?: string;
+        kind?: string;
+        limit?: number;
+      } = {},
     ) => {
       const sp = new URLSearchParams();
       if (params.status) sp.set('status', params.status);
       if (params.assigned_to) sp.set('assigned_to', params.assigned_to);
       if (params.priority) sp.set('priority', params.priority);
+      if (params.kind) sp.set('kind', params.kind);
       if (params.limit) sp.set('limit', String(params.limit));
       const qs = sp.toString();
       return request<Ticket[]>(
@@ -1222,6 +1297,11 @@ export function createApiClient(baseUrl: string, apiKey: string) {
 
     dismissTicket: (projectId: string, ticketId: string) =>
       request<Ticket>(`/api/v1/projects/${projectId}/tickets/${ticketId}/dismiss`, {
+        method: 'POST',
+      }),
+
+    closeTicket: (projectId: string, ticketId: string) =>
+      request<Ticket>(`/api/v1/projects/${projectId}/tickets/${ticketId}/close`, {
         method: 'POST',
       }),
 

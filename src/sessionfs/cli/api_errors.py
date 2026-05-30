@@ -55,11 +55,21 @@ def handle_api_response(resp) -> None:
                 raise SystemExit(0)
 
     if resp.status_code >= 400:
+        # Codex R1 MED #1 (tk_e7da4c4508d94bac) — the customer-facing
+        # `sfs org create` path comes through here and was the original
+        # GH #51 trigger. Use the shared `format_api_error` helper so
+        # the new v0.10.x envelope shape ({"error": {"code", "message",
+        # "details"}}) surfaces as "code: message" instead of bare JSON.
+        from sessionfs.cli.common import format_api_error
+
         try:
-            detail = resp.json().get("detail", resp.text)
+            body = resp.json()
         except Exception:
-            detail = resp.text
-        err_console.print(f"[red]API error ({resp.status_code}): {detail}[/red]")
+            body = resp.text
+        err_console.print(
+            f"[red]API error ({resp.status_code}): "
+            f"{format_api_error(body, resp.status_code)}[/red]"
+        )
         raise SystemExit(1)
 
 

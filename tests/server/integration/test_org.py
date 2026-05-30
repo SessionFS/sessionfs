@@ -9,7 +9,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sessionfs.server.db.models import OrgMember, Organization, User
+from sessionfs.server.db.models import User
 
 
 @pytest.fixture
@@ -65,6 +65,92 @@ async def test_create_org(client: AsyncClient, team_headers: dict):
     assert data["name"] == "Test Org"
     assert data["slug"] == "test-org"
     assert data["org_id"].startswith("org_")
+
+
+@pytest.mark.asyncio
+async def test_create_org_enterprise_user_no_stripe(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """v0.10.24 tk_17b39010f9a64cba regression — enterprise user with
+    no Stripe fields (every manual-license customer) used to hit a
+    SQLAlchemy unit-of-work FK ordering bug that 500'd against
+    PostgreSQL. The Stripe-paying path autoflushed the Organization
+    row before OrgMember was queued; the no-stripe path did not, and
+    SQLAlchemy didn't reliably topo-sort the two pending INSERTs.
+
+    najitestech (GH #51, 2026-05-28) was the first enterprise customer
+    to surface this. The fix is an explicit `await db.flush()` after
+    `db.add(org)` in the route. This test exercises the no-stripe code
+    path on SQLite with PRAGMA foreign_keys=ON so the FK violation
+    surfaces locally without spinning up PostgreSQL.
+    """
+    from sqlalchemy import text
+
+    from sessionfs.server.auth.keys import generate_api_key, hash_api_key
+    from sessionfs.server.db.models import ApiKey
+
+    # PRAGMA foreign_keys=ON makes SQLite enforce FKs like PostgreSQL.
+    # Without this, SQLite silently accepts an OrgMember INSERT against
+    # a missing Organization row and the bug doesn't reproduce in
+    # tests even though it 500s in prod.
+    await db_session.execute(text("PRAGMA foreign_keys = ON"))
+
+    user = User(
+        id=str(uuid.uuid4()),
+        email="enterprise-no-stripe@example.com",
+        display_name="Enterprise Customer",
+        tier="enterprise",
+        stripe_customer_id=None,
+        stripe_subscription_id=None,
+        email_verified=True,
+        created_at=datetime.now(timezone.utc),
+    )
+    db_session.add(user)
+    await db_session.commit()
+    raw_key = generate_api_key()
+    db_session.add(
+        ApiKey(
+            id=str(uuid.uuid4()),
+            user_id=user.id,
+            key_hash=hash_api_key(raw_key),
+            name="enterprise-key",
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+    await db_session.commit()
+    headers = {"Authorization": f"Bearer {raw_key}"}
+
+    resp = await client.post(
+        "/api/v1/org",
+        headers=headers,
+        json={"name": "Najite Global", "slug": "najite-global"},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["name"] == "Najite Global"
+    assert data["slug"] == "najite-global"
+    assert data["org_id"].startswith("org_")
+
+    # Both rows landed: Organization first (FK target), then OrgMember.
+    org_row = (
+        await db_session.execute(
+            text("SELECT id, tier FROM organizations WHERE id = :id"),
+            {"id": data["org_id"]},
+        )
+    ).one_or_none()
+    assert org_row is not None
+    assert org_row[1] == "enterprise"
+    member_row = (
+        await db_session.execute(
+            text(
+                "SELECT user_id, role FROM org_members "
+                "WHERE org_id = :id AND user_id = :uid"
+            ),
+            {"id": data["org_id"], "uid": user.id},
+        )
+    ).one_or_none()
+    assert member_row is not None
+    assert member_row[1] == "admin"
 
 
 @pytest.mark.asyncio

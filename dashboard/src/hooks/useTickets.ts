@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
 import type { Ticket, TicketComment, TicketCreate } from '../api/client';
 
@@ -17,7 +17,12 @@ import type { Ticket, TicketComment, TicketCreate } from '../api/client';
 
 export function useTickets(
   projectId: string | undefined,
-  filters: { status?: string; assigned_to?: string; priority?: string } = {},
+  filters: {
+    status?: string;
+    assigned_to?: string;
+    priority?: string;
+    kind?: string;
+  } = {},
 ) {
   const { auth } = useAuth();
   return useQuery<Ticket[]>({
@@ -25,6 +30,26 @@ export function useTickets(
     queryFn: () => auth!.client.listTickets(projectId!, filters),
     enabled: !!auth && !!projectId,
     staleTime: 15_000,
+  });
+}
+
+/**
+ * Parallel-fetch child Tickets for an Issue rollup. Each child shares the
+ * `['ticket', projectId, id]` key so cached child reads hit the same entry
+ * as a direct expand of that child.
+ */
+export function useTicketChildren(
+  projectId: string | undefined,
+  ids: string[] | undefined,
+) {
+  const { auth } = useAuth();
+  return useQueries({
+    queries: (ids ?? []).map((id) => ({
+      queryKey: ['ticket', projectId, id],
+      queryFn: () => auth!.client.getTicket(projectId!, id),
+      enabled: !!auth && !!projectId,
+      staleTime: 15_000,
+    })),
   });
 }
 
@@ -84,6 +109,19 @@ export function useDismissTicket(projectId: string | undefined) {
   return useMutation({
     mutationFn: (ticketId: string) =>
       auth!.client.dismissTicket(projectId!, ticketId),
+    onSuccess: (_data, ticketId) => {
+      void qc.invalidateQueries({ queryKey: ['tickets', projectId] });
+      void qc.invalidateQueries({ queryKey: ['ticket', projectId, ticketId] });
+    },
+  });
+}
+
+export function useCloseTicket(projectId: string | undefined) {
+  const { auth } = useAuth();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (ticketId: string) =>
+      auth!.client.closeTicket(projectId!, ticketId),
     onSuccess: (_data, ticketId) => {
       void qc.invalidateQueries({ queryKey: ['tickets', projectId] });
       void qc.invalidateQueries({ queryKey: ['ticket', projectId, ticketId] });

@@ -65,6 +65,37 @@ async def user_can_access_project(
     return captured is not None
 
 
+async def user_is_project_admin(
+    db: AsyncSession, user_id: str, project: Project
+) -> bool:
+    """Return True if the user has admin standing on this project.
+
+    Trusted-actor signal (v0.10.24 tk_dbccde26ed604b3c, Codex R1 MED #1):
+    admin standing is the project owner OR — when the project is
+    org-scoped — an `OrgMember.role == 'admin'` of that org. This is
+    the actor-side check; do NOT authorize on mutable request input
+    like `assigned_to`.
+
+    Service keys are NOT admins via this helper. Service-key admin
+    operations gate via the explicit `admin:*` scope.
+    """
+    if project.owner_id == user_id:
+        return True
+    if project.org_id is not None:
+        admin = (
+            await db.execute(
+                select(OrgMember.user_id).where(
+                    OrgMember.org_id == project.org_id,
+                    OrgMember.user_id == user_id,
+                    OrgMember.role == "admin",
+                )
+            )
+        ).scalar_one_or_none()
+        if admin is not None:
+            return True
+    return False
+
+
 async def load_project_for_user(
     project_id: str, db: AsyncSession, user_id: str | None
 ) -> Project:

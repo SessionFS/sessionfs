@@ -79,8 +79,9 @@ class SessionMetadataUpdate(BaseModel):
             raise ValueError("Title must be 500 characters or fewer")
         if "\x00" in v:
             raise ValueError("Null bytes not allowed in title")
-        # Strip HTML tags
-        v = re.sub(r"<[^>]*>", "", v)
+        v = re.sub(r"<[^>]*>", "", v).strip()
+        if not v:
+            raise ValueError("Title cannot be empty")
         return v
 
     @field_validator("tags")

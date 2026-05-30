@@ -698,6 +698,40 @@ _TOOLS = [
         },
     ),
     Tool(
+        name="rename_session",
+        description=(
+            "Rename a captured session's title and/or alias. Owner-only — "
+            "the caller's user account must own the session. At least one "
+            "of `new_title` or `new_alias` is required. Pass `new_alias` "
+            "as an empty string to clear the alias.\n\n"
+            "Tier gating: setting an alias requires Starter+ "
+            "(`aliases_cloud` feature). Title edits are available to all "
+            "tiers. Returns the updated session record.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs session rename` or any other sfs CLI command. This tool "
+            "connects directly to the API and is more reliable than "
+            "shelling out."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "The session ID (ses_... format) or alias",
+                },
+                "new_title": {
+                    "type": "string",
+                    "description": "New title (≤500 chars, must be non-empty after HTML strip + trim)",
+                },
+                "new_alias": {
+                    "type": "string",
+                    "description": "New alias (3-100 chars, alphanumeric + hyphens/underscores, must start alphanumeric). Empty string clears the alias.",
+                },
+            },
+            "required": ["session_id"],
+        },
+    ),
+    Tool(
         name="get_session_provenance",
         description=(
             "Return the instruction provenance for a session: which rules "
@@ -800,10 +834,17 @@ _TOOLS = [
         name="list_tickets",
         description=(
             "List tickets for this project. Filter by `assigned_to` "
-            "(persona name), `status`, or `priority`. Returns each ticket's "
-            "id, title, assigned persona, status, and priority.\n\n"
-            "Status values: suggested, open, in_progress, blocked, review, "
-            "done, cancelled.\n\n"
+            "(persona name), `status`, `priority`, or `kind`. Returns each "
+            "ticket's id, title, assigned persona, status, priority, kind, "
+            "and parent_ticket_id when set.\n\n"
+            "Status values for tasks: suggested, open, in_progress, "
+            "blocked, review, done, cancelled. Status values for issues: "
+            "open, in_progress, closed, cancelled (no suggested/review/"
+            "blocked — Issues are PM-triaged containers, not executor "
+            "work units).\n\n"
+            "Kind values: 'task' (default — the existing executor unit) "
+            "or 'issue' (a PM-triaged container that rolls up child "
+            "tasks via parent_ticket_id).\n\n"
             "IMPORTANT: Always use this MCP tool instead of running "
             "`sfs ticket list` or any other sfs CLI command."
         ),
@@ -813,6 +854,11 @@ _TOOLS = [
                 "assigned_to": {"type": "string", "description": "Filter by persona name"},
                 "status": {"type": "string", "description": "Filter by status"},
                 "priority": {"type": "string", "description": "Filter by priority"},
+                "kind": {
+                    "type": "string",
+                    "enum": ["issue", "task"],
+                    "description": "Filter by kind. Omit to return both.",
+                },
                 "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
             },
         },
@@ -947,11 +993,27 @@ _TOOLS = [
         description=(
             "Create a new ticket. Can be created by a human or an agent "
             "working on another ticket.\n\n"
-            "Agent-created tickets (source='agent') default to 'suggested' "
+            "**Kind: Issue vs Task** (v0.10.24).\n"
+            "- `kind='task'` (default) — the existing executor work unit. "
+            "Owned by Atlas/Sentinel/Prism/Forge/etc. Tasks finish via "
+            "complete + accept. File a Task for concrete code work.\n"
+            "- `kind='issue'` — a PM-triaged container that rolls up one "
+            "or more child Tasks via `parent_ticket_id`. Owned by "
+            "Compass. Issues finish via /close (manual close by Compass "
+            "— NOT auto-derived from child status). File an Issue when "
+            "a user-reported problem will spawn multiple workstreams "
+            "that need PM-level rollup. Authorization: only Compass-"
+            "assigned or project owner may file Issues.\n\n"
+            "When `parent_ticket_id` is set: parent must exist in this "
+            "project AND be kind='issue'. Single-level nesting only — "
+            "Issues cannot be nested under other Issues.\n\n"
+            "Agent-created Tasks (source='agent') default to 'suggested' "
             "status and require:\n"
             "- acceptance_criteria (at least one)\n"
             "- description >= 20 characters\n"
             "- max 3 per session_id\n\n"
+            "Agent-created Issues bypass the suggested-quality gate "
+            "(Issues are PM-triaged containers, not executor work).\n\n"
             "Human-created tickets (source='human', default) land as "
             "'open' immediately.\n\n"
             "IMPORTANT: Always use this MCP tool instead of running "
@@ -971,6 +1033,16 @@ _TOOLS = [
                 "source": {"type": "string", "enum": ["human", "agent"], "default": "human"},
                 "created_by_session_id": {"type": "string"},
                 "created_by_persona": {"type": "string"},
+                "kind": {
+                    "type": "string",
+                    "enum": ["issue", "task"],
+                    "default": "task",
+                    "description": "'task' = executor work (default). 'issue' = PM-triaged rollup container.",
+                },
+                "parent_ticket_id": {
+                    "type": "string",
+                    "description": "Optional parent Issue (only valid when kind='task'). Parent must be kind='issue' in this same project.",
+                },
                 "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
             },
             "required": ["title"],
@@ -1037,8 +1109,10 @@ _TOOLS = [
         description=(
             "Create a new agent persona in this project. Persona names "
             "must be ASCII (1-50 chars: letters, digits, dash, underscore). "
-            "Use this when an agent decides a new role is needed (e.g. "
-            "after recognizing a gap in the team's expertise).\n\n"
+            "Names are case-insensitive-unique per project (v0.10.23 "
+            "tk_884b2321fdb74170) — creating 'Atlas' when 'atlas' exists "
+            "returns 409. Use this when an agent decides a new role is "
+            "needed (e.g. after recognizing a gap in the team's expertise).\n\n"
             "IMPORTANT: Always use this MCP tool instead of running "
             "`sfs persona create` or any other sfs CLI command."
         ),
@@ -1052,6 +1126,84 @@ _TOOLS = [
                 "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
             },
             "required": ["name", "role"],
+        },
+    ),
+    Tool(
+        name="update_persona",
+        description=(
+            "Update fields on an existing persona — role, "
+            "specializations, and/or content. Bumps `version` only on "
+            "actual mutations (no-op PUT does not invalidate caches). "
+            "Preserves `created_at` and `created_by`. Errors 404 if no "
+            "persona by that name exists in this project.\n\n"
+            "v0.10.24 (GH #50): closes the 'agent built a persona during "
+            "onboarding, deeper research disproved some claims, now "
+            "needs to edit it via MCP' gap. Previously agents had to "
+            "drop out of MCP and ask a human to run `sfs persona edit`. "
+            "Names are case-insensitive-unique per project (v0.10.23 "
+            "tk_884b2321fdb74170) — lookup uses the exact stored case.\n\n"
+            "Authorization: same as create_persona (project owner / org "
+            "admin / case-insensitive name match).\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs persona edit` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Persona name to update (exact case as stored)"},
+                "role": {"type": "string", "description": "New role description (omit to leave unchanged)"},
+                "content": {"type": "string", "description": "New persona body markdown (omit to leave unchanged)"},
+                "specializations": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Replace the specializations list (omit to leave unchanged)",
+                },
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+            "required": ["name"],
+        },
+    ),
+    Tool(
+        name="delete_persona",
+        description=(
+            "Soft-delete a persona — sets `is_active=false`. The row "
+            "stays in the database so historical tickets and sessions "
+            "still resolve their persona name. The name remains "
+            "RESERVED at the case-insensitive uniqueness layer "
+            "(v0.10.23 tk_884b2321fdb74170), so you cannot create a "
+            "new persona with the same name (case-insensitive) while "
+            "the soft-deleted row exists. Reactivation is NOT exposed "
+            "via MCP today — to bring a soft-deleted persona back, an "
+            "operator must use the HTTP API directly "
+            "(`PUT /api/v1/projects/{pid}/personas/{name}` with "
+            "`is_active=true`). Plan accordingly before calling this tool.\n\n"
+            "Refuses with 409 when non-terminal tickets (suggested / "
+            "open / in_progress / blocked / review) reference this "
+            "persona, unless `force=true` is passed. Without the "
+            "guard, those tickets would be stranded — start_ticket "
+            "later refuses to load an inactive persona.\n\n"
+            "v0.10.24 (GH #50): closes the 'retire a persona that was "
+            "filed by mistake or has been replaced' gap that previously "
+            "required dropping out of MCP for `sfs persona delete`.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs persona delete` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Persona name to soft-delete"},
+                "force": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Override the non-terminal-ticket guard. Use "
+                        "only when the operator has reassigned or "
+                        "cancelled stranded tickets manually."
+                    ),
+                },
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+            "required": ["name"],
         },
     ),
     Tool(
@@ -1746,6 +1898,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_get_knowledge_health(arguments)
         elif name == "get_context_section":
             result = await _handle_get_context_section(arguments)
+        elif name == "rename_session":
+            result = await _handle_rename_session(arguments)
         elif name == "get_session_provenance":
             result = await _handle_get_session_provenance(arguments)
         elif name == "get_session_retrieval_log":
@@ -1774,6 +1928,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_add_ticket_comment(arguments)
         elif name == "create_persona":
             result = await _handle_create_persona(arguments)
+        elif name == "update_persona":
+            result = await _handle_update_persona(arguments)
+        elif name == "delete_persona":
+            result = await _handle_delete_persona(arguments)
         elif name == "assign_persona":
             result = await _handle_assign_persona(arguments)
         elif name == "assume_persona":
@@ -3112,6 +3270,96 @@ async def _handle_get_context_section(args: dict) -> dict:
     return resp.json()
 
 
+async def _handle_rename_session(args: dict) -> dict:
+    """Wrap PATCH /api/v1/sessions/{session_id} to rename title and/or alias.
+
+    Sessions are user-scoped, not project-scoped, so this does not call
+    `_resolve_project_id`. Auth is the standard bearer-token user gate;
+    the server enforces owner-only via `_get_user_session`. Tier gating
+    on alias is enforced server-side via `check_feature(aliases_cloud)`.
+    """
+    session_id = args.get("session_id", "")
+    if not session_id:
+        return {"error": "session_id is required"}
+
+    new_title = args.get("new_title")
+    new_alias = args.get("new_alias")
+    if new_title is None and new_alias is None:
+        return {"error": "At least one of new_title or new_alias is required"}
+
+    payload: dict = {}
+    if new_title is not None:
+        payload["title"] = new_title
+    if new_alias is not None:
+        # Empty string means "clear the alias" — route the clear path
+        # through DELETE /alias rather than PATCH alias=null, since the
+        # PATCH endpoint validates non-empty against _ALIAS_RE.
+        if new_alias == "":
+            # Handled below as a separate request.
+            pass
+        else:
+            payload["alias"] = new_alias
+
+    config = load_config()
+    if not config.sync.api_key:
+        return {"error": "Not authenticated. Run 'sfs auth login' first."}
+
+    import httpx
+    api_url = config.sync.api_url.rstrip("/")
+    headers = {"Authorization": f"Bearer {config.sync.api_key}"}
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        # Resolve the caller-supplied identifier (which may be an alias)
+        # to the canonical session id BEFORE any mutation. Codex R1
+        # MEDIUM: if the caller passes the alias they're about to clear,
+        # the post-DELETE GET/PATCH would 404 since the alias is no
+        # longer resolvable. Capture the canonical id once up front.
+        canonical_id = session_id
+        if new_alias == "":
+            del_resp = await client.delete(
+                f"{api_url}/api/v1/sessions/{session_id}/alias",
+                headers=headers,
+            )
+            if del_resp.status_code == 404:
+                return {"error": f"Session {session_id} not found"}
+            if del_resp.status_code >= 400:
+                return {"error": f"API error {del_resp.status_code}: {del_resp.text}"}
+            try:
+                del_body = del_resp.json()
+                if isinstance(del_body, dict) and del_body.get("id"):
+                    canonical_id = del_body["id"]
+            except Exception:
+                # If the response isn't JSON, fall back to the caller's
+                # identifier. PATCH/GET below will surface a 404 if that
+                # was the just-cleared alias.
+                pass
+            if not payload:
+                # Alias-clear-only path: DELETE response already carries
+                # the updated SessionDetail. No follow-up call needed.
+                return del_body if isinstance(del_body, dict) else {"id": canonical_id}
+        if payload:
+            resp = await client.patch(
+                f"{api_url}/api/v1/sessions/{canonical_id}",
+                json=payload,
+                headers=headers,
+            )
+            if resp.status_code == 404:
+                return {"error": f"Session {session_id} not found"}
+            if resp.status_code >= 400:
+                return {"error": f"API error {resp.status_code}: {resp.text}"}
+            return resp.json()
+        # No mutation requested but caller didn't trigger alias-clear
+        # (defensive — this branch is unreachable given the earlier
+        # at-least-one-of check, kept for safety).
+        get_resp = await client.get(
+            f"{api_url}/api/v1/sessions/{canonical_id}",
+            headers=headers,
+        )
+        if get_resp.status_code >= 400:
+            return {"error": f"API error {get_resp.status_code}: {get_resp.text}"}
+        return get_resp.json()
+
+
 async def _handle_get_session_provenance(args: dict) -> dict:
     """Wrap GET /api/v1/sessions/{session_id}/provenance."""
     session_id = args.get("session_id", "")
@@ -3286,7 +3534,7 @@ async def _handle_list_tickets(args: dict) -> dict:
         return {"error": str(exc)}
 
     params: dict[str, str] = {}
-    for key in ("assigned_to", "status", "priority"):
+    for key in ("assigned_to", "status", "priority", "kind"):
         val = args.get(key)
         if isinstance(val, str) and val.strip():
             params[key] = val.strip()
@@ -3496,6 +3744,7 @@ async def _handle_create_ticket(args: dict) -> dict:
     for key in (
         "description", "assigned_to", "priority", "source",
         "created_by_session_id", "created_by_persona",
+        "kind", "parent_ticket_id",
     ):
         val = args.get(key)
         if isinstance(val, str) and val.strip():
@@ -3640,6 +3889,115 @@ async def _handle_create_persona(args: dict) -> dict:
     if resp.status_code >= 400:
         return {"error": f"API error {resp.status_code}: {resp.text}"}
     return resp.json()
+
+
+async def _handle_update_persona(args: dict) -> dict:
+    """Wrap PUT /api/v1/projects/{project_id}/personas/{name}.
+
+    v0.10.24 tk_32abb6d0d4744c5d / GH #50. Mirror the CLI `sfs persona
+    edit` flow for agents working through MCP. Only fields the caller
+    passes are mutated; the server bumps `version` only on actual
+    mutations so a no-op call doesn't invalidate caches.
+    """
+    name = (args.get("name") or "").strip()
+    if not name:
+        return {"error": "name is required"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    # Build the PUT body with only the fields the caller passed. Server
+    # treats omitted fields as no-op (preserves existing value), so we
+    # must not send role/content/specializations with their defaults —
+    # that would silently overwrite existing values.
+    body: dict[str, Any] = {}
+    for key in ("role", "content"):
+        val = args.get(key)
+        if isinstance(val, str):
+            body[key] = val
+    specs = args.get("specializations")
+    if isinstance(specs, list):
+        body["specializations"] = list(specs)
+
+    if not body:
+        return {
+            "error": (
+                "At least one of role, content, or specializations is "
+                "required for update_persona"
+            )
+        }
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.put(
+            f"{api_url}/api/v1/projects/{project_id}/personas/{name}",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=body,
+        )
+    if resp.status_code == 404:
+        return {"error": f"Persona '{name}' not found in this project"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_delete_persona(args: dict) -> dict:
+    """Wrap DELETE /api/v1/projects/{project_id}/personas/{name}?force=...
+
+    v0.10.24 tk_32abb6d0d4744c5d / GH #50. Soft-delete only — the server
+    sets is_active=false. Refuses with 409 when non-terminal tickets
+    reference the persona unless `force=true` is passed (server-side
+    guard from KB 339).
+    """
+    name = (args.get("name") or "").strip()
+    if not name:
+        return {"error": "name is required"}
+    # Codex R1 MEDIUM (tk_32abb6d0d4744c5d) — `bool("false")` is True
+    # in Python. A destructive path should never accept truthy-string
+    # values as "force". Accept literal True OR a narrow set of
+    # case-insensitive truthy strings ("true", "1", "yes"); anything
+    # else (False, "false", "no", "0", omitted) stays unforced.
+    raw_force = args.get("force", False)
+    if isinstance(raw_force, bool):
+        force = raw_force
+    elif isinstance(raw_force, str):
+        force = raw_force.strip().lower() in {"true", "1", "yes"}
+    else:
+        force = False
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    import httpx
+    params: dict[str, str] = {}
+    if force:
+        params["force"] = "true"
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.delete(
+            f"{api_url}/api/v1/projects/{project_id}/personas/{name}",
+            headers={"Authorization": f"Bearer {api_key}"},
+            params=params,
+        )
+    if resp.status_code == 204:
+        return {"ok": True, "name": name, "soft_deleted": True}
+    if resp.status_code == 404:
+        return {"error": f"Persona '{name}' not found in this project"}
+    if resp.status_code == 409:
+        # Surface the structured envelope so the caller can decide
+        # whether to retry with force=true.
+        try:
+            return {"error": resp.json(), "status": 409}
+        except Exception:
+            return {"error": resp.text, "status": 409}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return {"ok": True, "name": name, "soft_deleted": True}
 
 
 async def _handle_assign_persona(args: dict) -> dict:

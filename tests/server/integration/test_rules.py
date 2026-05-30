@@ -692,3 +692,90 @@ class TestSessionProvenanceFields:
         assert uploaded_session.rules_version is None
         assert uploaded_session.rules_hash is None
         assert uploaded_session.instruction_artifacts == "[]"
+
+
+class TestMaxTokensBounds:
+    """v0.10.24 tk_d4a13a68b6724ba6 — structured envelope on over-cap.
+
+    Server caps knowledge_max_tokens and context_max_tokens at 20000.
+    Was a bare HTTPException(422, "knowledge_max_tokens out of range");
+    now returns the v0.10.x ErrorResponse envelope with `code`,
+    `message`, `field`, `min`, `max`, `current`.
+    """
+
+    async def _get_etag(self, client, headers, project_id):
+        resp = await client.get(
+            f"/api/v1/projects/{project_id}/rules", headers=headers
+        )
+        return resp.json()["etag"]
+
+    @pytest.mark.asyncio
+    async def test_knowledge_max_tokens_over_cap_envelope(
+        self, client: AsyncClient, auth_headers, project: Project
+    ):
+        etag = await self._get_etag(client, auth_headers, project.id)
+        resp = await client.put(
+            f"/api/v1/projects/{project.id}/rules",
+            headers={**auth_headers, "If-Match": etag},
+            json={"knowledge_max_tokens": 25000},
+        )
+        assert resp.status_code == 422, resp.text
+        body = resp.json()
+        # Structured envelope, NOT bare {"detail": "knowledge_max_tokens out of range"}
+        assert "error" in body
+        assert body["error"]["code"] == "max_tokens_exceeded"
+        details = body["error"]["details"]
+        assert details["field"] == "knowledge_max_tokens"
+        assert details["max"] == 20000
+        assert details["current"] == 25000
+        # Human-readable message includes the actionable bound
+        assert "20000" in body["error"]["message"]
+        assert "25000" in body["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_context_max_tokens_over_cap_envelope(
+        self, client: AsyncClient, auth_headers, project: Project
+    ):
+        etag = await self._get_etag(client, auth_headers, project.id)
+        resp = await client.put(
+            f"/api/v1/projects/{project.id}/rules",
+            headers={**auth_headers, "If-Match": etag},
+            json={"context_max_tokens": 99999},
+        )
+        assert resp.status_code == 422
+        body = resp.json()
+        assert body["error"]["code"] == "max_tokens_exceeded"
+        assert body["error"]["details"]["field"] == "context_max_tokens"
+        assert body["error"]["details"]["current"] == 99999
+
+    @pytest.mark.asyncio
+    async def test_max_tokens_at_boundary_accepted(
+        self, client: AsyncClient, auth_headers, project: Project
+    ):
+        """Exactly 20000 is allowed — the cap is inclusive."""
+        etag = await self._get_etag(client, auth_headers, project.id)
+        resp = await client.put(
+            f"/api/v1/projects/{project.id}/rules",
+            headers={**auth_headers, "If-Match": etag},
+            json={"knowledge_max_tokens": 20000, "context_max_tokens": 20000},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["knowledge_max_tokens"] == 20000
+        assert body["context_max_tokens"] == 20000
+
+    @pytest.mark.asyncio
+    async def test_max_tokens_negative_rejected_with_envelope(
+        self, client: AsyncClient, auth_headers, project: Project
+    ):
+        """Below-zero rejection uses the same envelope."""
+        etag = await self._get_etag(client, auth_headers, project.id)
+        resp = await client.put(
+            f"/api/v1/projects/{project.id}/rules",
+            headers={**auth_headers, "If-Match": etag},
+            json={"knowledge_max_tokens": -100},
+        )
+        assert resp.status_code == 422
+        body = resp.json()
+        assert body["error"]["code"] == "max_tokens_exceeded"
+        assert body["error"]["details"]["current"] == -100
