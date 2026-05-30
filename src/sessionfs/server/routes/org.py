@@ -137,6 +137,17 @@ async def create_organization(
         storage_limit_bytes=storage,
     )
     db.add(org)
+    # v0.10.24 tk_17b39010f9a64cba — force the Organization INSERT to
+    # land BEFORE OrgMember is queued, otherwise SQLAlchemy's unit-of-
+    # work flush at commit() doesn't reliably topologically sort the
+    # two pending INSERTs by FK dependency and OrgMember runs first
+    # → FK violation → 500. This used to be masked for Stripe-paying
+    # users because the `update(User)` below triggered an implicit
+    # autoflush; users with no stripe_customer_id or
+    # stripe_subscription_id (every manual-license enterprise customer)
+    # skipped that branch and hit the FK error. najitestech (GH #51)
+    # was the first such customer to surface it.
+    await db.flush()
 
     # Transfer subscription ownership: clear user-level Stripe fields
     # so they can't be confused with a personal subscription later.
