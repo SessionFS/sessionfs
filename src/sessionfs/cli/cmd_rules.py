@@ -269,7 +269,11 @@ def _resolve_project_id(api_url: str, api_key: str, normalized: str) -> str:
         )
         raise typer.Exit(1)
     if status >= 400:
-        err_console.print(f"[red]API error ({status}): {body}[/red]")
+        from sessionfs.cli.common import format_api_error
+
+        err_console.print(
+            f"[red]API error ({status}): {format_api_error(body, status)}[/red]"
+        )
         raise typer.Exit(1)
     if not isinstance(body, dict):
         err_console.print("[red]Unexpected API response.[/red]")

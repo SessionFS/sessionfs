@@ -41,7 +41,7 @@ from sessionfs.cli.cmd_rules import (
     _normalize_remote,
     _resolve_project_id,
 )
-from sessionfs.cli.common import console, err_console, handle_errors
+from sessionfs.cli.common import console, err_console, format_api_error, handle_errors
 
 ticket_app = typer.Typer(
     name="ticket",
@@ -138,7 +138,7 @@ def list_tickets(
         )
     )
     if s >= 400:
-        err_console.print(f"[red]API error ({s}): {body}[/red]")
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
         raise typer.Exit(1)
     _print_ticket_table(body if isinstance(body, list) else [])
 
@@ -160,7 +160,7 @@ def show_ticket(
         err_console.print(f"[red]Ticket '{ticket_id}' not found.[/red]")
         raise typer.Exit(1)
     if s >= 400 or not isinstance(body, dict):
-        err_console.print(f"[red]API error ({s}): {body}[/red]")
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
         raise typer.Exit(1)
 
     kind = body.get("kind", "task")
@@ -249,7 +249,7 @@ def create_ticket(
         )
     )
     if s >= 400 or not isinstance(body, dict):
-        err_console.print(f"[red]API error ({s}): {body}[/red]")
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
         raise typer.Exit(1)
     if output_id:
         # Machine-safe: stdout = ticket id, nothing else. Confirmation
@@ -299,7 +299,7 @@ def start_ticket(
         )
         raise typer.Exit(1)
     if s >= 400 or not isinstance(body, dict):
-        err_console.print(f"[red]API error ({s}): {body}[/red]")
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
         raise typer.Exit(1)
 
     ticket = body.get("ticket", {})
@@ -383,7 +383,7 @@ def complete_ticket(
         err_console.print(f"[red]Ticket '{ticket_id}' not found.[/red]")
         raise typer.Exit(1)
     if s >= 400 or not isinstance(body, dict):
-        err_console.print(f"[red]API error ({s}): {body}[/red]")
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
         raise typer.Exit(1)
 
     cleared = clear_bundle_if_owned(ticket_id=ticket_id, project_id=project_id)
@@ -432,7 +432,7 @@ def comment_ticket(
         err_console.print(f"[red]Ticket '{ticket_id}' not found.[/red]")
         raise typer.Exit(1)
     if s >= 400 or not isinstance(body, dict):
-        err_console.print(f"[red]API error ({s}): {body}[/red]")
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
         raise typer.Exit(1)
     console.print(f"[green]Commented on {ticket_id}.[/green]")
 
@@ -469,7 +469,7 @@ def list_ticket_comments(
         err_console.print(f"[red]Ticket '{ticket_id}' not found.[/red]")
         raise typer.Exit(1)
     if s >= 400 or not isinstance(body, list):
-        err_console.print(f"[red]API error ({s}): {body}[/red]")
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
         raise typer.Exit(1)
     if not body:
         console.print(f"[dim]No comments on {ticket_id}.[/dim]")
@@ -583,7 +583,7 @@ def watch_ticket(
             err_console.print(f"[red]Ticket '{ticket_id}' not found.[/red]")
             raise typer.Exit(1)
         if s >= 400 or not isinstance(body, list):
-            err_console.print(f"[red]API error ({s}): {body}[/red]")
+            err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
             return None
         return body
 
@@ -788,7 +788,7 @@ def _post_transition(ticket_id: str, suffix: str, success_label: str) -> None:
         err_console.print(f"[red]Ticket '{ticket_id}' not found.[/red]")
         raise typer.Exit(1)
     if s >= 400 or not isinstance(body, dict):
-        err_console.print(f"[red]API error ({s}): {body}[/red]")
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
         raise typer.Exit(1)
     console.print(f"[green]{success_label}[/green] {ticket_id}")
 
@@ -860,7 +860,7 @@ def assign_ticket_cmd(
         err_console.print(f"[red]Ticket '{ticket_id}' not found.[/red]")
         raise typer.Exit(1)
     if s >= 400 or not isinstance(body, dict):
-        err_console.print(f"[red]API error ({s}): {body}[/red]")
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
         raise typer.Exit(1)
     console.print(f"[green]Assigned {ticket_id} to {persona}.[/green]")
 
@@ -905,7 +905,7 @@ def resolve_ticket_cmd(
         )
         raise typer.Exit(1)
     if s >= 400 or not isinstance(body, dict):
-        err_console.print(f"[red]API error ({s}): {body}[/red]")
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
         raise typer.Exit(1)
     console.print(f"[green]Resolved {ticket_id}.[/green]")
 
@@ -935,7 +935,7 @@ def escalate_ticket_cmd(
         err_console.print(f"[red]Ticket '{ticket_id}' not found.[/red]")
         raise typer.Exit(1)
     if s >= 400 or not isinstance(body, dict):
-        err_console.print(f"[red]API error ({s}): {body}[/red]")
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
         raise typer.Exit(1)
 
     current = body.get("priority", "medium")

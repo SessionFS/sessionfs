@@ -105,8 +105,16 @@ async def _api_request(method: str, path: str, api_url: str, api_key: str, json_
     if resp.status_code == 409:
         return {"_status": 409}
     if resp.status_code >= 400:
-        detail = resp.json().get("detail", resp.text) if resp.headers.get("content-type", "").startswith("application/json") else resp.text
-        err_console.print(f"[red]API error ({resp.status_code}): {detail}[/red]")
+        from sessionfs.cli.common import format_api_error
+
+        if resp.headers.get("content-type", "").startswith("application/json"):
+            body = resp.json()
+        else:
+            body = resp.text
+        err_console.print(
+            f"[red]API error ({resp.status_code}): "
+            f"{format_api_error(body, resp.status_code)}[/red]"
+        )
         raise typer.Exit(1)
     return resp.json()
 
