@@ -276,10 +276,11 @@ class TestToolRegistryV0996:
     (create/claim/get/list_inbox/list_sent/revoke/decline/comment = 8).
     Total: 53."""
 
-    def test_tool_count_is_59(self):
+    def test_tool_count_is_61(self):
         from sessionfs.mcp.server import _TOOLS
-        assert len(_TOOLS) == 59, (
-            f"Expected 59 MCP tools after tk_cf9f1691091d4e8e added rename_session, got {len(_TOOLS)}"
+        assert len(_TOOLS) == 61, (
+            f"Expected 61 MCP tools after tk_32abb6d0d4744c5d added "
+            f"update_persona + delete_persona, got {len(_TOOLS)}"
         )
 
     def test_new_tools_registered(self):
@@ -323,6 +324,9 @@ class TestToolRegistryV0996:
             "promote_eligible_entries",
             # v0.10.23 session rename (tk_cf9f1691091d4e8e)
             "rename_session",
+            # v0.10.24 persona MCP parity (tk_32abb6d0d4744c5d / GH #50)
+            "update_persona",
+            "delete_persona",
         ):
             assert new_tool in names, f"Missing MCP tool: {new_tool}"
 
@@ -470,6 +474,17 @@ class TestNewToolDispatch:
                     "dismissed_by": "u",
                     "dismissed_reason": "stale",
                 })
+
+            async def delete(self, url, *, params=None, headers=None):
+                # v0.10.24 tk_32abb6d0d4744c5d — delete_persona dispatch
+                # needs a DELETE method on the fake client. Most DELETE
+                # routes in our API return 204 (no body), so the
+                # default response shape is empty + status 204.
+                captured["method"] = "DELETE"
+                captured["url"] = url
+                captured["params"] = params or {}
+                captured["headers"] = headers or {}
+                return _FakeResponse(204, None)
 
         monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
 
@@ -1211,6 +1226,75 @@ class TestNewToolDispatch:
         assert captured["json"]["name"] == "atlas"
         assert captured["json"]["role"] == "Backend Architect"
         assert captured["json"]["specializations"] == ["backend", "api"]
+
+    # ── v0.10.24 tk_32abb6d0d4744c5d / GH #50 — persona MCP parity ──
+
+    @pytest.mark.asyncio
+    async def test_update_persona_requires_name(self, fake_resolver):
+        result = await mcp_server._handle_update_persona({})
+        assert "error" in result
+        assert "name" in result["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_update_persona_requires_at_least_one_field(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        result = await mcp_server._handle_update_persona({"name": "atlas"})
+        # Should reject without firing the PUT — saves a round-trip and
+        # avoids server-side no-op confusion.
+        assert "error" in result
+        assert "role" in result["error"] or "content" in result["error"]
+        assert captured == {} or "method" not in captured
+
+    @pytest.mark.asyncio
+    async def test_update_persona_sends_put_with_only_provided_fields(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        await mcp_server._handle_update_persona({
+            "name": "atlas",
+            "content": "# Atlas\n\nRevised after research.",
+        })
+        assert captured["method"] == "PUT"
+        assert captured["url"] == "https://api.test/api/v1/projects/proj_test/personas/atlas"
+        # Only `content` was passed — body must not include role or
+        # specializations (server treats omitted fields as no-op; sending
+        # defaults would silently overwrite existing values).
+        assert captured["json"] == {"content": "# Atlas\n\nRevised after research."}
+
+    @pytest.mark.asyncio
+    async def test_update_persona_sends_specializations_list(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        await mcp_server._handle_update_persona({
+            "name": "atlas",
+            "specializations": ["fastapi", "alembic"],
+        })
+        assert captured["json"] == {"specializations": ["fastapi", "alembic"]}
+
+    @pytest.mark.asyncio
+    async def test_delete_persona_requires_name(self, fake_resolver):
+        result = await mcp_server._handle_delete_persona({})
+        assert "error" in result
+        assert "name" in result["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_delete_persona_sends_delete_without_force(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        await mcp_server._handle_delete_persona({"name": "atlas"})
+        assert captured["method"] == "DELETE"
+        assert captured["url"] == "https://api.test/api/v1/projects/proj_test/personas/atlas"
+        # No `force` param by default — server's non-terminal-ticket
+        # guard fires unless the caller explicitly opts in.
+        assert captured.get("params", {}) == {}
+
+    @pytest.mark.asyncio
+    async def test_delete_persona_passes_force_when_true(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        await mcp_server._handle_delete_persona({"name": "atlas", "force": True})
+        assert captured["method"] == "DELETE"
+        assert captured.get("params", {}) == {"force": "true"}
 
     @pytest.mark.asyncio
     async def test_assign_persona_sends_put(self, fake_resolver, fake_httpx, captured):

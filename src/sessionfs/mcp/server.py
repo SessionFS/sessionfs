@@ -1109,8 +1109,10 @@ _TOOLS = [
         description=(
             "Create a new agent persona in this project. Persona names "
             "must be ASCII (1-50 chars: letters, digits, dash, underscore). "
-            "Use this when an agent decides a new role is needed (e.g. "
-            "after recognizing a gap in the team's expertise).\n\n"
+            "Names are case-insensitive-unique per project (v0.10.23 "
+            "tk_884b2321fdb74170) — creating 'Atlas' when 'atlas' exists "
+            "returns 409. Use this when an agent decides a new role is "
+            "needed (e.g. after recognizing a gap in the team's expertise).\n\n"
             "IMPORTANT: Always use this MCP tool instead of running "
             "`sfs persona create` or any other sfs CLI command."
         ),
@@ -1124,6 +1126,81 @@ _TOOLS = [
                 "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
             },
             "required": ["name", "role"],
+        },
+    ),
+    Tool(
+        name="update_persona",
+        description=(
+            "Update fields on an existing persona — role, "
+            "specializations, and/or content. Bumps `version` only on "
+            "actual mutations (no-op PUT does not invalidate caches). "
+            "Preserves `created_at` and `created_by`. Errors 404 if no "
+            "persona by that name exists in this project.\n\n"
+            "v0.10.24 (GH #50): closes the 'agent built a persona during "
+            "onboarding, deeper research disproved some claims, now "
+            "needs to edit it via MCP' gap. Previously agents had to "
+            "drop out of MCP and ask a human to run `sfs persona edit`. "
+            "Names are case-insensitive-unique per project (v0.10.23 "
+            "tk_884b2321fdb74170) — lookup uses the exact stored case.\n\n"
+            "Authorization: same as create_persona (project owner / org "
+            "admin / case-insensitive name match).\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs persona edit` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Persona name to update (exact case as stored)"},
+                "role": {"type": "string", "description": "New role description (omit to leave unchanged)"},
+                "content": {"type": "string", "description": "New persona body markdown (omit to leave unchanged)"},
+                "specializations": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Replace the specializations list (omit to leave unchanged)",
+                },
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+            "required": ["name"],
+        },
+    ),
+    Tool(
+        name="delete_persona",
+        description=(
+            "Soft-delete a persona — sets `is_active=false`. The row "
+            "stays in the database so historical tickets and sessions "
+            "still resolve their persona name. The name remains "
+            "RESERVED at the case-insensitive uniqueness layer "
+            "(v0.10.23 tk_884b2321fdb74170), so you cannot create a "
+            "new persona with the same name (case-insensitive) until "
+            "the soft-deleted row is reactivated via update_persona or "
+            "the row is renamed.\n\n"
+            "Refuses with 409 when non-terminal tickets (suggested / "
+            "open / in_progress / blocked / review) reference this "
+            "persona, unless `force=true` is passed. Without the "
+            "guard, those tickets would be stranded — start_ticket "
+            "later refuses to load an inactive persona.\n\n"
+            "v0.10.24 (GH #50): closes the 'retire a persona that was "
+            "filed by mistake or has been replaced' gap that previously "
+            "required dropping out of MCP for `sfs persona delete`.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs persona delete` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Persona name to soft-delete"},
+                "force": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Override the non-terminal-ticket guard. Use "
+                        "only when the operator has reassigned or "
+                        "cancelled stranded tickets manually."
+                    ),
+                },
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+            "required": ["name"],
         },
     ),
     Tool(
@@ -1848,6 +1925,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_add_ticket_comment(arguments)
         elif name == "create_persona":
             result = await _handle_create_persona(arguments)
+        elif name == "update_persona":
+            result = await _handle_update_persona(arguments)
+        elif name == "delete_persona":
+            result = await _handle_delete_persona(arguments)
         elif name == "assign_persona":
             result = await _handle_assign_persona(arguments)
         elif name == "assume_persona":
@@ -3805,6 +3886,104 @@ async def _handle_create_persona(args: dict) -> dict:
     if resp.status_code >= 400:
         return {"error": f"API error {resp.status_code}: {resp.text}"}
     return resp.json()
+
+
+async def _handle_update_persona(args: dict) -> dict:
+    """Wrap PUT /api/v1/projects/{project_id}/personas/{name}.
+
+    v0.10.24 tk_32abb6d0d4744c5d / GH #50. Mirror the CLI `sfs persona
+    edit` flow for agents working through MCP. Only fields the caller
+    passes are mutated; the server bumps `version` only on actual
+    mutations so a no-op call doesn't invalidate caches.
+    """
+    name = (args.get("name") or "").strip()
+    if not name:
+        return {"error": "name is required"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    # Build the PUT body with only the fields the caller passed. Server
+    # treats omitted fields as no-op (preserves existing value), so we
+    # must not send role/content/specializations with their defaults —
+    # that would silently overwrite existing values.
+    body: dict[str, Any] = {}
+    for key in ("role", "content"):
+        val = args.get(key)
+        if isinstance(val, str):
+            body[key] = val
+    specs = args.get("specializations")
+    if isinstance(specs, list):
+        body["specializations"] = list(specs)
+
+    if not body:
+        return {
+            "error": (
+                "At least one of role, content, or specializations is "
+                "required for update_persona"
+            )
+        }
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.put(
+            f"{api_url}/api/v1/projects/{project_id}/personas/{name}",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=body,
+        )
+    if resp.status_code == 404:
+        return {"error": f"Persona '{name}' not found in this project"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_delete_persona(args: dict) -> dict:
+    """Wrap DELETE /api/v1/projects/{project_id}/personas/{name}?force=...
+
+    v0.10.24 tk_32abb6d0d4744c5d / GH #50. Soft-delete only — the server
+    sets is_active=false. Refuses with 409 when non-terminal tickets
+    reference the persona unless `force=true` is passed (server-side
+    guard from KB 339).
+    """
+    name = (args.get("name") or "").strip()
+    if not name:
+        return {"error": "name is required"}
+    force = bool(args.get("force", False))
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    import httpx
+    params: dict[str, str] = {}
+    if force:
+        params["force"] = "true"
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.delete(
+            f"{api_url}/api/v1/projects/{project_id}/personas/{name}",
+            headers={"Authorization": f"Bearer {api_key}"},
+            params=params,
+        )
+    if resp.status_code == 204:
+        return {"ok": True, "name": name, "soft_deleted": True}
+    if resp.status_code == 404:
+        return {"error": f"Persona '{name}' not found in this project"}
+    if resp.status_code == 409:
+        # Surface the structured envelope so the caller can decide
+        # whether to retry with force=true.
+        try:
+            return {"error": resp.json(), "status": 409}
+        except Exception:
+            return {"error": resp.text, "status": 409}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return {"ok": True, "name": name, "soft_deleted": True}
 
 
 async def _handle_assign_persona(args: dict) -> dict:
