@@ -316,6 +316,179 @@ class TestSyncSkipsExcludedSessions:
         )
 
 
+class TestResolveMaxMemberSize:
+    """CLI `_resolve_max_member_size()` precedence chain
+    (tk_d5945c4bce3245ce, parent Issue tk_714456298d424202).
+
+    The lookup order is:
+      1. `SFS_MAX_SYNC_MEMBER_BYTES_PAID` env var — explicit operator override.
+      2. Server-supplied `max_member_bytes` from `GET /sync/settings`.
+      3. Hardcoded 50 MB literal final fallback (logged warning).
+    Cached per CLI invocation; older servers without the field fall through.
+    """
+
+    def setup_method(self, method):
+        from sessionfs.cli.cmd_cloud import _reset_max_member_size_cache
+        _reset_max_member_size_cache()
+
+    def teardown_method(self, method):
+        from sessionfs.cli.cmd_cloud import _reset_max_member_size_cache
+        _reset_max_member_size_cache()
+
+    def test_env_var_override_wins_over_server(self, monkeypatch):
+        """An explicit env var must beat any server-supplied value so
+        customers can experiment ahead of a server upgrade."""
+        from sessionfs.cli import cmd_cloud
+
+        monkeypatch.setenv("SFS_MAX_SYNC_MEMBER_BYTES_PAID", str(200 * 1024 * 1024))
+
+        def _fail(*a, **kw):
+            raise AssertionError(
+                "httpx.get should not be reached when env var override is set"
+            )
+
+        monkeypatch.setattr("httpx.get", _fail)
+
+        result = cmd_cloud._resolve_max_member_size(
+            "https://api.example.com", "test_key"
+        )
+        assert result == 200 * 1024 * 1024
+
+    def test_server_paid_tier_value_consumed(self, monkeypatch):
+        """When env var is unset, the server-supplied cap (paid-tier
+        300 MB in this test) must be used — proving the CLI no longer
+        defaults to the 50 MB literal."""
+        from sessionfs.cli import cmd_cloud
+
+        monkeypatch.delenv("SFS_MAX_SYNC_MEMBER_BYTES_PAID", raising=False)
+
+        class _FakeResp:
+            status_code = 200
+            def json(self):
+                return {
+                    "mode": "all",
+                    "debounce_seconds": 30,
+                    "max_member_bytes": 300 * 1024 * 1024,
+                }
+
+        monkeypatch.setattr("httpx.get", lambda *a, **kw: _FakeResp())
+
+        result = cmd_cloud._resolve_max_member_size(
+            "https://api.example.com", "test_key"
+        )
+        assert result == 300 * 1024 * 1024
+
+    def test_server_free_tier_value_consumed(self, monkeypatch):
+        """A free-tier caller sees the 10 MB cap from the server response,
+        matching what the server enforces."""
+        from sessionfs.cli import cmd_cloud
+
+        monkeypatch.delenv("SFS_MAX_SYNC_MEMBER_BYTES_PAID", raising=False)
+
+        class _FakeResp:
+            status_code = 200
+            def json(self):
+                return {
+                    "mode": "off",
+                    "debounce_seconds": 30,
+                    "max_member_bytes": 10 * 1024 * 1024,
+                }
+
+        monkeypatch.setattr("httpx.get", lambda *a, **kw: _FakeResp())
+
+        result = cmd_cloud._resolve_max_member_size(
+            "https://api.example.com", "test_key"
+        )
+        assert result == 10 * 1024 * 1024
+
+    def test_older_server_missing_field_falls_back(self, monkeypatch, caplog):
+        """A server that pre-dates Task 2 omits `max_member_bytes`. CLI
+        must fall through to the 50 MB literal WITHOUT crashing, and
+        must log a warning so operators see the misconfiguration."""
+        import logging
+        from sessionfs.cli import cmd_cloud
+
+        monkeypatch.delenv("SFS_MAX_SYNC_MEMBER_BYTES_PAID", raising=False)
+
+        class _FakeOldResp:
+            status_code = 200
+            def json(self):
+                # Older-server shape — no max_member_bytes key.
+                return {"mode": "off", "debounce_seconds": 30}
+
+        monkeypatch.setattr("httpx.get", lambda *a, **kw: _FakeOldResp())
+
+        with caplog.at_level(logging.WARNING, logger="sessionfs.cli"):
+            result = cmd_cloud._resolve_max_member_size(
+                "https://api.example.com", "test_key"
+            )
+
+        assert result == 50 * 1024 * 1024, (
+            "Older server must fall through to 50MB literal cleanly"
+        )
+        assert any(
+            "falling back" in rec.message.lower() for rec in caplog.records
+        ), "Final-fallback path must log a warning visible to operators"
+
+    def test_network_error_falls_back(self, monkeypatch, caplog):
+        """A network failure during /sync/settings must not crash the
+        CLI; falls through to the 50 MB literal with a warning."""
+        import logging
+        from sessionfs.cli import cmd_cloud
+
+        monkeypatch.delenv("SFS_MAX_SYNC_MEMBER_BYTES_PAID", raising=False)
+
+        def _raise(*a, **kw):
+            import httpx
+            raise httpx.ConnectError("simulated DNS failure")
+
+        monkeypatch.setattr("httpx.get", _raise)
+
+        with caplog.at_level(logging.WARNING, logger="sessionfs.cli"):
+            result = cmd_cloud._resolve_max_member_size(
+                "https://api.example.com", "test_key"
+            )
+
+        assert result == 50 * 1024 * 1024
+        assert any(
+            "falling back" in rec.message.lower() for rec in caplog.records
+        )
+
+    def test_value_is_cached_across_calls(self, monkeypatch):
+        """Second call must not re-poll the server. Guards against the
+        ticket's explicit ‘one call per `sfs sync` / `sfs pull` /
+        `sfs handoff` run’ requirement."""
+        from sessionfs.cli import cmd_cloud
+
+        monkeypatch.delenv("SFS_MAX_SYNC_MEMBER_BYTES_PAID", raising=False)
+
+        call_count = {"n": 0}
+
+        class _FakeResp:
+            status_code = 200
+            def json(self):
+                return {
+                    "mode": "off",
+                    "debounce_seconds": 30,
+                    "max_member_bytes": 75 * 1024 * 1024,
+                }
+
+        def _counted(*a, **kw):
+            call_count["n"] += 1
+            return _FakeResp()
+
+        monkeypatch.setattr("httpx.get", _counted)
+
+        first = cmd_cloud._resolve_max_member_size("https://x", "k")
+        second = cmd_cloud._resolve_max_member_size("https://x", "k")
+        third = cmd_cloud._resolve_max_member_size("https://x", "k")
+
+        assert first == second == third == 75 * 1024 * 1024
+        assert call_count["n"] == 1, (
+            f"Expected exactly one /sync/settings call, got {call_count['n']}"
+        )
+
+
 class TestClientSideOversizedCheck:
     """sfs push refuses to upload archives whose members exceed 10MB."""
 

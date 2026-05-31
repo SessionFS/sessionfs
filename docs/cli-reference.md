@@ -671,6 +671,18 @@ sfs pull SESSION_ID
 
 ---
 
+## Per-file size cap discovery (v0.10.27+)
+
+`sfs push`, `sfs pull`, `sfs sync`, `sfs handoff`, and `sfs pull-handoff` all enforce a per-file size cap inside the sync archive. The CLI discovers the cap with the following precedence:
+
+1. **`SFS_MAX_SYNC_MEMBER_BYTES_PAID` env var** — explicit operator override. Always wins; lets customers experiment ahead of a server upgrade.
+2. **Server-supplied `max_member_bytes`** from `GET /api/v1/sync/settings` — tier-aware (`10 MB` free / `50 MB` paid by default); reflects whatever the operator has set on the server.
+3. **`50 MB` literal final fallback** — only used when the env var is unset AND server discovery fails (network error, older server, missing field). Logged with a warning so the misconfiguration is visible.
+
+The value is cached per CLI invocation — one `/sync/settings` call per `sfs sync` / `sfs push` / `sfs pull` / `sfs handoff` run. Older servers that pre-date the `max_member_bytes` field fall through to the literal cleanly without crashing.
+
+---
+
 ## `sfs pull-handoff`
 
 Pull a session from a handoff link.
