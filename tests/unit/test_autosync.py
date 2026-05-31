@@ -242,6 +242,80 @@ class TestTransientErrorsDoNotExclude:
             "Unknown exceptions must NOT count toward exclusion threshold"
 
 
+class TestSyncSkipsExcludedSessions:
+    """Daemon hotfix `tk_4abfa69b38d54bc0` — `_sync_sessions()` must skip
+    sessions in the local exclusion list (`deleted.json`) instead of
+    re-attempting them every cycle.
+
+    Parent Issue `tk_714456298d424202`: paying customer C hit a daemon
+    liveness incident where 862+ retries / 4 days on a 75MB excluded
+    session starved the async event loop on decompression + DLP scanning,
+    timing out `/health` and tripping 13 liveness probe kills.
+    """
+
+    def _make_syncer(self, tmp_path, monkeypatch):
+        from sessionfs.daemon.config import DaemonConfig
+        from sessionfs.daemon.main import DaemonSyncer
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        import sessionfs.store.deleted as _deleted
+        _deleted._DEFAULT_DIR = tmp_path / ".sessionfs"
+        _deleted._DEFAULT_PATH = _deleted._DEFAULT_DIR / "deleted.json"
+
+        config = DaemonConfig(sync={"enabled": True, "api_key": "test", "auto": "all", "debounce": 1})
+        store = MagicMock()
+        return DaemonSyncer(config, store)
+
+    def test_sync_sessions_skips_excluded_session_ids(self, tmp_path, monkeypatch):
+        """Regression for parent Issue `tk_714456298d424202` — an excluded
+        session must short-circuit `_sync_sessions()` before
+        `pack_session()` / `push_session()` run, and must be discarded
+        from `_pending_sessions` so the next cycle does not re-queue it.
+        Non-excluded sessions in the same batch must still process.
+        """
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+
+        from sessionfs.store.deleted import mark_deleted
+
+        syncer = self._make_syncer(tmp_path, monkeypatch)
+        excluded_id = "ses_excluded12345"
+        normal_id = "ses_normal0123456"
+
+        # mark_deleted writes to ~/.sessionfs/deleted.json under the
+        # tmp_path that the fixture redirects HOME to.
+        mark_deleted(excluded_id, scope="local", reason="hotfix_test")
+
+        syncer._pending_sessions.add(excluded_id)
+        syncer._pending_sessions.add(normal_id)
+
+        # Returning None for every lookup means non-excluded sessions hit
+        # the existing `if not session_dir` branch — exits cleanly without
+        # touching pack/push. The point of THIS test is that the excluded
+        # session must short-circuit BEFORE this lookup runs at all.
+        syncer.store.get_session_dir.return_value = None
+
+        fake_client = AsyncMock()
+        with patch.object(syncer, "_get_client", return_value=fake_client):
+            asyncio.run(syncer._sync_sessions({excluded_id, normal_id}))
+
+        touched = [call.args[0] for call in syncer.store.get_session_dir.call_args_list]
+
+        assert excluded_id not in touched, (
+            f"Excluded session_id {excluded_id} must short-circuit before "
+            f"`store.get_session_dir()` lookup (and therefore before "
+            f"pack_session/push_session)."
+        )
+        assert normal_id in touched, (
+            f"Non-excluded session_id {normal_id} must still process via "
+            f"the regular loop body."
+        )
+        assert excluded_id not in syncer._pending_sessions, (
+            "Excluded session_id must be discarded from `_pending_sessions` "
+            "so the next sync cycle does not re-queue it."
+        )
+
+
 class TestClientSideOversizedCheck:
     """sfs push refuses to upload archives whose members exceed 10MB."""
 

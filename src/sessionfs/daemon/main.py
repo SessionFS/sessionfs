@@ -145,6 +145,7 @@ class DaemonSyncer:
 
     async def _sync_sessions(self, session_ids: set[str]) -> None:
         """Push pending sessions to the server."""
+        from sessionfs.store.deleted import is_excluded
         from sessionfs.sync.archive import pack_session
         from sessionfs.sync.client import (
             SyncConflictError,
@@ -160,6 +161,19 @@ class DaemonSyncer:
             await self._update_watch_status(session_id, "queued", client)
 
         for session_id in session_ids:
+            # tk_714456298d424202 — short-circuit excluded sessions before
+            # pack/push. Without this, a single excluded large session
+            # retries every cycle, starving the async event loop on
+            # decompression + DLP scanning and tripping liveness probes.
+            if is_excluded(session_id):
+                logger.debug(
+                    "Skipping excluded session %s in sync loop "
+                    "(in deleted.json) — use 'sfs restore' to clear",
+                    session_id[:12],
+                )
+                self._pending_sessions.discard(session_id)
+                continue
+
             session_dir = self.store.get_session_dir(session_id)
             if not session_dir:
                 self._pending_sessions.discard(session_id)
