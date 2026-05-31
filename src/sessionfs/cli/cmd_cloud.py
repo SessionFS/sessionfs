@@ -748,6 +748,26 @@ def sync_all() -> None:
                 async with upload_sem:
                     try:
                         archive_data = pack_session(session_dir)
+                        # Pre-upload oversize check — mirrors the same
+                        # gate as `sfs push` and `sfs handoff` so the
+                        # `sfs sync` upload path doesn't waste bandwidth
+                        # on a guaranteed-413 archive. Codex R1 MEDIUM
+                        # on tk_d5945c4bce3245ce — this site was the
+                        # only `push_session()` caller still skipping
+                        # the resolver-aware preflight.
+                        oversized = _find_oversized_member(
+                            archive_data, max_size=max_member_size
+                        )
+                        if oversized is not None:
+                            name, size = oversized
+                            push_results[sid] = "error"
+                            err_console.print(
+                                f"[red]Skipped {sid[:12]}: too large to push:[/red] "
+                                f"'{name}' is {size // (1024 * 1024)}MB "
+                                f"(server cap {max_member_size // (1024 * 1024)}MB per file). "
+                                f"Try /compact in your AI tool first."
+                            )
+                            return
                         # Authoritative gate: atomically asks the
                         # deleted.json file "may I proceed?". Returns
                         # True if no entry OR a transient entry was

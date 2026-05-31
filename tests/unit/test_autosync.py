@@ -488,6 +488,109 @@ class TestResolveMaxMemberSize:
         )
 
 
+class TestSyncAllOversizedPreflight:
+    """`sfs sync` (sync_all → _push_one) must run the same per-file
+    oversize preflight as `sfs push` and `sfs handoff`, using the
+    server-discovered `max_member_bytes` cap.
+
+    Codex R1 MEDIUM on tk_d5945c4bce3245ce (`tc_6be2e1302d224b88`):
+    the upload path inside `sync_all()._push_one` was calling
+    `client.push_session()` without first calling
+    `_find_oversized_member(archive_data, max_size=max_member_size)`,
+    so the resolver-aware cap was only used for pulls / unpack — not
+    the actual upload side of `sfs sync`. Regression-protect by
+    asserting `push_session()` is NEVER called when the archive
+    contains a member that exceeds the discovered cap.
+    """
+
+    def setup_method(self, method):
+        from sessionfs.cli.cmd_cloud import _reset_max_member_size_cache
+        _reset_max_member_size_cache()
+
+    def teardown_method(self, method):
+        from sessionfs.cli.cmd_cloud import _reset_max_member_size_cache
+        _reset_max_member_size_cache()
+
+    def test_sync_skips_push_for_archive_exceeding_server_cap(
+        self, monkeypatch, tmp_path
+    ):
+        """Pin the contract: when pack_session yields an archive whose
+        single member exceeds the resolver-supplied cap, `sfs sync`
+        must skip the upload (no push_session call) instead of wasting
+        bandwidth on a guaranteed-413."""
+        import asyncio
+        import io
+        import tarfile
+        from unittest.mock import AsyncMock, MagicMock
+
+        from sessionfs.cli import cmd_cloud
+
+        # Force a 1 MB cap so a small synthetic over-cap archive is fast
+        # to build. Env var wins precedence → no /sync/settings call.
+        monkeypatch.setenv("SFS_MAX_SYNC_MEMBER_BYTES_PAID", str(1 * 1024 * 1024))
+
+        # Build a synthetic archive containing a 2 MB messages.jsonl —
+        # exceeds the 1 MB cap above so _find_oversized_member trips.
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            payload = b"x" * (2 * 1024 * 1024)
+            info = tarfile.TarInfo(name="messages.jsonl")
+            info.size = len(payload)
+            tar.addfile(info, io.BytesIO(payload))
+        oversized_archive = buf.getvalue()
+
+        monkeypatch.setattr(
+            "sessionfs.sync.archive.pack_session",
+            lambda _session_dir: oversized_archive,
+        )
+
+        fake_session_dir = tmp_path / "ses_huge.sfs"
+        fake_session_dir.mkdir()
+
+        mock_store = MagicMock()
+        mock_store.get_session_dir.return_value = fake_session_dir
+        mock_store.get_session_manifest.return_value = {"sync": {"etag": "old"}}
+        mock_store.list_sessions.return_value = [{"session_id": "ses_huge1234567"}]
+        monkeypatch.setattr(cmd_cloud, "open_store", lambda: mock_store)
+
+        mock_remote = MagicMock()
+        mock_remote.sessions = []
+        mock_remote.has_more = False
+        mock_client = MagicMock()
+        mock_client.list_remote_sessions = AsyncMock(return_value=mock_remote)
+        mock_client.push_session = AsyncMock()  # must NEVER be called
+        mock_client.close = AsyncMock()
+        monkeypatch.setattr(cmd_cloud, "_get_sync_client", lambda: mock_client)
+
+        # _load_sync_config is called by sync_all to prime the resolver;
+        # the env var wins anyway, but provide a valid stub so no real
+        # config file is read.
+        monkeypatch.setattr(
+            cmd_cloud,
+            "_load_sync_config",
+            lambda: {"api_url": "https://x", "api_key": "k", "enabled": True},
+        )
+
+        # Run inside a fresh loop the same way the prior delete-cli
+        # tests do — cmd_cloud.sync_all is sync-on-the-outside,
+        # asyncio.run inside.
+        def _run(coro):
+            loop = asyncio.new_event_loop()
+            try:
+                return loop.run_until_complete(coro)
+            finally:
+                loop.close()
+
+        monkeypatch.setattr(cmd_cloud.asyncio, "run", _run)
+
+        try:
+            cmd_cloud.sync_all()
+        except Exception:
+            pass
+
+        mock_client.push_session.assert_not_called()
+
+
 class TestClientSideOversizedCheck:
     """sfs push refuses to upload archives whose members exceed 10MB."""
 
