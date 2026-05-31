@@ -80,6 +80,7 @@ export default defineConfig({
           label: 'Integrations',
           items: [
             { label: 'Cloud Agents (Bedrock, Vertex)', slug: 'integrations/cloud-agents' },
+            { label: 'External Agent Orchestration', slug: 'integrations/external-agents' },
             { label: 'CI Integration (Agent Runs)', slug: 'integrations/ci-integration' },
           ],
         },

@@ -5,14 +5,19 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import Session, SyncWatchlist, User
-from sessionfs.server.tier_gate import UserContext, check_feature, get_user_context
+from sessionfs.server.tier_gate import (
+    UserContext,
+    check_feature,
+    get_effective_tier,
+    get_user_context,
+)
 
 router = APIRouter(prefix="/api/v1/sync", tags=["sync"])
 
@@ -25,6 +30,19 @@ class UpdateSyncSettings(BaseModel):
 class SyncSettingsResponse(BaseModel):
     mode: str
     debounce_seconds: int
+    max_member_bytes: int = Field(
+        ...,
+        description=(
+            "Server-enforced upper bound on individual member size within "
+            "sync archives, in bytes. Tier-aware: reflects the caller's "
+            "effective tier (10 MB free, 50 MB paid by default). CLI v0.10.27+ "
+            "reads this rather than maintaining a local hardcoded fallback; "
+            "older CLI versions ignore the field harmlessly. The value is "
+            "sourced from the same _member_size_limit_for_tier() helper the "
+            "server uses to enforce the cap, so the field stays in sync if "
+            "the operator overrides SFS_MAX_SYNC_MEMBER_BYTES_{FREE,PAID}."
+        ),
+    )
 
 
 class WatchlistEntry(BaseModel):
@@ -57,11 +75,16 @@ class SyncStatusResponse(BaseModel):
 @router.get("/settings", response_model=SyncSettingsResponse)
 async def get_sync_settings(
     user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ) -> SyncSettingsResponse:
     """Get user's autosync configuration."""
+    from sessionfs.server.routes.sessions import _member_size_limit_for_tier
+
+    effective_tier = await get_effective_tier(user, db)
     return SyncSettingsResponse(
         mode=user.sync_mode or "off",
         debounce_seconds=user.sync_debounce or 30,
+        max_member_bytes=_member_size_limit_for_tier(effective_tier),
     )
 
 
@@ -73,6 +96,8 @@ async def update_sync_settings(
     db: AsyncSession = Depends(get_db),
 ) -> SyncSettingsResponse:
     """Update autosync mode."""
+    from sessionfs.server.routes.sessions import _member_size_limit_for_tier
+
     if body.mode != "off":
         check_feature(ctx, "autosync")
     if body.mode not in ("off", "all", "selective"):
@@ -83,9 +108,11 @@ async def update_sync_settings(
         user.sync_debounce = max(5, min(300, body.debounce_seconds))
     await db.commit()
 
+    effective_tier = await get_effective_tier(user, db)
     return SyncSettingsResponse(
         mode=user.sync_mode,
         debounce_seconds=user.sync_debounce,
+        max_member_bytes=_member_size_limit_for_tier(effective_tier),
     )
 
 

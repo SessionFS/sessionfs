@@ -671,6 +671,18 @@ sfs pull SESSION_ID
 
 ---
 
+## Per-file size cap discovery (v0.10.27+)
+
+`sfs push`, `sfs pull`, `sfs sync`, `sfs handoff`, and `sfs pull-handoff` all enforce a per-file size cap inside the sync archive. The CLI discovers the cap with the following precedence:
+
+1. **`SFS_MAX_SYNC_MEMBER_BYTES_PAID` env var** — explicit operator override. Always wins; lets customers experiment ahead of a server upgrade.
+2. **Server-supplied `max_member_bytes`** from `GET /api/v1/sync/settings` — tier-aware (`10 MB` free / `50 MB` paid by default); reflects whatever the operator has set on the server.
+3. **`50 MB` literal final fallback** — only used when the env var is unset AND server discovery fails (network error, older server, missing field). Logged with a warning so the misconfiguration is visible.
+
+The value is cached per CLI invocation — one `/sync/settings` call per `sfs sync` / `sfs push` / `sfs pull` / `sfs handoff` run. Older servers that pre-date the `max_member_bytes` field fall through to the literal cleanly without crashing.
+
+---
+
 ## `sfs pull-handoff`
 
 Pull a session from a handoff link.
@@ -1983,7 +1995,8 @@ Manage agent tickets for the current project. Tickets are self-contained units o
 
 **Tier:** Team+.
 
-**Status FSM:** `suggested → open → in_progress → blocked → review → done` (terminal). `suggested/open → cancelled` (terminal).
+**Status FSM (Task, default):** `suggested → open → in_progress → blocked → review → done` (terminal). `suggested/open → cancelled` (terminal).
+**Status FSM (Issue, v0.10.24):** `suggested → open → in_progress → closed` (terminal). Issues never enter review; they are PM rollups closed manually with `sfs ticket close`.
 
 ### `sfs ticket list`
 
@@ -1994,6 +2007,8 @@ sfs ticket list
 sfs ticket list --assigned-to atlas
 sfs ticket list --status in_progress
 sfs ticket list --priority high
+sfs ticket list --kind issue              # only PM rollup containers
+sfs ticket list --kind task               # only executor work (omit for both)
 ```
 
 ### `sfs ticket show`
@@ -2016,7 +2031,9 @@ sfs ticket create --title "Fix rate limiter" \
   --file src/sessionfs/server/routes/knowledge.py
 ```
 
-Options: `--title/-t` (required), `--description/-d`, `--assigned-to/-a`, `--priority/-p` (critical/high/medium/low), `--criteria` (repeatable), `--file/-f` (repeatable), `--depends-on` (repeatable).
+Options: `--title/-t` (required), `--description/-d`, `--assigned-to/-a`, `--priority/-p` (critical/high/medium/low), `--criteria` (repeatable), `--file/-f` (repeatable), `--depends-on` (repeatable), `--kind` (`task` (default) or `issue` — PM rollup container; v0.10.24), `--parent` (parent Issue id, only valid when `--kind task`; child task rolls up into the Issue's Children view).
+
+Pass `--kind issue` for high-level PM rollups (no executor; closed manually with `sfs ticket close`). Tasks attached to an Issue via `--parent tk_...` appear under that Issue's Children rollup in CLI + MCP + dashboard.
 
 ### `sfs ticket start`
 
@@ -2086,8 +2103,11 @@ sfs ticket unblock tk_abc123   # blocked → in_progress
 sfs ticket reopen tk_abc123    # review → open (reporter requests changes)
 sfs ticket approve tk_abc123   # suggested → open (approve an agent-created ticket)
 sfs ticket dismiss tk_abc123   # suggested/open → cancelled
-sfs ticket resolve tk_abc123   # review → done (final close, runs dep enrichment)
+sfs ticket resolve tk_abc123   # review → done (Task terminator; runs dep enrichment)
+sfs ticket close tk_abc123     # in_progress → closed (Issue terminator; manual, NOT auto-derived from child Task status)
 ```
+
+Issues and Tasks have forked FSM terminators: Tasks finish via `complete` → `accept` → `resolve` (done); Issues finish via `close` (closed). `sfs ticket list --kind issue` filters to PM rollup containers; `sfs ticket list --kind task` (default omits filter) to executor work.
 
 ### `sfs ticket assign`
 

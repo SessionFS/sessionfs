@@ -22,28 +22,121 @@ from sessionfs.cli.common import (
 auth_app = typer.Typer(name="auth", help="Authentication for cloud sync.")
 
 
-# Mirror the server-side cap so we can fail fast and skip wasted uploads.
-# The CLI doesn't know the user's tier locally, so we pre-flight against the
-# more permissive paid-tier cap (50 MB by default). If the user is actually
-# on free tier, the server returns its own structured 413 and the CLI
-# surfaces the message verbatim — both error paths print the same actionable
-# guidance, so users on either tier get a useful response. Override with
-# SFS_MAX_SYNC_MEMBER_BYTES_PAID when the deployment uses a non-default cap.
+# Final-fallback per-file cap. Used only when the env-var override is
+# unset AND server discovery via GET /sync/settings fails. See
+# `_resolve_max_member_size` for the full precedence chain.
 import os as _os
 MAX_MEMBER_SIZE = int(
     _os.environ.get("SFS_MAX_SYNC_MEMBER_BYTES_PAID", str(50 * 1024 * 1024))
 )
 
+# Per-process cache so each `sfs` invocation hits /sync/settings at most
+# once. Reset between tests via `_reset_max_member_size_cache()`.
+_max_member_size_cache: int | None = None
 
-def _find_oversized_member(archive_data: bytes) -> tuple[str, int] | None:
-    """Return (name, size) of the first archive member > MAX_MEMBER_SIZE, else None."""
+
+def _resolve_max_member_size(
+    api_url: str | None,
+    api_key: str | None,
+    *,
+    force_refresh: bool = False,
+) -> int:
+    """Return the effective per-file byte cap for sync uploads.
+
+    Precedence (per tk_d5945c4bce3245ce, parent Issue tk_714456298d424202):
+      1. `SFS_MAX_SYNC_MEMBER_BYTES_PAID` env var — explicit operator override.
+         Always wins; lets customers experiment ahead of the server.
+      2. Server-supplied `max_member_bytes` from `GET /sync/settings` — the
+         tier-aware value the server enforces (added by tk_bb56f6a56da34b05).
+      3. Hardcoded 50 MB literal — final fallback. Logged with a warning
+         so operators can spot the misconfiguration.
+
+    Cached per CLI invocation; subsequent calls return the cached value
+    without re-hitting the server. Older servers that don't return
+    `max_member_bytes` fall through to (3) without crashing.
+    """
+    global _max_member_size_cache
+    if _max_member_size_cache is not None and not force_refresh:
+        return _max_member_size_cache
+
+    # (1) Explicit env-var override always wins. Re-read each call so the
+    # caller can mutate it between invocations in tests; the cache then
+    # captures the post-override value for subsequent reads.
+    env_override = _os.environ.get("SFS_MAX_SYNC_MEMBER_BYTES_PAID")
+    if env_override:
+        try:
+            _max_member_size_cache = int(env_override)
+            return _max_member_size_cache
+        except ValueError:
+            # Malformed env var — log and fall through to server discovery.
+            import logging as _logging
+            _logging.getLogger("sessionfs.cli").warning(
+                "SFS_MAX_SYNC_MEMBER_BYTES_PAID=%r is not an integer; "
+                "ignoring and discovering from server.",
+                env_override,
+            )
+
+    # (2) Server discovery — short timeout so a slow server doesn't block
+    # every `sfs push`. Older servers that pre-date Task 2 won't return
+    # the field; we treat that as "no server value" and fall through.
+    if api_url and api_key:
+        try:
+            import httpx as _httpx
+            resp = _httpx.get(
+                f"{api_url.rstrip('/')}/api/v1/sync/settings",
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=5.0,
+            )
+            if resp.status_code == 200:
+                body = resp.json()
+                if isinstance(body, dict):
+                    raw = body.get("max_member_bytes")
+                    if isinstance(raw, int) and raw > 0:
+                        _max_member_size_cache = raw
+                        return _max_member_size_cache
+        except Exception:
+            # Network error / DNS / 5xx / JSON parse error — fall through.
+            pass
+
+    # (3) Final fallback.
+    import logging as _logging
+    _logging.getLogger("sessionfs.cli").warning(
+        "Could not discover sync member-size cap from server; "
+        "falling back to %d MB literal. Set SFS_MAX_SYNC_MEMBER_BYTES_PAID "
+        "to silence this warning, or upgrade the server to v0.10.27+.",
+        50,
+    )
+    _max_member_size_cache = 50 * 1024 * 1024
+    return _max_member_size_cache
+
+
+def _reset_max_member_size_cache() -> None:
+    """Test-only: clear the per-process cache between cases."""
+    global _max_member_size_cache
+    _max_member_size_cache = None
+
+
+def _find_oversized_member(
+    archive_data: bytes,
+    max_size: int | None = None,
+) -> tuple[str, int] | None:
+    """Return (name, size) of the first archive member exceeding `max_size`.
+
+    `max_size` defaults to `MAX_MEMBER_SIZE` when callers haven't resolved
+    the tier-aware value yet (e.g. older code paths). Newer call sites
+    should resolve via `_resolve_max_member_size()` once at command entry
+    and pass the result here.
+    """
     import io as _io
     import tarfile as _tarfile
+
+    if max_size is None:
+        max_size = MAX_MEMBER_SIZE
 
     try:
         with _tarfile.open(fileobj=_io.BytesIO(archive_data), mode="r:gz") as tar:
             for member in tar.getmembers():
-                if member.size > MAX_MEMBER_SIZE:
+                if member.size > max_size:
                     return member.name, member.size
     except _tarfile.TarError:
         # Bad archive — let the server-side validation surface a clean error.
@@ -354,19 +447,26 @@ def push(
         console.print(f"Packing session {full_id[:12]}...")
         archive_data = pack_session(session_dir)
 
+        # Resolve the server-advertised member-size cap once per command.
+        # Cached so the unpack path below sees the same value.
+        _sync_cfg = _load_sync_config()
+        max_member_size = _resolve_max_member_size(
+            _sync_cfg.get("api_url"), _sync_cfg.get("api_key")
+        )
+
         # Local size check: don't waste an upload for a session the server
         # will reject with 413. This typically means the user needs to
         # /clear or /compact in their AI tool.
-        oversized = _find_oversized_member(archive_data)
+        oversized = _find_oversized_member(archive_data, max_size=max_member_size)
         if oversized is not None:
             name, size = oversized
             err_console.print(
                 f"[red]Session too large to push:[/red] '{name}' is "
                 f"{size // (1024 * 1024)}MB (server hard cap "
-                f"{MAX_MEMBER_SIZE // (1024 * 1024)}MB per file).\n"
+                f"{max_member_size // (1024 * 1024)}MB per file).\n"
                 f"[yellow]Try /compact in your AI tool to start a fresh "
                 f"session, then push again. Free tier has a tighter "
-                f"{10}MB cap; Pro/Team/Enterprise get the full {MAX_MEMBER_SIZE // (1024 * 1024)}MB.[/yellow]"
+                f"{10}MB cap; Pro/Team/Enterprise get the full {max_member_size // (1024 * 1024)}MB.[/yellow]"
             )
             raise SystemExit(1)
 
@@ -465,7 +565,14 @@ def pull(
 
         # Extract to local store
         target_dir = store.allocate_session_dir(session_id)
-        unpack_session(result.data, target_dir, member_limit_bytes=MAX_MEMBER_SIZE)
+        _sync_cfg = _load_sync_config()
+        unpack_session(
+            result.data,
+            target_dir,
+            member_limit_bytes=_resolve_max_member_size(
+                _sync_cfg.get("api_url"), _sync_cfg.get("api_key")
+            ),
+        )
 
         # Update index
         manifest_path = target_dir / "manifest.json"
@@ -568,6 +675,12 @@ def sync_all() -> None:
 
     store = open_store()
 
+    # Resolve the tier-aware member-size cap once for this command.
+    _sync_cfg = _load_sync_config()
+    max_member_size = _resolve_max_member_size(
+        _sync_cfg.get("api_url"), _sync_cfg.get("api_key")
+    )
+
     async def _sync():
         pushed = 0
         pulled = 0
@@ -635,6 +748,26 @@ def sync_all() -> None:
                 async with upload_sem:
                     try:
                         archive_data = pack_session(session_dir)
+                        # Pre-upload oversize check — mirrors the same
+                        # gate as `sfs push` and `sfs handoff` so the
+                        # `sfs sync` upload path doesn't waste bandwidth
+                        # on a guaranteed-413 archive. Codex R1 MEDIUM
+                        # on tk_d5945c4bce3245ce — this site was the
+                        # only `push_session()` caller still skipping
+                        # the resolver-aware preflight.
+                        oversized = _find_oversized_member(
+                            archive_data, max_size=max_member_size
+                        )
+                        if oversized is not None:
+                            name, size = oversized
+                            push_results[sid] = "error"
+                            err_console.print(
+                                f"[red]Skipped {sid[:12]}: too large to push:[/red] "
+                                f"'{name}' is {size // (1024 * 1024)}MB "
+                                f"(server cap {max_member_size // (1024 * 1024)}MB per file). "
+                                f"Try /compact in your AI tool first."
+                            )
+                            return
                         # Authoritative gate: atomically asks the
                         # deleted.json file "may I proceed?". Returns
                         # True if no entry OR a transient entry was
@@ -701,7 +834,7 @@ def sync_all() -> None:
                             unpack_session(
                                 result.data,
                                 target_dir,
-                                member_limit_bytes=MAX_MEMBER_SIZE,
+                                member_limit_bytes=max_member_size,
                             )
 
                             manifest_path = target_dir / "manifest.json"
@@ -862,16 +995,22 @@ def handoff(
         console.print(f"Ensuring session {full_id[:12]} is synced...")
         archive_data = pack_session(session_dir)
 
+        # Resolve the tier-aware member-size cap from server settings.
+        _sync_cfg = _load_sync_config()
+        max_member_size = _resolve_max_member_size(
+            _sync_cfg.get("api_url"), _sync_cfg.get("api_key")
+        )
+
         # Pre-upload oversize check — same gate as `sfs push` so we catch
         # the per-file cap locally and give the user an actionable message
         # before wasting bandwidth on a guaranteed-413 upload.
-        oversized = _find_oversized_member(archive_data)
+        oversized = _find_oversized_member(archive_data, max_size=max_member_size)
         if oversized is not None:
             name, size = oversized
             err_console.print(
                 f"[red]Session too large to hand off:[/red] '{name}' is "
                 f"{size // (1024 * 1024)}MB (server hard cap "
-                f"{MAX_MEMBER_SIZE // (1024 * 1024)}MB per file).\n"
+                f"{max_member_size // (1024 * 1024)}MB per file).\n"
                 f"Try /compact in your AI tool to start a fresh session, "
                 f"then re-run sfs handoff."
             )
@@ -1083,8 +1222,13 @@ def pull_handoff(
 
         # Extract to local store
         target_dir = store.allocate_session_dir(session_id)
+        _sync_cfg = _load_sync_config()
         unpack_session(
-            pull_result.data, target_dir, member_limit_bytes=MAX_MEMBER_SIZE
+            pull_result.data,
+            target_dir,
+            member_limit_bytes=_resolve_max_member_size(
+                _sync_cfg.get("api_url"), _sync_cfg.get("api_key")
+            ),
         )
 
         # Update index

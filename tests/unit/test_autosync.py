@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -242,6 +241,356 @@ class TestTransientErrorsDoNotExclude:
             "Unknown exceptions must NOT count toward exclusion threshold"
 
 
+class TestSyncSkipsExcludedSessions:
+    """Daemon hotfix `tk_4abfa69b38d54bc0` — `_sync_sessions()` must skip
+    sessions in the local exclusion list (`deleted.json`) instead of
+    re-attempting them every cycle.
+
+    Parent Issue `tk_714456298d424202`: paying customer C hit a daemon
+    liveness incident where 862+ retries / 4 days on a 75MB excluded
+    session starved the async event loop on decompression + DLP scanning,
+    timing out `/health` and tripping 13 liveness probe kills.
+    """
+
+    def _make_syncer(self, tmp_path, monkeypatch):
+        from sessionfs.daemon.config import DaemonConfig
+        from sessionfs.daemon.main import DaemonSyncer
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        import sessionfs.store.deleted as _deleted
+        _deleted._DEFAULT_DIR = tmp_path / ".sessionfs"
+        _deleted._DEFAULT_PATH = _deleted._DEFAULT_DIR / "deleted.json"
+
+        config = DaemonConfig(sync={"enabled": True, "api_key": "test", "auto": "all", "debounce": 1})
+        store = MagicMock()
+        return DaemonSyncer(config, store)
+
+    def test_sync_sessions_skips_excluded_session_ids(self, tmp_path, monkeypatch):
+        """Regression for parent Issue `tk_714456298d424202` — an excluded
+        session must short-circuit `_sync_sessions()` before
+        `pack_session()` / `push_session()` run, and must be discarded
+        from `_pending_sessions` so the next cycle does not re-queue it.
+        Non-excluded sessions in the same batch must still process.
+        """
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from sessionfs.store.deleted import mark_deleted
+
+        syncer = self._make_syncer(tmp_path, monkeypatch)
+        excluded_id = "ses_excluded12345"
+        normal_id = "ses_normal0123456"
+
+        # mark_deleted writes to ~/.sessionfs/deleted.json under the
+        # tmp_path that the fixture redirects HOME to.
+        mark_deleted(excluded_id, scope="local", reason="hotfix_test")
+
+        syncer._pending_sessions.add(excluded_id)
+        syncer._pending_sessions.add(normal_id)
+
+        # Returning None for every lookup means non-excluded sessions hit
+        # the existing `if not session_dir` branch — exits cleanly without
+        # touching pack/push. The point of THIS test is that the excluded
+        # session must short-circuit BEFORE this lookup runs at all.
+        syncer.store.get_session_dir.return_value = None
+
+        fake_client = AsyncMock()
+        with patch.object(syncer, "_get_client", return_value=fake_client):
+            asyncio.run(syncer._sync_sessions({excluded_id, normal_id}))
+
+        touched = [call.args[0] for call in syncer.store.get_session_dir.call_args_list]
+
+        assert excluded_id not in touched, (
+            f"Excluded session_id {excluded_id} must short-circuit before "
+            f"`store.get_session_dir()` lookup (and therefore before "
+            f"pack_session/push_session)."
+        )
+        assert normal_id in touched, (
+            f"Non-excluded session_id {normal_id} must still process via "
+            f"the regular loop body."
+        )
+        assert excluded_id not in syncer._pending_sessions, (
+            "Excluded session_id must be discarded from `_pending_sessions` "
+            "so the next sync cycle does not re-queue it."
+        )
+
+
+class TestResolveMaxMemberSize:
+    """CLI `_resolve_max_member_size()` precedence chain
+    (tk_d5945c4bce3245ce, parent Issue tk_714456298d424202).
+
+    The lookup order is:
+      1. `SFS_MAX_SYNC_MEMBER_BYTES_PAID` env var — explicit operator override.
+      2. Server-supplied `max_member_bytes` from `GET /sync/settings`.
+      3. Hardcoded 50 MB literal final fallback (logged warning).
+    Cached per CLI invocation; older servers without the field fall through.
+    """
+
+    def setup_method(self, method):
+        from sessionfs.cli.cmd_cloud import _reset_max_member_size_cache
+        _reset_max_member_size_cache()
+
+    def teardown_method(self, method):
+        from sessionfs.cli.cmd_cloud import _reset_max_member_size_cache
+        _reset_max_member_size_cache()
+
+    def test_env_var_override_wins_over_server(self, monkeypatch):
+        """An explicit env var must beat any server-supplied value so
+        customers can experiment ahead of a server upgrade."""
+        from sessionfs.cli import cmd_cloud
+
+        monkeypatch.setenv("SFS_MAX_SYNC_MEMBER_BYTES_PAID", str(200 * 1024 * 1024))
+
+        def _fail(*a, **kw):
+            raise AssertionError(
+                "httpx.get should not be reached when env var override is set"
+            )
+
+        monkeypatch.setattr("httpx.get", _fail)
+
+        result = cmd_cloud._resolve_max_member_size(
+            "https://api.example.com", "test_key"
+        )
+        assert result == 200 * 1024 * 1024
+
+    def test_server_paid_tier_value_consumed(self, monkeypatch):
+        """When env var is unset, the server-supplied cap (paid-tier
+        300 MB in this test) must be used — proving the CLI no longer
+        defaults to the 50 MB literal."""
+        from sessionfs.cli import cmd_cloud
+
+        monkeypatch.delenv("SFS_MAX_SYNC_MEMBER_BYTES_PAID", raising=False)
+
+        class _FakeResp:
+            status_code = 200
+            def json(self):
+                return {
+                    "mode": "all",
+                    "debounce_seconds": 30,
+                    "max_member_bytes": 300 * 1024 * 1024,
+                }
+
+        monkeypatch.setattr("httpx.get", lambda *a, **kw: _FakeResp())
+
+        result = cmd_cloud._resolve_max_member_size(
+            "https://api.example.com", "test_key"
+        )
+        assert result == 300 * 1024 * 1024
+
+    def test_server_free_tier_value_consumed(self, monkeypatch):
+        """A free-tier caller sees the 10 MB cap from the server response,
+        matching what the server enforces."""
+        from sessionfs.cli import cmd_cloud
+
+        monkeypatch.delenv("SFS_MAX_SYNC_MEMBER_BYTES_PAID", raising=False)
+
+        class _FakeResp:
+            status_code = 200
+            def json(self):
+                return {
+                    "mode": "off",
+                    "debounce_seconds": 30,
+                    "max_member_bytes": 10 * 1024 * 1024,
+                }
+
+        monkeypatch.setattr("httpx.get", lambda *a, **kw: _FakeResp())
+
+        result = cmd_cloud._resolve_max_member_size(
+            "https://api.example.com", "test_key"
+        )
+        assert result == 10 * 1024 * 1024
+
+    def test_older_server_missing_field_falls_back(self, monkeypatch, caplog):
+        """A server that pre-dates Task 2 omits `max_member_bytes`. CLI
+        must fall through to the 50 MB literal WITHOUT crashing, and
+        must log a warning so operators see the misconfiguration."""
+        import logging
+        from sessionfs.cli import cmd_cloud
+
+        monkeypatch.delenv("SFS_MAX_SYNC_MEMBER_BYTES_PAID", raising=False)
+
+        class _FakeOldResp:
+            status_code = 200
+            def json(self):
+                # Older-server shape — no max_member_bytes key.
+                return {"mode": "off", "debounce_seconds": 30}
+
+        monkeypatch.setattr("httpx.get", lambda *a, **kw: _FakeOldResp())
+
+        with caplog.at_level(logging.WARNING, logger="sessionfs.cli"):
+            result = cmd_cloud._resolve_max_member_size(
+                "https://api.example.com", "test_key"
+            )
+
+        assert result == 50 * 1024 * 1024, (
+            "Older server must fall through to 50MB literal cleanly"
+        )
+        assert any(
+            "falling back" in rec.message.lower() for rec in caplog.records
+        ), "Final-fallback path must log a warning visible to operators"
+
+    def test_network_error_falls_back(self, monkeypatch, caplog):
+        """A network failure during /sync/settings must not crash the
+        CLI; falls through to the 50 MB literal with a warning."""
+        import logging
+        from sessionfs.cli import cmd_cloud
+
+        monkeypatch.delenv("SFS_MAX_SYNC_MEMBER_BYTES_PAID", raising=False)
+
+        def _raise(*a, **kw):
+            import httpx
+            raise httpx.ConnectError("simulated DNS failure")
+
+        monkeypatch.setattr("httpx.get", _raise)
+
+        with caplog.at_level(logging.WARNING, logger="sessionfs.cli"):
+            result = cmd_cloud._resolve_max_member_size(
+                "https://api.example.com", "test_key"
+            )
+
+        assert result == 50 * 1024 * 1024
+        assert any(
+            "falling back" in rec.message.lower() for rec in caplog.records
+        )
+
+    def test_value_is_cached_across_calls(self, monkeypatch):
+        """Second call must not re-poll the server. Guards against the
+        ticket's explicit ‘one call per `sfs sync` / `sfs pull` /
+        `sfs handoff` run’ requirement."""
+        from sessionfs.cli import cmd_cloud
+
+        monkeypatch.delenv("SFS_MAX_SYNC_MEMBER_BYTES_PAID", raising=False)
+
+        call_count = {"n": 0}
+
+        class _FakeResp:
+            status_code = 200
+            def json(self):
+                return {
+                    "mode": "off",
+                    "debounce_seconds": 30,
+                    "max_member_bytes": 75 * 1024 * 1024,
+                }
+
+        def _counted(*a, **kw):
+            call_count["n"] += 1
+            return _FakeResp()
+
+        monkeypatch.setattr("httpx.get", _counted)
+
+        first = cmd_cloud._resolve_max_member_size("https://x", "k")
+        second = cmd_cloud._resolve_max_member_size("https://x", "k")
+        third = cmd_cloud._resolve_max_member_size("https://x", "k")
+
+        assert first == second == third == 75 * 1024 * 1024
+        assert call_count["n"] == 1, (
+            f"Expected exactly one /sync/settings call, got {call_count['n']}"
+        )
+
+
+class TestSyncAllOversizedPreflight:
+    """`sfs sync` (sync_all → _push_one) must run the same per-file
+    oversize preflight as `sfs push` and `sfs handoff`, using the
+    server-discovered `max_member_bytes` cap.
+
+    Codex R1 MEDIUM on tk_d5945c4bce3245ce (`tc_6be2e1302d224b88`):
+    the upload path inside `sync_all()._push_one` was calling
+    `client.push_session()` without first calling
+    `_find_oversized_member(archive_data, max_size=max_member_size)`,
+    so the resolver-aware cap was only used for pulls / unpack — not
+    the actual upload side of `sfs sync`. Regression-protect by
+    asserting `push_session()` is NEVER called when the archive
+    contains a member that exceeds the discovered cap.
+    """
+
+    def setup_method(self, method):
+        from sessionfs.cli.cmd_cloud import _reset_max_member_size_cache
+        _reset_max_member_size_cache()
+
+    def teardown_method(self, method):
+        from sessionfs.cli.cmd_cloud import _reset_max_member_size_cache
+        _reset_max_member_size_cache()
+
+    def test_sync_skips_push_for_archive_exceeding_server_cap(
+        self, monkeypatch, tmp_path
+    ):
+        """Pin the contract: when pack_session yields an archive whose
+        single member exceeds the resolver-supplied cap, `sfs sync`
+        must skip the upload (no push_session call) instead of wasting
+        bandwidth on a guaranteed-413."""
+        import asyncio
+        import io
+        import tarfile
+        from unittest.mock import AsyncMock, MagicMock
+
+        from sessionfs.cli import cmd_cloud
+
+        # Force a 1 MB cap so a small synthetic over-cap archive is fast
+        # to build. Env var wins precedence → no /sync/settings call.
+        monkeypatch.setenv("SFS_MAX_SYNC_MEMBER_BYTES_PAID", str(1 * 1024 * 1024))
+
+        # Build a synthetic archive containing a 2 MB messages.jsonl —
+        # exceeds the 1 MB cap above so _find_oversized_member trips.
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            payload = b"x" * (2 * 1024 * 1024)
+            info = tarfile.TarInfo(name="messages.jsonl")
+            info.size = len(payload)
+            tar.addfile(info, io.BytesIO(payload))
+        oversized_archive = buf.getvalue()
+
+        monkeypatch.setattr(
+            "sessionfs.sync.archive.pack_session",
+            lambda _session_dir: oversized_archive,
+        )
+
+        fake_session_dir = tmp_path / "ses_huge.sfs"
+        fake_session_dir.mkdir()
+
+        mock_store = MagicMock()
+        mock_store.get_session_dir.return_value = fake_session_dir
+        mock_store.get_session_manifest.return_value = {"sync": {"etag": "old"}}
+        mock_store.list_sessions.return_value = [{"session_id": "ses_huge1234567"}]
+        monkeypatch.setattr(cmd_cloud, "open_store", lambda: mock_store)
+
+        mock_remote = MagicMock()
+        mock_remote.sessions = []
+        mock_remote.has_more = False
+        mock_client = MagicMock()
+        mock_client.list_remote_sessions = AsyncMock(return_value=mock_remote)
+        mock_client.push_session = AsyncMock()  # must NEVER be called
+        mock_client.close = AsyncMock()
+        monkeypatch.setattr(cmd_cloud, "_get_sync_client", lambda: mock_client)
+
+        # _load_sync_config is called by sync_all to prime the resolver;
+        # the env var wins anyway, but provide a valid stub so no real
+        # config file is read.
+        monkeypatch.setattr(
+            cmd_cloud,
+            "_load_sync_config",
+            lambda: {"api_url": "https://x", "api_key": "k", "enabled": True},
+        )
+
+        # Run inside a fresh loop the same way the prior delete-cli
+        # tests do — cmd_cloud.sync_all is sync-on-the-outside,
+        # asyncio.run inside.
+        def _run(coro):
+            loop = asyncio.new_event_loop()
+            try:
+                return loop.run_until_complete(coro)
+            finally:
+                loop.close()
+
+        monkeypatch.setattr(cmd_cloud.asyncio, "run", _run)
+
+        try:
+            cmd_cloud.sync_all()
+        except Exception:
+            pass
+
+        mock_client.push_session.assert_not_called()
+
+
 class TestClientSideOversizedCheck:
     """sfs push refuses to upload archives whose members exceed 10MB."""
 
@@ -420,7 +769,6 @@ class TestHandoffIdMisuseRedirect:
         must hit the redirect, NOT Typer's "Missing option '--to'"
         error. This is the exact user scenario.
         """
-        import re
 
         from tests.utils.ansi import assert_in_ansi, assert_not_in_ansi
 

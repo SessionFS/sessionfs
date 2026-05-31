@@ -9,6 +9,8 @@ SessionFS coordinates AI agents across local tools and cloud platforms through o
 
 This is a **control-plane** integration: cloud agents can participate in your team's personas, tickets, knowledge, and rules. **Transcript capture as `.sfs` sessions is not part of this layer** — that ships in a future release. Until then, what your cloud agent says inside its own platform stays there; what it *does* against SessionFS (tickets, knowledge contributions) is captured here.
 
+> **This page covers *agent-initiated* runs** — the cloud agent itself calls the REST API. If instead a coordination layer (a script, n8n, a GitHub Action, a Claude Code session) *spawns* an external CLI agent (Codex CLI, Gemini CLI, Claude Code) to do ticket work, see [External Agent Orchestration](/integrations/external-agents) for the `create_agent_run` → spawn → `complete_agent_run` provenance wrapper.
+
 ## What cloud agents can do today
 
 | Capability | Endpoint(s) | Tier |
@@ -27,7 +29,7 @@ All operations require `Authorization: Bearer <SessionFS_API_key>`. As of v0.10.
 
 MCP works great for local tools (Claude Code, Cursor, Codex, etc.) where the agent runtime can spawn `sfs mcp serve` as a stdio subprocess. Bedrock, Vertex, and custom cloud agents typically can't. The Cloud Agent Control Plane gives those agents the same operations through plain HTTP, with no client-side daemon, no MCP transport, and no special SDK.
 
-If your agent *can* speak MCP, prefer it — you get 58 tools and richer descriptions. If it can't, use this layer.
+If your agent *can* speak MCP, prefer it — you get 61 tools and richer descriptions. If it can't, use this layer.
 
 ## Amazon Bedrock
 
@@ -158,6 +160,8 @@ To keep this release thin and reviewable:
 
 ## See also
 
+- [External Agent Orchestration](/integrations/external-agents) — wrap a spawned Codex/Gemini/Claude Code CLI agent in an AgentRun for ticket-scoped provenance.
+- [CI Integration (Agent Runs)](/integrations/ci-integration) — gate a CI build on a persona review's outcome.
 - [MCP Server](/mcp) — full MCP tool catalogue, including the 14 persona + ticket tools.
 - [MCP integration](/features/mcp) — preferred path for local tools (Claude Code, Cursor, Codex, ...).
 - [CLI reference](/cli) — `sfs persona`, `sfs ticket`, `sfs project entries` — the same operations from a terminal.
