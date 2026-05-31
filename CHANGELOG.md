@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.27] - 2026-05-30
+
+**Daemon liveness hotfix + tier-aware per-file cap discovery.** Bundles three R2-CLEAN Codex-reviewed tickets under one PATCH release. All changes additive — no schema migrations, no breaking changes, no auth changes. Older CLIs talking to a v0.10.27 server ignore the new field harmlessly; v0.10.27 CLIs talking to an older server fall through to the 50 MB literal with a logged warning.
+
+### Fixed
+
+**Daemon: skip excluded sessions in `_sync_sessions()` loop** (`tk_4abfa69b38d54bc0`, parent Issue `tk_714456298d424202`). Without this guard, `_sync_sessions()` retried sessions already in the local exclusion list (`deleted.json`) every cycle. A 75 MB excluded session on a paying customer's daemon caused 862+ retries / 4 days, starving the async event loop on decompression + DLP scanning, timing out `/health`, and tripping 13 liveness probe kills. Fix: at the top of the per-session loop body, `is_excluded(session_id)` short-circuits with `continue` + `_pending_sessions.discard(session_id)` so the next cycle does not re-queue. Debug-level skip log mirrors the watcher convention. Bug B (persistent `sync_failures` counter across daemon restart) deferred per Compass — the one-line guard is the minimum viable hotfix.
+
+**`sfs sync` upload path now runs the resolver-aware oversized-member preflight** (`tk_d5945c4bce3245ce` R1 MEDIUM). `sync_all._push_one` was the only `push_session()` caller still skipping the preflight; `sfs push` and `sfs handoff` already had it. After `pack_session()` and before `acquire_for_retry()` / `push_session()`, `_find_oversized_member(archive_data, max_size=max_member_size)` runs and over-cap archives are marked as push errors with the same friendly skip message shape — no wasted upload of a guaranteed-413 archive.
+
+### Added
+
+**Server: `max_member_bytes` in `GET/PUT /api/v1/sync/settings` response** (`tk_bb56f6a56da34b05`, parent Issue `tk_714456298d424202`). `SyncSettingsResponse` gains a tier-aware `max_member_bytes: int` field sourced from `_member_size_limit_for_tier(await get_effective_tier(user, db))`, so the value tracks the same server-side enforcement as `_check_member_sizes` and follows any `SFS_MAX_SYNC_MEMBER_BYTES_{FREE,PAID}` operator overrides automatically. Purely additive response shape; no migration. `get_sync_settings` gains `db: AsyncSession = Depends(get_db)` so it can resolve the effective tier.
+
+**CLI: tier-aware per-file cap discovery via `_resolve_max_member_size()`** (`tk_d5945c4bce3245ce`, depends on `tk_bb56f6a56da34b05`). New resolver in `src/sessionfs/cli/cmd_cloud.py` with explicit precedence:
+1. `SFS_MAX_SYNC_MEMBER_BYTES_PAID` env-var override — always wins; lets customers experiment ahead of server upgrades.
+2. Server-supplied `max_member_bytes` from `GET /sync/settings` — tier-aware value the server enforces.
+3. 50 MB literal final fallback — logged warning so operators see the misconfiguration; only used when (1) is unset AND server discovery fails.
+
+Cached per CLI invocation via module-level `_max_member_size_cache` — one `/sync/settings` call per `sfs push` / `sfs pull` / `sfs sync` / `sfs handoff` / `sfs pull-handoff` run. Older servers without the field fall through cleanly without crashing. `_find_oversized_member(archive_data, max_size=None)` takes an optional override; entry points (push, pull, sync_all, handoff, pull_handoff) resolve the cap once at command entry and thread it into oversize checks + `unpack_session(member_limit_bytes=...)`.
+
+### Documentation
+
+- `docs/cli-reference.md` adds "Per-file size cap discovery (v0.10.27+)" section covering the precedence chain across all five sync commands.
+- `site/src/content/docs/api.mdx` GET + PUT `/sync/settings` rows describe the new field + older-client compatibility.
+
+### Verification
+
+- pytest tests/ -x -q → 2119 passed (+11 from v0.10.26 baseline 2108), 2 xfailed (pre-existing PG-only migration smoke tests tracked `tk_7dc9e8764a5a4297`)
+- ruff check src/ → clean
+- helm lint charts/sessionfs → clean
+- Shield-SR independent pre-release security review → CLEAN (0 CRITICAL / 0 HIGH / 0 MEDIUM)
+- Codex review threads: tk_4abfa69b38d54bc0 R1 (1 LOW ruff) → R2 CLEAN; tk_bb56f6a56da34b05 R1 CLEAN; tk_d5945c4bce3245ce R1 (1 MED missed sync preflight) → R2 CLEAN
+
 ## [0.10.26] - 2026-05-30
 
 **Hotfix release — fix typer 0.26 BadParameter class hierarchy regression so Deploy API ships.** v0.10.25's `click<8.4` pin installed click 8.3.3 in CI but tests still failed: typer 0.26.3 vendors its own click module (`typer._click`), so `typer.BadParameter` is `typer._click.exceptions.BadParameter`, NOT `click.exceptions.ClickException`. `handle_errors` decorator's `except click.exceptions.ClickException` no longer catches typer-raised parameter errors → they fall through to the generic `except Exception` → render as "Unexpected error: ..." instead of the standard typer parser-error format. Same root cause as the Codex round-2 fix on tk_e025375272b84a95 / v0.10.11, surfaced again by typer's 0.26 refactor.
