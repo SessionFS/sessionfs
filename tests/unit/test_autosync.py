@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -274,7 +273,7 @@ class TestSyncSkipsExcludedSessions:
         Non-excluded sessions in the same batch must still process.
         """
         import asyncio
-        from unittest.mock import AsyncMock, patch
+        from unittest.mock import AsyncMock
 
         from sessionfs.store.deleted import mark_deleted
 
@@ -667,7 +666,6 @@ class TestHandoffIdMisuseRedirect:
         must hit the redirect, NOT Typer's "Missing option '--to'"
         error. This is the exact user scenario.
         """
-        import re
 
         from tests.utils.ansi import assert_in_ansi, assert_not_in_ansi
 
