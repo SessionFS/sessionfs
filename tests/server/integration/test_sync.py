@@ -462,3 +462,101 @@ async def test_sync_push_paid_tier_at_30mb_succeeds(
     assert resp.status_code in (200, 201), (
         f"Pro tier should accept 30MB member, got {resp.status_code}: {resp.text[:200]}"
     )
+
+
+# ---- /sync/settings: max_member_bytes exposure (tk_bb56f6a56da34b05) ----
+
+
+@pytest.mark.asyncio
+async def test_get_sync_settings_exposes_paid_tier_max_member_bytes(
+    client: AsyncClient, auth_headers: dict
+):
+    """Paid-tier caller (test_user fixture is tier='pro') must see the
+    50 MB paid-tier cap in `max_member_bytes`. Sourced from
+    `_member_size_limit_for_tier()` so the field stays in sync if an
+    operator overrides `SFS_MAX_SYNC_MEMBER_BYTES_PAID`.
+
+    Parent Issue `tk_714456298d424202` — CLI relies on this field to
+    drop its hardcoded 50MB fallback (Task 3).
+    """
+    from sessionfs.server.routes.sessions import SFS_MAX_SYNC_MEMBER_BYTES_PAID
+
+    resp = await client.get("/api/v1/sync/settings", headers=auth_headers)
+    assert resp.status_code == 200, resp.text[:200]
+    body = resp.json()
+    assert "max_member_bytes" in body, (
+        f"GET /sync/settings response missing max_member_bytes: {body}"
+    )
+    assert body["max_member_bytes"] == SFS_MAX_SYNC_MEMBER_BYTES_PAID, (
+        f"Paid tier should see paid-tier cap, got {body['max_member_bytes']} "
+        f"expected {SFS_MAX_SYNC_MEMBER_BYTES_PAID}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_sync_settings_exposes_free_tier_max_member_bytes(
+    client: AsyncClient, db_session
+):
+    """Free-tier callers (anything below pro) must see the 10 MB free-tier
+    cap in `max_member_bytes`. Uses `starter` tier (smallest tier with
+    cloud_sync enabled) so the assertion exercises the non-paid bucket
+    in `_member_size_limit_for_tier`.
+    """
+    import uuid as _uuid
+    from datetime import datetime as _dt, timezone as _tz
+
+    from sessionfs.server.auth.keys import (
+        generate_api_key as _gen_key,
+        hash_api_key as _hash_key,
+    )
+    from sessionfs.server.db.models import ApiKey as _ApiKey, User as _User
+    from sessionfs.server.routes.sessions import SFS_MAX_SYNC_MEMBER_BYTES_FREE
+
+    starter_user = _User(
+        id=str(_uuid.uuid4()),
+        email=f"starter_settings_{_uuid.uuid4().hex[:8]}@example.com",
+        tier="starter",
+        email_verified=True,
+        created_at=_dt.now(_tz.utc),
+    )
+    db_session.add(starter_user)
+    await db_session.commit()
+    raw = _gen_key()
+    db_session.add(_ApiKey(
+        id=str(_uuid.uuid4()),
+        user_id=starter_user.id,
+        key_hash=_hash_key(raw),
+        name="starter-settings-key",
+        created_at=_dt.now(_tz.utc),
+    ))
+    await db_session.commit()
+    starter_headers = {"Authorization": f"Bearer {raw}"}
+
+    resp = await client.get("/api/v1/sync/settings", headers=starter_headers)
+    assert resp.status_code == 200, resp.text[:200]
+    body = resp.json()
+    assert body["max_member_bytes"] == SFS_MAX_SYNC_MEMBER_BYTES_FREE, (
+        f"Starter tier should see free-tier cap, got {body['max_member_bytes']} "
+        f"expected {SFS_MAX_SYNC_MEMBER_BYTES_FREE}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_put_sync_settings_returns_max_member_bytes(
+    client: AsyncClient, auth_headers: dict
+):
+    """PUT /sync/settings response shape must match GET so CLI callers
+    can use either entry point to discover the cap.
+    """
+    from sessionfs.server.routes.sessions import SFS_MAX_SYNC_MEMBER_BYTES_PAID
+
+    resp = await client.put(
+        "/api/v1/sync/settings",
+        headers=auth_headers,
+        json={"mode": "off"},
+    )
+    assert resp.status_code == 200, resp.text[:200]
+    body = resp.json()
+    assert body["max_member_bytes"] == SFS_MAX_SYNC_MEMBER_BYTES_PAID, (
+        f"PUT should echo the paid-tier cap, got {body['max_member_bytes']}"
+    )

@@ -105,8 +105,8 @@ Available scopes (the `*` wildcard is reserved for legacy user/admin keys; servi
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/api/v1/sync/settings` | Bearer | Get autosync settings |
-| PUT | `/api/v1/sync/settings` | Bearer | Update autosync mode (requires `autosync` feature if not "off") |
+| GET | `/api/v1/sync/settings` | Bearer | Get autosync settings (`mode`, `debounce_seconds`, `max_member_bytes` — tier-aware per-file cap; CLI v0.10.27+ reads this to avoid a hardcoded fallback) |
+| PUT | `/api/v1/sync/settings` | Bearer | Update autosync mode (requires `autosync` feature if not "off"); response echoes the same shape as GET including `max_member_bytes` |
 | GET | `/api/v1/sync/watchlist` | Bearer | Get watched sessions |
 | POST | `/api/v1/sync/watch/{id}` | Bearer | Add session to watchlist |
 | DELETE | `/api/v1/sync/watch/{id}` | Bearer | Remove session from watchlist |
