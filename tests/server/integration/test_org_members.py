@@ -1688,3 +1688,136 @@ async def test_legacy_org_invite_endpoint_resends_over_expired_row(
     assert len(rows) == 1
     assert rows[0].id != old_id
     assert _aware(rows[0].expires_at) > datetime.now(timezone.utc)
+
+
+@pytest.mark.asyncio
+async def test_legacy_org_invite_endpoint_resends_over_declined_row(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """tk_d88678e6fe384de6 R1 LOW — pin all three stale-row states
+    for the legacy `/api/v1/org/invite` endpoint, not just expired.
+    """
+    from sessionfs.server.db.models import OrgInvite
+
+    admin, admin_key = await _make_user(db_session, "admin_legacy_decl")
+    org = await _make_org(db_session, admin=admin)
+    admin.default_org_id = org.id
+    await db_session.commit()
+
+    email = "legacy_decl@example.com"
+    first_created = datetime(2026, 2, 1, 12, 0, 0, tzinfo=timezone.utc)
+    declined = OrgInvite(
+        id=f"inv_{uuid.uuid4().hex[:16]}",
+        org_id=org.id,
+        email=email,
+        role="member",
+        invited_by=admin.id,
+        created_at=first_created,
+        expires_at=datetime.now(timezone.utc) + timedelta(days=3),
+        declined_at=datetime.now(timezone.utc),
+        decline_reason="legacy decline path",
+    )
+    db_session.add(declined)
+    await db_session.commit()
+    old_id = declined.id
+
+    resp = await client.post(
+        "/api/v1/org/invite",
+        json={"email": email, "role": "member"},
+        headers=_hdrs(admin_key),
+    )
+    assert resp.status_code == 200, resp.text[:300]
+
+    rows = (
+        await db_session.execute(
+            select(OrgInvite).where(
+                OrgInvite.org_id == org.id,
+                OrgInvite.email == email,
+            )
+        )
+    ).scalars().all()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.id != old_id
+    assert row.declined_at is None
+    assert row.decline_reason is None
+    # created_at preserved as audit signal.
+    preserved = row.created_at
+    if preserved.tzinfo is not None:
+        preserved = preserved.replace(tzinfo=None)
+    assert preserved == first_created.replace(tzinfo=None)
+
+
+@pytest.mark.asyncio
+async def test_legacy_org_invite_endpoint_resends_over_orphan_accepted_row(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """tk_d88678e6fe384de6 R1 LOW — orphan-accepted coverage for the
+    legacy endpoint. Invite was accepted, but the resulting OrgMember
+    was later removed; admin must be able to re-invite the email.
+    """
+    from sessionfs.server.db.models import OrgInvite
+
+    admin, admin_key = await _make_user(db_session, "admin_legacy_orphan")
+    org = await _make_org(db_session, admin=admin)
+    admin.default_org_id = org.id
+    await db_session.commit()
+
+    email = "legacy_orphan@example.com"
+    orphan = OrgInvite(
+        id=f"inv_{uuid.uuid4().hex[:16]}",
+        org_id=org.id,
+        email=email,
+        role="member",
+        invited_by=admin.id,
+        created_at=datetime(2026, 3, 1, 12, 0, 0, tzinfo=timezone.utc),
+        expires_at=datetime.now(timezone.utc) + timedelta(days=2),
+        accepted_at=datetime(2026, 3, 2, 12, 0, 0, tzinfo=timezone.utc),
+    )
+    db_session.add(orphan)
+    await db_session.commit()
+    # No matching OrgMember → orphan-accepted state.
+
+    resp = await client.post(
+        "/api/v1/org/invite",
+        json={"email": email, "role": "member"},
+        headers=_hdrs(admin_key),
+    )
+    assert resp.status_code == 200, resp.text[:300]
+
+    rows = (
+        await db_session.execute(
+            select(OrgInvite).where(
+                OrgInvite.org_id == org.id,
+                OrgInvite.email == email,
+            )
+        )
+    ).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].accepted_at is None
+
+
+def test_invite_stale_lookup_emits_for_update():
+    """tk_d88678e6fe384de6 R1 MEDIUM — source-level guard that the
+    stale-invite lookup compiles to SQL containing FOR UPDATE on
+    Postgres. SQLite ignores FOR UPDATE at runtime (single-writer
+    model), but PG honors it and that is what protects concurrent
+    re-invites of the same stale row from a StaleDataError race.
+
+    Follows the same pattern as `test_resolve_project_helper_emits_for_update`.
+    """
+    from sqlalchemy import select as _select
+    from sqlalchemy.dialects import postgresql
+
+    from sessionfs.server.db.models import OrgInvite as _OrgInvite
+
+    sql = str(
+        _select(_OrgInvite)
+        .where(
+            _OrgInvite.org_id == "o",
+            _OrgInvite.email == "x@y",
+        )
+        .with_for_update()
+        .compile(dialect=postgresql.dialect())
+    )
+    assert "FOR UPDATE" in sql

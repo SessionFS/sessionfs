@@ -393,12 +393,21 @@ async def invite_member(
     # v0.10.22 R1 MED route predicate is more permissive than the DB
     # constraint can support, and a fresh INSERT on top of a stale row
     # raises IntegrityError → 409 duplicate_resource.
+    #
+    # `.with_for_update()` serializes concurrent re-invites against
+    # the same stale row on PG (Codex R1 MED on this ticket). SQLite
+    # ignores FOR UPDATE; the engine's single-writer model serializes
+    # anyway. Without the lock, two requests can both read the old
+    # primary key and the second UPDATE collides against a row whose
+    # id was just rewritten by the first → StaleDataError → 500.
     stale = (
         await db.execute(
-            select(OrgInvite).where(
+            select(OrgInvite)
+            .where(
                 OrgInvite.org_id == org_id,
                 OrgInvite.email == data.email,
             )
+            .with_for_update()
         )
     ).scalar_one_or_none()
 

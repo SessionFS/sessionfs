@@ -250,12 +250,23 @@ async def invite_member(
     # DB UniqueConstraint still blocked the INSERT with IntegrityError
     # (= 409 duplicate_resource via the v0.10.24 envelope). The
     # UPSERT pattern below resolves that mismatch.
+    #
+    # `.with_for_update()` serializes concurrent re-invites against
+    # the same stale row on PG. Without the lock, two requests can
+    # both load the old primary key; the first commits the new id,
+    # and the second flushes its UPDATE against the now-missing old
+    # id → SQLAlchemy 0-row-update / StaleDataError → 500 instead of
+    # the AC's atomic behavior. SQLite is single-writer at the engine
+    # level, so it ignores FOR UPDATE harmlessly. Codex R1 MED on
+    # this ticket.
     stale = (
         await db.execute(
-            select(OrgInvite).where(
+            select(OrgInvite)
+            .where(
                 OrgInvite.org_id == ctx.org.id,
                 OrgInvite.email == data.email,
             )
+            .with_for_update()
         )
     ).scalar_one_or_none()
 
