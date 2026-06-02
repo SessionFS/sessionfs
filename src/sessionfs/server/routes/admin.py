@@ -250,10 +250,12 @@ async def mint_api_key_on_behalf(
     plus `user_id` + `user_email` so the caller knows which account
     received the key. Raw key is returned exactly once.
 
-    Mints a `key_kind='user'` row with `scopes='["*"]'` via the
-    model's column defaults — full user-equivalent capability,
-    matching what the user would have minted for themselves via the
-    self-service endpoint. NOT a scoped service key (those live at
+    Mints a `key_kind='user'` row with `scopes='["*"]'` — set
+    explicitly at the call site below (not relying on column
+    defaults) so the security contract stays visible during future
+    refactors. Full user-equivalent capability, matching what the
+    user would have minted for themselves via the self-service
+    endpoint. NOT a scoped service key (those live at
     `/api/v1/orgs/{org_id}/service-keys` per v0.10.10).
 
     Refuses to mint for inactive users (no backdoor for disabled
