@@ -273,11 +273,28 @@ async def mint_api_key_on_behalf(
     key_id = str(uuid.uuid4())
     name = body.name or "admin-minted"
 
+    # Mirror the explicit-field shape from
+    # `routes/api_keys.py:create_personal_key` (Codex R3 MEDIUM 2 +
+    # this ticket R1 MEDIUM) — populate `key_prefix` so the row shows
+    # up in list responses as `sk_sfs_xxxxxx` instead of the
+    # `sk_sfs_legacy` placeholder. Also set `key_kind` + `scopes`
+    # explicitly rather than relying on column defaults, so this
+    # endpoint's security contract is visible at the call site rather
+    # than in model defaults that future migrations could shift.
+    # `created_by_user_id=admin.id` captures the admin issuer for
+    # audit; `target.id` already owns the row via `user_id`.
+    from sessionfs.server.routes.api_keys import _key_prefix
+
     api_key = ApiKey(
         id=key_id,
         user_id=target.id,
         key_hash=hash_api_key(raw_key),
         name=name,
+        key_kind="user",
+        scopes=json.dumps(["*"]),
+        key_prefix=_key_prefix(raw_key),
+        created_by_user_id=admin.id,
+        is_active=True,
     )
     db.add(api_key)
 

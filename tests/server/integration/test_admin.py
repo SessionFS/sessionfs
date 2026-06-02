@@ -250,7 +250,10 @@ async def test_mint_api_key_on_behalf_happy_path(
     assert body["raw_key"].startswith("sk_sfs_")
     assert "key_id" in body
 
-    # ApiKey row exists, key_kind='user', scopes='["*"]' (defaults).
+    # ApiKey row exists, key_kind='user', scopes='["*"]' (explicit),
+    # key_prefix populated (R1 MED — must equal raw_key[:12] so the
+    # row shows up as sk_sfs_xxxxxx in list responses, not the
+    # sk_sfs_legacy fallback), created_by_user_id = admin issuer.
     key = (
         await db_session.execute(
             select(ApiKey).where(ApiKey.id == body["key_id"])
@@ -261,8 +264,14 @@ async def test_mint_api_key_on_behalf_happy_path(
     assert key.key_kind == "user"
     assert key.scopes == '["*"]'
     assert key.is_active is True
+    assert key.key_prefix == body["raw_key"][:12]
+    assert key.created_by_user_id == admin_user.id
 
-    # Audit row written with correct action + details.
+    # Audit row written with correct action + details. R1 LOW —
+    # JSON-parse `details` and assert the {key_id, name} payload so
+    # a future refactor cannot silently drop those fields.
+    import json as _json
+
     audit = (
         await db_session.execute(
             select(AdminAction).where(
@@ -274,6 +283,9 @@ async def test_mint_api_key_on_behalf_happy_path(
     assert audit is not None
     assert audit.admin_id == admin_user.id
     assert audit.target_type == "user"
+    details = _json.loads(audit.details)
+    assert details["key_id"] == body["key_id"]
+    assert details["name"] == "pianolinux-recovery-2026-06"
 
 
 @pytest.mark.asyncio
