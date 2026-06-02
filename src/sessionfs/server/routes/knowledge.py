@@ -1114,13 +1114,19 @@ async def compile_context(
         base_url=body.base_url,
     )
 
-    # Always run concept page refresh — even when there were no pending
-    # entries to compile (compilation is None). Concept pages may need
-    # cleanup because entries were dismissed or clusters shrank below the
-    # threshold since the last compile. Previously, returning early when
-    # compilation is None skipped this entirely, leaving dead concept
-    # pages lingering until the next compile that happened to have real
-    # entries.
+    # Run concept page refresh exactly once per /compile request. This
+    # covers BOTH branches: real-compile (cleanup + new-concept
+    # generation for entries that just committed) AND no-op compile
+    # (cleanup-only for clusters that shrank below threshold or had
+    # entries dismissed since the last real compile). The post-noop
+    # response and the real-compile response below both read the same
+    # post-generation concept_pages count.
+    #
+    # tk_5c124c496ea14ecc — prior code ran auto_generate_concepts here
+    # AND again after the real-compile branch, doubling latency on
+    # large projects and increasing timeout/OOM risk. The second call
+    # was non-essential per its own "(Legacy) ... for compatibility"
+    # inline comment.
     try:
         await auto_generate_concepts(
             project_id=project_id,
@@ -1239,23 +1245,10 @@ async def compile_context(
             noop_reason=reason,
         )
 
-    # (Legacy) concept generation also runs after real compilation
-    # for compatibility — the above call covers the cleanup-only path.
-    try:
-        await auto_generate_concepts(
-            project_id=project_id,
-            user_id=user.id,
-            db=db,
-            api_key=body.llm_api_key,
-            model=body.model or "claude-sonnet-4",
-            provider=body.provider,
-            base_url=body.base_url,
-        )
-    except Exception:
-        logger.warning("Concept auto-generation failed (non-fatal)", exc_info=True)
-
-    # Recount concept pages after the second auto_generate_concepts pass.
-    concept_pages = await _count_pages("concept")
+    # Concept generation already ran once above for both branches
+    # (tk_5c124c496ea14ecc — single-pass refactor). The `concept_pages`
+    # count from `_count_pages("concept")` above reflects post-
+    # generation state and is reused as `concept_pages_updated` below.
 
     words_before = len((compilation.context_before or "").split())
     words_after = len((compilation.context_after or "").split())
