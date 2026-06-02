@@ -1270,8 +1270,15 @@ async def test_compile_real_calls_auto_generate_concepts_exactly_once(
     """tk_5c124c496ea14ecc — the duplicate-pass bug lived in the
     real-compile branch (one call before the noop check, a second
     after the real-compile path). After the fix, both branches share
-    a single pre-classification call. Assert real-compile + non-empty
-    claim still triggers exactly one invocation.
+    a single pre-classification call. Assert real-compile produces a
+    non-zero `entries_compiled` AND triggers `auto_generate_concepts`
+    exactly once — Codex R1 non-blocking refinement so this test
+    catches both directions of regression (duplicate pass AND
+    accidentally-removed-from-real-path).
+
+    Determinism: no `llm_api_key` is passed, so `_simple_compile`
+    runs (no LLM call) and the route's real-compile path executes
+    end-to-end without external dependencies.
     """
     from sessionfs.server.services import compiler as _compiler
 
@@ -1285,10 +1292,12 @@ async def test_compile_real_calls_auto_generate_concepts_exactly_once(
         _compiler, "auto_generate_concepts", _counting_stub
     )
 
-    # Seed compile-eligible claims (claim_class='claim',
-    # not dismissed, current freshness, no superseded_by, no
-    # compiled_at) so `compile_project_context` returns a real
-    # ContextCompilation instead of None.
+    # Seed compile-eligible claims: claim_class='claim', not
+    # dismissed, current freshness, no superseded_by, no
+    # compiled_at. `compile_project_context` will return a real
+    # ContextCompilation (not None), which routes the request
+    # through the real-compile branch — the exact site that
+    # previously made the second auto_generate_concepts call.
     db_session.add_all([
         KnowledgeEntry(
             project_id=test_project.id, session_id="ses_real1",
@@ -1307,19 +1316,28 @@ async def test_compile_real_calls_auto_generate_concepts_exactly_once(
     ])
     await db_session.commit()
 
-    await client.post(
+    resp = await client.post(
         f"/api/v1/projects/{test_project.id}/compile",
         headers=auth_headers,
-        json={"llm_api_key": "test-key-skip-real-llm"},
+        json={},  # no llm_api_key → deterministic _simple_compile path
     )
-    # The compile may or may not 200 depending on whether the
-    # synthetic key short-circuits — what we pin is the duplicate-
-    # pass invariant. Even an internal error inside the LLM path
-    # should not cause auto_generate_concepts to fire twice.
-    assert call_count["n"] <= 1, (
-        f"auto_generate_concepts must NEVER run more than once per "
-        f"/compile request (got {call_count['n']} calls). Real compile "
-        f"branch was the duplicate-pass site."
+    assert resp.status_code == 200, resp.text[:300]
+    body = resp.json()
+    # Real-compile branch confirmed: at least one claim flowed
+    # through the compiler.
+    assert body["entries_compiled"] > 0, (
+        f"Test must exercise the real-compile branch (the duplicate-"
+        f"pass site), but got entries_compiled={body['entries_compiled']}"
+    )
+    # Exact-one assertion catches both regression directions:
+    # - Duplicate call returning would push n to 2.
+    # - Accidental removal from the (now single) call site would
+    #   push n to 0.
+    assert call_count["n"] == 1, (
+        f"auto_generate_concepts must run exactly once per /compile "
+        f"request (got {call_count['n']} calls). Real-compile branch "
+        f"was the duplicate-pass site; removing the second call must "
+        f"NOT remove the only remaining call too."
     )
 
 
