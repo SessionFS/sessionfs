@@ -162,21 +162,47 @@ Available scopes (the `*` wildcard is reserved for legacy user/admin keys; servi
 | GET | `/api/v1/projects/{id}/links/{target_type}/{target_id}` | Bearer | Get backlinks for a target |
 | PUT | `/api/v1/projects/{id}/settings` | Bearer | Update project settings (e.g. `auto_narrative` toggle) |
 
+### Tickets
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/v1/projects/{id}/tickets` | Bearer (`tickets:read`) | List tickets. Query params: `status`, `assigned_to`, `kind` |
+| POST | `/api/v1/projects/{id}/tickets` | Bearer (`tickets:write`) | Create a ticket (body: `title`, `description`, `acceptance_criteria`, `priority`, `kind`, `parent_ticket_id`, `depends_on`) |
+| GET | `/api/v1/projects/{id}/tickets/{tid}` | Bearer (`tickets:read`) | Get a ticket with dependencies, dependents, and recent comments |
+| PUT | `/api/v1/projects/{id}/tickets/{tid}` | Bearer (`tickets:write`) | Partial mutation for `title` / `description` / `priority` / `acceptance_criteria` / `context_refs` / `file_refs` / `depends_on`. Status transitions remain FSM-only. Authz: creator OR project admin. Optional `lease_epoch` for optimistic concurrency (409 + structured envelope on stale; last-write-wins when omitted; `lease_epoch` alone rejected with 400 — it's a fence, not a mutation). Side effect: every successful update auto-posts ONE `author_persona='system'` diff comment + writes per-field rows to the `ticket_edits` audit table (no-op writes don't pollute the audit). `depends_on` updates run same-project + cycle + dedup validation before wipe-and-reinsert. (v0.10.28) |
+| POST | `/api/v1/projects/{id}/tickets/{tid}/start` | Bearer (`tickets:write`) | Atomic claim. Increments and returns `lease_epoch`, creates a server-side `retrieval_audit_id`, returns compiled persona + ticket context |
+| POST | `/api/v1/projects/{id}/tickets/{tid}/complete` | Bearer (`tickets:write`) | `in_progress` → `review`. Pass `lease_epoch` to reject stale workers with 409 |
+| POST | `/api/v1/projects/{id}/tickets/{tid}/resolve` | Bearer (`tickets:write`) | `review` → `done`. Atomic with rowcount-1 guard |
+| POST | `/api/v1/projects/{id}/tickets/{tid}/close` | Bearer (`tickets:write`) | Issue terminator (rejects `kind='task'` with 400) |
+| POST | `/api/v1/projects/{id}/tickets/{tid}/approve` | Bearer (`tickets:write`) | Move `suggested` → `open` so an agent-source ticket can be started |
+| POST | `/api/v1/projects/{id}/tickets/{tid}/escalate` | Bearer (`tickets:write`) | Raise priority and append a non-idempotent audit comment |
+| POST | `/api/v1/projects/{id}/tickets/{tid}/comments` | Bearer (`tickets:write`) | Append a comment to the ticket thread |
+| GET | `/api/v1/projects/{id}/tickets/{tid}/comments` | Bearer (`tickets:read`) | Paginated comment thread (query: `since`, `since_id`, `limit`) |
+| GET | `/api/v1/projects/{id}/tickets/{tid}/review-state` | Bearer (`tickets:read`) | Derived review state — open/closed findings, last verdict, severity counts |
+
 ### Organizations
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | POST | `/api/v1/org` | Bearer | Create organization (Team tier or above required) |
 | GET | `/api/v1/org` | Bearer | Get org info, member list, and current user role |
-| POST | `/api/v1/org/invite` | Bearer | Invite a member by email (admin only). Sends invite email best-effort (v0.10.22). |
+| POST | `/api/v1/org/invite` | Bearer | Invite a member by email (admin only). Sends invite email best-effort (v0.10.22). UPSERTs over stale `(org_id, email)` rows (declined / expired / orphan-accepted) since v0.10.28 — regenerates `id` to invalidate stale acceptance links and preserves `created_at` as the audit signal. |
 | POST | `/api/v1/org/invite/{invite_id}/accept` | Bearer | Accept an org invite |
 | POST | `/api/v1/org/invite/{invite_id}/decline` | Bearer | Decline a pending invite (recipient only, optional `decline_reason`) — v0.10.22 |
 | GET | `/api/v1/org/invites` | Bearer | List pending invites (admin only) |
 | GET | `/api/v1/org/invites/me` | Bearer | List pending invites addressed to the caller (v0.10.22) |
 | DELETE | `/api/v1/org/invites/{invite_id}` | Bearer | Revoke a pending invite (admin only) |
 | POST | `/api/v1/orgs/{org_id}/invites/{invite_id}/resend` | Bearer | Resend an invite email (admin only) — v0.10.22 |
+| POST | `/api/v1/orgs/{org_id}/invite` | Bearer | Org-scoped invite path (admin only). Same UPSERT-over-stale semantics as `/api/v1/org/invite` since v0.10.28. |
 | PUT | `/api/v1/org/members/{user_id}/role` | Bearer | Change a member's role (admin only) |
 | DELETE | `/api/v1/org/members/{user_id}` | Bearer | Remove a member from the org (admin only) |
+
+### Admin
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/api/v1/admin/users/{user_id}/api-keys` | Bearer (admin) | Mint a user-kind `ApiKey` on behalf of any active user as a lost-key recovery path. Raw key returned exactly once; audit row via `_log_action(action="mint_api_key_on_behalf", details={key_id, name})`. Guards: 404 unknown user, 403 inactive user (no backdoor for disabled accounts), 403 non-admin caller. Service keys are NOT minted here — they remain at `/api/v1/orgs/{org_id}/service-keys` per v0.10.10. (v0.10.28) |
+| POST | `/api/v1/admin/projects/{project_id}/restore-from-compilation` | Bearer (admin) | Restore `project.context_document` from a prior `ContextCompilation.context_after`; restore `compiled_at` on participating entries. Body: `{compilation_id: int, dry_run: bool = true}`. Single atomic transaction. Audit-logged. (v0.10.13) |
 
 ### Billing
 
