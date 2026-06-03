@@ -411,9 +411,6 @@ def update_ticket_cmd(
     priority: str | None = typer.Option(
         None, "--priority", help="low | medium | high | critical (use `escalate` for one-step audit-tagged bumps)"
     ),
-    assigned_to: str | None = typer.Option(
-        None, "--assigned-to", "-a", help="Reassign to persona"
-    ),
     acceptance_criteria_file: str | None = typer.Option(
         None, "--acceptance-criteria-file",
         help="Path to a file with one acceptance-criterion per line; replaces the full list",
@@ -428,7 +425,8 @@ def update_ticket_cmd(
     tk_835a876529de4551. Every successful update auto-posts a system
     diff comment on the ticket and writes audit rows to `ticket_edits`.
     Status transitions go through the lifecycle commands (`start` /
-    `complete` / `resolve` / etc.) — NOT this verb.
+    `complete` / `resolve` / etc.) — NOT this verb. Persona reassignment
+    goes through `sfs ticket assign` — NOT this verb either.
     """
     if description is not None and description_file is not None:
         err_console.print(
@@ -451,8 +449,6 @@ def update_ticket_cmd(
             raise typer.Exit(2) from exc
     if priority is not None:
         payload["priority"] = priority
-    if assigned_to is not None:
-        payload["assigned_to"] = assigned_to
     if acceptance_criteria_file is not None:
         try:
             with open(acceptance_criteria_file, encoding="utf-8") as f:
@@ -486,8 +482,10 @@ def update_ticket_cmd(
     if not payload or set(payload.keys()) == {"lease_epoch"}:
         err_console.print(
             "[red]At least one mutable field is required "
-            "(--title / --description[-file] / --priority / --assigned-to / "
-            "--acceptance-criteria-file).[/red]"
+            "(--title / --description[-file] / --priority / "
+            "--acceptance-criteria-file). lease_epoch alone is a fence, "
+            "not a mutation. Use `sfs ticket assign` for persona "
+            "reassignment.[/red]"
         )
         raise typer.Exit(2)
 

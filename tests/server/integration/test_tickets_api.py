@@ -2733,6 +2733,152 @@ async def test_update_ticket_cross_project_isolation(
 
 
 @pytest.mark.asyncio
+async def test_update_ticket_rejects_cross_project_depends_on(
+    client: AsyncClient, db_session: AsyncSession,
+):
+    """tk_835a876529de4551 R1 MED #1 — update_ticket must run the
+    same same-project validation as create_ticket. A cross-project
+    dep_id must be rejected with 400 before the wipe+insert happens."""
+    user_a, key_a = await _make_user(db_session)
+    user_b, key_b = await _make_user(db_session)
+    project_a = await _make_project(db_session, user_a)
+    project_b = await _make_project(db_session, user_b)
+    headers_a = _hdrs(key_a)
+
+    # Create a ticket in project A and a ticket in project B.
+    rA = await client.post(
+        f"/api/v1/projects/{project_a.id}/tickets",
+        headers=headers_a,
+        json={"title": "A's main", "description": "x", "priority": "low"},
+    )
+    main_a = rA.json()["id"]
+    rB = await client.post(
+        f"/api/v1/projects/{project_b.id}/tickets",
+        headers=_hdrs(key_b),
+        json={"title": "B's dep", "description": "x", "priority": "low"},
+    )
+    dep_b = rB.json()["id"]
+
+    # Try to set main_a.depends_on = [dep_b] (cross-project).
+    bad = await client.put(
+        f"/api/v1/projects/{project_a.id}/tickets/{main_a}",
+        headers=headers_a,
+        json={"depends_on": [dep_b]},
+    )
+    assert bad.status_code == 400
+    # Existing deps must remain unchanged (none in this case).
+    refreshed = await client.get(
+        f"/api/v1/projects/{project_a.id}/tickets/{main_a}",
+        headers=headers_a,
+    )
+    assert refreshed.json()["depends_on"] == []
+
+
+@pytest.mark.asyncio
+async def test_update_ticket_rejects_cycle_in_depends_on(
+    client: AsyncClient, db_session: AsyncSession,
+):
+    """tk_835a876529de4551 R1 MED #1 — update_ticket must reject
+    cycle-introducing dep edges before the wipe+insert."""
+    user, raw = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    headers = _hdrs(raw)
+
+    async def _mk(title: str) -> str:
+        r = await client.post(
+            f"/api/v1/projects/{project.id}/tickets",
+            headers=headers,
+            json={"title": title, "description": "x", "priority": "low"},
+        )
+        return r.json()["id"]
+
+    a = await _mk("A")
+    b = await _mk("B")
+
+    # A depends on B.
+    r1 = await client.put(
+        f"/api/v1/projects/{project.id}/tickets/{a}",
+        headers=headers,
+        json={"depends_on": [b]},
+    )
+    assert r1.status_code == 200
+
+    # Now try B depends on A — would create a cycle (A→B→A).
+    cycle = await client.put(
+        f"/api/v1/projects/{project.id}/tickets/{b}",
+        headers=headers,
+        json={"depends_on": [a]},
+    )
+    assert cycle.status_code == 400, cycle.text
+
+
+@pytest.mark.asyncio
+async def test_update_ticket_dedupes_depends_on(
+    client: AsyncClient, db_session: AsyncSession,
+):
+    """tk_835a876529de4551 R1 MED #1 — duplicate dep ids in the
+    request collapse to a single TicketDependency row instead of
+    hitting an IntegrityError on the composite PK."""
+    user, raw = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    headers = _hdrs(raw)
+
+    async def _mk(title: str) -> str:
+        r = await client.post(
+            f"/api/v1/projects/{project.id}/tickets",
+            headers=headers,
+            json={"title": title, "description": "x", "priority": "low"},
+        )
+        return r.json()["id"]
+
+    main = await _mk("Main")
+    dep = await _mk("Dep")
+
+    r = await client.put(
+        f"/api/v1/projects/{project.id}/tickets/{main}",
+        headers=headers,
+        json={"depends_on": [dep, dep, dep]},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["depends_on"] == [dep]
+
+
+@pytest.mark.asyncio
+async def test_update_ticket_rejects_lease_epoch_only_payload(
+    client: AsyncClient, db_session: AsyncSession,
+):
+    """tk_835a876529de4551 R1 MED #2 — lease_epoch is a fence, not
+    a mutation. `{lease_epoch: N}` alone must be rejected with 400
+    so callers can't silently burn another worker's lease epoch
+    without writing an audit row + diff comment."""
+    user, raw = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    headers = _hdrs(raw)
+
+    create_r = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=headers,
+        json={"title": "Fence-only", "description": "x", "priority": "low"},
+    )
+    tid = create_r.json()["id"]
+    initial_epoch = create_r.json()["lease_epoch"]
+
+    bad = await client.put(
+        f"/api/v1/projects/{project.id}/tickets/{tid}",
+        headers=headers,
+        json={"lease_epoch": initial_epoch},
+    )
+    assert bad.status_code == 400
+
+    # Epoch must NOT have advanced.
+    refreshed = await client.get(
+        f"/api/v1/projects/{project.id}/tickets/{tid}",
+        headers=headers,
+    )
+    assert refreshed.json()["lease_epoch"] == initial_epoch
+
+
+@pytest.mark.asyncio
 async def test_update_ticket_depends_on_full_replacement(
     client: AsyncClient, db_session: AsyncSession,
 ):

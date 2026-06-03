@@ -1277,6 +1277,49 @@ class TestNewToolDispatch:
         })
         assert captured["json"] == {"priority": "high", "lease_epoch": 7}
 
+    @pytest.mark.asyncio
+    async def test_update_ticket_rejects_lease_epoch_only(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        """tk_835a876529de4551 R1 MED #2 — lease_epoch is a fence,
+        not a mutation. The MCP handler must reject lease_epoch-only
+        locally so the round-trip doesn't burn another worker's
+        epoch without writing an audit row."""
+        result = await mcp_server._handle_update_ticket({
+            "ticket_id": "tk_abc",
+            "lease_epoch": 7,
+        })
+        assert "error" in result
+        assert "lease_epoch" in result["error"].lower()
+        # No HTTP call should have fired.
+        assert captured == {} or "method" not in captured
+
+    @pytest.mark.asyncio
+    async def test_update_ticket_tool_schema_excludes_assigned_to(self):
+        """tk_835a876529de4551 R1 LOW — `assigned_to` is reserved for
+        the dedicated `assign_persona` verb. The update_ticket tool
+        spec must not advertise it; the underlying PUT route still
+        accepts it for assign_persona back-compat but it's hidden
+        from the generic update surface."""
+        from sessionfs.mcp.server import _TOOLS
+
+        tool = next(t for t in _TOOLS if t.name == "update_ticket")
+        props = tool.inputSchema["properties"]
+        assert "assigned_to" not in props
+        assert "related_sessions" not in props
+        # Required mutable fields still present.
+        for key in (
+            "title",
+            "description",
+            "priority",
+            "acceptance_criteria",
+            "context_refs",
+            "file_refs",
+            "depends_on",
+            "lease_epoch",
+        ):
+            assert key in props, f"update_ticket tool missing {key}"
+
     # ── v0.10.24 tk_32abb6d0d4744c5d / GH #50 — persona MCP parity ──
 
     @pytest.mark.asyncio

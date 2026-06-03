@@ -1295,9 +1295,9 @@ _TOOLS = [
         name="update_ticket",
         description=(
             "Patch mutable ticket fields (title, description, "
-            "acceptance_criteria, context_refs, file_refs, related_sessions, "
-            "depends_on, priority, assigned_to). Only fields the caller "
-            "passes are mutated — omitted fields are left untouched.\n\n"
+            "acceptance_criteria, context_refs, file_refs, depends_on, "
+            "priority). Only fields the caller passes are mutated — "
+            "omitted fields are left untouched.\n\n"
             "SIDE EFFECT: every successful update auto-posts a "
             "`system`-authored diff comment on the ticket AND writes one "
             "audit row per mutated field to the `ticket_edits` table. "
@@ -1306,13 +1306,17 @@ _TOOLS = [
             "Status transitions are NOT mutable via this verb. Use the "
             "lifecycle tools (start_ticket / complete_ticket / "
             "resolve_ticket / approve_ticket / escalate_ticket) for "
-            "status moves; this verb is for corrections + refinements "
-            "to the spec itself.\n\n"
+            "status moves. Persona reassignment is NOT exposed here "
+            "either — use `assign_persona` for that. This verb is "
+            "specifically for corrections + refinements to the spec "
+            "(description, acceptance criteria, file/context refs, "
+            "dependency edges, priority).\n\n"
             "Optional `lease_epoch` for optimistic concurrency: when "
             "passed, the update is rejected with 409 if the ticket's "
             "epoch has advanced since the caller read it. When omitted, "
             "last-write-wins is allowed (the auto-posted diff comment "
-            "marks it as unfenced).\n\n"
+            "marks it as unfenced). lease_epoch alone is a fence, NOT "
+            "a mutation — at least one mutable field is required.\n\n"
             "Authorization: caller must be the ticket creator or a "
             "project admin. Persona name does not grant edit rights.\n\n"
             "IMPORTANT: Always use this MCP tool instead of running "
@@ -1328,7 +1332,6 @@ _TOOLS = [
                     "type": "string",
                     "enum": ["low", "medium", "high", "critical"],
                 },
-                "assigned_to": {"type": "string"},
                 "acceptance_criteria": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -1341,17 +1344,13 @@ _TOOLS = [
                     "type": "array",
                     "items": {"type": "string"},
                 },
-                "related_sessions": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                },
                 "depends_on": {
                     "type": "array",
                     "items": {"type": "string"},
                 },
                 "lease_epoch": {
                     "type": "integer",
-                    "description": "Optional fence — read from get_ticket; 409 if stale.",
+                    "description": "Optional fence — read from get_ticket; 409 if stale. Not a mutation by itself.",
                 },
                 "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
             },
@@ -4297,18 +4296,22 @@ async def _handle_escalate_ticket(args: dict) -> dict:
     return payload
 
 
-_UPDATE_TICKET_FIELDS = (
+# Codex R1 LOW — assignment + related_sessions are NOT exposed via
+# update_ticket. `assigned_to` belongs to `assign_persona` (the
+# routing-only verb); `related_sessions` is an internal write-path
+# field. Keeping them in the wrapped surface here would undercut
+# the FSM/verb boundary even though the underlying PUT route still
+# accepts them for `assign_persona` back-compat.
+_UPDATE_TICKET_MUTABLE_FIELDS = (
     "title",
     "description",
     "priority",
-    "assigned_to",
     "acceptance_criteria",
     "context_refs",
     "file_refs",
-    "related_sessions",
     "depends_on",
-    "lease_epoch",
 )
+_UPDATE_TICKET_FIELDS = _UPDATE_TICKET_MUTABLE_FIELDS + ("lease_epoch",)
 
 
 async def _handle_update_ticket(args: dict) -> dict:
@@ -4332,13 +4335,18 @@ async def _handle_update_ticket(args: dict) -> dict:
             continue
         body[key] = val
 
-    if not body:
+    # Codex R1 MED #2 — lease_epoch is a fence parameter, not a
+    # mutation. Reject lease_epoch-only payloads locally so callers
+    # don't hit the server's 400 (and don't waste the round-trip).
+    has_mutable = any(k in body for k in _UPDATE_TICKET_MUTABLE_FIELDS)
+    if not has_mutable:
         return {
             "error": (
                 "At least one mutable field is required for update_ticket "
-                "(title, description, priority, assigned_to, "
-                "acceptance_criteria, context_refs, file_refs, "
-                "related_sessions, depends_on, lease_epoch)."
+                "(title, description, priority, acceptance_criteria, "
+                "context_refs, file_refs, depends_on). "
+                "lease_epoch alone is a fence, not a mutation; use "
+                "assign_persona to change assignment."
             )
         }
 

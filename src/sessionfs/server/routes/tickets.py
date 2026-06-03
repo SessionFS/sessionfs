@@ -1204,6 +1204,32 @@ async def update_ticket(
     project = await _get_project_or_404(project_id, db, user.id)
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
 
+    # Reject lease_epoch-only payloads BEFORE touching the epoch.
+    # Codex R1 MED #2 — without this gate, `{lease_epoch: N}` would
+    # atomically bump the epoch, produce zero diffs, commit, and
+    # return without an audit row or system comment. That lets
+    # callers silently burn another worker's lease without leaving
+    # the auditable trail this verb's whole point is to provide.
+    _MUTABLE_FIELDS_PRESENT = (
+        body.title is not None
+        or body.description is not None
+        or body.priority is not None
+        or body.assigned_to is not None
+        or body.context_refs is not None
+        or body.file_refs is not None
+        or body.related_sessions is not None
+        or body.acceptance_criteria is not None
+        or body.depends_on is not None
+    )
+    if not _MUTABLE_FIELDS_PRESENT:
+        raise HTTPException(
+            400,
+            "update_ticket requires at least one mutable field "
+            "(title, description, priority, assigned_to, context_refs, "
+            "file_refs, related_sessions, acceptance_criteria, depends_on). "
+            "lease_epoch alone is not a mutation — it is the fence for one.",
+        )
+
     # Authorization. The "lease holder" in the design doc lives in the
     # local active-ticket bundle (~/.sessionfs/active_ticket.json) and
     # is not durably reflected on the Ticket row — so server-side we
@@ -1302,16 +1328,27 @@ async def update_ticket(
     if body.depends_on is not None:
         # depends_on lives in the TicketDependency join table, not on
         # the Ticket row. v1 semantic: full replacement.
+        #
+        # Codex R1 MED #1 — apply the same guards as the create path
+        # (dedup → same-project validation → cycle check) BEFORE the
+        # wipe so a malformed input never reaches the join table. Raw
+        # replacement on its own can install cycles, accept cross-
+        # project dep ids, and surface DB-constraint failures as
+        # generic IntegrityErrors instead of the structured 400 the
+        # client expects.
+        deduped = list(dict.fromkeys(body.depends_on))
+        await _validate_dependencies_same_project(db, project_id, deduped)
+        await _check_dependency_cycle(db, ticket.id, deduped)
+
         old_deps = await _ticket_dependencies(db, ticket.id)
-        new_deps = list(body.depends_on)
-        _record("depends_on", old_deps, new_deps)
+        _record("depends_on", old_deps, deduped)
         # Wipe + re-insert the dependency rows for this ticket.
         await db.execute(
             TicketDependency.__table__.delete().where(
                 TicketDependency.ticket_id == ticket.id
             )
         )
-        for dep_id in new_deps:
+        for dep_id in deduped:
             db.add(TicketDependency(ticket_id=ticket.id, depends_on_id=dep_id))
 
     # No-op: nothing actually changed. Skip the audit-write + diff
