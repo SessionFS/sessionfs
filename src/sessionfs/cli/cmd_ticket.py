@@ -396,6 +396,127 @@ def complete_ticket(
         )
 
 
+@ticket_app.command("update")
+@handle_errors
+def update_ticket_cmd(
+    ticket_id: str = typer.Argument(...),
+    title: str | None = typer.Option(None, "--title", help="New title"),
+    description: str | None = typer.Option(
+        None, "--description", help="New description (use --description-file for long markdown)"
+    ),
+    description_file: str | None = typer.Option(
+        None, "--description-file",
+        help="Path to a file whose contents become the new description (avoids shell-quoting for long markdown)",
+    ),
+    priority: str | None = typer.Option(
+        None, "--priority", help="low | medium | high | critical (use `escalate` for one-step audit-tagged bumps)"
+    ),
+    acceptance_criteria_file: str | None = typer.Option(
+        None, "--acceptance-criteria-file",
+        help="Path to a file with one acceptance-criterion per line; replaces the full list",
+    ),
+    lease_epoch: int | None = typer.Option(
+        None, "--lease-epoch",
+        help="Fence stale ticket workers (read from `sfs ticket show`); 409 if stale",
+    ),
+) -> None:
+    """Patch mutable ticket fields.
+
+    tk_835a876529de4551. Every successful update auto-posts a system
+    diff comment on the ticket and writes audit rows to `ticket_edits`.
+    Status transitions go through the lifecycle commands (`start` /
+    `complete` / `resolve` / etc.) — NOT this verb. Persona reassignment
+    goes through `sfs ticket assign` — NOT this verb either.
+    """
+    if description is not None and description_file is not None:
+        err_console.print(
+            "[red]Pass either --description or --description-file, not both.[/red]"
+        )
+        raise typer.Exit(2)
+
+    api_url, api_key, project_id = _resolve_project()
+    payload: dict = {}
+    if title is not None:
+        payload["title"] = title
+    if description is not None:
+        payload["description"] = description
+    elif description_file is not None:
+        try:
+            with open(description_file, encoding="utf-8") as f:
+                payload["description"] = f.read()
+        except OSError as exc:
+            err_console.print(f"[red]Could not read --description-file: {exc}[/red]")
+            raise typer.Exit(2) from exc
+    if priority is not None:
+        payload["priority"] = priority
+    if acceptance_criteria_file is not None:
+        try:
+            with open(acceptance_criteria_file, encoding="utf-8") as f:
+                criteria = [
+                    line.rstrip("\n").strip()
+                    for line in f
+                    if line.strip()
+                ]
+            payload["acceptance_criteria"] = criteria
+        except OSError as exc:
+            err_console.print(
+                f"[red]Could not read --acceptance-criteria-file: {exc}[/red]"
+            )
+            raise typer.Exit(2) from exc
+
+    # If caller didn't pass --lease-epoch, opportunistically pull it
+    # from the active-ticket bundle so reasonable workflows get
+    # fenced edits for free — matches `sfs ticket comment` semantics.
+    if lease_epoch is None:
+        bundle = read_bundle()
+        if (
+            isinstance(bundle, dict)
+            and bundle.get("ticket_id") == ticket_id
+            and bundle.get("project_id") == project_id
+            and isinstance(bundle.get("lease_epoch"), int)
+        ):
+            lease_epoch = bundle["lease_epoch"]
+    if lease_epoch is not None:
+        payload["lease_epoch"] = lease_epoch
+
+    if not payload or set(payload.keys()) == {"lease_epoch"}:
+        err_console.print(
+            "[red]At least one mutable field is required "
+            "(--title / --description[-file] / --priority / "
+            "--acceptance-criteria-file). lease_epoch alone is a fence, "
+            "not a mutation. Use `sfs ticket assign` for persona "
+            "reassignment.[/red]"
+        )
+        raise typer.Exit(2)
+
+    s, body, _ = asyncio.run(
+        _api_request(
+            "PUT",
+            f"/api/v1/projects/{project_id}/tickets/{ticket_id}",
+            api_url, api_key, json_data=payload,
+        )
+    )
+    if s == 404:
+        err_console.print(f"[red]Ticket '{ticket_id}' not found.[/red]")
+        raise typer.Exit(1)
+    if s == 403:
+        err_console.print(
+            "[red]Not authorized to update this ticket "
+            "(only creator or project admin can edit).[/red]"
+        )
+        raise typer.Exit(1)
+    if s == 409:
+        err_console.print(
+            f"[red]Stale lease_epoch — ticket has been updated since you "
+            f"read it. Re-run `sfs ticket show {ticket_id}` and retry.[/red]"
+        )
+        raise typer.Exit(1)
+    if s >= 400 or not isinstance(body, dict):
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]Updated {ticket_id}.[/green]")
+
+
 @ticket_app.command("comment")
 @handle_errors
 def comment_ticket(

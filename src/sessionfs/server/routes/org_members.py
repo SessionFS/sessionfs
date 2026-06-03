@@ -383,23 +383,52 @@ async def invite_member(
             },
         )
 
-    # Active invite for the same email? Excludes declined + expired
-    # rows so the admin can resend after either terminal state.
-    # Codex v0.10.22 R1 MEDIUM (tk_6afbcfefe5804c1d).
-    if (
+    # Lookup ANY existing row for this (org_id, email). Migration 016
+    # enforces uq_org_invites_org_email so at most one row can exist.
+    # We classify by state: stale (declined / expired / orphan-
+    # accepted) → UPDATE in place; active → 409.
+    #
+    # tk_d88678e6fe384de6 — pairs with the same fix in routes/org.py
+    # so both invite endpoints behave identically. Without this, the
+    # v0.10.22 R1 MED route predicate is more permissive than the DB
+    # constraint can support, and a fresh INSERT on top of a stale row
+    # raises IntegrityError → 409 duplicate_resource.
+    #
+    # `.with_for_update()` serializes concurrent re-invites against
+    # the same stale row on PG (Codex R1 MED on this ticket). SQLite
+    # ignores FOR UPDATE; the engine's single-writer model serializes
+    # anyway. Without the lock, two requests can both read the old
+    # primary key and the second UPDATE collides against a row whose
+    # id was just rewritten by the first → StaleDataError → 500.
+    stale = (
         await db.execute(
-            select(OrgInvite).where(
+            select(OrgInvite)
+            .where(
                 OrgInvite.org_id == org_id,
                 OrgInvite.email == data.email,
-                OrgInvite.accepted_at.is_(None),
-                OrgInvite.declined_at.is_(None),
-                OrgInvite.expires_at > _now(),
             )
+            .with_for_update()
         )
-    ).scalar_one_or_none():
-        raise HTTPException(409, "An active invite already exists for this email")
+    ).scalar_one_or_none()
 
-    # Existing member?
+    now = _now()
+    if stale is not None:
+        stale_expires = stale.expires_at
+        if stale_expires.tzinfo is None:
+            from datetime import timezone as _tz
+            stale_expires = stale_expires.replace(tzinfo=_tz.utc)
+        is_active = (
+            stale.accepted_at is None
+            and stale.declined_at is None
+            and stale_expires > now
+        )
+        if is_active:
+            raise HTTPException(
+                409, "An active invite already exists for this email"
+            )
+
+    # Existing member? Covers both: user already added via a different
+    # path AND orphan-accepted stale invite with a live OrgMember.
     target_user = (
         await db.execute(select(User).where(User.email == data.email))
     ).scalar_one_or_none()
@@ -415,19 +444,38 @@ async def invite_member(
         if existing:
             raise HTTPException(409, "This user is already a member")
 
-    invite_id = f"inv_{secrets.token_hex(8)}"
-    invite = OrgInvite(
-        id=invite_id,
-        org_id=org_id,
-        email=data.email,
-        role=data.role,
-        invited_by=user.id,
-        created_at=_now(),
-        expires_at=_now().replace(microsecond=0) + _invite_ttl(),
-    )
-    db.add(invite)
+    new_invite_id = f"inv_{secrets.token_hex(8)}"
+    new_expires_at = now.replace(microsecond=0) + _invite_ttl()
+
+    if stale is not None:
+        # UPDATE-in-place: regenerate `id` to invalidate stale email
+        # links, refresh `expires_at`, clear all terminal-state fields,
+        # update role/invited_by. Preserve `created_at` as the audit
+        # signal of when the email was first onboarded.
+        stale.id = new_invite_id
+        stale.role = data.role
+        stale.invited_by = user.id
+        stale.expires_at = new_expires_at
+        stale.accepted_at = None
+        stale.declined_at = None
+        stale.decline_reason = None
+        stale.last_emailed_at = None
+        invite = stale
+    else:
+        invite = OrgInvite(
+            id=new_invite_id,
+            org_id=org_id,
+            email=data.email,
+            role=data.role,
+            invited_by=user.id,
+            created_at=now,
+            expires_at=new_expires_at,
+        )
+        db.add(invite)
+
     await db.commit()
     await db.refresh(invite)
+    invite_id = invite.id
 
     # v0.10.22 (tk_6afbcfefe5804c1d) — best-effort email send. The
     # invite row is already durable; a transient email failure logs

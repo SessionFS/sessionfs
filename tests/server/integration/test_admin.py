@@ -219,6 +219,165 @@ async def test_force_verify(client: AsyncClient, admin_headers: dict, extra_user
 
 
 # ---------------------------------------------------------------------------
+# Mint API key on behalf of user (tk_4afbae8ed3a442e9)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mint_api_key_on_behalf_happy_path(
+    client: AsyncClient,
+    admin_headers: dict,
+    extra_user: User,
+    admin_user: User,
+    db_session: AsyncSession,
+):
+    """Admin mints a fresh user-kind key on behalf of another user.
+    Raw key returned exactly once; response includes user_id +
+    user_email so the operator knows which account got the key.
+    """
+    from sessionfs.server.db.models import AdminAction
+
+    resp = await client.post(
+        f"/api/v1/admin/users/{extra_user.id}/api-keys",
+        json={"name": "pianolinux-recovery-2026-06"},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 201, resp.text[:200]
+    body = resp.json()
+    assert body["user_id"] == extra_user.id
+    assert body["user_email"] == extra_user.email
+    assert body["name"] == "pianolinux-recovery-2026-06"
+    assert body["raw_key"].startswith("sk_sfs_")
+    assert "key_id" in body
+
+    # ApiKey row exists, key_kind='user', scopes='["*"]' (explicit),
+    # key_prefix populated (R1 MED — must equal raw_key[:12] so the
+    # row shows up as sk_sfs_xxxxxx in list responses, not the
+    # sk_sfs_legacy fallback), created_by_user_id = admin issuer.
+    key = (
+        await db_session.execute(
+            select(ApiKey).where(ApiKey.id == body["key_id"])
+        )
+    ).scalar_one_or_none()
+    assert key is not None
+    assert key.user_id == extra_user.id
+    assert key.key_kind == "user"
+    assert key.scopes == '["*"]'
+    assert key.is_active is True
+    assert key.key_prefix == body["raw_key"][:12]
+    assert key.created_by_user_id == admin_user.id
+
+    # Audit row written with correct action + details. R1 LOW —
+    # JSON-parse `details` and assert the {key_id, name} payload so
+    # a future refactor cannot silently drop those fields.
+    import json as _json
+
+    audit = (
+        await db_session.execute(
+            select(AdminAction).where(
+                AdminAction.action == "mint_api_key_on_behalf",
+                AdminAction.target_id == extra_user.id,
+            )
+        )
+    ).scalar_one_or_none()
+    assert audit is not None
+    assert audit.admin_id == admin_user.id
+    assert audit.target_type == "user"
+    details = _json.loads(audit.details)
+    assert details["key_id"] == body["key_id"]
+    assert details["name"] == "pianolinux-recovery-2026-06"
+
+
+@pytest.mark.asyncio
+async def test_mint_api_key_on_behalf_default_name(
+    client: AsyncClient, admin_headers: dict, extra_user: User
+):
+    """When body omits `name`, defaults to 'admin-minted'."""
+    resp = await client.post(
+        f"/api/v1/admin/users/{extra_user.id}/api-keys",
+        json={},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 201
+    assert resp.json()["name"] == "admin-minted"
+
+
+@pytest.mark.asyncio
+async def test_mint_api_key_on_behalf_minted_key_authenticates(
+    client: AsyncClient, admin_headers: dict, extra_user: User
+):
+    """The raw key returned must actually authenticate a subsequent
+    request as the target user — proves the hash matches what
+    `hash_api_key()` expects and the key_kind='user' default makes
+    it admissible by `get_current_user`.
+    """
+    mint_resp = await client.post(
+        f"/api/v1/admin/users/{extra_user.id}/api-keys",
+        json={"name": "auth-test"},
+        headers=admin_headers,
+    )
+    assert mint_resp.status_code == 201
+    raw_key = mint_resp.json()["raw_key"]
+
+    # Use the minted key to call /auth/me — should return extra_user's
+    # profile, not the admin's.
+    me_resp = await client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert me_resp.status_code == 200
+    assert me_resp.json()["email"] == extra_user.email
+
+
+@pytest.mark.asyncio
+async def test_mint_api_key_on_behalf_404_unknown_user(
+    client: AsyncClient, admin_headers: dict
+):
+    fake_id = str(uuid.uuid4())
+    resp = await client.post(
+        f"/api/v1/admin/users/{fake_id}/api-keys",
+        json={"name": "ghost"},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_mint_api_key_on_behalf_403_for_non_admin(
+    client: AsyncClient, auth_headers: dict, extra_user: User
+):
+    resp = await client.post(
+        f"/api/v1/admin/users/{extra_user.id}/api-keys",
+        json={"name": "not-allowed"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_mint_api_key_on_behalf_403_for_inactive_user(
+    client: AsyncClient,
+    admin_headers: dict,
+    extra_user: User,
+    db_session: AsyncSession,
+):
+    """Disabled accounts must not be a backdoor — admin cannot mint a
+    key for an `is_active=false` user."""
+    extra_user.is_active = False
+    await db_session.commit()
+
+    resp = await client.post(
+        f"/api/v1/admin/users/{extra_user.id}/api-keys",
+        json={"name": "should-fail"},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 403
+    body = resp.json()
+    msg = body.get("detail") or body.get("error", {}).get("message", "")
+    assert "inactive" in str(msg).lower()
+
+
+# ---------------------------------------------------------------------------
 # Delete user
 # ---------------------------------------------------------------------------
 

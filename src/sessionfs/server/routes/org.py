@@ -238,23 +238,59 @@ async def invite_member(
             "message": "All seats are in use. Upgrade for more seats.",
         })
 
-    # Check for existing ACTIVE invite — must exclude rows the
-    # recipient has already declined or that have expired so the
-    # admin can resend after either of those terminal states. Codex
-    # v0.10.22 R1 MEDIUM (tk_6afbcfefe5804c1d).
-    existing = await db.execute(
-        select(OrgInvite).where(
-            OrgInvite.org_id == ctx.org.id,
-            OrgInvite.email == data.email,
-            OrgInvite.accepted_at.is_(None),
-            OrgInvite.declined_at.is_(None),
-            OrgInvite.expires_at > datetime.now(timezone.utc),
+    # Lookup ANY existing row for this (org_id, email). Migration 016
+    # enforces uq_org_invites_org_email so at most one row can exist.
+    # We classify by state below — if no row exists we INSERT; if a
+    # stale (declined / expired / orphan-accepted) row exists we
+    # UPDATE in place. An active row (no terminal state) is the only
+    # case that returns 409 here.
+    #
+    # tk_d88678e6fe384de6 — the v0.10.22 R1 MED fix made the active-
+    # invite predicate more permissive at the route layer, but the
+    # DB UniqueConstraint still blocked the INSERT with IntegrityError
+    # (= 409 duplicate_resource via the v0.10.24 envelope). The
+    # UPSERT pattern below resolves that mismatch.
+    #
+    # `.with_for_update()` serializes concurrent re-invites against
+    # the same stale row on PG. Without the lock, two requests can
+    # both load the old primary key; the first commits the new id,
+    # and the second flushes its UPDATE against the now-missing old
+    # id → SQLAlchemy 0-row-update / StaleDataError → 500 instead of
+    # the AC's atomic behavior. SQLite is single-writer at the engine
+    # level, so it ignores FOR UPDATE harmlessly. Codex R1 MED on
+    # this ticket.
+    stale = (
+        await db.execute(
+            select(OrgInvite)
+            .where(
+                OrgInvite.org_id == ctx.org.id,
+                OrgInvite.email == data.email,
+            )
+            .with_for_update()
         )
-    )
-    if existing.scalar_one_or_none():
-        raise HTTPException(409, "An active invite already exists for this email")
+    ).scalar_one_or_none()
 
-    # Check user isn't already a member
+    now = datetime.now(timezone.utc)
+    if stale is not None:
+        stale_expires = stale.expires_at
+        # SQLite roundtrips DateTime(timezone=True) as naive; coerce
+        # to tz-aware before comparing so Helm-on-SQLite tests don't
+        # raise offset-naive/offset-aware errors.
+        if stale_expires.tzinfo is None:
+            stale_expires = stale_expires.replace(tzinfo=timezone.utc)
+        is_active = (
+            stale.accepted_at is None
+            and stale.declined_at is None
+            and stale_expires > now
+        )
+        if is_active:
+            raise HTTPException(
+                409, "An active invite already exists for this email"
+            )
+
+    # Check user isn't already a member (covers both: existing member
+    # added via a different path AND orphan-accepted stale invite with
+    # a live OrgMember row).
     existing_user = await db.execute(
         select(User).where(User.email == data.email)
     )
@@ -267,21 +303,43 @@ async def invite_member(
             )
         )
         if existing_membership.scalar_one_or_none():
-            raise HTTPException(409, "This user is already a member of your organization")
+            raise HTTPException(
+                409, "This user is already a member of your organization"
+            )
 
     role = data.role if data.role in ("admin", "member") else "member"
-    invite_id = f"inv_{secrets.token_hex(8)}"
-    invite = OrgInvite(
-        id=invite_id,
-        org_id=ctx.org.id,
-        email=data.email,
-        role=role,
-        invited_by=ctx.user.id,
-        expires_at=datetime.now(timezone.utc) + timedelta(days=7),
-    )
-    db.add(invite)
+    new_invite_id = f"inv_{secrets.token_hex(8)}"
+    new_expires_at = now + timedelta(days=7)
+
+    if stale is not None:
+        # UPDATE-in-place: regenerate `id` so stale email-acceptance
+        # links from the prior attempt are invalidated; refresh
+        # `expires_at`; clear all terminal-state fields; update
+        # role/invited_by. Preserve `created_at` as the audit signal
+        # of when the email was first onboarded.
+        stale.id = new_invite_id
+        stale.role = role
+        stale.invited_by = ctx.user.id
+        stale.expires_at = new_expires_at
+        stale.accepted_at = None
+        stale.declined_at = None
+        stale.decline_reason = None
+        stale.last_emailed_at = None
+        invite = stale
+    else:
+        invite = OrgInvite(
+            id=new_invite_id,
+            org_id=ctx.org.id,
+            email=data.email,
+            role=role,
+            invited_by=ctx.user.id,
+            expires_at=new_expires_at,
+        )
+        db.add(invite)
+
     await db.commit()
     await db.refresh(invite)
+    invite_id = invite.id
 
     # v0.10.22 (tk_6afbcfefe5804c1d) — best-effort email send. The
     # invite row is already durable; a transient email failure logs

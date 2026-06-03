@@ -1213,6 +1213,134 @@ async def test_compile_noop_returns_explanatory_reason(
 
 
 
+# ── tk_5c124c496ea14ecc — auto_generate_concepts must run exactly once per /compile ──
+
+
+@pytest.mark.asyncio
+async def test_compile_noop_calls_auto_generate_concepts_exactly_once(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession,
+    test_user: User, test_project: Project, monkeypatch,
+):
+    """tk_5c124c496ea14ecc — a no-op compile (zero eligible entries)
+    must still run concept cleanup, but exactly once. Prior code's
+    duplicate post-compile invocation didn't apply to the noop branch,
+    so the noop case was already single-call; this test pins the
+    contract so a future refactor can't reintroduce a double-pass.
+    """
+    from sessionfs.server.services import compiler as _compiler
+
+    call_count = {"n": 0}
+
+    async def _counting_stub(*args, **kwargs):
+        call_count["n"] += 1
+        return []
+
+    monkeypatch.setattr(
+        _compiler, "auto_generate_concepts", _counting_stub
+    )
+
+    # Seed only notes — guarantees the noop branch in /compile.
+    db_session.add_all([
+        KnowledgeEntry(
+            project_id=test_project.id, session_id="ses_dup1",
+            user_id=test_user.id, entry_type="decision",
+            content="z" * 60, confidence=0.7, claim_class="note",
+        ),
+    ])
+    await db_session.commit()
+
+    resp = await client.post(
+        f"/api/v1/projects/{test_project.id}/compile",
+        headers=auth_headers, json={},
+    )
+    assert resp.status_code == 200, resp.text[:300]
+    body = resp.json()
+    assert body["entries_compiled"] == 0
+    assert call_count["n"] == 1, (
+        f"auto_generate_concepts should run exactly once on no-op "
+        f"compile, got {call_count['n']} calls"
+    )
+
+
+@pytest.mark.asyncio
+async def test_compile_real_calls_auto_generate_concepts_exactly_once(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession,
+    test_user: User, test_project: Project, monkeypatch,
+):
+    """tk_5c124c496ea14ecc — the duplicate-pass bug lived in the
+    real-compile branch (one call before the noop check, a second
+    after the real-compile path). After the fix, both branches share
+    a single pre-classification call. Assert real-compile produces a
+    non-zero `entries_compiled` AND triggers `auto_generate_concepts`
+    exactly once — Codex R1 non-blocking refinement so this test
+    catches both directions of regression (duplicate pass AND
+    accidentally-removed-from-real-path).
+
+    Determinism: no `llm_api_key` is passed, so `_simple_compile`
+    runs (no LLM call) and the route's real-compile path executes
+    end-to-end without external dependencies.
+    """
+    from sessionfs.server.services import compiler as _compiler
+
+    call_count = {"n": 0}
+
+    async def _counting_stub(*args, **kwargs):
+        call_count["n"] += 1
+        return []
+
+    monkeypatch.setattr(
+        _compiler, "auto_generate_concepts", _counting_stub
+    )
+
+    # Seed compile-eligible claims: claim_class='claim', not
+    # dismissed, current freshness, no superseded_by, no
+    # compiled_at. `compile_project_context` will return a real
+    # ContextCompilation (not None), which routes the request
+    # through the real-compile branch — the exact site that
+    # previously made the second auto_generate_concepts call.
+    db_session.add_all([
+        KnowledgeEntry(
+            project_id=test_project.id, session_id="ses_real1",
+            user_id=test_user.id, entry_type="decision",
+            content="The compile route used to double-run concept gen; this fix collapses it.",
+            confidence=0.95, claim_class="claim",
+            freshness_class="current",
+        ),
+        KnowledgeEntry(
+            project_id=test_project.id, session_id="ses_real2",
+            user_id=test_user.id, entry_type="pattern",
+            content="Concept refresh runs exactly once per /compile invocation now.",
+            confidence=0.9, claim_class="claim",
+            freshness_class="current",
+        ),
+    ])
+    await db_session.commit()
+
+    resp = await client.post(
+        f"/api/v1/projects/{test_project.id}/compile",
+        headers=auth_headers,
+        json={},  # no llm_api_key → deterministic _simple_compile path
+    )
+    assert resp.status_code == 200, resp.text[:300]
+    body = resp.json()
+    # Real-compile branch confirmed: at least one claim flowed
+    # through the compiler.
+    assert body["entries_compiled"] > 0, (
+        f"Test must exercise the real-compile branch (the duplicate-"
+        f"pass site), but got entries_compiled={body['entries_compiled']}"
+    )
+    # Exact-one assertion catches both regression directions:
+    # - Duplicate call returning would push n to 2.
+    # - Accidental removal from the (now single) call site would
+    #   push n to 0.
+    assert call_count["n"] == 1, (
+        f"auto_generate_concepts must run exactly once per /compile "
+        f"request (got {call_count['n']} calls). Real-compile branch "
+        f"was the duplicate-pass site; removing the second call must "
+        f"NOT remove the only remaining call too."
+    )
+
+
 # ── v0.10.12 tk_c64915570f4d4042 — bulk-promote endpoint ──
 
 

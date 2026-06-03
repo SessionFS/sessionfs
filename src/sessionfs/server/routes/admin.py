@@ -7,10 +7,12 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import require_admin
+from sessionfs.server.auth.keys import generate_api_key, hash_api_key
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import (
     AdminAction,
@@ -208,6 +210,115 @@ async def force_verify_user(
     await db.commit()
 
     return {"user_id": user_id, "email_verified": True}
+
+
+# tk_4afbae8ed3a442e9 — Admin operational tool to mint a fresh API
+# key on behalf of any user. SessionFS has no magic-link / OAuth /
+# password-reset / signin flow, so a user who loses their key has no
+# self-service recovery. This endpoint is the legitimate
+# admin-impersonation-free recovery path (no session token issued —
+# the admin gets a raw key once and hands it to the user out-of-band).
+
+
+class MintApiKeyOnBehalfRequest(BaseModel):
+    name: str | None = None
+
+
+class MintApiKeyOnBehalfResponse(BaseModel):
+    key_id: str
+    raw_key: str
+    name: str | None
+    created_at: datetime
+    user_id: str
+    user_email: str
+
+
+@router.post(
+    "/users/{user_id}/api-keys",
+    response_model=MintApiKeyOnBehalfResponse,
+    status_code=201,
+)
+async def mint_api_key_on_behalf(
+    user_id: str,
+    body: MintApiKeyOnBehalfRequest,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> MintApiKeyOnBehalfResponse:
+    """Mint a user-kind API key on behalf of the target user.
+
+    Admin-only. Mirrors `POST /api/v1/auth/me/api-keys` response shape
+    plus `user_id` + `user_email` so the caller knows which account
+    received the key. Raw key is returned exactly once.
+
+    Mints a `key_kind='user'` row with `scopes='["*"]'` — set
+    explicitly at the call site below (not relying on column
+    defaults) so the security contract stays visible during future
+    refactors. Full user-equivalent capability, matching what the
+    user would have minted for themselves via the self-service
+    endpoint. NOT a scoped service key (those live at
+    `/api/v1/orgs/{org_id}/service-keys` per v0.10.10).
+
+    Refuses to mint for inactive users (no backdoor for disabled
+    accounts) and unknown user_ids. All successful mints write an
+    audit log entry via `_log_action`.
+    """
+    result = await db.execute(select(User).where(User.id == user_id))
+    target = result.scalar_one_or_none()
+    if target is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not target.is_active:
+        raise HTTPException(
+            status_code=403, detail="Cannot mint key for inactive user"
+        )
+
+    raw_key = generate_api_key()
+    key_id = str(uuid.uuid4())
+    name = body.name or "admin-minted"
+
+    # Mirror the explicit-field shape from
+    # `routes/api_keys.py:create_personal_key` (Codex R3 MEDIUM 2 +
+    # this ticket R1 MEDIUM) — populate `key_prefix` so the row shows
+    # up in list responses as `sk_sfs_xxxxxx` instead of the
+    # `sk_sfs_legacy` placeholder. Also set `key_kind` + `scopes`
+    # explicitly rather than relying on column defaults, so this
+    # endpoint's security contract is visible at the call site rather
+    # than in model defaults that future migrations could shift.
+    # `created_by_user_id=admin.id` captures the admin issuer for
+    # audit; `target.id` already owns the row via `user_id`.
+    from sessionfs.server.routes.api_keys import _key_prefix
+
+    api_key = ApiKey(
+        id=key_id,
+        user_id=target.id,
+        key_hash=hash_api_key(raw_key),
+        name=name,
+        key_kind="user",
+        scopes=json.dumps(["*"]),
+        key_prefix=_key_prefix(raw_key),
+        created_by_user_id=admin.id,
+        is_active=True,
+    )
+    db.add(api_key)
+
+    await _log_action(
+        db,
+        admin.id,
+        "mint_api_key_on_behalf",
+        "user",
+        user_id,
+        {"key_id": key_id, "name": name},
+    )
+    await db.commit()
+    await db.refresh(api_key)
+
+    return MintApiKeyOnBehalfResponse(
+        key_id=api_key.id,
+        raw_key=raw_key,
+        name=api_key.name,
+        created_at=api_key.created_at,
+        user_id=target.id,
+        user_email=target.email,
+    )
 
 
 @router.delete("/users/{user_id}", status_code=204)

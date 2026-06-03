@@ -5,6 +5,61 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.28] - 2026-06-03
+
+**Coordination + recovery surface: ticket mutation, org invite resend, admin key recovery, compile latency cut.** Bundles four R2-CLEAN Codex-reviewed tickets. Migration 048 adds the `ticket_edits` audit table (strictly additive, cross-DB safe). MCP tool count 61 → 62.
+
+### Added
+
+**`update_ticket` MCP/API/CLI verb** (`tk_835a876529de4551`). Until now, every ticket correction had to land in the comment stream — descriptions drifted permanently out of sync with reality and `start_ticket` loaded stale framing into the compiled persona context. This release adds the missing mutation verb across all three surfaces:
+- **PUT `/api/v1/projects/{pid}/tickets/{tid}`** — partial update for mutable fields (`title`, `description`, `priority`, `acceptance_criteria`, `context_refs`, `file_refs`, `depends_on`). Status transitions remain FSM-only. Authz: ticket creator OR project admin (persona name does NOT grant edit rights). Optional `lease_epoch` for optimistic concurrency (409 + structured envelope on stale; last-write-wins when omitted; lease_epoch alone is rejected with 400 — it's a fence, not a mutation).
+- **Auto-posted system diff comment** — every successful update writes ONE `TicketComment` with `author_persona='system'` summarizing the per-field diff. No-op writes do NOT post the comment (empty audit pollution is the anti-pattern).
+- **Per-field audit rows** in the new `ticket_edits` table (migration 048): id, ticket_id, edited_by_user_id, edited_by_persona, field_name, JSON-encoded old/new values, edited_at, lease_epoch at edit time. Indexed on `(ticket_id, edited_at)` for history queries. `edited_by_user_id` is plain String (not FK) — audit rows survive user-row deletes per `AdminAction` / `KnowledgeEntry` convention.
+- **`depends_on` updates** run `_validate_dependencies_same_project` + `_check_dependency_cycle` + dedup BEFORE the wipe-and-reinsert (no cross-project leaks, no cycles, no `IntegrityError` envelopes for duplicates — full-list replacement semantics).
+- **MCP `update_ticket` tool** — schema explicitly excludes `assigned_to` and `related_sessions` (those belong to `assign_persona` and the internal write-path respectively). Description names the auto-comment side effect so agents don't double-post.
+- **CLI `sfs ticket update <id>`** — flags `--title`, `--description`, `--description-file` (file-based for long markdown without shell-quoting hazards), `--priority`, `--acceptance-criteria-file`, `--lease-epoch` (opportunistically pulled from active-ticket bundle).
+
+**Admin `POST /api/v1/admin/users/{user_id}/api-keys`** (`tk_4afbae8ed3a442e9`). SessionFS has no magic-link/OAuth/password-reset flow, so a user who loses their key has no self-service recovery — the chicken-and-egg blocks `POST /auth/me/api-keys`. This admin-gated endpoint mints a user-kind `ApiKey` on behalf of any active user; raw key returned exactly once; audit row via `_log_action(action="mint_api_key_on_behalf", details={key_id, name})`. `key_kind="user"`, `scopes='["*"]'`, `key_prefix=raw_key[:12]`, `created_by_user_id=admin.id` all set explicitly at the call site (Codex R3 MEDIUM 2 precedent — refactor-safe). Guards: 404 unknown user, 403 inactive user (no backdoor for disabled accounts), 403 non-admin caller. Service keys remain out of scope — they live at `/api/v1/orgs/{org_id}/service-keys` per v0.10.10.
+
+### Fixed
+
+**Org invite UPSERT over stale rows** (`tk_d88678e6fe384de6`). Migration 016 enforces `uq_org_invites_org_email` on `(org_id, email)`. v0.10.22 added a route-level predicate filtering accepted/declined/expired rows so the admin surface "looked like" a resend was allowed, but the DB constraint blocked the INSERT with `IntegrityError` — re-rendered as a generic `409 duplicate_resource` with no actionable detail. After expiry/decline, the CEO had no API path to re-invite (production incident 2026-05-31 with `richardmcmullen1992@gmail.com` and `sammykezz@gmail.com`).
+
+Fix: both `invite_member` endpoints now lookup ANY existing row for `(org_id, email)` with `.with_for_update()` (PG row-lock serializes concurrent re-invites; SQLite single-writer is harmless), classify by state, and route accordingly:
+- No row → INSERT fresh.
+- Active row → 409 "active invite exists".
+- Already a member via live `OrgMember` → 409 "already a member".
+- Stale (declined / expired / orphan-accepted) → UPDATE in place: regenerate `id` (invalidates stale email-acceptance links), refresh `expires_at`, clear `accepted_at` / `declined_at` / `decline_reason` / `last_emailed_at`, update `role` + `invited_by`. **Preserves `created_at` as the audit signal of when the email was first onboarded.**
+
+**`/compile` single-pass `auto_generate_concepts`** (`tk_5c124c496ea14ecc`). The route invoked `auto_generate_concepts()` twice on real-compile requests — once before the noop classification (intended for both branches) and again after the real-compile path (flagged `(Legacy) ... for compatibility` in the prior inline comment). Doubled LLM call latency and increased timeout/OOM risk on large projects. Removed the second call; the first now covers both branches; `concept_pages` counted once and reused as `concept_pages_updated` in both response paths.
+
+### Security
+
+- **`cryptography` ≥46.0.7** already pinned (since v0.10.12) — past all GH #16 reported CVE fix-versions (44.0.1 / 46.0.5 / 46.0.6). Issue closed as resolved.
+- **`PyJWT >=2.13.0,<3.0`** bumped this release (was `>=2.8`) — Shield-SR pre-release scan flagged PYSEC-2026-175/177/178/179 against 2.12.x. Test suite re-run after the upgrade: no regressions.
+
+### Migration
+
+- **048** — `ticket_edits` audit table. Strictly additive: `CREATE TABLE` + one index on `(ticket_id, edited_at)`. Downgrade drops in reverse order. JSON-encoded `old_value` + `new_value` as `Text` (not native JSONB) for SQLite Helm compatibility; PG can `json_extract` via cast if cross-DB indexing is ever needed.
+
+### Documentation
+
+- **CLI reference** picks up `sfs ticket update` flags and the FSM-only-vs-mutation boundary callout (use `assign_persona` for reassignment, escalate_ticket for one-step priority bumps).
+- **MCP tool description** for `update_ticket` explicitly names the auto-posted system comment side effect so agents don't double-post a manual comment.
+
+### Verification
+
+- pytest tests/ -x -q → **2153 passed (+34 from v0.10.27 baseline 2119), 2 xfailed** (pre-existing PG-only migration smoke tests tracked `tk_7dc9e8764a5a4297`)
+- ruff check src/ → clean
+- helm lint charts/sessionfs → clean
+- Shield-SR independent pre-release security review → **CLEAN** (0 CRITICAL / 0 HIGH / 0 MEDIUM new findings; 4 PyJWT CVEs fixed by version bump)
+- Codex review threads: tk_d88678e6fe384de6 R1 (1 MED + 1 LOW) → R2 CLEAN; tk_4afbae8ed3a442e9 R1 (1 MED + 1 LOW) → R2 CLEAN → R3 docstring CLEAN; tk_5c124c496ea14ecc R1 CLEAN (non-blocking test tightening) → R2 CLEAN; tk_835a876529de4551 R1 (2 MED + 1 LOW) → R2 CLEAN.
+
+### Issues closed
+- GH #50 — MCP `update_persona` / `delete_persona` parity (shipped v0.10.24, re-confirmed in this cycle's audit)
+- GH #51 — `sfs org create` 500 + IntegrityError envelope (shipped v0.10.24)
+- GH #16 — Dependency CVEs in cryptography 43.0.3 (pinned `>=46.0.7` since v0.10.12)
+
 ## [0.10.27] - 2026-05-30
 
 **Daemon liveness hotfix + tier-aware per-file cap discovery.** Bundles three R2-CLEAN Codex-reviewed tickets under one PATCH release. All changes additive — no schema migrations, no breaking changes, no auth changes. Older CLIs talking to a v0.10.27 server ignore the new field harmlessly; v0.10.27 CLIs talking to an older server fall through to the 50 MB literal with a logged warning.

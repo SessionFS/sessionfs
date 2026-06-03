@@ -14,7 +14,7 @@ data-stays / access-revoked invariants on member removal (KB 230 #3):
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from httpx import AsyncClient
@@ -1359,3 +1359,465 @@ async def test_list_my_orgs_returns_all_memberships_with_roles(
 async def test_list_my_orgs_requires_auth(client: AsyncClient):
     resp = await client.get("/api/v1/orgs")
     assert resp.status_code in (401, 403)
+
+
+# ── tk_d88678e6fe384de6 — UPSERT invite over stale (declined / expired / orphan) rows ──
+
+
+def _aware(dt: datetime) -> datetime:
+    """SQLite roundtrips DateTime(timezone=True) as naive; coerce to
+    tz-aware for safe comparison against datetime.now(timezone.utc)."""
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+@pytest.mark.asyncio
+async def test_invite_succeeds_when_prior_invite_declined(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """tk_d88678e6fe384de6 — admin can re-invite after the recipient
+    declines. Without this fix, the v0.10.22 R1 MED route predicate
+    lets the POST proceed but `uq_org_invites_org_email` raises
+    IntegrityError on the INSERT, surfacing as 409 duplicate_resource.
+    """
+    from sessionfs.server.db.models import OrgInvite
+
+    admin, admin_key = await _make_user(db_session, "admin")
+    org = await _make_org(db_session, admin=admin)
+
+    # Seed a declined invite for the same (org_id, email).
+    email = "decliner@example.com"
+    first_created = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    declined = OrgInvite(
+        id=f"inv_{uuid.uuid4().hex[:16]}",
+        org_id=org.id,
+        email=email,
+        role="member",
+        invited_by=admin.id,
+        created_at=first_created,
+        expires_at=datetime.now(timezone.utc) + timedelta(days=5),
+        declined_at=datetime.now(timezone.utc),
+        decline_reason="not interested",
+    )
+    db_session.add(declined)
+    await db_session.commit()
+    old_id = declined.id
+
+    # Re-invite must succeed (not 409 duplicate_resource).
+    resp = await client.post(
+        f"/api/v1/orgs/{org.id}/members/invite",
+        json={"email": email, "role": "member"},
+        headers=_hdrs(admin_key),
+    )
+    assert resp.status_code == 200, resp.text[:300]
+    assert resp.json()["email"] == email
+
+    # UPDATE-in-place semantics: exactly ONE row exists for the
+    # (org_id, email), terminal-state fields are cleared, id is
+    # regenerated (invalidating old email-acceptance link), and
+    # created_at is preserved as the audit signal.
+    rows = (
+        await db_session.execute(
+            select(OrgInvite).where(
+                OrgInvite.org_id == org.id,
+                OrgInvite.email == email,
+            )
+        )
+    ).scalars().all()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.id != old_id, "id must regenerate so old email link is invalidated"
+    assert row.declined_at is None
+    assert row.decline_reason is None
+    assert row.accepted_at is None
+    assert _aware(row.expires_at) > datetime.now(timezone.utc)
+    # created_at preserved (Compass-recommended audit signal).
+    # SQLite roundtrips timezone-aware → naive; compare as naive.
+    preserved = row.created_at
+    if preserved.tzinfo is not None:
+        preserved = preserved.replace(tzinfo=None)
+    assert preserved == first_created.replace(tzinfo=None)
+
+
+@pytest.mark.asyncio
+async def test_invite_succeeds_when_prior_invite_expired(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """tk_d88678e6fe384de6 — admin can re-invite after the prior
+    invite expires. This is the exact production scenario hit by
+    CEO on 2026-05-31 for richardmcmullen1992 / sammykezz signups
+    whose 2026-05-23 invites timed out at the 7-day TTL.
+    """
+    from sessionfs.server.db.models import OrgInvite
+
+    admin, admin_key = await _make_user(db_session, "admin")
+    org = await _make_org(db_session, admin=admin)
+    email = "expirer@example.com"
+    expired = OrgInvite(
+        id=f"inv_{uuid.uuid4().hex[:16]}",
+        org_id=org.id,
+        email=email,
+        role="member",
+        invited_by=admin.id,
+        created_at=datetime(2026, 5, 23, 18, 0, 0, tzinfo=timezone.utc),
+        expires_at=datetime(2026, 5, 30, 18, 0, 0, tzinfo=timezone.utc),
+    )
+    db_session.add(expired)
+    await db_session.commit()
+    old_id = expired.id
+
+    resp = await client.post(
+        f"/api/v1/orgs/{org.id}/members/invite",
+        json={"email": email, "role": "member"},
+        headers=_hdrs(admin_key),
+    )
+    assert resp.status_code == 200, resp.text[:300]
+
+    rows = (
+        await db_session.execute(
+            select(OrgInvite).where(
+                OrgInvite.org_id == org.id,
+                OrgInvite.email == email,
+            )
+        )
+    ).scalars().all()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.id != old_id
+    assert _aware(row.expires_at) > datetime.now(timezone.utc)
+
+
+@pytest.mark.asyncio
+async def test_invite_succeeds_when_prior_invite_orphan_accepted(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """tk_d88678e6fe384de6 — admin can re-invite when the prior
+    invite was accepted but the resulting OrgMember was later
+    removed. The orphan-accepted invite row must NOT block the
+    new INSERT.
+    """
+    from sessionfs.server.db.models import OrgInvite
+
+    admin, admin_key = await _make_user(db_session, "admin")
+    org = await _make_org(db_session, admin=admin)
+    email = "rejoiner@example.com"
+    orphan = OrgInvite(
+        id=f"inv_{uuid.uuid4().hex[:16]}",
+        org_id=org.id,
+        email=email,
+        role="member",
+        invited_by=admin.id,
+        created_at=datetime(2026, 4, 1, 12, 0, 0, tzinfo=timezone.utc),
+        expires_at=datetime.now(timezone.utc) + timedelta(days=2),
+        accepted_at=datetime(2026, 4, 2, 12, 0, 0, tzinfo=timezone.utc),
+    )
+    db_session.add(orphan)
+    await db_session.commit()
+    # No OrgMember row for this email → the orphan-accepted shape.
+
+    resp = await client.post(
+        f"/api/v1/orgs/{org.id}/members/invite",
+        json={"email": email, "role": "member"},
+        headers=_hdrs(admin_key),
+    )
+    assert resp.status_code == 200, resp.text[:300]
+
+    rows = (
+        await db_session.execute(
+            select(OrgInvite).where(
+                OrgInvite.org_id == org.id,
+                OrgInvite.email == email,
+            )
+        )
+    ).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].accepted_at is None
+
+
+@pytest.mark.asyncio
+async def test_invite_still_409s_when_active_invite_exists(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """tk_d88678e6fe384de6 — behavior unchanged for the active-invite
+    case. The upsert must NOT silently overwrite an in-flight
+    invite that the recipient hasn't seen yet.
+    """
+    from sessionfs.server.db.models import OrgInvite
+
+    admin, admin_key = await _make_user(db_session, "admin")
+    org = await _make_org(db_session, admin=admin)
+    email = "active@example.com"
+    active = OrgInvite(
+        id=f"inv_{uuid.uuid4().hex[:16]}",
+        org_id=org.id,
+        email=email,
+        role="member",
+        invited_by=admin.id,
+        created_at=datetime.now(timezone.utc),
+        expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+    )
+    db_session.add(active)
+    await db_session.commit()
+
+    resp = await client.post(
+        f"/api/v1/orgs/{org.id}/members/invite",
+        json={"email": email, "role": "member"},
+        headers=_hdrs(admin_key),
+    )
+    assert resp.status_code == 409
+    body = resp.json()
+    # Either the legacy `detail` shape or the v0.10.24 envelope.
+    msg = (
+        body.get("detail")
+        or body.get("error", {}).get("message", "")
+    )
+    assert "active invite" in str(msg).lower()
+
+
+@pytest.mark.asyncio
+async def test_invite_cross_org_isolation_with_same_email(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """tk_d88678e6fe384de6 — admin in org A re-inviting `someone@x`
+    after a decline must NOT touch a separate (still-active) invite
+    for `someone@x` in org B. The unique constraint is per-(org_id,
+    email), and the upsert lookup filters by org_id, so the rows
+    are independent.
+    """
+    from sessionfs.server.db.models import OrgInvite
+
+    admin_a, admin_a_key = await _make_user(db_session, "admin_a")
+    admin_b, admin_b_key = await _make_user(db_session, "admin_b")
+    org_a = await _make_org(db_session, admin=admin_a)
+    org_b = await _make_org(db_session, admin=admin_b)
+    email = "shared@example.com"
+
+    # org A: stale (declined) invite.
+    decl_a = OrgInvite(
+        id=f"inv_{uuid.uuid4().hex[:16]}",
+        org_id=org_a.id,
+        email=email,
+        role="member",
+        invited_by=admin_a.id,
+        created_at=datetime.now(timezone.utc) - timedelta(days=3),
+        expires_at=datetime.now(timezone.utc) + timedelta(days=4),
+        declined_at=datetime.now(timezone.utc),
+    )
+    # org B: active invite, untouched by org A's resend.
+    active_b = OrgInvite(
+        id=f"inv_{uuid.uuid4().hex[:16]}",
+        org_id=org_b.id,
+        email=email,
+        role="member",
+        invited_by=admin_b.id,
+        created_at=datetime.now(timezone.utc),
+        expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+    )
+    db_session.add_all([decl_a, active_b])
+    await db_session.commit()
+    org_b_invite_id = active_b.id
+
+    # org A admin re-invites → should succeed without touching org B.
+    resp = await client.post(
+        f"/api/v1/orgs/{org_a.id}/members/invite",
+        json={"email": email, "role": "member"},
+        headers=_hdrs(admin_a_key),
+    )
+    assert resp.status_code == 200
+
+    # org B's row is unchanged: same id, still active.
+    org_b_row = (
+        await db_session.execute(
+            select(OrgInvite).where(OrgInvite.id == org_b_invite_id)
+        )
+    ).scalar_one_or_none()
+    assert org_b_row is not None
+    assert org_b_row.id == org_b_invite_id
+    assert org_b_row.declined_at is None
+    assert org_b_row.accepted_at is None
+
+
+# Same coverage for the dual endpoint POST /api/v1/org/invite (org.py).
+
+
+@pytest.mark.asyncio
+async def test_legacy_org_invite_endpoint_resends_over_expired_row(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """tk_d88678e6fe384de6 — `POST /api/v1/org/invite` (the legacy
+    single-org endpoint at routes/org.py) gets the same upsert fix
+    as the multi-org endpoint, so both surfaces behave identically.
+    """
+    from sessionfs.server.db.models import OrgInvite
+
+    admin, admin_key = await _make_user(db_session, "admin_legacy")
+    org = await _make_org(db_session, admin=admin)
+
+    # admin's default_org must be set so the /org route resolves it.
+    admin.default_org_id = org.id
+    await db_session.commit()
+
+    email = "legacy@example.com"
+    expired = OrgInvite(
+        id=f"inv_{uuid.uuid4().hex[:16]}",
+        org_id=org.id,
+        email=email,
+        role="member",
+        invited_by=admin.id,
+        created_at=datetime(2026, 5, 23, 18, 0, 0, tzinfo=timezone.utc),
+        expires_at=datetime(2026, 5, 30, 18, 0, 0, tzinfo=timezone.utc),
+    )
+    db_session.add(expired)
+    await db_session.commit()
+    old_id = expired.id
+
+    resp = await client.post(
+        "/api/v1/org/invite",
+        json={"email": email, "role": "member"},
+        headers=_hdrs(admin_key),
+    )
+    assert resp.status_code == 200, resp.text[:300]
+
+    rows = (
+        await db_session.execute(
+            select(OrgInvite).where(
+                OrgInvite.org_id == org.id,
+                OrgInvite.email == email,
+            )
+        )
+    ).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].id != old_id
+    assert _aware(rows[0].expires_at) > datetime.now(timezone.utc)
+
+
+@pytest.mark.asyncio
+async def test_legacy_org_invite_endpoint_resends_over_declined_row(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """tk_d88678e6fe384de6 R1 LOW — pin all three stale-row states
+    for the legacy `/api/v1/org/invite` endpoint, not just expired.
+    """
+    from sessionfs.server.db.models import OrgInvite
+
+    admin, admin_key = await _make_user(db_session, "admin_legacy_decl")
+    org = await _make_org(db_session, admin=admin)
+    admin.default_org_id = org.id
+    await db_session.commit()
+
+    email = "legacy_decl@example.com"
+    first_created = datetime(2026, 2, 1, 12, 0, 0, tzinfo=timezone.utc)
+    declined = OrgInvite(
+        id=f"inv_{uuid.uuid4().hex[:16]}",
+        org_id=org.id,
+        email=email,
+        role="member",
+        invited_by=admin.id,
+        created_at=first_created,
+        expires_at=datetime.now(timezone.utc) + timedelta(days=3),
+        declined_at=datetime.now(timezone.utc),
+        decline_reason="legacy decline path",
+    )
+    db_session.add(declined)
+    await db_session.commit()
+    old_id = declined.id
+
+    resp = await client.post(
+        "/api/v1/org/invite",
+        json={"email": email, "role": "member"},
+        headers=_hdrs(admin_key),
+    )
+    assert resp.status_code == 200, resp.text[:300]
+
+    rows = (
+        await db_session.execute(
+            select(OrgInvite).where(
+                OrgInvite.org_id == org.id,
+                OrgInvite.email == email,
+            )
+        )
+    ).scalars().all()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.id != old_id
+    assert row.declined_at is None
+    assert row.decline_reason is None
+    # created_at preserved as audit signal.
+    preserved = row.created_at
+    if preserved.tzinfo is not None:
+        preserved = preserved.replace(tzinfo=None)
+    assert preserved == first_created.replace(tzinfo=None)
+
+
+@pytest.mark.asyncio
+async def test_legacy_org_invite_endpoint_resends_over_orphan_accepted_row(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """tk_d88678e6fe384de6 R1 LOW — orphan-accepted coverage for the
+    legacy endpoint. Invite was accepted, but the resulting OrgMember
+    was later removed; admin must be able to re-invite the email.
+    """
+    from sessionfs.server.db.models import OrgInvite
+
+    admin, admin_key = await _make_user(db_session, "admin_legacy_orphan")
+    org = await _make_org(db_session, admin=admin)
+    admin.default_org_id = org.id
+    await db_session.commit()
+
+    email = "legacy_orphan@example.com"
+    orphan = OrgInvite(
+        id=f"inv_{uuid.uuid4().hex[:16]}",
+        org_id=org.id,
+        email=email,
+        role="member",
+        invited_by=admin.id,
+        created_at=datetime(2026, 3, 1, 12, 0, 0, tzinfo=timezone.utc),
+        expires_at=datetime.now(timezone.utc) + timedelta(days=2),
+        accepted_at=datetime(2026, 3, 2, 12, 0, 0, tzinfo=timezone.utc),
+    )
+    db_session.add(orphan)
+    await db_session.commit()
+    # No matching OrgMember → orphan-accepted state.
+
+    resp = await client.post(
+        "/api/v1/org/invite",
+        json={"email": email, "role": "member"},
+        headers=_hdrs(admin_key),
+    )
+    assert resp.status_code == 200, resp.text[:300]
+
+    rows = (
+        await db_session.execute(
+            select(OrgInvite).where(
+                OrgInvite.org_id == org.id,
+                OrgInvite.email == email,
+            )
+        )
+    ).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].accepted_at is None
+
+
+def test_invite_stale_lookup_emits_for_update():
+    """tk_d88678e6fe384de6 R1 MEDIUM — source-level guard that the
+    stale-invite lookup compiles to SQL containing FOR UPDATE on
+    Postgres. SQLite ignores FOR UPDATE at runtime (single-writer
+    model), but PG honors it and that is what protects concurrent
+    re-invites of the same stale row from a StaleDataError race.
+
+    Follows the same pattern as `test_resolve_project_helper_emits_for_update`.
+    """
+    from sqlalchemy import select as _select
+    from sqlalchemy.dialects import postgresql
+
+    from sessionfs.server.db.models import OrgInvite as _OrgInvite
+
+    sql = str(
+        _select(_OrgInvite)
+        .where(
+            _OrgInvite.org_id == "o",
+            _OrgInvite.email == "x@y",
+        )
+        .with_for_update()
+        .compile(dialect=postgresql.dialect())
+    )
+    assert "FOR UPDATE" in sql
