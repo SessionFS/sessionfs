@@ -1292,6 +1292,73 @@ _TOOLS = [
         },
     ),
     Tool(
+        name="update_ticket",
+        description=(
+            "Patch mutable ticket fields (title, description, "
+            "acceptance_criteria, context_refs, file_refs, related_sessions, "
+            "depends_on, priority, assigned_to). Only fields the caller "
+            "passes are mutated — omitted fields are left untouched.\n\n"
+            "SIDE EFFECT: every successful update auto-posts a "
+            "`system`-authored diff comment on the ticket AND writes one "
+            "audit row per mutated field to the `ticket_edits` table. "
+            "Do NOT add a separate comment to record the change — the "
+            "side-effect comment already captures it.\n\n"
+            "Status transitions are NOT mutable via this verb. Use the "
+            "lifecycle tools (start_ticket / complete_ticket / "
+            "resolve_ticket / approve_ticket / escalate_ticket) for "
+            "status moves; this verb is for corrections + refinements "
+            "to the spec itself.\n\n"
+            "Optional `lease_epoch` for optimistic concurrency: when "
+            "passed, the update is rejected with 409 if the ticket's "
+            "epoch has advanced since the caller read it. When omitted, "
+            "last-write-wins is allowed (the auto-posted diff comment "
+            "marks it as unfenced).\n\n"
+            "Authorization: caller must be the ticket creator or a "
+            "project admin. Persona name does not grant edit rights.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs ticket update` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "ticket_id": {"type": "string"},
+                "title": {"type": "string"},
+                "description": {"type": "string"},
+                "priority": {
+                    "type": "string",
+                    "enum": ["low", "medium", "high", "critical"],
+                },
+                "assigned_to": {"type": "string"},
+                "acceptance_criteria": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "context_refs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "file_refs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "related_sessions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "depends_on": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "lease_epoch": {
+                    "type": "integer",
+                    "description": "Optional fence — read from get_ticket; 409 if stale.",
+                },
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+            "required": ["ticket_id"],
+        },
+    ),
+    Tool(
         name="forget_persona",
         description=(
             "Clear the local persona-only provenance bundle written by "
@@ -1942,6 +2009,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_resolve_ticket(arguments)
         elif name == "escalate_ticket":
             result = await _handle_escalate_ticket(arguments)
+        elif name == "update_ticket":
+            result = await _handle_update_ticket(arguments)
         elif name == "create_agent_run":
             result = await _handle_create_agent_run(arguments)
         elif name == "complete_agent_run":
@@ -4226,6 +4295,80 @@ async def _handle_escalate_ticket(args: dict) -> dict:
     if comment_warning:
         payload["comment_warning"] = comment_warning
     return payload
+
+
+_UPDATE_TICKET_FIELDS = (
+    "title",
+    "description",
+    "priority",
+    "assigned_to",
+    "acceptance_criteria",
+    "context_refs",
+    "file_refs",
+    "related_sessions",
+    "depends_on",
+    "lease_epoch",
+)
+
+
+async def _handle_update_ticket(args: dict) -> dict:
+    """Wrap PUT /api/v1/projects/{project_id}/tickets/{ticket_id}.
+
+    tk_835a876529de4551 — partial-update for mutable ticket fields.
+    Build the PUT body from only the fields the caller passed so
+    server-side omitted-fields-are-untouched semantics work; do not
+    inject defaults that would silently overwrite existing values.
+    """
+    ticket_id = (args.get("ticket_id") or "").strip()
+    if not ticket_id:
+        return {"error": "ticket_id is required"}
+
+    body: dict[str, Any] = {}
+    for key in _UPDATE_TICKET_FIELDS:
+        if key not in args:
+            continue
+        val = args[key]
+        if val is None:
+            continue
+        body[key] = val
+
+    if not body:
+        return {
+            "error": (
+                "At least one mutable field is required for update_ticket "
+                "(title, description, priority, assigned_to, "
+                "acceptance_criteria, context_refs, file_refs, "
+                "related_sessions, depends_on, lease_epoch)."
+            )
+        }
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.put(
+            f"{api_url}/api/v1/projects/{project_id}/tickets/{ticket_id}",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=body,
+        )
+    if resp.status_code == 404:
+        return {"error": f"Ticket '{ticket_id}' not found"}
+    if resp.status_code == 409:
+        # Stale lease_epoch — surface the structured envelope so the
+        # caller can re-fetch and retry.
+        try:
+            return {"error": "stale_lease_epoch", "detail": resp.json()}
+        except Exception:
+            return {"error": f"stale_lease_epoch: {resp.text}"}
+    if resp.status_code == 403:
+        return {"error": "Not authorized to update this ticket (need creator or project admin)"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
 
 
 # ── v0.10.2 — AgentRun MCP handlers ──

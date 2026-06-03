@@ -1436,6 +1436,50 @@ class TicketComment(Base):
     service_key_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
 
+class TicketEdit(Base):
+    """Per-field audit row for ticket field mutations via update_ticket.
+
+    tk_835a876529de4551 — every successful call to the PATCH-shaped
+    update verb writes one row per mutated field so the historical
+    record of what the field looked like before the change is
+    preserved server-side. Pairs with the auto-posted diff comment
+    on TicketComment (human-readable summary) — this table is the
+    structured per-field history.
+
+    `edited_by_user_id` and `edited_by_persona` are plain Strings, not
+    FKs, so future user-row deletes can't cascade away the audit trail.
+    Matches the AdminAction / KnowledgeEntry audit-triple convention.
+    `lease_epoch` captures the ticket's epoch at edit time for
+    concurrent-edit ordering reconstruction.
+    """
+
+    __tablename__ = "ticket_edits"
+    __table_args__ = (
+        Index("idx_ticket_edits_ticket_at", "ticket_id", "edited_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    ticket_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("tickets.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    edited_by_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    edited_by_persona: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    field_name: Mapped[str] = mapped_column(String(50), nullable=False)
+    # JSON-encoded prior + new values. Text (not native JSONB) keeps
+    # the column cross-DB compatible for SQLite local-mode deployments;
+    # PG queries can json_extract via the operator on the typed cast.
+    old_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    new_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    edited_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    lease_epoch: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+
+
 class AgentRun(Base):
     """One execution of one persona, optionally against one ticket.
 

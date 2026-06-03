@@ -11,6 +11,7 @@ covers comment-append + KB-ref merge + auto-unblock.
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -2494,3 +2495,282 @@ async def test_existing_task_fsm_unchanged(
     )
     assert accepted.status_code == 200
     assert accepted.json()["status"] == "done"
+
+
+# ── tk_835a876529de4551 — update_ticket diff/audit/authz/lease ────
+
+
+@pytest.mark.asyncio
+async def test_update_ticket_writes_per_field_audit_rows(
+    client: AsyncClient, db_session: AsyncSession,
+):
+    """Every mutated field writes one TicketEdit row with JSON-encoded
+    old/new values and the ticket's lease_epoch at edit time. Preserves
+    the structured per-field history future SoD / audit queries depend on."""
+    from sessionfs.server.db.models import TicketEdit
+
+    user, raw = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    headers = _hdrs(raw)
+
+    create_r = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=headers,
+        json={
+            "title": "Original title",
+            "description": "Original description",
+            "priority": "medium",
+            "acceptance_criteria": ["AC 1", "AC 2"],
+        },
+    )
+    assert create_r.status_code == 201
+    tid = create_r.json()["id"]
+
+    put_r = await client.put(
+        f"/api/v1/projects/{project.id}/tickets/{tid}",
+        headers=headers,
+        json={
+            "title": "Corrected title",
+            "description": "Corrected description with updates",
+            "acceptance_criteria": ["AC 1", "AC 2", "AC 3"],
+        },
+    )
+    assert put_r.status_code == 200, put_r.text
+
+    edits = (
+        await db_session.execute(
+            select(TicketEdit).where(TicketEdit.ticket_id == tid)
+        )
+    ).scalars().all()
+    by_field = {e.field_name: e for e in edits}
+    assert set(by_field) == {"title", "description", "acceptance_criteria"}
+    assert json.loads(by_field["title"].old_value) == "Original title"
+    assert json.loads(by_field["title"].new_value) == "Corrected title"
+    assert json.loads(by_field["acceptance_criteria"].old_value) == ["AC 1", "AC 2"]
+    assert json.loads(by_field["acceptance_criteria"].new_value) == ["AC 1", "AC 2", "AC 3"]
+    # lease_epoch captured for reconstruction.
+    for e in edits:
+        assert e.edited_by_user_id == user.id
+
+
+@pytest.mark.asyncio
+async def test_update_ticket_posts_system_diff_comment(
+    client: AsyncClient, db_session: AsyncSession,
+):
+    """Successful update auto-posts a TicketComment with author_persona
+    'system' summarizing the diff. Caller does not need to add a
+    manual comment to record the change."""
+    user, raw = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    headers = _hdrs(raw)
+
+    create_r = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=headers,
+        json={"title": "X", "description": "Y", "priority": "low"},
+    )
+    tid = create_r.json()["id"]
+
+    # Update changes priority.
+    put_r = await client.put(
+        f"/api/v1/projects/{project.id}/tickets/{tid}",
+        headers=headers,
+        json={"priority": "high"},
+    )
+    assert put_r.status_code == 200
+
+    comments_r = await client.get(
+        f"/api/v1/projects/{project.id}/tickets/{tid}/comments",
+        headers=headers,
+    )
+    assert comments_r.status_code == 200
+    body = comments_r.json()
+    comments = body if isinstance(body, list) else body.get("comments", [])
+    system_comments = [
+        c for c in comments if c.get("author_persona") == "system"
+    ]
+    assert len(system_comments) == 1, (
+        f"expected exactly one system diff comment, got {len(system_comments)}"
+    )
+    content = system_comments[0]["content"]
+    assert "priority" in content
+    assert "low" in content and "high" in content
+
+
+@pytest.mark.asyncio
+async def test_update_ticket_noop_does_not_post_diff_comment(
+    client: AsyncClient, db_session: AsyncSession,
+):
+    """An update that doesn't change any field must NOT post a diff
+    comment — empty audit pollution is the explicit anti-pattern."""
+    user, raw = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    headers = _hdrs(raw)
+
+    create_r = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=headers,
+        json={"title": "Same", "description": "Same", "priority": "low"},
+    )
+    tid = create_r.json()["id"]
+
+    # PUT with same values — no diff.
+    put_r = await client.put(
+        f"/api/v1/projects/{project.id}/tickets/{tid}",
+        headers=headers,
+        json={"title": "Same", "priority": "low"},
+    )
+    assert put_r.status_code == 200
+
+    comments_r = await client.get(
+        f"/api/v1/projects/{project.id}/tickets/{tid}/comments",
+        headers=headers,
+    )
+    body = comments_r.json()
+    comments = body if isinstance(body, list) else body.get("comments", [])
+    system_comments = [
+        c for c in comments if c.get("author_persona") == "system"
+    ]
+    assert system_comments == [], (
+        "no-op update must NOT post a diff comment"
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_ticket_lease_epoch_fence_409s_on_stale(
+    client: AsyncClient, db_session: AsyncSession,
+):
+    """Passing a stale lease_epoch must atomically reject with 409 +
+    structured envelope identifying the current epoch."""
+    user, raw = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    headers = _hdrs(raw)
+
+    create_r = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=headers,
+        json={"title": "Fenced", "description": "x", "priority": "low"},
+    )
+    tid = create_r.json()["id"]
+    initial_epoch = create_r.json()["lease_epoch"]
+
+    # First update with the correct lease_epoch should succeed AND bump.
+    ok = await client.put(
+        f"/api/v1/projects/{project.id}/tickets/{tid}",
+        headers=headers,
+        json={"title": "Fenced v2", "lease_epoch": initial_epoch},
+    )
+    assert ok.status_code == 200, ok.text
+    new_epoch = ok.json()["lease_epoch"]
+    assert new_epoch == initial_epoch + 1
+
+    # Second update with the OLD epoch must 409.
+    stale = await client.put(
+        f"/api/v1/projects/{project.id}/tickets/{tid}",
+        headers=headers,
+        json={"title": "Should not win", "lease_epoch": initial_epoch},
+    )
+    assert stale.status_code == 409
+    body = stale.json()
+    detail = body.get("detail") or body.get("error", {}).get("details", body.get("error", body))
+    if isinstance(detail, dict) and "current_lease_epoch" in detail:
+        assert detail["current_lease_epoch"] == new_epoch
+
+
+@pytest.mark.asyncio
+async def test_update_ticket_403_for_non_creator_non_admin(
+    client: AsyncClient, db_session: AsyncSession,
+):
+    """A regular user who is neither the ticket creator nor a project
+    admin cannot update the ticket. Persona name (assigned_to) does
+    NOT grant edit rights."""
+    creator, creator_key = await _make_user(db_session)
+    intruder, intruder_key = await _make_user(db_session)
+    project = await _make_project(db_session, creator)
+
+    create_r = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(creator_key),
+        json={"title": "Owned", "description": "x", "priority": "low"},
+    )
+    tid = create_r.json()["id"]
+
+    # Intruder tries to update — should 403.
+    bad = await client.put(
+        f"/api/v1/projects/{project.id}/tickets/{tid}",
+        headers=_hdrs(intruder_key),
+        json={"title": "Hijacked"},
+    )
+    assert bad.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_update_ticket_cross_project_isolation(
+    client: AsyncClient, db_session: AsyncSession,
+):
+    """A user in project A who tries to update a ticket from project B
+    must get 404 (project boundary) — not 403 (which would leak the
+    ticket's existence)."""
+    user_a, key_a = await _make_user(db_session)
+    user_b, key_b = await _make_user(db_session)
+    project_a = await _make_project(db_session, user_a)
+    project_b = await _make_project(db_session, user_b)
+
+    create_r = await client.post(
+        f"/api/v1/projects/{project_b.id}/tickets",
+        headers=_hdrs(key_b),
+        json={"title": "B's ticket", "description": "x", "priority": "low"},
+    )
+    tid_b = create_r.json()["id"]
+
+    # User A uses A's project_id with B's ticket_id.
+    bad = await client.put(
+        f"/api/v1/projects/{project_a.id}/tickets/{tid_b}",
+        headers=_hdrs(key_a),
+        json={"title": "Cross-project hijack"},
+    )
+    assert bad.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_update_ticket_depends_on_full_replacement(
+    client: AsyncClient, db_session: AsyncSession,
+):
+    """v1 semantic: depends_on is full-list replacement, not item-patch.
+    Replacing [dep_a] with [dep_b, dep_c] removes dep_a and adds both
+    new deps via TicketDependency wipe + re-insert."""
+    user, raw = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    headers = _hdrs(raw)
+
+    async def _mk(title: str) -> str:
+        r = await client.post(
+            f"/api/v1/projects/{project.id}/tickets",
+            headers=headers,
+            json={"title": title, "description": "x", "priority": "low"},
+        )
+        return r.json()["id"]
+
+    main_tid = await _mk("Main")
+    dep_a = await _mk("Dep A")
+    dep_b = await _mk("Dep B")
+    dep_c = await _mk("Dep C")
+
+    # First set: only dep_a.
+    r1 = await client.put(
+        f"/api/v1/projects/{project.id}/tickets/{main_tid}",
+        headers=headers,
+        json={"depends_on": [dep_a]},
+    )
+    assert r1.status_code == 200
+    assert r1.json()["depends_on"] == [dep_a]
+
+    # Replace with [dep_b, dep_c].
+    r2 = await client.put(
+        f"/api/v1/projects/{project.id}/tickets/{main_tid}",
+        headers=headers,
+        json={"depends_on": [dep_b, dep_c]},
+    )
+    assert r2.status_code == 200
+    new_deps = sorted(r2.json()["depends_on"])
+    assert new_deps == sorted([dep_b, dep_c])

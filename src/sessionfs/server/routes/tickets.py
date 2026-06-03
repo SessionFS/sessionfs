@@ -57,6 +57,7 @@ from sessionfs.server.db.models import (
     Ticket,
     TicketComment,
     TicketDependency,
+    TicketEdit,
     User,
 )
 from sessionfs.server.routes.knowledge import _get_project_for_auth
@@ -226,6 +227,21 @@ class TicketUpdate(BaseModel):
     """Partial update for non-lifecycle fields (re-assign, re-prioritize,
     edit description, attach files/criteria/context). Status transitions
     happen through dedicated lifecycle routes — NOT through this PUT.
+
+    tk_835a876529de4551 — every successful call posts a `system`-authored
+    diff comment on the ticket AND writes one TicketEdit audit row per
+    mutated field. Callers do not need to manually add a comment to
+    record what changed.
+
+    Optimistic concurrency: if `lease_epoch` is present, the update is
+    atomically rejected with 409 when the ticket's epoch has advanced.
+    When omitted, last-write-wins is allowed but the auto-posted diff
+    comment notes the unfenced edit.
+
+    Authorization (route layer): caller must be the ticket creator or
+    a project admin. Server-side lease-holder validation is deferred —
+    the local active-ticket bundle is the canonical lease holder and
+    is not durably reflected on the Ticket row in v1.
     """
 
     title: str | None = None
@@ -236,6 +252,8 @@ class TicketUpdate(BaseModel):
     file_refs: list[str] | None = None
     related_sessions: list[str] | None = None
     acceptance_criteria: list[str] | None = None
+    depends_on: list[str] | None = None
+    lease_epoch: int | None = None
 
     @field_validator("title")
     @classmethod
@@ -1165,19 +1183,95 @@ async def update_ticket(
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> TicketResponse:
-    """Update non-lifecycle fields (title, description, priority,
-    assigned_to, context_refs, file_refs, related_sessions,
-    acceptance_criteria). Status transitions go through dedicated
-    lifecycle routes."""
+    """Update mutable, non-lifecycle ticket fields.
+
+    Mutable: title, description, priority, assigned_to, context_refs,
+    file_refs, related_sessions, acceptance_criteria, depends_on.
+    Status transitions go through dedicated lifecycle routes (start /
+    complete / accept / dismiss / etc.) — NOT through this PUT.
+
+    tk_835a876529de4551 — every mutation:
+      1. Requires authz: the caller must be the ticket creator OR a
+         project admin. Persona name is routing, not authorization.
+      2. Optionally fences on `lease_epoch`: 409 if the caller's epoch
+         is stale, last-write-wins if omitted (with a noted comment).
+      3. Writes one TicketEdit audit row per mutated field with
+         JSON-encoded old/new values.
+      4. Auto-posts a `system`-authored TicketComment with the diff
+         summary so a human reader sees what changed.
+    """
     check_feature(ctx, "agent_tickets")
-    await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_or_404(project_id, db, user.id)
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
 
+    # Authorization. The "lease holder" in the design doc lives in the
+    # local active-ticket bundle (~/.sessionfs/active_ticket.json) and
+    # is not durably reflected on the Ticket row — so server-side we
+    # admit ticket creator + project admin. Future work could persist
+    # a current-lease-holder column and admit that too.
+    if ticket.created_by_user_id != user.id:
+        from sessionfs.server.auth.project_access import user_is_project_admin
+
+        if not await user_is_project_admin(db, user.id, project):
+            raise HTTPException(
+                403,
+                "Only the ticket creator or a project admin may update "
+                "this ticket. Persona name does not grant edit rights.",
+            )
+
+    # Optimistic concurrency: fence on lease_epoch when caller passes
+    # it. Atomic UPDATE WHERE lease_epoch=... so a concurrent writer
+    # holding the same epoch can win exactly once.
+    fence_applied = False
+    if body.lease_epoch is not None:
+        # Atomic check-then-mark: bump the lease_epoch row-level via
+        # an UPDATE WHERE ... rowcount-1 guard. On hit we are the sole
+        # writer for this epoch; on miss we 409.
+        bumped = await db.execute(
+            update(Ticket)
+            .where(Ticket.id == ticket.id, Ticket.lease_epoch == body.lease_epoch)
+            .values(lease_epoch=body.lease_epoch + 1)
+            .execution_options(synchronize_session="fetch")
+        )
+        if bumped.rowcount != 1:
+            current_epoch = (
+                await db.execute(
+                    select(Ticket.lease_epoch).where(Ticket.id == ticket.id)
+                )
+            ).scalar_one_or_none()
+            raise HTTPException(
+                409,
+                {
+                    "error": "stale_lease_epoch",
+                    "message": (
+                        "Ticket lease_epoch has advanced since you read it. "
+                        "Re-fetch the ticket and retry."
+                    ),
+                    "passed_lease_epoch": body.lease_epoch,
+                    "current_lease_epoch": current_epoch,
+                },
+            )
+        # Re-fetch so subsequent reads + the response reflect the bump.
+        await db.refresh(ticket)
+        fence_applied = True
+
+    # Compute per-field diffs BEFORE mutating so the audit row captures
+    # the right old_value. Each entry: (field_name, old_value, new_value)
+    # where values are JSON-serializable; the audit-write encodes them.
+    edits: list[tuple[str, object, object]] = []
+
+    def _record(field: str, old_v: object, new_v: object) -> None:
+        if old_v != new_v:
+            edits.append((field, old_v, new_v))
+
     if body.title is not None:
+        _record("title", ticket.title, body.title)
         ticket.title = body.title
     if body.description is not None:
+        _record("description", ticket.description, body.description)
         ticket.description = body.description
     if body.priority is not None:
+        _record("priority", ticket.priority, body.priority)
         ticket.priority = body.priority
     if body.assigned_to is not None:
         # v0.10.23 tk_884b2321fdb74170 — same best-effort normalize as
@@ -1186,20 +1280,128 @@ async def update_ticket(
         canonical = await _resolve_persona_name(
             db, project_id, body.assigned_to
         )
-        ticket.assigned_to = canonical if canonical is not None else body.assigned_to
+        new_assigned = canonical if canonical is not None else body.assigned_to
+        _record("assigned_to", ticket.assigned_to, new_assigned)
+        ticket.assigned_to = new_assigned
     if body.context_refs is not None:
+        old_refs = json.loads(ticket.context_refs or "[]")
+        _record("context_refs", old_refs, body.context_refs)
         ticket.context_refs = json.dumps(body.context_refs)
     if body.file_refs is not None:
+        old_refs = json.loads(ticket.file_refs or "[]")
+        _record("file_refs", old_refs, body.file_refs)
         ticket.file_refs = json.dumps(body.file_refs)
     if body.related_sessions is not None:
+        old_refs = json.loads(ticket.related_sessions or "[]")
+        _record("related_sessions", old_refs, body.related_sessions)
         ticket.related_sessions = json.dumps(body.related_sessions)
     if body.acceptance_criteria is not None:
+        old_refs = json.loads(ticket.acceptance_criteria or "[]")
+        _record("acceptance_criteria", old_refs, body.acceptance_criteria)
         ticket.acceptance_criteria = json.dumps(body.acceptance_criteria)
+    if body.depends_on is not None:
+        # depends_on lives in the TicketDependency join table, not on
+        # the Ticket row. v1 semantic: full replacement.
+        old_deps = await _ticket_dependencies(db, ticket.id)
+        new_deps = list(body.depends_on)
+        _record("depends_on", old_deps, new_deps)
+        # Wipe + re-insert the dependency rows for this ticket.
+        await db.execute(
+            TicketDependency.__table__.delete().where(
+                TicketDependency.ticket_id == ticket.id
+            )
+        )
+        for dep_id in new_deps:
+            db.add(TicketDependency(ticket_id=ticket.id, depends_on_id=dep_id))
+
+    # No-op: nothing actually changed. Skip the audit-write + diff
+    # comment so empty PUTs don't pollute the audit trail.
+    if not edits:
+        await db.commit()
+        await db.refresh(ticket)
+        deps = await _ticket_dependencies(db, ticket.id)
+        return _to_response(ticket, deps)
+
+    # Per-field audit rows.
+    now = datetime.now(timezone.utc)
+    editing_persona = (
+        ctx.active_persona if hasattr(ctx, "active_persona") else None
+    )
+    for field_name, old_v, new_v in edits:
+        db.add(
+            TicketEdit(
+                id=f"te_{uuid.uuid4().hex[:16]}",
+                ticket_id=ticket.id,
+                edited_by_user_id=user.id,
+                edited_by_persona=editing_persona,
+                field_name=field_name,
+                old_value=json.dumps(old_v),
+                new_value=json.dumps(new_v),
+                edited_at=now,
+                lease_epoch=ticket.lease_epoch,
+            )
+        )
+
+    # Auto-posted diff comment so the change shows up in the human-
+    # readable comment thread. `system` author identity per design doc.
+    diff_summary = _format_edit_diff_summary(edits, fence_applied=fence_applied)
+    db.add(
+        TicketComment(
+            id=f"tc_{uuid.uuid4().hex[:16]}",
+            ticket_id=ticket.id,
+            author_user_id=user.id,
+            author_persona="system",
+            content=diff_summary,
+            created_at=now,
+        )
+    )
 
     await db.commit()
     await db.refresh(ticket)
     deps = await _ticket_dependencies(db, ticket.id)
     return _to_response(ticket, deps)
+
+
+_DIFF_INLINE_MAX = 200  # chars per field before truncation in the comment
+
+
+def _format_edit_diff_summary(
+    edits: list[tuple[str, object, object]],
+    *,
+    fence_applied: bool,
+) -> str:
+    """Render the per-field diff for the auto-posted comment.
+
+    Short scalar fields show 'field: "old" → "new"' inline. Long
+    string fields (description) and list fields show shape changes
+    with truncated previews. The audit trail in `ticket_edits`
+    retains the full JSON-encoded values; this rendering is for
+    human consumption.
+    """
+
+    def _truncate(s: str) -> str:
+        if len(s) <= _DIFF_INLINE_MAX:
+            return s
+        return s[:_DIFF_INLINE_MAX] + "…"
+
+    def _fmt(value: object) -> str:
+        if isinstance(value, list):
+            return f"[{len(value)} item(s)]"
+        if isinstance(value, str):
+            return f'"{_truncate(value)}"'
+        return _truncate(str(value))
+
+    lines = ["**Ticket fields updated** via `update_ticket` (tk_835a876529de4551):"]
+    for field_name, old_v, new_v in edits:
+        lines.append(f"- `{field_name}`: {_fmt(old_v)} → {_fmt(new_v)}")
+    if not fence_applied:
+        lines.append(
+            "\n_Unfenced edit_ — no `lease_epoch` passed; last-write-wins."
+        )
+    lines.append(
+        "\n_Full per-field old/new values preserved in `ticket_edits`._"
+    )
+    return "\n".join(lines)
 
 
 # ── Lifecycle routes ──
