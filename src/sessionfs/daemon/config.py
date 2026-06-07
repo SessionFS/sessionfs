@@ -179,7 +179,40 @@ class DaemonConfig(BaseModel):
 
 
 def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> DaemonConfig:
-    """Load config from TOML file. Returns defaults if file doesn't exist."""
+    """Load config from TOML file. Returns defaults if file doesn't exist.
+
+    tk_457d060822bc48c0 — when called with no explicit path (the common
+    CLI/daemon case), resolve the ACTIVE profile's config file instead of
+    hardcoding config.toml. The default profile still resolves to
+    config.toml, so existing single-account installs are unchanged. An
+    explicit `config_path` (tests, custom deployments) bypasses profile
+    resolution entirely.
+    """
+    if config_path == DEFAULT_CONFIG_PATH:
+        from sessionfs.profiles import (
+            DEFAULT_PROFILE,
+            profile_config_path,
+            resolve_active_profile_name,
+            resolve_store_dir,
+        )
+
+        name = resolve_active_profile_name()
+        config_path = profile_config_path(name)
+        if not config_path.exists():
+            cfg = DaemonConfig()
+            if name != DEFAULT_PROFILE:
+                cfg.store_dir = resolve_store_dir()
+            return cfg
+
+        with open(config_path, "rb") as f:
+            raw = tomllib.load(f)
+        cfg = DaemonConfig.model_validate(raw)
+        # A named profile without an explicit store_dir gets a profile-
+        # scoped store so its sessions don't bleed into the default.
+        if name != DEFAULT_PROFILE and "store_dir" not in raw:
+            cfg.store_dir = resolve_store_dir()
+        return cfg
+
     if not config_path.exists():
         return DaemonConfig()
 

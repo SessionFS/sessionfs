@@ -166,31 +166,29 @@ def _normalize_remote(url: str) -> str:
 def _get_api_config() -> tuple[str, str]:
     """Return (api_url, api_key) for cloud requests.
 
+    tk_457d060822bc48c0 — resolves through the SHARED profile resolver
+    (the same one `_load_sync_config` now uses) so coordination commands
+    and sync commands always resolve to the same identity in a shell.
+
     Resolution order (highest priority first):
     1. `SESSIONFS_API_KEY` / `SESSIONFS_API_URL` environment variables —
        so a fresh CI runner with just those secrets can authenticate
-       without running `sfs auth login` first. Documented in the
-       CI integration examples.
-    2. The `~/.sessionfs/config.toml` sync block populated by
-       `sfs auth login` — for local interactive use.
+       without running `sfs auth login` first.
+    2. `SESSIONFS_PROFILE` env var — per-shell active-profile override.
+    3. The persisted active profile (`sfs auth use <name>`).
+    4. The `default` profile (`~/.sessionfs/config.toml`).
     """
-    import os
+    from sessionfs.profiles import resolve_auth
 
-    env_key = os.environ.get("SESSIONFS_API_KEY")
-    env_url = os.environ.get("SESSIONFS_API_URL")
-    if env_key:
-        return (env_url or "https://api.sessionfs.dev").rstrip("/"), env_key
-
-    from sessionfs.cli.cmd_cloud import _load_sync_config
-    cfg = _load_sync_config()
-    if not cfg["api_key"]:
+    auth = resolve_auth()
+    if not auth.api_key:
         err_console.print(
             "[red]Not authenticated.[/red] Run [bold]sfs auth login[/bold] "
-            "first, or set [bold]SESSIONFS_API_KEY[/bold] (and optionally "
-            "[bold]SESSIONFS_API_URL[/bold]) for CI/non-interactive use."
+            "first, set [bold]SESSIONFS_API_KEY[/bold] (CI/non-interactive), "
+            "or select a profile with [bold]sfs auth use <name>[/bold]."
         )
         raise typer.Exit(1)
-    return cfg["api_url"], cfg["api_key"]
+    return auth.api_url, auth.api_key
 
 
 async def _api_request(

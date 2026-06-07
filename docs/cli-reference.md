@@ -1258,6 +1258,56 @@ sfs auth login [OPTIONS]
 |--------|------|---------|-------------|
 | `--url` | string | `https://api.sessionfs.dev` | Server URL |
 | `--key` | string | — | API key |
+| `--profile` | string | — | Save under a named profile for multi-account use (see below). Omit for the `default` profile. |
+
+### Multi-account profiles (v0.10.29+)
+
+Run more than one SessionFS account on the same device — e.g. your org's
+operational account plus a separate account for external-org / client
+work. One active profile drives **every** command in a shell (push,
+pull, sync, ticket, persona, agent, the daemon) — they all resolve the
+same identity.
+
+```bash
+sfs auth login --profile client-acme       # save a second account
+sfs auth use client-acme                    # make it active (persisted)
+sfs auth profiles                           # list profiles, * marks active
+sfs auth whoami                             # show active profile + resolved email
+sfs auth use default                        # switch back
+```
+
+**Resolution precedence** (highest first):
+
+1. `SESSIONFS_API_KEY` (+ optional `SESSIONFS_API_URL`) — an ephemeral
+   identity for CI / one-off use. Overrides any profile for that shell.
+2. `SESSIONFS_PROFILE=<name>` — a per-shell active-profile override.
+3. The persisted active profile (`sfs auth use <name>`).
+4. The `default` profile (`~/.sessionfs/config.toml`).
+
+Each named profile gets an isolated session store
+(`~/.sessionfs/profiles/<name>/store`) so captures, the local index, and
+the delete-exclusion list don't bleed across accounts. The `default`
+profile keeps `~/.sessionfs` unchanged — existing single-account installs
+need no migration. Profile files are written `chmod 600` (they hold raw
+API keys).
+
+> A long-running daemon pins the profile it started with; it does not
+> flip identity mid-run. Restart the daemon after `sfs auth use` to pick
+> up a new active profile.
+
+#### `sfs auth use <name>`
+
+Set the active profile. Persists to `~/.sessionfs/active_profile`; affects
+all subsequent commands in any new shell until overridden.
+
+#### `sfs auth profiles`
+
+List known profiles and mark the active one.
+
+#### `sfs auth whoami`
+
+Show the active profile and the account it resolves to (one `/auth/me`
+call), including which precedence source supplied the key.
 
 ### `sfs auth signup`
 

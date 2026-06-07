@@ -145,14 +145,29 @@ def _find_oversized_member(
 
 
 def _load_sync_config() -> dict:
-    """Load sync config from config.toml."""
-    from sessionfs.daemon.config import load_config
+    """Load sync config for the active profile.
 
-    config = load_config()
+    tk_457d060822bc48c0 — resolves through the SHARED profile resolver
+    so push/pull/sync use the same identity as ticket/persona/agent.
+    Precedence: SESSIONFS_API_KEY > SESSIONFS_PROFILE > active_profile
+    > default (config.toml). `enabled` is read from config.toml for the
+    default profile (back-compat with the daemon's sync.enabled gate);
+    named profiles + the env-key path are enabled-by-construction.
+    """
+    from sessionfs.profiles import DEFAULT_PROFILE, resolve_auth
+
+    auth = resolve_auth()
+    enabled = True
+    if auth.source == "profile" and auth.profile_name == DEFAULT_PROFILE:
+        # Honor the daemon's sync.enabled flag for the default profile so
+        # existing "sync disabled until login" behavior is unchanged.
+        from sessionfs.daemon.config import load_config
+
+        enabled = load_config().sync.enabled
     return {
-        "api_url": config.sync.api_url,
-        "api_key": config.sync.api_key,
-        "enabled": config.sync.enabled,
+        "api_url": auth.api_url,
+        "api_key": auth.api_key,
+        "enabled": enabled,
     }
 
 
@@ -237,8 +252,39 @@ def auth_login(
     api_key: Optional[str] = typer.Option(
         None, "--key", help="API key (will prompt if not provided)."
     ),
+    profile: Optional[str] = typer.Option(
+        None,
+        "--profile",
+        help=(
+            "Save under a named profile for multi-account use "
+            "(default: the 'default' profile / config.toml). Switch with "
+            "`sfs auth use <name>`."
+        ),
+    ),
 ) -> None:
-    """Authenticate with a SessionFS server."""
+    """Authenticate with a SessionFS server.
+
+    tk_457d060822bc48c0 — pass `--profile <name>` to store the key as a
+    named profile (a second account on the same device). Without it, the
+    key lands in the `default` profile (config.toml), unchanged behavior.
+    """
+    from sessionfs.profiles import (
+        DEFAULT_PROFILE,
+        is_valid_profile_name,
+        write_named_profile,
+    )
+
+    if profile is not None:
+        profile = profile.strip()
+        if not is_valid_profile_name(profile):
+            err_console.print(
+                f"[red]Invalid profile name '{profile}'.[/red] Use lowercase "
+                "letters, digits, '-' or '_' (max 64 chars)."
+            )
+            raise SystemExit(2)
+        if profile == DEFAULT_PROFILE:
+            profile = None  # 'default' is just config.toml
+
     if not api_key:
         api_key = typer.prompt("Enter your API key")
 
@@ -270,11 +316,119 @@ def auth_login(
         err_console.print(f"[red]Connection error: {exc}[/red]")
         raise SystemExit(1)
 
-    # Save to config
-    _save_sync_config(api_url, api_key)
-    console.print(f"[green]Authenticated with {api_url}[/green]")
-    console.print(f"Server status: {result.get('status', 'unknown')}")
-    console.print("Cloud sync is now enabled. The daemon will push sessions automatically.")
+    # Save: named profile → its own file; default → config.toml (preserves
+    # the watcher sections etc. via the surgical [sync]-block updater).
+    if profile is not None:
+        write_named_profile(profile, api_url, api_key)
+        console.print(f"[green]Authenticated with {api_url}[/green] "
+                      f"(profile: [bold]{profile}[/bold])")
+        console.print(f"Server status: {result.get('status', 'unknown')}")
+        console.print(
+            f"Switch to it with [bold]sfs auth use {profile}[/bold] "
+            f"or [bold]SESSIONFS_PROFILE={profile}[/bold] in a shell."
+        )
+    else:
+        _save_sync_config(api_url, api_key)
+        console.print(f"[green]Authenticated with {api_url}[/green]")
+        console.print(f"Server status: {result.get('status', 'unknown')}")
+        console.print("Cloud sync is now enabled. The daemon will push sessions automatically.")
+
+
+@auth_app.command("use")
+def auth_use(
+    name: str = typer.Argument(..., help="Profile name to activate (e.g. 'default')."),
+) -> None:
+    """Set the active auth profile for all subsequent commands.
+
+    tk_457d060822bc48c0 — persists the choice so every command (push,
+    ticket, sync, agent, …) in any new shell uses this identity, until
+    overridden by SESSIONFS_PROFILE or SESSIONFS_API_KEY.
+    """
+    from sessionfs.profiles import (
+        DEFAULT_PROFILE,
+        is_valid_profile_name,
+        list_profiles,
+        profile_config_path,
+        set_active_profile,
+    )
+
+    name = name.strip()
+    if not is_valid_profile_name(name):
+        err_console.print(f"[red]Invalid profile name '{name}'.[/red]")
+        raise SystemExit(2)
+    if name != DEFAULT_PROFILE and not profile_config_path(name).exists():
+        known = ", ".join(list_profiles()) or "(none)"
+        err_console.print(
+            f"[red]Profile '{name}' not found.[/red] Known profiles: {known}. "
+            f"Create one with [bold]sfs auth login --profile {name}[/bold]."
+        )
+        raise SystemExit(1)
+    set_active_profile(name)
+    console.print(f"[green]Active profile is now '{name}'.[/green]")
+
+
+@auth_app.command("profiles")
+def auth_profiles() -> None:
+    """List known auth profiles and mark the active one."""
+    from sessionfs.profiles import list_profiles, resolve_active_profile_name
+
+    names = list_profiles()
+    if not names:
+        console.print("[dim]No profiles yet. Run `sfs auth login`.[/dim]")
+        return
+    active = resolve_active_profile_name()
+    for n in names:
+        marker = "[green]*[/green]" if n == active else " "
+        console.print(f" {marker} {n}")
+    import os as _os
+    if _os.environ.get("SESSIONFS_API_KEY"):
+        console.print(
+            "[yellow]Note:[/yellow] SESSIONFS_API_KEY is set — it overrides "
+            "the active profile for this shell."
+        )
+    elif _os.environ.get("SESSIONFS_PROFILE"):
+        console.print(
+            f"[dim]SESSIONFS_PROFILE={_os.environ['SESSIONFS_PROFILE']} "
+            f"is set for this shell.[/dim]"
+        )
+
+
+@auth_app.command("whoami")
+def auth_whoami() -> None:
+    """Show the active profile + the account it resolves to (one /auth/me call)."""
+    from sessionfs.profiles import resolve_auth
+
+    auth = resolve_auth()
+    if auth.source == "env_key":
+        label = "SESSIONFS_API_KEY (env)"
+    else:
+        label = f"profile '{auth.profile_name}'"
+    if not auth.api_key:
+        err_console.print(
+            f"[red]Not authenticated[/red] ({label}). Run `sfs auth login`."
+        )
+        raise SystemExit(1)
+
+    import httpx
+    try:
+        resp = httpx.get(
+            f"{auth.api_url}/api/v1/auth/me",
+            headers={"Authorization": f"Bearer {auth.api_key}"},
+            timeout=10.0,
+        )
+    except Exception as exc:
+        err_console.print(f"[red]Could not reach server: {exc}[/red]")
+        raise SystemExit(1)
+    if resp.status_code != 200:
+        err_console.print(
+            f"[red]Auth check failed (HTTP {resp.status_code}) for {label}.[/red]"
+        )
+        raise SystemExit(1)
+    me = resp.json()
+    console.print(f"Identity:  [bold]{me.get('email', '?')}[/bold]")
+    console.print(f"Resolved from: {label}")
+    console.print(f"Server:    {auth.api_url}")
+    console.print(f"Tier:      {me.get('tier', '?')}")
 
 
 @auth_app.command("signup")

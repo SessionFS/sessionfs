@@ -97,25 +97,36 @@ def test_get_api_config_honors_env_vars(monkeypatch):
 
     monkeypatch.setenv("SESSIONFS_API_KEY", "test-key-from-env")
     monkeypatch.setenv("SESSIONFS_API_URL", "https://api.example.test/")
-    # _load_sync_config must NOT be called — env overrides take precedence.
-    def _explode():
-        raise RuntimeError("_load_sync_config should not be called when env is set")
-    monkeypatch.setattr("sessionfs.cli.cmd_cloud._load_sync_config", _explode)
-
+    # tk_457d060822bc48c0 — _get_api_config now resolves through the
+    # shared profile resolver (sessionfs.profiles.resolve_auth), which
+    # handles the SESSIONFS_API_KEY env path itself. The real config.toml
+    # / _load_sync_config is never consulted when the env key is set.
     url, key = cmd_rules._get_api_config()
     assert url == "https://api.example.test"  # trailing slash stripped
     assert key == "test-key-from-env"
 
 
 def test_get_api_config_falls_back_to_local_config(monkeypatch):
-    """Without env vars, fall back to the ~/.sessionfs sync config."""
+    """Without env vars, resolve through the active profile.
+
+    tk_457d060822bc48c0 — the seam moved from cmd_cloud._load_sync_config
+    to sessionfs.profiles.resolve_auth (the single resolver both the
+    coordination and sync commands now share). Patch that boundary so
+    the test doesn't read the developer's real ~/.sessionfs/config.toml.
+    """
     from sessionfs.cli import cmd_rules
+    from sessionfs.profiles import ResolvedAuth
 
     monkeypatch.delenv("SESSIONFS_API_KEY", raising=False)
     monkeypatch.delenv("SESSIONFS_API_URL", raising=False)
     monkeypatch.setattr(
-        "sessionfs.cli.cmd_cloud._load_sync_config",
-        lambda: {"api_url": "https://api.sessionfs.dev", "api_key": "config-key"},
+        "sessionfs.profiles.resolve_auth",
+        lambda: ResolvedAuth(
+            api_url="https://api.sessionfs.dev",
+            api_key="config-key",
+            source="profile",
+            profile_name="default",
+        ),
     )
 
     url, key = cmd_rules._get_api_config()
