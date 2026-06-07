@@ -580,12 +580,16 @@ def push(
                             console.print("[dim]Push cancelled.[/dim]")
                             return
 
-        # Check if session is in the local exclusion list (deleted from cloud)
+        # Check if session is in the local exclusion list (deleted from cloud).
+        # Scope the exclusion store to the active profile (tk_457d060822bc48c0
+        # R1 MED #3) so two accounts don't share one deleted.json/backoff file.
         from sessionfs.store.deleted import is_excluded, get_entry, remove_exclusion
+        from sessionfs.cli.common import get_store_dir
+        _del_base = get_store_dir()
 
         extra_headers: dict[str, str] = {}
-        if is_excluded(full_id):
-            entry = get_entry(full_id)
+        if is_excluded(full_id, base_dir=_del_base):
+            entry = get_entry(full_id, base_dir=_del_base)
             scope = entry.get("scope", "?") if entry else "?"
             from sessionfs.cli.common import confirm_or_exit
             if not confirm_or_exit(
@@ -641,8 +645,8 @@ def push(
         result = asyncio.run(_push())
 
         # On successful push of a previously deleted session, clear exclusion
-        if is_excluded(full_id):
-            remove_exclusion(full_id)
+        if is_excluded(full_id, base_dir=_del_base):
+            remove_exclusion(full_id, base_dir=_del_base)
 
         # Update local manifest with new etag
         _update_manifest_sync(session_dir, result.etag)
@@ -656,7 +660,7 @@ def push(
 
     except SyncDeletedError:
         from sessionfs.sync.deleted_cleanup import cleanup_deleted_session
-        cleanup_deleted_session(full_id, session_dir, store)
+        cleanup_deleted_session(full_id, session_dir, store, base_dir=_del_base)
         err_console.print(
             f"[yellow]Session {full_id[:12]} has been deleted on the server.[/yellow]\n"
             f"Local copy cleaned up. Restore with: sfs restore {full_id}"
@@ -738,9 +742,12 @@ def pull(
         _update_manifest_sync(target_dir, result.etag)
 
         # Explicit pull overrides exclusion — remove from deleted.json
+        # (active-profile-scoped store, tk_457d060822bc48c0 R1 MED #3).
         from sessionfs.store.deleted import is_excluded, remove_exclusion
-        if is_excluded(session_id):
-            remove_exclusion(session_id)
+        from sessionfs.cli.common import get_store_dir
+        _del_base = get_store_dir()
+        if is_excluded(session_id, base_dir=_del_base):
+            remove_exclusion(session_id, base_dir=_del_base)
 
         console.print(
             f"[green]Pulled session {session_id}[/green]\n"
@@ -829,6 +836,12 @@ def sync_all() -> None:
 
     store = open_store()
 
+    # Active-profile-scoped exclusion store, captured once so both
+    # _push_one and _pull_one closures use the same dir
+    # (tk_457d060822bc48c0 R1 MED #3).
+    from sessionfs.cli.common import get_store_dir
+    _del_base = get_store_dir()
+
     # Resolve the tier-aware member-size cap once for this command.
     _sync_cfg = _load_sync_config()
     max_member_size = _resolve_max_member_size(
@@ -881,7 +894,7 @@ def sync_all() -> None:
                     get_entry,
                 )
 
-                hint = get_entry(sid)
+                hint = get_entry(sid, base_dir=_del_base)
                 if (
                     hint is not None
                     and hint.get("reason") not in TRANSIENT_REASONS
@@ -932,7 +945,7 @@ def sync_all() -> None:
                         # now). Closes the round-7 race where an
                         # unlocked-None-then-hard-delete sequence
                         # would have pushed the deleted session.
-                        if not acquire_for_retry(sid):
+                        if not acquire_for_retry(sid, base_dir=_del_base):
                             return
                         result = await client.push_session(sid, archive_data, etag=local_etag)
                         _update_manifest_sync(session_dir, result.etag)
@@ -944,7 +957,7 @@ def sync_all() -> None:
                         )
                     except SyncDeletedError:
                         from sessionfs.sync.deleted_cleanup import cleanup_deleted_session
-                        cleanup_deleted_session(sid, session_dir, store)
+                        cleanup_deleted_session(sid, session_dir, store, base_dir=_del_base)
                         push_results[sid] = "skipped"
                     except Exception as exc:
                         push_results[sid] = "error"
@@ -971,7 +984,7 @@ def sync_all() -> None:
                     get_entry,
                 )
 
-                hint = get_entry(sid)
+                hint = get_entry(sid, base_dir=_del_base)
                 if (
                     hint is not None
                     and hint.get("reason") not in TRANSIENT_REASONS
@@ -980,7 +993,7 @@ def sync_all() -> None:
 
                 async with pull_sem:
                     try:
-                        if not acquire_for_retry(sid):
+                        if not acquire_for_retry(sid, base_dir=_del_base):
                             return False
                         result = await client.pull_session(sid)
                         if result.data:
@@ -1240,7 +1253,8 @@ def handoff(
 
     except SyncDeletedError:
         from sessionfs.sync.deleted_cleanup import cleanup_deleted_session
-        cleanup_deleted_session(full_id, session_dir, store)
+        from sessionfs.cli.common import get_store_dir as _gsd
+        cleanup_deleted_session(full_id, session_dir, store, base_dir=_gsd())
         err_console.print(
             f"[yellow]Session {full_id[:12]} has been deleted on the server.[/yellow]\n"
             f"Local copy cleaned up. Cannot hand off a deleted session.\n"

@@ -16,15 +16,19 @@ from sessionfs.cli.common import (
 
 
 def _load_sync_config() -> dict:
-    """Load sync config from config.toml."""
-    from sessionfs.daemon.config import load_config
+    """Load sync config for the active profile.
 
-    config = load_config()
-    return {
-        "api_url": config.sync.api_url,
-        "api_key": config.sync.api_key,
-        "enabled": config.sync.enabled,
-    }
+    tk_457d060822bc48c0 R1 MED — delegate to the shared resolver so
+    delete/trash/restore honor the SAME precedence chain
+    (SESSIONFS_API_KEY > SESSIONFS_PROFILE > active_profile > default)
+    as push/pull/sync and the coordination commands. Previously this
+    called load_config() directly, which honored profiles but NOT the
+    explicit SESSIONFS_API_KEY override — so a shell with that env set
+    would delete/trash/restore against the wrong account.
+    """
+    from sessionfs.cli.cmd_cloud import _load_sync_config as _shared
+
+    return _shared()
 
 
 def _get_sync_client():
@@ -140,8 +144,11 @@ def delete(
             except Exception:
                 pass  # Index entry may not exist
 
-        # Add to local exclusion list
-        mark_deleted(full_id, scope)
+        # Add to local exclusion list — scoped to the active profile's
+        # store so two accounts don't share one deleted.json
+        # (tk_457d060822bc48c0 R1 MED #3).
+        from sessionfs.cli.common import get_store_dir
+        mark_deleted(full_id, scope, base_dir=get_store_dir())
         console.print(f"[green]Session {full_id[:16]} marked as deleted (scope={scope}).[/green]")
 
     finally:
@@ -171,10 +178,11 @@ def trash() -> None:
     except Exception as exc:
         err_console.print(f"[yellow]Could not reach server: {exc}[/yellow]")
 
-    # Fetch local exclusion list
+    # Fetch local exclusion list — active-profile-scoped store.
     from sessionfs.store.deleted import list_deleted
+    from sessionfs.cli.common import get_store_dir
 
-    local_deleted = list_deleted()
+    local_deleted = list_deleted(base_dir=get_store_dir())
 
     if not server_trash and not local_deleted:
         console.print("[dim]Trash is empty.[/dim]")
@@ -232,8 +240,12 @@ def restore(
 ) -> None:
     """Restore a soft-deleted session."""
     from sessionfs.store.deleted import get_entry, remove_exclusion
+    from sessionfs.cli.common import get_store_dir
 
     import httpx
+
+    # Active-profile-scoped exclusion store (tk_457d060822bc48c0 R1 MED #3).
+    _base = get_store_dir()
 
     # Resolve prefix → full ID from local store when available.
     try:
@@ -255,7 +267,7 @@ def restore(
     if resp.status_code == 200:
         console.print(f"[green]Restored session {session_id} on server.[/green]")
         # Check if local copy was also removed
-        entry = get_entry(session_id)
+        entry = get_entry(session_id, base_dir=_base)
         if entry and entry.get("scope") in ("local", "everywhere"):
             console.print(
                 f"[yellow]Local copy was removed. Run: sfs pull {session_id}[/yellow]"
@@ -264,7 +276,7 @@ def restore(
         console.print("[yellow]Session is not deleted on server.[/yellow]")
         # Still check local exclusion — user may have done a local-only
         # delete and then the server copy was restored via dashboard.
-        entry = get_entry(session_id)
+        entry = get_entry(session_id, base_dir=_base)
         if entry:
             console.print(
                 "[dim]Clearing local exclusion — session is active on server.[/dim]"
@@ -278,7 +290,7 @@ def restore(
         return
     elif resp.status_code == 404:
         # May be local-only delete
-        entry = get_entry(session_id)
+        entry = get_entry(session_id, base_dir=_base)
         if entry and entry.get("scope") == "local":
             console.print("[yellow]This was a local-only delete. No server restore needed.[/yellow]")
         else:
@@ -289,5 +301,5 @@ def restore(
         raise SystemExit(1)
 
     # Remove from local exclusion list
-    remove_exclusion(session_id)
+    remove_exclusion(session_id, base_dir=_base)
     console.print(f"[green]Removed {session_id} from local exclusion list.[/green]")

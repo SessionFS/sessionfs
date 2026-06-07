@@ -235,3 +235,126 @@ def test_list_profiles_includes_named_and_default(sfs_home):
     assert "default" in names
     assert "work" in names
     assert "client" in names
+
+
+# ── R1 LOW #4: invalid SESSIONFS_PROFILE / active_profile rejected ──
+
+
+def test_invalid_env_profile_falls_back(sfs_home, monkeypatch):
+    """A hostile SESSIONFS_PROFILE='../bad' must not flow into
+    profile_config_path; resolution falls back to default."""
+    from sessionfs.profiles import resolve_active_profile_name
+
+    _write_default_config(sfs_home, api_key="key_default")
+    monkeypatch.setenv("SESSIONFS_PROFILE", "../bad")
+    assert resolve_active_profile_name() == "default"
+
+
+def test_invalid_active_profile_file_falls_back(sfs_home):
+    """A hand-edited active_profile with a bad name is ignored."""
+    from sessionfs.profiles import active_profile_path, resolve_active_profile_name
+
+    _write_default_config(sfs_home)
+    active_profile_path().write_text("../../etc/passwd\n")
+    assert resolve_active_profile_name() == "default"
+
+
+def test_invalid_env_profile_resolve_auth_uses_default(sfs_home, monkeypatch):
+    from sessionfs.profiles import resolve_auth
+
+    _write_default_config(sfs_home, api_key="key_default")
+    monkeypatch.setenv("SESSIONFS_PROFILE", "../bad")
+    auth = resolve_auth()
+    assert auth.api_key == "key_default"
+    assert auth.profile_name == "default"
+
+
+# ── R1 MED #2: delete/trash/restore share the resolver (env-key honored) ──
+
+
+def test_delete_load_sync_config_honors_env_key(sfs_home, monkeypatch):
+    """cmd_delete._load_sync_config must honor SESSIONFS_API_KEY like
+    push/ticket — it delegates to the shared resolver now."""
+    _write_default_config(sfs_home, api_key="key_default")
+    monkeypatch.setenv("SESSIONFS_API_KEY", "key_env")
+
+    from sessionfs.cli.cmd_delete import _load_sync_config as delete_cfg
+    from sessionfs.cli.cmd_cloud import _load_sync_config as cloud_cfg
+
+    assert delete_cfg()["api_key"] == "key_env"
+    assert delete_cfg()["api_key"] == cloud_cfg()["api_key"]
+
+
+def test_delete_resolver_agrees_with_active_profile(sfs_home):
+    from sessionfs.profiles import set_active_profile, write_named_profile
+
+    _write_default_config(sfs_home, api_key="key_default")
+    write_named_profile("work", "https://api.sessionfs.dev", "key_work")
+    set_active_profile("work")
+
+    from sessionfs.cli.cmd_delete import _load_sync_config as delete_cfg
+
+    assert delete_cfg()["api_key"] == "key_work"
+
+
+# ── R1 MED #3: two profiles do not share deleted.json ──
+
+
+def test_two_profiles_have_isolated_deleted_json(sfs_home):
+    """A deletion recorded under the default profile's store must NOT be
+    visible from a named profile's store dir, and vice versa."""
+    from sessionfs.profiles import resolve_store_dir, set_active_profile, write_named_profile
+    from sessionfs.store import deleted as d
+
+    _write_default_config(sfs_home)
+    write_named_profile("work", "https://api.sessionfs.dev", "key_work")
+
+    # Default profile active → store dir = ~/.sessionfs.
+    default_store = resolve_store_dir()
+    d.mark_deleted("ses_default_only", "cloud", reason="too_large", base_dir=default_store)
+
+    # Switch to 'work' → its own store dir.
+    set_active_profile("work")
+    work_store = resolve_store_dir()
+    assert work_store != default_store
+    d.mark_deleted("ses_work_only", "cloud", reason="too_large", base_dir=work_store)
+
+    # Each store sees only its own entry.
+    default_entries = d.list_deleted(base_dir=default_store)
+    work_entries = d.list_deleted(base_dir=work_store)
+    assert "ses_default_only" in default_entries
+    assert "ses_default_only" not in work_entries
+    assert "ses_work_only" in work_entries
+    assert "ses_work_only" not in default_entries
+
+
+# ── R1 HIGH #1: daemon reload does not silently switch profile ──
+
+
+def test_daemon_reload_does_not_switch_profile_mid_run(sfs_home, monkeypatch):
+    """A daemon started under the default profile must keep the default
+    profile's sync key after a reload, even if the active profile was
+    changed to a different one in the meantime."""
+    from sessionfs.daemon.config import DaemonConfig
+    from sessionfs.daemon.main import Daemon
+    from sessionfs.profiles import set_active_profile, write_named_profile
+
+    _write_default_config(sfs_home, api_key="key_default")
+    write_named_profile("work", "https://api.sessionfs.dev", "key_work")
+
+    # Build a daemon config carrying the default profile's key, pinned to
+    # 'default'. (We construct DaemonConfig directly + set the syncer key
+    # so we don't depend on the watcher subsystem.)
+    cfg = DaemonConfig(sync={"enabled": True, "api_key": "key_default",
+                             "api_url": "https://api.sessionfs.dev"})
+    daemon = Daemon(cfg)
+    assert daemon._pinned_profile == "default"
+
+    # Operator switches the active profile to 'work' between SIGHUPs.
+    set_active_profile("work")
+
+    # Reload must NOT adopt profile 'work's key — pinned to default.
+    daemon._reload_config()
+    assert daemon.config.sync.api_key == "key_default", (
+        "daemon reload must not switch identity mid-run"
+    )

@@ -110,16 +110,38 @@ def resolve_active_profile_name() -> str:
     """Active profile name by precedence (excluding the env-KEY path).
 
     SESSIONFS_PROFILE > persisted active_profile file > 'default'.
+
+    Names from the env var or the persisted file are VALIDATED here
+    (not just at `sfs auth use` / `login` time): a hand-edited
+    active_profile or a hostile ``SESSIONFS_PROFILE=../bad`` must not
+    flow into ``profile_config_path`` and point key resolution at a
+    path outside ``profiles/``. Invalid names are ignored and we fall
+    through to the next precedence tier (ultimately 'default'). Codex
+    R1 LOW on tk_457d060822bc48c0.
     """
     env_profile = os.environ.get("SESSIONFS_PROFILE")
     if env_profile:
-        return env_profile.strip()
+        env_profile = env_profile.strip()
+        if is_valid_profile_name(env_profile):
+            return env_profile
+        import logging
+        logging.getLogger("sessionfs.profiles").warning(
+            "Ignoring invalid SESSIONFS_PROFILE=%r (not a valid profile "
+            "name); falling back to the persisted/default profile.",
+            env_profile,
+        )
     apath = active_profile_path()
     if apath.exists():
         try:
             name = apath.read_text().strip()
-            if name:
+            if name and is_valid_profile_name(name):
                 return name
+            if name:
+                import logging
+                logging.getLogger("sessionfs.profiles").warning(
+                    "Ignoring invalid active_profile %r; using 'default'.",
+                    name,
+                )
         except OSError:
             pass
     return DEFAULT_PROFILE
