@@ -57,6 +57,16 @@ class LocalStore:
         self._sessions_dir = store_dir / "sessions"
         self._index: SessionIndex | None = None
 
+    @property
+    def store_dir(self) -> Path:
+        """The root store directory (e.g. ~/.sessionfs, or a named
+        profile's store). Public accessor for callers that must scope
+        the active profile's deleted.json — tk_457d060822bc48c0 R2:
+        capture_guard checks is_excluded(base_dir=store.store_dir) so a
+        named-profile deletion is honored by the watcher, not just the
+        sync path."""
+        return self._store_dir
+
     def initialize(self) -> None:
         """Create directory structure and open the index database."""
         self._store_dir.mkdir(parents=True, exist_ok=True)

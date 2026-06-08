@@ -48,7 +48,13 @@ def should_recapture(
     # (via `sfs restore` or `sfs pull <id>`).
     try:
         from sessionfs.store.deleted import is_excluded
-        if is_excluded(sfs_id):
+        # Scope the exclusion check to the active profile's store
+        # (tk_457d060822bc48c0 R2 MEDIUM). The daemon/sync/delete paths
+        # now write profile-scoped deleted.json entries; without
+        # base_dir here the watcher would read the global/default file,
+        # miss a named-profile deletion, and resurrect the .sfs from the
+        # native source — recapturing a deleted session.
+        if is_excluded(sfs_id, base_dir=store.store_dir):
             logger.info(
                 "Skipping capture of %s: %s session is in local exclusion list "
                 "(deleted.json) — use 'sfs restore' or 'sfs pull' to clear",
