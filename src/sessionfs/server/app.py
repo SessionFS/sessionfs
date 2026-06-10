@@ -94,6 +94,18 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
             allow_credentials=True,
             allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
             allow_headers=["Content-Type", "Authorization", "If-Match", "If-None-Match"],
+            # tk_1a73a7bf359f41c3 — expose ETag so cross-origin browsers can
+            # READ it. The dashboard's GET /rules stores response.headers
+            # .get('ETag') and replays it as If-Match on the next PUT
+            # (optimistic concurrency). Without this, a cross-origin fetch
+            # (app.sessionfs.dev → api.sessionfs.dev on cloud) hides the
+            # ETag from JS per the Fetch spec, so etag resolves to '' and
+            # the PUT sends `If-Match: ''` → rules.py raises 428. Same-origin
+            # Helm deployments behaved correctly because the header was
+            # always readable there — which is why the bug was cloud-only.
+            # v0.10.24 (febd732) added If-Match to allow_headers (send side);
+            # this completes the round-trip by exposing ETag (read side).
+            expose_headers=["ETag"],
             max_age=3600,
         )
 

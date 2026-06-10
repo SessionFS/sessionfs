@@ -161,3 +161,57 @@ class TestCORSDefaults:
         assert '"*"' not in source.split("allow_headers")[1].split("]")[0], (
             "allow_headers must not be wildcard ['*']; explicit allowlist required."
         )
+
+    def test_exposes_etag_for_cross_origin_reads(self):
+        """tk_1a73a7bf359f41c3 — the dashboard's GET /rules stores the
+        response ETag and replays it as If-Match on the next PUT (optimistic
+        concurrency). A cross-origin browser only exposes a response header to
+        JS when it appears in Access-Control-Expose-Headers; without ETag
+        there, fetch hides it, the dashboard reads etag='' and the PUT sends
+        `If-Match: ''` → rules.py raises 428.
+
+        This was CLOUD-ONLY: on Helm the dashboard is served same-origin with
+        the API so the ETag was always readable; on cloud (app.sessionfs.dev →
+        api.sessionfs.dev) the header was hidden. v0.10.24 added If-Match to
+        allow_headers (send side); exposing ETag completes the round-trip
+        (read side).
+
+        Dashboard call site: dashboard/src/api/client.ts:644
+        (resp.headers.get('ETag')) → client.ts:1199 (If-Match on PUT)."""
+        from fastapi.testclient import TestClient
+
+        from sessionfs.server.app import create_app
+
+        config = ServerConfig(cors_origins=["https://app.sessionfs.dev"])
+        app = create_app(config)
+        with TestClient(app) as client:
+            # An ACTUAL (non-preflight) cross-origin GET — Starlette only emits
+            # Access-Control-Expose-Headers on real responses, not OPTIONS.
+            resp = client.get(
+                "/health",
+                headers={"Origin": "https://app.sessionfs.dev"},
+            )
+        exposed = resp.headers.get("access-control-expose-headers", "").lower()
+        assert "etag" in exposed, (
+            f"ETag missing from access-control-expose-headers: {exposed!r}. "
+            "Cross-origin browsers will hide the rules ETag, the dashboard "
+            "will replay If-Match: '' and the rules PUT will 428 (cloud-only)."
+        )
+
+    def test_expose_headers_pinned_to_audited_set(self):
+        """Drift guard — pins CORSMiddleware.expose_headers. ETag is the only
+        response header the cross-origin dashboard reads back from JS
+        (dashboard/src/api/client.ts:644). Adding to this list means a new
+        cross-origin header read was introduced; removing ETag re-breaks the
+        rules PUT round-trip (tk_1a73a7bf359f41c3)."""
+        import inspect
+
+        from sessionfs.server import app as app_module
+
+        source = inspect.getsource(app_module.create_app)
+        assert 'expose_headers=["ETag"]' in source, (
+            "CORS expose_headers drifted from audited set. ETag must be exposed "
+            "so the cross-origin dashboard can read the rules ETag and replay "
+            "it as If-Match on PUT. If this change is intentional, re-audit the "
+            "dashboard cross-origin response-header reads and update this test."
+        )
