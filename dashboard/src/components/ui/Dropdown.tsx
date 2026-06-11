@@ -101,10 +101,11 @@ export function Dropdown({ trigger, items, onSelect, menuLabel, minWidthClass }:
 
       {open && (
         <div
-          className={`absolute top-full right-0 mt-1 z-40 ${minWidthClass || 'min-w-[160px]'} rounded-lg py-1 shadow-[var(--shadow-lg)]`}
+          className={`absolute top-full right-0 mt-1 z-40 ${minWidthClass || 'min-w-[160px]'} rounded-lg py-1`}
           style={{
             backgroundColor: 'var(--overlay)',
             border: '1px solid var(--border)',
+            boxShadow: 'var(--shadow-overlay)',
           }}
         >
           <ul ref={listRef} role="menu" aria-label={menuLabel}>

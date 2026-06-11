@@ -68,6 +68,10 @@
 
   --brand:       #1a73e8;
   --brand-hover: #1557b0;
+
+  /* Light-mode overlays: edge highlight is negative (shadow at top) */
+  --edge-highlight: rgba(0, 0, 0, 0.05);
+  --shadow-overlay: inset 0 1px 0 var(--edge-highlight), var(--shadow-lg);
 }
 
 /* ── Shared tokens (theme-independent) ── */
@@ -101,6 +105,7 @@
 
   --brand-glow: color-mix(in srgb, var(--brand) 25%, transparent);
   --edge-highlight: rgba(255, 255, 255, 0.06);
+  --shadow-overlay: inset 0 1px 0 var(--edge-highlight), var(--shadow-lg);
 }
 
 /* Dialog/Drawer enter animation — scale(0.95) + fade, 150ms ease-out */

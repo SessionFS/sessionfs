@@ -47,10 +47,11 @@ export function Dialog({ open, onClose, titleId, className: panelClassName, chil
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className={`relative rounded-xl p-6 max-w-lg w-full mx-4 shadow-[var(--shadow-lg)] ${panelClassName ?? ''}`}
+        className={`relative rounded-xl p-6 max-w-lg w-full mx-4 ${panelClassName ?? ''}`}
         style={{
           backgroundColor: 'var(--overlay)',
           border: '1px solid var(--border)',
+          boxShadow: 'var(--shadow-overlay)',
           animation: 'overlayEnter 150ms ease-out both',
         }}
       >

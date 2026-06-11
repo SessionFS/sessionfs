@@ -283,7 +283,9 @@ export default function SearchBar() {
           className="absolute top-full left-0 right-0 mt-1 border border-[var(--border)] rounded-lg overflow-auto max-h-[360px] z-50"
           style={{
             backgroundColor: 'var(--overlay)',
-            boxShadow: 'var(--shadow-lg)',
+            boxShadow: 'var(--shadow-overlay)',
+            maskImage: 'linear-gradient(to bottom, black 0%, black calc(100% - 20px), transparent 100%)',
+            WebkitMaskImage: 'linear-gradient(to bottom, black 0%, black calc(100% - 20px), transparent 100%)',
           }}
         >
           {GROUP_ORDER.map((key) => renderGroup(key))}
@@ -308,7 +310,7 @@ export default function SearchBar() {
           className="absolute top-full left-0 right-0 mt-1 border border-[var(--border)] rounded-lg z-50 px-3 py-3 text-sm text-[var(--text-tertiary)] text-center"
           style={{
             backgroundColor: 'var(--overlay)',
-            boxShadow: 'var(--shadow-lg)',
+            boxShadow: 'var(--shadow-overlay)',
           }}
         >
           No results found
