@@ -9,15 +9,30 @@ function getInitialTheme(): 'light' | 'dark' {
   return 'dark';
 }
 
-export default function ThemeToggle() {
-  const [theme, setTheme] = useState<'light' | 'dark'>(getInitialTheme);
+interface ThemeToggleProps {
+  /** Controlled theme value. When set with onToggle, the component is fully controlled. */
+  theme?: 'light' | 'dark';
+  /** Called when the user toggles. When provided, the component is fully controlled. */
+  onToggle?: () => void;
+}
+
+export default function ThemeToggle({ theme: controlledTheme, onToggle }: ThemeToggleProps) {
+  const [internalTheme, setInternalTheme] = useState<'light' | 'dark'>(getInitialTheme);
+
+  const theme = controlledTheme ?? internalTheme;
+
+  const toggle = () => {
+    if (onToggle) {
+      onToggle();
+    } else {
+      setInternalTheme((t) => (t === 'dark' ? 'light' : 'dark'));
+    }
+  };
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     lsSet('sfs-theme', theme);
   }, [theme]);
-
-  const toggle = () => setTheme((t) => (t === 'dark' ? 'light' : 'dark'));
 
   return (
     <button

@@ -216,6 +216,15 @@ code, pre, kbd, samp {
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* Dropdown enter animation — 150ms fade + scale, respects reduced-motion */
+@keyframes dropdownEnter {
+  from { opacity: 0; transform: scale(0.95) translateY(-4px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+.dropdown-enter {
+  animation: dropdownEnter 150ms ease-out both;
+}
+
 /* ── Reduced motion ── */
 @media (prefers-reduced-motion: reduce) {
   *,

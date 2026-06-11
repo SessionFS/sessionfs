@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect } from 'react';
-import { Link, Outlet, useLocation } from 'react-router-dom';
+import { useState, useEffect } from 'react';
+import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { useHandoffInbox } from '../hooks/useHandoffs';
 import { useMe } from '../hooks/useMe';
@@ -8,6 +8,7 @@ import { useMyInvites } from '../invites/useInvites';
 import SearchBar from './SearchBar';
 import ThemeToggle from './ThemeToggle';
 import { Badge } from './Badge';
+import { Dropdown } from './ui';
 import Wordmark from './Wordmark';
 
 const NAV_LINKS = [
@@ -50,29 +51,26 @@ function siteHref(path: string): string {
 export default function Layout() {
   const { logout } = useAuth();
   const location = useLocation();
+  const navigate = useNavigate();
   const inbox = useHandoffInbox();
   const me = useMe();
   const isAdmin = me.data?.tier === 'admin';
+  const hasOrg = !!me.data?.default_org_id;
   const pendingCount = inbox.data?.handoffs.filter((h) => h.status === 'pending').length ?? 0;
   const incomingTransfers = useTransfers('incoming', 'pending');
   const transfersPendingCount = incomingTransfers.data?.transfers.length ?? 0;
   const myInvites = useMyInvites();
   const invitesPendingCount = myInvites.data?.invites.length ?? 0;
 
-  const [avatarOpen, setAvatarOpen] = useState(false);
-  const avatarRef = useRef<HTMLDivElement>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
-  // Close avatar dropdown on outside click
-  useEffect(() => {
-    function handleClick(e: MouseEvent) {
-      if (avatarRef.current && !avatarRef.current.contains(e.target as Node)) {
-        setAvatarOpen(false);
-      }
-    }
-    document.addEventListener('mousedown', handleClick);
-    return () => document.removeEventListener('mousedown', handleClick);
-  }, []);
+  // Own the theme state so the header toggle and the account menu stay in sync.
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    const stored = (() => { try { return localStorage.getItem('sfs-theme'); } catch { return null; } })();
+    return stored === 'light' || stored === 'dark' ? stored : 'dark';
+  });
+
+  const toggleTheme = () => setTheme((t) => (t === 'dark' ? 'light' : 'dark'));
 
   // Close drawer on route change
   useEffect(() => {
@@ -96,6 +94,102 @@ export default function Layout() {
   const tierLabel = me.data?.tier || 'free';
   const tierVariant = tierLabel === 'admin' ? 'info' : tierLabel === 'team' ? 'success' : 'default';
   const userInitial = (me.data?.email?.[0] || 'U').toUpperCase();
+
+  // ── Account menu icon SVGs ──
+  const iconProps = { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const };
+
+  const orgIcon = (
+    <svg {...iconProps}><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>
+  );
+  const invitesIcon = (
+    <svg {...iconProps}><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><line x1="19" y1="8" x2="19" y2="14" /><line x1="22" y1="11" x2="16" y2="11" /></svg>
+  );
+  const billingIcon = (
+    <svg {...iconProps}><rect x="2" y="5" width="20" height="14" rx="2" /><line x1="2" y1="10" x2="22" y2="10" /></svg>
+  );
+  const settingsIcon = (
+    <svg {...iconProps}><circle cx="12" cy="12" r="3" /><path d="M12 1v2m0 18v2M4.22 4.22l1.42 1.42m12.72 12.72 1.42 1.42M1 12h2m18 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" /></svg>
+  );
+  const helpIcon = (
+    <svg {...iconProps}><circle cx="12" cy="12" r="9" /><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.8.4-1 .9-1 1.7" /><line x1="12" y1="17" x2="12" y2="17.01" /></svg>
+  );
+  const themeIcon = (
+    <svg {...iconProps}><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" /></svg>
+  );
+  const adminIcon = (
+    <svg {...iconProps}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>
+  );
+  const logoutIcon = (
+    <svg {...iconProps}><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
+  );
+
+  // ── Account menu items ──
+  const tierBadgeEl = (
+    <Badge variant={tierVariant as 'default' | 'success' | 'info'} label={tierLabel} size="sm" />
+  );
+
+  const accountMenuItems: Array<{ key: string; label: string; icon?: React.ReactNode; danger?: boolean; disabled?: boolean; separator?: boolean; header?: boolean; badge?: string }> = [
+    // Section 1 — Identity header (non-interactive)
+    { key: 'identity', label: me.data?.email || 'Unknown', icon: tierBadgeEl, header: true },
+    // Section 2 — Organization (only when user has a default org)
+    ...(hasOrg
+      ? [
+          { key: 'org-sep', label: '', separator: true as const },
+          { key: 'organization', label: 'Organization', icon: orgIcon },
+          {
+            key: 'invites',
+            label: 'Invites',
+            icon: invitesIcon,
+            badge: invitesPendingCount > 0 ? String(invitesPendingCount) : undefined,
+          },
+          { key: 'billing', label: 'Billing', icon: billingIcon },
+          { key: 'personal-sep', label: '', separator: true as const },
+        ]
+      : []),
+    // Section 3 — Personal
+    { key: 'settings', label: 'Settings', icon: settingsIcon },
+    { key: 'help', label: 'Help', icon: helpIcon },
+    {
+      key: 'theme',
+      label: `Theme: ${theme === 'dark' ? 'Dark' : 'Light'}`,
+      icon: themeIcon,
+    },
+    ...(isAdmin
+      ? [{ key: 'admin', label: 'Admin', icon: adminIcon }]
+      : []),
+    // Section 4 — Logout
+    { key: 'logout-sep', label: '', separator: true as const },
+    { key: 'logout', label: 'Logout', icon: logoutIcon, danger: true },
+  ];
+
+  function handleAccountMenuSelect(key: string) {
+    switch (key) {
+      case 'organization':
+        navigate('/settings/organization');
+        break;
+      case 'invites':
+        navigate('/invites');
+        break;
+      case 'billing':
+        navigate('/settings/billing');
+        break;
+      case 'settings':
+        navigate('/settings');
+        break;
+      case 'help':
+        navigate('/help');
+        break;
+      case 'admin':
+        navigate('/admin');
+        break;
+      case 'theme':
+        toggleTheme();
+        break;
+      case 'logout':
+        logout();
+        break;
+    }
+  }
 
   return (
     <div className="flex flex-col min-h-screen">
@@ -202,58 +296,33 @@ export default function Layout() {
           <SearchBar />
         </nav>
 
-        {/* Right: ThemeToggle + Help + Avatar */}
+        {/* Right: ThemeToggle + Account menu */}
         <div className="flex items-center gap-2 shrink-0">
-          <ThemeToggle />
-          <Link
-            to="/help"
-            aria-label="Help"
-            className="flex items-center justify-center w-8 h-8 rounded-[var(--radius-md)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] transition-colors"
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="9" />
-              <path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.8.4-1 .9-1 1.7" />
-              <line x1="12" y1="17" x2="12" y2="17.01" />
-            </svg>
-          </Link>
-          <div className="relative" ref={avatarRef}>
-            <button
-              onClick={() => setAvatarOpen((v) => !v)}
-              className="flex items-center gap-2 rounded-[var(--radius-md)] px-2 py-1 transition-colors hover:bg-[var(--surface-hover)]"
-            >
-              <span
-                className="flex items-center justify-center w-7 h-7 rounded-full text-xs font-semibold"
-                style={{
-                  backgroundColor: 'var(--brand)',
-                  color: 'var(--text-inverse)',
-                }}
+          <ThemeToggle theme={theme} onToggle={toggleTheme} />
+          <Dropdown
+            trigger={
+              <button
+                className="flex items-center gap-2 rounded-[var(--radius-md)] px-2 py-1 transition-colors hover:bg-[var(--surface-hover)]"
+                aria-haspopup="menu"
+                aria-expanded={undefined}
               >
-                {userInitial}
-              </span>
-              <Badge variant={tierVariant as 'default' | 'success' | 'info'} label={tierLabel} size="sm" />
-            </button>
-            {avatarOpen && (
-              <div
-                className="absolute right-0 mt-1 w-40 py-1 rounded-[var(--radius-md)] border z-50"
-                style={{
-                  backgroundColor: 'var(--bg-elevated)',
-                  borderColor: 'var(--border)',
-                  boxShadow: 'var(--shadow-md)',
-                }}
-              >
-                <button
-                  onClick={() => {
-                    setAvatarOpen(false);
-                    logout();
+                <span
+                  className="flex items-center justify-center w-7 h-7 rounded-full text-xs font-semibold"
+                  style={{
+                    backgroundColor: 'var(--brand)',
+                    color: 'var(--text-inverse)',
                   }}
-                  className="w-full text-left px-3 py-1.5 text-sm transition-colors hover:bg-[var(--surface-hover)]"
-                  style={{ color: 'var(--text-secondary)' }}
                 >
-                  Logout
-                </button>
-              </div>
-            )}
-          </div>
+                  {userInitial}
+                </span>
+                <Badge variant={tierVariant as 'default' | 'success' | 'info'} label={tierLabel} size="sm" />
+              </button>
+            }
+            items={accountMenuItems}
+            onSelect={handleAccountMenuSelect}
+            menuLabel="Account menu"
+            minWidthClass="min-w-[240px]"
+          />
         </div>
       </header>
 

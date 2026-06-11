@@ -9,6 +9,10 @@ interface DropdownItem {
   disabled?: boolean;
   /** Render a hairline separator instead of a menu item. */
   separator?: boolean;
+  /** Render as a non-interactive header (not focusable, excluded from keyboard nav). */
+  header?: boolean;
+  /** Optional right-aligned badge text (e.g. pending count). */
+  badge?: string;
 }
 
 interface DropdownProps {
@@ -17,9 +21,11 @@ interface DropdownProps {
   onSelect: (key: string) => void;
   /** Accessible label for the menu. */
   menuLabel: string;
+  /** Optional min-width override class (default min-w-[160px]). */
+  minWidthClass?: string;
 }
 
-export function Dropdown({ trigger, items, onSelect, menuLabel }: DropdownProps) {
+export function Dropdown({ trigger, items, onSelect, menuLabel, minWidthClass }: DropdownProps) {
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -46,7 +52,7 @@ export function Dropdown({ trigger, items, onSelect, menuLabel }: DropdownProps)
   useEffect(() => {
     if (!open) return;
     function handleKey(e: KeyboardEvent) {
-      const enabled = items.filter((i) => !i.disabled && !i.separator);
+      const enabled = items.filter((i) => !i.disabled && !i.separator && !i.header);
       switch (e.key) {
         case 'Escape':
           e.preventDefault();
@@ -92,7 +98,7 @@ export function Dropdown({ trigger, items, onSelect, menuLabel }: DropdownProps)
 
       {open && (
         <div
-          className="absolute top-full left-0 mt-1 z-40 min-w-[160px] rounded-lg py-1 shadow-[var(--shadow-lg)]"
+          className={`absolute top-full right-0 mt-1 z-40 ${minWidthClass || 'min-w-[160px]'} rounded-lg py-1 shadow-[var(--shadow-lg)] dropdown-enter`}
           style={{
             backgroundColor: 'var(--overlay)',
             border: '1px solid var(--border)',
@@ -107,7 +113,20 @@ export function Dropdown({ trigger, items, onSelect, menuLabel }: DropdownProps)
                   </li>
                 );
               }
-              const enabledIdx = items.filter((it, idx) => idx < i && !it.disabled && !it.separator).length;
+              if (item.header) {
+                return (
+                  <li key={item.key} role="none">
+                    <div className="flex items-center gap-2 px-3 py-2 text-[13px] text-[var(--text-primary)]">
+                      {item.icon}
+                      <span className="flex-1 truncate">{item.label}</span>
+                      {item.badge && (
+                        <span className="shrink-0">{item.badge}</span>
+                      )}
+                    </div>
+                  </li>
+                );
+              }
+              const enabledIdx = items.filter((it, idx) => idx < i && !it.disabled && !it.separator && !it.header).length;
               return (
                 <li key={item.key} role="none">
                   <button
@@ -131,7 +150,18 @@ export function Dropdown({ trigger, items, onSelect, menuLabel }: DropdownProps)
                     }`}
                   >
                     {item.icon}
-                    {item.label}
+                    <span className="flex-1">{item.label}</span>
+                    {item.badge && (
+                      <span
+                        className="ml-auto px-1.5 py-0.5 text-[11px] rounded-full font-medium shrink-0"
+                        style={{
+                          backgroundColor: 'rgba(240,192,64,0.15)',
+                          color: 'var(--warning)',
+                        }}
+                      >
+                        {item.badge}
+                      </span>
+                    )}
                   </button>
                 </li>
               );
