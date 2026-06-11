@@ -1,0 +1,132 @@
+import { useState, useRef, useEffect, useCallback, type ReactNode } from 'react';
+
+interface DropdownItem {
+  key: string;
+  label: string;
+  /** Optional left icon or element. */
+  icon?: ReactNode;
+  danger?: boolean;
+  disabled?: boolean;
+}
+
+interface DropdownProps {
+  trigger: ReactNode;
+  items: DropdownItem[];
+  onSelect: (key: string) => void;
+  /** Accessible label for the menu. */
+  menuLabel: string;
+}
+
+export function Dropdown({ trigger, items, onSelect, menuLabel }: DropdownProps) {
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
+
+  const close = useCallback(() => {
+    setOpen(false);
+    setActiveIndex(-1);
+  }, []);
+
+  // Outside click
+  useEffect(() => {
+    if (!open) return;
+    function handleClick(e: MouseEvent) {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
+        close();
+      }
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [open, close]);
+
+  // Keyboard
+  useEffect(() => {
+    if (!open) return;
+    function handleKey(e: KeyboardEvent) {
+      const enabled = items.filter((i) => !i.disabled);
+      switch (e.key) {
+        case 'Escape':
+          e.preventDefault();
+          close();
+          break;
+        case 'ArrowDown':
+          e.preventDefault();
+          setActiveIndex((prev) => {
+            const next = prev + 1;
+            return next >= enabled.length ? 0 : next;
+          });
+          break;
+        case 'ArrowUp':
+          e.preventDefault();
+          setActiveIndex((prev) => {
+            const next = prev - 1;
+            return next < 0 ? enabled.length - 1 : next;
+          });
+          break;
+        case 'Enter':
+          e.preventDefault();
+          if (activeIndex >= 0 && enabled[activeIndex]) {
+            onSelect(enabled[activeIndex].key);
+            close();
+          }
+          break;
+      }
+    }
+    document.addEventListener('keydown', handleKey);
+    return () => document.removeEventListener('keydown', handleKey);
+  }, [open, activeIndex, items, onSelect, close]);
+
+  // Scroll active into view
+  useEffect(() => {
+    if (activeIndex < 0 || !listRef.current) return;
+    const item = listRef.current.querySelector(`[data-dropdown-index="${activeIndex}"]`);
+    item?.scrollIntoView({ block: 'nearest' });
+  }, [activeIndex]);
+
+  return (
+    <div ref={wrapperRef} className="relative inline-block">
+      <div onClick={() => setOpen((v) => !v)}>{trigger}</div>
+
+      {open && (
+        <div
+          className="absolute top-full left-0 mt-1 z-40 min-w-[160px] rounded-lg py-1 shadow-[var(--shadow-lg)]"
+          style={{
+            backgroundColor: 'var(--overlay)',
+            border: '1px solid var(--border)',
+          }}
+        >
+          <ul ref={listRef} role="menu" aria-label={menuLabel}>
+            {items.map((item, i) => (
+              <li key={item.key} role="none">
+                <button
+                  role="menuitem"
+                  disabled={item.disabled}
+                  data-dropdown-index={i}
+                  onClick={() => {
+                    if (!item.disabled) {
+                      onSelect(item.key);
+                      close();
+                    }
+                  }}
+                  className={`w-full text-left px-3 py-1.5 text-[13px] flex items-center gap-2 transition-colors duration-150 ${
+                    item.disabled
+                      ? 'text-[var(--text-tertiary)] cursor-not-allowed opacity-50'
+                      : i === activeIndex
+                        ? 'bg-[var(--surface-active)] text-[var(--text-primary)]'
+                        : item.danger
+                          ? 'text-[var(--danger)] hover:bg-[var(--surface-hover)]'
+                          : 'text-[var(--text-secondary)] hover:bg-[var(--surface-hover)]'
+                  }`}
+                >
+                  {item.icon}
+                  {item.label}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
