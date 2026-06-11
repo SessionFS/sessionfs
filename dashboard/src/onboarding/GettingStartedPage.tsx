@@ -5,6 +5,7 @@ import { useAuth } from '../auth/AuthContext';
 import { setItem } from '../utils/storage';
 import CopyButton from '../components/CopyButton';
 import Wordmark from '../components/Wordmark';
+import { Card, Button } from '../components/ui';
 
 /**
  * Scope the dismissal flag to (baseUrl, apiKey-hash) so different accounts
@@ -206,12 +207,9 @@ export default function GettingStartedPage() {
             Help
           </Link>
         </p>
-        <button
-          onClick={handleSkip}
-          className="text-sm font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
-        >
+        <Button variant="ghost" size="sm" onClick={handleSkip}>
           Skip to Dashboard &rarr;
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -231,12 +229,10 @@ function StepCard({
   children: React.ReactNode;
 }) {
   return (
-    <div
-      className="rounded-[var(--radius-lg)] border p-5 md:p-6"
-      style={{
-        backgroundColor: 'var(--bg-secondary)',
-        borderColor: done ? 'var(--brand)' : 'var(--border)',
-      }}
+    <Card
+      level="surface"
+      className="p-5 md:p-6"
+      topEdge={done ? 'var(--brand)' : undefined}
     >
       <div className="flex items-start gap-4">
         {/* Step indicator */}
@@ -267,6 +263,6 @@ function StepCard({
           {children}
         </div>
       </div>
-    </div>
+    </Card>
   );
 }

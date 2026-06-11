@@ -245,7 +245,7 @@ export default function BillingPage() {
               <ul className="mt-4 space-y-2 text-[14px]">
                 {t.features.map((f) => (
                   <li key={f} className="flex items-start gap-2 text-[var(--text-secondary)]">
-                    <span className="text-green-500 mt-0.5 flex-shrink-0">&#10003;</span>
+                    <span className="text-[var(--accent)] mt-0.5 flex-shrink-0">&#10003;</span>
                     {f}
                   </li>
                 ))}

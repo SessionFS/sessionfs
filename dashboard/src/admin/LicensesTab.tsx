@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
-import type { HelmLicense } from '../api/client';
 import { Select, Table } from '../components/ui';
 
 const STATUS_STYLES: Record<string, string> = {

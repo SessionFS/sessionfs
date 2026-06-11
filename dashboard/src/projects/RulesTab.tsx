@@ -66,7 +66,7 @@ function VersionBadge({ version }: { version: number }) {
       className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold"
       style={{
         backgroundColor: 'var(--brand)',
-        color: '#fff',
+        color: 'white',
       }}
     >
       v{version}

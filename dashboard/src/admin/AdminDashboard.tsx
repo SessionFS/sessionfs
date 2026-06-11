@@ -9,11 +9,10 @@ import {
 } from '../hooks/useAdmin';
 import type { AdminUser } from '../api/client';
 import RelativeDate from '../components/RelativeDate';
-import ConfirmModal from './ConfirmModal';
 import LicensesTab from './LicensesTab';
 import { getAvatarColor } from '../utils/avatar';
 import { formatBytes } from '../utils/format';
-import { Card, Button, Input, Select, Table } from '../components/ui';
+import { Card, Button, Input, Select, Table, Tabs, Dialog, DialogHeader, DialogFooter } from '../components/ui';
 
 type AdminTab = 'users' | 'licenses' | 'activity';
 
@@ -171,28 +170,19 @@ export default function AdminDashboard() {
       )}
 
       {/* Tab Navigation */}
-      <div className="flex gap-0 border-b border-[var(--border)] mb-6">
-        {tabs.map((t) => (
-          <button
-            key={t.key}
-            onClick={() => setActiveTab(t.key)}
-            className={`px-4 py-2 text-[14px] font-medium transition-colors ${
-              activeTab === t.key
-                ? 'text-[var(--text-primary)] border-b-2 border-[var(--brand)] -mb-px'
-                : 'text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      <Tabs
+        bare
+        tabs={tabs}
+        activeKey={activeTab}
+        onChange={(key) => setActiveTab(key as AdminTab)}
+      />
 
       {/* Tab content */}
-        {activeTab === 'licenses' && <LicensesTab />}
+        {activeTab === 'licenses' && <div role="tabpanel"><LicensesTab /></div>}
 
         {/* Activity tab */}
         {activeTab === 'activity' && (
-          <section>
+          <section role="tabpanel">
             {actionsData && actionsData.actions.length > 0 ? (
               <Table
                 columns={[
@@ -244,7 +234,7 @@ export default function AdminDashboard() {
 
         {/* User Management */}
         {activeTab === 'users' && (
-          <section>
+          <section role="tabpanel">
             <div className="mb-4">
               <Input
                 type="text"
@@ -314,19 +304,18 @@ export default function AdminDashboard() {
         )}
 
       {/* Delete confirmation dialog */}
-      <ConfirmModal
-        open={!!confirmDelete}
-        title="Delete User"
-        message={
-          confirmDelete
+      <Dialog open={!!confirmDelete} onClose={() => setConfirmDelete(null)} titleId="delete-user-title">
+        <DialogHeader titleId="delete-user-title">Delete User</DialogHeader>
+        <p className="text-sm text-[var(--text-secondary)] mb-6">
+          {confirmDelete
             ? `Are you sure you want to deactivate ${confirmDelete.email}? This will revoke API keys, remove org memberships, and disable the account.`
-            : ''
-        }
-        confirmLabel="Delete User"
-        destructive
-        onConfirm={handleDeleteConfirm}
-        onCancel={() => setConfirmDelete(null)}
-      />
+            : ''}
+        </p>
+        <DialogFooter>
+          <Button variant="secondary" onClick={() => setConfirmDelete(null)}>Cancel</Button>
+          <Button variant="danger" onClick={handleDeleteConfirm}>Delete User</Button>
+        </DialogFooter>
+      </Dialog>
     </div>
   );
 }
@@ -436,9 +425,9 @@ function UserRow({
         </td>
         <td className="px-4 py-3 text-center">
           {user.email_verified ? (
-            <span className="text-green-500" title="Verified">&#10003;</span>
+            <span className="text-[var(--accent)]" title="Verified">&#10003;</span>
           ) : (
-            <span className="text-red-500" title="Not verified">&#10007;</span>
+            <span className="text-[var(--danger)]" title="Not verified">&#10007;</span>
           )}
         </td>
         <td className="px-4 py-3 text-right text-[var(--text-secondary)] tabular-nums">

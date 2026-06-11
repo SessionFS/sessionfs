@@ -3,8 +3,8 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from './AuthContext';
 import { signup, ApiError } from '../api/client';
 import { loginSchema, signupSchema, fieldErrorsFromZod, type FieldErrors } from '../utils/validation';
-import FieldError from '../components/FieldError';
 import Wordmark from '../components/Wordmark';
+import { Card, Button, Input } from '../components/ui';
 
 export default function LoginPage() {
   const { login } = useAuth();
@@ -118,118 +118,120 @@ export default function LoginPage() {
           background: 'radial-gradient(48rem 20rem at 50% -10%, color-mix(in srgb, var(--brand) 16%, transparent), transparent 72%)',
         }}
       />
-      <div className="w-full max-w-sm p-8 bg-bg-secondary rounded-lg border border-border shadow-[var(--shadow-md)] relative">
+      <Card level="elevated" className="w-full max-w-sm p-8 relative">
         <div className="flex flex-col items-center mb-6 text-center">
           <div className="brand-badge rounded-2xl px-4 py-3">
             <Wordmark size="lg" />
           </div>
-          <p className="mt-4 max-w-xs text-sm text-text-secondary">
+          <p className="mt-4 max-w-xs text-sm text-[var(--text-secondary)]">
             Resume work, build project memory, and hand off AI sessions without losing context.
           </p>
         </div>
-        <h1 className="text-3xl font-bold tracking-tight text-text-primary mb-1 sr-only">SessionFS</h1>
-        <p className="text-text-secondary text-sm mb-6">
+        <h1 className="sr-only">SessionFS</h1>
+        <p className="text-[var(--text-secondary)] text-sm mb-6">
           {mode === 'login' ? 'Sign in with your API key' : 'Create a new account'}
         </p>
 
         {signupKey && (
-          <div className="mb-4 p-3 bg-bg-tertiary rounded border border-role-assistant/30 text-sm">
-            <p className="text-role-assistant font-medium mb-1">Account created</p>
-            <p className="text-text-secondary mb-2">Save your API key — it won't be shown again:</p>
-            <code className="block p-2 bg-bg-primary rounded text-sm break-all select-all text-text-primary">
+          <div className="mb-4 p-3 bg-[var(--bg-tertiary)] rounded border border-[var(--accent)]/30 text-sm">
+            <p className="text-[var(--accent)] font-medium mb-1">Account created</p>
+            <p className="text-[var(--text-secondary)] mb-2">Save your API key — it won't be shown again:</p>
+            <code className="block p-2 bg-[var(--bg-primary)] rounded text-sm break-all select-all text-[var(--text-primary)]">
               {signupKey}
             </code>
           </div>
         )}
 
         {error && (
-          <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded text-red-400 text-sm">
+          <div className="mb-4 p-3 bg-[var(--danger)]/10 border border-[var(--danger)]/30 rounded text-[var(--danger)] text-sm">
             {error}
           </div>
         )}
 
         {mode === 'login' ? (
           <form onSubmit={handleLogin}>
-            <label className="block mb-4">
-              <span className="text-[var(--text-secondary)] text-[14px] font-medium">Server URL</span>
-              <input
+            <div className="mb-4">
+              <Input
                 type="url"
                 value={baseUrl}
                 onChange={(e) => { setBaseUrl(e.target.value); clearFieldError('baseUrl'); }}
                 onBlur={() => validateLoginField('baseUrl')}
-                className="mt-1 block w-full px-3 py-2 bg-bg-primary border border-border rounded text-sm text-text-primary focus:outline-none focus:border-accent"
+                title="Server URL"
+                error={fieldErrors.baseUrl}
               />
-              <FieldError message={fieldErrors.baseUrl} />
-            </label>
-            <label className="block mb-6">
-              <span className="text-[var(--text-secondary)] text-[14px] font-medium">API Key</span>
-              <input
+            </div>
+            <div className="mb-6">
+              <Input
                 type="password"
                 value={apiKey}
                 onChange={(e) => { setApiKey(e.target.value); clearFieldError('apiKey'); }}
                 onBlur={() => { if (apiKey) validateLoginField('apiKey'); }}
                 placeholder="sk_sfs_..."
-                className="mt-1 block w-full px-3 py-2 bg-bg-primary border border-border rounded text-sm text-text-primary focus:outline-none focus:border-accent"
+                title="API Key"
+                error={fieldErrors.apiKey}
                 autoFocus
               />
-              <FieldError message={fieldErrors.apiKey} />
-            </label>
-            <button
+            </div>
+            <Button
               type="submit"
-              disabled={loading || !apiKey}
-              className="w-full px-5 py-2.5 bg-[var(--brand)] text-white font-semibold rounded-lg text-sm hover:bg-[var(--brand-hover)] disabled:opacity-50 transition-colors"
+              variant="primary"
+              size="md"
+              loading={loading}
+              disabled={!apiKey}
+              className="w-full"
             >
               {loading ? 'Connecting...' : 'Sign In'}
-            </button>
-            <p className="mt-4 text-center text-text-muted text-sm">
+            </Button>
+            <p className="mt-4 text-center text-[var(--text-tertiary)] text-sm">
               No account?{' '}
-              <button type="button" onClick={() => { setMode('signup'); setFieldErrors({}); }} className="text-accent hover:underline">
+              <button type="button" onClick={() => { setMode('signup'); setFieldErrors({}); }} className="text-[var(--accent)] hover:underline">
                 Sign up
               </button>
             </p>
           </form>
         ) : (
           <form onSubmit={handleSignup}>
-            <label className="block mb-4">
-              <span className="text-[var(--text-secondary)] text-[14px] font-medium">Server URL</span>
-              <input
+            <div className="mb-4">
+              <Input
                 type="url"
                 value={baseUrl}
                 onChange={(e) => { setBaseUrl(e.target.value); clearFieldError('baseUrl'); }}
                 onBlur={() => validateSignupField('baseUrl')}
-                className="mt-1 block w-full px-3 py-2 bg-bg-primary border border-border rounded text-sm text-text-primary focus:outline-none focus:border-accent"
+                title="Server URL"
+                error={fieldErrors.baseUrl}
               />
-              <FieldError message={fieldErrors.baseUrl} />
-            </label>
-            <label className="block mb-6">
-              <span className="text-[var(--text-secondary)] text-[14px] font-medium">Email</span>
-              <input
+            </div>
+            <div className="mb-6">
+              <Input
                 type="email"
                 value={email}
                 onChange={(e) => { setEmail(e.target.value); clearFieldError('email'); }}
                 onBlur={() => { if (email) validateSignupField('email'); }}
                 placeholder="you@example.com"
-                className="mt-1 block w-full px-3 py-2 bg-bg-primary border border-border rounded text-sm text-text-primary focus:outline-none focus:border-accent"
+                title="Email"
+                error={fieldErrors.email}
                 autoFocus
               />
-              <FieldError message={fieldErrors.email} />
-            </label>
-            <button
+            </div>
+            <Button
               type="submit"
-              disabled={loading || !email}
-              className="w-full px-5 py-2.5 bg-[var(--brand)] text-white font-semibold rounded-lg text-sm hover:bg-[var(--brand-hover)] disabled:opacity-50 transition-colors"
+              variant="primary"
+              size="md"
+              loading={loading}
+              disabled={!email}
+              className="w-full"
             >
               {loading ? 'Creating...' : 'Create Account'}
-            </button>
-            <p className="mt-4 text-center text-text-muted text-sm">
+            </Button>
+            <p className="mt-4 text-center text-[var(--text-tertiary)] text-sm">
               Have an API key?{' '}
-              <button type="button" onClick={() => { setMode('login'); setFieldErrors({}); }} className="text-accent hover:underline">
+              <button type="button" onClick={() => { setMode('login'); setFieldErrors({}); }} className="text-[var(--accent)] hover:underline">
                 Sign in
               </button>
             </p>
           </form>
         )}
-      </div>
+      </Card>
     </div>
   );
 }

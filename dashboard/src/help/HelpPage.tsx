@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { getItem as lsGet } from '../utils/storage';
+import { Card } from '../components/ui';
 
 type Tool = {
   id: string;
@@ -418,13 +419,10 @@ Restart ${selectedTool.label} to activate.`;
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {USE_CASES.map((useCase) => (
-            <div
+            <Card
               key={useCase.title}
-              className="rounded-[var(--radius-lg)] border p-5"
-              style={{
-                backgroundColor: 'var(--bg-secondary)',
-                borderColor: 'var(--border)',
-              }}
+              level="surface"
+              className="p-5"
             >
               <div className="flex items-center gap-2 mb-3">
                 <span className="text-[18px] leading-none" aria-hidden="true">
@@ -445,7 +443,7 @@ Restart ${selectedTool.label} to activate.`;
                   </li>
                 ))}
               </ul>
-            </div>
+            </Card>
           ))}
         </div>
       </section>
@@ -559,17 +557,8 @@ Restart ${selectedTool.label} to activate.`;
 
 function McpToolGroup({ label, tools }: { label: string; tools: McpTool[] }) {
   return (
-    <div
-      className="rounded-[var(--radius-lg)] border p-4"
-      style={{
-        backgroundColor: 'var(--bg-secondary)',
-        borderColor: 'var(--border)',
-      }}
-    >
-      <div
-        className="text-[11px] font-semibold uppercase tracking-wider mb-3"
-        style={{ color: 'var(--text-tertiary)' }}
-      >
+    <Card level="surface" className="p-4">
+      <div className="text-micro text-[var(--text-tertiary)] uppercase mb-3">
         {label}
       </div>
       <ul className="space-y-3">
@@ -590,7 +579,7 @@ function McpToolGroup({ label, tools }: { label: string; tools: McpTool[] }) {
           </li>
         ))}
       </ul>
-    </div>
+    </Card>
   );
 }
 
@@ -611,16 +600,10 @@ function ResourceLink({
       href={href}
       target={isExternal && !href.startsWith('mailto:') ? '_blank' : undefined}
       rel={isExternal && !href.startsWith('mailto:') ? 'noopener noreferrer' : undefined}
-      className="flex items-center gap-3 px-4 py-3 rounded-[var(--radius-md)] border transition-colors"
+      className="flex items-center gap-3 px-4 py-3 rounded-[var(--radius-md)] border transition-colors hover:bg-[var(--surface-hover)]"
       style={{
         backgroundColor: 'var(--bg-secondary)',
         borderColor: 'var(--border)',
-      }}
-      onMouseEnter={(e) => {
-        e.currentTarget.style.backgroundColor = 'var(--surface-hover)';
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.backgroundColor = 'var(--bg-secondary)';
       }}
     >
       <span className="text-[16px] leading-none" aria-hidden="true">
