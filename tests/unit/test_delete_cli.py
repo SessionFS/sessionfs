@@ -597,6 +597,7 @@ def test_sfs_trash_survives_malformed_deleted_json(monkeypatch, tmp_path: Path):
         "sessionfs.store.deleted._DEFAULT_PATH",
         tmp_path / "deleted.json",
     )
+    monkeypatch.setattr("sessionfs.cli.common.get_store_dir", lambda: tmp_path)
 
     runner = CliRunner()
     result = runner.invoke(app, ["trash"])
@@ -742,6 +743,7 @@ def test_push_one_aborts_when_hard_delete_appears_after_snapshot(
         "sessionfs.store.deleted._DEFAULT_PATH",
         tmp_path / "deleted.json",
     )
+    monkeypatch.setattr("sessionfs.cli.common.get_store_dir", lambda: tmp_path)
 
     fake_dir = tmp_path / "ses_race2.sfs"
     fake_dir.mkdir()
@@ -876,6 +878,7 @@ def test_push_one_aborts_when_concurrent_writer_promotes_to_hard_delete(
         "sessionfs.store.deleted._DEFAULT_PATH",
         tmp_path / "deleted.json",
     )
+    monkeypatch.setattr("sessionfs.cli.common.get_store_dir", lambda: tmp_path)
 
     fake_dir = tmp_path / "ses_racy.sfs"
     fake_dir.mkdir()

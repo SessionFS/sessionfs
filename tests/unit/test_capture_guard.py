@@ -72,23 +72,51 @@ class TestExclusionListGuard:
     native source and resurrect it on every machine.
     """
 
-    def test_excluded_session_blocked_on_first_capture(self, store, tmp_path, monkeypatch):
+    def test_excluded_session_blocked_on_first_capture(self, store):
         from sessionfs.store import deleted as deleted_mod
 
-        monkeypatch.setattr(deleted_mod, "_DEFAULT_DIR", tmp_path)
-        monkeypatch.setattr(deleted_mod, "_DEFAULT_PATH", tmp_path / "deleted.json")
-        deleted_mod.mark_deleted("ses_excluded", "everywhere")
+        # tk_457d060822bc48c0 R2 — capture_guard now scopes the exclusion
+        # check to store.store_dir, so seed the exclusion there.
+        deleted_mod.mark_deleted("ses_excluded", "everywhere", base_dir=store.store_dir)
         assert should_recapture(store, "ses_excluded", 50, "claude-code") is False
 
-    def test_excluded_session_blocked_on_recapture(self, store, tmp_path, monkeypatch):
+    def test_excluded_session_blocked_on_recapture(self, store):
         from sessionfs.store import deleted as deleted_mod
 
-        monkeypatch.setattr(deleted_mod, "_DEFAULT_DIR", tmp_path)
-        monkeypatch.setattr(deleted_mod, "_DEFAULT_PATH", tmp_path / "deleted.json")
         sfs_id = "ses_existing_then_deleted"
         _create_existing_session(store, sfs_id, 10)
-        deleted_mod.mark_deleted(sfs_id, "cloud")
+        deleted_mod.mark_deleted(sfs_id, "cloud", base_dir=store.store_dir)
         assert should_recapture(store, sfs_id, 100, "codex") is False
+
+    def test_recapture_honors_profile_scoped_exclusion_not_global(
+        self, store, tmp_path, monkeypatch
+    ):
+        """tk_457d060822bc48c0 R2 MEDIUM — a deletion recorded under the
+        active profile's store must block recapture even when the global
+        default deleted.json is empty. Without base_dir threading, the
+        watcher read the global file, missed the profile-scoped deletion,
+        and resurrected the session."""
+        from sessionfs.store import deleted as deleted_mod
+
+        # Global/default deleted.json points somewhere empty.
+        empty_global = tmp_path / "global"
+        empty_global.mkdir()
+        monkeypatch.setattr(deleted_mod, "_DEFAULT_DIR", empty_global)
+        monkeypatch.setattr(
+            deleted_mod, "_DEFAULT_PATH", empty_global / "deleted.json"
+        )
+
+        # The deletion lives ONLY in the profile store (store.store_dir).
+        deleted_mod.mark_deleted("ses_profile_del", "cloud", base_dir=store.store_dir)
+
+        # Sanity: the global default does NOT see it.
+        assert deleted_mod.is_excluded("ses_profile_del") is False
+        assert deleted_mod.is_excluded(
+            "ses_profile_del", base_dir=store.store_dir
+        ) is True
+
+        # The watcher must skip recapture — it checks store.store_dir.
+        assert should_recapture(store, "ses_profile_del", 50, "claude-code") is False
 
     def test_non_excluded_session_allowed(self, store, tmp_path, monkeypatch):
         from sessionfs.store import deleted as deleted_mod

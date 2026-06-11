@@ -165,7 +165,11 @@ class DaemonSyncer:
             # pack/push. Without this, a single excluded large session
             # retries every cycle, starving the async event loop on
             # decompression + DLP scanning and tripping liveness probes.
-            if is_excluded(session_id):
+            # base_dir scopes the exclusion file to the daemon's PINNED
+            # profile store (tk_457d060822bc48c0 R1 #3) — the daemon never
+            # flips identity mid-run, so this stays consistent across the
+            # whole sync loop.
+            if is_excluded(session_id, base_dir=self.config.store_dir):
                 logger.debug(
                     "Skipping excluded session %s in sync loop "
                     "(in deleted.json) — use 'sfs restore' to clear",
@@ -210,7 +214,10 @@ class DaemonSyncer:
                 # Server says session is deleted — clean up locally.
                 # Recovery: sfs restore + sfs pull (30-day window).
                 from sessionfs.sync.deleted_cleanup import cleanup_deleted_session
-                cleanup_deleted_session(session_id, session_dir, self.store)
+                cleanup_deleted_session(
+                    session_id, session_dir, self.store,
+                    base_dir=self.config.store_dir,
+                )
                 self._pending_sessions.discard(session_id)
                 logger.info(
                     "Session %s deleted on server — local copy cleaned up",
@@ -286,8 +293,11 @@ class DaemonSyncer:
             try:
                 from sessionfs.store.deleted import is_excluded, mark_deleted
 
-                if not is_excluded(session_id):
-                    mark_deleted(session_id, scope="cloud", reason="too_large")
+                if not is_excluded(session_id, base_dir=self.config.store_dir):
+                    mark_deleted(
+                        session_id, scope="cloud", reason="too_large",
+                        base_dir=self.config.store_dir,
+                    )
                     logger.warning(
                         "Session %s excluded from autosync after %d failures: %s",
                         session_id[:12],
@@ -478,6 +488,19 @@ class Daemon:
         self._reload_requested = False
         self._last_prune_check = 0.0
         self._capture_paused = False
+        # tk_457d060822bc48c0 R1 HIGH — pin the profile this daemon
+        # started under. A SIGHUP reload must NOT adopt a different
+        # profile's api_key while still holding this profile's
+        # LocalStore / watchers / status path / pending sessions, which
+        # would push profile-A sessions into profile-B's account. We
+        # record the active profile name at startup and only reload the
+        # SAME profile's config; a changed active profile is logged and
+        # ignored until the daemon is restarted.
+        try:
+            from sessionfs.profiles import resolve_active_profile_name
+            self._pinned_profile = resolve_active_profile_name()
+        except Exception:
+            self._pinned_profile = "default"
 
     def _setup_signals(self) -> None:
         """Register signal handlers for graceful shutdown and config reload."""
@@ -495,9 +518,35 @@ class Daemon:
         self._reload_requested = True
 
     def _reload_config(self) -> None:
-        """Reload config from disk (for sync settings changes without restart)."""
+        """Reload config from disk (for sync settings changes without restart).
+
+        tk_457d060822bc48c0 R1 HIGH — reload is pinned to the profile the
+        daemon STARTED under. If the active profile changed since startup
+        (e.g. `sfs auth use other` between SIGHUPs), we do NOT adopt the
+        new profile's sync block — that would mix profile B's api_key with
+        profile A's store and push the wrong account's sessions. Instead we
+        log a clear "restart to switch profile" message and keep running as
+        the pinned profile.
+        """
         try:
-            new_config = load_config(DEFAULT_CONFIG_PATH)
+            from sessionfs.profiles import (
+                profile_config_path,
+                resolve_active_profile_name,
+            )
+
+            current = resolve_active_profile_name()
+            if current != self._pinned_profile:
+                logger.warning(
+                    "Active profile changed (%s → %s) but the daemon is "
+                    "pinned to '%s'. NOT switching identity mid-run. "
+                    "Restart the daemon to sync as profile '%s'.",
+                    self._pinned_profile, current, self._pinned_profile,
+                    current,
+                )
+                return
+            # Reload only the pinned profile's config file (not whatever
+            # the active pointer now resolves to).
+            new_config = load_config(profile_config_path(self._pinned_profile))
             self.config.sync = new_config.sync
             self._syncer.config = self.config
             logger.info("Config reloaded (sync.enabled=%s)", self.config.sync.enabled)

@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.29] - 2026-06-11
+
+**Named auth profiles (multi-account on one device) + cloud dashboard 428 fix.** Two workstreams, both Codex-reviewed to CLEAN (profiles R1 1 HIGH + 2 MED + 1 LOW → R2 1 MED → R3 VERIFIED-CLEAN; CORS R1 CLEAN). No DB migrations (still 001–048). MCP tool count unchanged (62).
+
+### Added
+
+**Named auth profiles** (`tk_457d060822bc48c0`). Two SessionFS accounts could not cleanly coexist on one device: identity resolution was split across `_get_api_config()` (env var > config.toml — used by ticket/persona/agent/rules/keys/admin commands) and `_load_sync_config()` (config.toml ONLY — used by push/pull/sync/delete/project and the daemon), so `SESSIONFS_API_KEY` flipped half the CLI to one account while sync kept acting as the other. This release makes ONE switch change every command consistently:
+
+- **New shared resolver `sessionfs/profiles.py:resolve_auth()`** — the single source of truth for api_url/api_key/store_dir. Both legacy helpers and the daemon now resolve through it.
+- **Precedence chain:** `SESSIONFS_API_KEY` (explicit, wins) > `SESSIONFS_PROFILE` (per-shell profile override) > persisted active profile (`~/.sessionfs/active_profile`) > `default` (existing `config.toml` — zero migration for single-account installs).
+- **Named profiles** at `~/.sessionfs/profiles/<name>.toml` with isolated per-profile `store_dir` (`~/.sessionfs/profiles/<name>/store`) so session captures, the SQLite index, and the `deleted.json` exclusion list never bleed across accounts. Profile names are validated (no path traversal); profile files and the active_profile pointer are written `chmod 600`.
+- **CLI verbs:** `sfs auth login --profile <name>`, `sfs auth use <name>`, `sfs auth profiles`, `sfs auth whoami` (resolves email via one `/auth/me` call).
+- **Daemon pins its startup profile** — `_reload_config` refuses a mid-run identity switch; restart the daemon to change accounts. The watcher's capture guard checks the active profile's `deleted.json` (via the new `LocalStore.store_dir` property), so a deletion under one profile is not resurrected from the native source.
+
+### Fixed
+
+**Dashboard 428 "If-Match header required" on Settings → Context/Knowledge Injection — cloud only** (`tk_1a73a7bf359f41c3`). The dashboard stores the ETag from `GET /rules` and replays it as `If-Match` on the next PUT (optimistic concurrency). Per the Fetch spec, a cross-origin response header is hidden from JS unless listed in `Access-Control-Expose-Headers` — and the CORS middleware never exposed `ETag`. On cloud (app.sessionfs.dev → api.sessionfs.dev, cross-origin) the browser hid the header, the dashboard read `etag=''`, sent `If-Match: ''`, and the rules route returned 428. Helm deployments serve dashboard + API same-origin, so the bug was invisible there. Fix: `expose_headers=["ETag"]` on the CORS middleware — completing the round-trip that v0.10.24 started when it added `If-Match` to `allow_headers` (send side). Two new drift-guard tests pin the exposure (live cross-origin response header + source literal). No client change needed; the fix lands with the API deploy.
+
 ## [0.10.28] - 2026-06-03
 
 **Coordination + recovery surface: ticket mutation, org invite resend, admin key recovery, compile latency cut.** Bundles four R2-CLEAN Codex-reviewed tickets. Migration 048 adds the `ticket_edits` audit table (strictly additive, cross-DB safe). MCP tool count 61 → 62.

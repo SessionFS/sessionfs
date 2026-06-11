@@ -21,12 +21,19 @@ def cleanup_deleted_session(
     session_id: str,
     session_dir: Path | None = None,
     store: object | None = None,
+    base_dir: Path | None = None,
 ) -> None:
     """Remove a server-deleted session from local state.
 
-    1. Add to ~/.sessionfs/deleted.json (scope=everywhere)
+    1. Add to the active profile's deleted.json (scope=everywhere)
     2. Remove the .sfs directory if present
     3. Remove from SQLite index (sessions + tracked_sessions)
+
+    `base_dir` scopes the exclusion file to the active profile's store
+    (tk_457d060822bc48c0 R1 MED #3). When None, falls back to the global
+    ~/.sessionfs/deleted.json default — callers in the profile-aware
+    sync/delete paths and the daemon should pass their resolved /
+    pinned store dir so two accounts don't share one exclusion file.
 
     Non-fatal: logs warnings on failure but never raises.
     Recovery: `sfs restore <id>` + `sfs pull <id>` (30-day window).
@@ -35,8 +42,8 @@ def cleanup_deleted_session(
 
     # 1. Exclusion list
     try:
-        if not is_excluded(session_id):
-            mark_deleted(session_id, "everywhere")
+        if not is_excluded(session_id, base_dir=base_dir):
+            mark_deleted(session_id, "everywhere", base_dir=base_dir)
             logger.info("Auto-excluded %s (server 410)", session_id)
     except Exception as exc:
         logger.warning("Failed to mark %s as deleted: %s", session_id, exc)
