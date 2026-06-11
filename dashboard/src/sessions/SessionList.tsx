@@ -160,6 +160,10 @@ export default function SessionList() {
   const [showTrash, setShowTrash] = useState(false);
   const [showBulkDeleteDialog, setShowBulkDeleteDialog] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [viewMode, setViewMode] = useState<'list' | 'grid'>(() => {
+    const stored = typeof window !== 'undefined' ? window.localStorage.getItem('sfs-sessions-view') : null;
+    return stored === 'grid' ? 'grid' : 'list';
+  });
 
   function toggleSelect(id: string) {
     setSelectedIds(prev => {
@@ -172,6 +176,12 @@ export default function SessionList() {
 
   function selectAll() {
     setSelectedIds(new Set(sessions.map(s => s.id)));
+  }
+
+  // Persist view mode
+  function handleViewMode(mode: 'list' | 'grid') {
+    setViewMode(mode);
+    try { window.localStorage.setItem('sfs-sessions-view', mode); } catch { /* noop */ }
   }
 
   function clearSelection() {
@@ -573,8 +583,38 @@ export default function SessionList() {
               )}
             </svg>
           </button>
+          {/* List/Grid view toggle */}
+          <div className="flex items-center rounded-lg border border-[var(--border)] bg-[var(--surface)] overflow-hidden">
+            <button
+              onClick={() => handleViewMode('list')}
+              className={`p-2 transition-colors ${viewMode === 'list' ? 'bg-[var(--bg-elevated)] text-[var(--text-primary)]' : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)]'}`}
+              title="List view"
+              aria-label="List view"
+              aria-pressed={viewMode === 'list'}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" />
+                <line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" />
+              </svg>
+            </button>
+            <button
+              onClick={() => handleViewMode('grid')}
+              className={`p-2 transition-colors ${viewMode === 'grid' ? 'bg-[var(--bg-elevated)] text-[var(--text-primary)]' : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)]'}`}
+              title="Grid view"
+              aria-label="Grid view"
+              aria-pressed={viewMode === 'grid'}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" />
+                <rect x="3" y="14" width="7" height="7" /><rect x="14" y="14" width="7" height="7" />
+              </svg>
+            </button>
+          </div>
           <button
-            onClick={() => { if (selectMode) clearSelection(); else setSelectMode(true); }}
+            onClick={() => {
+              if (selectMode) clearSelection();
+              else { setSelectMode(true); if (viewMode === 'grid') handleViewMode('list'); }
+            }}
             className="text-[13px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] px-3 py-2 border border-[var(--border)] rounded-lg"
           >
             {selectMode ? 'Cancel' : 'Select'}
@@ -646,30 +686,47 @@ export default function SessionList() {
         {/* ── Session list ── */}
         {!isLoading && !showTrash && filteredSessions.length > 0 && (
           <>
-            {grouped.mode === 'tool' ? (
-              grouped.toolGroups.map((group, index) => (
-                <DateGroup
-                  key={group.label}
-                  label={group.label}
-                  sessions={group.sessions}
-                  onRowClick={handleRowClick}
-                  onRowKeyDown={handleRowKeyDown}
-                  onResume={handleResume}
-                  expandedGroups={expandedGroups}
-                  onToggleGroup={toggleGroup}
-                  isFirst={index === 0}
-                  selectMode={selectMode}
-                  selectedIds={selectedIds}
-                  onToggleSelect={toggleSelect}
-                  isInFolder={!!selectedFolderId}
-                />
-              ))
+            {viewMode === 'grid' ? (
+              /* Grid view */
+              grouped.mode === 'tool' ? (
+                grouped.toolGroups.map((group, index) => (
+                  <GridGroup key={group.label} label={group.label} sessions={group.sessions} isFirst={index === 0}
+                    onRowClick={handleRowClick} onResume={handleResume} isInFolder={!!selectedFolderId} />
+                ))
+              ) : (
+                <>
+                  <GridGroup label="Today" sessions={grouped.today} isFirst onRowClick={handleRowClick} onResume={handleResume} isInFolder={!!selectedFolderId} />
+                  <GridGroup label="This Week" sessions={grouped.thisWeek} onRowClick={handleRowClick} onResume={handleResume} isInFolder={!!selectedFolderId} />
+                  <GridGroup label="Earlier" sessions={grouped.earlier} onRowClick={handleRowClick} onResume={handleResume} isInFolder={!!selectedFolderId} />
+                </>
+              )
             ) : (
-              <>
-                <DateGroup label="Today" sessions={grouped.today} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} isFirst selectMode={selectMode} selectedIds={selectedIds} onToggleSelect={toggleSelect} isInFolder={!!selectedFolderId} />
-                <DateGroup label="This Week" sessions={grouped.thisWeek} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} selectMode={selectMode} selectedIds={selectedIds} onToggleSelect={toggleSelect} isInFolder={!!selectedFolderId} />
-                <DateGroup label="Earlier" sessions={grouped.earlier} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} selectMode={selectMode} selectedIds={selectedIds} onToggleSelect={toggleSelect} isInFolder={!!selectedFolderId} />
-              </>
+              /* List view */
+              grouped.mode === 'tool' ? (
+                grouped.toolGroups.map((group, index) => (
+                  <DateGroup
+                    key={group.label}
+                    label={group.label}
+                    sessions={group.sessions}
+                    onRowClick={handleRowClick}
+                    onRowKeyDown={handleRowKeyDown}
+                    onResume={handleResume}
+                    expandedGroups={expandedGroups}
+                    onToggleGroup={toggleGroup}
+                    isFirst={index === 0}
+                    selectMode={selectMode}
+                    selectedIds={selectedIds}
+                    onToggleSelect={toggleSelect}
+                    isInFolder={!!selectedFolderId}
+                  />
+                ))
+              ) : (
+                <>
+                  <DateGroup label="Today" sessions={grouped.today} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} isFirst selectMode={selectMode} selectedIds={selectedIds} onToggleSelect={toggleSelect} isInFolder={!!selectedFolderId} />
+                  <DateGroup label="This Week" sessions={grouped.thisWeek} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} selectMode={selectMode} selectedIds={selectedIds} onToggleSelect={toggleSelect} isInFolder={!!selectedFolderId} />
+                  <DateGroup label="Earlier" sessions={grouped.earlier} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} selectMode={selectMode} selectedIds={selectedIds} onToggleSelect={toggleSelect} isInFolder={!!selectedFolderId} />
+                </>
+              )
             )}
 
             {/* Pagination */}
@@ -777,6 +834,114 @@ export default function SessionList() {
           onConfirm={executeBulkDelete}
         />
       )}
+    </div>
+  );
+}
+
+/* ── Grid-grouped session section ── */
+
+function GridGroup({
+  label,
+  sessions,
+  isFirst,
+  onRowClick,
+  onResume,
+  isInFolder,
+}: {
+  label: string;
+  sessions: SessionSummary[];
+  isFirst?: boolean;
+  onRowClick: (id: string) => void;
+  onResume: (s: SessionSummary) => void;
+  isInFolder?: boolean;
+}) {
+  if (sessions.length === 0) return null;
+
+  return (
+    <div className={`mb-5 ${isFirst ? 'mt-0' : 'mt-8'}`}>
+      <h3 className="text-micro font-semibold uppercase text-[var(--text-tertiary)] pt-3 pb-2 mb-3 border-b border-[var(--border)] col-span-full">
+        {label}
+      </h3>
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+        {sessions.map((s) => (
+          <SessionGridCard
+            key={s.id}
+            session={s}
+            onClick={() => onRowClick(s.id)}
+            onResume={() => onResume(s)}
+            isBookmarked={!!isInFolder}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ── Grid-view session card ── */
+
+function SessionGridCard({
+  session: s,
+  onClick,
+  onResume,
+  isBookmarked,
+}: {
+  session: SessionSummary;
+  onClick: () => void;
+  onResume: () => void;
+  isBookmarked?: boolean;
+}) {
+  const toolColor = TOOL_COLORS[s.source_tool] || 'var(--text-tertiary)';
+
+  return (
+    <div
+      role="button"
+      onClick={onClick}
+      onKeyDown={(e) => { if (e.key === 'Enter') onClick(); }}
+      tabIndex={0}
+      className="group bg-[var(--surface)] border border-[var(--border)] rounded-lg cursor-pointer hover:bg-[var(--bg-elevated)] hover:border-[var(--border-strong)] transition-[background-color,border-color] duration-150 ease-out outline-none focus:ring-1 focus:ring-[var(--brand-glow)] flex flex-col"
+      style={{ borderLeftWidth: '3px', borderLeftStyle: 'solid', borderLeftColor: toolColor }}
+    >
+      {/* Body */}
+      <div className="px-4 pt-[14px] pb-2 flex-1 min-w-0">
+        <h4 className="text-[15px] font-semibold text-[var(--text-primary)] truncate mb-1.5">
+          {s.title || <span className="text-[var(--text-tertiary)] italic">Untitled session</span>}
+        </h4>
+        <div className="flex flex-wrap items-center gap-1 text-[12px] text-[var(--text-tertiary)]">
+          <span className="text-mono-chip">{fullToolName(s.source_tool)}</span>
+          <span className="text-mono-chip">{s.id.slice(0, 12)}</span>
+          <span className="opacity-40">&middot;</span>
+          <span className="tabular-nums">{s.message_count} msgs</span>
+          {(s.total_input_tokens + s.total_output_tokens) > 0 && (
+            <>
+              <span className="opacity-40">&middot;</span>
+              <span className="tabular-nums">{formatTokens(s.total_input_tokens + s.total_output_tokens)}</span>
+            </>
+          )}
+          {s.model_id && s.model_id !== '<synthetic>' && (
+            <>
+              <span className="opacity-40">&middot;</span>
+              <span>{abbreviateModel(s.model_id)}</span>
+            </>
+          )}
+        </div>
+      </div>
+      {/* Footer */}
+      <div className="px-4 pb-3 flex items-center justify-between">
+        <span className="text-[12px] text-[var(--text-tertiary)]">
+          <RelativeDate iso={s.updated_at} />
+        </span>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={(e) => { e.stopPropagation(); onResume(); }}
+            className="px-2.5 py-1 text-xs font-semibold text-white bg-[var(--brand)] rounded-md hover:opacity-90 transition-opacity opacity-0 group-hover:opacity-100 group-focus:opacity-100"
+          >
+            Resume
+          </button>
+          <div onClick={(e) => e.stopPropagation()}>
+            <BookmarkDropdown sessionId={s.id} isBookmarked={isBookmarked} />
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

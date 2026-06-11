@@ -92,6 +92,118 @@ describe('SessionList empty state', () => {
     expect(helpLink).toHaveAttribute('href', '/help');
   });
 
+  it('renders list view by default with session items', () => {
+    const now = new Date().toISOString();
+    hooks.useSessions.mockReturnValue({
+      data: {
+        sessions: [
+          {
+            id: 'ses_1', title: 'Test Session', source_tool: 'claude-code',
+            model_id: null, message_count: 5, total_input_tokens: 100, total_output_tokens: 200,
+            created_at: now, updated_at: now, last_user_at: now, tool_use_count: 0,
+          },
+          {
+            id: 'ses_2', title: 'Another Session', source_tool: 'codex',
+            model_id: 'claude-sonnet-4-6', message_count: 3, total_input_tokens: 50, total_output_tokens: 60,
+            created_at: now, updated_at: now, last_user_at: now, tool_use_count: 0,
+          },
+        ],
+        total: 2, page: 1, page_size: 20, has_more: false,
+      },
+      isLoading: false, error: null,
+    });
+    hooks.useDeletedSessions.mockReturnValue({ data: { sessions: [] }, isLoading: false });
+    hooks.useRestoreSession.mockReturnValue({ mutate: vi.fn(), isPending: false });
+    hooks.useFolders.mockReturnValue({ data: { folders: [] }, isLoading: false });
+    hooks.useAddBookmark.mockReturnValue({ mutateAsync: vi.fn() });
+    hooks.useFolderSessions.mockReturnValue({ data: null, isLoading: false });
+
+    render(
+      <MemoryRouter>
+        <SessionList />
+      </MemoryRouter>,
+    );
+
+    // Session titles visible (hero + list — getAllByText handles multiples)
+    expect(screen.getAllByText('Test Session').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('Another Session')).toBeInTheDocument();
+    // List view is the active toggle state
+    expect(screen.getByLabelText('List view')).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('switches to grid view and renders session cards', async () => {
+    const user = userEvent.setup();
+    const now = new Date().toISOString();
+    hooks.useSessions.mockReturnValue({
+      data: {
+        sessions: [
+          {
+            id: 'ses_1', title: 'Test Session', source_tool: 'claude-code',
+            model_id: null, message_count: 5, total_input_tokens: 100, total_output_tokens: 200,
+            created_at: now, updated_at: now, last_user_at: now, tool_use_count: 0,
+          },
+        ],
+        total: 1, page: 1, page_size: 20, has_more: false,
+      },
+      isLoading: false, error: null,
+    });
+    hooks.useDeletedSessions.mockReturnValue({ data: { sessions: [] }, isLoading: false });
+    hooks.useRestoreSession.mockReturnValue({ mutate: vi.fn(), isPending: false });
+    hooks.useFolders.mockReturnValue({ data: { folders: [] }, isLoading: false });
+    hooks.useAddBookmark.mockReturnValue({ mutateAsync: vi.fn() });
+    hooks.useFolderSessions.mockReturnValue({ data: null, isLoading: false });
+
+    render(
+      <MemoryRouter>
+        <SessionList />
+      </MemoryRouter>,
+    );
+
+    // Switch to grid view
+    await user.click(screen.getByLabelText('Grid view'));
+    expect(screen.getByLabelText('Grid view')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByLabelText('List view')).toHaveAttribute('aria-pressed', 'false');
+    // Session card still renders title (hero + grid card)
+    expect(screen.getAllByText('Test Session').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('persists view mode across re-mounts via localStorage', () => {
+    // Pre-set grid in localStorage
+    window.localStorage.setItem('sfs-sessions-view', 'grid');
+
+    const now = new Date().toISOString();
+    hooks.useSessions.mockReturnValue({
+      data: {
+        sessions: [
+          {
+            id: 'ses_1', title: 'X', source_tool: 'claude-code',
+            model_id: null, message_count: 1, total_input_tokens: 0, total_output_tokens: 0,
+            created_at: now, updated_at: now, last_user_at: now, tool_use_count: 0,
+          },
+        ],
+        total: 1, page: 1, page_size: 20, has_more: false,
+      },
+      isLoading: false, error: null,
+    });
+    hooks.useDeletedSessions.mockReturnValue({ data: { sessions: [] }, isLoading: false });
+    hooks.useRestoreSession.mockReturnValue({ mutate: vi.fn(), isPending: false });
+    hooks.useFolders.mockReturnValue({ data: { folders: [] }, isLoading: false });
+    hooks.useAddBookmark.mockReturnValue({ mutateAsync: vi.fn() });
+    hooks.useFolderSessions.mockReturnValue({ data: null, isLoading: false });
+
+    render(
+      <MemoryRouter>
+        <SessionList />
+      </MemoryRouter>,
+    );
+
+    // Should start in grid mode because localStorage says so
+    expect(screen.getByLabelText('Grid view')).toHaveAttribute('aria-pressed', 'true');
+
+    // Clean up
+    window.localStorage.removeItem('sfs-sessions-view');
+  });
+
   it('groups sessions by tool when "Sort: Tool" is selected', async () => {
     const user = userEvent.setup();
     const now = new Date().toISOString();
