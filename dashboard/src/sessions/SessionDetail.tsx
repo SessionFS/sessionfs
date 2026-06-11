@@ -605,7 +605,7 @@ function AuditScoreBar({ score }: { score: number }) {
     <div className="flex items-center gap-2">
       <span className={`text-sm font-semibold tabular-nums ${textColor}`}>{pct}%</span>
       <div className="w-24 h-1.5 bg-[var(--bg-tertiary)] rounded-full overflow-hidden">
-        <div className={`h-full rounded-full transition-[width] duration-300 ${color}`} style={{ width: `${pct}%` }} />
+        <div className={`h-full rounded-full transition-[width] duration-200 ${color}`} style={{ width: `${pct}%` }} />
       </div>
     </div>
   );

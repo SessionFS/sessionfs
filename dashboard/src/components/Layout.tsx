@@ -344,14 +344,14 @@ export default function Layout() {
       >
         {/* Backdrop */}
         <div
-          className={`absolute inset-0 bg-black transition-opacity duration-300 ${
+          className={`absolute inset-0 bg-black transition-opacity duration-200 ${
             drawerOpen ? 'opacity-50' : 'opacity-0'
           }`}
           onClick={() => setDrawerOpen(false)}
         />
         {/* Drawer panel */}
         <nav
-          className={`absolute top-0 left-0 bottom-0 w-64 flex flex-col transition-transform duration-300 ease-in-out ${
+          className={`absolute top-0 left-0 bottom-0 w-64 flex flex-col transition-transform duration-200 ease-in-out ${
             drawerOpen ? 'translate-x-0' : '-translate-x-full'
           }`}
           style={{
