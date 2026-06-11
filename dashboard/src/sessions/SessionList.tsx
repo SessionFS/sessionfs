@@ -14,6 +14,7 @@ import type { NavFilter } from '../components/BookmarkSidebar';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../auth/AuthContext';
 import { TOOL_COLORS } from '../utils/tools';
+import { Button } from '../components/ui';
 
 const CAPTURE_ONLY_TOOLS = new Set(['cursor', 'cline', 'roo-code', 'amp']);
 
@@ -1041,13 +1042,14 @@ function TrashView() {
             }`}>
               {scopeLabel}
             </span>
-            <button
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={() => handleRestore(s.id)}
-              disabled={restoreSession.isPending}
-              className="px-3 py-1.5 text-xs font-medium text-[var(--brand)] border border-[var(--brand)]/30 rounded-lg hover:bg-[var(--brand)]/10 transition-colors disabled:opacity-50"
+              loading={restoreSession.isPending}
             >
               Restore
-            </button>
+            </Button>
           </div>
         );
       })}

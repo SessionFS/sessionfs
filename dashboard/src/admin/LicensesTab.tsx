@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
 import type { HelmLicense } from '../api/client';
+import { Select, Table } from '../components/ui';
 
 const STATUS_STYLES: Record<string, string> = {
   active: 'bg-green-500/10 text-green-500 border-green-500/30',
@@ -33,16 +34,16 @@ export default function LicensesTab() {
     <div>
       {/* Filter */}
       <div className="mb-4">
-        <select
+        <Select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
-          className="bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] focus:outline-none focus:border-[var(--brand)]"
-        >
-          <option value="all">All statuses</option>
-          <option value="active">Active</option>
-          <option value="expired">Expired</option>
-          <option value="revoked">Revoked</option>
-        </select>
+          options={[
+            { value: 'all', label: 'All statuses' },
+            { value: 'active', label: 'Active' },
+            { value: 'expired', label: 'Expired' },
+            { value: 'revoked', label: 'Revoked' },
+          ]}
+        />
       </div>
 
       {error && (
@@ -60,67 +61,93 @@ export default function LicensesTab() {
       )}
 
       {licenses.length > 0 && (
-        <div className="border border-[var(--border)] rounded-xl overflow-hidden">
-          <table className="w-full text-[14px]">
-            <thead>
-              <tr className="bg-[var(--bg-elevated)] text-[13px] font-semibold text-[var(--text-tertiary)]">
-                <th className="px-4 py-3 text-left">Organization</th>
-                <th className="px-4 py-3 text-left">Contact</th>
-                <th className="px-4 py-3 text-left w-20">Type</th>
-                <th className="px-4 py-3 text-left w-20">Tier</th>
-                <th className="px-4 py-3 text-center w-16">Seats</th>
-                <th className="px-4 py-3 text-left w-24">Status</th>
-                <th className="px-4 py-3 text-left w-28">Expires</th>
-                <th className="px-4 py-3 text-center w-20">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {licenses.map((lic: HelmLicense) => {
+        <Table
+          columns={[
+            {
+              key: 'org',
+              header: 'Organization',
+              render: (lic) => (
+                <span className="text-[var(--text-primary)]">{lic.org_name}</span>
+              ),
+            },
+            {
+              key: 'contact',
+              header: 'Contact',
+              render: (lic) => (
+                <span className="text-[var(--text-secondary)]">{lic.contact_email}</span>
+              ),
+            },
+            {
+              key: 'type',
+              header: 'Type',
+              width: 'w-20',
+              render: (lic) => (
+                <span className="text-xs text-[var(--text-tertiary)]">{lic.license_type}</span>
+              ),
+            },
+            {
+              key: 'tier',
+              header: 'Tier',
+              width: 'w-20',
+              render: (lic) => (
+                <span className="text-xs text-[var(--text-secondary)] capitalize">{lic.tier}</span>
+              ),
+            },
+            {
+              key: 'seats',
+              header: 'Seats',
+              width: 'w-16',
+              render: (lic) => (
+                <span className="tabular-nums">{lic.seats_limit}</span>
+              ),
+            },
+            {
+              key: 'status',
+              header: 'Status',
+              width: 'w-24',
+              render: (lic) => {
                 const statusStyle = STATUS_STYLES[lic.effective_status] || STATUS_STYLES['active'];
                 return (
-                  <tr
-                    key={lic.id}
-                    className="border-t border-[var(--border)] hover:bg-[var(--surface-hover)] transition-colors"
-                  >
-                    <td className="px-4 py-3 text-[var(--text-primary)]">{lic.org_name}</td>
-                    <td className="px-4 py-3 text-[var(--text-secondary)]">{lic.contact_email}</td>
-                    <td className="px-4 py-3">
-                      <span className="text-xs text-[var(--text-tertiary)]">{lic.license_type}</span>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className="text-xs text-[var(--text-secondary)] capitalize">{lic.tier}</span>
-                    </td>
-                    <td className="px-4 py-3 text-center text-[var(--text-secondary)] tabular-nums">
-                      {lic.seats_limit}
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className={`px-2 py-0.5 text-xs font-medium border rounded-full ${statusStyle}`}>
-                        {lic.effective_status}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-xs text-[var(--text-tertiary)]">
-                      {lic.expires_at ? lic.expires_at.slice(0, 10) : 'Never'}
-                    </td>
-                    <td className="px-4 py-3 text-center">
-                      {lic.effective_status === 'active' && (
-                        <button
-                          onClick={() => {
-                            const reason = prompt('Reason for revocation:');
-                            if (reason) revokeMutation.mutate({ key: lic.id, reason });
-                          }}
-                          disabled={revokeMutation.isPending}
-                          className="text-xs text-red-500 hover:underline disabled:opacity-50"
-                        >
-                          Revoke
-                        </button>
-                      )}
-                    </td>
-                  </tr>
+                  <span className={`px-2 py-0.5 text-xs font-medium border rounded-full ${statusStyle}`}>
+                    {lic.effective_status}
+                  </span>
                 );
-              })}
-            </tbody>
-          </table>
-        </div>
+              },
+            },
+            {
+              key: 'expires',
+              header: 'Expires',
+              width: 'w-28',
+              render: (lic) => (
+                <span className="text-xs text-[var(--text-tertiary)]">
+                  {lic.expires_at ? lic.expires_at.slice(0, 10) : 'Never'}
+                </span>
+              ),
+            },
+            {
+              key: 'actions',
+              header: 'Actions',
+              width: 'w-20',
+              render: (lic) =>
+                lic.effective_status === 'active' ? (
+                  <button
+                    onClick={() => {
+                      const reason = prompt('Reason for revocation:');
+                      if (reason) revokeMutation.mutate({ key: lic.id, reason });
+                    }}
+                    disabled={revokeMutation.isPending}
+                    className="text-xs text-red-500 hover:underline disabled:opacity-50"
+                  >
+                    Revoke
+                  </button>
+                ) : (
+                  <span className="text-xs text-[var(--text-tertiary)]">—</span>
+                ),
+            },
+          ]}
+          data={licenses}
+          rowKey={(lic) => lic.id}
+        />
       )}
     </div>
   );

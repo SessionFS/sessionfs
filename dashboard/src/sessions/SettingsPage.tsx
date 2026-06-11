@@ -7,6 +7,7 @@ import { useToast } from '../hooks/useToast';
 import { judgeSettingsSchema, fieldErrorsFromZod, type FieldErrors } from '../utils/validation';
 import FieldError from '../components/FieldError';
 import { getItem as lsGet, setItem as lsSet, removeItem as lsRemove } from '../utils/storage';
+import { Tabs, Card, Button, Input, Select } from '../components/ui';
 
 const PROVIDERS = [
   { value: 'openrouter', label: 'OpenRouter' },
@@ -79,7 +80,7 @@ export default function SettingsPage() {
 
   if (!auth) return null;
 
-  const tabs: { key: SettingsTab; label: string }[] = [
+  const tabs = [
     { key: 'account', label: 'Account' },
     { key: 'judge', label: 'Judge' },
     { key: 'connection', label: 'Connection' },
@@ -91,31 +92,23 @@ export default function SettingsPage() {
     <div className="max-w-2xl mx-auto px-4 py-8">
       <h1 className="text-3xl font-bold tracking-tight text-[var(--text-primary)] mb-6">Settings</h1>
 
-      {/* Tab navigation */}
-      <div className="flex gap-0 border-b border-[var(--border)] mb-6">
-        {tabs.map((t) => (
-          <button
-            key={t.key}
-            onClick={() => setActiveTab(t.key)}
-            className={`px-4 py-2 text-[14px] font-medium transition-colors ${
-              activeTab === t.key
-                ? 'text-[var(--text-primary)] border-b-2 border-[var(--brand)] -mb-px'
-                : 'text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      <Tabs
+        tabs={tabs}
+        activeKey={activeTab}
+        onChange={(key) => setActiveTab(key as SettingsTab)}
+        bare
+      />
 
       {/* Tab content */}
-      {activeTab === 'account' && (
-        <AccountTab profile={profile} logout={logout} />
-      )}
-      {activeTab === 'judge' && <JudgeTab />}
-      {activeTab === 'connection' && <ConnectionTab />}
-      {activeTab === 'preferences' && <PreferencesTab />}
-      {activeTab === 'dlp' && <DLPTab />}
+      <div className="pt-4">
+        {activeTab === 'account' && (
+          <AccountTab profile={profile} logout={logout} />
+        )}
+        {activeTab === 'judge' && <JudgeTab />}
+        {activeTab === 'connection' && <ConnectionTab />}
+        {activeTab === 'preferences' && <PreferencesTab />}
+        {activeTab === 'dlp' && <DLPTab />}
+      </div>
     </div>
   );
 }
@@ -128,7 +121,7 @@ function AccountTab({ profile, logout }: { profile: any; logout: () => void }) {
   return (
     <div className="space-y-5">
       {profile && (
-        <div className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl p-5">
+        <Card level="elevated" className="p-5">
           <h2 className="text-lg font-semibold text-[var(--text-primary)] mb-4">Account</h2>
           <div className="space-y-3">
             <div>
@@ -143,12 +136,12 @@ function AccountTab({ profile, logout }: { profile: any; logout: () => void }) {
               }</span>
             </div>
           </div>
-        </div>
+        </Card>
       )}
 
       {/* Last Sync card */}
       {profile?.last_client_version && (
-        <div className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl p-5">
+        <Card level="elevated" className="p-5">
           <div className="flex items-center gap-2 mb-4">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--text-tertiary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="23 4 23 10 17 10" />
@@ -195,15 +188,12 @@ function AccountTab({ profile, logout }: { profile: any; logout: () => void }) {
               </p>
             </div>
           )}
-        </div>
+        </Card>
       )}
 
-      <button
-        onClick={logout}
-        className="px-4 py-2 text-sm border border-red-500/30 text-red-500 rounded-lg hover:bg-red-500/10 transition-colors"
-      >
+      <Button variant="danger" onClick={logout}>
         Logout
-      </button>
+      </Button>
     </div>
   );
 }
@@ -216,11 +206,11 @@ function ConnectionTab() {
   const { auth } = useAuth();
   if (!auth) return null;
 
-  const maskedKey = auth.apiKey.slice(0, 12) + '\u2026' + auth.apiKey.slice(-4);
+  const maskedKey = auth.apiKey.slice(0, 12) + '…' + auth.apiKey.slice(-4);
 
   return (
     <div className="space-y-5">
-      <div className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl p-5">
+      <Card level="elevated" className="p-5">
         <h2 className="text-lg font-semibold text-[var(--text-primary)] mb-4">Connection</h2>
 
         <div className="mb-4">
@@ -242,7 +232,7 @@ function ConnectionTab() {
             <CopyButton text={auth.apiKey} />
           </div>
         </div>
-      </div>
+      </Card>
 
       {/* GitHub Integration */}
       <GitHubIntegrationSection />
@@ -359,7 +349,7 @@ function JudgeTab() {
   return (
     <div className="space-y-5">
       {/* Judge Configuration */}
-      <div className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl p-5">
+      <Card level="elevated" className="p-5">
         <h2 className="text-lg font-semibold text-[var(--text-primary)] mb-2">Judge Configuration</h2>
         <p className="text-sm text-[var(--text-tertiary)] mb-4">
           Configure the LLM used for session audits. Your key is stored server-side and used only for audit requests.
@@ -371,15 +361,11 @@ function JudgeTab() {
           <>
             <div className="mb-4">
               <label className="text-[13px] text-[var(--text-tertiary)] block mb-1">Provider</label>
-              <select
+              <Select
                 value={judgeProvider}
                 onChange={(e) => handleProviderChange(e.target.value)}
-                className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 text-[14px] text-[var(--text-secondary)] focus:outline-none focus:border-[var(--brand)]"
-              >
-                {PROVIDERS.map((p) => (
-                  <option key={p.value} value={p.value}>{p.label}</option>
-                ))}
-              </select>
+                options={[...PROVIDERS]}
+              />
             </div>
 
             <div className="mb-4">
@@ -388,66 +374,62 @@ function JudgeTab() {
                 {discovering && <span className="text-[var(--text-tertiary)] opacity-50 ml-2">discovering...</span>}
               </label>
               {judgeBaseUrl && discoveredModels.length > 0 ? (
-                <select
+                <Select
                   value={judgeModel}
                   onChange={(e) => { setJudgeModel(e.target.value); setJudgeSaved(false); }}
-                  className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 text-[14px] text-[var(--text-secondary)] focus:outline-none focus:border-[var(--brand)] font-mono"
-                >
-                  <option value="">Select a model...</option>
-                  {discoveredModels.map((m) => (
-                    <option key={m.id} value={m.id}>{m.id}{m.owned_by ? ` (${m.owned_by})` : ''}</option>
-                  ))}
-                </select>
+                  options={[
+                    { value: '', label: 'Select a model...' },
+                    ...discoveredModels.map((m) => ({ value: m.id, label: m.id + (m.owned_by ? ` (${m.owned_by})` : '') })),
+                  ]}
+                />
               ) : judgeBaseUrl ? (
-                <input
+                <Input
                   type="text"
                   value={judgeModel}
-                  onChange={(e) => { setJudgeModel(e.target.value); setJudgeSaved(false); }}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => { setJudgeModel(e.target.value); setJudgeSaved(false); }}
                   placeholder="model-name"
-                  className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 text-[14px] text-[var(--text-secondary)] placeholder:text-[var(--text-tertiary)] placeholder:opacity-50 focus:outline-none focus:border-[var(--brand)] font-mono"
+                  title="Model"
+                  className="font-mono"
                 />
               ) : isOpenRouter ? (
-                <input
+                <Input
                   type="text"
                   value={judgeModel}
-                  onChange={(e) => { setJudgeModel(e.target.value); setJudgeSaved(false); }}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => { setJudgeModel(e.target.value); setJudgeSaved(false); }}
                   placeholder="anthropic/claude-sonnet-4"
-                  className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 text-[14px] text-[var(--text-secondary)] placeholder:text-[var(--text-tertiary)] placeholder:opacity-50 focus:outline-none focus:border-[var(--brand)] font-mono"
+                  title="Model"
+                  className="font-mono"
                 />
               ) : (
-                <select
+                <Select
                   value={judgeModel}
                   onChange={(e) => { setJudgeModel(e.target.value); setJudgeSaved(false); }}
-                  className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 text-[14px] text-[var(--text-secondary)] focus:outline-none focus:border-[var(--brand)]"
-                >
-                  {providerModels.map((m) => (
-                    <option key={m.value} value={m.value}>{m.label}</option>
-                  ))}
-                </select>
+                  options={providerModels}
+                />
               )}
               <FieldError message={judgeErrors.model} />
             </div>
 
             <div className="mb-4">
-              <label className="text-[13px] text-[var(--text-tertiary)] block mb-1">API Key</label>
-              <input
+              <Input
                 type="password"
                 value={judgeApiKey}
-                onChange={(e) => { setJudgeApiKey(e.target.value); setJudgeSaved(false); if (judgeErrors.apiKey) setJudgeErrors((prev) => ({ ...prev, apiKey: undefined })); }}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => { setJudgeApiKey(e.target.value); setJudgeSaved(false); if (judgeErrors.apiKey) setJudgeErrors((prev) => ({ ...prev, apiKey: undefined })); }}
                 placeholder={keyPlaceholder}
-                className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 text-[14px] text-[var(--text-secondary)] placeholder:text-[var(--text-tertiary)] placeholder:opacity-50 focus:outline-none focus:border-[var(--brand)] font-mono"
+                title="API Key"
+                className="font-mono"
               />
               <FieldError message={judgeErrors.apiKey} />
             </div>
 
             <div className="mb-4">
-              <label className="text-[13px] text-[var(--text-tertiary)] block mb-1">Base URL <span className="opacity-50">(optional)</span></label>
-              <input
+              <Input
                 type="text"
                 value={judgeBaseUrl}
-                onChange={(e) => { setJudgeBaseUrl(e.target.value); setJudgeSaved(false); if (judgeErrors.baseUrl) setJudgeErrors((prev) => ({ ...prev, baseUrl: undefined })); }}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => { setJudgeBaseUrl(e.target.value); setJudgeSaved(false); if (judgeErrors.baseUrl) setJudgeErrors((prev) => ({ ...prev, baseUrl: undefined })); }}
                 placeholder="https://litellm.company.internal/v1"
-                className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 text-[14px] text-[var(--text-secondary)] placeholder:text-[var(--text-tertiary)] placeholder:opacity-50 focus:outline-none focus:border-[var(--brand)] font-mono"
+                title="Base URL (optional)"
+                className="font-mono"
               />
               <FieldError message={judgeErrors.baseUrl} />
               <p className="text-xs text-[var(--text-tertiary)] opacity-60 mt-1">
@@ -456,21 +438,23 @@ function JudgeTab() {
             </div>
 
             <div className="flex items-center gap-3 mb-3">
-              <button
+              <Button
+                variant="primary"
                 onClick={handleSaveJudge}
                 disabled={!judgeModel || (!judgeApiKey && !judgeBaseUrl) || saveJudge.isPending}
-                className="bg-[var(--brand)] text-white rounded-lg px-5 py-2.5 text-sm font-semibold hover:bg-[var(--brand-hover)] transition-colors disabled:opacity-50"
+                loading={saveJudge.isPending}
               >
-                {saveJudge.isPending ? 'Saving...' : 'Save'}
-              </button>
+                Save
+              </Button>
               {keySet && (
-                <button
+                <Button
+                  variant="danger"
                   onClick={handleClearJudge}
                   disabled={clearJudge.isPending}
-                  className="px-4 py-2 text-sm border border-red-500/30 text-red-500 rounded-lg hover:bg-red-500/10 transition-colors disabled:opacity-50"
+                  loading={clearJudge.isPending}
                 >
-                  {clearJudge.isPending ? 'Clearing...' : 'Clear Key'}
-                </button>
+                  Clear Key
+                </Button>
               )}
             </div>
 
@@ -487,7 +471,7 @@ function JudgeTab() {
             )}
           </>
         )}
-      </div>
+      </Card>
 
       {/* Auto-audit */}
       <AutoAuditSection />
@@ -513,24 +497,24 @@ function PreferencesTab() {
 
   return (
     <div className="space-y-5">
-      <div className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl p-5">
+      <Card level="elevated" className="p-5">
         <h2 className="text-lg font-semibold text-[var(--text-primary)] mb-4">Appearance</h2>
         <div>
-          <label className="text-[13px] text-[var(--text-tertiary)] block mb-1">Theme</label>
-          <select
+          <Select
             value={theme}
             onChange={(e) => handleThemeChange(e.target.value)}
-            className="w-full max-w-xs bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 text-[14px] text-[var(--text-secondary)] focus:outline-none focus:border-[var(--brand)]"
-          >
-            <option value="light">Light</option>
-            <option value="dark">Dark</option>
-            <option value="system">System</option>
-          </select>
+            options={[
+              { value: 'light', label: 'Light' },
+              { value: 'dark', label: 'Dark' },
+              { value: 'system', label: 'System' },
+            ]}
+            title="Theme"
+          />
           <p className="text-xs text-[var(--text-tertiary)] opacity-60 mt-1.5">
             Choose how SessionFS looks. System follows your OS preference.
           </p>
         </div>
-      </div>
+      </Card>
     </div>
   );
 }
@@ -558,7 +542,7 @@ function AutoAuditSection() {
   const current = data?.trigger || 'manual';
 
   return (
-    <div className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl p-5">
+    <Card level="elevated" className="p-5">
       <h2 className="text-lg font-semibold text-[var(--text-primary)] mb-3">Auto-audit</h2>
       <div className="space-y-2">
         {[
@@ -574,7 +558,7 @@ function AutoAuditSection() {
           </label>
         ))}
       </div>
-    </div>
+    </Card>
   );
 }
 
@@ -598,7 +582,7 @@ function AutosyncSection() {
   const currentMode = syncSettings?.mode || 'off';
 
   return (
-    <div className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl p-5">
+    <Card level="elevated" className="p-5">
       <h2 className="text-lg font-semibold text-[var(--text-primary)] mb-2">Autosync</h2>
       <p className="text-sm text-[var(--text-tertiary)] mb-3">
         Automatically sync sessions to the cloud. The daemon pushes changes after a short debounce period.
@@ -629,7 +613,7 @@ function AutosyncSection() {
           )}
         </div>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -689,7 +673,7 @@ export function GitHubIntegrationSection() {
   const connected = ghSettings && ghSettings.account_login;
 
   return (
-    <div className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl p-5">
+    <Card level="elevated" className="p-5">
       <h2 className="text-lg font-semibold text-[var(--text-primary)] mb-2">GitHub Integration</h2>
       <p className="text-sm text-[var(--text-tertiary)] mb-4">
         Automatically post AI context comments on pull requests showing which sessions contributed to the code.
@@ -769,7 +753,7 @@ export function GitHubIntegrationSection() {
           </a>
         </div>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -831,12 +815,12 @@ function DLPTab() {
   if (!isOrgMember) {
     return (
       <div className="space-y-5">
-        <div className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl p-5">
+        <Card level="elevated" className="p-5">
           <h2 className="text-lg font-semibold text-[var(--text-primary)] mb-2">Data Loss Prevention</h2>
           <p className="text-sm text-[var(--text-tertiary)]">
             DLP scanning is available for Team and Enterprise plans.
           </p>
-        </div>
+        </Card>
       </div>
     );
   }
@@ -845,12 +829,12 @@ function DLPTab() {
   if (!isOrgAdmin) {
     return (
       <div className="space-y-5">
-        <div className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl p-5">
+        <Card level="elevated" className="p-5">
           <h2 className="text-lg font-semibold text-[var(--text-primary)] mb-2">Data Loss Prevention</h2>
           <p className="text-sm text-[var(--text-tertiary)]">
             Only organization admins can configure DLP policies.
           </p>
-        </div>
+        </Card>
       </div>
     );
   }
@@ -876,7 +860,7 @@ function DLPTab() {
 
   return (
     <div className="space-y-5">
-      <div className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl p-5">
+      <Card level="elevated" className="p-5">
         <h2 className="text-lg font-semibold text-[var(--text-primary)] mb-2">Data Loss Prevention</h2>
         <p className="text-sm text-[var(--text-tertiary)] mb-4">
           Automatically scan synced sessions for sensitive data such as secrets and protected health information.
@@ -957,7 +941,7 @@ function DLPTab() {
             )}
           </>
         )}
-      </div>
+      </Card>
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
 import { formatBytes } from '../utils/format';
+import { Card, Button } from '../components/ui';
 
 const TIERS = [
   {
@@ -134,7 +135,7 @@ export default function BillingPage() {
       <h1 className="text-3xl font-bold tracking-tight text-[var(--text-primary)] mb-6">Billing</h1>
 
       {/* Current plan info */}
-      <div className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl p-6 mb-8">
+      <Card level="elevated" className="p-6 mb-8">
         <div className="flex items-center justify-between">
           <div>
             <p className="text-[13px] text-[var(--text-tertiary)] mb-1">Current Plan</p>
@@ -171,20 +172,20 @@ export default function BillingPage() {
 
         {hasSubscription && (!isOrgMember || isOrgAdmin) && (
           <div className="mt-5 pt-4 border-t border-[var(--border)] flex gap-3">
-            <button
+            <Button
+              variant="primary"
               onClick={() => portalMutation.mutate(undefined)}
-              disabled={portalMutation.isPending}
-              className="bg-[var(--brand)] text-white rounded-lg px-5 py-2.5 text-sm font-semibold hover:bg-[var(--brand-hover)] transition-colors disabled:opacity-50"
+              loading={portalMutation.isPending}
             >
-              {portalMutation.isPending ? 'Redirecting...' : 'Manage Subscription'}
-            </button>
-            <button
+              Manage Subscription
+            </Button>
+            <Button
+              variant="secondary"
               onClick={() => portalMutation.mutate(undefined)}
-              disabled={portalMutation.isPending}
-              className="px-5 py-2.5 text-sm font-medium border border-[var(--border)] text-[var(--text-secondary)] rounded-lg hover:bg-[var(--surface-hover)] transition-colors disabled:opacity-50"
+              loading={portalMutation.isPending}
             >
-              {portalMutation.isPending ? 'Redirecting...' : 'View Invoices'}
-            </button>
+              View Invoices
+            </Button>
             {portalMutation.isError && (
               <p className="text-red-500 text-sm self-center">{String(portalMutation.error)}</p>
             )}
@@ -203,19 +204,19 @@ export default function BillingPage() {
             <p className="text-xs text-[var(--text-tertiary)] mb-3">
               Your organization provides your plan. Cancel your personal subscription to avoid duplicate charges.
             </p>
-            <button
+            <Button
+              variant="secondary"
               onClick={() => portalMutation.mutate('personal')}
-              disabled={portalMutation.isPending}
-              className="px-4 py-2 text-sm font-medium border border-yellow-500/30 text-yellow-600 rounded-lg hover:bg-yellow-500/10 transition-colors disabled:opacity-50"
+              loading={portalMutation.isPending}
             >
-              {portalMutation.isPending ? 'Redirecting...' : 'Manage Personal Subscription'}
-            </button>
+              Manage Personal Subscription
+            </Button>
             {portalMutation.isError && (
               <p className="text-red-500 text-xs mt-2">{String(portalMutation.error)}</p>
             )}
           </div>
         )}
-      </div>
+      </Card>
 
       {/* Tier cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -224,11 +225,13 @@ export default function BillingPage() {
           const isPro = t.popular;
 
           return (
-            <div
+            <Card
               key={t.tier}
-              className={`bg-[var(--bg-elevated)] rounded-xl border p-5 transition-colors ${
-                isPro ? 'border-[var(--brand)] ring-1 ring-[var(--brand)]' : 'border-[var(--border)]'
-              } ${isCurrent ? 'bg-[var(--brand)]/[0.03]' : ''}`}
+              level="elevated"
+              topEdge={isCurrent ? 'var(--brand)' : undefined}
+              className={`p-5 transition-colors ${
+                isPro ? '!border-[var(--brand)] ring-1 ring-[var(--brand)]' : ''
+              }`}
             >
               {isPro && (
                 <span className="text-xs font-medium text-[var(--brand)] uppercase tracking-wide">Popular</span>
@@ -258,28 +261,26 @@ export default function BillingPage() {
                 ) : isBeta ? (
                   <span className="block text-center py-2 text-[var(--text-tertiary)] text-sm">Coming soon</span>
                 ) : hasSubscription ? (
-                  <button
+                  <Button
+                    variant="secondary"
                     onClick={() => portalMutation.mutate(undefined)}
-                    disabled={portalMutation.isPending}
-                    className="w-full py-2.5 px-5 rounded-lg text-sm font-medium border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] transition-colors disabled:opacity-50"
+                    loading={portalMutation.isPending}
+                    className="w-full"
                   >
-                    {portalMutation.isPending ? 'Redirecting...' : 'Change plan'}
-                  </button>
+                    Change plan
+                  </Button>
                 ) : (
-                  <button
+                  <Button
+                    variant={isPro ? 'primary' : 'secondary'}
                     onClick={() => checkoutMutation.mutate(t.tier)}
-                    disabled={checkoutMutation.isPending}
-                    className={`w-full py-2.5 px-5 rounded-lg text-sm font-semibold transition-colors disabled:opacity-50 ${
-                      isPro
-                        ? 'bg-[var(--brand)] text-white hover:bg-[var(--brand-hover)]'
-                        : 'border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--surface-hover)]'
-                    }`}
+                    loading={checkoutMutation.isPending}
+                    className="w-full"
                   >
-                    {checkoutMutation.isPending ? 'Redirecting...' : 'Upgrade'}
-                  </button>
+                    Upgrade
+                  </Button>
                 )}
               </div>
-            </div>
+            </Card>
           );
         })}
       </div>
