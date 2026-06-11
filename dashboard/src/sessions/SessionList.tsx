@@ -439,12 +439,19 @@ export default function SessionList() {
 
         {/* ── Hero: Best next action ── */}
         {!isLoading && !showTrash && mostRecent && (
-          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl px-5 py-4 mb-5 shadow-[var(--shadow-sm)]">
+          <div
+            className="rounded-xl px-5 py-4 mb-5"
+            style={{
+              backgroundColor: 'var(--bg-elevated)',
+              border: '1px solid var(--border)',
+              borderLeft: `4px solid ${TOOL_COLORS[mostRecent.source_tool] || 'var(--text-tertiary)'}`,
+            }}
+          >
             <div className="flex flex-col sm:flex-row sm:items-center gap-4">
               {/* Left: session to resume */}
               <div className="flex-1 min-w-0">
                 <h2
-                  className="text-xl font-semibold text-[var(--text-primary)] truncate cursor-pointer hover:text-[var(--brand)] transition-colors"
+                  className="text-[17px] font-semibold text-[var(--text-primary)] truncate cursor-pointer hover:text-[var(--brand)] transition-colors"
                   onClick={() => navigate(`/sessions/${mostRecent.id}`)}
                 >
                   {mostRecent.title || 'Untitled session'}
@@ -467,7 +474,7 @@ export default function SessionList() {
                 <div className="mt-3 flex items-center gap-3">
                   <button
                     onClick={() => handleResume(mostRecent)}
-                    className="px-4 py-2 bg-[var(--brand)] text-white text-sm font-semibold rounded-lg hover:opacity-90 transition-opacity"
+                    className="px-4 py-2 bg-[var(--brand)] text-white text-sm font-semibold rounded-lg hover:opacity-90 transition-opacity focus:outline-none shadow-[0_4px_16px_var(--brand-glow)] focus:shadow-[0_4px_16px_var(--brand-glow),0_0_0_3px_var(--brand-glow)]"
                   >
                     {CAPTURE_ONLY_TOOLS.has(mostRecent.source_tool) ? 'Resume in Claude Code' : 'Resume'}
                   </button>
@@ -917,8 +924,8 @@ function DateGroup({
   const lineageGroups = groupByLineage(sessions);
 
   return (
-    <div className={`mb-5 ${isFirst ? 'mt-0' : 'mt-6'}`}>
-      <h3 className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--text-tertiary)] pb-2 mb-3 border-b border-[var(--border)]">
+    <div className={`mb-5 ${isFirst ? 'mt-0' : 'mt-8'}`}>
+      <h3 className="text-micro font-semibold uppercase text-[var(--text-tertiary)] pt-3 pb-2 mb-3 border-b border-[var(--border)]">
         {label}
       </h3>
       <div className="flex flex-col gap-1.5">
@@ -952,7 +959,6 @@ function DateGroup({
                 }}
                 onResume={() => onResume(group.root)}
                 onNavigate={hasChildren ? () => onRowClick(group.root.id) : undefined}
-                hasChildren={hasChildren}
                 isBookmarked={!!isInFolder}
                 selectMode={selectMode}
                 selected={selectedIds.has(group.root.id)}
@@ -979,7 +985,7 @@ function DateGroup({
                 ) : undefined}
               />
               {hasChildren && isExpanded && (
-                <div className="flex flex-col gap-1 mt-1 ml-6 border-l-2 border-[var(--brand)]/30 pl-3 space-y-1">
+                <div className="flex flex-col gap-1 mt-1 ml-6 border-l border-[var(--border)] pl-3">
                   {group.children.map((child) => (
                     <SessionRow
                       key={child.id}
@@ -1019,7 +1025,6 @@ function SessionRow({
   onNavigate,
   lineageBadge,
   isChild,
-  hasChildren,
   isBookmarked,
   selectMode,
   selected,
@@ -1032,7 +1037,6 @@ function SessionRow({
   onNavigate?: () => void;
   lineageBadge?: React.ReactNode;
   isChild?: boolean;
-  hasChildren?: boolean;
   isBookmarked?: boolean;
   selectMode?: boolean;
   selected?: boolean;
@@ -1044,7 +1048,8 @@ function SessionRow({
       onClick={onClick}
       onKeyDown={(e) => { if (e.key === ' ') { e.preventDefault(); onClick(); } else { onKeyDown(e); } }}
       tabIndex={0}
-      className={`group bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg cursor-pointer hover:bg-[var(--surface-hover)] hover:shadow-[var(--shadow-sm)] transition-all duration-150 focus:bg-[var(--surface-hover)] outline-none focus:ring-1 focus:ring-[var(--brand)] ${isChild ? 'px-3 py-3' : 'px-4 py-4'} ${hasChildren ? 'border-l-[3px] border-l-[var(--brand)]/40' : ''} ${selected ? 'ring-1 ring-[var(--brand)] bg-[var(--brand)]/5' : ''}`}
+      className={`group bg-[var(--surface)] border border-[var(--border)] rounded-lg cursor-pointer hover:bg-[var(--bg-elevated)] hover:border-[var(--border-strong)] transition-[background-color,border-color] duration-150 ease-out outline-none focus:ring-1 focus:ring-[var(--brand-glow)] ${isChild ? 'px-3 py-3' : 'px-4 py-[14px]'} ${selected ? 'ring-1 ring-[var(--brand)] bg-[var(--brand)]/5' : ''}`}
+      style={{ borderLeftWidth: '3px', borderLeftStyle: 'solid', borderLeftColor: TOOL_COLORS[s.source_tool] || 'var(--text-tertiary)' }}
     >
       {/* Line 1: Title + hover actions + timestamp */}
       <div className="flex items-center gap-3 mb-1">
@@ -1058,7 +1063,7 @@ function SessionRow({
           />
         )}
         <span
-          className={`font-semibold text-[var(--text-primary)] truncate flex-1 ${isChild ? 'text-[14px]' : 'text-base'}`}
+          className={`font-semibold text-[var(--text-primary)] truncate flex-1 ${isChild ? 'text-[13px]' : 'text-[15px]'}`}
           onClick={onNavigate ? (e) => { e.stopPropagation(); onNavigate(); } : undefined}
           style={onNavigate ? { cursor: 'pointer' } : undefined}
         >
@@ -1096,15 +1101,10 @@ function SessionRow({
           </div>
         </div>
       </div>
-      {/* Line 2: Tool dot + tool name + metadata */}
-      <div className={`flex items-center gap-2 ${isChild ? 'text-[11px]' : 'text-[12px]'} text-[var(--text-tertiary)] opacity-70`}>
-        <span
-          className="w-2 h-2 rounded-full shrink-0"
-          style={{ backgroundColor: TOOL_COLORS[s.source_tool] || '#6B7280' }}
-        />
-        <span className="font-medium whitespace-nowrap">{fullToolName(s.source_tool)}</span>
-        <span className="opacity-40">&middot;</span>
-        <span className="font-mono">{s.id.slice(0, 12)}</span>
+      {/* Line 2: tool name + session id as mono-chips; counts + model as text-tertiary */}
+      <div className={`flex items-center gap-1.5 ${isChild ? 'text-[12px]' : 'text-[13px]'} text-[var(--text-tertiary)]`}>
+        <span className="text-mono-chip">{fullToolName(s.source_tool)}</span>
+        <span className="text-mono-chip">{s.id.slice(0, 12)}</span>
         <span className="opacity-40">&middot;</span>
         <span className="tabular-nums">{s.message_count} msgs</span>
         {!isChild && (s.total_input_tokens + s.total_output_tokens) > 0 && (
