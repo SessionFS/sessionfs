@@ -1,5 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
-import { useFocusTrap } from '../hooks/useFocusTrap';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import {
@@ -32,6 +31,7 @@ import PersonasTab from './PersonasTab';
 import TicketsTab from './TicketsTab';
 import AgentRunsTab from './AgentRunsTab';
 import { useMyOrgs } from '../transfers/useTransfers';
+import { Tabs, Card, Button, Input, Textarea, Dialog, DialogHeader, DialogFooter, Dropdown } from '../components/ui';
 
 type ProjectTab =
   | 'context'
@@ -362,17 +362,19 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
             </ul>
           )}
           {health.stale_entry_count > 0 && (
-            <button
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={() => dismissStale.mutate(undefined, {
                 onSuccess: (result) => addToast('success', `Dismissed ${result.dismissed_count} stale entries.`),
                 onError: (err) => addToast('error', `Failed to dismiss: ${String(err)}`),
               })}
               disabled={dismissStale.isPending}
-              className="mt-2 px-3 py-1.5 text-xs font-medium border rounded-md transition-colors hover:bg-[var(--surface-hover)]"
-              style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
+              loading={dismissStale.isPending}
+              className="mt-2"
             >
-              {dismissStale.isPending ? 'Dismissing...' : `Dismiss ${health.stale_entry_count} stale`}
-            </button>
+              Dismiss {health.stale_entry_count} stale
+            </Button>
           )}
         </div>
       )}
@@ -483,20 +485,21 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
           </select>
         </div>
         <div className="flex items-center gap-2">
-          <button
+          <Button
+            variant="secondary"
             onClick={handleRebuild}
             disabled={rebuild.isPending}
-            className="px-4 py-2 text-sm font-medium text-[var(--text-secondary)] border border-[var(--border)] rounded-lg hover:bg-[var(--surface-hover)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            loading={rebuild.isPending}
           >
-            {rebuild.isPending ? 'Rebuilding...' : 'Rebuild'}
-          </button>
-          <button
+            Rebuild
+          </Button>
+          <Button
             onClick={handleCompile}
             disabled={compile.isPending}
-            className="px-4 py-2 text-sm font-semibold bg-[var(--brand)] text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            loading={compile.isPending}
           >
-            {compile.isPending ? 'Compiling...' : 'Compile Now'}
-          </button>
+            Compile Now
+          </Button>
         </div>
       </div>
 
@@ -727,52 +730,40 @@ function PagesTab({ projectId }: { projectId: string }) {
         <span className="text-sm text-[var(--text-tertiary)]">
           {pages.length} {pages.length === 1 ? 'page' : 'pages'}
         </span>
-        <button
-          onClick={() => setShowNewPage(true)}
-          className="px-4 py-2 text-sm font-semibold bg-[var(--brand)] text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors"
-        >
-          + New Page
-        </button>
+        <Button onClick={() => setShowNewPage(true)}>+ New Page</Button>
       </div>
 
       {/* New page form */}
       {showNewPage && (
         <div className="mb-4 px-4 py-3 rounded-lg border border-[var(--brand)] bg-[var(--bg-primary)]">
           <div className="flex gap-3 mb-2">
-            <input
+            <Input
               value={newSlug}
               onChange={(e) => setNewSlug(e.target.value)}
               placeholder="page-slug"
-              className="flex-1 px-3 py-1.5 text-sm bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)] placeholder:text-[var(--text-tertiary)]"
+              className="flex-1"
               autoFocus
             />
-            <input
+            <Input
               value={newTitle}
               onChange={(e) => setNewTitle(e.target.value)}
               placeholder="Page Title (optional)"
-              className="flex-1 px-3 py-1.5 text-sm bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)] placeholder:text-[var(--text-tertiary)]"
+              className="flex-1"
             />
           </div>
-          <textarea
+          <Textarea
             value={newContent}
             onChange={(e) => setNewContent(e.target.value)}
             placeholder="Page content (markdown)..."
-            className="w-full min-h-[120px] px-3 py-2 text-sm font-mono bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)] resize-y placeholder:text-[var(--text-tertiary)]"
+            className="min-h-[120px] font-mono"
           />
           <div className="flex justify-end gap-3 mt-2">
-            <button
-              onClick={() => { setShowNewPage(false); setNewSlug(''); setNewTitle(''); setNewContent(''); }}
-              className="px-3 py-1.5 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
-            >
+            <Button variant="ghost" onClick={() => { setShowNewPage(false); setNewSlug(''); setNewTitle(''); setNewContent(''); }}>
               Cancel
-            </button>
-            <button
-              onClick={handleCreatePage}
-              disabled={updatePage.isPending}
-              className="px-4 py-1.5 text-sm font-semibold bg-[var(--brand)] text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors disabled:opacity-50"
-            >
-              {updatePage.isPending ? 'Creating...' : 'Create'}
-            </button>
+            </Button>
+            <Button onClick={handleCreatePage} disabled={updatePage.isPending} loading={updatePage.isPending}>
+              Create
+            </Button>
           </div>
         </div>
       )}
@@ -829,26 +820,19 @@ function PagesTab({ projectId }: { projectId: string }) {
 
                     {isEditing ? (
                       <div>
-                        <textarea
+                        <Textarea
                           value={editDraft}
                           onChange={(e) => setEditDraft(e.target.value)}
-                          className="w-full min-h-[300px] px-3 py-3 text-[14px] font-mono bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)] resize-y"
+                          className="min-h-[300px] font-mono text-[14px]"
                           autoFocus
                         />
                         <div className="flex justify-end gap-3 mt-3">
-                          <button
-                            onClick={() => { setEditingSlug(null); setEditDraft(''); }}
-                            className="px-3 py-1.5 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
-                          >
+                          <Button variant="ghost" onClick={() => { setEditingSlug(null); setEditDraft(''); }}>
                             Cancel
-                          </button>
-                          <button
-                            onClick={() => handleSaveEdit(page.slug)}
-                            disabled={updatePage.isPending}
-                            className="px-5 py-2.5 text-sm font-semibold bg-[var(--brand)] text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors disabled:opacity-50"
-                          >
-                            {updatePage.isPending ? 'Saving...' : 'Save'}
-                          </button>
+                          </Button>
+                          <Button onClick={() => handleSaveEdit(page.slug)} disabled={updatePage.isPending} loading={updatePage.isPending}>
+                            Save
+                          </Button>
                         </div>
                       </div>
                     ) : (
@@ -982,14 +966,9 @@ export default function ProjectDetail() {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [showMoreMenu, setShowMoreMenu] = useState(false);
   const [workflowHintDismissed, setWorkflowHintDismissed] = useState(
     () => sessionStorage.getItem('sfs-workflow-hint-dismissed') === '1',
   );
-  const tabBarRef = useRef<HTMLDivElement>(null);
-  const [indicatorStyle, setIndicatorStyle] = useState<{ left: number; width: number }>({ left: 0, width: 0 });
-  const deleteDialogRef = useRef<HTMLDivElement>(null);
-  useFocusTrap(showDeleteConfirm ? deleteDialogRef : { current: null });
   const [autoNarrative, setAutoNarrative] = useState(project?.auto_narrative ?? false);
   const updateSettings = useUpdateProjectSettings(project?.id);
 
@@ -998,31 +977,15 @@ export default function ProjectDetail() {
   const pendingCount = pendingData?.total ?? 0;
   const compile = useCompileProject(project?.id);
 
-  function switchTab(tab: ProjectTab) {
-    setActiveTab(tab);
+  const switchTab = useCallback((tab: string) => {
+    setActiveTab(tab as ProjectTab);
     setTabKey((k) => k + 1);
-  }
+  }, []);
 
   function dismissWorkflowHint() {
     setWorkflowHintDismissed(true);
     sessionStorage.setItem('sfs-workflow-hint-dismissed', '1');
   }
-
-  // Measure active tab for sliding indicator
-  useEffect(() => {
-    if (!tabBarRef.current) return;
-    const bar = tabBarRef.current;
-    const btns = bar.querySelectorAll<HTMLButtonElement>('[data-tab]');
-    const activeBtn = Array.from(btns).find((b) => b.dataset.tab === activeTab);
-    if (activeBtn) {
-      const barRect = bar.getBoundingClientRect();
-      const btnRect = activeBtn.getBoundingClientRect();
-      setIndicatorStyle({
-        left: btnRect.left - barRect.left,
-        width: btnRect.width,
-      });
-    }
-  }, [activeTab]);
 
   // Sync auto_narrative state when project data loads
   useEffect(() => {
@@ -1084,15 +1047,12 @@ export default function ProjectDetail() {
   if (error || !project) {
     return (
       <div className="p-8">
-        <button
-          onClick={() => navigate('/projects')}
-          className="text-[var(--brand)] text-sm hover:underline inline-flex items-center gap-1"
-        >
+        <Button variant="ghost" onClick={() => navigate('/projects')}>
           <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="15 18 9 12 15 6" />
           </svg>
           Back to Projects
-        </button>
+        </Button>
         <p className="text-red-400 mt-4">Failed to load project: {String(error)}</p>
       </div>
     );
@@ -1127,18 +1087,15 @@ export default function ProjectDetail() {
   return (
     <div className="max-w-4xl mx-auto px-4 py-6">
       {/* Back link */}
-      <button
-        onClick={() => navigate('/projects')}
-        className="text-[var(--brand)] text-sm hover:underline inline-flex items-center gap-1 mb-4"
-      >
+      <Button variant="ghost" onClick={() => navigate('/projects')} className="mb-4">
         <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <polyline points="15 18 9 12 15 6" />
         </svg>
         Back to Projects
-      </button>
+      </Button>
 
       {/* Header card */}
-      <div className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-sm)]">
+      <Card level="elevated" className="rounded-xl shadow-[var(--shadow-sm)]">
         <div className="px-5 pt-4 flex items-start justify-between">
           <div className="min-w-0 flex-1">
             <h1 className="text-2xl font-semibold text-[var(--text-primary)] break-all">
@@ -1174,34 +1131,24 @@ export default function ProjectDetail() {
             </label>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            <div className="relative">
-              <button
-                onClick={() => setShowMoreMenu(!showMoreMenu)}
-                className="p-1.5 text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] rounded-lg transition-colors"
-              >
-                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
-                  <circle cx="12" cy="5" r="2" />
-                  <circle cx="12" cy="12" r="2" />
-                  <circle cx="12" cy="19" r="2" />
-                </svg>
-              </button>
-              {showMoreMenu && (
-                <>
-                  <div className="fixed inset-0 z-30" onClick={() => setShowMoreMenu(false)} />
-                  <div className="absolute right-0 top-10 z-40 bg-[var(--bg-elevated)] border border-[var(--border)] rounded-lg shadow-[var(--shadow-md)] py-1 min-w-[160px]">
-                    <button
-                      onClick={() => {
-                        setShowMoreMenu(false);
-                        setShowDeleteConfirm(true);
-                      }}
-                      className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-[var(--surface-hover)] transition-colors"
-                    >
-                      Delete Project
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
+            <Dropdown
+              trigger={
+                <button className="p-1.5 text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] rounded-lg transition-colors">
+                  <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
+                    <circle cx="12" cy="5" r="2" />
+                    <circle cx="12" cy="12" r="2" />
+                    <circle cx="12" cy="19" r="2" />
+                  </svg>
+                </button>
+              }
+              items={[
+                { key: 'delete', label: 'Delete Project', danger: true },
+              ]}
+              onSelect={(key) => {
+                if (key === 'delete') setShowDeleteConfirm(true);
+              }}
+              menuLabel="Project actions"
+            />
           </div>
         </div>
 
@@ -1227,62 +1174,50 @@ export default function ProjectDetail() {
             <span className="text-xs text-[var(--brand)] font-medium ml-1">
               {pendingCount} pending {pendingCount === 1 ? 'entry' : 'entries'} — not yet in context
             </span>
-            <button
+            <Button
+              size="sm"
               onClick={handleCompileFromContext}
               disabled={compile.isPending}
-              className="ml-2 px-2.5 py-1 text-xs font-semibold rounded bg-[var(--brand)] text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="ml-2"
               title="Run a compile pass — promotes pending claims into the project context document"
             >
               {compile.isPending ? 'Compiling…' : 'Compile now'}
-            </button>
-            <button
-              onClick={dismissWorkflowHint}
-              className="ml-1 text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] text-xs px-1"
-              title="Dismiss"
-            >
+            </Button>
+            <Button variant="ghost" size="sm" onClick={dismissWorkflowHint} title="Dismiss">
               &times;
-            </button>
+            </Button>
           </div>
         )}
 
         {/* Tabs */}
-        <div ref={tabBarRef} className="relative flex px-5 mt-2 border-t border-[var(--border)]">
-          {tabs.map((tab) => (
-            <button
-              key={tab.key}
-              data-tab={tab.key}
-              onClick={() => switchTab(tab.key)}
-              className={`px-4 py-3 text-[14px] font-medium transition-colors duration-200 ${
-                activeTab === tab.key
-                  ? 'text-[var(--brand)]'
-                  : 'text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]'
-              }`}
-            >
-              {tab.label}
-              {tab.key === 'entries' && pendingCount > 0 && (
-                <span className="ml-1.5 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[11px] font-semibold bg-[var(--brand)] text-white leading-none">
-                  {pendingCount > 99 ? '99+' : pendingCount}
+        <div className="px-5 mt-2 border-t border-[var(--border)] pt-2">
+          <Tabs
+            bare
+            activeKey={activeTab}
+            onChange={switchTab}
+            tabs={tabs.map((tab) => ({
+              key: tab.key,
+              label: (
+                <span className="inline-flex items-center gap-1.5">
+                  {tab.label}
+                  {tab.key === 'entries' && pendingCount > 0 && (
+                    <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[11px] font-semibold bg-[var(--brand)] text-white leading-none">
+                      {pendingCount > 99 ? '99+' : pendingCount}
+                    </span>
+                  )}
                 </span>
-              )}
-            </button>
-          ))}
-          {/* Sliding underline indicator */}
-          <span
-            className="absolute bottom-0 h-[2px] bg-[var(--brand)] rounded-full transition-all duration-300 ease-out pointer-events-none"
-            style={{
-              left: indicatorStyle.left,
-              width: indicatorStyle.width,
-            }}
+              ),
+            }))}
           />
         </div>
-      </div>
+      </Card>
 
       {/* Tab content */}
       {activeTab === 'context' && (
         <div key={`context-${tabKey}`} className="mt-4 tab-panel-enter">
           {/* Context hero header card */}
           {!editing && (
-            <div className="mb-3 bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-sm)] px-5 py-4">
+            <Card level="elevated" className="mb-3 rounded-xl shadow-[var(--shadow-sm)] px-5 py-4">
               <div className="flex items-center justify-between">
                 <div>
                   <h2 className="text-base font-semibold text-[var(--text-primary)]">Compiled Context</h2>
@@ -1299,115 +1234,102 @@ export default function ProjectDetail() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <button
+                  <Button
                     onClick={handleCompileFromContext}
                     disabled={compile.isPending}
-                    className="px-4 py-2 text-sm font-semibold bg-[var(--brand)] text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    loading={compile.isPending}
                   >
-                    {compile.isPending ? 'Compiling...' : 'Compile Now'}
-                  </button>
-                  <button
-                    onClick={handleEdit}
-                    className="px-4 py-2 text-sm font-medium text-[var(--text-secondary)] border border-[var(--border)] rounded-lg hover:bg-[var(--surface-hover)] transition-colors"
-                  >
-                    Edit
-                  </button>
+                    Compile Now
+                  </Button>
+                  <Button variant="secondary" onClick={handleEdit}>Edit</Button>
                 </div>
               </div>
-            </div>
+            </Card>
           )}
 
           {/* Context document body */}
-          <div className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-sm)]">
+          <Card level="elevated" className="rounded-xl shadow-[var(--shadow-sm)]">
             <div className="px-6 py-5">
               {editing ? (
                 <div>
-                  <textarea
+                  <Textarea
                     value={draft}
                     onChange={(e) => setDraft(e.target.value)}
-                    className="w-full min-h-[400px] px-3 py-3 text-[14px] font-mono bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)] resize-y placeholder:text-[var(--text-tertiary)]"
-                    placeholder="Write your project context document here...&#10;&#10;This will be shared with all sessions in this project."
+                    className="min-h-[400px] font-mono text-[14px]"
+                    placeholder={"Write your project context document here...\n\nThis will be shared with all sessions in this project."}
                     autoFocus
                   />
                   <div className="flex justify-end gap-3 mt-3">
-                    <button
-                      onClick={handleCancel}
-                      className="px-3 py-1.5 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
-                    >
-                      Cancel
-                    </button>
-                    <button
+                    <Button variant="ghost" onClick={handleCancel}>Cancel</Button>
+                    <Button
                       onClick={handleSave}
                       disabled={updateContext.isPending}
-                      className="px-5 py-2.5 text-sm font-semibold bg-[var(--brand)] text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      loading={updateContext.isPending}
                     >
-                      {updateContext.isPending ? 'Saving...' : 'Save'}
-                    </button>
+                      Save
+                    </Button>
                   </div>
                 </div>
               ) : project.context_document ? (
-                <article className="prose prose-sm dark:prose-invert max-w-none text-[var(--text-secondary)] leading-relaxed">
-                  <ReactMarkdown>{project.context_document}</ReactMarkdown>
-                </article>
+                <div className="bg-[var(--surface)] border border-[var(--border)] rounded-lg p-5">
+                  <article className="prose prose-sm dark:prose-invert max-w-none text-[var(--text-secondary)] leading-relaxed">
+                    <ReactMarkdown>{project.context_document}</ReactMarkdown>
+                  </article>
+                </div>
               ) : (
                 <div className="text-center py-12">
-                  <p className="text-[var(--text-tertiary)] text-sm mb-1">
+                  <p className="text-[var(--text-tertiary)] text-[13px] mb-1">
                     No context document yet.
                   </p>
-                  <p className="text-[var(--text-tertiary)] text-xs mb-4">
+                  <p className="text-[13px] text-[var(--text-tertiary)] mb-4">
                     Add knowledge entries, then compile to generate a context document.
                   </p>
-                  <button
-                    onClick={handleEdit}
-                    className="text-sm text-[var(--brand)] hover:underline"
-                  >
-                    Write one manually
-                  </button>
+                  <Button variant="ghost" onClick={handleEdit}>Write one manually</Button>
                 </div>
               )}
             </div>
-          </div>
+          </Card>
         </div>
       )}
 
       {activeTab === 'pages' && (
-        <div key={`pages-${tabKey}`} className="mt-4 tab-panel-enter bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-sm)]">
+        <Card key={`pages-${tabKey}`} level="elevated" className="mt-4 tab-panel-enter rounded-xl shadow-[var(--shadow-sm)]">
           <PagesTab projectId={project.id} />
-        </div>
+        </Card>
       )}
 
       {activeTab === 'rules' && (
-        <div key={`rules-${tabKey}`} className="mt-4 tab-panel-enter bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-sm)]">
+        <Card key={`rules-${tabKey}`} level="elevated" className="mt-4 tab-panel-enter rounded-xl shadow-[var(--shadow-sm)]">
           <RulesTab projectId={project.id} />
-        </div>
+        </Card>
       )}
 
       {activeTab === 'personas' && (
-        <div key={`personas-${tabKey}`} className="mt-4 tab-panel-enter bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-sm)] p-4">
+        <Card key={`personas-${tabKey}`} level="elevated" className="mt-4 tab-panel-enter rounded-xl shadow-[var(--shadow-sm)] p-4">
           <PersonasTab projectId={project.id} />
-        </div>
+        </Card>
       )}
 
       {activeTab === 'tickets' && (
-        <div key={`tickets-${tabKey}`} className="mt-4 tab-panel-enter bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-sm)] p-4">
+        <Card key={`tickets-${tabKey}`} level="elevated" className="mt-4 tab-panel-enter rounded-xl shadow-[var(--shadow-sm)] p-4">
           <TicketsTab projectId={project.id} />
-        </div>
+        </Card>
       )}
 
       {activeTab === 'agent-runs' && (
-        <div key={`agent-runs-${tabKey}`} className="mt-4 tab-panel-enter bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-sm)] p-4">
+        <Card key={`agent-runs-${tabKey}`} level="elevated" className="mt-4 tab-panel-enter rounded-xl shadow-[var(--shadow-sm)] p-4">
           <AgentRunsTab projectId={project.id} />
-        </div>
+        </Card>
       )}
 
       {activeTab === 'entries' && (
-        <div key={`entries-${tabKey}`} className="mt-4 tab-panel-enter bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-sm)]">
+        <Card key={`entries-${tabKey}`} level="elevated" className="mt-4 tab-panel-enter rounded-xl shadow-[var(--shadow-sm)]">
           <KnowledgeEntriesTab projectId={project.id} />
-        </div>
+        </Card>
       )}
 
       {activeTab === 'transfer' && (
-        <div key={`transfer-${tabKey}`} className="mt-4 tab-panel-enter bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-sm)] p-4">
+        <Card key={`transfer-${tabKey}`} level="elevated" className="mt-4 tab-panel-enter rounded-xl shadow-[var(--shadow-sm)] p-4">
           <TransferPanel
             projectId={project.id}
             currentScope={
@@ -1415,55 +1337,35 @@ export default function ProjectDetail() {
             }
             availableOrgs={myOrgs.data ?? []}
           />
-        </div>
+        </Card>
       )}
 
       {activeTab === 'history' && (
-        <div key={`history-${tabKey}`} className="mt-4 tab-panel-enter bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-sm)]">
+        <Card key={`history-${tabKey}`} level="elevated" className="mt-4 tab-panel-enter rounded-xl shadow-[var(--shadow-sm)]">
           <HistoryTab projectId={project.id} />
-        </div>
+        </Card>
       )}
 
       {/* Delete confirmation modal */}
-      {showDeleteConfirm && (
-        <>
-          <div className="fixed inset-0 z-50 bg-black/50" onClick={() => setShowDeleteConfirm(false)} onKeyDown={(e) => { if (e.key === 'Escape') setShowDeleteConfirm(false); }} />
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
-            <div
-              ref={deleteDialogRef}
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="delete-project-title"
-              onKeyDown={(e) => { if (e.key === 'Escape') setShowDeleteConfirm(false); }}
-              className="pointer-events-auto w-full max-w-sm bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-lg)] p-6"
-            >
-              <h3 id="delete-project-title" className="text-base font-semibold text-[var(--text-primary)] mb-2">
-                Delete project?
-              </h3>
-              <p className="text-sm text-[var(--text-tertiary)] mb-5">
-                This will permanently delete the project context for{' '}
-                <span className="font-medium text-[var(--text-secondary)]">{project.git_remote_normalized}</span>.
-                This action cannot be undone.
-              </p>
-              <div className="flex justify-end gap-3">
-                <button
-                  onClick={() => setShowDeleteConfirm(false)}
-                  className="px-3 py-1.5 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleDelete}
-                  disabled={deleteProject.isPending}
-                  className="px-4 py-1.5 text-sm bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors font-medium disabled:opacity-50"
-                >
-                  {deleteProject.isPending ? 'Deleting...' : 'Delete'}
-                </button>
-              </div>
-            </div>
-          </div>
-        </>
-      )}
+      <Dialog open={showDeleteConfirm} onClose={() => setShowDeleteConfirm(false)} titleId="delete-project-title">
+        <DialogHeader titleId="delete-project-title">Delete project?</DialogHeader>
+        <p className="text-sm text-[var(--text-tertiary)] mb-4">
+          This will permanently delete the project context for{' '}
+          <span className="font-medium text-[var(--text-secondary)]">{project.git_remote_normalized}</span>.
+          This action cannot be undone.
+        </p>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => setShowDeleteConfirm(false)}>Cancel</Button>
+          <Button
+            variant="danger"
+            onClick={handleDelete}
+            disabled={deleteProject.isPending}
+            loading={deleteProject.isPending}
+          >
+            Delete
+          </Button>
+        </DialogFooter>
+      </Dialog>
     </div>
   );
 }

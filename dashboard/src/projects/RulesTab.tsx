@@ -13,11 +13,11 @@ import {
   useRulesVersion,
   isStaleEtagError,
 } from '../hooks/useRules';
-import { useFocusTrap } from '../hooks/useFocusTrap';
 import { useToast } from '../hooks/useToast';
 import RelativeDate from '../components/RelativeDate';
 import CopyButton from '../components/CopyButton';
 import type { ProjectRules, RulesVersion } from '../api/client';
+import { Button, Input, Textarea, Dialog, DialogHeader } from '../components/ui';
 
 /**
  * Rules tab — v0.9.9.
@@ -83,51 +83,24 @@ interface CompiledOutputModalProps {
 }
 
 function CompiledOutputModal({ tool, filename, content, tokenCount, onClose }: CompiledOutputModalProps) {
-  const dialogRef = useRef<HTMLDivElement>(null);
-  useFocusTrap(dialogRef);
   return (
-    <>
-      <div
-        className="fixed inset-0 z-50 bg-black/50"
-        onClick={onClose}
-        role="presentation"
-      />
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
-        <div
-          ref={dialogRef}
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="compiled-output-title"
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') onClose();
-          }}
-          className="pointer-events-auto w-full max-w-3xl max-h-[80vh] flex flex-col bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-lg)]"
-        >
-          <div className="flex items-center justify-between px-5 py-3 border-b border-[var(--border)]">
-            <div className="min-w-0">
-              <h3 id="compiled-output-title" className="text-base font-semibold text-[var(--text-primary)]">
-                {filename}
-              </h3>
-              <p className="text-xs text-[var(--text-tertiary)]">
-                {tool} &middot; {tokenCount.toLocaleString()} tokens
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              <CopyButton text={content} label="Copy" />
-              <button
-                onClick={onClose}
-                className="px-3 py-1.5 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-          <pre className="flex-1 overflow-auto px-5 py-4 text-xs font-mono text-[var(--text-secondary)] whitespace-pre-wrap">
-            {content}
-          </pre>
+    <Dialog open onClose={onClose} titleId="compiled-output-title" className="max-w-3xl max-h-[80vh] flex flex-col !p-0">
+      <div className="flex items-center justify-between px-5 py-3 border-b border-[var(--border)]">
+        <div className="min-w-0">
+          <DialogHeader titleId="compiled-output-title">{filename}</DialogHeader>
+          <p className="text-xs text-[var(--text-tertiary)] -mt-3">
+            {tool} &middot; {tokenCount.toLocaleString()} tokens
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <CopyButton text={content} label="Copy" />
+          <Button variant="ghost" onClick={onClose}>Close</Button>
         </div>
       </div>
-    </>
+      <pre className="flex-1 overflow-auto px-5 py-4 text-xs font-mono text-[var(--text-secondary)] whitespace-pre-wrap">
+        {content}
+      </pre>
+    </Dialog>
   );
 }
 
@@ -137,84 +110,65 @@ interface VersionViewerModalProps {
 }
 
 function VersionViewerModal({ version, onClose }: VersionViewerModalProps) {
-  const dialogRef = useRef<HTMLDivElement>(null);
-  useFocusTrap(dialogRef);
   const entries = Object.entries(version.compiled_outputs || {});
   const [activeTool, setActiveTool] = useState<string | null>(entries[0]?.[0] ?? null);
   const active = activeTool ? version.compiled_outputs[activeTool] : null;
   return (
-    <>
-      <div className="fixed inset-0 z-50 bg-black/50" onClick={onClose} role="presentation" />
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
-        <div
-          ref={dialogRef}
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="version-viewer-title"
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') onClose();
-          }}
-          className="pointer-events-auto w-full max-w-4xl max-h-[85vh] flex flex-col bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-lg)]"
-        >
-          <div className="flex items-center justify-between px-5 py-3 border-b border-[var(--border)]">
-            <div className="min-w-0">
-              <h3 id="version-viewer-title" className="text-base font-semibold text-[var(--text-primary)] flex items-center gap-2">
-                <VersionBadge version={version.version} />
-                <span className="text-sm text-[var(--text-tertiary)] font-mono">
-                  {version.content_hash?.slice(0, 8)}
+    <Dialog open onClose={onClose} titleId="version-viewer-title" className="max-w-4xl max-h-[85vh] flex flex-col !p-0">
+      <div className="flex items-center justify-between px-5 py-3 border-b border-[var(--border)]">
+        <div className="min-w-0">
+          <DialogHeader titleId="version-viewer-title">
+            <span className="inline-flex items-center gap-2">
+              <VersionBadge version={version.version} />
+              <span className="text-sm text-[var(--text-tertiary)] font-mono font-normal">
+                {version.content_hash?.slice(0, 8)}
+              </span>
+            </span>
+          </DialogHeader>
+          <p className="text-xs text-[var(--text-tertiary)] -mt-3">
+            Compiled <RelativeDate iso={version.compiled_at} />
+          </p>
+        </div>
+        <Button variant="ghost" onClick={onClose}>Close</Button>
+      </div>
+      {entries.length === 0 ? (
+        <p className="p-8 text-center text-sm text-[var(--text-tertiary)]">
+          No compiled outputs in this version.
+        </p>
+      ) : (
+        <>
+          <div className="flex gap-1 px-5 pt-3 border-b border-[var(--border)] overflow-x-auto">
+            {entries.map(([tool, out]) => (
+              <button
+                key={tool}
+                onClick={() => setActiveTool(tool)}
+                className={`px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors ${
+                  activeTool === tool
+                    ? 'text-[var(--brand)] border-b-2 border-[var(--brand)]'
+                    : 'text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]'
+                }`}
+              >
+                {tool}
+                <span className="ml-1.5 text-[10px] text-[var(--text-tertiary)]">
+                  ({out.token_count.toLocaleString()}t)
                 </span>
-              </h3>
-              <p className="text-xs text-[var(--text-tertiary)] mt-0.5">
-                Compiled <RelativeDate iso={version.compiled_at} />
-              </p>
-            </div>
-            <button
-              onClick={onClose}
-              className="px-3 py-1.5 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
-            >
-              Close
-            </button>
+              </button>
+            ))}
           </div>
-          {entries.length === 0 ? (
-            <p className="p-8 text-center text-sm text-[var(--text-tertiary)]">
-              No compiled outputs in this version.
-            </p>
-          ) : (
+          {active && (
             <>
-              <div className="flex gap-1 px-5 pt-3 border-b border-[var(--border)] overflow-x-auto">
-                {entries.map(([tool, out]) => (
-                  <button
-                    key={tool}
-                    onClick={() => setActiveTool(tool)}
-                    className={`px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors ${
-                      activeTool === tool
-                        ? 'text-[var(--brand)] border-b-2 border-[var(--brand)]'
-                        : 'text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]'
-                    }`}
-                  >
-                    {tool}
-                    <span className="ml-1.5 text-[10px] text-[var(--text-tertiary)]">
-                      ({out.token_count.toLocaleString()}t)
-                    </span>
-                  </button>
-                ))}
+              <div className="flex items-center justify-between px-5 py-2 text-xs text-[var(--text-tertiary)] border-b border-[var(--border)]">
+                <span className="font-mono">{active.filename}</span>
+                <CopyButton text={active.content} label="Copy" />
               </div>
-              {active && (
-                <>
-                  <div className="flex items-center justify-between px-5 py-2 text-xs text-[var(--text-tertiary)] border-b border-[var(--border)]">
-                    <span className="font-mono">{active.filename}</span>
-                    <CopyButton text={active.content} label="Copy" />
-                  </div>
-                  <pre className="flex-1 overflow-auto px-5 py-4 text-xs font-mono text-[var(--text-secondary)] whitespace-pre-wrap">
-                    {active.content}
-                  </pre>
-                </>
-              )}
+              <pre className="flex-1 overflow-auto px-5 py-4 text-xs font-mono text-[var(--text-secondary)] whitespace-pre-wrap">
+                {active.content}
+              </pre>
             </>
           )}
-        </div>
-      </div>
-    </>
+        </>
+      )}
+    </Dialog>
   );
 }
 
@@ -373,14 +327,9 @@ const DebouncedTokenInput = forwardRef<DebouncedTokenInputHandle, DebouncedToken
     }, []);
 
     return (
-      <input
+      <Input
         type="number"
         min={0}
-        // v0.10.24 tk_d4a13a68b6724ba6 — match the server cap in
-        // routes/rules.py so the browser rejects over-cap values
-        // before the debounced PUT fires. Without this attribute, a
-        // user typing 25000 would round-trip to a 422 with no
-        // actionable feedback.
         max={20000}
         step={500}
         value={draft}
@@ -393,7 +342,7 @@ const DebouncedTokenInput = forwardRef<DebouncedTokenInputHandle, DebouncedToken
         }}
         disabled={disabled}
         aria-label={ariaLabel}
-        className="w-24 px-2 py-1 text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)]"
+        className="w-24 text-xs px-2 py-1 rounded"
       />
     );
   },
@@ -576,13 +525,13 @@ export default function RulesTab({ projectId }: { projectId: string }) {
             <RelativeDate iso={rules.updated_at} />.
           </p>
         </div>
-        <button
+        <Button
           onClick={handleCompile}
           disabled={compileRules.isPending || updateRules.isPending}
-          className="px-4 py-2 text-sm font-semibold bg-[var(--brand)] text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          loading={compileRules.isPending}
         >
-          {compileRules.isPending ? 'Compiling...' : 'Compile'}
-        </button>
+          Compile
+        </Button>
       </div>
 
       {/* Static preferences */}
@@ -592,41 +541,29 @@ export default function RulesTab({ projectId }: { projectId: string }) {
             Static preferences
           </h3>
           {!editing && (
-            <button
-              onClick={() => setDraft(rules.static_rules ?? '')}
-              className="text-xs text-[var(--brand)] hover:underline"
-            >
+            <Button variant="ghost" size="sm" onClick={() => setDraft(rules.static_rules ?? '')}>
               Edit
-            </button>
+            </Button>
           )}
         </div>
         {editing ? (
           <div>
-            <textarea
+            <Textarea
               value={draft ?? ''}
               onChange={(e) => setDraft(e.target.value)}
               placeholder="Write canonical project preferences (markdown or plain text)..."
-              className="w-full min-h-[240px] px-3 py-3 text-[14px] font-mono bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)] resize-y placeholder:text-[var(--text-tertiary)]"
+              className="min-h-[240px] font-mono text-[14px]"
               autoFocus
             />
             <div className="flex justify-end gap-3 mt-3">
-              <button
-                onClick={() => setDraft(null)}
-                className="px-3 py-1.5 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleSaveStatic}
-                disabled={updateRules.isPending}
-                className="px-5 py-2 text-sm font-semibold bg-[var(--brand)] text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {updateRules.isPending ? 'Saving...' : 'Save'}
-              </button>
+              <Button variant="ghost" onClick={() => setDraft(null)}>Cancel</Button>
+              <Button onClick={handleSaveStatic} disabled={updateRules.isPending} loading={updateRules.isPending}>
+                Save
+              </Button>
             </div>
           </div>
         ) : (
-          <pre className="px-3 py-3 text-[13px] font-mono bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-[var(--text-secondary)] whitespace-pre-wrap min-h-[80px]">
+          <pre className="px-3 py-3 text-[13px] font-mono bg-[var(--surface)] border border-[var(--border)] rounded-lg text-[var(--text-secondary)] whitespace-pre-wrap min-h-[80px]">
             {rules.static_rules || (
               <span className="text-[var(--text-tertiary)] italic">
                 No static preferences set. Click Edit to add some.

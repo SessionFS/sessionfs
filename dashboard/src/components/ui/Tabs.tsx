@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 
 interface Tab {
   key: string;
-  label: string;
+  label: ReactNode;
   content?: ReactNode;
 }
 

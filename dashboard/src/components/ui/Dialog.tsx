@@ -6,10 +6,12 @@ interface DialogProps {
   onClose: () => void;
   /** ID for aria-labelledby — must match a heading inside children. */
   titleId: string;
+  /** Optional className for the dialog panel (e.g. max-w-3xl for wide content). */
+  className?: string;
   children: ReactNode;
 }
 
-export function Dialog({ open, onClose, titleId, children }: DialogProps) {
+export function Dialog({ open, onClose, titleId, className: panelClassName, children }: DialogProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
   useFocusTrap(open ? dialogRef : { current: null });
 
@@ -45,7 +47,7 @@ export function Dialog({ open, onClose, titleId, children }: DialogProps) {
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className="relative rounded-xl p-6 max-w-lg w-full mx-4 shadow-[var(--shadow-lg)]"
+        className={`relative rounded-xl p-6 max-w-lg w-full mx-4 shadow-[var(--shadow-lg)] ${panelClassName ?? ''}`}
         style={{
           backgroundColor: 'var(--overlay)',
           border: '1px solid var(--border)',

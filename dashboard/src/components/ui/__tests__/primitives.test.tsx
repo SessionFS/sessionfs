@@ -85,6 +85,13 @@ describe('Card', () => {
     expect(el.style.borderLeftWidth).toBe('3px');
     expect(el.style.borderLeftColor).toBe('var(--tool-claude)');
   });
+
+  it('applies topEdge as 3px top border', () => {
+    render(<Card topEdge="var(--brand)" data-testid="c">X</Card>);
+    const el = screen.getByTestId('c');
+    expect(el.style.borderTopWidth).toBe('3px');
+    expect(el.style.borderTopColor).toBe('var(--brand)');
+  });
 });
 
 // ── Input / Textarea / Select ──
