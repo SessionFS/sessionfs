@@ -138,10 +138,10 @@ export default function Layout() {
               <Link
                 key={to}
                 to={to}
-                className={`px-3 py-1.5 rounded-[var(--radius-md)] text-[13px] font-medium transition-colors border-l-2 ${
+                className={`px-3 py-1.5 rounded-[var(--radius-md)] text-[13px] font-medium transition-colors ${
                   active
-                    ? 'bg-[var(--surface)] border-l-[var(--brand)] text-[var(--text-primary)]'
-                    : 'border-l-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)]'
+                    ? 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-primary)]'
+                    : 'border border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)]'
                 }`}
               >
                 {label}
@@ -190,10 +190,10 @@ export default function Layout() {
           {isAdmin && (
             <Link
               to="/admin"
-              className={`px-3 py-1.5 rounded-[var(--radius-md)] text-[13px] font-medium transition-colors border-l-2 ${
+              className={`px-3 py-1.5 rounded-[var(--radius-md)] text-[13px] font-medium transition-colors ${
                 location.pathname === '/admin'
-                  ? 'bg-[var(--surface)] border-l-[var(--brand)] text-[var(--text-primary)]'
-                  : 'border-l-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)]'
+                  ? 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-primary)]'
+                  : 'border border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)]'
               }`}
             >
               Admin

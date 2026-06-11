@@ -20,11 +20,11 @@
   --bg-primary:    oklch(16% 0.012 255);   /* canvas */
   --bg-secondary:  oklch(18% 0.012 255);   /* sidebar / nav */
   --bg-tertiary:   oklch(18.5% 0.012 255); /* legacy tertiary (between bg-secondary and surface) */
-  --surface:       oklch(21% 0.012 255);   /* cards */
-  --surface-hover: oklch(23% 0.012 255);   /* card hover */
+  --surface:       oklch(22% 0.012 255);   /* cards */
+  --surface-hover: oklch(24.5% 0.012 255); /* card hover */
   --surface-active:oklch(26% 0.012 255);   /* pressed / active */
-  --bg-elevated:   oklch(24% 0.012 255);   /* hover cards, popovers */
-  --overlay:       oklch(27% 0.012 255);   /* modals, dialogs, dropdowns */
+  --bg-elevated:   oklch(26% 0.012 255);   /* hover cards, popovers */
+  --overlay:       oklch(29% 0.012 255);   /* modals, dialogs, dropdowns */
   --border:        oklch(30% 0.012 255);   /* hairline border */
   --border-strong: oklch(40% 0.012 255);   /* focus / emphasis border */
 
