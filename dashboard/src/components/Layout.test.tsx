@@ -170,6 +170,21 @@ describe('Layout', () => {
       expect(mockLogout).toHaveBeenCalledTimes(1);
     });
 
+    it('sets aria-expanded on the trigger button', async () => {
+      renderLayout();
+      const trigger = document.querySelector('[aria-haspopup="menu"]') as HTMLElement;
+      expect(trigger).toBeInTheDocument();
+      expect(trigger.getAttribute('aria-expanded')).toBe('false');
+
+      await openAccountMenu();
+      expect(trigger.getAttribute('aria-expanded')).toBe('true');
+
+      await userEvent.keyboard('{Escape}');
+      await waitFor(() => {
+        expect(trigger.getAttribute('aria-expanded')).toBe('false');
+      });
+    });
+
     it('closes on Escape key', async () => {
       renderLayout();
       await openAccountMenu();

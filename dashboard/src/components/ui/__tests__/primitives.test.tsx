@@ -106,6 +106,22 @@ describe('Input', () => {
     render(<Input error="Required" />);
     expect(screen.getByRole('alert')).toHaveTextContent('Required');
   });
+
+  it('associates label with input via htmlFor when id matches label slug (legacy compat)', () => {
+    // Simulates TicketsTab: id="field-description" + title="Description (markdown)"
+    render(<Input id="field-description" title="Description (markdown)" />);
+    const input = screen.getByLabelText('Description (markdown)');
+    expect(input).toBeInTheDocument();
+    expect(input.id).toBe('field-description');
+  });
+
+  it('associates label with input via auto-generated id when no explicit id', () => {
+    render(<Input title="Email address" />);
+    const input = screen.getByLabelText('Email address');
+    expect(input).toBeInTheDocument();
+    // The auto-generated id should be non-empty and applied to the control
+    expect(input.id).toBeTruthy();
+  });
 });
 
 describe('Textarea', () => {
@@ -117,6 +133,20 @@ describe('Textarea', () => {
   it('shows error state', () => {
     render(<Textarea error="Too short" />);
     expect(screen.getByRole('alert')).toHaveTextContent('Too short');
+  });
+
+  it('associates label with textarea via htmlFor with explicit id', () => {
+    render(<Textarea id="field-notes" title="Session notes" />);
+    const textarea = screen.getByLabelText('Session notes');
+    expect(textarea).toBeInTheDocument();
+    expect(textarea.id).toBe('field-notes');
+  });
+
+  it('associates label with textarea via auto-generated id when no explicit id', () => {
+    render(<Textarea title="Comments" />);
+    const textarea = screen.getByLabelText('Comments');
+    expect(textarea).toBeInTheDocument();
+    expect(textarea.id).toBeTruthy();
   });
 });
 
@@ -136,6 +166,20 @@ describe('Select', () => {
   it('shows error state', () => {
     render(<Select options={opts} error="Pick one" />);
     expect(screen.getByRole('alert')).toHaveTextContent('Pick one');
+  });
+
+  it('associates label with select via htmlFor with explicit id', () => {
+    render(<Select id="field-assign-to" title="Assign to persona" options={opts} />);
+    const select = screen.getByLabelText('Assign to persona');
+    expect(select).toBeInTheDocument();
+    expect(select.id).toBe('field-assign-to');
+  });
+
+  it('associates label with select via auto-generated id when no explicit id', () => {
+    render(<Select title="Priority" options={opts} />);
+    const select = screen.getByLabelText('Priority');
+    expect(select).toBeInTheDocument();
+    expect(select.id).toBeTruthy();
   });
 });
 

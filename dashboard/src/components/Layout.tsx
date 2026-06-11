@@ -300,11 +300,11 @@ export default function Layout() {
         <div className="flex items-center gap-2 shrink-0">
           <ThemeToggle theme={theme} onToggle={toggleTheme} />
           <Dropdown
-            trigger={
+            trigger={(open) => (
               <button
                 className="flex items-center gap-2 rounded-[var(--radius-md)] px-2 py-1 transition-colors hover:bg-[var(--surface-hover)]"
                 aria-haspopup="menu"
-                aria-expanded={undefined}
+                aria-expanded={open}
               >
                 <span
                   className="flex items-center justify-center w-7 h-7 rounded-full text-xs font-semibold"
@@ -317,7 +317,7 @@ export default function Layout() {
                 </span>
                 <Badge variant={tierVariant as 'default' | 'success' | 'info'} label={tierLabel} size="sm" />
               </button>
-            }
+            )}
             items={accountMenuItems}
             onSelect={handleAccountMenuSelect}
             menuLabel="Account menu"

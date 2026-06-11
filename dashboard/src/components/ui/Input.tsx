@@ -1,4 +1,4 @@
-import type { InputHTMLAttributes, TextareaHTMLAttributes, SelectHTMLAttributes, ReactNode } from 'react';
+import { useId, type InputHTMLAttributes, type TextareaHTMLAttributes, type SelectHTMLAttributes, type ReactNode } from 'react';
 
 /* ── shared field styling ── */
 
@@ -12,19 +12,16 @@ const errorField =
 
 interface FieldWrapperProps {
   label?: string;
+  htmlFor?: string;
   error?: string;
   children: ReactNode;
 }
 
-function fieldId(label: string): string {
-  return `field-${label.toLowerCase().replace(/\s+/g, '-')}`;
-}
-
-function FieldWrapper({ label, error, children }: FieldWrapperProps) {
+function FieldWrapper({ label, htmlFor, error, children }: FieldWrapperProps) {
   return (
     <div className="flex flex-col gap-1">
       {label && (
-        <label htmlFor={fieldId(label)} className="text-[13px] font-medium text-[var(--text-secondary)]">
+        <label htmlFor={htmlFor} className="text-[13px] font-medium text-[var(--text-secondary)]">
           {label}
         </label>
       )}
@@ -44,11 +41,15 @@ interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
   error?: string;
 }
 
-export function Input({ error, className = '', id, ...rest }: InputProps) {
+export function Input({ error, className = '', id, title, ...rest }: InputProps) {
+  const generatedId = useId();
+  const controlId = id || generatedId;
+
   return (
-    <FieldWrapper label={rest.title} error={error}>
+    <FieldWrapper label={title} htmlFor={controlId} error={error}>
       <input
-        id={id}
+        id={controlId}
+        title={title}
         className={`${baseField} ${error ? errorField : ''} ${className}`}
         {...rest}
       />
@@ -62,11 +63,15 @@ interface TextareaProps extends TextareaHTMLAttributes<HTMLTextAreaElement> {
   error?: string;
 }
 
-export function Textarea({ error, className = '', id, ...rest }: TextareaProps) {
+export function Textarea({ error, className = '', id, title, ...rest }: TextareaProps) {
+  const generatedId = useId();
+  const controlId = id || generatedId;
+
   return (
-    <FieldWrapper label={rest.title} error={error}>
+    <FieldWrapper label={title} htmlFor={controlId} error={error}>
       <textarea
-        id={id}
+        id={controlId}
+        title={title}
         className={`${baseField} resize-y min-h-[80px] ${error ? errorField : ''} ${className}`}
         {...rest}
       />
@@ -81,12 +86,16 @@ interface SelectProps extends SelectHTMLAttributes<HTMLSelectElement> {
   options: Array<{ value: string; label: string }>;
 }
 
-export function Select({ error, options, className = '', id, ...rest }: SelectProps) {
+export function Select({ error, options, className = '', id, title, ...rest }: SelectProps) {
+  const generatedId = useId();
+  const controlId = id || generatedId;
+
   return (
-    <FieldWrapper label={rest.title} error={error}>
+    <FieldWrapper label={title} htmlFor={controlId} error={error}>
       <div className="relative">
         <select
-          id={id}
+          id={controlId}
+          title={title}
           className={`${baseField} appearance-none pr-8 cursor-pointer ${error ? errorField : ''} ${className}`}
           {...rest}
         >

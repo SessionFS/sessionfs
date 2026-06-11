@@ -16,7 +16,8 @@ interface DropdownItem {
 }
 
 interface DropdownProps {
-  trigger: ReactNode;
+  /** Trigger element or render function receiving open state (for aria-expanded). */
+  trigger: ReactNode | ((open: boolean) => ReactNode);
   items: DropdownItem[];
   onSelect: (key: string) => void;
   /** Accessible label for the menu. */
@@ -92,9 +93,11 @@ export function Dropdown({ trigger, items, onSelect, menuLabel, minWidthClass }:
     item?.scrollIntoView({ block: 'nearest' });
   }, [activeIndex]);
 
+  const triggerNode = typeof trigger === 'function' ? trigger(open) : trigger;
+
   return (
     <div ref={wrapperRef} className="relative inline-block">
-      <div onClick={() => setOpen((v) => !v)}>{trigger}</div>
+      <div onClick={() => setOpen((v) => !v)} role="presentation">{triggerNode}</div>
 
       {open && (
         <div
