@@ -4,9 +4,8 @@ import { getItem as lsGet, setItem as lsSet } from '../utils/storage';
 function getInitialTheme(): 'light' | 'dark' {
   const stored = lsGet('sfs-theme');
   if (stored === 'light' || stored === 'dark') return stored;
-  if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
-    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-  }
+  // No stored preference — default to dark. System preference is ignored
+  // because the dashboard ships dark-first; users toggle explicitly.
   return 'dark';
 }
 

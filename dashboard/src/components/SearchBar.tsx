@@ -268,7 +268,7 @@ export default function SearchBar() {
           placeholder="Search sessions... (\u2318K)"
           className="w-full pl-8 pr-12 py-1.5 bg-bg-tertiary border border-border rounded-lg text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 transition-colors"
         />
-        <kbd className="absolute right-2.5 top-1/2 -translate-y-1/2 hidden sm:inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-medium text-text-muted bg-bg-primary border border-border rounded">
+        <kbd className="absolute right-2.5 top-1/2 -translate-y-1/2 hidden sm:inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-medium text-text-tertiary bg-bg-sunken border border-border rounded">
           <span className="text-[11px]">{'\u2318'}</span>K
         </kbd>
       </div>

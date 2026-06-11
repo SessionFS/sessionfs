@@ -131,17 +131,17 @@ export default function Layout() {
         </div>
 
         {/* Center: Nav links (desktop only) */}
-        <nav className="hidden md:flex items-center gap-1 text-[14px] overflow-x-auto whitespace-nowrap">
+        <nav className="hidden md:flex items-center gap-1 overflow-x-auto whitespace-nowrap">
           {NAV_LINKS.filter((link) => !link.orgOnly || !!me.data?.default_org_id).map(({ to, label, match }) => {
             const active = match(location.pathname);
             return (
               <Link
                 key={to}
                 to={to}
-                className={`px-3 pb-[14px] pt-[16px] border-b-2 transition-colors ${
+                className={`px-3 py-1.5 rounded-[var(--radius-md)] text-[13px] font-medium transition-colors border-l-2 ${
                   active
-                    ? 'border-[var(--brand)] text-[var(--brand)]'
-                    : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                    ? 'bg-[var(--surface)] border-l-[var(--brand)] text-[var(--text-primary)]'
+                    : 'border-l-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)]'
                 }`}
               >
                 {label}
@@ -190,10 +190,10 @@ export default function Layout() {
           {isAdmin && (
             <Link
               to="/admin"
-              className={`px-3 pb-[14px] pt-[16px] border-b-2 transition-colors ${
+              className={`px-3 py-1.5 rounded-[var(--radius-md)] text-[13px] font-medium transition-colors border-l-2 ${
                 location.pathname === '/admin'
-                  ? 'border-[var(--brand)] text-[var(--brand)]'
-                  : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                  ? 'bg-[var(--surface)] border-l-[var(--brand)] text-[var(--text-primary)]'
+                  : 'border-l-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)]'
               }`}
             >
               Admin
