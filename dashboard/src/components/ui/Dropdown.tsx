@@ -101,7 +101,7 @@ export function Dropdown({ trigger, items, onSelect, menuLabel, minWidthClass }:
 
       {open && (
         <div
-          className={`absolute top-full right-0 mt-1 z-40 ${minWidthClass || 'min-w-[160px]'} rounded-lg py-1 shadow-[var(--shadow-lg)] dropdown-enter`}
+          className={`absolute top-full right-0 mt-1 z-40 ${minWidthClass || 'min-w-[160px]'} rounded-lg py-1 shadow-[var(--shadow-lg)]`}
           style={{
             backgroundColor: 'var(--overlay)',
             border: '1px solid var(--border)',
@@ -142,7 +142,7 @@ export function Dropdown({ trigger, items, onSelect, menuLabel, minWidthClass }:
                         close();
                       }
                     }}
-                    className={`w-full text-left px-3 py-1.5 text-[13px] flex items-center gap-2 transition-colors duration-150 ${
+                    className={`w-full text-left px-3 py-1.5 text-[13px] flex items-center gap-2 transition-colors duration-150 outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] rounded-[var(--radius-sm)] ${
                       item.disabled
                         ? 'text-[var(--text-tertiary)] cursor-not-allowed opacity-50'
                         : enabledIdx === activeIndex

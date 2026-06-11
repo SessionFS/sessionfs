@@ -3,10 +3,10 @@ import { useId, type InputHTMLAttributes, type TextareaHTMLAttributes, type Sele
 /* ── shared field styling ── */
 
 const baseField =
-  'w-full bg-[var(--bg-sunken)] border border-[var(--border)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] transition-[background-color,border-color,box-shadow] duration-150 ease-out outline-none focus:border-[var(--brand)] focus:shadow-[0_0_0_3px_var(--brand-glow)] disabled:opacity-50 disabled:cursor-not-allowed';
+  'w-full bg-[var(--bg-sunken)] border border-[var(--border)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] transition-[background-color,border-color,box-shadow] duration-150 ease-out outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] disabled:opacity-50 disabled:cursor-not-allowed';
 
 const errorField =
-  'border-[var(--danger)] focus:border-[var(--danger)] focus:shadow-[0_0_0_3px_rgba(240,64,96,0.25)]';
+  'border-[var(--danger)] focus-visible:border-[var(--danger)] focus-visible:shadow-[0_0_0_3px_rgba(240,64,96,0.25)]';
 
 /* ── field wrapper ── */
 

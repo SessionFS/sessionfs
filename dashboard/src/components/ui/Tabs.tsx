@@ -31,7 +31,7 @@ export function Tabs({ tabs, activeKey, onChange, bare = false }: TabsProps) {
               role="tab"
               aria-selected={active}
               onClick={() => onChange(tab.key)}
-              className={`px-3 py-1.5 rounded-[var(--radius-md)] text-[13px] font-medium transition-colors cursor-pointer ${
+              className={`px-3 py-1.5 rounded-[var(--radius-md)] text-[13px] font-medium transition-colors cursor-pointer outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] ${
                 active
                   ? 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-primary)]'
                   : 'border border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)]'

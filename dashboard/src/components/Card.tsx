@@ -16,7 +16,7 @@ export default function Card({ children, className = '', onClick, hoverable = fa
         'bg-[var(--bg-elevated)]',
         'shadow-[var(--shadow-sm)]',
         hoverable
-          ? 'transition-shadow duration-150 hover:shadow-[var(--shadow-md)] cursor-pointer'
+          ? 'transition-shadow duration-150 hover:shadow-[var(--shadow-md)] cursor-pointer outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]'
           : '',
         className,
       ]

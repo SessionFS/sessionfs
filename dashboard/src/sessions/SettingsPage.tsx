@@ -553,7 +553,7 @@ function AutoAuditSection() {
           <label key={value} className="flex items-center gap-2.5 text-sm text-[var(--text-secondary)] cursor-pointer">
             <input type="radio" name="audit-trigger" checked={current === value}
               onChange={() => update.mutate(value)} disabled={update.isPending}
-              className="text-[var(--brand)] focus:ring-[var(--brand)]" />
+              className="text-[var(--brand)] focus-visible:ring-[var(--brand)]" />
             {label}
           </label>
         ))}
@@ -600,7 +600,7 @@ function AutosyncSection() {
                 checked={currentMode === mode}
                 onChange={() => updateMode.mutate(mode)}
                 disabled={updateMode.isPending}
-                className="text-[var(--brand)] focus:ring-[var(--brand)]"
+                className="text-[var(--brand)] focus-visible:ring-[var(--brand)]"
               />
               {mode === 'off' && 'Off -- Manual sync only (sfs push)'}
               {mode === 'all' && 'All sessions -- Sync everything automatically'}
@@ -703,7 +703,7 @@ export function GitHubIntegrationSection() {
                 type="checkbox"
                 checked={ghSettings.auto_comment ?? true}
                 onChange={(e) => updateSettings.mutate({ auto_comment: e.target.checked })}
-                className="rounded border-[var(--border)] bg-[var(--surface)] text-[var(--brand)] focus:ring-[var(--brand)]"
+                className="rounded border-[var(--border)] bg-[var(--surface)] text-[var(--brand)] focus-visible:ring-[var(--brand)]"
               />
               Auto-comment on PRs
             </label>
@@ -712,7 +712,7 @@ export function GitHubIntegrationSection() {
                 type="checkbox"
                 checked={ghSettings.include_trust_score ?? true}
                 onChange={(e) => updateSettings.mutate({ include_trust_score: e.target.checked })}
-                className="rounded border-[var(--border)] bg-[var(--surface)] text-[var(--brand)] focus:ring-[var(--brand)]"
+                className="rounded border-[var(--border)] bg-[var(--surface)] text-[var(--brand)] focus-visible:ring-[var(--brand)]"
               />
               Include trust scores
             </label>
@@ -721,7 +721,7 @@ export function GitHubIntegrationSection() {
                 type="checkbox"
                 checked={ghSettings.include_session_links ?? true}
                 onChange={(e) => updateSettings.mutate({ include_session_links: e.target.checked })}
-                className="rounded border-[var(--border)] bg-[var(--surface)] text-[var(--brand)] focus:ring-[var(--brand)]"
+                className="rounded border-[var(--border)] bg-[var(--surface)] text-[var(--brand)] focus-visible:ring-[var(--brand)]"
               />
               Include session links
             </label>
@@ -875,7 +875,7 @@ function DLPTab() {
               <button
                 onClick={handleToggle}
                 disabled={updatePolicy.isPending}
-                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] ${
                   enabled ? 'bg-[var(--brand)]' : 'bg-[var(--border)]'
                 }`}
                 role="switch"
@@ -904,7 +904,7 @@ function DLPTab() {
                       checked={mode === value}
                       onChange={() => handleModeChange(value)}
                       disabled={updatePolicy.isPending || !enabled}
-                      className="text-[var(--brand)] focus:ring-[var(--brand)]"
+                      className="text-[var(--brand)] focus-visible:ring-[var(--brand)]"
                     />
                     {label}
                   </label>
@@ -923,7 +923,7 @@ function DLPTab() {
                       checked={categories.includes(value)}
                       onChange={() => handleCategoryToggle(value)}
                       disabled={updatePolicy.isPending || !enabled}
-                      className="mt-0.5 rounded border-[var(--border)] bg-[var(--surface)] text-[var(--brand)] focus:ring-[var(--brand)]"
+                      className="mt-0.5 rounded border-[var(--border)] bg-[var(--surface)] text-[var(--brand)] focus-visible:ring-[var(--brand)]"
                     />
                     <div>
                       <span className="text-[var(--text-primary)] font-medium">{label}</span>

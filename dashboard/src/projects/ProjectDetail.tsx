@@ -142,14 +142,14 @@ function SupersedeDialog({
           value={supersedingId}
           onChange={(e) => setSupersedingId(e.target.value)}
           placeholder="Superseding entry ID"
-          className="flex-1 px-2 py-1 text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)] placeholder:text-[var(--text-tertiary)]"
+          className="flex-1 px-2 py-1 text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--text-primary)] outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] placeholder:text-[var(--text-tertiary)]"
         />
       </div>
       <input
         value={reason}
         onChange={(e) => setReason(e.target.value)}
         placeholder="Reason for supersession"
-        className="w-full px-2 py-1 text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)] placeholder:text-[var(--text-tertiary)] mb-2"
+        className="w-full px-2 py-1 text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--text-primary)] outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] placeholder:text-[var(--text-tertiary)] mb-2"
       />
       <div className="flex gap-2 justify-end">
         <button

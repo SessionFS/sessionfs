@@ -161,7 +161,7 @@ export default function BillingPage() {
               </p>
               <div className="w-48 h-2 bg-[var(--border)] rounded-full mt-2 overflow-hidden">
                 <div
-                  className="h-full bg-[var(--brand)] rounded-full transition-all"
+                  className="h-full bg-[var(--brand)] rounded-full transition-[width] duration-300"
                   style={{ width: `${storagePct}%` }}
                 />
               </div>
@@ -303,7 +303,7 @@ export default function BillingPage() {
           <h2 className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--text-tertiary)] mb-3">Storage Usage</h2>
           <div className="w-full h-3 bg-[var(--border)] rounded-full overflow-hidden">
             <div
-              className="h-full bg-[var(--brand)] rounded-full transition-all"
+              className="h-full bg-[var(--brand)] rounded-full transition-[width] duration-300"
               style={{ width: `${Math.min(100, billing.storage_limit_bytes > 0 ? (billing.storage_used_bytes / billing.storage_limit_bytes) * 100 : 0)}%` }}
             />
           </div>

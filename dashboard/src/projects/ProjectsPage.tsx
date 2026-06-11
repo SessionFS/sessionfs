@@ -36,7 +36,7 @@ function ProjectCard({ project, onClick }: { project: ProjectContext; onClick: (
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); }
       }}
       tabIndex={0}
-      className="group p-5 cursor-pointer hover:shadow-[var(--shadow-md)] hover:border-[var(--brand)]/40 transition-all focus:border-[var(--brand)] outline-none rounded-xl"
+      className="group p-5 cursor-pointer hover:shadow-[var(--shadow-md)] hover:border-[var(--brand)]/40 transition-[box-shadow,border-color] duration-150 focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] outline-none rounded-xl"
     >
       {/* Title row */}
       <div className="flex items-start justify-between gap-3 mb-2">

@@ -49,7 +49,7 @@ export function Button({
   return (
     <button
       disabled={isDisabled}
-      className={`inline-flex items-center justify-center gap-2 font-semibold rounded-lg transition-[background-color,border-color,opacity] duration-150 ease-out outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] disabled:opacity-50 disabled:cursor-not-allowed ${VARIANT_CLASSES[variant]} ${SIZE_CLASSES[size]} ${className}`}
+      className={`inline-flex items-center justify-center gap-2 font-semibold rounded-lg transition-[background-color,border-color,opacity,transform] duration-150 ease-out outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed disabled:scale-100 ${VARIANT_CLASSES[variant]} ${SIZE_CLASSES[size]} ${className}`}
       {...rest}
     >
       {loading && <Spinner />}

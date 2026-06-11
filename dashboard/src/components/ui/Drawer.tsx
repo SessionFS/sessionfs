@@ -69,7 +69,7 @@ export function Drawer({ open, onClose, titleId, children }: DrawerProps) {
       {/* Backdrop */}
       <div
         className="absolute inset-0"
-        style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}
+        style={{ backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)' }}
         onClick={onClose}
       />
       {/* Drawer panel */}
@@ -89,7 +89,7 @@ export function Drawer({ open, onClose, titleId, children }: DrawerProps) {
         <button
           type="button"
           onClick={onClose}
-          className="absolute top-3 right-3 p-2 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-sunken)] focus:outline-none focus:ring-2 focus:ring-[var(--brand-glow)]"
+          className="absolute top-3 right-3 p-2 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-sunken)] outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
           aria-label="Close drawer"
         >
           <svg

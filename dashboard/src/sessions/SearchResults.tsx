@@ -105,7 +105,7 @@ function MobileFilterSheet({
               <select
                 value={draftTool}
                 onChange={(e) => setDraftTool(e.target.value)}
-                className="w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm text-[var(--text-primary)] focus:border-[var(--brand)] focus:outline-none"
+                className="w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
               >
                 {TOOLS.map((t) => (
                   <option key={t.value} value={t.value}>{t.label}</option>
@@ -118,7 +118,7 @@ function MobileFilterSheet({
               <select
                 value={draftDays}
                 onChange={(e) => setDraftDays(Number(e.target.value))}
-                className="w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm text-[var(--text-primary)] focus:border-[var(--brand)] focus:outline-none"
+                className="w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
               >
                 {DATE_RANGES.map((d) => (
                   <option key={d.value} value={d.value}>{d.label}</option>
@@ -207,7 +207,7 @@ export default function SearchResults() {
         <select
           value={tool}
           onChange={(e) => setTool(e.target.value)}
-          className="w-full px-2 py-1.5 bg-bg-secondary border border-border rounded text-sm text-text-secondary focus:outline-none"
+          className="w-full px-2 py-1.5 bg-bg-secondary border border-border rounded text-sm text-text-secondary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
         >
           {TOOLS.map((t) => (
             <option key={t.value} value={t.value}>{t.label}</option>
@@ -218,7 +218,7 @@ export default function SearchResults() {
         <select
           value={days}
           onChange={(e) => setDays(Number(e.target.value))}
-          className="w-full px-2 py-1.5 bg-bg-secondary border border-border rounded text-sm text-text-secondary focus:outline-none"
+          className="w-full px-2 py-1.5 bg-bg-secondary border border-border rounded text-sm text-text-secondary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
         >
           {DATE_RANGES.map((d) => (
             <option key={d.value} value={d.value}>{d.label}</option>

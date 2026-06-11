@@ -70,7 +70,16 @@ export default function Layout() {
     return stored === 'light' || stored === 'dark' ? stored : 'dark';
   });
 
-  const toggleTheme = () => setTheme((t) => (t === 'dark' ? 'light' : 'dark'));
+  const toggleTheme = () => {
+    // Disable transitions during theme swap to prevent flash-of-wrong-theme animations
+    document.documentElement.classList.add('theme-switching');
+    setTheme((t) => (t === 'dark' ? 'light' : 'dark'));
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        document.documentElement.classList.remove('theme-switching');
+      });
+    });
+  };
 
   // Close drawer on route change
   useEffect(() => {
@@ -232,7 +241,7 @@ export default function Layout() {
               <Link
                 key={to}
                 to={to}
-                className={`px-3 py-1.5 rounded-[var(--radius-md)] text-[13px] font-medium transition-colors ${
+                className={`px-3 py-1.5 rounded-[var(--radius-md)] text-[13px] font-medium transition-colors outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] ${
                   active
                     ? 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-primary)]'
                     : 'border border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)]'
@@ -284,7 +293,7 @@ export default function Layout() {
           {isAdmin && (
             <Link
               to="/admin"
-              className={`px-3 py-1.5 rounded-[var(--radius-md)] text-[13px] font-medium transition-colors ${
+              className={`px-3 py-1.5 rounded-[var(--radius-md)] text-[13px] font-medium transition-colors outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] ${
                 location.pathname === '/admin'
                   ? 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-primary)]'
                   : 'border border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)]'
@@ -374,7 +383,7 @@ export default function Layout() {
                   key={to}
                   to={to}
                   onClick={() => setDrawerOpen(false)}
-                  className={`flex items-center gap-2 px-3 py-2.5 rounded-[var(--radius-md)] text-[14px] transition-colors ${
+                  className={`flex items-center gap-2 px-3 py-2.5 rounded-[var(--radius-md)] text-[14px] transition-colors outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] ${
                     active
                       ? 'bg-[var(--surface-hover)] text-[var(--brand)] font-medium'
                       : 'text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]'

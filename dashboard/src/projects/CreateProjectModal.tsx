@@ -96,7 +96,7 @@ export default function CreateProjectModal({ onClose, onCreated }: Props) {
               onBlur={handleBlur}
               placeholder="github.com/acme/repo"
               autoFocus
-              className="w-full px-3 py-2 text-sm bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)] placeholder:text-[var(--text-tertiary)]"
+              className="w-full px-3 py-2 text-sm bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] placeholder:text-[var(--text-tertiary)]"
             />
             <FieldError message={errors.git_remote_normalized} />
             {name && (

@@ -267,7 +267,7 @@ export default function SearchBar() {
           }}
           onKeyDown={handleKeyDown}
           placeholder="Search sessions... (\u2318K)"
-          className="w-full pl-8 pr-12 py-1.5 bg-[var(--bg-sunken)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] focus:outline-none focus:border-[var(--brand)] transition-[background-color,border-color,box-shadow] duration-150 ease-out focus:shadow-[0_0_0_3px_var(--brand-glow)]"
+          className="w-full pl-8 pr-12 py-1.5 bg-[var(--bg-sunken)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] focus-visible:outline-none focus-visible:border-[var(--brand)] transition-[background-color,border-color,box-shadow] duration-150 ease-out focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
         />
         <span className="absolute right-2.5 top-1/2 -translate-y-1/2 hidden sm:inline-flex">
           <Kbd>{'\u2318'}K</Kbd>

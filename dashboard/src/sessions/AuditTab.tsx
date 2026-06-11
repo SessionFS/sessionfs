@@ -555,7 +555,7 @@ function FindingCard({
                 value={dismissReason}
                 onChange={e => setDismissReason(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter') handleDismiss(); }}
-                className="flex-1 px-2 py-1 text-xs bg-bg-tertiary border border-border rounded text-text-primary placeholder:text-text-muted/50 focus:outline-none focus:border-accent"
+                className="flex-1 px-2 py-1 text-xs bg-bg-tertiary border border-border rounded text-text-primary placeholder:text-text-muted/50 outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
                 autoFocus
               />
               <button

@@ -22,11 +22,17 @@ export default function ThemeToggle({ theme: controlledTheme, onToggle }: ThemeT
   const theme = controlledTheme ?? internalTheme;
 
   const toggle = () => {
+    document.documentElement.classList.add('theme-switching');
     if (onToggle) {
       onToggle();
     } else {
       setInternalTheme((t) => (t === 'dark' ? 'light' : 'dark'));
     }
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        document.documentElement.classList.remove('theme-switching');
+      });
+    });
   };
 
   useEffect(() => {

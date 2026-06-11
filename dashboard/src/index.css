@@ -100,6 +100,13 @@
   --radius-xl: 16px;
 
   --brand-glow: color-mix(in srgb, var(--brand) 25%, transparent);
+  --edge-highlight: rgba(255, 255, 255, 0.06);
+}
+
+/* Dialog/Drawer enter animation — scale(0.95) + fade, 150ms ease-out */
+@keyframes overlayEnter {
+  from { opacity: 0; transform: scale(0.95); }
+  to   { opacity: 1; transform: scale(1); }
 }
 
 /* === Tailwind v4 theme: map old color classes so existing code keeps working === */
@@ -144,11 +151,8 @@
   --color-info: var(--info);
 }
 
-@keyframes bookmark-pop {
-  0% { transform: scale(1); }
-  50% { transform: scale(1.3); }
-  100% { transform: scale(1); }
-}
+/* bookmark-pop removed — elastic/overshoot violates motion guidelines.
+   Bookmark toggles now use a 150ms color + opacity transition only. */
 
 body {
   margin: 0;
@@ -216,14 +220,9 @@ code, pre, kbd, samp {
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* Dropdown enter animation — 150ms fade + scale, respects reduced-motion */
-@keyframes dropdownEnter {
-  from { opacity: 0; transform: scale(0.95) translateY(-4px); }
-  to { opacity: 1; transform: scale(1) translateY(0); }
-}
-.dropdown-enter {
-  animation: dropdownEnter 150ms ease-out both;
-}
+/* Dropdowns, menus, command palette appear INSTANTLY (frequency principle).
+   Subtle exit fade (~100ms) is acceptable but CSS-only exit can't be done
+   without Animation API; instant removal is the safer default. */
 
 /* ── Reduced motion ── */
 @media (prefers-reduced-motion: reduce) {
@@ -234,6 +233,19 @@ code, pre, kbd, samp {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+  /* Preserve skeleton pulse — pure opacity, no transform, essential loading feedback */
+  .animate-skeleton-pulse {
+    animation-duration: 1.5s !important;
+    animation-iteration-count: infinite !important;
+  }
+}
+
+/* Theme switch guard — disables all transitions/animations for one frame */
+.theme-switching *,
+.theme-switching *::before,
+.theme-switching *::after {
+  transition: none !important;
+  animation: none !important;
 }
 
 /* === Typography Scale === */

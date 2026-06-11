@@ -60,7 +60,7 @@ export default function DeleteScopeDialog({
           aria-labelledby="delete-scope-title"
           onKeyDown={handleKeyDown}
           tabIndex={-1}
-          className="pointer-events-auto w-full max-w-md bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-lg)] p-6 focus:outline-none"
+          className="pointer-events-auto w-full max-w-md bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-lg)] p-6 outline-none"
         >
           <h3
             id="delete-scope-title"

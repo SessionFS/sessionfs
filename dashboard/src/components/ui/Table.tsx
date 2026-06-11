@@ -38,8 +38,8 @@ export function Table<T>({ columns, data, onRowClick, rowKey }: TableProps<T>) {
             <tr
               key={rowKey(row)}
               onClick={() => onRowClick?.(row)}
-              className={`border-b border-[var(--border)] transition-colors duration-150 ${
-                onRowClick ? 'cursor-pointer hover:bg-[var(--surface-hover)]' : ''
+              className={`border-b border-[var(--border)] transition-colors duration-150 outline-none ${
+                onRowClick ? 'cursor-pointer hover:bg-[var(--surface-hover)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] focus-visible:bg-[var(--surface-hover)]' : ''
               }`}
             >
               {columns.map((col) => (

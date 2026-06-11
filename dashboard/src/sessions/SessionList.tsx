@@ -485,7 +485,7 @@ export default function SessionList() {
                 <div className="mt-3 flex items-center gap-3">
                   <button
                     onClick={() => handleResume(mostRecent)}
-                    className="px-4 py-2 bg-[var(--brand)] text-white text-sm font-semibold rounded-lg hover:opacity-90 transition-opacity focus:outline-none shadow-[0_4px_16px_var(--brand-glow)] focus:shadow-[0_4px_16px_var(--brand-glow),0_0_0_3px_var(--brand-glow)]"
+                    className="px-4 py-2 bg-[var(--brand)] text-white text-sm font-semibold rounded-lg hover:opacity-90 transition-opacity outline-none shadow-[0_4px_16px_var(--brand-glow)] focus-visible:shadow-[0_4px_16px_var(--brand-glow),0_0_0_3px_var(--brand-glow)]"
                   >
                     {CAPTURE_ONLY_TOOLS.has(mostRecent.source_tool) ? 'Resume in Claude Code' : 'Resume'}
                   </button>
@@ -530,7 +530,7 @@ export default function SessionList() {
             <select
               value={toolFilter}
               onChange={(e) => { setToolFilter(e.target.value); setPage(1); }}
-              className="appearance-none bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 pr-8 text-[14px] font-medium text-[var(--text-secondary)] focus:outline-none focus:border-[var(--brand)] cursor-pointer transition-colors"
+              className="appearance-none bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 pr-8 text-[14px] font-medium text-[var(--text-secondary)] outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] cursor-pointer transition-colors"
             >
               {TOOLS.map((t) => (
                 <option key={t} value={t}>{t === 'all' ? 'All Tools' : fullToolName(t)}</option>
@@ -544,7 +544,7 @@ export default function SessionList() {
             <select
               value={dateRange}
               onChange={(e) => setDateRange(e.target.value)}
-              className="appearance-none bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 pr-8 text-[14px] font-medium text-[var(--text-secondary)] focus:outline-none focus:border-[var(--brand)] cursor-pointer transition-colors"
+              className="appearance-none bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 pr-8 text-[14px] font-medium text-[var(--text-secondary)] outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] cursor-pointer transition-colors"
             >
               {DATE_RANGES.map((d) => (
                 <option key={d.value} value={d.value}>{d.label}</option>
@@ -558,7 +558,7 @@ export default function SessionList() {
             <select
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value as SortKey)}
-              className="appearance-none bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 pr-8 text-[14px] font-medium text-[var(--text-secondary)] focus:outline-none focus:border-[var(--brand)] cursor-pointer transition-colors"
+              className="appearance-none bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 pr-8 text-[14px] font-medium text-[var(--text-secondary)] outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] cursor-pointer transition-colors"
             >
               <option value="date">Sort: Date</option>
               <option value="tool">Sort: Tool</option>
@@ -899,7 +899,7 @@ function SessionGridCard({
       onClick={onClick}
       onKeyDown={(e) => { if (e.key === 'Enter') onClick(); }}
       tabIndex={0}
-      className="group bg-[var(--surface)] border border-[var(--border)] rounded-lg cursor-pointer hover:bg-[var(--bg-elevated)] hover:border-[var(--border-strong)] transition-[background-color,border-color] duration-150 ease-out outline-none focus:ring-1 focus:ring-[var(--brand-glow)] flex flex-col"
+      className="group bg-[var(--surface)] border border-[var(--border)] rounded-lg cursor-pointer hover:bg-[var(--bg-elevated)] hover:border-[var(--border-strong)] transition-[background-color,border-color] duration-150 ease-out outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] flex flex-col"
       style={{ borderLeftWidth: '3px', borderLeftStyle: 'solid', borderLeftColor: toolColor }}
     >
       {/* Body */}
@@ -1215,7 +1215,7 @@ function SessionRow({
       onClick={onClick}
       onKeyDown={(e) => { if (e.key === ' ') { e.preventDefault(); onClick(); } else { onKeyDown(e); } }}
       tabIndex={0}
-      className={`group bg-[var(--surface)] border border-[var(--border)] rounded-lg cursor-pointer hover:bg-[var(--bg-elevated)] hover:border-[var(--border-strong)] transition-[background-color,border-color] duration-150 ease-out outline-none focus:ring-1 focus:ring-[var(--brand-glow)] ${isChild ? 'px-3 py-3' : 'px-4 py-[14px]'} ${selected ? 'ring-1 ring-[var(--brand)] bg-[var(--brand)]/5' : ''}`}
+      className={`group bg-[var(--surface)] border border-[var(--border)] rounded-lg cursor-pointer hover:bg-[var(--bg-elevated)] hover:border-[var(--border-strong)] transition-[background-color,border-color] duration-150 ease-out outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] ${isChild ? 'px-3 py-3' : 'px-4 py-[14px]'} ${selected ? 'ring-1 ring-[var(--brand)] bg-[var(--brand)]/5' : ''}`}
       style={{ borderLeftWidth: '3px', borderLeftStyle: 'solid', borderLeftColor: TOOL_COLORS[s.source_tool] || 'var(--text-tertiary)' }}
     >
       {/* Line 1: Title + hover actions + timestamp */}
@@ -1326,7 +1326,7 @@ function BookmarkDropdown({ sessionId, isBookmarked: initialBookmarked }: { sess
     <div className="relative" ref={ref}>
       <button
         onClick={handleIconClick}
-        className={`transition-colors text-sm p-1 rounded hover:bg-[var(--surface-hover)] ${bookmarked ? 'text-[var(--brand)]' : 'text-[var(--text-tertiary)] hover:text-[var(--brand)]'} ${popping ? 'animate-[bookmark-pop_200ms_ease-out]' : ''}`}
+        className={`transition-[transform,color,background-color] duration-150 text-sm p-1 rounded hover:bg-[var(--surface-hover)] ${bookmarked ? 'text-[var(--brand)]' : 'text-[var(--text-tertiary)] hover:text-[var(--brand)]'} ${popping ? 'scale-125' : ''}`}
         title="Bookmark"
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill={bookmarked ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

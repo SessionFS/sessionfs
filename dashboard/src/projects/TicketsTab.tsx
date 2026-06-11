@@ -449,7 +449,7 @@ function BoardCard({
     <button
       type="button"
       onClick={onToggle}
-      className={`w-full text-left bg-[var(--surface)] border border-[var(--border)] rounded-lg p-3 hover:bg-[var(--bg-elevated)] hover:border-[var(--border-strong)] transition-[background-color,border-color] duration-150 outline-none focus:ring-1 focus:ring-[var(--brand-glow)] ${
+      className={`w-full text-left bg-[var(--surface)] border border-[var(--border)] rounded-lg p-3 hover:bg-[var(--bg-elevated)] hover:border-[var(--border-strong)] transition-[background-color,border-color] duration-150 outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] ${
         isExpanded ? 'border-[var(--brand)] ring-1 ring-[var(--brand)]/30' : ''
       }`}
       aria-expanded={isExpanded}
@@ -593,7 +593,7 @@ function TicketDetail({ projectId, ticketId, fallback, onNavigate }: DetailProps
         <div className="text-xs">
           <button
             type="button"
-            className="text-[var(--brand)] hover:underline focus:outline-none focus:ring-2 focus:ring-[var(--brand-glow)] rounded"
+            className="text-[var(--brand)] hover:underline outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] rounded"
             onClick={() => onNavigate(t.parent_ticket_id!)}
           >
             ← Back to parent Issue:{' '}
@@ -649,7 +649,7 @@ function TicketDetail({ projectId, ticketId, fallback, onNavigate }: DetailProps
                   <li key={cid}>
                     <button
                       type="button"
-                      className="w-full text-left flex items-center gap-2 px-2 py-1 rounded hover:bg-[var(--bg-sunken)] focus:outline-none focus:ring-2 focus:ring-[var(--brand-glow)]"
+                      className="w-full text-left flex items-center gap-2 px-2 py-1 rounded hover:bg-[var(--bg-sunken)] outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
                       onClick={() => onNavigate(cid)}
                     >
                       <span className="font-mono text-xs text-[var(--text-tertiary)]">

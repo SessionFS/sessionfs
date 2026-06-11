@@ -154,7 +154,7 @@ export default function AdminDashboard() {
                   <>
                     <div className="w-full h-1.5 bg-[var(--border)] rounded-full mt-2 overflow-hidden">
                       <div
-                        className="h-full bg-purple-500 rounded-full transition-all"
+                        className="h-full bg-purple-500 rounded-full transition-[width] duration-300"
                         style={{ width: `${storagePct}%` }}
                       />
                     </div>

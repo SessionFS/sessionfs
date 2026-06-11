@@ -178,7 +178,7 @@ export default function BookmarkSidebar({
                     if (e.key === 'Escape') setEditingFolder(null);
                   }}
                   autoFocus
-                  className="w-full px-1.5 py-0.5 text-sm bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)]"
+                  className="w-full px-1.5 py-0.5 text-sm bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--text-primary)] outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
                 />
                 <div className="flex gap-1">
                   {PRESET_COLORS.map((c) => (
@@ -268,7 +268,7 @@ export default function BookmarkSidebar({
               }}
               placeholder="Folder name"
               autoFocus
-              className="w-full px-2 py-1 text-sm bg-[var(--bg-secondary)] border border-[var(--border)] rounded text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)]"
+              className="w-full px-2 py-1 text-sm bg-[var(--bg-secondary)] border border-[var(--border)] rounded text-[var(--text-primary)] outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
             />
             <div className="flex gap-1">
               {PRESET_COLORS.map((c) => (

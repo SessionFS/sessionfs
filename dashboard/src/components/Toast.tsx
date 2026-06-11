@@ -83,7 +83,7 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: string)
   return (
     <div
       role="status"
-      className={`pointer-events-auto border border-[var(--border)] rounded-lg p-3 pr-8 border-l-[3px] ${BORDER_COLORS[toast.type]} transition-all duration-200 ease-out min-w-[250px] max-w-sm ${visible ? 'translate-x-0 opacity-100' : 'translate-x-full opacity-0'}`}
+      className={`pointer-events-auto border border-[var(--border)] rounded-lg p-3 pr-8 border-l-[3px] ${BORDER_COLORS[toast.type]} transition-[transform,opacity] duration-200 ease-out min-w-[250px] max-w-sm ${visible ? 'translate-x-0 opacity-100' : 'translate-x-full opacity-0'}`}
       style={{
         backgroundColor: 'var(--overlay)',
         boxShadow: 'var(--shadow-lg)',
