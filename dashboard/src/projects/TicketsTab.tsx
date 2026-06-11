@@ -945,7 +945,7 @@ function NewTicketModal({ projectId, onClose }: NewModalProps) {
           onChange={(e) => setCriteria(e.target.value)}
           rows={4}
           title="Acceptance criteria (one per line)"
-          placeholder="Migration adds … table\nTier gate enforces …\nTests cover …"
+          placeholder="Migration adds ... table\nTier gate enforces ...\nTests cover ..."
         />
 
         <div className="grid grid-cols-2 gap-3">
@@ -970,7 +970,7 @@ function NewTicketModal({ projectId, onClose }: NewModalProps) {
             value={assignedTo}
             onChange={(e) => setAssignedTo(e.target.value)}
             title="Assign to persona"
-            placeholder="atlas, sentinel, …"
+            placeholder="atlas, sentinel, ..."
             className="font-mono"
           />
         </div>

@@ -81,7 +81,7 @@ export default function HandoffModal({ sessionId, onClose }: HandoffModalProps) 
                 onBlur={() => { if (message) validateField('message', message); }}
                 maxLength={2000}
                 rows={3}
-                placeholder="Context for the recipient..."
+                placeholder="Context for the recipient…"
                 error={errors.message}
               />
               <span className="text-xs text-[var(--text-tertiary)] mt-0.5 block text-right">

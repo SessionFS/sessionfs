@@ -102,7 +102,7 @@ const CLI_COMMANDS: CliCommand[] = [
   { cmd: 'sfs project edit', desc: 'Edit project context for this repo' },
   { cmd: 'sfs rules init', desc: 'Set up canonical project rules (enables per-tool compilers)' },
   { cmd: 'sfs rules edit', desc: 'Edit canonical static preferences in $EDITOR' },
-  { cmd: 'sfs rules compile', desc: 'Compile canonical rules to tool files (CLAUDE.md, codex.md, …)' },
+  { cmd: 'sfs rules compile', desc: 'Compile canonical rules to tool files (CLAUDE.md, codex.md, ...)' },
   { cmd: 'sfs dlp scan <id>', desc: 'Scan for secrets/PHI' },
 ];
 
@@ -144,7 +144,7 @@ const MCP_KNOWLEDGE_WRITE: McpTool[] = [
 
 const MCP_RULES: McpTool[] = [
   { name: 'get_rules', desc: 'Canonical project rules + compilation config' },
-  { name: 'get_compiled_rules', desc: 'Compiled rule text for a tool (CLAUDE.md, codex.md, …)' },
+  { name: 'get_compiled_rules', desc: 'Compiled rule text for a tool (CLAUDE.md, codex.md, ...)' },
 ];
 
 const MCP_PERSONAS: McpTool[] = [

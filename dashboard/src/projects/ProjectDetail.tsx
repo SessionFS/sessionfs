@@ -167,7 +167,7 @@ function SupersedeDialog({
           disabled={isPending || !supersedingId || !reason.trim()}
           className="text-xs font-medium text-white bg-[var(--brand)] px-3 py-1 rounded hover:bg-[var(--brand-hover)] transition-colors disabled:opacity-50"
         >
-          {isPending ? 'Saving...' : 'Confirm'}
+          {isPending ? 'Saving…' : 'Confirm'}
         </button>
       </div>
     </div>
@@ -505,7 +505,7 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
 
       {/* Entries list */}
       {isLoading ? (
-        <p className="text-[var(--text-tertiary)] text-sm py-4">Loading entries...</p>
+        <p className="text-[var(--text-tertiary)] text-sm py-4">Loading entries…</p>
       ) : !filteredEntries.length ? (
         <p className="text-[var(--text-tertiary)] text-sm py-8 text-center">
           No knowledge entries found. Entries are auto-extracted from sessions.
@@ -718,7 +718,7 @@ function PagesTab({ projectId }: { projectId: string }) {
   }
 
   if (isLoading) {
-    return <p className="p-5 text-[var(--text-tertiary)] text-sm">Loading pages...</p>;
+    return <p className="p-5 text-[var(--text-tertiary)] text-sm">Loading pages…</p>;
   }
 
   const pages = data?.pages || [];
@@ -754,7 +754,7 @@ function PagesTab({ projectId }: { projectId: string }) {
           <Textarea
             value={newContent}
             onChange={(e) => setNewContent(e.target.value)}
-            placeholder="Page content (markdown)..."
+            placeholder="Page content (markdown)…"
             className="min-h-[120px] font-mono"
           />
           <div className="flex justify-end gap-3 mt-2">
@@ -837,7 +837,7 @@ function PagesTab({ projectId }: { projectId: string }) {
                       </div>
                     ) : (
                       <>
-                        <div className="prose prose-sm dark:prose-invert max-w-none text-[var(--text-secondary)]">
+                        <div className="prose prose-sm dark:prose-invert max-w-[65ch] text-[var(--text-secondary)]">
                           <ReactMarkdown>{pageDetail?.content ?? page.content ?? ''}</ReactMarkdown>
                         </div>
 
@@ -874,7 +874,7 @@ function PagesTab({ projectId }: { projectId: string }) {
                               disabled={regeneratePage.isPending}
                               className="text-xs text-[var(--brand)] hover:underline disabled:opacity-50"
                             >
-                              {regeneratePage.isPending ? 'Regenerating...' : 'Regenerate'}
+                              {regeneratePage.isPending ? 'Regenerating…' : 'Regenerate'}
                             </button>
                           )}
                           <button
@@ -908,7 +908,7 @@ function HistoryTab({ projectId }: { projectId: string }) {
   const { data, isLoading } = useCompilations(projectId);
 
   if (isLoading) {
-    return <p className="p-5 text-[var(--text-tertiary)] text-sm">Loading history...</p>;
+    return <p className="p-5 text-[var(--text-tertiary)] text-sm">Loading history…</p>;
   }
 
   const compilations = data?.compilations || [];
@@ -1041,7 +1041,7 @@ export default function ProjectDetail() {
   }
 
   if (isLoading) {
-    return <div className="p-8 text-[var(--text-tertiary)]">Loading project...</div>;
+    return <div className="p-8 text-[var(--text-tertiary)]">Loading project…</div>;
   }
 
   if (error || !project) {
@@ -1256,7 +1256,7 @@ export default function ProjectDetail() {
                     value={draft}
                     onChange={(e) => setDraft(e.target.value)}
                     className="min-h-[400px] font-mono text-[14px]"
-                    placeholder={"Write your project context document here...\n\nThis will be shared with all sessions in this project."}
+                    placeholder={"Write your project context document here…\n\nThis will be shared with all sessions in this project."}
                     autoFocus
                   />
                   <div className="flex justify-end gap-3 mt-3">
@@ -1272,7 +1272,7 @@ export default function ProjectDetail() {
                 </div>
               ) : project.context_document ? (
                 <div className="bg-[var(--surface)] border border-[var(--border)] rounded-lg p-5">
-                  <article className="prose prose-sm dark:prose-invert max-w-none text-[var(--text-secondary)] leading-relaxed">
+                  <article className="prose prose-sm dark:prose-invert max-w-[65ch] text-[var(--text-secondary)] leading-relaxed">
                     <ReactMarkdown>{project.context_document}</ReactMarkdown>
                   </article>
                 </div>

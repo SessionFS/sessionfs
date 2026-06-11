@@ -56,7 +56,7 @@ export default function OnboardingGate({ children }: { children: React.ReactNode
   if (sessions.isLoading || projects.isLoading) {
     return (
       <div className="flex items-center justify-center min-h-[60vh] animate-[fadeIn_0.3s_ease-in_0.15s_both]">
-        <p className="text-sm text-[var(--text-tertiary)]">Loading...</p>
+        <p className="text-sm text-[var(--text-tertiary)]">Loading…</p>
       </div>
     );
   }

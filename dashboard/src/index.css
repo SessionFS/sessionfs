@@ -184,6 +184,7 @@ body::before {
 
 h1, h2, h3, h4, h5, h6 {
   font-family: var(--font-display);
+  font-optical-sizing: auto;
 }
 
 h1 { font-size: 30px; font-weight: 700; letter-spacing: -0.025em; line-height: 1.2; }
@@ -253,14 +254,24 @@ code, pre, kbd, samp {
   animation: none !important;
 }
 
-/* === Typography Scale === */
+/* === Typography Scale ===
+   Ratios check (≥1.25 between adjacent steps):
+   display(32) / headline(24) = 1.33 ✓
+   headline(24) / title(19)   = 1.26 ✓  (bumped from 18→19px)
+   title(19)    / body(15)     = 1.27 ✓
+   body(15)     / caption(12)  = 1.25 ✓  (reduced from 13→12px)
+   caption(12)  / micro(11)    = 1.09 ✗  — kept; distinct micro-label purpose
+*/
 
-.text-display { font-size: 2rem; line-height: 1.2; font-weight: 700; letter-spacing: -0.02em; }
-.text-headline { font-size: 1.5rem; line-height: 1.3; font-weight: 700; letter-spacing: -0.015em; }
-.text-title { font-size: 1.125rem; line-height: 1.4; font-weight: 600; }
+.text-display { font-size: 2rem; line-height: 1.2; font-weight: 700; letter-spacing: -0.02em; font-optical-sizing: auto; }
+.text-headline { font-size: 1.5rem; line-height: 1.3; font-weight: 700; letter-spacing: -0.015em; font-optical-sizing: auto; }
+.text-title { font-size: 1.1875rem; line-height: 1.4; font-weight: 600; }
 .text-body { font-size: 0.9375rem; line-height: 1.5; }
-.text-caption { font-size: 0.8125rem; line-height: 1.4; color: var(--text-tertiary); }
+.text-caption { font-size: 0.75rem; line-height: 1.4; color: var(--text-tertiary); }
 .text-micro { font-size: 0.6875rem; line-height: 1.3; letter-spacing: 0.02em; }
+
+/* Prose blocks — comfortable reading width */
+.prose-block { max-width: 65ch; }
 
 /* Mono chip — session IDs, etags, tool names */
 .text-mono-chip {

@@ -341,10 +341,10 @@ function JudgeTab() {
   }
 
   const keyPlaceholder =
-    isOpenRouter ? 'sk-or-...' :
-    judgeProvider === 'anthropic' ? 'sk-ant-...' :
-    judgeProvider === 'openai' ? 'sk-...' :
-    'AIza...';
+    isOpenRouter ? 'sk-or-…' :
+    judgeProvider === 'anthropic' ? 'sk-ant-…' :
+    judgeProvider === 'openai' ? 'sk-…' :
+    'AIza…';
 
   return (
     <div className="space-y-5">
@@ -356,7 +356,7 @@ function JudgeTab() {
         </p>
 
         {judgeLoading ? (
-          <div className="text-sm text-[var(--text-tertiary)] py-2">Loading settings...</div>
+          <div className="text-sm text-[var(--text-tertiary)] py-2">Loading settings…</div>
         ) : (
           <>
             <div className="mb-4">
@@ -371,14 +371,14 @@ function JudgeTab() {
             <div className="mb-4">
               <label className="text-[13px] text-[var(--text-tertiary)] block mb-1">
                 Model
-                {discovering && <span className="text-[var(--text-tertiary)] opacity-50 ml-2">discovering...</span>}
+                {discovering && <span className="text-[var(--text-tertiary)] opacity-50 ml-2">discovering…</span>}
               </label>
               {judgeBaseUrl && discoveredModels.length > 0 ? (
                 <Select
                   value={judgeModel}
                   onChange={(e) => { setJudgeModel(e.target.value); setJudgeSaved(false); }}
                   options={[
-                    { value: '', label: 'Select a model...' },
+                    { value: '', label: 'Select a model…' },
                     ...discoveredModels.map((m) => ({ value: m.id, label: m.id + (m.owned_by ? ` (${m.owned_by})` : '') })),
                   ]}
                 />
@@ -589,7 +589,7 @@ function AutosyncSection() {
       </p>
 
       {isLoading ? (
-        <div className="text-sm text-[var(--text-tertiary)] py-2">Loading...</div>
+        <div className="text-sm text-[var(--text-tertiary)] py-2">Loading…</div>
       ) : (
         <div className="space-y-2">
           {(['off', 'all', 'selective'] as const).map((mode) => (
@@ -686,7 +686,7 @@ export function GitHubIntegrationSection() {
       )}
 
       {isLoading ? (
-        <div className="text-sm text-[var(--text-tertiary)] py-2">Loading...</div>
+        <div className="text-sm text-[var(--text-tertiary)] py-2">Loading…</div>
       ) : connected ? (
         <>
           <div className="flex items-center gap-2 mb-4">
@@ -867,7 +867,7 @@ function DLPTab() {
         </p>
 
         {isLoading ? (
-          <div className="text-sm text-[var(--text-tertiary)] py-2">Loading policy...</div>
+          <div className="text-sm text-[var(--text-tertiary)] py-2">Loading policy…</div>
         ) : (
           <>
             {/* Enable toggle */}

@@ -71,7 +71,7 @@ export default function AuditTab({ sessionId, messageCount, sessionTitle, onJump
       <div className="flex flex-col items-center justify-center py-16">
         <div className="bg-bg-secondary border border-border rounded-lg p-6 text-center max-w-sm">
           <div className="w-8 h-8 border-2 border-accent border-t-transparent rounded-full animate-spin mx-auto mb-4" />
-          <p className="text-text-primary font-medium mb-1">Audit in progress...</p>
+          <p className="text-text-primary font-medium mb-1">Audit in progress…</p>
           <p className="text-text-muted text-xs mb-4">
             Estimated time: ~{estimatedSeconds}s ({messageCount} messages)
           </p>

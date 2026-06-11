@@ -114,7 +114,7 @@ export default function SessionDetail() {
   );
 
   if (isLoading) {
-    return <div className="p-8 text-[var(--text-tertiary)]">Loading session...</div>;
+    return <div className="p-8 text-[var(--text-tertiary)]">Loading session…</div>;
   }
 
   if (error || !session) {
@@ -187,7 +187,7 @@ export default function SessionDetail() {
       } else if (m.messages_text) {
         text = String(m.messages_text);
       }
-      return { role, text: text.slice(0, 120) + (text.length > 120 ? '...' : '') };
+      return { role, text: text.slice(0, 120) + (text.length > 120 ? '…' : '') };
     });
     return last3;
   })();

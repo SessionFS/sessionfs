@@ -112,7 +112,7 @@ export default function DeleteScopeDialog({
               disabled={isPending}
               className="px-4 py-1.5 text-sm bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors font-medium disabled:opacity-50"
             >
-              {isPending ? 'Deleting...' : 'Delete'}
+              {isPending ? 'Deleting…' : 'Delete'}
             </button>
           </div>
         </div>

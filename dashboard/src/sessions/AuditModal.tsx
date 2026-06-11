@@ -104,10 +104,10 @@ export default function AuditModal({ open, sessionId, sessionTitle, messageCount
   const hasBaseUrl = !!baseUrl;
 
   const keyPlaceholder = useMemo(() => {
-    if (isOpenRouter) return 'sk-or-...';
-    if (provider === 'anthropic') return 'sk-ant-...';
-    if (provider === 'openai') return 'sk-...';
-    return 'AIza...';
+    if (isOpenRouter) return 'sk-or-…';
+    if (provider === 'anthropic') return 'sk-ant-…';
+    if (provider === 'openai') return 'sk-…';
+    return 'AIza…';
   }, [provider, isOpenRouter]);
 
   function handleProviderChange(newProvider: string) {
@@ -179,13 +179,13 @@ export default function AuditModal({ open, sessionId, sessionTitle, messageCount
         <div>
           <label className="block text-[13px] font-medium text-[var(--text-secondary)] mb-1">
             Model
-            {discovering && <span className="text-[var(--text-tertiary)] ml-2">discovering...</span>}
+            {discovering && <span className="text-[var(--text-tertiary)] ml-2">discovering…</span>}
           </label>
           {hasBaseUrl && discoveredModels.length > 0 ? (
             <Select
               value={model}
               onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setModel(e.target.value)}
-              options={[{ value: '', label: 'Select a model...' }, ...modelSelectOptions]}
+              options={[{ value: '', label: 'Select a model…' }, ...modelSelectOptions]}
             />
           ) : hasBaseUrl ? (
             <Input
@@ -272,7 +272,7 @@ export default function AuditModal({ open, sessionId, sessionTitle, messageCount
                 disabled={testStatus === 'testing'}
                 className="px-2 py-1.5 text-xs border border-[var(--border)] rounded hover:bg-[var(--bg-tertiary)] transition-colors whitespace-nowrap text-[var(--text-secondary)]"
               >
-                {testStatus === 'testing' ? 'Testing...' :
+                {testStatus === 'testing' ? 'Testing…' :
                  testStatus === 'ok' ? 'Connected' :
                  testStatus === 'fail' ? 'Failed' : 'Test'}
               </button>
@@ -312,7 +312,7 @@ export default function AuditModal({ open, sessionId, sessionTitle, messageCount
           disabled={!canSubmit || submitting}
           loading={submitting}
         >
-          {submitting ? 'Running...' : 'Run Audit'}
+          {submitting ? 'Running…' : 'Run Audit'}
         </Button>
       </DialogFooter>
     </Dialog>

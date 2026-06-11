@@ -117,7 +117,7 @@ export default function BillingPage() {
   });
 
   if (isLoading) {
-    return <div className="text-center py-12 text-[var(--text-tertiary)]">Loading billing...</div>;
+    return <div className="text-center py-12 text-[var(--text-tertiary)]">Loading billing…</div>;
   }
 
   const currentTier = billing?.tier || 'free';

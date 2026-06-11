@@ -92,7 +92,7 @@ export default function AdminDashboard() {
 
       {/* Overview Cards */}
       {statsLoading && (
-        <div className="text-[var(--text-tertiary)] text-sm mb-6">Loading stats...</div>
+        <div className="text-[var(--text-tertiary)] text-sm mb-6">Loading stats…</div>
       )}
       {stats && (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
@@ -240,7 +240,7 @@ export default function AdminDashboard() {
                 type="text"
                 value={emailSearch}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEmailSearch(e.target.value)}
-                placeholder="Search by email..."
+                placeholder="Search by email…"
                 title="Search users"
               />
             </div>
@@ -252,7 +252,7 @@ export default function AdminDashboard() {
             )}
 
             {usersLoading && (
-              <div className="text-[var(--text-tertiary)] text-sm">Loading users...</div>
+              <div className="text-[var(--text-tertiary)] text-sm">Loading users…</div>
             )}
 
             {usersData && usersData.users.length > 0 && (
@@ -450,7 +450,7 @@ function UserRow({
                 disabled={isVerifying}
                 className="w-full text-left px-3 py-1.5 text-sm text-green-500 hover:bg-[var(--surface-hover)] transition-colors disabled:opacity-50"
               >
-                {isVerifying ? 'Verifying...' : 'Verify Email'}
+                {isVerifying ? 'Verifying…' : 'Verify Email'}
               </button>
             )}
             <button

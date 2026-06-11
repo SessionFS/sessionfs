@@ -57,7 +57,7 @@ export default function SummaryTab({ sessionId }: Props) {
           Generate a summary to see files changed, activity, and metrics.
         </p>
         <Button onClick={() => generate.mutate()} disabled={generate.isPending} loading={generate.isPending}>
-          {generate.isPending ? 'Generating...' : 'Generate Summary'}
+          {generate.isPending ? 'Generating…' : 'Generate Summary'}
         </Button>
       </div>
     );
@@ -216,7 +216,7 @@ export default function SummaryTab({ sessionId }: Props) {
                 disabled={generateNarrative.isPending}
                 loading={generateNarrative.isPending}
               >
-                {generateNarrative.isPending ? 'Generating...' : 'Generate Narrative'}
+                {generateNarrative.isPending ? 'Generating…' : 'Generate Narrative'}
               </Button>
               {generateNarrative.isError && (
                 <p className="text-xs text-[var(--danger)] mt-2">

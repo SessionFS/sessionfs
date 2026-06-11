@@ -166,7 +166,7 @@ export default function LoginPage() {
                 value={apiKey}
                 onChange={(e) => { setApiKey(e.target.value); clearFieldError('apiKey'); }}
                 onBlur={() => { if (apiKey) validateLoginField('apiKey'); }}
-                placeholder="sk_sfs_..."
+                placeholder="sk_sfs_…"
                 title="API Key"
                 error={fieldErrors.apiKey}
                 autoFocus
@@ -180,7 +180,7 @@ export default function LoginPage() {
               disabled={!apiKey}
               className="w-full"
             >
-              {loading ? 'Connecting...' : 'Sign In'}
+              {loading ? 'Connecting…' : 'Sign In'}
             </Button>
             <p className="mt-4 text-center text-[var(--text-tertiary)] text-sm">
               No account?{' '}
@@ -221,7 +221,7 @@ export default function LoginPage() {
               disabled={!email}
               className="w-full"
             >
-              {loading ? 'Creating...' : 'Create Account'}
+              {loading ? 'Creating…' : 'Create Account'}
             </Button>
             <p className="mt-4 text-center text-[var(--text-tertiary)] text-sm">
               Have an API key?{' '}

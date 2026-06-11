@@ -52,7 +52,7 @@ export default function LicensesTab() {
       )}
 
       {isLoading && (
-        <div className="text-[var(--text-tertiary)] text-sm py-4">Loading licenses...</div>
+        <div className="text-[var(--text-tertiary)] text-sm py-4">Loading licenses…</div>
       )}
 
       {!isLoading && licenses.length === 0 && (

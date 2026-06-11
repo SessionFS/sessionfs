@@ -277,7 +277,7 @@ export default function SearchResults() {
                 <span className="text-text-primary font-medium">"{data.query}"</span>
               </>
             ) : isLoading ? (
-              'Searching...'
+              'Searching…'
             ) : null}
           </h2>
         </div>
@@ -306,7 +306,7 @@ export default function SearchResults() {
 
         {/* Loading */}
         {isLoading && (
-          <div className="text-center py-12 text-text-muted">Searching...</div>
+          <div className="text-center py-12 text-text-muted">Searching…</div>
         )}
 
         {/* Empty state */}

@@ -48,7 +48,7 @@ export default function ConversationView({ sessionId, initialPage }: Props) {
   }
 
   if (isLoading && !data) {
-    return <div className="p-4 text-text-muted">Loading messages...</div>;
+    return <div className="p-4 text-text-muted">Loading messages…</div>;
   }
 
   const messages = data?.messages || [];
@@ -98,7 +98,7 @@ export default function ConversationView({ sessionId, initialPage }: Props) {
       )}
 
       {isLoading && messages.length === 0 && (
-        <p className="text-text-muted text-sm">Loading page {page}...</p>
+        <p className="text-text-muted text-sm">Loading page {page}…</p>
       )}
 
       {messages.map((msg, i) => (
@@ -127,15 +127,15 @@ function Pagination({
   isLoading: boolean;
 }) {
   // Build page numbers: show first, last, current, and neighbors
-  const pages: (number | '...')[] = [];
+  const pages: (number | '…')[] = [];
   const addPage = (p: number) => { if (!pages.includes(p)) pages.push(p); };
 
   addPage(1);
-  if (page > 3) pages.push('...');
+  if (page > 3) pages.push('…');
   for (let p = Math.max(2, page - 1); p <= Math.min(totalPages - 1, page + 1); p++) {
     addPage(p);
   }
-  if (page < totalPages - 2) pages.push('...');
+  if (page < totalPages - 2) pages.push('…');
   if (totalPages > 1) addPage(totalPages);
 
   return (
@@ -152,8 +152,8 @@ function Pagination({
           Prev
         </button>
         {pages.map((p, i) =>
-          p === '...' ? (
-            <span key={`dots-${i}`} className="px-1 text-text-muted text-sm">...</span>
+          p === '…' ? (
+            <span key={`dots-${i}`} className="px-1 text-text-muted text-sm">…</span>
           ) : (
             <button
               key={p}

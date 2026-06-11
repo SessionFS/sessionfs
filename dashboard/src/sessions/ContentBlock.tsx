@@ -10,7 +10,7 @@ export default function ContentBlock({ block }: BlockProps) {
 
   if (type === 'text') {
     return (
-      <div className="prose prose-invert prose-sm max-w-none [&_pre]:bg-[var(--bg-sunken)] [&_pre]:border [&_pre]:border-[var(--border)] [&_pre]:rounded-lg [&_code]:text-sm">
+      <div className="prose prose-invert prose-sm max-w-[65ch] [&_pre]:bg-[var(--bg-sunken)] [&_pre]:border [&_pre]:border-[var(--border)] [&_pre]:rounded-lg [&_code]:text-sm">
         <Markdown>{String(block.text || '')}</Markdown>
       </div>
     );

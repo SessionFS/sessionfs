@@ -117,7 +117,7 @@ export default function CreateProjectModal({ onClose, onCreated }: Props) {
                 disabled={!remote.trim() || createProject.isPending}
                 className="px-4 py-1.5 text-sm bg-[var(--brand)] text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {createProject.isPending ? 'Creating...' : 'Create'}
+                {createProject.isPending ? 'Creating…' : 'Create'}
               </button>
             </div>
           </form>

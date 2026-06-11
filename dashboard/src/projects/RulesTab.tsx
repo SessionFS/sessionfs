@@ -487,7 +487,7 @@ export default function RulesTab({ projectId }: { projectId: string }) {
   }
 
   if (isLoading) {
-    return <p className="p-5 text-[var(--text-tertiary)] text-sm">Loading rules...</p>;
+    return <p className="p-5 text-[var(--text-tertiary)] text-sm">Loading rules…</p>;
   }
 
   if (error || !rules) {
@@ -551,7 +551,7 @@ export default function RulesTab({ projectId }: { projectId: string }) {
             <Textarea
               value={draft ?? ''}
               onChange={(e) => setDraft(e.target.value)}
-              placeholder="Write canonical project preferences (markdown or plain text)..."
+              placeholder="Write canonical project preferences (markdown or plain text)…"
               className="min-h-[240px] font-mono text-[14px]"
               autoFocus
             />
@@ -833,7 +833,7 @@ function CompiledOutputsList({
   const { data: detail, isLoading } = useRulesVersion(projectId, version);
 
   if (isLoading) {
-    return <p className="text-xs text-[var(--text-tertiary)]">Loading compiled outputs...</p>;
+    return <p className="text-xs text-[var(--text-tertiary)]">Loading compiled outputs…</p>;
   }
   if (!detail) {
     return <p className="text-xs text-[var(--text-tertiary)] italic">No compiled outputs found.</p>;

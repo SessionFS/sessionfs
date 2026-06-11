@@ -77,7 +77,7 @@ export default function OrgPage() {
   });
 
   if (isLoading) {
-    return <div className="text-center py-12 text-[var(--text-tertiary)]">Loading...</div>;
+    return <div className="text-center py-12 text-[var(--text-tertiary)]">Loading…</div>;
   }
 
   const org = data?.org;
@@ -149,7 +149,7 @@ export default function OrgPage() {
               disabled={!inviteEmail || inviteMutation.isPending}
               className="bg-[var(--brand)] text-white rounded-lg px-5 py-2.5 text-sm font-semibold hover:bg-[var(--brand-hover)] transition-colors disabled:opacity-50"
             >
-              {inviteMutation.isPending ? 'Sending...' : 'Send Invite'}
+              {inviteMutation.isPending ? 'Sending…' : 'Send Invite'}
             </button>
           </div>
           {inviteMutation.isError && (

@@ -15,7 +15,7 @@ function firstContentLine(md: string | undefined | null): string | null {
   if (!md) return null;
   for (const raw of md.split('\n')) {
     const line = raw.replace(/^#+\s*/, '').trim();
-    if (line.length > 0) return line.length > 120 ? line.slice(0, 117) + '...' : line;
+    if (line.length > 0) return line.length > 120 ? line.slice(0, 117) + '…' : line;
   }
   return null;
 }
