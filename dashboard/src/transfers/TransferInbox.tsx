@@ -13,6 +13,8 @@
  *     (an admin demoted between initiate and accept loses standing).
  *   - Auto-accept transfers never sit in this inbox (state='accepted' at
  *     create time).
+ *
+ * Phase 3 restyle: rows onto Card + Button variants.
  */
 
 import { useToast } from '../hooks/useToast';
@@ -23,6 +25,7 @@ import {
   useRejectTransfer,
   useTransfers,
 } from './useTransfers';
+import { Button, Card } from '../components/ui';
 
 function scopeLabel(scope: string): string {
   return scope === 'personal' ? 'Personal' : `Org ${scope}`;
@@ -37,7 +40,7 @@ function ProjectLabel({ t }: { t: TransferInfo }) {
       </span>
     );
   }
-  return <span>{name}</span>;
+  return <span className="font-semibold text-[var(--text-primary)]">{name}</span>;
 }
 
 export default function TransferInbox() {
@@ -81,78 +84,76 @@ export default function TransferInbox() {
     );
   };
 
-  if (incoming.isLoading || outgoing.isLoading) return <p>Loading transfers…</p>;
-  if (incoming.error) return <p role="alert">Failed to load inbox: {String(incoming.error)}</p>;
-  if (outgoing.error) return <p role="alert">Failed to load outbox: {String(outgoing.error)}</p>;
+  if (incoming.isLoading || outgoing.isLoading) return <p className="text-[var(--text-tertiary)] p-4 text-sm">Loading transfers…</p>;
+  if (incoming.error) return <p role="alert" className="text-[var(--danger)] p-4 text-sm">Failed to load inbox: {String(incoming.error)}</p>;
+  if (outgoing.error) return <p role="alert" className="text-[var(--danger)] p-4 text-sm">Failed to load outbox: {String(outgoing.error)}</p>;
 
   const incomingRows = incoming.data?.transfers ?? [];
   const outgoingRows = outgoing.data?.transfers ?? [];
   const busy = accept.isPending || reject.isPending || cancel.isPending;
 
   return (
-    <section aria-labelledby="transfers-heading">
-      <h2 id="transfers-heading">Project transfers</h2>
+    <section aria-labelledby="transfers-heading" className="space-y-5">
+      <h2 id="transfers-heading" className="text-lg font-semibold text-[var(--text-primary)]">Project transfers</h2>
 
       <section aria-labelledby="incoming-heading">
-        <h3 id="incoming-heading">Incoming ({incomingRows.length})</h3>
+        <h3 id="incoming-heading" className="text-micro uppercase text-[var(--text-tertiary)] mb-3">
+          Incoming ({incomingRows.length})
+        </h3>
         {incomingRows.length === 0 ? (
-          <p className="text-[var(--text-tertiary)]">No pending incoming transfers.</p>
+          <p className="text-[13px] text-[var(--text-tertiary)]">No pending incoming transfers.</p>
         ) : (
-          <ul>
+          <div className="space-y-2">
             {incomingRows.map((t) => (
-              <li key={t.id} data-testid={`incoming-${t.id}`}>
-                <div>
-                  <strong><ProjectLabel t={t} /></strong>
-                  <span> from {scopeLabel(t.from_scope)} → {scopeLabel(t.to_scope)}</span>
+              <Card key={t.id} className="p-4 flex items-center justify-between gap-3 flex-wrap" data-testid={`incoming-${t.id}`}>
+                <div className="min-w-0">
+                  <div className="text-sm">
+                    <span className="font-semibold text-[var(--text-primary)]"><ProjectLabel t={t} /></span>
+                    <span className="text-[var(--text-tertiary)]"> from {scopeLabel(t.from_scope)} → {scopeLabel(t.to_scope)}</span>
+                  </div>
+                  <div className="text-xs text-[var(--text-tertiary)] mt-0.5">
+                    Initiated by {t.initiated_by}
+                  </div>
                 </div>
-                <div className="text-[var(--text-tertiary)] text-xs">
-                  Initiated by {t.initiated_by}
+                <div className="flex gap-2 flex-shrink-0">
+                  <Button size="sm" onClick={() => handleAccept(t)} disabled={busy} aria-label={`Accept transfer ${t.id}`}>
+                    Accept
+                  </Button>
+                  <Button variant="danger" size="sm" onClick={() => handleReject(t)} disabled={busy} aria-label={`Reject transfer ${t.id}`}>
+                    Reject
+                  </Button>
                 </div>
-                <button
-                  onClick={() => handleAccept(t)}
-                  disabled={busy}
-                  aria-label={`Accept transfer ${t.id}`}
-                >
-                  Accept
-                </button>
-                <button
-                  onClick={() => handleReject(t)}
-                  disabled={busy}
-                  aria-label={`Reject transfer ${t.id}`}
-                >
-                  Reject
-                </button>
-              </li>
+              </Card>
             ))}
-          </ul>
+          </div>
         )}
       </section>
 
       <section aria-labelledby="outgoing-heading">
-        <h3 id="outgoing-heading">Outgoing ({outgoingRows.length})</h3>
+        <h3 id="outgoing-heading" className="text-micro uppercase text-[var(--text-tertiary)] mb-3">
+          Outgoing ({outgoingRows.length})
+        </h3>
         {outgoingRows.length === 0 ? (
-          <p className="text-[var(--text-tertiary)]">No pending outgoing transfers.</p>
+          <p className="text-[13px] text-[var(--text-tertiary)]">No pending outgoing transfers.</p>
         ) : (
-          <ul>
+          <div className="space-y-2">
             {outgoingRows.map((t) => (
-              <li key={t.id} data-testid={`outgoing-${t.id}`}>
-                <div>
-                  <strong><ProjectLabel t={t} /></strong>
-                  <span> from {scopeLabel(t.from_scope)} → {scopeLabel(t.to_scope)}</span>
+              <Card key={t.id} className="p-4 flex items-center justify-between gap-3 flex-wrap" data-testid={`outgoing-${t.id}`}>
+                <div className="min-w-0">
+                  <div className="text-sm">
+                    <span className="font-semibold text-[var(--text-primary)]"><ProjectLabel t={t} /></span>
+                    <span className="text-[var(--text-tertiary)]"> from {scopeLabel(t.from_scope)} → {scopeLabel(t.to_scope)}</span>
+                  </div>
+                  <div className="text-xs text-[var(--text-tertiary)] mt-0.5">
+                    Waiting on {t.target_user_id ?? '(target removed)'}
+                  </div>
                 </div>
-                <div className="text-[var(--text-tertiary)] text-xs">
-                  Waiting on {t.target_user_id ?? '(target removed)'}
-                </div>
-                <button
-                  onClick={() => handleCancel(t)}
-                  disabled={busy}
-                  aria-label={`Cancel transfer ${t.id}`}
-                >
+                <Button variant="danger" size="sm" onClick={() => handleCancel(t)} disabled={busy} aria-label={`Cancel transfer ${t.id}`}>
                   Cancel
-                </button>
-              </li>
+                </Button>
+              </Card>
             ))}
-          </ul>
+          </div>
         )}
       </section>
     </section>

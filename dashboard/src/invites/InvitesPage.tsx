@@ -12,6 +12,8 @@
  *     and expired rows; no client-side filtering needed.
  *   - Accept is atomic on the server with seat re-check; we surface
  *     server's structured error envelope back to the toast.
+ *
+ * Phase 3 restyle: onto Card, Button, Textarea primitives.
  */
 
 import { useState } from 'react';
@@ -19,6 +21,8 @@ import { useSearchParams } from 'react-router-dom';
 
 import { useToast } from '../hooks/useToast';
 import { useAcceptInvite, useDeclineInvite, useMyInvites } from './useInvites';
+import { Button, Card, Textarea } from '../components/ui';
+import { Badge } from '../components/Badge';
 
 export default function InvitesPage() {
   const invites = useMyInvites();
@@ -30,9 +34,9 @@ export default function InvitesPage() {
   const [decliningId, setDecliningId] = useState<string | null>(null);
   const [declineReason, setDeclineReason] = useState('');
 
-  if (invites.isLoading) return <p>Loading invites…</p>;
+  if (invites.isLoading) return <p className="text-[var(--text-tertiary)] p-4 text-sm">Loading invites…</p>;
   if (invites.error)
-    return <p role="alert">Failed to load invites: {String(invites.error)}</p>;
+    return <p role="alert" className="text-[var(--danger)] p-4 text-sm">Failed to load invites: {String(invites.error)}</p>;
 
   const rows = invites.data?.invites ?? [];
   const busy = accept.isPending || decline.isPending;
@@ -62,92 +66,109 @@ export default function InvitesPage() {
   };
 
   return (
-    <section aria-labelledby="invites-heading">
-      <h2 id="invites-heading">Organization invites</h2>
-      <p className="text-[var(--text-tertiary)]">
+    <section aria-labelledby="invites-heading" className="max-w-2xl mx-auto px-4 py-6">
+      <h2 id="invites-heading" className="text-xl font-bold tracking-tight text-[var(--text-primary)] mb-2">Organization invites</h2>
+      <p className="text-sm text-[var(--text-tertiary)] mb-5">
         Invites sent to your email address. Accept to join the org, or decline
         if you weren't expecting it.
       </p>
+
       {rows.length === 0 ? (
-        <p className="text-[var(--text-tertiary)]">No pending invites.</p>
+        <div className="text-center py-12">
+          <svg className="mx-auto mb-3 opacity-30" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--text-tertiary)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+            <circle cx="9" cy="7" r="4" />
+            <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+            <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+          </svg>
+          <p className="text-[15px] font-semibold text-[var(--text-primary)] mb-1">No pending invites</p>
+          <p className="text-[13px] text-[var(--text-tertiary)]">
+            You don't have any pending organization invitations.
+          </p>
+        </div>
       ) : (
-        <ul>
+        <div className="space-y-3">
           {rows.map((inv) => {
             const isHighlight = highlight === inv.invite_id;
             const isDeclining = decliningId === inv.invite_id;
             return (
-              <li
+              <Card
                 key={inv.invite_id}
+                className="p-4"
+                style={isHighlight ? { boxShadow: '0 0 0 2px var(--brand-glow)' } : undefined}
                 data-testid={`invite-${inv.invite_id}`}
-                style={
-                  isHighlight
-                    ? { outline: '2px solid var(--accent-primary)', padding: '8px' }
-                    : undefined
-                }
               >
-                <div>
-                  <strong>{inv.org_name}</strong>
-                  <span> — role: {inv.role}</span>
+                <div className="flex items-center justify-between gap-3 mb-2">
+                  <div>
+                    <strong className="text-[var(--text-primary)]">{inv.org_name}</strong>
+                    <span className="text-[var(--text-tertiary)] text-sm ml-2">
+                      role: <Badge variant="default" label={inv.role} size="sm" />
+                    </span>
+                  </div>
                 </div>
-                <div className="text-[var(--text-tertiary)] text-xs">
+                <div className="text-xs text-[var(--text-tertiary)] mb-3">
                   Invited by {inv.invited_by_email} on{' '}
                   {new Date(inv.created_at).toLocaleDateString()}. Expires{' '}
                   {new Date(inv.expires_at).toLocaleDateString()}.
                 </div>
                 {isDeclining ? (
-                  <div>
-                    <label
-                      htmlFor={`reason-${inv.invite_id}`}
-                      className="text-xs text-[var(--text-tertiary)]"
-                    >
-                      Decline reason (optional, max 1000 chars)
-                    </label>
-                    <textarea
+                  <div className="space-y-3">
+                    <Textarea
+                      title="Decline reason (optional, max 1000 chars)"
                       id={`reason-${inv.invite_id}`}
                       value={declineReason}
                       onChange={(e) => setDeclineReason(e.target.value)}
                       maxLength={1000}
                       rows={2}
                     />
-                    <button
-                      onClick={() => handleDecline(inv.invite_id, inv.org_name)}
-                      disabled={busy}
-                      aria-label={`Confirm decline invite to ${inv.org_name}`}
-                    >
-                      Confirm decline
-                    </button>
-                    <button
-                      onClick={() => {
-                        setDecliningId(null);
-                        setDeclineReason('');
-                      }}
-                      disabled={busy}
-                    >
-                      Cancel
-                    </button>
+                    <div className="flex gap-2">
+                      <Button
+                        variant="danger"
+                        size="sm"
+                        onClick={() => handleDecline(inv.invite_id, inv.org_name)}
+                        disabled={busy}
+                        aria-label={`Confirm decline invite to ${inv.org_name}`}
+                      >
+                        Confirm decline
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => {
+                          setDecliningId(null);
+                          setDeclineReason('');
+                        }}
+                        disabled={busy}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
                   </div>
                 ) : (
-                  <div>
-                    <button
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
                       onClick={() => handleAccept(inv.invite_id, inv.org_name)}
                       disabled={busy}
                       aria-label={`Accept invite to ${inv.org_name}`}
                     >
                       Accept
-                    </button>
-                    <button
+                    </Button>
+                    <Button
+                      variant="danger"
+                      size="sm"
                       onClick={() => setDecliningId(inv.invite_id)}
                       disabled={busy}
                       aria-label={`Decline invite to ${inv.org_name}`}
                     >
                       Decline
-                    </button>
+                    </Button>
                   </div>
                 )}
-              </li>
+              </Card>
             );
           })}
-        </ul>
+        </div>
       )}
     </section>
   );
