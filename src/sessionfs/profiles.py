@@ -233,13 +233,32 @@ def list_profiles() -> list[str]:
     return names
 
 
+def _write_private_file(path: Path, content: str) -> None:
+    """Create/overwrite ``path`` with 0o600 enforced AT CREATION.
+
+    Shield-SR v0.10.29: ``write_text()`` + ``os.chmod()`` leaves a window
+    (or, if the process dies in between, a permanent state) where the
+    file exists with umask-default permissions — typically 0o644, world-
+    readable — while holding a raw API key. ``os.open`` with an explicit
+    mode applies 0o600 atomically at creation. The trailing chmod also
+    tightens a pre-existing file that may have looser permissions.
+    """
+    fd = os.open(
+        path,
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+        stat.S_IRUSR | stat.S_IWUSR,
+    )
+    with os.fdopen(fd, "w") as f:
+        f.write(content)
+    os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+
+
 def set_active_profile(name: str) -> None:
     """Persist the active profile pointer (chmod 600 on the dir's file)."""
     d = _sessionfs_dir()
     d.mkdir(parents=True, exist_ok=True)
     apath = active_profile_path()
-    apath.write_text(name + "\n")
-    os.chmod(apath, stat.S_IRUSR | stat.S_IWUSR)
+    _write_private_file(apath, name + "\n")
 
 
 def write_named_profile(name: str, api_url: str, api_key: str) -> Path:
@@ -270,6 +289,7 @@ def write_named_profile(name: str, api_url: str, api_key: str) -> Path:
         "push_interval = 30\n"
         "retry_max = 5\n"
     )
-    path.write_text(content)
-    os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)  # 0o600 — holds a raw key
+    # 0o600 enforced at creation — holds a raw key (Shield-SR v0.10.29:
+    # write_text + chmod left a umask-default window; see _write_private_file).
+    _write_private_file(path, content)
     return path

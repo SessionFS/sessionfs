@@ -225,10 +225,10 @@ def _save_sync_config(api_url: str, api_key: str) -> None:
         new_lines.append('push_interval = 30')
         new_lines.append('retry_max = 5')
 
-    config_path.write_text("\n".join(new_lines))
-    import os
-    import stat
-    os.chmod(config_path, stat.S_IRUSR | stat.S_IWUSR)  # 0o600 — not world-readable
+    # 0o600 enforced at creation — holds a raw key (Shield-SR v0.10.29:
+    # write_text + chmod left a umask-default window on first login).
+    from sessionfs.profiles import _write_private_file
+    _write_private_file(config_path, "\n".join(new_lines))
 
 
 def _get_sync_client():
