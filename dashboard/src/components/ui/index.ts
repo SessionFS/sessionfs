@@ -2,6 +2,7 @@ export { Button } from './Button';
 export { Card } from './Card';
 export { Input, Textarea, Select } from './Input';
 export { Dialog, DialogHeader, DialogFooter } from './Dialog';
+export { Drawer } from './Drawer';
 export { Tabs } from './Tabs';
 export { Table } from './Table';
 export { Dropdown } from './Dropdown';

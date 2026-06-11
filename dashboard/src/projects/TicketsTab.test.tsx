@@ -286,4 +286,57 @@ describe('TicketsTab', () => {
     fireEvent.change(kindSelect, { target: { value: 'issue' } });
     expect(screen.queryByLabelText(/Parent Issue/i)).toBeNull();
   });
+
+  /* ── Board view drawer (phase 3 fix C2) ── */
+
+  it('opens detail in a drawer on board card click', () => {
+    localStorage.setItem('sfs-tickets-view', 'board');
+    render(<TicketsTab projectId="proj_1" />);
+    fireEvent.click(screen.getByText('Add session export'));
+    // Detail content renders inside the drawer dialog
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByText('Implement export endpoint.')).toBeInTheDocument();
+    expect(screen.getByText(/CLI works/)).toBeInTheDocument();
+  });
+
+  it('closes the board drawer on Escape', () => {
+    localStorage.setItem('sfs-tickets-view', 'board');
+    render(<TicketsTab projectId="proj_1" />);
+    fireEvent.click(screen.getByText('Add session export'));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('renders comment composer at full width in the board drawer', () => {
+    localStorage.setItem('sfs-tickets-view', 'board');
+    render(<TicketsTab projectId="proj_1" />);
+    fireEvent.click(screen.getByText('Add session export'));
+    // Comment textarea and button are inside the drawer
+    expect(screen.getByPlaceholderText('Add comment…')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Comment$/ })).toBeInTheDocument();
+  });
+
+  it('sets aria-haspopup="dialog" on board card buttons', () => {
+    localStorage.setItem('sfs-tickets-view', 'board');
+    render(<TicketsTab projectId="proj_1" />);
+    const card = screen.getByRole('button', { name: /Add session export/ });
+    expect(card).toHaveAttribute('aria-haspopup', 'dialog');
+  });
+
+  it('list view still expands in place without a dialog', () => {
+    // Default view is list (no localStorage override)
+    render(<TicketsTab projectId="proj_1" />);
+    fireEvent.click(screen.getByText('Add session export'));
+    expect(screen.getByText('Implement export endpoint.')).toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('shows approve + dismiss buttons in the board drawer', () => {
+    localStorage.setItem('sfs-tickets-view', 'board');
+    render(<TicketsTab projectId="proj_1" />);
+    fireEvent.click(screen.getByText('Add session export'));
+    expect(screen.getByRole('button', { name: /Approve/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Dismiss/i })).toBeInTheDocument();
+  });
 });

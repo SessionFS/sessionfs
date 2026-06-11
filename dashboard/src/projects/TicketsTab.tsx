@@ -40,6 +40,7 @@ import {
   Dialog,
   DialogHeader,
   DialogFooter,
+  Drawer,
   Input,
   Select,
   Textarea,
@@ -366,55 +367,70 @@ function ListView({ tickets, projectId, selected, onSelect, onNavigate }: ViewPr
  * expanded detail — not via drag. */
 
 function BoardView({ tickets, projectId, selected, onSelect, onNavigate }: ViewProps) {
+  const selectedTicket = tickets.find((t) => t.id === selected) ?? null;
+
   return (
-    <div className="overflow-x-auto -mx-1 px-1">
-      <div className="flex gap-3 min-w-[1100px]">
-        {BOARD_STATUSES.map((status) => {
-          const columnTickets = tickets.filter((t) => t.status === status.value);
-          return (
-            <div key={status.value} className="flex-1 min-w-[180px] max-w-[260px]">
-              {/* Column header */}
-              <h3 className="text-micro uppercase font-semibold text-[var(--text-tertiary)] mb-2 px-1 flex items-center gap-1.5">
-                {status.label}
-                <span className="text-[var(--text-tertiary)]/60 tabular-nums">
-                  {columnTickets.length}
-                </span>
-              </h3>
+    <>
+      <div className="overflow-x-auto -mx-1 px-1">
+        <div className="flex gap-3 min-w-[1100px]">
+          {BOARD_STATUSES.map((status) => {
+            const columnTickets = tickets.filter((t) => t.status === status.value);
+            return (
+              <div key={status.value} className="flex-1 min-w-[180px] max-w-[260px]">
+                {/* Column header */}
+                <h3 className="text-micro uppercase font-semibold text-[var(--text-tertiary)] mb-2 px-1 flex items-center gap-1.5">
+                  {status.label}
+                  <span className="text-[var(--text-tertiary)]/60 tabular-nums">
+                    {columnTickets.length}
+                  </span>
+                </h3>
 
-              {columnTickets.length === 0 ? (
-                <div className="border border-dashed border-[var(--border)] rounded-lg p-3 text-[12px] text-[var(--text-tertiary)] text-center">
-                  —
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {columnTickets.map((t) => (
-                    <BoardCard
-                      key={t.id}
-                      ticket={t}
-                      isExpanded={selected === t.id}
-                      onToggle={() => onSelect(t.id)}
-                    />
-                  ))}
-                </div>
-              )}
-
-              {/* Expanded detail below the card */}
-              {columnTickets
-                .filter((t) => selected === t.id)
-                .map((t) => (
-                  <TicketDetail
-                    key={`${t.id}-detail`}
-                    projectId={projectId}
-                    ticketId={t.id}
-                    fallback={t}
-                    onNavigate={onNavigate}
-                  />
-                ))}
-            </div>
-          );
-        })}
+                {columnTickets.length === 0 ? (
+                  <div className="border border-dashed border-[var(--border)] rounded-lg p-3 text-[12px] text-[var(--text-tertiary)] text-center">
+                    —
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {columnTickets.map((t) => (
+                      <BoardCard
+                        key={t.id}
+                        ticket={t}
+                        isExpanded={selected === t.id}
+                        onToggle={() => onSelect(t.id)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
-    </div>
+
+      {/* Board detail drawer — right-side panel instead of in-column expansion */}
+      <Drawer
+        open={selected !== null}
+        onClose={() => onSelect(selected!)}
+        titleId="ticket-detail-title"
+      >
+        {selectedTicket && (
+          <div className="space-y-3">
+            <h2
+              id="ticket-detail-title"
+              className="text-lg font-semibold text-[var(--text-primary)]"
+            >
+              {selectedTicket.title}
+            </h2>
+            <TicketDetail
+              projectId={projectId}
+              ticketId={selectedTicket.id}
+              fallback={selectedTicket}
+              onNavigate={onNavigate}
+            />
+          </div>
+        )}
+      </Drawer>
+    </>
   );
 }
 
@@ -437,6 +453,7 @@ function BoardCard({
         isExpanded ? 'border-[var(--brand)] ring-1 ring-[var(--brand)]/30' : ''
       }`}
       aria-expanded={isExpanded}
+      aria-haspopup="dialog"
     >
       {/* Kind + ID row */}
       <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
