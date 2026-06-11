@@ -96,6 +96,7 @@ export default function LicensesTab() {
               key: 'seats',
               header: 'Seats',
               width: 'w-16',
+              align: 'right' as const,
               render: (lic) => (
                 <span className="tabular-nums">{lic.seats_limit}</span>
               ),

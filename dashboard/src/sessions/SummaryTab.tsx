@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
 import { useJudgeSettings } from '../hooks/useJudgeSettings';
 import { Button } from '../components/ui/Button';
+import Skeleton from '../components/Skeleton';
 import { Card } from '../components/ui/Card';
 
 interface Props {
@@ -64,9 +65,8 @@ export default function SummaryTab({ sessionId }: Props) {
 
   if (isLoading) {
     return (
-      <div className="flex flex-col items-center justify-center py-16">
-        <div className="w-6 h-6 border-2 border-accent border-t-transparent rounded-full animate-spin mb-3" />
-        <p className="text-text-muted text-sm">Loading summary...</p>
+      <div className="py-16 px-4">
+        <Skeleton lines={5} type="text" />
       </div>
     );
   }

@@ -6,6 +6,8 @@ interface Column<T> {
   render: (row: T) => ReactNode;
   /** Optional column width (Tailwind width class). */
   width?: string;
+  /** Column alignment — defaults to 'left'. Use 'right' for quantitative columns (counts, sizes, money). */
+  align?: 'left' | 'right';
 }
 
 interface TableProps<T> {
@@ -20,13 +22,15 @@ interface TableProps<T> {
 export function Table<T>({ columns, data, onRowClick, rowKey }: TableProps<T>) {
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-left">
+      <table className="w-full border-separate border-spacing-0">
         <thead>
-          <tr className="border-b border-[var(--border)]">
+          <tr>
             {columns.map((col) => (
               <th
                 key={col.key}
-                className={`px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.04em] text-[var(--text-tertiary)] ${col.width ?? ''}`}
+                className={`sticky top-0 z-10 bg-[var(--surface)] px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.04em] text-[var(--text-tertiary)] border-b border-[var(--border)] ${
+                  col.align === 'right' ? 'text-right' : 'text-left'
+                } ${col.width ?? ''}`}
               >
                 {col.header}
               </th>
@@ -45,7 +49,9 @@ export function Table<T>({ columns, data, onRowClick, rowKey }: TableProps<T>) {
               {columns.map((col) => (
                 <td
                   key={col.key}
-                  className="px-3 py-2.5 text-[13px] text-[var(--text-primary)]"
+                  className={`px-3 py-2.5 text-[13px] text-[var(--text-primary)] ${
+                    col.align === 'right' ? 'text-right tabular-nums' : 'text-left'
+                  }`}
                 >
                   {col.render(row)}
                 </td>

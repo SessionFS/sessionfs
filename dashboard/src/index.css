@@ -273,6 +273,11 @@ code, pre, kbd, samp {
   padding: 0.125em 0.5em;
 }
 
+/* Numeric values: tabular-nums for alignment stability */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
 /* === Card Styles === */
 
 .card-elevated { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-lg); }

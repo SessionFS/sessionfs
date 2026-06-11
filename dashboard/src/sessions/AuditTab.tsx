@@ -13,6 +13,7 @@ import {
 import { useToast } from '../hooks/useToast';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
+import Skeleton from '../components/Skeleton';
 import { Dropdown } from '../components/ui/Dropdown';
 
 interface Props {
@@ -107,9 +108,8 @@ export default function AuditTab({ sessionId, messageCount, sessionTitle, onJump
 
   if (isLoading) {
     return (
-      <div className="flex flex-col items-center justify-center py-16">
-        <div className="w-6 h-6 border-2 border-accent border-t-transparent rounded-full animate-spin mb-3" />
-        <p className="text-text-muted text-sm">Loading audit report...</p>
+      <div className="py-16 px-4">
+        <Skeleton type="card" />
       </div>
     );
   }
