@@ -123,8 +123,8 @@
   --color-role-system: #d29922;
 
   /* Code/thinking backgrounds */
-  --color-code-bg: var(--bg-secondary);
-  --color-thinking-bg: var(--bg-tertiary);
+  --color-code-bg: var(--bg-sunken);
+  --color-thinking-bg: var(--bg-sunken);
 
   /* New design-system colors exposed as Tailwind classes */
   --color-bg-elevated: var(--bg-elevated);

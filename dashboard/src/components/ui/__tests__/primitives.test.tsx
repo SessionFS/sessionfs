@@ -220,6 +220,16 @@ describe('Tabs', () => {
     await userEvent.click(screen.getByRole('tab', { name: 'Tab Two' }));
     expect(onChange).toHaveBeenCalledWith('two');
   });
+
+  it('bare mode renders tab bar only, no tabpanel', () => {
+    render(<Tabs tabs={tabs} activeKey="one" onChange={vi.fn()} bare />);
+    expect(screen.getByRole('tab', { name: 'Tab One' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Tab Two' })).toBeInTheDocument();
+    // tabpanel should NOT be rendered
+    expect(screen.queryByRole('tabpanel')).not.toBeInTheDocument();
+    // content should NOT be rendered
+    expect(screen.queryByText('Content 1')).not.toBeInTheDocument();
+  });
 });
 
 // ── Table ──
@@ -284,7 +294,25 @@ describe('Dropdown', () => {
     expect(fn).toHaveBeenCalledWith('edit');
   });
 
-  it('closes on Escape', async () => {
+  it('renders separator items as dividers, not buttons', async () => {
+    const itemsWithSep = [
+      { key: 'edit', label: 'Edit' },
+      { key: 'sep', label: '', separator: true },
+      { key: 'delete', label: 'Delete', danger: true },
+    ];
+    render(
+      <Dropdown trigger={<button>Menu</button>} items={itemsWithSep} onSelect={vi.fn()} menuLabel="Actions" />,
+    );
+    await userEvent.click(screen.getByText('Menu'));
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+    // Separator should NOT be a menuitem
+    expect(screen.queryByRole('menuitem', { name: '' })).not.toBeInTheDocument();
+    // Other items still present
+    expect(screen.getByRole('menuitem', { name: 'Edit' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Delete' })).toBeInTheDocument();
+  });
+
+  it('closes on Escape (Dropdown)', async () => {
     render(
       <Dropdown trigger={<button>Menu</button>} items={items} onSelect={vi.fn()} menuLabel="Actions" />,
     );

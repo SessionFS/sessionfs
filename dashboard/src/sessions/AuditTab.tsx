@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo } from 'react';
+import { useState, useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
 import { useAudit } from '../hooks/useAudit';
@@ -11,6 +11,9 @@ import {
   downloadFile,
 } from '../utils/auditExport';
 import { useToast } from '../hooks/useToast';
+import { Button } from '../components/ui/Button';
+import { Card } from '../components/ui/Card';
+import { Dropdown } from '../components/ui/Dropdown';
 
 interface Props {
   sessionId: string;
@@ -71,12 +74,13 @@ export default function AuditTab({ sessionId, messageCount, sessionTitle, onJump
           <p className="text-text-muted text-xs mb-4">
             Estimated time: ~{estimatedSeconds}s ({messageCount} messages)
           </p>
-          <button
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={() => queryClient.invalidateQueries({ queryKey: ['audit', sessionId] })}
-            className="px-4 py-2 text-sm border border-border text-text-secondary rounded hover:bg-bg-tertiary transition-colors"
           >
             Refresh
-          </button>
+          </Button>
         </div>
       </div>
     );
@@ -85,20 +89,18 @@ export default function AuditTab({ sessionId, messageCount, sessionTitle, onJump
   if (!isLoading && (is404 || (!report && !error))) {
     return (
       <div className="flex flex-col items-center justify-center py-16">
-        <p className="text-text-secondary mb-2">No audit has been run for this session.</p>
-        <p className="text-text-muted text-sm mb-6">
+        <svg className="w-10 h-10 text-[var(--text-tertiary)] mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M9 12l2 2 4-4m6 2a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" />
+        </svg>
+        <p className="text-[15px] font-semibold text-[var(--text-primary)] mb-1">No audit yet</p>
+        <p className="text-[13px] text-[var(--text-tertiary)] mb-4">
           Auditing evaluates factual claims in the conversation against tool output evidence.
         </p>
-        <button
-          onClick={() => setShowModal(true)}
-          className="px-4 py-2 text-sm bg-accent text-white rounded hover:bg-accent/90 transition-colors"
-        >
+        <Button onClick={() => setShowModal(true)}>
           Run Audit
-        </button>
-        {showModal && (
-          <AuditModal sessionTitle={sessionTitle} sessionId={sessionId} messageCount={messageCount}
-            onClose={() => setShowModal(false)} onComplete={() => { setShowModal(false); addToast('info', 'Audit started'); }} />
-        )}
+        </Button>
+        <AuditModal open={showModal} sessionTitle={sessionTitle} sessionId={sessionId} messageCount={messageCount}
+          onClose={() => setShowModal(false)} onComplete={() => { setShowModal(false); addToast('info', 'Audit started'); }} />
       </div>
     );
   }
@@ -251,10 +253,9 @@ function AuditReportView({
           <span className="px-2 py-0.5 text-xs rounded-full bg-green-500/20 text-green-400">{verified.length} verified</span>
         )}
         <div className="flex-1" />
-        <button onClick={() => setShowModal(true)}
-          className="px-3 py-1.5 text-sm border border-border text-text-secondary rounded hover:bg-bg-tertiary transition-colors">
+        <Button variant="secondary" size="sm" onClick={() => setShowModal(true)}>
           Re-audit
-        </button>
+        </Button>
         <DownloadDropdown report={report} sessionTitle={sessionTitle} />
       </div>
 
@@ -338,10 +339,8 @@ function AuditReportView({
       {/* History */}
       <AuditHistory sessionId={sessionId} />
 
-      {showModal && (
-        <AuditModal sessionTitle={sessionTitle} sessionId={sessionId} messageCount={messageCount}
-          onClose={() => setShowModal(false)} onComplete={() => { setShowModal(false); addToast('info', 'Audit started'); }} />
-      )}
+      <AuditModal open={showModal} sessionTitle={sessionTitle} sessionId={sessionId} messageCount={messageCount}
+        onClose={() => setShowModal(false)} onComplete={() => { setShowModal(false); addToast('info', 'Audit started'); }} />
     </div>
   );
 }
@@ -584,10 +583,10 @@ function FindingCard({
 
 function MetricCard({ label, value, color }: { label: string; value: string; color: string }) {
   return (
-    <div className="bg-bg-secondary border border-border rounded-lg p-3 text-center">
+    <Card className="p-3 text-center">
       <div className={`text-3xl font-bold tabular-nums ${color}`}>{value}</div>
-      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--text-tertiary)] mt-0.5">{label}</div>
-    </div>
+      <div className="text-micro text-[var(--text-tertiary)] uppercase mt-0.5">{label}</div>
+    </Card>
   );
 }
 
@@ -652,42 +651,33 @@ function AuditHistory({ sessionId }: { sessionId: string }) {
 
 
 function DownloadDropdown({ report, sessionTitle }: { report: AuditReport; sessionTitle?: string }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function handleClick(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    }
-    if (open) document.addEventListener('mousedown', handleClick);
-    return () => document.removeEventListener('mousedown', handleClick);
-  }, [open]);
-
   const base = `audit-${report.session_id.slice(0, 12)}`;
 
-  function handleDownload(format: 'json' | 'md' | 'csv') {
-    setOpen(false);
-    if (format === 'json') downloadFile(exportAuditJson(report), `${base}.json`, 'application/json');
-    else if (format === 'md') downloadFile(exportAuditMarkdown(report, sessionTitle), `${base}.md`, 'text/markdown');
+  const items = useMemo(() => [
+    { key: 'json', label: 'JSON' },
+    { key: 'md', label: 'Markdown' },
+    { key: 'csv', label: 'CSV' },
+  ], []);
+
+  function handleSelect(key: string) {
+    if (key === 'json') downloadFile(exportAuditJson(report), `${base}.json`, 'application/json');
+    else if (key === 'md') downloadFile(exportAuditMarkdown(report, sessionTitle), `${base}.md`, 'text/markdown');
     else downloadFile(exportAuditCsv(report), `${base}.csv`, 'text/csv');
   }
 
   return (
-    <div className="relative" ref={ref}>
-      <button onClick={() => setOpen(!open)}
-        className="px-3 py-1.5 text-sm border border-border text-text-secondary rounded hover:bg-bg-tertiary transition-colors inline-flex items-center gap-1">
-        Export
-        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-        </svg>
-      </button>
-      {open && (
-        <div className="absolute top-full left-0 mt-1 bg-bg-secondary border border-border rounded-lg shadow-lg z-10 min-w-[120px]">
-          <button onClick={() => handleDownload('json')} className="w-full text-left px-3 py-2 text-sm text-text-secondary hover:bg-bg-tertiary rounded-t-lg">JSON</button>
-          <button onClick={() => handleDownload('md')} className="w-full text-left px-3 py-2 text-sm text-text-secondary hover:bg-bg-tertiary">Markdown</button>
-          <button onClick={() => handleDownload('csv')} className="w-full text-left px-3 py-2 text-sm text-text-secondary hover:bg-bg-tertiary rounded-b-lg">CSV</button>
-        </div>
-      )}
-    </div>
+    <Dropdown
+      trigger={
+        <button className="px-3 py-1.5 text-sm border border-[var(--border)] text-[var(--text-secondary)] rounded hover:bg-[var(--bg-tertiary)] transition-colors inline-flex items-center gap-1">
+          Export
+          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+      }
+      items={items}
+      onSelect={handleSelect}
+      menuLabel="Export format"
+    />
   );
 }

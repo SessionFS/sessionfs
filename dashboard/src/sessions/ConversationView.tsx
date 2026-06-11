@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useMessages } from '../hooks/useMessages';
 import MessageBlock from './MessageBlock';
+import { Button } from '../components/ui/Button';
 
 const PAGE_SIZE = 50;
 
@@ -61,19 +62,21 @@ export default function ConversationView({ sessionId, initialPage }: Props) {
       {/* Order toggle + pagination */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <button
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={() => { setOrder(o => o === 'newest' ? 'oldest' : 'newest'); setPage(1); }}
-            className="text-[13px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] px-3 py-1.5 border border-[var(--border)] rounded-lg transition-colors"
           >
             {order === 'newest' ? 'Newest first' : 'Oldest first'}
-          </button>
+          </Button>
           {order === 'oldest' && totalPages > 1 && (
-            <button
+            <Button
+              variant="ghost"
+              size="sm"
               onClick={() => setPage(totalPages)}
-              className="text-[13px] text-[var(--brand)] hover:underline"
             >
               Jump to latest →
-            </button>
+            </Button>
           )}
         </div>
         <span className="text-[13px] text-[var(--text-tertiary)]">
@@ -85,7 +88,13 @@ export default function ConversationView({ sessionId, initialPage }: Props) {
       )}
 
       {messages.length === 0 && !isLoading && (
-        <p className="text-text-muted text-sm">No messages in this session.</p>
+        <div className="flex flex-col items-center justify-center py-16">
+          <svg className="w-10 h-10 text-[var(--text-tertiary)] mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+          </svg>
+          <p className="text-[15px] font-semibold text-[var(--text-primary)] mb-1">No messages yet</p>
+          <p className="text-[13px] text-[var(--text-tertiary)]">This session contains no messages.</p>
+        </div>
       )}
 
       {isLoading && messages.length === 0 && (

@@ -203,7 +203,7 @@ describe('SessionDetail', () => {
     renderPage();
     const user = userEvent.setup();
 
-    await user.click(screen.getByRole('button', { name: /^summary$/i }));
+    await user.click(screen.getByRole('tab', { name: /summary/i }));
 
     await waitFor(() => {
       expect(screen.getByTestId('summary-tab')).toBeInTheDocument();
@@ -221,7 +221,7 @@ describe('SessionDetail', () => {
     renderPage();
     const user = userEvent.setup();
 
-    await user.click(screen.getByRole('button', { name: /^audit$/i }));
+    await user.click(screen.getByRole('tab', { name: /audit/i }));
 
     await waitFor(() => {
       expect(screen.getByTestId('audit-tab')).toBeInTheDocument();

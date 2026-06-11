@@ -3,20 +3,23 @@ import type { ReactNode } from 'react';
 interface Tab {
   key: string;
   label: string;
-  content: ReactNode;
+  content?: ReactNode;
 }
 
 interface TabsProps {
   tabs: Tab[];
   activeKey: string;
   onChange: (key: string) => void;
+  /** Render only the tab bar, no content panel. Use when content lives in a
+   *  separate scrollable container (e.g. SessionDetail's flex-1 overflow). */
+  bare?: boolean;
 }
 
 /**
  * Pill-style tabs matching the Phase 1b nav pattern:
  * active tab = --surface pill + hairline border, inactive = transparent.
  */
-export function Tabs({ tabs, activeKey, onChange }: TabsProps) {
+export function Tabs({ tabs, activeKey, onChange, bare = false }: TabsProps) {
   return (
     <div>
       <div className="flex gap-1 border-b border-[var(--border)] pb-0" role="tablist">
@@ -39,9 +42,11 @@ export function Tabs({ tabs, activeKey, onChange }: TabsProps) {
           );
         })}
       </div>
-      <div className="pt-4" role="tabpanel">
-        {tabs.find((t) => t.key === activeKey)?.content}
-      </div>
+      {!bare && (
+        <div className="pt-4" role="tabpanel">
+          {tabs.find((t) => t.key === activeKey)?.content}
+        </div>
+      )}
     </div>
   );
 }

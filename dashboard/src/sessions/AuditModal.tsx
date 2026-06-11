@@ -2,6 +2,10 @@ import { useState, useMemo, useEffect } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { useJudgeSettings } from '../hooks/useJudgeSettings';
 import { useBackgroundTasks } from '../components/BackgroundTasks';
+import { Dialog, DialogHeader, DialogFooter } from '../components/ui/Dialog';
+import { Button } from '../components/ui/Button';
+import { Input } from '../components/ui/Input';
+import { Select } from '../components/ui';
 
 const PROVIDERS = [
   { value: 'openrouter', label: 'OpenRouter' },
@@ -40,6 +44,7 @@ const PROVIDER_MODELS: Record<string, { value: string; label: string }[]> = {
 };
 
 interface Props {
+  open: boolean;
   sessionId: string;
   sessionTitle?: string;
   messageCount: number;
@@ -47,7 +52,7 @@ interface Props {
   onComplete: () => void;
 }
 
-export default function AuditModal({ sessionId, sessionTitle, messageCount, onClose, onComplete }: Props) {
+export default function AuditModal({ open, sessionId, sessionTitle, messageCount, onClose, onComplete }: Props) {
   const { auth } = useAuth();
   const { data: savedSettings } = useJudgeSettings();
   const [provider, setProvider] = useState('anthropic');
@@ -147,176 +152,169 @@ export default function AuditModal({ sessionId, sessionTitle, messageCount, onCl
     }
   }
 
+  const providerOptions = PROVIDERS.map((p) => ({ value: p.value, label: p.label }));
+
+  const modelSelectOptions = useMemo(() => {
+    if (hasBaseUrl && discoveredModels.length > 0) {
+      return discoveredModels.map((m) => ({
+        value: m.id,
+        label: m.id + (m.owned_by ? ` (${m.owned_by})` : ''),
+      }));
+    }
+    return models.map((m) => ({ value: m.value, label: m.label }));
+  }, [hasBaseUrl, discoveredModels, models]);
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="bg-bg-secondary border border-border rounded-lg w-full max-w-md mx-4 shadow-xl max-h-[90vh] overflow-y-auto">
-        <form onSubmit={handleSubmit}>
-          <div className="p-5">
-            <h2 className="text-base font-medium text-text-primary mb-4">Run Audit</h2>
+    <Dialog open={open} onClose={onClose} titleId="audit-modal-title">
+      <DialogHeader titleId="audit-modal-title">Run Audit</DialogHeader>
 
-            <label className="block text-sm text-text-muted mb-1">Provider</label>
-            <select
-              value={provider}
-              onChange={(e) => handleProviderChange(e.target.value)}
-              className="w-full mb-3 px-2 py-1.5 bg-bg-primary border border-border rounded text-sm text-text-secondary focus:outline-none focus:border-accent"
-            >
-              {PROVIDERS.map((p) => (
-                <option key={p.value} value={p.value}>{p.label}</option>
-              ))}
-            </select>
+      <form onSubmit={handleSubmit} className="space-y-3">
+        <Select
+          title="Provider"
+          value={provider}
+          onChange={(e: React.ChangeEvent<HTMLSelectElement>) => handleProviderChange(e.target.value)}
+          options={providerOptions}
+        />
 
-            <label className="block text-sm text-text-muted mb-1">
-              Model
-              {discovering && <span className="text-text-muted/50 ml-2">discovering...</span>}
-            </label>
-            {hasBaseUrl && discoveredModels.length > 0 ? (
-              <select
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                className="w-full mb-3 px-2 py-1.5 bg-bg-primary border border-border rounded text-sm text-text-secondary focus:outline-none focus:border-accent font-mono"
-              >
-                <option value="">Select a model...</option>
-                {discoveredModels.map((m) => (
-                  <option key={m.id} value={m.id}>{m.id}{m.owned_by ? ` (${m.owned_by})` : ''}</option>
-                ))}
-              </select>
-            ) : hasBaseUrl ? (
-              <input
-                type="text"
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                placeholder="model-name"
-                className="w-full mb-3 px-2 py-1.5 bg-bg-primary border border-border rounded text-sm text-text-secondary placeholder:text-text-muted/50 focus:outline-none focus:border-accent font-mono"
+        <div>
+          <label className="block text-[13px] font-medium text-[var(--text-secondary)] mb-1">
+            Model
+            {discovering && <span className="text-[var(--text-tertiary)] ml-2">discovering...</span>}
+          </label>
+          {hasBaseUrl && discoveredModels.length > 0 ? (
+            <Select
+              value={model}
+              onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setModel(e.target.value)}
+              options={[{ value: '', label: 'Select a model...' }, ...modelSelectOptions]}
+            />
+          ) : hasBaseUrl ? (
+            <Input
+              type="text"
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              placeholder="model-name"
+            />
+          ) : (
+            <>
+              <Select
+                value={models.some((m) => m.value === model) ? model : '__custom__'}
+                onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
+                  if (e.target.value === '__custom__') setModel('');
+                  else setModel(e.target.value);
+                }}
+                options={[...models.map((m) => ({ value: m.value, label: m.label }))]}
               />
-            ) : (
-              <>
-                <select
-                  value={models.some(m => m.value === model) ? model : '__custom__'}
-                  onChange={(e) => {
-                    if (e.target.value === '__custom__') setModel('');
-                    else setModel(e.target.value);
-                  }}
-                  className="w-full mb-1.5 px-2 py-1.5 bg-bg-primary border border-border rounded text-sm text-text-secondary focus:outline-none focus:border-accent"
-                >
-                  {models.map((m) => (
-                    <option key={m.value} value={m.value}>{m.label}</option>
-                  ))}
-                  {isOpenRouter && <option value="__custom__">Custom model ID...</option>}
-                </select>
-                {isOpenRouter && !models.some(m => m.value === model) && (
-                  <input
-                    type="text"
-                    value={model}
-                    onChange={(e) => setModel(e.target.value)}
-                    placeholder="provider/model-name"
-                    className="w-full mb-1.5 px-2 py-1.5 bg-bg-primary border border-border rounded text-sm text-text-secondary placeholder:text-text-muted/50 focus:outline-none focus:border-accent font-mono"
-                  />
-                )}
-                <div className="mb-3" />
-              </>
-            )}
-
-            <label className="block text-sm text-text-muted mb-1">API Key</label>
-            {hasSavedKey && (
-              <div className="flex items-center gap-2 mb-2">
-                <label className="flex items-center gap-1.5 text-sm text-text-secondary cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={useSavedKey}
-                    onChange={(e) => setUseSavedKey(e.target.checked)}
-                    className="rounded border-border"
-                  />
-                  Use saved API key
-                </label>
-                <span className="text-sm text-green-400">Key saved</span>
-              </div>
-            )}
-            {(!hasSavedKey || !useSavedKey) && (
-              <input
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder={hasBaseUrl ? 'Optional for local endpoints' : keyPlaceholder}
-                required={!hasSavedKey && !hasBaseUrl}
-                className="w-full mb-3 px-2 py-1.5 bg-bg-primary border border-border rounded text-sm text-text-secondary placeholder:text-text-muted/50 focus:outline-none focus:border-accent font-mono"
-              />
-            )}
-            {hasSavedKey && useSavedKey && (
-              <input
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder="Override with one-time key (optional)"
-                className="w-full mb-3 px-2 py-1.5 bg-bg-primary border border-border rounded text-sm text-text-secondary placeholder:text-text-muted/50 focus:outline-none focus:border-accent font-mono"
-              />
-            )}
-
-            <label className="block text-sm text-text-muted mb-1">
-              Base URL <span className="text-text-muted/50">(optional)</span>
-            </label>
-            <div className="flex gap-2 mb-1">
-              <input
-                type="text"
-                value={baseUrl}
-                onChange={(e) => { setBaseUrl(e.target.value); setTestStatus('idle'); }}
-                placeholder="https://litellm.company.internal/v1"
-                className="flex-1 px-2 py-1.5 bg-bg-primary border border-border rounded text-sm text-text-secondary placeholder:text-text-muted/50 focus:outline-none focus:border-accent font-mono"
-              />
-              {baseUrl && (
-                <button
-                  type="button"
-                  onClick={handleTestConnection}
-                  disabled={testStatus === 'testing'}
-                  className="px-2 py-1.5 text-xs border border-border rounded hover:bg-bg-tertiary transition-colors whitespace-nowrap"
-                >
-                  {testStatus === 'testing' ? 'Testing...' :
-                   testStatus === 'ok' ? 'Connected' :
-                   testStatus === 'fail' ? 'Failed' : 'Test'}
-                </button>
+              {isOpenRouter && !models.some((m) => m.value === model) && (
+                <Input
+                  type="text"
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                  placeholder="provider/model-name"
+                  className="mt-1.5"
+                />
               )}
-            </div>
-            {testStatus === 'ok' && <p className="text-xs text-green-400 mb-3">Connection successful ({discoveredModels.length} models found)</p>}
-            {testStatus === 'fail' && <p className="text-xs text-red-400 mb-3">Connection failed — check URL and API key</p>}
-            {!baseUrl && <p className="text-xs text-text-muted/50 mb-3">Leave blank for provider default. Set for LiteLLM, vLLM, Ollama.</p>}
+            </>
+          )}
+        </div>
 
-            <div className="text-sm text-text-muted mb-3">
-              Estimated cost: ~${estimatedCost} ({messageCount} messages)
+        <div>
+          <label className="block text-[13px] font-medium text-[var(--text-secondary)] mb-1">API Key</label>
+          {hasSavedKey && (
+            <div className="flex items-center gap-2 mb-2">
+              <label className="flex items-center gap-1.5 text-sm text-[var(--text-secondary)] cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={useSavedKey}
+                  onChange={(e) => setUseSavedKey(e.target.checked)}
+                  className="rounded border-[var(--border)]"
+                />
+                Use saved API key
+              </label>
+              <span className="text-sm text-green-400">Key saved</span>
             </div>
+          )}
+          {(!hasSavedKey || !useSavedKey) && (
+            <Input
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder={hasBaseUrl ? 'Optional for local endpoints' : keyPlaceholder}
+              required={!hasSavedKey && !hasBaseUrl}
+            />
+          )}
+          {hasSavedKey && useSavedKey && (
+            <Input
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder="Override with one-time key (optional)"
+              className="mt-2"
+            />
+          )}
+        </div>
 
-            <div className="text-sm text-text-muted/70 bg-bg-primary border border-border rounded px-3 py-2 mb-3">
-              {hasSavedKey && useSavedKey && !apiKey
-                ? 'Using your saved API key from Settings.'
-                : hasBaseUrl && !apiKey
-                ? 'Using custom endpoint (no API key required for local endpoints).'
-                : 'Your API key is used for this request only and is never stored.'}
-            </div>
-
-            {!!error && (
-              <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded px-3 py-2 mb-3">
-                {error}
-              </div>
+        <div>
+          <label className="block text-[13px] font-medium text-[var(--text-secondary)] mb-1">
+            Base URL <span className="text-[var(--text-tertiary)]">(optional)</span>
+          </label>
+          <div className="flex gap-2 mb-1">
+            <Input
+              type="text"
+              value={baseUrl}
+              onChange={(e) => { setBaseUrl(e.target.value); setTestStatus('idle'); }}
+              placeholder="https://litellm.company.internal/v1"
+              className="flex-1"
+            />
+            {baseUrl && (
+              <button
+                type="button"
+                onClick={handleTestConnection}
+                disabled={testStatus === 'testing'}
+                className="px-2 py-1.5 text-xs border border-[var(--border)] rounded hover:bg-[var(--bg-tertiary)] transition-colors whitespace-nowrap text-[var(--text-secondary)]"
+              >
+                {testStatus === 'testing' ? 'Testing...' :
+                 testStatus === 'ok' ? 'Connected' :
+                 testStatus === 'fail' ? 'Failed' : 'Test'}
+              </button>
             )}
           </div>
+          {testStatus === 'ok' && <p className="text-xs text-green-400 mb-3">Connection successful ({discoveredModels.length} models found)</p>}
+          {testStatus === 'fail' && <p className="text-xs text-[var(--danger)] mb-3">Connection failed — check URL and API key</p>}
+          {!baseUrl && <p className="text-xs text-[var(--text-tertiary)] mb-1">Leave blank for provider default. Set for LiteLLM, vLLM, Ollama.</p>}
+        </div>
 
-          <div className="flex justify-end gap-2 px-5 py-3 border-t border-border">
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={submitting}
-              className="px-3 py-1.5 text-sm text-text-secondary border border-border rounded hover:bg-bg-tertiary transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={!canSubmit || submitting}
-              className="px-3 py-1.5 text-sm bg-accent text-white rounded hover:bg-accent/90 transition-colors disabled:opacity-50"
-            >
-              {submitting ? 'Running...' : 'Run Audit'}
-            </button>
+        <div className="text-sm text-[var(--text-tertiary)]">
+          Estimated cost: ~${estimatedCost} ({messageCount} messages)
+        </div>
+
+        <div className="text-sm text-[var(--text-tertiary)] bg-[var(--bg-sunken)] border border-[var(--border)] rounded-lg px-3 py-2">
+          {hasSavedKey && useSavedKey && !apiKey
+            ? 'Using your saved API key from Settings.'
+            : hasBaseUrl && !apiKey
+            ? 'Using custom endpoint (no API key required for local endpoints).'
+            : 'Your API key is used for this request only and is never stored.'}
+        </div>
+
+        {!!error && (
+          <div className="text-sm text-[var(--danger)] bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">
+            {error}
           </div>
-        </form>
-      </div>
-    </div>
+        )}
+      </form>
+
+      <DialogFooter>
+        <Button variant="secondary" onClick={onClose} disabled={submitting}>
+          Cancel
+        </Button>
+        <Button
+          type="submit"
+          onClick={handleSubmit}
+          disabled={!canSubmit || submitting}
+          loading={submitting}
+        >
+          {submitting ? 'Running...' : 'Run Audit'}
+        </Button>
+      </DialogFooter>
+    </Dialog>
   );
 }

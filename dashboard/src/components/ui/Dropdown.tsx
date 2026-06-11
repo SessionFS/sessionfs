@@ -7,6 +7,8 @@ interface DropdownItem {
   icon?: ReactNode;
   danger?: boolean;
   disabled?: boolean;
+  /** Render a hairline separator instead of a menu item. */
+  separator?: boolean;
 }
 
 interface DropdownProps {
@@ -44,7 +46,7 @@ export function Dropdown({ trigger, items, onSelect, menuLabel }: DropdownProps)
   useEffect(() => {
     if (!open) return;
     function handleKey(e: KeyboardEvent) {
-      const enabled = items.filter((i) => !i.disabled);
+      const enabled = items.filter((i) => !i.disabled && !i.separator);
       switch (e.key) {
         case 'Escape':
           e.preventDefault();
@@ -97,33 +99,43 @@ export function Dropdown({ trigger, items, onSelect, menuLabel }: DropdownProps)
           }}
         >
           <ul ref={listRef} role="menu" aria-label={menuLabel}>
-            {items.map((item, i) => (
-              <li key={item.key} role="none">
-                <button
-                  role="menuitem"
-                  disabled={item.disabled}
-                  data-dropdown-index={i}
-                  onClick={() => {
-                    if (!item.disabled) {
-                      onSelect(item.key);
-                      close();
-                    }
-                  }}
-                  className={`w-full text-left px-3 py-1.5 text-[13px] flex items-center gap-2 transition-colors duration-150 ${
-                    item.disabled
-                      ? 'text-[var(--text-tertiary)] cursor-not-allowed opacity-50'
-                      : i === activeIndex
-                        ? 'bg-[var(--surface-active)] text-[var(--text-primary)]'
-                        : item.danger
-                          ? 'text-[var(--danger)] hover:bg-[var(--surface-hover)]'
-                          : 'text-[var(--text-secondary)] hover:bg-[var(--surface-hover)]'
-                  }`}
-                >
-                  {item.icon}
-                  {item.label}
-                </button>
-              </li>
-            ))}
+            {items.map((item, i) => {
+              if (item.separator) {
+                return (
+                  <li key={item.key} role="none">
+                    <div className="border-t border-[var(--border)] my-1" />
+                  </li>
+                );
+              }
+              const enabledIdx = items.filter((it, idx) => idx < i && !it.disabled && !it.separator).length;
+              return (
+                <li key={item.key} role="none">
+                  <button
+                    role="menuitem"
+                    disabled={item.disabled}
+                    data-dropdown-index={enabledIdx}
+                    onClick={() => {
+                      if (!item.disabled) {
+                        onSelect(item.key);
+                        close();
+                      }
+                    }}
+                    className={`w-full text-left px-3 py-1.5 text-[13px] flex items-center gap-2 transition-colors duration-150 ${
+                      item.disabled
+                        ? 'text-[var(--text-tertiary)] cursor-not-allowed opacity-50'
+                        : enabledIdx === activeIndex
+                          ? 'bg-[var(--surface-active)] text-[var(--text-primary)]'
+                          : item.danger
+                            ? 'text-[var(--danger)] hover:bg-[var(--surface-hover)]'
+                            : 'text-[var(--text-secondary)] hover:bg-[var(--surface-hover)]'
+                    }`}
+                  >
+                    {item.icon}
+                    {item.label}
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}

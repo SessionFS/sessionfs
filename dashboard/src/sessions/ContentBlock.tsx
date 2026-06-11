@@ -10,7 +10,7 @@ export default function ContentBlock({ block }: BlockProps) {
 
   if (type === 'text') {
     return (
-      <div className="prose prose-invert prose-sm max-w-none [&_pre]:bg-code-bg [&_pre]:border [&_pre]:border-border [&_pre]:rounded [&_code]:text-sm">
+      <div className="prose prose-invert prose-sm max-w-none [&_pre]:bg-[var(--bg-sunken)] [&_pre]:border [&_pre]:border-[var(--border)] [&_pre]:rounded-lg [&_code]:text-sm">
         <Markdown>{String(block.text || '')}</Markdown>
       </div>
     );
@@ -51,7 +51,7 @@ export default function ContentBlock({ block }: BlockProps) {
   }
 
   return (
-    <pre className="text-sm text-[var(--text-tertiary)] bg-[var(--bg-secondary)] p-2 rounded overflow-x-auto">
+    <pre className="text-sm text-[var(--text-tertiary)] bg-[var(--bg-sunken)] border border-[var(--border)] p-2 rounded-lg overflow-x-auto">
       {JSON.stringify(block, null, 2)}
     </pre>
   );
@@ -73,7 +73,7 @@ function ToolUseBlock({ block }: BlockProps) {
         <span className="font-mono text-sm text-[var(--text-secondary)]">Tool: {name}</span>
       </button>
       {open && inputStr && (
-        <pre className="mt-1 bg-[var(--bg-tertiary)] rounded-lg p-3 font-mono text-xs text-[var(--text-secondary)] overflow-x-auto whitespace-pre-wrap">
+        <pre className="mt-1 bg-[var(--bg-sunken)] border border-[var(--border)] rounded-lg p-3 font-mono text-xs text-[var(--text-secondary)] overflow-x-auto whitespace-pre-wrap">
           {inputStr}
         </pre>
       )}
@@ -96,7 +96,7 @@ function ToolResultBlock({ block }: BlockProps) {
         <span className="font-mono text-xs text-[var(--text-tertiary)]">Result ({String(lines.length)} lines)</span>
       </button>
       {open && (
-        <pre className="mt-1 bg-[var(--bg-tertiary)] rounded-lg p-3 font-mono text-xs text-[var(--text-tertiary)] overflow-x-auto whitespace-pre-wrap max-h-96 overflow-y-auto">
+        <pre className="mt-1 bg-[var(--bg-sunken)] border border-[var(--border)] rounded-lg p-3 font-mono text-xs text-[var(--text-tertiary)] overflow-x-auto whitespace-pre-wrap max-h-96 overflow-y-auto">
           {content}
         </pre>
       )}
@@ -107,7 +107,7 @@ function ToolResultBlock({ block }: BlockProps) {
 function ThinkingBlock({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="rounded-lg bg-thinking-bg border border-[var(--border)]">
+    <div className="rounded-lg bg-[var(--bg-sunken)] border border-[var(--border)]">
       <button
         onClick={() => setOpen(!open)}
         className="w-full px-3 py-1.5 text-left text-sm text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors flex items-center gap-2"

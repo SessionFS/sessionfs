@@ -30,11 +30,13 @@ export default function MessageBlock({ message }: MessageProps) {
   }
 
   const isUser = role === 'user';
+  const isTool = role === 'tool';
   const badgeStyle = ROLE_BADGE_STYLES[role] || 'border border-[var(--text-tertiary)] text-[var(--text-tertiary)] bg-transparent';
   const borderClass = isUser ? 'border-l-[3px] border-l-[var(--brand)] pl-4' : '';
+  const bgClass = isTool ? 'bg-[var(--bg-sunken)]' : 'bg-[var(--surface)]';
 
   return (
-    <div className={`${borderClass} py-2`}>
+    <div className={`${borderClass} ${bgClass} rounded-lg p-3`}>
       <div className="flex items-center justify-between mb-1">
         <div className="flex items-center gap-2">
           <span className={`text-xs font-medium rounded-full px-2 py-0.5 ${badgeStyle}`}>

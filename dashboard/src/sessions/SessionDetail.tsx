@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useSession } from '../hooks/useSession';
 import { useMessages } from '../hooks/useMessages';
@@ -20,8 +20,18 @@ import type { DeleteScope } from './DeleteScopeDialog';
 import { useDeleteSession } from '../hooks/useSessions';
 import { useToast } from '../hooks/useToast';
 import { TOOL_COLORS } from '../utils/tools';
+import { Button } from '../components/ui/Button';
+import { Card } from '../components/ui/Card';
+import { Tabs } from '../components/ui/Tabs';
+import { Dropdown } from '../components/ui/Dropdown';
 
 type Tab = 'messages' | 'summary' | 'audit';
+
+const TAB_DEFS: Array<{ key: Tab; label: string }> = [
+  { key: 'messages', label: 'Messages' },
+  { key: 'summary', label: 'Summary' },
+  { key: 'audit', label: 'Audit' },
+];
 
 export default function SessionDetail() {
   const { id } = useParams<{ id: string }>();
@@ -37,7 +47,6 @@ export default function SessionDetail() {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>('messages');
   const [jumpToPage, setJumpToPage] = useState<number | undefined>(undefined);
-  const [showMoreMenu, setShowMoreMenu] = useState(false);
   const deleteSession = useDeleteSession();
   const { addToast } = useToast();
 
@@ -129,7 +138,37 @@ export default function SessionDetail() {
         : `${(session.duration_ms / 1000).toFixed(0)}s`
     : null;
 
-  const toolColor = TOOL_COLORS[session.source_tool] || '#6B7280';
+  const toolColor = TOOL_COLORS[session.source_tool] || 'var(--text-tertiary)';
+
+  // More-menu: resume command + items
+  const captureOnly = ['cursor', 'cline', 'roo-code', 'amp'].includes(session.source_tool);
+  const resumeTool = captureOnly ? 'claude-code' : session.source_tool;
+  const resumeCmd = `sfs resume ${session.id} --in ${resumeTool}`;
+
+  const moreMenuItems = useMemo(() => [
+    { key: 'resume', label: `Resume in ${fullToolName(resumeTool)}` },
+    { key: 'audit', label: 'Run Audit' },
+    { key: 'rename', label: 'Rename (Title & Alias)' },
+    { key: 'sep', label: '', separator: true as const },
+    { key: 'delete', label: 'Delete Session', danger: true as const },
+  ], [resumeTool]);
+
+  function handleMoreSelect(key: string) {
+    switch (key) {
+      case 'resume':
+        navigator.clipboard.writeText(resumeCmd);
+        break;
+      case 'audit':
+        setShowAuditModal(true);
+        break;
+      case 'rename':
+        handleMetaEdit();
+        break;
+      case 'delete':
+        setShowDeleteDialog(true);
+        break;
+    }
+  }
 
   // Quick preview data
   const previewData = (() => {
@@ -168,56 +207,38 @@ export default function SessionDetail() {
         </button>
       </div>
 
-      {/* Header card */}
-      <div className="mx-4 mt-2 bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-sm)]">
-        {/* Top row: tool + actions */}
+      {/* Header card — tool-colored left edge per Phase 1b card pattern */}
+      <Card level="elevated" toolEdge={toolColor} className="mx-4 mt-2">
+        {/* Top row: tool name + actions */}
         <div className="px-5 pt-4 flex items-start justify-between">
           <div className="flex items-center gap-3">
-            <span
-              className="w-6 h-6 rounded-full shrink-0"
-              style={{ backgroundColor: toolColor }}
-            />
             <span className="text-base font-semibold text-[var(--text-primary)]">
               {fullToolName(session.source_tool)}
             </span>
             {session.alias && (
-              <span className="text-sm text-purple-400 font-mono">
+              <span className="text-sm text-[var(--brand)] font-mono">
                 {session.alias}
               </span>
             )}
           </div>
           <div className="flex items-center gap-2">
-            <button
-              onClick={() => setShowHandoff(true)}
-              className="px-5 py-2.5 text-sm font-semibold bg-[var(--brand)] text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors"
-            >
+            <Button onClick={() => setShowHandoff(true)} size="sm">
               Hand Off
-            </button>
-            <div className="relative">
-              <button
-                onClick={() => setShowMoreMenu(!showMoreMenu)}
-                className="p-1.5 text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] rounded-lg transition-colors"
-              >
-                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
-                  <circle cx="12" cy="5" r="2" />
-                  <circle cx="12" cy="12" r="2" />
-                  <circle cx="12" cy="19" r="2" />
-                </svg>
-              </button>
-              {showMoreMenu && (
-                <MoreMenu
-                  sessionId={session.id}
-                  sourceTool={session.source_tool}
-                  onRunAudit={() => { setShowMoreMenu(false); setShowAuditModal(true); }}
-                  onEditMeta={() => { setShowMoreMenu(false); handleMetaEdit(); }}
-                  onDelete={() => {
-                    setShowMoreMenu(false);
-                    setShowDeleteDialog(true);
-                  }}
-                  onClose={() => setShowMoreMenu(false)}
-                />
-              )}
-            </div>
+            </Button>
+            <Dropdown
+              trigger={
+                <button className="p-1.5 text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] rounded-lg transition-colors" aria-label="Session actions">
+                  <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
+                    <circle cx="12" cy="5" r="2" />
+                    <circle cx="12" cy="12" r="2" />
+                    <circle cx="12" cy="19" r="2" />
+                  </svg>
+                </button>
+              }
+              items={moreMenuItems}
+              onSelect={handleMoreSelect}
+              menuLabel="Session actions"
+            />
           </div>
         </div>
 
@@ -226,7 +247,7 @@ export default function SessionDetail() {
           <div className="px-5 mt-2">
             <div className="flex items-start gap-3 flex-wrap">
               <label className="flex-1 min-w-[12rem]">
-                <span className="block text-xs text-[var(--text-tertiary)] mb-1">Title</span>
+                <span className="block text-[11px] uppercase tracking-[0.02em] text-[var(--text-tertiary)] mb-1">Title</span>
                 <input
                   type="text"
                   value={titleInput}
@@ -239,7 +260,7 @@ export default function SessionDetail() {
                 />
               </label>
               <label className="w-56">
-                <span className="block text-xs text-[var(--text-tertiary)] mb-1">Alias</span>
+                <span className="block text-[11px] uppercase tracking-[0.02em] text-[var(--text-tertiary)] mb-1">Alias</span>
                 <input
                   type="text"
                   value={aliasInput}
@@ -251,22 +272,16 @@ export default function SessionDetail() {
                 />
               </label>
               <div className="flex items-center gap-2 mt-5">
-                <button
-                  onClick={handleMetaSave}
-                  className="px-3 py-1 text-xs font-semibold bg-[var(--brand)] text-white rounded-lg hover:bg-[var(--brand-hover)]"
-                >
+                <Button onClick={handleMetaSave} variant="primary" size="sm">
                   Save
-                </button>
-                <button
-                  onClick={() => setEditingMeta(false)}
-                  className="px-3 py-1 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
-                >
+                </Button>
+                <Button onClick={() => setEditingMeta(false)} variant="ghost" size="sm">
                   Cancel
-                </button>
+                </Button>
               </div>
             </div>
             {metaError && (
-              <div className="text-red-400 text-xs mt-1">{metaError}</div>
+              <div className="text-[var(--danger)] text-xs mt-1">{metaError}</div>
             )}
           </div>
         ) : (
@@ -285,9 +300,9 @@ export default function SessionDetail() {
           </div>
         )}
 
-        {/* Metadata pills */}
+        {/* Metadata row — session ID as mono-chip */}
         <div className="px-5 mt-2 flex flex-wrap items-center gap-2 text-[13px]">
-          <span className="font-mono text-[var(--text-tertiary)]">{session.id}</span>
+          <span className="text-mono-chip">{session.id}</span>
           {session.model_id && session.model_id !== '<synthetic>' && (
             <>
               <span className="text-[var(--text-tertiary)]">&middot;</span>
@@ -357,13 +372,13 @@ export default function SessionDetail() {
         {/* CLI commands (compact) */}
         <div className="px-5 mt-3 flex flex-wrap items-center gap-3 text-xs">
           <div className="flex items-center gap-1.5">
-            <code className="text-[var(--text-tertiary)] bg-[var(--bg-primary)] px-2 py-0.5 rounded font-mono">
+            <code className="text-[var(--text-tertiary)] bg-[var(--bg-sunken)] px-2 py-0.5 rounded font-mono">
               sfs resume {session.id}
             </code>
             <CopyButton text={`sfs resume ${session.id}`} label="Copy" />
           </div>
           <div className="flex items-center gap-1.5">
-            <code className="text-[var(--text-tertiary)] bg-[var(--bg-primary)] px-2 py-0.5 rounded font-mono">
+            <code className="text-[var(--text-tertiary)] bg-[var(--bg-sunken)] px-2 py-0.5 rounded font-mono">
               sfs show {session.id}
             </code>
             <CopyButton text={`sfs show ${session.id}`} label="Copy" />
@@ -410,26 +425,16 @@ export default function SessionDetail() {
         {/* Bookmarks section */}
         <BookmarksSection sessionId={session.id} />
 
-        {/* Tabs */}
-        <div className="flex px-5 mt-2 border-t border-[var(--border)]">
-          {(['messages', 'summary', 'audit'] as Tab[]).map((tab) => (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={`px-4 py-3 text-[14px] font-medium transition-colors relative ${
-                activeTab === tab
-                  ? 'text-[var(--brand)]'
-                  : 'text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]'
-              }`}
-            >
-              {tab.charAt(0).toUpperCase() + tab.slice(1)}
-              {activeTab === tab && (
-                <span className="absolute bottom-0 left-4 right-4 h-0.5 bg-[var(--brand)] rounded-full" />
-              )}
-            </button>
-          ))}
+        {/* Tabs — bare mode: tab bar only, content lives in scrollable container below */}
+        <div className="px-5 mt-2">
+          <Tabs
+            tabs={TAB_DEFS}
+            activeKey={activeTab}
+            onChange={(key) => setActiveTab(key as Tab)}
+            bare
+          />
         </div>
-      </div>
+      </Card>
 
       {/* Tab content */}
       <div className="flex-1 overflow-y-auto">
@@ -443,14 +448,13 @@ export default function SessionDetail() {
       {showHandoff && (
         <HandoffModal sessionId={session.id} onClose={() => setShowHandoff(false)} />
       )}
-      {showAuditModal && (
-        <AuditModal
-          sessionId={session.id}
-          messageCount={session.message_count}
-          onClose={() => setShowAuditModal(false)}
-          onComplete={() => setShowAuditModal(false)}
-        />
-      )}
+      <AuditModal
+        open={showAuditModal}
+        sessionId={session.id}
+        messageCount={session.message_count}
+        onClose={() => setShowAuditModal(false)}
+        onComplete={() => setShowAuditModal(false)}
+      />
       {showDeleteDialog && (
         <DeleteScopeDialog
           count={1}
@@ -474,66 +478,6 @@ export default function SessionDetail() {
         />
       )}
     </div>
-  );
-}
-
-function MoreMenu({
-  sessionId,
-  sourceTool,
-  onRunAudit,
-  onEditMeta,
-  onDelete,
-  onClose,
-}: {
-  sessionId: string;
-  sourceTool: string;
-  onRunAudit: () => void;
-  onEditMeta: () => void;
-  onDelete: () => void;
-  onClose: () => void;
-}) {
-  const [copied, setCopied] = useState(false);
-  const captureOnly = ['cursor', 'cline', 'roo-code', 'amp'].includes(sourceTool);
-  const resumeTool = captureOnly ? 'claude-code' : sourceTool;
-  const resumeCmd = `sfs resume ${sessionId} --in ${resumeTool}`;
-
-  return (
-    <>
-      {/* Backdrop */}
-      <div className="fixed inset-0 z-30" onClick={onClose} />
-      <div className="absolute right-0 top-10 z-40 bg-[var(--bg-elevated)] border border-[var(--border)] rounded-lg shadow-[var(--shadow-md)] py-1 min-w-[180px]">
-        <button
-          onClick={() => {
-            navigator.clipboard.writeText(resumeCmd).then(() => {
-              setCopied(true);
-              setTimeout(() => { setCopied(false); onClose(); }, 800);
-            });
-          }}
-          className="w-full text-left px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] transition-colors"
-        >
-          {copied ? 'Copied!' : `Resume in ${fullToolName(resumeTool)}`}
-        </button>
-        <button
-          onClick={onRunAudit}
-          className="w-full text-left px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] transition-colors"
-        >
-          Run Audit
-        </button>
-        <button
-          onClick={onEditMeta}
-          className="w-full text-left px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] transition-colors"
-        >
-          Rename (Title & Alias)
-        </button>
-        <div className="border-t border-[var(--border)] my-1" />
-        <button
-          onClick={onDelete}
-          className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-red-500/10 transition-colors"
-        >
-          Delete Session
-        </button>
-      </div>
-    </>
   );
 }
 
@@ -635,8 +579,8 @@ function DLPScanSection({ session }: { session: object }) {
         </div>
         <div className="text-xs text-[var(--text-tertiary)] mb-2">
           {scanResult.findings_count} finding{scanResult.findings_count !== 1 ? 's' : ''}
-          {' \u00b7 '}{actionLabel}
-          {timeAgo && <>{' \u00b7 '}Scanned {timeAgo}</>}
+          {' · '}{actionLabel}
+          {timeAgo && <>{' · '}Scanned {timeAgo}</>}
         </div>
         <div className="flex flex-wrap gap-1.5">
           {scanResult.finding_types.map((type) => (
