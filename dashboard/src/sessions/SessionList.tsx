@@ -449,12 +449,7 @@ export default function SessionList() {
         {/* ── Hero: Best next action ── */}
         {!isLoading && !showTrash && mostRecent && (
           <div
-            className="rounded-xl px-5 py-4 mb-5"
-            style={{
-              backgroundColor: 'var(--bg-elevated)',
-              border: '1px solid var(--border)',
-              borderLeft: `4px solid ${TOOL_COLORS[mostRecent.source_tool] || 'var(--text-tertiary)'}`,
-            }}
+            className="rounded-xl px-5 py-4 mb-5 bg-[var(--bg-elevated)] border border-[var(--border)]"
           >
             <div className="flex flex-col sm:flex-row sm:items-center gap-4">
               {/* Left: session to resume */}
@@ -963,7 +958,6 @@ function SessionGridCard({
       onKeyDown={(e) => { if (e.key === 'Enter') onClick(); }}
       tabIndex={0}
       className="group bg-[var(--surface)] border border-[var(--border)] rounded-lg cursor-pointer hover:bg-[var(--bg-elevated)] hover:border-[var(--border-strong)] transition-[background-color,border-color] duration-150 ease-out outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] flex flex-col"
-      style={{ borderLeftWidth: '3px', borderLeftStyle: 'solid', borderLeftColor: toolColor }}
     >
       {/* Body */}
       <div className="px-4 pt-[14px] pb-2 flex-1 min-w-0">
@@ -971,6 +965,10 @@ function SessionGridCard({
           {s.title || <span className="text-[var(--text-tertiary)] italic">Untitled session</span>}
         </h4>
         <div className="flex flex-wrap items-center gap-1 text-[12px] text-[var(--text-tertiary)]">
+          <span
+            className="w-2 h-2 rounded-full shrink-0"
+            style={{ backgroundColor: toolColor }}
+          />
           <span className="text-mono-chip">{fullToolName(s.source_tool)}</span>
           <span className="text-mono-chip">{s.id.slice(0, 12)}</span>
           <span className="opacity-40">&middot;</span>
@@ -1279,7 +1277,6 @@ function SessionRow({
       onKeyDown={(e) => { if (e.key === ' ') { e.preventDefault(); onClick(); } else { onKeyDown(e); } }}
       tabIndex={0}
       className={`group bg-[var(--surface)] border border-[var(--border)] rounded-lg cursor-pointer hover:bg-[var(--bg-elevated)] hover:border-[var(--border-strong)] transition-[background-color,border-color] duration-150 ease-out outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] ${isChild ? 'px-3 py-3' : 'px-4 py-[14px]'} ${selected ? 'ring-1 ring-[var(--brand)] bg-[var(--brand)]/5' : ''}`}
-      style={{ borderLeftWidth: '3px', borderLeftStyle: 'solid', borderLeftColor: TOOL_COLORS[s.source_tool] || 'var(--text-tertiary)' }}
     >
       {/* Line 1: Title + hover actions + timestamp */}
       <div className="flex items-center gap-3 mb-1">
@@ -1333,6 +1330,10 @@ function SessionRow({
       </div>
       {/* Line 2: tool name + session id as mono-chips; counts + model as text-tertiary */}
       <div className={`flex items-center gap-1.5 ${isChild ? 'text-[12px]' : 'text-[13px]'} text-[var(--text-tertiary)]`}>
+        <span
+          className="w-2 h-2 rounded-full shrink-0"
+          style={{ backgroundColor: TOOL_COLORS[s.source_tool] || 'var(--text-tertiary)' }}
+        />
         <span className="text-mono-chip">{fullToolName(s.source_tool)}</span>
         <span className="text-mono-chip">{s.id.slice(0, 12)}</span>
         <span className="opacity-40">&middot;</span>
