@@ -46,7 +46,7 @@ export default function HandoffList() {
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-6">
-      <h1 className="text-2xl font-bold tracking-tight text-[var(--text-primary)] mb-5">Handoffs</h1>
+      <h1 className="text-2xl font-bold tracking-tight text-text-primary mb-5">Handoffs</h1>
 
       <Tabs
         tabs={tabItems}
@@ -64,7 +64,7 @@ export default function HandoffList() {
 
       {/* Loading */}
       {isLoading && (
-        <div className="text-center py-12 text-[var(--text-tertiary)] text-sm">Loading handoffs…</div>
+        <div className="text-center py-12 text-text-tertiary text-sm">Loading handoffs…</div>
       )}
 
       {/* Handoff cards */}
@@ -77,19 +77,19 @@ export default function HandoffList() {
               onClick={() => navigate(`/handoffs/${h.id}`)}
               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate(`/handoffs/${h.id}`); } }}
               tabIndex={0}
-              className="rounded-xl p-4 cursor-pointer border border-[var(--border)] hover:border-[var(--border-strong)] transition-colors duration-150 focus:border-[var(--brand)] outline-none"
+              className="rounded-xl p-4 cursor-pointer border border-border hover:border-border-strong transition-colors duration-150 focus:border-[var(--brand)] outline-none"
               style={{ backgroundColor: 'var(--surface)' }}
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-center gap-3 min-w-0 flex-1">
-                  <span className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-medium text-[var(--brand)] uppercase border" style={{ backgroundColor: 'rgba(79,156,247,0.12)', borderColor: 'rgba(79,156,247,0.3)' }}>
+                  <span className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-medium text-brand uppercase border" style={{ backgroundColor: 'rgba(79,156,247,0.12)', borderColor: 'rgba(79,156,247,0.3)' }}>
                     {(isInbox ? h.sender_email : h.recipient_email).charAt(0)}
                   </span>
                   <div className="min-w-0">
-                    <div className="text-[14px] font-medium text-[var(--text-primary)] truncate">
+                    <div className="text-base font-medium text-text-primary truncate">
                       {isInbox ? h.sender_email : h.recipient_email}
                     </div>
-                    <div className="text-[13px] text-[var(--text-tertiary)]">
+                    <div className="text-sm text-text-tertiary">
                       <RelativeDate iso={h.created_at} />
                     </div>
                   </div>
@@ -103,13 +103,13 @@ export default function HandoffList() {
               </div>
 
               {/* Session info */}
-              <div className="mt-3 flex items-center gap-3 text-[13px]">
+              <div className="mt-3 flex items-center gap-3 text-sm">
                 {h.session_tool && <ToolBadge tool={h.session_tool} />}
-                <span className="text-[var(--text-primary)] truncate">
-                  {h.session_title || <span className="text-[var(--text-tertiary)] italic">Untitled</span>}
+                <span className="text-text-primary truncate">
+                  {h.session_title || <span className="text-text-tertiary italic">Untitled</span>}
                 </span>
                 {h.session_message_count != null && (
-                  <span className="text-[var(--text-tertiary)] tabular-nums flex-shrink-0">
+                  <span className="text-text-tertiary tabular-nums flex-shrink-0">
                     {h.session_message_count} msgs
                   </span>
                 )}
@@ -128,15 +128,15 @@ export default function HandoffList() {
                 <polyline points="22 12 16 12 14 15 10 15 8 12 2 12" />
                 <path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
               </svg>
-              <p className="text-[15px] font-semibold text-[var(--text-primary)] mb-1">No handoffs received yet</p>
-              <p className="text-[13px] text-[var(--text-tertiary)] mb-4">
+              <p className="text-md font-semibold text-text-primary mb-1">No handoffs received yet</p>
+              <p className="text-sm text-text-tertiary mb-4">
                 When a teammate hands off a session to you, it will appear here.
               </p>
               <a
                 href="https://sessionfs.dev/handoff/"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-sm text-[var(--brand)] hover:underline"
+                className="text-sm text-brand hover:underline"
               >
                 Learn about handoffs →
               </a>
@@ -147,15 +147,15 @@ export default function HandoffList() {
                 <line x1="22" y1="2" x2="11" y2="13" />
                 <polygon points="22 2 15 22 11 13 2 9 22 2" />
               </svg>
-              <p className="text-[15px] font-semibold text-[var(--text-primary)] mb-1">No handoffs sent yet</p>
-              <p className="text-[13px] text-[var(--text-tertiary)] mb-4">
+              <p className="text-md font-semibold text-text-primary mb-1">No handoffs sent yet</p>
+              <p className="text-sm text-text-tertiary mb-4">
                 Hand off a session to share context with a teammate.
               </p>
               <a
                 href="https://sessionfs.dev/handoff/"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-sm text-[var(--brand)] hover:underline"
+                className="text-sm text-brand hover:underline"
               >
                 Hand off a session →
               </a>

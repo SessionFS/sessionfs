@@ -52,11 +52,11 @@ export default function LicensesTab() {
       )}
 
       {isLoading && (
-        <div className="text-[var(--text-tertiary)] text-sm py-4">Loading licenses…</div>
+        <div className="text-text-tertiary text-sm py-4">Loading licenses…</div>
       )}
 
       {!isLoading && licenses.length === 0 && (
-        <div className="text-center py-12 text-[var(--text-tertiary)] text-sm">No licenses found</div>
+        <div className="text-center py-12 text-text-tertiary text-sm">No licenses found</div>
       )}
 
       {licenses.length > 0 && (
@@ -66,14 +66,14 @@ export default function LicensesTab() {
               key: 'org',
               header: 'Organization',
               render: (lic) => (
-                <span className="text-[var(--text-primary)]">{lic.org_name}</span>
+                <span className="text-text-primary">{lic.org_name}</span>
               ),
             },
             {
               key: 'contact',
               header: 'Contact',
               render: (lic) => (
-                <span className="text-[var(--text-secondary)]">{lic.contact_email}</span>
+                <span className="text-text-secondary">{lic.contact_email}</span>
               ),
             },
             {
@@ -81,7 +81,7 @@ export default function LicensesTab() {
               header: 'Type',
               width: 'w-20',
               render: (lic) => (
-                <span className="text-xs text-[var(--text-tertiary)]">{lic.license_type}</span>
+                <span className="text-xs text-text-tertiary">{lic.license_type}</span>
               ),
             },
             {
@@ -89,7 +89,7 @@ export default function LicensesTab() {
               header: 'Tier',
               width: 'w-20',
               render: (lic) => (
-                <span className="text-xs text-[var(--text-secondary)] capitalize">{lic.tier}</span>
+                <span className="text-xs text-text-secondary capitalize">{lic.tier}</span>
               ),
             },
             {
@@ -119,7 +119,7 @@ export default function LicensesTab() {
               header: 'Expires',
               width: 'w-28',
               render: (lic) => (
-                <span className="text-xs text-[var(--text-tertiary)]">
+                <span className="text-xs text-text-tertiary">
                   {lic.expires_at ? lic.expires_at.slice(0, 10) : 'Never'}
                 </span>
               ),
@@ -141,7 +141,7 @@ export default function LicensesTab() {
                     Revoke
                   </button>
                 ) : (
-                  <span className="text-xs text-[var(--text-tertiary)]">—</span>
+                  <span className="text-xs text-text-tertiary">—</span>
                 ),
             },
           ]}

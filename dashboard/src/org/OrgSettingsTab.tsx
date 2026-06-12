@@ -107,14 +107,14 @@ export default function OrgSettingsTab({ orgId, canEdit }: OrgSettingsTabProps) 
         aria-label={label}
         title={label}
       />
-      <span className="text-[12px] text-[var(--text-tertiary)]">{hint}</span>
+      <span className="text-xs text-text-tertiary">{hint}</span>
     </div>
   );
 
   return (
     <section aria-labelledby="org-settings-heading">
       <h3 id="org-settings-heading">Org defaults</h3>
-      <p className="text-sm text-[var(--text-secondary)]">
+      <p className="text-sm text-text-secondary">
         Creation defaults for new projects added to this org. Existing
         projects keep their current values; change a project's own KB
         knobs from the project settings to override. Leave a field

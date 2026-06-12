@@ -34,9 +34,9 @@ export default function InvitesPage() {
   const [decliningId, setDecliningId] = useState<string | null>(null);
   const [declineReason, setDeclineReason] = useState('');
 
-  if (invites.isLoading) return <p className="text-[var(--text-tertiary)] p-4 text-sm">Loading invites…</p>;
+  if (invites.isLoading) return <p className="text-text-tertiary p-4 text-sm">Loading invites…</p>;
   if (invites.error)
-    return <p role="alert" className="text-[var(--danger)] p-4 text-sm">Failed to load invites: {String(invites.error)}</p>;
+    return <p role="alert" className="text-danger p-4 text-sm">Failed to load invites: {String(invites.error)}</p>;
 
   const rows = invites.data?.invites ?? [];
   const busy = accept.isPending || decline.isPending;
@@ -67,8 +67,8 @@ export default function InvitesPage() {
 
   return (
     <section aria-labelledby="invites-heading" className="max-w-2xl mx-auto px-4 py-6">
-      <h2 id="invites-heading" className="text-xl font-bold tracking-tight text-[var(--text-primary)] mb-2">Organization invites</h2>
-      <p className="text-sm text-[var(--text-tertiary)] mb-5">
+      <h2 id="invites-heading" className="text-xl font-bold tracking-tight text-text-primary mb-2">Organization invites</h2>
+      <p className="text-sm text-text-tertiary mb-5">
         Invites sent to your email address. Accept to join the org, or decline
         if you weren't expecting it.
       </p>
@@ -81,8 +81,8 @@ export default function InvitesPage() {
             <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
             <path d="M16 3.13a4 4 0 0 1 0 7.75" />
           </svg>
-          <p className="text-[15px] font-semibold text-[var(--text-primary)] mb-1">No pending invites</p>
-          <p className="text-[13px] text-[var(--text-tertiary)]">
+          <p className="text-md font-semibold text-text-primary mb-1">No pending invites</p>
+          <p className="text-sm text-text-tertiary">
             You don't have any pending organization invitations.
           </p>
         </div>
@@ -100,13 +100,13 @@ export default function InvitesPage() {
               >
                 <div className="flex items-center justify-between gap-3 mb-2">
                   <div>
-                    <strong className="text-[var(--text-primary)]">{inv.org_name}</strong>
-                    <span className="text-[var(--text-tertiary)] text-sm ml-2">
+                    <strong className="text-text-primary">{inv.org_name}</strong>
+                    <span className="text-text-tertiary text-sm ml-2">
                       role: <Badge variant="default" label={inv.role} size="sm" />
                     </span>
                   </div>
                 </div>
-                <div className="text-xs text-[var(--text-tertiary)] mb-3">
+                <div className="text-xs text-text-tertiary mb-3">
                   Invited by {inv.invited_by_email} on{' '}
                   {new Date(inv.created_at).toLocaleDateString()}. Expires{' '}
                   {new Date(inv.expires_at).toLocaleDateString()}.

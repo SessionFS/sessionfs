@@ -219,7 +219,7 @@ function TerminalCopyButton({ text }: { text: string }) {
       onClick={handleCopy}
       aria-label="Copy command"
       aria-live="polite"
-      className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors"
+      className="inline-flex items-center gap-1.5 px-2.5 py-1 text-2xs font-medium rounded-md transition-colors"
       style={{
         backgroundColor: 'rgba(255,255,255,0.06)',
         color,
@@ -260,7 +260,7 @@ function TerminalCopyButton({ text }: { text: string }) {
 function Terminal({ command, output }: { command: string; output: string }) {
   return (
     <div
-      className="rounded-[var(--radius-md)] overflow-hidden border"
+      className="rounded-md overflow-hidden border"
       style={{
         backgroundColor: '#0b0d12',
         borderColor: 'rgba(255,255,255,0.08)',
@@ -281,7 +281,7 @@ function Terminal({ command, output }: { command: string; output: string }) {
           <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: '#28c840' }} />
         </div>
         <span
-          className="text-[11px] font-mono"
+          className="text-2xs font-mono"
           style={{ color: 'rgba(255,255,255,0.4)' }}
         >
           terminal
@@ -290,7 +290,7 @@ function Terminal({ command, output }: { command: string; output: string }) {
       </div>
       {/* Body */}
       <pre
-        className="px-4 py-4 text-[13px] font-mono leading-relaxed overflow-x-auto whitespace-pre"
+        className="px-4 py-4 text-sm font-mono leading-relaxed overflow-x-auto whitespace-pre"
         style={{ color: 'rgba(255,255,255,0.92)' }}
       >
         <span style={{ color: 'rgba(255,255,255,0.45)' }}>$ </span>
@@ -307,17 +307,17 @@ function SectionHeading({ eyebrow, title, subtitle }: { eyebrow?: string; title:
     <div className="mb-6">
       {eyebrow && (
         <div
-          className="text-[11px] font-semibold uppercase tracking-wider mb-2"
+          className="text-2xs font-semibold uppercase tracking-wider mb-2"
           style={{ color: 'var(--brand)' }}
         >
           {eyebrow}
         </div>
       )}
-      <h2 className="text-[22px] font-bold text-[var(--text-primary)] leading-tight">
+      <h2 className="text-[22px] font-bold text-text-primary leading-tight">
         {title}
       </h2>
       {subtitle && (
-        <p className="mt-1.5 text-[14px] text-[var(--text-secondary)] leading-relaxed">
+        <p className="mt-1.5 text-base text-text-secondary leading-relaxed">
           {subtitle}
         </p>
       )}
@@ -357,15 +357,15 @@ Restart ${selectedTool.label} to activate.`;
       {/* Hero */}
       <header className="mb-12 md:mb-16">
         <div
-          className="text-[11px] font-semibold uppercase tracking-wider mb-3"
+          className="text-2xs font-semibold uppercase tracking-wider mb-3"
           style={{ color: 'var(--brand)' }}
         >
           Help & Quickstart
         </div>
-        <h1 className="text-[32px] md:text-[40px] font-bold leading-tight text-[var(--text-primary)] tracking-tight">
+        <h1 className="text-[32px] md:text-[40px] font-bold leading-tight text-text-primary tracking-tight">
           You don't need to memorize commands.
         </h1>
-        <p className="mt-4 text-[16px] md:text-[17px] text-[var(--text-secondary)] leading-relaxed max-w-3xl">
+        <p className="mt-4 text-[16px] md:text-lg text-text-secondary leading-relaxed max-w-3xl">
           Install the MCP server for your AI tool, and your agent learns SessionFS automatically.
           Just tell it what you want.
         </p>
@@ -389,7 +389,7 @@ Restart ${selectedTool.label} to activate.`;
                 role="tab"
                 aria-selected={active}
                 onClick={() => setSelectedTool(tool)}
-                className="px-3.5 py-1.5 text-[13px] font-medium rounded-full border transition-colors"
+                className="px-3.5 py-1.5 text-sm font-medium rounded-full border transition-colors"
                 style={{
                   backgroundColor: active ? 'var(--brand)' : 'transparent',
                   color: active ? 'var(--text-inverse)' : 'var(--text-secondary)',
@@ -404,7 +404,7 @@ Restart ${selectedTool.label} to activate.`;
 
         <Terminal command={selectedTool.command} output={fakeOutput} />
 
-        <p className="mt-4 text-[13px] text-[var(--text-tertiary)] text-center md:text-left">
+        <p className="mt-4 text-sm text-text-tertiary text-center md:text-left">
           That's it. Your AI agent now knows how to use SessionFS.
         </p>
       </section>
@@ -425,10 +425,10 @@ Restart ${selectedTool.label} to activate.`;
               className="p-5"
             >
               <div className="flex items-center gap-2 mb-3">
-                <span className="text-[18px] leading-none" aria-hidden="true">
+                <span className="text-lg leading-none" aria-hidden="true">
                   {useCase.icon}
                 </span>
-                <h3 className="text-[15px] font-semibold text-[var(--text-primary)]">
+                <h3 className="text-md font-semibold text-text-primary">
                   {useCase.title}
                 </h3>
               </div>
@@ -457,7 +457,7 @@ Restart ${selectedTool.label} to activate.`;
         />
 
         <div
-          className="rounded-[var(--radius-md)] overflow-hidden border mb-6"
+          className="rounded-md overflow-hidden border mb-6"
           style={{
             backgroundColor: '#0b0d12',
             borderColor: 'rgba(255,255,255,0.08)',
@@ -465,7 +465,7 @@ Restart ${selectedTool.label} to activate.`;
           }}
         >
           <pre
-            className="px-4 py-4 text-[13px] font-mono leading-relaxed overflow-x-auto"
+            className="px-4 py-4 text-sm font-mono leading-relaxed overflow-x-auto"
             style={{ color: 'rgba(255,255,255,0.92)' }}
           >
             <span style={{ color: 'rgba(255,255,255,0.45)' }}>$ </span>
@@ -480,7 +480,7 @@ Restart ${selectedTool.label} to activate.`;
         </div>
 
         <div
-          className="rounded-[var(--radius-lg)] border overflow-hidden"
+          className="rounded-lg border overflow-hidden"
           style={{
             backgroundColor: 'var(--bg-secondary)',
             borderColor: 'var(--border)',
@@ -499,7 +499,7 @@ Restart ${selectedTool.label} to activate.`;
                 >
                   {row.cmd}
                 </code>
-                <span className="text-[13px]" style={{ color: 'var(--text-secondary)' }}>
+                <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>
                   {row.desc}
                 </span>
               </li>
@@ -507,7 +507,7 @@ Restart ${selectedTool.label} to activate.`;
           </ul>
         </div>
 
-        <div className="mt-4 text-[13px]">
+        <div className="mt-4 text-sm">
           <a
             href={siteHref('/cli/')}
             className="inline-flex items-center gap-1 transition-colors"
@@ -558,7 +558,7 @@ Restart ${selectedTool.label} to activate.`;
 function McpToolGroup({ label, tools }: { label: string; tools: McpTool[] }) {
   return (
     <Card level="surface" className="p-4">
-      <div className="text-micro text-[var(--text-tertiary)] uppercase mb-3">
+      <div className="text-micro text-text-tertiary uppercase mb-3">
         {label}
       </div>
       <ul className="space-y-3">
@@ -600,7 +600,7 @@ function ResourceLink({
       href={href}
       target={isExternal && !href.startsWith('mailto:') ? '_blank' : undefined}
       rel={isExternal && !href.startsWith('mailto:') ? 'noopener noreferrer' : undefined}
-      className="flex items-center gap-3 px-4 py-3 rounded-[var(--radius-md)] border transition-colors hover:bg-[var(--surface-hover)]"
+      className="flex items-center gap-3 px-4 py-3 rounded-md border transition-colors hover:bg-surface-hover"
       style={{
         backgroundColor: 'var(--bg-secondary)',
         borderColor: 'var(--border)',
@@ -609,7 +609,7 @@ function ResourceLink({
       <span className="text-[16px] leading-none" aria-hidden="true">
         {icon}
       </span>
-      <span className="text-[14px] flex-1" style={{ color: 'var(--text-primary)' }}>
+      <span className="text-base flex-1" style={{ color: 'var(--text-primary)' }}>
         {label}
       </span>
       <span aria-hidden="true" style={{ color: 'var(--text-tertiary)' }}>

@@ -123,27 +123,27 @@ export default function LoginPage() {
           <div className="brand-badge rounded-2xl px-4 py-3">
             <Wordmark size="lg" />
           </div>
-          <p className="mt-4 max-w-xs text-sm text-[var(--text-secondary)]">
+          <p className="mt-4 max-w-xs text-sm text-text-secondary">
             Resume work, build project memory, and hand off AI sessions without losing context.
           </p>
         </div>
         <h1 className="sr-only">SessionFS</h1>
-        <p className="text-[var(--text-secondary)] text-sm mb-6">
+        <p className="text-text-secondary text-sm mb-6">
           {mode === 'login' ? 'Sign in with your API key' : 'Create a new account'}
         </p>
 
         {signupKey && (
-          <div className="mb-4 p-3 bg-[var(--bg-tertiary)] rounded border border-[var(--accent)]/30 text-sm">
+          <div className="mb-4 p-3 bg-bg-tertiary rounded border border-[var(--accent)]/30 text-sm">
             <p className="text-[var(--accent)] font-medium mb-1">Account created</p>
-            <p className="text-[var(--text-secondary)] mb-2">Save your API key — it won't be shown again:</p>
-            <code className="block p-2 bg-[var(--bg-primary)] rounded text-sm break-all select-all text-[var(--text-primary)]">
+            <p className="text-text-secondary mb-2">Save your API key — it won't be shown again:</p>
+            <code className="block p-2 bg-bg-primary rounded text-sm break-all select-all text-text-primary">
               {signupKey}
             </code>
           </div>
         )}
 
         {error && (
-          <div className="mb-4 p-3 bg-[var(--danger)]/10 border border-[var(--danger)]/30 rounded text-[var(--danger)] text-sm">
+          <div className="mb-4 p-3 bg-[var(--danger)]/10 border border-[var(--danger)]/30 rounded text-danger text-sm">
             {error}
           </div>
         )}
@@ -182,7 +182,7 @@ export default function LoginPage() {
             >
               {loading ? 'Connecting…' : 'Sign In'}
             </Button>
-            <p className="mt-4 text-center text-[var(--text-tertiary)] text-sm">
+            <p className="mt-4 text-center text-text-tertiary text-sm">
               No account?{' '}
               <button type="button" onClick={() => { setMode('signup'); setFieldErrors({}); }} className="text-[var(--accent)] hover:underline">
                 Sign up
@@ -223,7 +223,7 @@ export default function LoginPage() {
             >
               {loading ? 'Creating…' : 'Create Account'}
             </Button>
-            <p className="mt-4 text-center text-[var(--text-tertiary)] text-sm">
+            <p className="mt-4 text-center text-text-tertiary text-sm">
               Have an API key?{' '}
               <button type="button" onClick={() => { setMode('login'); setFieldErrors({}); }} className="text-[var(--accent)] hover:underline">
                 Sign in

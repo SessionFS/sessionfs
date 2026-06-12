@@ -77,7 +77,7 @@ export default function OrgPage() {
   });
 
   if (isLoading) {
-    return <div className="text-center py-12 text-[var(--text-tertiary)]">Loading…</div>;
+    return <div className="text-center py-12 text-text-tertiary">Loading…</div>;
   }
 
   const org = data?.org;
@@ -88,12 +88,12 @@ export default function OrgPage() {
   if (!org) {
     return (
       <div className="max-w-2xl mx-auto px-4 py-12 text-center">
-        <h2 className="text-xl font-semibold text-[var(--text-primary)] mb-4">No Organization</h2>
-        <p className="text-[var(--text-tertiary)] mb-6">
+        <h2 className="text-xl font-semibold text-text-primary mb-4">No Organization</h2>
+        <p className="text-text-tertiary mb-6">
           You're not part of an organization. Organizations are available on Team tier and above.
         </p>
-        <p className="text-sm text-[var(--text-tertiary)]">
-          Create one via CLI: <code className="bg-[var(--surface)] border border-[var(--border)] px-2 py-1 rounded-md text-[var(--text-secondary)]">sfs org create "My Team" my-team</code>
+        <p className="text-sm text-text-tertiary">
+          Create one via CLI: <code className="bg-surface border border-border px-2 py-1 rounded-md text-text-secondary">sfs org create "My Team" my-team</code>
         </p>
       </div>
     );
@@ -103,15 +103,15 @@ export default function OrgPage() {
     <div className="max-w-4xl mx-auto px-4 py-8">
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight text-[var(--text-primary)]">{org.name}</h1>
-          <p className="text-[15px] text-[var(--text-secondary)]">
+          <h1 className="text-3xl font-bold tracking-tight text-text-primary">{org.name}</h1>
+          <p className="text-md text-text-secondary">
             {org.slug} &middot; {org.tier} tier &middot; {org.seats_used}/{org.seats_limit} seats
           </p>
         </div>
         {isAdmin && (
           <button
             onClick={() => setShowInviteForm(!showInviteForm)}
-            className="bg-[var(--brand)] text-white rounded-lg px-5 py-2.5 text-sm font-semibold hover:bg-[var(--brand-hover)] transition-colors"
+            className="bg-brand text-white rounded-lg px-5 py-2.5 text-sm font-semibold hover:bg-[var(--brand-hover)] transition-colors"
           >
             Invite Member
           </button>
@@ -120,25 +120,25 @@ export default function OrgPage() {
 
       {/* Invite form */}
       {showInviteForm && isAdmin && (
-        <div className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl p-5 mb-6">
-          <h3 className="text-sm font-medium text-[var(--text-primary)] mb-3">Invite a teammate</h3>
+        <div className="bg-bg-elevated border border-border rounded-xl p-5 mb-6">
+          <h3 className="text-sm font-medium text-text-primary mb-3">Invite a teammate</h3>
           <div className="flex gap-3 items-end">
             <div className="flex-1">
-              <label className="block text-[13px] text-[var(--text-tertiary)] mb-1">Email</label>
+              <label className="block text-sm text-text-tertiary mb-1">Email</label>
               <input
                 type="email"
                 value={inviteEmail}
                 onChange={(e) => setInviteEmail(e.target.value)}
                 placeholder="colleague@company.com"
-                className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+                className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
               />
             </div>
             <div>
-              <label className="block text-[13px] text-[var(--text-tertiary)] mb-1">Role</label>
+              <label className="block text-sm text-text-tertiary mb-1">Role</label>
               <select
                 value={inviteRole}
                 onChange={(e) => setInviteRole(e.target.value)}
-                className="bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+                className="bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text-secondary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
               >
                 <option value="member">Member</option>
                 <option value="admin">Admin</option>
@@ -147,7 +147,7 @@ export default function OrgPage() {
             <button
               onClick={() => inviteMutation.mutate()}
               disabled={!inviteEmail || inviteMutation.isPending}
-              className="bg-[var(--brand)] text-white rounded-lg px-5 py-2.5 text-sm font-semibold hover:bg-[var(--brand-hover)] transition-colors disabled:opacity-50"
+              className="bg-brand text-white rounded-lg px-5 py-2.5 text-sm font-semibold hover:bg-[var(--brand-hover)] transition-colors disabled:opacity-50"
             >
               {inviteMutation.isPending ? 'Sending…' : 'Send Invite'}
             </button>
@@ -159,13 +159,13 @@ export default function OrgPage() {
       )}
 
       {/* Members */}
-      <div className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl overflow-hidden mb-6">
-        <div className="px-5 py-3 border-b border-[var(--border)]">
-          <h3 className="text-lg font-semibold text-[var(--text-primary)]">Members</h3>
+      <div className="bg-bg-elevated border border-border rounded-xl overflow-hidden mb-6">
+        <div className="px-5 py-3 border-b border-border">
+          <h3 className="text-lg font-semibold text-text-primary">Members</h3>
         </div>
         <div className="divide-y divide-[var(--border)]">
           {members.map((m: any) => (
-            <div key={m.user_id} className="px-5 py-3 flex items-center gap-3 hover:bg-[var(--surface-hover)] transition-colors">
+            <div key={m.user_id} className="px-5 py-3 flex items-center gap-3 hover:bg-surface-hover transition-colors">
               {/* Avatar */}
               <span className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-medium flex-shrink-0 ${getAvatarColor(m.email)}`}>
                 {m.email.charAt(0).toUpperCase()}
@@ -173,23 +173,23 @@ export default function OrgPage() {
 
               {/* Info */}
               <div className="flex-1 min-w-0">
-                <div className="text-[14px] text-[var(--text-primary)] truncate">{m.email}</div>
-                <div className="text-xs text-[var(--text-tertiary)]">{m.display_name || 'No display name'}</div>
+                <div className="text-base text-text-primary truncate">{m.email}</div>
+                <div className="text-xs text-text-tertiary">{m.display_name || 'No display name'}</div>
               </div>
 
               {/* Role badge */}
               <span
                 className={`px-2 py-0.5 rounded-full text-xs font-medium ${
                   m.role === 'admin'
-                    ? 'bg-[var(--brand)]/15 text-[var(--brand)]'
-                    : 'bg-[var(--border)] text-[var(--text-tertiary)]'
+                    ? 'bg-brand/15 text-brand'
+                    : 'bg-[var(--border)] text-text-tertiary'
                 }`}
               >
                 {m.role}
               </span>
 
               {/* Joined */}
-              <span className="text-xs text-[var(--text-tertiary)] w-20 text-right flex-shrink-0">
+              <span className="text-xs text-text-tertiary w-20 text-right flex-shrink-0">
                 {m.joined_at?.slice(0, 10) || '-'}
               </span>
 
@@ -203,7 +203,7 @@ export default function OrgPage() {
                         role: m.role === 'admin' ? 'member' : 'admin',
                       })
                     }
-                    className="text-xs text-[var(--brand)] hover:underline"
+                    className="text-xs text-brand hover:underline"
                   >
                     {m.role === 'admin' ? 'Make Member' : 'Make Admin'}
                   </button>
@@ -226,9 +226,9 @@ export default function OrgPage() {
 
       {/* Pending invites */}
       {isAdmin && pendingInvites.length > 0 && (
-        <div className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl overflow-hidden">
-          <div className="px-5 py-3 border-b border-[var(--border)]">
-            <h3 className="text-lg font-semibold text-[var(--text-primary)]">Pending Invites</h3>
+        <div className="bg-bg-elevated border border-border rounded-xl overflow-hidden">
+          <div className="px-5 py-3 border-b border-border">
+            <h3 className="text-lg font-semibold text-text-primary">Pending Invites</h3>
           </div>
           <div className="divide-y divide-[var(--border)]">
             {pendingInvites.map((inv: any) => (
@@ -237,15 +237,15 @@ export default function OrgPage() {
                   {inv.email.charAt(0).toUpperCase()}
                 </span>
                 <div className="flex-1 min-w-0">
-                  <div className="text-[14px] text-[var(--text-primary)] truncate">{inv.email}</div>
+                  <div className="text-base text-text-primary truncate">{inv.email}</div>
                 </div>
                 <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-500/10 text-yellow-500">
                   {inv.role}
                 </span>
-                <span className="text-xs text-[var(--text-tertiary)]">
+                <span className="text-xs text-text-tertiary">
                   Sent {inv.created_at?.slice(0, 10)}
                 </span>
-                <span className="text-xs text-[var(--text-tertiary)]">
+                <span className="text-xs text-text-tertiary">
                   Expires {inv.expires_at?.slice(0, 10)}
                 </span>
               </div>
@@ -256,7 +256,7 @@ export default function OrgPage() {
 
       {/* v0.10.0 Phase 6 — org defaults (retention, compile model, KB knobs). */}
       {org?.id && (
-        <div className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl p-5 mt-6">
+        <div className="bg-bg-elevated border border-border rounded-xl p-5 mt-6">
           <OrgSettingsTab orgId={org.id} canEdit={isAdmin} />
         </div>
       )}

@@ -36,11 +36,11 @@ function ProjectLabel({ t }: { t: TransferInfo }) {
   if (t.project_id === null) {
     return (
       <span title="Source project has been deleted; this audit row survives">
-        {name} <em className="text-[var(--text-tertiary)]">(deleted)</em>
+        {name} <em className="text-text-tertiary">(deleted)</em>
       </span>
     );
   }
-  return <span className="font-semibold text-[var(--text-primary)]">{name}</span>;
+  return <span className="font-semibold text-text-primary">{name}</span>;
 }
 
 export default function TransferInbox() {
@@ -84,9 +84,9 @@ export default function TransferInbox() {
     );
   };
 
-  if (incoming.isLoading || outgoing.isLoading) return <p className="text-[var(--text-tertiary)] p-4 text-sm">Loading transfers…</p>;
-  if (incoming.error) return <p role="alert" className="text-[var(--danger)] p-4 text-sm">Failed to load inbox: {String(incoming.error)}</p>;
-  if (outgoing.error) return <p role="alert" className="text-[var(--danger)] p-4 text-sm">Failed to load outbox: {String(outgoing.error)}</p>;
+  if (incoming.isLoading || outgoing.isLoading) return <p className="text-text-tertiary p-4 text-sm">Loading transfers…</p>;
+  if (incoming.error) return <p role="alert" className="text-danger p-4 text-sm">Failed to load inbox: {String(incoming.error)}</p>;
+  if (outgoing.error) return <p role="alert" className="text-danger p-4 text-sm">Failed to load outbox: {String(outgoing.error)}</p>;
 
   const incomingRows = incoming.data?.transfers ?? [];
   const outgoingRows = outgoing.data?.transfers ?? [];
@@ -94,24 +94,24 @@ export default function TransferInbox() {
 
   return (
     <section aria-labelledby="transfers-heading" className="space-y-5">
-      <h2 id="transfers-heading" className="text-lg font-semibold text-[var(--text-primary)]">Project transfers</h2>
+      <h2 id="transfers-heading" className="text-lg font-semibold text-text-primary">Project transfers</h2>
 
       <section aria-labelledby="incoming-heading">
-        <h3 id="incoming-heading" className="text-micro uppercase text-[var(--text-tertiary)] mb-3">
+        <h3 id="incoming-heading" className="text-micro uppercase text-text-tertiary mb-3">
           Incoming ({incomingRows.length})
         </h3>
         {incomingRows.length === 0 ? (
-          <p className="text-[13px] text-[var(--text-tertiary)]">No pending incoming transfers.</p>
+          <p className="text-sm text-text-tertiary">No pending incoming transfers.</p>
         ) : (
           <div className="space-y-2">
             {incomingRows.map((t) => (
               <Card key={t.id} className="p-4 flex items-center justify-between gap-3 flex-wrap" data-testid={`incoming-${t.id}`}>
                 <div className="min-w-0">
                   <div className="text-sm">
-                    <span className="font-semibold text-[var(--text-primary)]"><ProjectLabel t={t} /></span>
-                    <span className="text-[var(--text-tertiary)]"> from {scopeLabel(t.from_scope)} → {scopeLabel(t.to_scope)}</span>
+                    <span className="font-semibold text-text-primary"><ProjectLabel t={t} /></span>
+                    <span className="text-text-tertiary"> from {scopeLabel(t.from_scope)} → {scopeLabel(t.to_scope)}</span>
                   </div>
-                  <div className="text-xs text-[var(--text-tertiary)] mt-0.5">
+                  <div className="text-xs text-text-tertiary mt-0.5">
                     Initiated by {t.initiated_by}
                   </div>
                 </div>
@@ -130,21 +130,21 @@ export default function TransferInbox() {
       </section>
 
       <section aria-labelledby="outgoing-heading">
-        <h3 id="outgoing-heading" className="text-micro uppercase text-[var(--text-tertiary)] mb-3">
+        <h3 id="outgoing-heading" className="text-micro uppercase text-text-tertiary mb-3">
           Outgoing ({outgoingRows.length})
         </h3>
         {outgoingRows.length === 0 ? (
-          <p className="text-[13px] text-[var(--text-tertiary)]">No pending outgoing transfers.</p>
+          <p className="text-sm text-text-tertiary">No pending outgoing transfers.</p>
         ) : (
           <div className="space-y-2">
             {outgoingRows.map((t) => (
               <Card key={t.id} className="p-4 flex items-center justify-between gap-3 flex-wrap" data-testid={`outgoing-${t.id}`}>
                 <div className="min-w-0">
                   <div className="text-sm">
-                    <span className="font-semibold text-[var(--text-primary)]"><ProjectLabel t={t} /></span>
-                    <span className="text-[var(--text-tertiary)]"> from {scopeLabel(t.from_scope)} → {scopeLabel(t.to_scope)}</span>
+                    <span className="font-semibold text-text-primary"><ProjectLabel t={t} /></span>
+                    <span className="text-text-tertiary"> from {scopeLabel(t.from_scope)} → {scopeLabel(t.to_scope)}</span>
                   </div>
-                  <div className="text-xs text-[var(--text-tertiary)] mt-0.5">
+                  <div className="text-xs text-text-tertiary mt-0.5">
                     Waiting on {t.target_user_id ?? '(target removed)'}
                   </div>
                 </div>

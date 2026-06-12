@@ -48,10 +48,10 @@ export default function HandoffModal({ sessionId, onClose }: HandoffModalProps) 
         <>
           <div className="p-3 rounded-lg mb-4" style={{ backgroundColor: 'rgba(61,220,132,0.1)', border: '1px solid rgba(61,220,132,0.3)' }}>
             <p className="text-[var(--accent)] text-sm font-medium">Handoff sent</p>
-            <p className="text-[var(--text-secondary)] text-sm mt-1">
+            <p className="text-text-secondary text-sm mt-1">
               Handoff ID: <code className="text-mono-chip">{createHandoff.data.id}</code>
             </p>
-            <p className="text-[var(--text-tertiary)] text-sm mt-1">
+            <p className="text-text-tertiary text-sm mt-1">
               Notification sent to {createHandoff.data.recipient_email}
             </p>
           </div>
@@ -84,7 +84,7 @@ export default function HandoffModal({ sessionId, onClose }: HandoffModalProps) 
                 placeholder="Context for the recipient…"
                 error={errors.message}
               />
-              <span className="text-xs text-[var(--text-tertiary)] mt-0.5 block text-right">
+              <span className="text-xs text-text-tertiary mt-0.5 block text-right">
                 {message.length}/2000
               </span>
             </div>
