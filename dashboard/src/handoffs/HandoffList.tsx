@@ -132,7 +132,7 @@ export default function HandoffList() {
                 When a teammate hands off a session to you, it will appear here.
               </p>
               <a
-                href="https://docs.sessionfs.dev/handoffs"
+                href="https://sessionfs.dev/handoff/"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-sm text-[var(--brand)] hover:underline"
@@ -151,7 +151,7 @@ export default function HandoffList() {
                 Hand off a session to share context with a teammate.
               </p>
               <a
-                href="https://docs.sessionfs.dev/handoffs"
+                href="https://sessionfs.dev/handoff/"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-sm text-[var(--brand)] hover:underline"
