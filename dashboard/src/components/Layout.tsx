@@ -361,8 +361,11 @@ export default function Layout() {
               </svg>
             </Link>
           ) : (
-            <Link to="/" aria-label="SessionFS home" className="flex items-center hover:opacity-90 transition-opacity">
+            <Link to="/" aria-label="SessionFS home" className="flex flex-col gap-1 hover:opacity-90 transition-opacity">
               <Wordmark size="sm" showTagline={false} />
+              <span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--text-tertiary)] leading-tight">
+                Memory layer for AI coding agents
+              </span>
             </Link>
           )}
         </div>
