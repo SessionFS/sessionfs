@@ -25,6 +25,9 @@ const { hooks, mockAuth, mockToast } = vi.hoisted(() => ({
     useFolders: vi.fn(),
     useAddBookmark: vi.fn(),
     useFolderSessions: vi.fn(),
+    useCreateFolder: vi.fn(),
+    useUpdateFolder: vi.fn(),
+    useDeleteFolder: vi.fn(),
     useSessions: vi.fn(),
     useDeletedSessions: vi.fn(),
     useRestoreSession: vi.fn(),
@@ -41,6 +44,9 @@ vi.mock('../hooks/useBookmarks', () => ({
   useFolders: hooks.useFolders,
   useAddBookmark: hooks.useAddBookmark,
   useFolderSessions: hooks.useFolderSessions,
+  useCreateFolder: hooks.useCreateFolder,
+  useUpdateFolder: hooks.useUpdateFolder,
+  useDeleteFolder: hooks.useDeleteFolder,
 }));
 vi.mock('../hooks/useSessions', () => ({
   useSessions: hooks.useSessions,

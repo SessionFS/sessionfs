@@ -204,6 +204,53 @@ describe('SessionList empty state', () => {
     window.localStorage.removeItem('sfs-sessions-view');
   });
 
+  it('folder dropdown drives filter state when a folder is selected', async () => {
+    const user = userEvent.setup();
+    const now = new Date().toISOString();
+
+    hooks.useSessions.mockReturnValue({
+      data: {
+        sessions: [
+          {
+            id: 'ses_1', title: 'Test Session', source_tool: 'claude-code',
+            model_id: null, message_count: 5, total_input_tokens: 100, total_output_tokens: 200,
+            created_at: now, updated_at: now, last_user_at: now, tool_use_count: 0,
+          },
+        ],
+        total: 1, page: 1, page_size: 20, has_more: false,
+      },
+      isLoading: false, error: null,
+    });
+    hooks.useDeletedSessions.mockReturnValue({ data: { sessions: [] }, isLoading: false });
+    hooks.useRestoreSession.mockReturnValue({ mutate: vi.fn(), isPending: false });
+    hooks.useFolders.mockReturnValue({
+      data: {
+        folders: [
+          { id: 'fld_1', name: 'Bug fixes', color: '#f04060', bookmark_count: 3 },
+          { id: 'fld_2', name: 'Onboarding', color: '#3ddc84', bookmark_count: 1 },
+        ],
+      },
+      isLoading: false,
+    });
+    hooks.useAddBookmark.mockReturnValue({ mutateAsync: vi.fn() });
+    const folderSessions = vi.fn().mockReturnValue({ data: null, isLoading: false });
+    hooks.useFolderSessions.mockImplementation(folderSessions);
+
+    render(
+      <MemoryRouter>
+        <SessionList />
+      </MemoryRouter>,
+    );
+
+    // Open the folder dropdown
+    await user.click(screen.getByText('All Sessions'));
+    // Click a folder
+    await user.click(screen.getByText('Bug fixes'));
+
+    // useFolderSessions should have been called with the folder ID
+    expect(folderSessions).toHaveBeenCalledWith('fld_1');
+  });
+
   it('groups sessions by tool when "Sort: Tool" is selected', async () => {
     const user = userEvent.setup();
     const now = new Date().toISOString();
