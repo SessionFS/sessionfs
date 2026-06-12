@@ -1,5 +1,4 @@
 import { useState, useRef, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
 import type { FolderResponse } from '../api/client';
 import { useFolders, useCreateFolder, useUpdateFolder, useDeleteFolder } from '../hooks/useBookmarks';
 
@@ -17,7 +16,6 @@ interface BookmarkSidebarProps {
   bookmarkedCount: number;
   inRepoCount: number;
   inRepoLabel: string | null;
-  handoffCount: number;
   selectedFolderId: string | null;
   onSelectFolder: (folderId: string | null) => void;
 }
@@ -29,11 +27,9 @@ export default function BookmarkSidebar({
   bookmarkedCount: _bookmarkedCount,
   inRepoCount,
   inRepoLabel,
-  handoffCount,
   selectedFolderId,
   onSelectFolder,
 }: BookmarkSidebarProps) {
-  const navigate = useNavigate();
   const { data } = useFolders();
   const createFolder = useCreateFolder();
   const updateFolder = useUpdateFolder();
@@ -141,13 +137,7 @@ export default function BookmarkSidebar({
           </button>
         )}
 
-        <button
-          onClick={() => navigate('/handoffs')}
-          className={`w-full text-left px-3 py-2 text-[14px] rounded-r-md transition-colors flex items-center justify-between ${inactiveClass}`}
-        >
-          <span>Handoffs</span>
-          <span className="text-[12px] font-medium text-[var(--text-tertiary)] tabular-nums">{handoffCount}</span>
-        </button>
+        {/* Handoffs lives in the global sidebar now — not duplicated here. */}
 
         {/* Divider */}
         <div className="border-t border-[var(--border)] my-2" />
@@ -318,11 +308,9 @@ export function MobileNavChips({
   bookmarkedCount: _mobileBookmarkedCount,
   inRepoCount,
   inRepoLabel,
-  handoffCount,
   selectedFolderId,
   onSelectFolder,
 }: Omit<BookmarkSidebarProps, never>) {
-  const navigate = useNavigate();
   const { data } = useFolders();
   const folders = data?.folders ?? [];
 
@@ -354,12 +342,7 @@ export function MobileNavChips({
           This Repo ({inRepoCount})
         </button>
       )}
-      <button
-        onClick={() => navigate('/handoffs')}
-        className="shrink-0 px-3 py-1.5 rounded-full text-xs font-medium bg-[var(--surface)] text-[var(--text-secondary)] border border-[var(--border)] transition-colors"
-      >
-        Handoffs ({handoffCount})
-      </button>
+      {/* Handoffs lives in the global sidebar now — not duplicated here. */}
       {folders.map((f) => (
         <button
           key={f.id}

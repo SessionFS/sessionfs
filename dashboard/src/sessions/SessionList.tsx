@@ -429,7 +429,6 @@ export default function SessionList() {
         bookmarkedCount={totalBookmarked}
         inRepoCount={0}
         inRepoLabel={null}
-        handoffCount={pendingHandoffs.length}
         selectedFolderId={selectedFolderId}
         onSelectFolder={(id) => { setSelectedFolderId(id); setPage(1); }}
       />
@@ -443,7 +442,6 @@ export default function SessionList() {
           bookmarkedCount={totalBookmarked}
           inRepoCount={0}
           inRepoLabel={null}
-          handoffCount={pendingHandoffs.length}
           selectedFolderId={selectedFolderId}
           onSelectFolder={(id) => { setSelectedFolderId(id); setPage(1); }}
         />
