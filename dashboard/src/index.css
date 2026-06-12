@@ -156,6 +156,27 @@
   --color-danger: var(--danger);
   --color-warning: var(--warning);
   --color-info: var(--info);
+
+  /* === Canonical type scale ===
+     Dense dev-tool UI. Maps Tailwind's text-* utilities to our values so
+     components stop escape-hatching to text-[13px] etc. Conversion table:
+       text-[10px]/[11px] → text-2xs   text-[12px] → text-xs
+       text-[13px]        → text-sm    text-[14px] → text-base (UI default)
+       text-[15px]        → text-md    text-[17px]/[18px] → text-lg
+     Headings (h1/h2 + .text-display/.text-headline) keep their own scale. */
+  --text-2xs: 0.6875rem;            /* 11px — micro labels, eyebrows, kbd */
+  --text-2xs--line-height: 1.35;
+  --text-2xs--letter-spacing: 0.01em;
+  --text-xs: 0.75rem;               /* 12px — dense meta, counts */
+  --text-xs--line-height: 1.4;
+  --text-sm: 0.8125rem;             /* 13px — captions, secondary text (most common) */
+  --text-sm--line-height: 1.45;
+  --text-base: 0.875rem;            /* 14px — UI body default */
+  --text-base--line-height: 1.5;
+  --text-md: 0.9375rem;             /* 15px — emphasized body, card titles */
+  --text-md--line-height: 1.45;
+  --text-lg: 1.0625rem;             /* 17px — section/hero titles */
+  --text-lg--line-height: 1.35;
 }
 
 /* bookmark-pop removed — elastic/overshoot violates motion guidelines.
