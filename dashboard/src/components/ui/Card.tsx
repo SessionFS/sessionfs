@@ -22,7 +22,7 @@ export function Card({
 
   return (
     <div
-      className={`rounded-lg border border-[var(--border)] ${toolEdge || topEdge ? 'overflow-hidden' : ''} ${className}`}
+      className={`rounded-lg border border-border ${toolEdge || topEdge ? 'overflow-hidden' : ''} ${className}`}
       style={{
         backgroundColor: bgVar,
         ...(toolEdge

@@ -31,13 +31,8 @@ export function Tooltip({ content, children }: TooltipProps) {
       {visible && (
         <span
           role="tooltip"
-          className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-1 rounded text-[12px] leading-tight whitespace-nowrap z-50 pointer-events-none"
-          style={{
-            backgroundColor: 'var(--overlay)',
-            border: '1px solid var(--border)',
-            color: 'var(--text-primary)',
-            boxShadow: 'var(--shadow-md)',
-          }}
+          className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-1 rounded text-xs leading-tight whitespace-nowrap z-50 pointer-events-none border border-border bg-overlay text-text-primary"
+          style={{ boxShadow: 'var(--shadow-md)' }}
         >
           {content}
         </span>

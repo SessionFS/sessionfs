@@ -8,7 +8,7 @@ interface SkeletonProps {
 function SkeletonBlock({ className, style }: { className?: string; style?: React.CSSProperties }) {
   return (
     <div
-      className={`rounded-[var(--radius-sm)] animate-skeleton-pulse ${className ?? ''}`}
+      className={`rounded-sm animate-skeleton-pulse ${className ?? ''}`}
       style={{ backgroundColor: 'var(--bg-tertiary)', ...style }}
     />
   );
@@ -17,10 +17,7 @@ function SkeletonBlock({ className, style }: { className?: string; style?: React
 export default function Skeleton({ lines = 3, type = 'text' }: SkeletonProps) {
   if (type === 'card') {
     return (
-      <div
-        className="rounded-[var(--radius-lg)] border p-4 space-y-3"
-        style={{ borderColor: 'var(--border)', backgroundColor: 'var(--bg-elevated)' }}
-      >
+      <div className="rounded-lg border border-border bg-bg-elevated p-4 space-y-3">
         <SkeletonBlock className="h-4 w-2/3" />
         <SkeletonBlock className="h-3 w-full" />
         <SkeletonBlock className="h-3 w-4/5" />

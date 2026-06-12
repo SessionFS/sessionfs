@@ -22,7 +22,7 @@ interface TabsProps {
 export function Tabs({ tabs, activeKey, onChange, bare = false }: TabsProps) {
   return (
     <div>
-      <div className="flex gap-1 border-b border-[var(--border)] pb-0" role="tablist">
+      <div className="flex gap-1 border-b border-border pb-0" role="tablist">
         {tabs.map((tab) => {
           const active = tab.key === activeKey;
           return (
@@ -31,10 +31,10 @@ export function Tabs({ tabs, activeKey, onChange, bare = false }: TabsProps) {
               role="tab"
               aria-selected={active}
               onClick={() => onChange(tab.key)}
-              className={`px-3 py-1.5 rounded-[var(--radius-md)] text-[13px] font-medium transition-colors cursor-pointer outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] ${
+              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors cursor-pointer outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] ${
                 active
-                  ? 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-primary)]'
-                  : 'border border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)]'
+                  ? 'bg-surface border border-border text-text-primary'
+                  : 'border border-transparent text-text-secondary hover:text-text-primary hover:bg-surface-hover'
               }`}
             >
               {tab.label}

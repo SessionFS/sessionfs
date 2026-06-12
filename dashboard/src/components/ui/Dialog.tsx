@@ -47,13 +47,8 @@ export function Dialog({ open, onClose, titleId, className: panelClassName, chil
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className={`relative rounded-xl p-6 max-w-lg w-full mx-4 ${panelClassName ?? ''}`}
-        style={{
-          backgroundColor: 'var(--overlay)',
-          border: '1px solid var(--border)',
-          boxShadow: 'var(--shadow-overlay)',
-          animation: 'overlayEnter 150ms ease-out both',
-        }}
+        className={`relative rounded-xl p-6 max-w-lg w-full mx-4 border border-border bg-overlay ${panelClassName ?? ''}`}
+        style={{ boxShadow: 'var(--shadow-overlay)', animation: 'overlayEnter 150ms ease-out both' }}
       >
         {children}
       </div>
@@ -65,7 +60,7 @@ export function Dialog({ open, onClose, titleId, className: panelClassName, chil
 
 export function DialogHeader({ titleId, children }: { titleId: string; children: ReactNode }) {
   return (
-    <h2 id={titleId} className="text-lg font-semibold text-[var(--text-primary)] mb-4">
+    <h2 id={titleId} className="text-lg font-semibold text-text-primary mb-4">
       {children}
     </h2>
   );

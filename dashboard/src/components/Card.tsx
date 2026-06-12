@@ -12,10 +12,10 @@ export default function Card({ children, className = '', onClick, hoverable = fa
     <div
       onClick={onClick}
       className={[
-        'rounded-[var(--radius-lg)] border border-[var(--border)]',
-        'bg-[var(--bg-elevated)]',
+        'rounded-lg border border-border',
+        'bg-bg-elevated',
         hoverable
-          ? 'transition-[border-color] duration-150 hover:border-[var(--border-strong)] cursor-pointer outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]'
+          ? 'transition-[border-color] duration-150 hover:border-border-strong cursor-pointer outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]'
           : '',
         className,
       ]

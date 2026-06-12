@@ -14,7 +14,7 @@ describe('Button', () => {
 
   it('applies variant classes', () => {
     const { rerender } = render(<Button variant="primary">A</Button>);
-    expect(screen.getByRole('button')).toHaveClass('bg-[var(--brand)]');
+    expect(screen.getByRole('button')).toHaveClass('bg-brand');
 
     rerender(<Button variant="secondary">B</Button>);
     expect(screen.getByRole('button')).toHaveClass('border');
@@ -409,7 +409,7 @@ describe('Kbd', () => {
     render(<Kbd>K</Kbd>);
     const el = screen.getByText('K');
     expect(el).toHaveClass('font-mono');
-    expect(el).toHaveClass('bg-[var(--bg-sunken)]');
+    expect(el).toHaveClass('bg-bg-sunken');
   });
 });
 

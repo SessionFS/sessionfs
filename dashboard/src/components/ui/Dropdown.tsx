@@ -101,26 +101,22 @@ export function Dropdown({ trigger, items, onSelect, menuLabel, minWidthClass }:
 
       {open && (
         <div
-          className={`absolute top-full right-0 mt-1 z-40 ${minWidthClass || 'min-w-[160px]'} rounded-lg py-1`}
-          style={{
-            backgroundColor: 'var(--overlay)',
-            border: '1px solid var(--border)',
-            boxShadow: 'var(--shadow-overlay)',
-          }}
+          className={`absolute top-full right-0 mt-1 z-40 ${minWidthClass || 'min-w-[160px]'} rounded-lg py-1 border border-border bg-overlay`}
+          style={{ boxShadow: 'var(--shadow-overlay)' }}
         >
           <ul ref={listRef} role="menu" aria-label={menuLabel}>
             {items.map((item, i) => {
               if (item.separator) {
                 return (
                   <li key={item.key} role="none">
-                    <div className="border-t border-[var(--border)] my-1" />
+                    <div className="border-t border-border my-1" />
                   </li>
                 );
               }
               if (item.header) {
                 return (
                   <li key={item.key} role="none">
-                    <div className="flex items-center gap-2 px-3 py-2 text-[13px] text-[var(--text-primary)]">
+                    <div className="flex items-center gap-2 px-3 py-2 text-sm text-text-primary">
                       {item.icon}
                       <span className="flex-1 truncate">{item.label}</span>
                       {item.badge && (
@@ -143,21 +139,21 @@ export function Dropdown({ trigger, items, onSelect, menuLabel, minWidthClass }:
                         close();
                       }
                     }}
-                    className={`w-full text-left px-3 py-1.5 text-[13px] flex items-center gap-2 transition-colors duration-150 outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] rounded-[var(--radius-sm)] ${
+                    className={`w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 transition-colors duration-150 outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] rounded-sm ${
                       item.disabled
-                        ? 'text-[var(--text-tertiary)] cursor-not-allowed opacity-50'
+                        ? 'text-text-tertiary cursor-not-allowed opacity-50'
                         : enabledIdx === activeIndex
-                          ? 'bg-[var(--surface-active)] text-[var(--text-primary)]'
+                          ? 'bg-surface-active text-text-primary'
                           : item.danger
-                            ? 'text-[var(--danger)] hover:bg-[var(--surface-hover)]'
-                            : 'text-[var(--text-secondary)] hover:bg-[var(--surface-hover)]'
+                            ? 'text-danger hover:bg-surface-hover'
+                            : 'text-text-secondary hover:bg-surface-hover'
                     }`}
                   >
                     {item.icon}
                     <span className="flex-1">{item.label}</span>
                     {item.badge && (
                       <span
-                        className="ml-auto px-1.5 py-0.5 text-[11px] rounded-full font-medium shrink-0"
+                        className="ml-auto px-1.5 py-0.5 text-2xs rounded-full font-medium shrink-0"
                         style={{
                           backgroundColor: 'rgba(240,192,64,0.15)',
                           color: 'var(--warning)',

@@ -132,12 +132,12 @@ function SidebarLink({
     <Link
       to={item.to}
       onClick={onClick}
-      className={`flex items-center gap-2.5 rounded-[var(--radius-md)] text-[13px] font-medium transition-colors outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] ${
+      className={`flex items-center gap-2.5 rounded-md text-sm font-medium transition-colors outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] ${
         collapsed ? 'justify-center w-9 h-9 mx-auto' : 'px-3 py-1.5'
       } ${
         active
-          ? 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-primary)]'
-          : 'border border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)]'
+          ? 'bg-surface border border-border text-text-primary'
+          : 'border border-transparent text-text-secondary hover:text-text-primary hover:bg-surface-hover'
       }`}
       aria-current={active ? 'page' : undefined}
     >
@@ -302,7 +302,7 @@ export default function Layout() {
         {filteredGroups.map((group, gi) => (
           <div key={gi}>
             {group.label && !collapsed && (
-              <div className="text-micro uppercase font-semibold tracking-wide text-[var(--text-tertiary)] mt-5 mb-1 px-2">
+              <div className="text-micro uppercase font-semibold tracking-wide text-text-tertiary mt-5 mb-1 px-2">
                 {group.label}
               </div>
             )}
@@ -351,7 +351,7 @@ export default function Layout() {
       >
         {/* Top section — non-scrollable */}
         {/* Brand */}
-        <div className={`flex items-center ${collapsed ? 'justify-center' : 'px-4'}`} style={{ height: 56 }}>
+        <div className={`flex items-center ${collapsed ? 'justify-center' : 'px-4'} h-14`}>
           {collapsed ? (
             <Link to="/" aria-label="SessionFS home" className="flex items-center">
               <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--brand)" strokeWidth="2" strokeLinecap="round">
@@ -372,7 +372,7 @@ export default function Layout() {
           <div className="px-3 pb-2">
             <Link
               to="/settings/organization"
-              className="flex items-center gap-2 px-2 py-1 rounded-[var(--radius-md)] hover:bg-[var(--surface-hover)] transition-colors text-[11px] text-[var(--text-tertiary)] font-mono truncate"
+              className="flex items-center gap-2 px-2 py-1 rounded-md hover:bg-surface-hover transition-colors text-2xs text-text-tertiary font-mono truncate"
             >
               <span className="shrink-0 w-3.5 h-3.5">{orgIcon}</span>
               <span className="truncate">{me.data?.default_org_id}</span>
@@ -395,7 +395,7 @@ export default function Layout() {
           <button
             type="button"
             onClick={toggleCollapsed}
-            className="flex items-center justify-center w-7 h-7 rounded-[var(--radius-sm)] hover:bg-[var(--surface-hover)] transition-colors text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+            className="flex items-center justify-center w-7 h-7 rounded-sm hover:bg-surface-hover transition-colors text-text-tertiary hover:text-text-secondary"
             aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           >
             {collapsed ? expandIcon : collapseIcon}
@@ -407,17 +407,12 @@ export default function Layout() {
       <div className="flex-1 flex flex-col min-h-screen min-w-0">
         {/* ── Header (slim) ── */}
         <header
-          className="relative flex items-center justify-between px-5 shrink-0"
-          style={{
-            height: 56,
-            borderBottom: '1px solid var(--border)',
-            backgroundColor: 'var(--bg-secondary)',
-          }}
+          className="relative flex items-center justify-between px-5 shrink-0 h-14 border-b border-border bg-bg-secondary"
         >
           <div className="shell-divider pointer-events-none absolute inset-x-10 top-0 h-px" />
           {/* Center: brand tagline (the pre-redesign header treatment) */}
           <span
-            className="hidden md:block absolute left-1/2 -translate-x-1/2 text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)] pointer-events-none select-none whitespace-nowrap"
+            className="hidden md:block absolute left-1/2 -translate-x-1/2 text-2xs font-semibold uppercase tracking-[0.18em] text-text-tertiary pointer-events-none select-none whitespace-nowrap"
             aria-hidden="true"
           >
             Memory layer for AI coding agents
@@ -425,7 +420,7 @@ export default function Layout() {
           {/* Left: Hamburger (mobile) + page area */}
           <div className="flex items-center gap-2 shrink-0">
             <button
-              className="md:hidden flex items-center justify-center w-8 h-8 rounded-[var(--radius-md)] transition-colors hover:bg-[var(--surface-hover)]"
+              className="md:hidden flex items-center justify-center w-8 h-8 rounded-md transition-colors hover:bg-surface-hover"
               onClick={() => setDrawerOpen(true)}
               aria-label="Open navigation menu"
             >
@@ -443,13 +438,12 @@ export default function Layout() {
             <Dropdown
               trigger={(open) => (
                 <button
-                  className="flex items-center gap-2 rounded-[var(--radius-md)] px-2 py-1 transition-colors hover:bg-[var(--surface-hover)]"
+                  className="flex items-center gap-2 rounded-md px-2 py-1 transition-colors hover:bg-surface-hover"
                   aria-haspopup="menu"
                   aria-expanded={open}
                 >
                   <span
-                    className="flex items-center justify-center w-7 h-7 rounded-full text-xs font-semibold"
-                    style={{ backgroundColor: 'var(--brand)', color: 'var(--text-inverse)' }}
+                    className="flex items-center justify-center w-7 h-7 rounded-full text-xs font-semibold bg-brand text-text-inverse"
                   >
                     {userInitial}
                   </span>
@@ -481,20 +475,16 @@ export default function Layout() {
           {/* Drawer panel */}
           <nav
             aria-label="Primary"
-            className={`absolute top-0 left-0 bottom-0 w-64 flex flex-col transition-transform duration-200 ease-in-out ${
+            className={`absolute top-0 left-0 bottom-0 w-64 flex flex-col transition-transform duration-200 ease-in-out bg-bg-secondary border-r border-border ${
               drawerOpen ? 'translate-x-0' : '-translate-x-full'
             }`}
-            style={{
-              backgroundColor: 'var(--bg-secondary)',
-              borderRight: '1px solid var(--border)',
-            }}
           >
             {/* Drawer header */}
-            <div className="flex items-center justify-between px-4" style={{ height: 56 }}>
+            <div className="flex items-center justify-between px-4 h-14">
               <Wordmark size="sm" />
               <button
                 onClick={() => setDrawerOpen(false)}
-                className="flex items-center justify-center w-8 h-8 rounded-[var(--radius-md)] transition-colors hover:bg-[var(--surface-hover)]"
+                className="flex items-center justify-center w-8 h-8 rounded-md transition-colors hover:bg-surface-hover"
                 aria-label="Close navigation menu"
               >
                 <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
@@ -503,13 +493,13 @@ export default function Layout() {
                 </svg>
               </button>
             </div>
-            <div style={{ borderTop: '1px solid var(--border)' }} />
+            <div className="border-t border-border" />
             {/* Drawer links — full-width (always non-collapsed on mobile) */}
             <div className="flex flex-col flex-1 py-2 px-2 gap-0.5 overflow-y-auto">
               {filteredGroups.map((group, gi) => (
                 <div key={gi}>
                   {group.label && (
-                    <div className="text-micro uppercase font-semibold tracking-wide text-[var(--text-tertiary)] mt-4 mb-1 px-2">
+                    <div className="text-micro uppercase font-semibold tracking-wide text-text-tertiary mt-4 mb-1 px-2">
                       {group.label}
                     </div>
                   )}
@@ -521,10 +511,10 @@ export default function Layout() {
                         key={item.to}
                         to={item.to}
                         onClick={() => setDrawerOpen(false)}
-                        className={`flex items-center gap-2.5 px-3 py-2.5 rounded-[var(--radius-md)] text-[14px] transition-colors outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] ${
+                        className={`flex items-center gap-2.5 px-3 py-2.5 rounded-md text-base transition-colors outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] ${
                           active
-                            ? 'bg-[var(--surface-hover)] text-[var(--brand)] font-medium'
-                            : 'text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]'
+                            ? 'bg-surface-hover text-brand font-medium'
+                            : 'text-text-secondary hover:bg-surface-hover hover:text-text-primary'
                         }`}
                       >
                         <span className="shrink-0 flex items-center justify-center w-4 h-4">{item.icon}</span>
@@ -552,10 +542,10 @@ export default function Layout() {
                     key={item.to}
                     to={item.to}
                     onClick={() => setDrawerOpen(false)}
-                    className={`flex items-center gap-2.5 px-3 py-2.5 rounded-[var(--radius-md)] text-[14px] transition-colors outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] ${
+                    className={`flex items-center gap-2.5 px-3 py-2.5 rounded-md text-base transition-colors outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] ${
                       active
-                        ? 'bg-[var(--surface-hover)] text-[var(--brand)] font-medium'
-                        : 'text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]'
+                        ? 'bg-surface-hover text-brand font-medium'
+                        : 'text-text-secondary hover:bg-surface-hover hover:text-text-primary'
                     }`}
                   >
                     <span className="shrink-0 flex items-center justify-center w-4 h-4">{item.icon}</span>
@@ -568,7 +558,7 @@ export default function Layout() {
         </div>
 
         {/* ── Main content ── */}
-        <main className="relative flex-1 bg-[var(--bg-primary)] overflow-x-clip">
+        <main className="relative flex-1 bg-bg-primary overflow-x-clip">
           <div
             className="pointer-events-none absolute inset-x-0 top-0 h-48 opacity-80"
             style={{
@@ -587,16 +577,16 @@ export default function Layout() {
         </main>
 
         {/* ── Footer ── */}
-        <footer className="text-center py-8 text-[11px] text-[var(--text-tertiary)] border-t border-[var(--border)]">
-          <span className="font-semibold text-[var(--text-secondary)]">SessionFS</span>
-          <span className="mx-2 text-[var(--text-tertiary)]">·</span>
+        <footer className="text-center py-8 text-2xs text-text-tertiary border-t border-border">
+          <span className="font-semibold text-text-secondary">SessionFS</span>
+          <span className="mx-2 text-text-tertiary">·</span>
           Memory layer for AI coding agents
-          <span className="mx-2 text-[var(--text-tertiary)]">·</span>
+          <span className="mx-2 text-text-tertiary">·</span>
           v{__APP_VERSION__}
-          <span className="mx-2 text-[var(--text-tertiary)]">·</span>
-          <a href={siteHref('/quickstart/')} className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors">Docs</a> &middot;{' '}
-          <a href={siteHref('/')} className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors">Status</a> &middot;{' '}
-          <a href="mailto:support@sessionfs.dev" className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors">Support</a>
+          <span className="mx-2 text-text-tertiary">·</span>
+          <a href={siteHref('/quickstart/')} className="text-text-tertiary hover:text-text-secondary transition-colors">Docs</a> &middot;{' '}
+          <a href={siteHref('/')} className="text-text-tertiary hover:text-text-secondary transition-colors">Status</a> &middot;{' '}
+          <a href="mailto:support@sessionfs.dev" className="text-text-tertiary hover:text-text-secondary transition-colors">Support</a>
         </footer>
       </div>
     </div>

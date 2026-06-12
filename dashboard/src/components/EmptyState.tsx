@@ -12,16 +12,13 @@ export default function EmptyState({ icon, title, description, actionLabel, onAc
   return (
     <div className="flex flex-col items-center justify-center py-16 px-4 text-center">
       {icon && (
-        <div className="mb-4 text-[var(--text-tertiary)]">{icon}</div>
+        <div className="mb-4 text-text-tertiary">{icon}</div>
       )}
-      <h3
-        className="text-xl font-semibold mb-1"
-        style={{ color: 'var(--text-primary)' }}
-      >
+      <h3 className="text-xl font-semibold mb-1 text-text-primary">
         {title}
       </h3>
       {description && (
-        <p className="text-[15px] max-w-sm" style={{ color: 'var(--text-secondary)' }}>
+        <p className="text-md max-w-sm text-text-secondary">
           {description}
         </p>
       )}

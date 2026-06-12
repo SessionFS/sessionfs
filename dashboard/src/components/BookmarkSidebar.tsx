@@ -105,49 +105,49 @@ export default function BookmarkSidebar({
     return selectedFolderId === folderId;
   }
 
-  const activeClass = 'bg-[var(--surface-active,var(--bg-tertiary))] text-[var(--text-primary)] font-semibold border-l-[3px] border-l-[var(--brand)]';
-  const inactiveClass = 'text-[var(--text-secondary)] font-medium hover:bg-[var(--surface-hover,var(--bg-tertiary))] border-l-[3px] border-l-transparent';
+  const activeClass = 'bg-surface-active text-text-primary font-semibold border-l-[3px] border-l-brand';
+  const inactiveClass = 'text-text-secondary font-medium hover:bg-surface-hover border-l-[3px] border-l-transparent';
 
   // Mobile chips are rendered separately via MobileNavChips
 
   // Desktop: vertical rail
   const desktopRail = (
-    <div className="hidden sm:flex w-[220px] shrink-0 border-r border-[var(--border)] bg-[var(--bg-secondary)] flex-col overflow-y-auto">
+    <div className="hidden sm:flex w-[220px] shrink-0 border-r border-border bg-bg-secondary flex-col overflow-y-auto">
       <div className="p-3 flex flex-col gap-0.5">
         {/* Nav items */}
         <button
           onClick={() => { onSelectFilter('all'); onSelectFolder(null); }}
-          className={`w-full text-left px-3 py-2 text-[14px] rounded-r-md transition-colors flex items-center justify-between ${
+          className={`w-full text-left px-3 py-2 text-base rounded-r-md transition-colors flex items-center justify-between ${
             isActive('all') ? activeClass : inactiveClass
           }`}
         >
           <span>All Sessions</span>
-          <span className="text-[12px] font-medium text-[var(--text-tertiary)] tabular-nums">{totalCount}</span>
+          <span className="text-xs font-medium text-text-tertiary tabular-nums">{totalCount}</span>
         </button>
 
         {inRepoLabel && (
           <button
             onClick={() => { onSelectFilter('in-repo'); onSelectFolder(null); }}
-            className={`w-full text-left px-3 py-2 text-[14px] rounded-r-md transition-colors flex items-center justify-between ${
+            className={`w-full text-left px-3 py-2 text-base rounded-r-md transition-colors flex items-center justify-between ${
               isActive('in-repo') ? activeClass : inactiveClass
             }`}
           >
             <span className="truncate">In This Repo</span>
-            <span className="text-[12px] font-medium text-[var(--text-tertiary)] tabular-nums">{inRepoCount}</span>
+            <span className="text-xs font-medium text-text-tertiary tabular-nums">{inRepoCount}</span>
           </button>
         )}
 
         {/* Handoffs lives in the global sidebar now — not duplicated here. */}
 
         {/* Divider */}
-        <div className="border-t border-[var(--border)] my-2" />
+        <div className="border-t border-border my-2" />
 
         {/* Folders header */}
         <div className="flex items-center justify-between px-3 mb-2">
-          <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--text-tertiary)]">Folders</span>
+          <span className="text-2xs font-semibold uppercase tracking-wide text-text-tertiary">Folders</span>
           <button
             onClick={() => setShowCreate(true)}
-            className="text-[var(--text-tertiary)] hover:text-[var(--brand)] text-lg leading-none"
+            className="text-text-tertiary hover:text-brand text-lg leading-none"
             title="Create folder"
           >
             +
@@ -168,7 +168,7 @@ export default function BookmarkSidebar({
                     if (e.key === 'Escape') setEditingFolder(null);
                   }}
                   autoFocus
-                  className="w-full px-1.5 py-0.5 text-sm bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--text-primary)] outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+                  className="w-full px-1.5 py-0.5 text-sm bg-bg-primary border border-border rounded text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
                 />
                 <div className="flex gap-1">
                   {PRESET_COLORS.map((c) => (
@@ -183,13 +183,13 @@ export default function BookmarkSidebar({
                 <div className="flex gap-1">
                   <button
                     onClick={() => handleSaveEdit(f.id)}
-                    className="px-2 py-0.5 text-xs bg-[var(--brand)] text-white rounded hover:opacity-90"
+                    className="px-2 py-0.5 text-xs bg-brand text-white rounded hover:opacity-90"
                   >
                     Save
                   </button>
                   <button
                     onClick={() => setEditingFolder(null)}
-                    className="px-2 py-0.5 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+                    className="px-2 py-0.5 text-xs text-text-tertiary hover:text-text-secondary"
                   >
                     Cancel
                   </button>
@@ -199,7 +199,7 @@ export default function BookmarkSidebar({
               <div className="flex items-center group">
                 <button
                   onClick={() => { onSelectFolder(f.id); onSelectFilter(f.id); }}
-                  className={`flex-1 flex items-center gap-2 px-3 py-2 text-[14px] rounded-r-md transition-colors text-left ${
+                  className={`flex-1 flex items-center gap-2 px-3 py-2 text-base rounded-r-md transition-colors text-left ${
                     isFolderActive(f.id) ? activeClass : inactiveClass
                   }`}
                 >
@@ -208,14 +208,14 @@ export default function BookmarkSidebar({
                     style={{ backgroundColor: f.color || '#4f9cf7' }}
                   />
                   <span className="truncate flex-1">{f.name}</span>
-                  <span className="text-[var(--text-tertiary)] text-[12px] font-medium tabular-nums">{f.bookmark_count}</span>
+                  <span className="text-text-tertiary text-xs font-medium tabular-nums">{f.bookmark_count}</span>
                 </button>
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
                     setMenuFolder(menuFolder === f.id ? null : f.id);
                   }}
-                  className="px-1 text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] opacity-0 group-hover:opacity-100 transition-opacity text-xs"
+                  className="px-1 text-text-tertiary hover:text-text-secondary opacity-0 group-hover:opacity-100 transition-opacity text-xs"
                 >
                   ...
                 </button>
@@ -226,17 +226,17 @@ export default function BookmarkSidebar({
             {menuFolder === f.id && (
               <div
                 ref={menuRef}
-                className="absolute right-0 top-8 z-10 bg-[var(--bg-primary)] border border-[var(--border)] rounded shadow-lg py-1 min-w-[100px]"
+                className="absolute right-0 top-8 z-10 bg-bg-primary border border-border rounded shadow-lg py-1 min-w-[100px]"
               >
                 <button
                   onClick={() => handleStartEdit(f)}
-                  className="w-full text-left px-3 py-1 text-sm text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"
+                  className="w-full text-left px-3 py-1 text-sm text-text-secondary hover:bg-bg-tertiary"
                 >
                   Rename
                 </button>
                 <button
                   onClick={() => handleDelete(f.id)}
-                  className="w-full text-left px-3 py-1 text-sm text-red-400 hover:bg-[var(--bg-tertiary)]"
+                  className="w-full text-left px-3 py-1 text-sm text-red-400 hover:bg-bg-tertiary"
                 >
                   Delete
                 </button>
@@ -247,7 +247,7 @@ export default function BookmarkSidebar({
 
         {/* Create folder inline */}
         {showCreate && (
-          <div className="mt-2 p-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded space-y-2">
+          <div className="mt-2 p-2 bg-bg-primary border border-border rounded space-y-2">
             <input
               type="text"
               value={newName}
@@ -258,7 +258,7 @@ export default function BookmarkSidebar({
               }}
               placeholder="Folder name"
               autoFocus
-              className="w-full px-2 py-1 text-sm bg-[var(--bg-secondary)] border border-[var(--border)] rounded text-[var(--text-primary)] outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+              className="w-full px-2 py-1 text-sm bg-bg-secondary border border-border rounded text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
             />
             <div className="flex gap-1">
               {PRESET_COLORS.map((c) => (
@@ -274,13 +274,13 @@ export default function BookmarkSidebar({
               <button
                 onClick={handleCreate}
                 disabled={!newName.trim() || createFolder.isPending}
-                className="px-2 py-0.5 text-xs bg-[var(--brand)] text-white rounded hover:opacity-90 disabled:opacity-50"
+                className="px-2 py-0.5 text-xs bg-brand text-white rounded hover:opacity-90 disabled:opacity-50"
               >
                 Create
               </button>
               <button
                 onClick={() => setShowCreate(false)}
-                className="px-2 py-0.5 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+                className="px-2 py-0.5 text-xs text-text-tertiary hover:text-text-secondary"
               >
                 Cancel
               </button>
@@ -289,7 +289,7 @@ export default function BookmarkSidebar({
         )}
 
         {folders.length === 0 && !showCreate && (
-          <div className="px-3 py-2 text-xs text-[var(--text-tertiary)]">
+          <div className="px-3 py-2 text-xs text-text-tertiary">
             No folders yet
           </div>
         )}
@@ -327,7 +327,7 @@ export function MobileNavChips({
       <button
         onClick={() => { onSelectFilter('all'); onSelectFolder(null); }}
         className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
-          isActive('all') ? 'bg-[var(--brand)] text-white' : 'bg-[var(--surface)] text-[var(--text-secondary)] border border-[var(--border)]'
+          isActive('all') ? 'bg-brand text-white' : 'bg-surface text-text-secondary border border-border'
         }`}
       >
         All ({totalCount})
@@ -336,7 +336,7 @@ export function MobileNavChips({
         <button
           onClick={() => { onSelectFilter('in-repo'); onSelectFolder(null); }}
           className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
-            isActive('in-repo') ? 'bg-[var(--brand)] text-white' : 'bg-[var(--surface)] text-[var(--text-secondary)] border border-[var(--border)]'
+            isActive('in-repo') ? 'bg-brand text-white' : 'bg-surface text-text-secondary border border-border'
           }`}
         >
           This Repo ({inRepoCount})
@@ -348,7 +348,7 @@ export function MobileNavChips({
           key={f.id}
           onClick={() => { onSelectFolder(f.id); onSelectFilter(f.id); }}
           className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
-            isFolderActive(f.id) ? 'bg-[var(--brand)] text-white' : 'bg-[var(--surface)] text-[var(--text-secondary)] border border-[var(--border)]'
+            isFolderActive(f.id) ? 'bg-brand text-white' : 'bg-surface text-text-secondary border border-border'
           }`}
         >
           {f.name} ({f.bookmark_count})

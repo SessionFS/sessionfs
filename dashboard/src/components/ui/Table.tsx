@@ -28,7 +28,7 @@ export function Table<T>({ columns, data, onRowClick, rowKey }: TableProps<T>) {
             {columns.map((col) => (
               <th
                 key={col.key}
-                className={`sticky top-0 z-10 bg-[var(--surface)] px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.04em] text-[var(--text-tertiary)] border-b border-[var(--border)] ${
+                className={`sticky top-0 z-10 bg-surface px-3 py-2 text-2xs font-semibold uppercase tracking-[0.04em] text-text-tertiary border-b border-border ${
                   col.align === 'right' ? 'text-right' : 'text-left'
                 } ${col.width ?? ''}`}
               >
@@ -42,14 +42,14 @@ export function Table<T>({ columns, data, onRowClick, rowKey }: TableProps<T>) {
             <tr
               key={rowKey(row)}
               onClick={() => onRowClick?.(row)}
-              className={`border-b border-[var(--border)] transition-colors duration-150 outline-none ${
-                onRowClick ? 'cursor-pointer hover:bg-[var(--surface-hover)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] focus-visible:bg-[var(--surface-hover)]' : ''
+              className={`border-b border-border transition-colors duration-150 outline-none ${
+                onRowClick ? 'cursor-pointer hover:bg-surface-hover focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] focus-visible:bg-surface-hover' : ''
               }`}
             >
               {columns.map((col) => (
                 <td
                   key={col.key}
-                  className={`px-3 py-2.5 text-[13px] text-[var(--text-primary)] ${
+                  className={`px-3 py-2.5 text-sm text-text-primary ${
                     col.align === 'right' ? 'text-right tabular-nums' : 'text-left'
                   }`}
                 >
@@ -61,7 +61,7 @@ export function Table<T>({ columns, data, onRowClick, rowKey }: TableProps<T>) {
         </tbody>
       </table>
       {data.length === 0 && (
-        <div className="px-3 py-8 text-center text-[13px] text-[var(--text-tertiary)]">
+        <div className="px-3 py-8 text-center text-sm text-text-tertiary">
           No data
         </div>
       )}

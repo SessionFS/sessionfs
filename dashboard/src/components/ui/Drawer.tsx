@@ -78,18 +78,14 @@ export function Drawer({ open, onClose, titleId, children }: DrawerProps) {
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className="sfs-drawer-panel absolute right-0 top-0 bottom-0 w-[480px] max-w-full overflow-y-auto"
-        style={{
-          backgroundColor: 'var(--overlay)',
-          borderLeft: '1px solid var(--border)',
-          animation: 'sfs-drawer-in 150ms ease-out',
-        }}
+        className="sfs-drawer-panel absolute right-0 top-0 bottom-0 w-[480px] max-w-full overflow-y-auto border-l border-border bg-overlay"
+        style={{ animation: 'sfs-drawer-in 150ms ease-out' }}
       >
         {/* X close button */}
         <button
           type="button"
           onClick={onClose}
-          className="absolute top-3 right-3 p-2 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-sunken)] outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+          className="absolute top-3 right-3 p-2 rounded-lg text-text-tertiary hover:text-text-primary hover:bg-bg-sunken outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
           aria-label="Close drawer"
         >
           <svg

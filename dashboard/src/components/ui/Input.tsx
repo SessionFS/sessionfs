@@ -3,7 +3,7 @@ import { useId, type InputHTMLAttributes, type TextareaHTMLAttributes, type Sele
 /* ── shared field styling ── */
 
 const baseField =
-  'w-full bg-[var(--bg-sunken)] border border-[var(--border)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] transition-[background-color,border-color,box-shadow] duration-150 ease-out outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] disabled:opacity-50 disabled:cursor-not-allowed';
+  'w-full bg-bg-sunken border border-border rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary transition-[background-color,border-color,box-shadow] duration-150 ease-out outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] disabled:opacity-50 disabled:cursor-not-allowed';
 
 const errorField =
   'border-[var(--danger)] focus-visible:border-[var(--danger)] focus-visible:shadow-[0_0_0_3px_rgba(240,64,96,0.25)]';
@@ -21,13 +21,13 @@ function FieldWrapper({ label, htmlFor, error, children }: FieldWrapperProps) {
   return (
     <div className="flex flex-col gap-1">
       {label && (
-        <label htmlFor={htmlFor} className="text-[13px] font-medium text-[var(--text-secondary)]">
+        <label htmlFor={htmlFor} className="text-sm font-medium text-text-secondary">
           {label}
         </label>
       )}
       {children}
       {error && (
-        <p className="text-[12px] text-[var(--danger)] mt-0.5" role="alert">
+        <p className="text-xs text-danger mt-0.5" role="alert">
           {error}
         </p>
       )}
@@ -106,7 +106,7 @@ export function Select({ error, options, className = '', id, title, ...rest }: S
           ))}
         </select>
         <svg
-          className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--text-tertiary)] pointer-events-none"
+          className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-tertiary pointer-events-none"
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"

@@ -12,11 +12,11 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 
 const VARIANT_CLASSES: Record<ButtonVariant, string> = {
   primary:
-    'bg-[var(--brand)] text-white hover:opacity-90 shadow-[0_4px_16px_var(--brand-glow)]',
+    'bg-brand text-white hover:opacity-90 shadow-[0_4px_16px_var(--brand-glow)]',
   secondary:
-    'bg-[var(--surface)] text-[var(--text-secondary)] border border-[var(--border)] hover:bg-[var(--bg-elevated)] hover:border-[var(--border-strong)]',
+    'bg-surface text-text-secondary border border-border hover:bg-bg-elevated hover:border-border-strong',
   ghost:
-    'bg-transparent text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]',
+    'bg-transparent text-text-secondary hover:bg-surface-hover hover:text-text-primary',
   danger:
     'bg-[var(--danger)] text-white hover:opacity-90',
 };

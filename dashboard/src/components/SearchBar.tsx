@@ -175,7 +175,7 @@ export default function SearchBar({ inputId, className }: { inputId?: string; cl
 
     return (
       <li key={key} role="presentation">
-        <div className="px-3 py-1.5 text-micro font-semibold uppercase text-[var(--text-tertiary)] select-none">
+        <div className="px-3 py-1.5 text-micro font-semibold uppercase text-text-tertiary select-none">
           {GROUP_LABELS[key]}
         </div>
         <ul role="group" aria-label={GROUP_LABELS[key]}>
@@ -192,25 +192,25 @@ export default function SearchBar({ inputId, className }: { inputId?: string; cl
                 data-index={flatIdx}
                 onMouseEnter={() => setActiveIndex(flatIdx)}
                 onClick={() => selectResult(r.session_id)}
-                className={`flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors duration-150 border-b border-[var(--border)]/50 last:border-b-0 ${
-                  isActive ? 'bg-[var(--surface-active)] shadow-[0_0_0_1px_var(--brand-glow)]' : 'bg-transparent'
+                className={`flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors duration-150 border-b border-border/50 last:border-b-0 ${
+                  isActive ? 'bg-surface-active shadow-[0_0_0_1px_var(--brand-glow)]' : 'bg-transparent'
                 }`}
               >
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-0.5">
-                    <span className="text-sm text-[var(--text-primary)] truncate flex-1">
+                    <span className="text-sm text-text-primary truncate flex-1">
                       {r.title || r.alias || 'Untitled session'}
                     </span>
-                    <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-[var(--brand)]/15 text-[var(--brand)] shrink-0">
+                    <span className="text-2xs font-medium px-1.5 py-0.5 rounded bg-brand/15 text-brand shrink-0">
                       {abbreviateTool(r.source_tool)}
                     </span>
-                    <span className="text-[10px] text-[var(--text-tertiary)] shrink-0">
+                    <span className="text-2xs text-text-tertiary shrink-0">
                       <RelativeDate iso={r.updated_at} />
                     </span>
                   </div>
                   {r.matches[0] && (
                     <p
-                      className="text-xs text-[var(--text-secondary)] truncate [&_mark]:bg-[var(--brand)]/20 [&_mark]:text-[var(--brand)] [&_mark]:px-0.5 [&_mark]:rounded"
+                      className="text-xs text-text-secondary truncate [&_mark]:bg-brand/20 [&_mark]:text-brand [&_mark]:px-0.5 [&_mark]:rounded"
                       dangerouslySetInnerHTML={{
                         __html: renderSnippet(r.matches[0].snippet),
                       }}
@@ -218,9 +218,9 @@ export default function SearchBar({ inputId, className }: { inputId?: string; cl
                   )}
                 </div>
                 <span
-                  className={`text-[11px] font-medium px-2 py-0.5 rounded shrink-0 transition-opacity ${
+                  className={`text-2xs font-medium px-2 py-0.5 rounded shrink-0 transition-opacity ${
                     isActive
-                      ? 'opacity-100 text-[var(--brand)] bg-[var(--brand)]/10'
+                      ? 'opacity-100 text-brand bg-brand/10'
                       : 'opacity-0'
                   }`}
                 >
@@ -268,7 +268,7 @@ export default function SearchBar({ inputId, className }: { inputId?: string; cl
           }}
           onKeyDown={handleKeyDown}
           placeholder="Search sessions… (\u2318K)"
-          className="w-full pl-8 pr-12 py-1.5 bg-[var(--bg-sunken)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] focus-visible:outline-none focus-visible:border-[var(--brand)] transition-[background-color,border-color,box-shadow] duration-150 ease-out focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+          className="w-full pl-8 pr-12 py-1.5 bg-bg-sunken border border-border rounded-lg text-sm text-text-primary placeholder:text-text-tertiary focus-visible:outline-none focus-visible:border-[var(--brand)] transition-[background-color,border-color,box-shadow] duration-150 ease-out focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
         />
         <span className="absolute right-2.5 top-1/2 -translate-y-1/2 hidden sm:inline-flex">
           <Kbd>{'\u2318'}K</Kbd>
@@ -281,9 +281,8 @@ export default function SearchBar({ inputId, className }: { inputId?: string; cl
           id={listboxId}
           role="listbox"
           aria-label="Search results"
-          className="absolute top-full left-0 right-0 mt-1 border border-[var(--border)] rounded-lg overflow-auto max-h-[360px] z-50"
+          className="absolute top-full left-0 right-0 mt-1 border border-border rounded-lg overflow-auto max-h-[360px] z-50 bg-overlay"
           style={{
-            backgroundColor: 'var(--overlay)',
             boxShadow: 'var(--shadow-overlay)',
             maskImage: 'linear-gradient(to bottom, black 0%, black calc(100% - 20px), transparent 100%)',
             WebkitMaskImage: 'linear-gradient(to bottom, black 0%, black calc(100% - 20px), transparent 100%)',
@@ -296,7 +295,7 @@ export default function SearchBar({ inputId, className }: { inputId?: string; cl
                 setOpen(false);
                 navigate(`/search?q=${encodeURIComponent(input.trim())}`);
               }}
-              className="w-full px-3 py-2 text-xs text-[var(--brand)] hover:bg-[var(--surface-hover)] transition-colors duration-150 text-center border-t border-[var(--border)]"
+              className="w-full px-3 py-2 text-xs text-brand hover:bg-surface-hover transition-colors duration-150 text-center border-t border-border"
             >
               View all results
             </button>
@@ -308,11 +307,8 @@ export default function SearchBar({ inputId, className }: { inputId?: string; cl
         <div
           role="listbox"
           id={listboxId}
-          className="absolute top-full left-0 right-0 mt-1 border border-[var(--border)] rounded-lg z-50 px-3 py-3 text-sm text-[var(--text-tertiary)] text-center"
-          style={{
-            backgroundColor: 'var(--overlay)',
-            boxShadow: 'var(--shadow-overlay)',
-          }}
+          className="absolute top-full left-0 right-0 mt-1 border border-border rounded-lg z-50 px-3 py-3 text-sm text-text-tertiary text-center bg-overlay"
+          style={{ boxShadow: 'var(--shadow-overlay)' }}
         >
           No results found
         </div>
