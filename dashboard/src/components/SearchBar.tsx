@@ -42,7 +42,7 @@ const GROUP_LABELS: Record<keyof GroupedResults, string> = {
 
 const GROUP_ORDER: (keyof GroupedResults)[] = ['sessions', 'projects', 'handoffs'];
 
-export default function SearchBar() {
+export default function SearchBar({ inputId, className }: { inputId?: string; className?: string }) {
   const navigate = useNavigate();
   const [input, setInput] = useState('');
   const [query, setQuery] = useState('');
@@ -235,7 +235,7 @@ export default function SearchBar() {
   }
 
   return (
-    <div ref={wrapperRef} className="relative flex-1 max-w-md mx-4">
+    <div ref={wrapperRef} className={className || 'relative flex-1 max-w-md mx-4'}>
       <div className="relative">
         <svg
           className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted"
@@ -252,6 +252,7 @@ export default function SearchBar() {
         </svg>
         <input
           ref={inputRef}
+          id={inputId}
           type="text"
           role="combobox"
           aria-label="Search sessions"

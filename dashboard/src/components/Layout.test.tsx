@@ -216,4 +216,105 @@ describe('Layout', () => {
     });
 
   });
+
+  // ── Sidebar tests ──
+
+  describe('sidebar', () => {
+    it('renders nav with aria-label="Primary" inside an aside', () => {
+      renderLayout();
+      // Sidebar + mobile drawer each have a <nav aria-label="Primary">
+      const navs = screen.getAllByRole('navigation', { name: 'Primary' });
+      expect(navs.length).toBeGreaterThanOrEqual(1);
+      // At least one is inside an <aside> (the desktop sidebar)
+      expect(navs.some((n) => n.closest('aside'))).toBe(true);
+    });
+
+    it('renders all ungrouped nav items (Sessions, Projects, Handoffs)', () => {
+      renderLayout();
+      // In jsdom both sidebar and mobile drawer are visible simultaneously
+      // (no CSS media-query eval). Use getAllByRole to tolerate duplicates.
+      expect(screen.getAllByRole('link', { name: /Sessions/ }).length).toBeGreaterThan(0);
+      expect(screen.getAllByRole('link', { name: /Projects/ }).length).toBeGreaterThan(0);
+      expect(screen.getAllByRole('link', { name: /Handoffs/ }).length).toBeGreaterThan(0);
+    });
+
+    it('renders ORGANIZATION group label text', () => {
+      renderLayout();
+      // The uppercase group label appears in the sidebar (text-micro, uppercase)
+      const labels = screen.getAllByText('Organization');
+      expect(labels.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('hides org-only Organization nav link for solo users', () => {
+      useMeMock.mockReturnValue({
+        data: { tier: 'free', email: 'solo@sessionfs.dev' },
+      });
+      renderLayout();
+      // The Organization link (to /settings/organization) should be absent
+      const links = screen.queryAllByRole('link', { name: 'Organization' });
+      expect(links.length).toBe(0);
+    });
+
+    it('shows org chip when user has default_org_id', () => {
+      renderLayout();
+      const chip = screen.getByText('org_123');
+      const chipLink = chip.closest('a');
+      expect(chipLink).toBeInTheDocument();
+      expect(chipLink).toHaveAttribute('href', '/settings/organization');
+    });
+
+    it('hides org chip for solo users', () => {
+      useMeMock.mockReturnValue({
+        data: { tier: 'free', email: 'solo@sessionfs.dev' },
+      });
+      renderLayout();
+      expect(screen.queryByText('org_123')).not.toBeInTheDocument();
+    });
+
+    it('renders bottom-pinned Settings, Help, and Admin (admin user)', () => {
+      renderLayout();
+      // Sidebar + mobile drawer both render links in jsdom
+      expect(screen.getAllByRole('link', { name: /Settings/ }).length).toBeGreaterThan(0);
+      expect(screen.getAllByRole('link', { name: /Help/ }).length).toBeGreaterThan(0);
+      expect(screen.getAllByRole('link', { name: /Admin/ }).length).toBeGreaterThan(0);
+    });
+
+    it('hides Admin from bottom items for non-admin users', () => {
+      useMeMock.mockReturnValue({
+        data: { tier: 'team', email: 'team@acme.corp', default_org_id: 'org_123' },
+      });
+      renderLayout();
+      expect(screen.queryByRole('link', { name: /Admin/ })).not.toBeInTheDocument();
+    });
+
+    it('renders SearchBar (via mock)', () => {
+      renderLayout();
+      expect(screen.getByTestId('search-bar')).toBeInTheDocument();
+    });
+
+    describe('collapse', () => {
+      it('reads collapsed state from localStorage on mount', () => {
+        localStorage.setItem('sfs-sidebar-collapsed', 'true');
+        renderLayout();
+        expect(screen.getByLabelText('Expand sidebar')).toBeInTheDocument();
+        localStorage.removeItem('sfs-sidebar-collapsed');
+      });
+
+      it('defaults to expanded when no localStorage key', () => {
+        localStorage.removeItem('sfs-sidebar-collapsed');
+        renderLayout();
+        expect(screen.getByLabelText('Collapse sidebar')).toBeInTheDocument();
+      });
+
+      it('persists collapsed state to localStorage on toggle', async () => {
+        localStorage.removeItem('sfs-sidebar-collapsed');
+        renderLayout();
+        const btn = screen.getByLabelText('Collapse sidebar');
+        await userEvent.click(btn);
+        expect(localStorage.getItem('sfs-sidebar-collapsed')).toBe('true');
+        expect(screen.getByLabelText('Expand sidebar')).toBeInTheDocument();
+        localStorage.removeItem('sfs-sidebar-collapsed');
+      });
+    });
+  });
 });
