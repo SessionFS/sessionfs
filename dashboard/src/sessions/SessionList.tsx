@@ -423,8 +423,6 @@ export default function SessionList() {
     addToast('success', `Resume command copied${CAPTURE_ONLY_TOOLS.has(tool) ? ` (${tool} is capture-only, using claude-code)` : ''}`);
   }
 
-  const latestHandoff = pendingHandoffs.length > 0 ? pendingHandoffs[0] : null;
-
   return (
     <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4">
 
@@ -440,73 +438,52 @@ export default function SessionList() {
           onSelectFolder={(id) => { setSelectedFolderId(id); setPage(1); }}
         />
 
-        {/* ── Hero: Best next action ── */}
+        {/* ── Compact resume bar ── */}
         {!isLoading && !showTrash && mostRecent && (
-          <div
-            className="rounded-xl px-5 py-4 mb-5 bg-[var(--bg-elevated)] border border-[var(--border)]"
-          >
-            <div className="flex flex-col sm:flex-row sm:items-center gap-4">
-              {/* Left: session to resume */}
-              <div className="flex-1 min-w-0">
-                <h2
-                  className="text-[17px] font-semibold text-[var(--text-primary)] truncate cursor-pointer hover:text-[var(--brand)] transition-colors"
+          <div className="flex items-center gap-3 px-4 h-16 bg-[var(--bg-elevated)] border border-[var(--border)] rounded-[var(--radius-lg)] mb-5">
+            {/* Left: eyebrow + title + meta */}
+            <div className="flex-1 min-w-0 flex flex-col justify-center gap-0.5">
+              <span className="text-micro uppercase font-semibold text-[var(--text-tertiary)]">Continue where you left off</span>
+              <div className="flex items-center gap-2 min-w-0">
+                <span
+                  className="text-[15px] font-semibold text-[var(--text-primary)] truncate cursor-pointer hover:text-[var(--brand)] transition-colors"
                   onClick={() => navigate(`/sessions/${mostRecent.id}`)}
                 >
                   {mostRecent.title || 'Untitled session'}
-                </h2>
-                <div className="flex items-center gap-2 mt-1 text-sm text-[var(--text-tertiary)]">
-                  <span
-                    className="w-2 h-2 rounded-full shrink-0"
-                    style={{ backgroundColor: TOOL_COLORS[mostRecent.source_tool] || '#6B7280' }}
-                  />
-                  <span>{fullToolName(mostRecent.source_tool)}</span>
-                  {mostRecent.model_id && mostRecent.model_id !== '<synthetic>' && (
-                    <>
-                      <span className="opacity-40">&middot;</span>
-                      <span>{abbreviateModel(mostRecent.model_id)}</span>
-                    </>
-                  )}
-                  <span className="opacity-40">&middot;</span>
+                </span>
+                <span
+                  className="w-2 h-2 rounded-full shrink-0"
+                  style={{ backgroundColor: TOOL_COLORS[mostRecent.source_tool] || 'var(--text-tertiary)' }}
+                />
+                <span className="text-mono-chip">{fullToolName(mostRecent.source_tool)}</span>
+                <span className="text-caption text-[var(--text-tertiary)]">
                   <RelativeDate iso={mostRecent.updated_at} />
-                </div>
-                <div className="mt-3 flex items-center gap-3">
-                  <button
-                    onClick={() => handleResume(mostRecent)}
-                    className="px-4 py-2 bg-[var(--brand)] text-white text-sm font-semibold rounded-lg hover:opacity-90 transition-opacity outline-none shadow-[0_4px_16px_var(--brand-glow)] focus-visible:shadow-[0_4px_16px_var(--brand-glow),0_0_0_3px_var(--brand-glow)]"
-                  >
-                    {CAPTURE_ONLY_TOOLS.has(mostRecent.source_tool) ? 'Resume in Claude Code' : 'Resume'}
-                  </button>
-                  <button
-                    onClick={() => navigate(`/sessions/${mostRecent.id}`)}
-                    className="px-4 py-2 border border-[var(--border)] text-sm font-medium text-[var(--text-secondary)] rounded-lg hover:bg-[var(--surface-hover)] transition-colors"
-                  >
-                    View
-                  </button>
-                </div>
+                </span>
               </div>
+            </div>
 
-              {/* Right: compact status chips */}
-              <div className="flex sm:flex-col items-start gap-2 shrink-0">
-                {pendingHandoffs.length > 0 ? (
-                  <Link
-                    to={latestHandoff ? `/handoffs/${latestHandoff.id}` : '#'}
-                    className="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-[var(--brand)] bg-[var(--brand)]/10 rounded-lg hover:bg-[var(--brand)]/20 transition-colors"
-                  >
-                    <span className="w-2 h-2 rounded-full bg-[var(--brand)] animate-pulse" />
-                    {pendingHandoffs.length} pending handoff{pendingHandoffs.length !== 1 ? 's' : ''}
-                  </Link>
-                ) : (
-                  <span className="inline-flex items-center gap-2 px-3 py-1.5 text-sm text-[var(--text-tertiary)]">
-                    No pending handoffs
-                  </span>
-                )}
+            {/* Right: pending handoff badge + actions */}
+            <div className="flex items-center gap-2 shrink-0">
+              {pendingHandoffs.length > 0 && (
                 <Link
-                  to="/projects"
-                  className="inline-flex items-center gap-1 px-3 py-1.5 text-sm text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors"
+                  to="/handoffs"
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-full bg-[var(--brand)]/10 text-[var(--brand)] hover:bg-[var(--brand)]/20 transition-colors"
                 >
-                  Projects <span aria-hidden="true">&rarr;</span>
+                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--brand)]" />
+                  {pendingHandoffs.length} pending handoff{pendingHandoffs.length !== 1 ? 's' : ''}
                 </Link>
-              </div>
+              )}
+              <Button
+                onClick={() => handleResume(mostRecent)}
+              >
+                {CAPTURE_ONLY_TOOLS.has(mostRecent.source_tool) ? 'Resume in Claude Code' : 'Resume'}
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => navigate(`/sessions/${mostRecent.id}`)}
+              >
+                View
+              </Button>
             </div>
           </div>
         )}
