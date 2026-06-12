@@ -29,8 +29,8 @@
   --border-strong: oklch(40% 0.012 255);   /* focus / emphasis border */
 
   --text-primary:   oklch(93% 0 0);
-  --text-secondary: oklch(72% 0 0);
-  --text-tertiary:  oklch(60% 0 0);
+  --text-secondary: oklch(75% 0 0);
+  --text-tertiary:  oklch(66% 0 0);
   --text-inverse:   oklch(16% 0 0);
 
   /* Dark-mode shadows: surface steps do the work; only overlay gets a faint ambient lift */
@@ -267,7 +267,7 @@ code, pre, kbd, samp {
 .text-headline { font-size: 1.5rem; line-height: 1.3; font-weight: 700; letter-spacing: -0.015em; font-optical-sizing: auto; }
 .text-title { font-size: 1.1875rem; line-height: 1.4; font-weight: 600; }
 .text-body { font-size: 0.9375rem; line-height: 1.5; }
-.text-caption { font-size: 0.75rem; line-height: 1.4; color: var(--text-tertiary); }
+.text-caption { font-size: 0.8125rem; line-height: 1.4; color: var(--text-tertiary); }
 .text-micro { font-size: 0.6875rem; line-height: 1.3; letter-spacing: 0.02em; }
 
 /* Prose blocks — comfortable reading width */
