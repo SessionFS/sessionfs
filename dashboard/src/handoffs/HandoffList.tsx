@@ -96,6 +96,7 @@ export default function HandoffList() {
                 </div>
                 <Badge
                   variant={STATUS_VARIANT[h.status] ?? 'default'}
+                  tint
                   label={h.status}
                   size="sm"
                 />

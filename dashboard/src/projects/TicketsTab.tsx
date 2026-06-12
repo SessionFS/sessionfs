@@ -41,10 +41,12 @@ import {
   DialogHeader,
   DialogFooter,
   Drawer,
+  Dropdown,
   Input,
   Select,
   Textarea,
 } from '../components/ui';
+import { Badge } from '../components/Badge';
 
 interface TicketsTabProps {
   projectId: string;
@@ -71,17 +73,6 @@ const KIND_FILTERS: { value: string; label: string }[] = [
 /** Statuses that appear as board columns (all non-empty filter values). */
 const BOARD_STATUSES = STATUS_FILTERS.filter((s) => s.value !== '');
 
-const STATUS_TONE: Record<string, string> = {
-  suggested: 'bg-amber-500/15 text-amber-600',
-  open: 'bg-blue-500/15 text-blue-600',
-  in_progress: 'bg-brand/15 text-brand',
-  blocked: 'bg-orange-500/15 text-orange-600',
-  review: 'bg-purple-500/15 text-purple-600',
-  done: 'bg-emerald-500/15 text-emerald-600',
-  closed: 'bg-emerald-500/15 text-emerald-600',
-  cancelled: 'bg-[var(--border)]/30 text-[var(--text-tertiary)]',
-};
-
 const KIND_TONE: Record<string, string> = {
   issue: 'bg-indigo-500/15 text-indigo-600',
   task: 'bg-[var(--border)]/30 text-[var(--text-tertiary)]',
@@ -94,15 +85,107 @@ const PRIORITY_TONE: Record<string, string> = {
   critical: 'text-[var(--danger)]',
 };
 
-function StatusBadge({ status }: { status: string }) {
+/** Maps status to Badge tint variant semantic color. */
+const STATUS_VARIANT: Record<string, 'success' | 'warning' | 'danger' | 'info' | 'default'> = {
+  suggested: 'warning',
+  open: 'info',
+  in_progress: 'info',
+  blocked: 'danger',
+  review: 'info',
+  done: 'success',
+  closed: 'success',
+  cancelled: 'default',
+};
+
+/** Colored dot indicator — semantic token for each status. */
+const STATUS_DOT: Record<string, string> = {
+  suggested: 'var(--warning)',
+  open: 'var(--info)',
+  in_progress: 'var(--brand)',
+  blocked: 'var(--danger)',
+  review: 'var(--info)',
+  done: 'var(--accent)',
+  closed: 'var(--accent)',
+  cancelled: 'var(--text-tertiary)',
+};
+
+function formatStatusLabel(status: string): string {
+  return status.replace(/_/g, ' ');
+}
+
+/**
+ * Per-row status cell — tint Badge with colored dot.
+ * When the ticket has dashboard-legal transitions, a chevron opens
+ * a Dropdown listing ONLY those actions (approve / dismiss / close).
+ * CLI/MCP-only transitions (start/complete/resolve/escalate/block)
+ * are never listed. When no legal transitions, renders a static label.
+ */
+function StatusCell({ ticket, projectId }: { ticket: Ticket; projectId: string }) {
+  const approve = useApproveTicket(projectId);
+  const dismiss = useDismissTicket(projectId);
+  const close = useCloseTicket(projectId);
+  const { addToast } = useToast();
+
+  const canApprove = ticket.status === 'suggested';
+  const canDismiss = ticket.status === 'suggested' || ticket.status === 'open';
+  const canClose = ticket.kind === 'issue' && ticket.status === 'in_progress';
+  const hasActions = canApprove || canDismiss || canClose;
+
+  const variant = STATUS_VARIANT[ticket.status] || 'default';
+  const dotColor = STATUS_DOT[ticket.status] || 'var(--text-tertiary)';
+  const label = formatStatusLabel(ticket.status);
+
+  async function handleAction(action: string) {
+    try {
+      if (action === 'approve') {
+        await approve.mutateAsync(ticket.id);
+        addToast('success', 'Approved');
+      } else if (action === 'dismiss') {
+        await dismiss.mutateAsync(ticket.id);
+        addToast('success', 'Dismissed');
+      } else if (action === 'close') {
+        await close.mutateAsync(ticket.id);
+        addToast('success', 'Issue closed');
+      }
+    } catch (exc) {
+      const msg = exc instanceof ApiError ? `${exc.status}: ${exc.message}` : String(exc);
+      addToast('error', msg);
+    }
+  }
+
+  const actionItems = [
+    ...(canApprove ? [{ key: 'approve', label: 'Approve' }] : []),
+    ...(canDismiss ? [{ key: 'dismiss', label: 'Dismiss' }] : []),
+    ...(canClose ? [{ key: 'close', label: 'Close Issue' }] : []),
+  ];
+
+  if (!hasActions) {
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: dotColor }} />
+        <Badge variant={variant} tint label={label} size="sm" />
+      </span>
+    );
+  }
+
   return (
-    <span
-      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${
-        STATUS_TONE[status] ?? 'bg-[var(--border)]/30 text-[var(--text-tertiary)]'
-      }`}
-    >
-      {status}
-    </span>
+    <Dropdown
+      trigger={() => (
+        <button
+          type="button"
+          className="inline-flex items-center gap-1.5 px-1 -mx-1 py-0.5 rounded hover:bg-[var(--surface-hover)] transition-colors"
+        >
+          <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: dotColor }} />
+          <Badge variant={variant} tint label={label} size="sm" />
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-[var(--text-tertiary)]">
+            <polyline points="2,3 5,6 8,3" />
+          </svg>
+        </button>
+      )}
+      items={actionItems}
+      onSelect={handleAction}
+      menuLabel="Ticket actions"
+    />
   );
 }
 
@@ -316,7 +399,7 @@ function ListView({ tickets, projectId, selected, onSelect, onNavigate }: ViewPr
               <div className="flex items-center gap-2 text-sm flex-wrap">
                 <span className="text-mono-chip">{t.id}</span>
                 <KindBadge kind={t.kind} />
-                <StatusBadge status={t.status} />
+                <StatusCell ticket={t} projectId={projectId} />
                 <span
                   className={`text-xs uppercase tracking-wide ${PRIORITY_TONE[t.priority] ?? ''}`}
                 >
@@ -657,7 +740,12 @@ function TicketDetail({ projectId, ticketId, fallback, onNavigate }: DetailProps
                       </span>
                       {child ? (
                         <>
-                          <StatusBadge status={child.status} />
+                          <Badge
+                            variant={STATUS_VARIANT[child.status] || 'default'}
+                            tint
+                            label={formatStatusLabel(child.status)}
+                            size="sm"
+                          />
                           <span className="truncate text-[var(--text-primary)]">
                             {child.title}
                           </span>

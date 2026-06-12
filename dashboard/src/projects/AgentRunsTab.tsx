@@ -172,6 +172,7 @@ export default function AgentRunsTab({ projectId }: AgentRunsTabProps) {
                   <code className="text-mono-chip">{r.id}</code>
                   <Badge
                     variant={STATUS_VARIANT[r.status] ?? 'default'}
+                    tint
                     label={r.status}
                     size="sm"
                   />

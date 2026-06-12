@@ -285,6 +285,7 @@ export default function HandoffDetail() {
           </h2>
           <Badge
             variant={STATUS_VARIANT[handoff.status] ?? 'default'}
+            tint
             label={handoff.status}
             size="sm"
           />
