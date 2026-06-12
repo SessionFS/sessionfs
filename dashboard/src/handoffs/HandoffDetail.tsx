@@ -172,8 +172,7 @@ function SessionContextCard({ summary }: { summary: HandoffSessionSummary }) {
             {filesCapped.map((f) => (
               <span
                 key={f}
-                className="text-xs px-2 py-1 rounded-md border border-border truncate max-w-[200px]"
-                style={{ backgroundColor: 'var(--surface)', color: 'var(--text-secondary)' }}
+                className="text-xs px-2 py-1 rounded-md border border-border truncate max-w-[200px] bg-surface text-text-secondary"
                 title={f}
               >
                 {f}
@@ -207,7 +206,7 @@ function SessionContextCard({ summary }: { summary: HandoffSessionSummary }) {
           <span className="text-sm text-text-tertiary block mb-1.5">Errors</span>
           <div className="space-y-1.5">
             {summary.errors_encountered.map((err, i) => (
-              <p key={i} className="text-xs truncate px-2.5 py-1.5 rounded-md border" style={{ color: 'var(--danger)', backgroundColor: 'rgba(240,64,96,0.05)', borderColor: 'rgba(240,64,96,0.2)' }}>
+              <p key={i} className="text-xs truncate px-2.5 py-1.5 rounded-md border text-danger" style={{ backgroundColor: 'rgba(240,64,96,0.05)', borderColor: 'rgba(240,64,96,0.2)' }}>
                 {err}
               </p>
             ))}
@@ -219,7 +218,7 @@ function SessionContextCard({ summary }: { summary: HandoffSessionSummary }) {
       {lastMessage && (
         <div>
           <span className="text-sm text-text-tertiary block mb-1.5">Last activity</span>
-          <p className="text-sm text-text-secondary px-3 py-2 rounded-lg border border-border line-clamp-3" style={{ backgroundColor: 'var(--surface)' }}>
+          <p className="text-sm text-text-secondary px-3 py-2 rounded-lg border border-border line-clamp-3 bg-surface">
             {lastMessage}
           </p>
         </div>
@@ -337,8 +336,7 @@ export default function HandoffDetail() {
         <p className="text-sm text-text-tertiary mb-2">Pull via CLI</p>
         <div className="flex items-center gap-2">
           <code
-            className="text-sm px-3 py-2 rounded-lg border border-border flex-1 truncate"
-            style={{ backgroundColor: 'var(--surface)', color: 'var(--text-secondary)' }}
+            className="text-sm px-3 py-2 rounded-lg border border-border flex-1 truncate bg-surface text-text-secondary"
           >
             {pullCommand}
           </code>

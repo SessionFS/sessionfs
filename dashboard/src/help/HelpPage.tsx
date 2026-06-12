@@ -307,8 +307,7 @@ function SectionHeading({ eyebrow, title, subtitle }: { eyebrow?: string; title:
     <div className="mb-6">
       {eyebrow && (
         <div
-          className="text-2xs font-semibold uppercase tracking-wider mb-2"
-          style={{ color: 'var(--brand)' }}
+          className="text-2xs font-semibold uppercase tracking-wider mb-2 text-brand"
         >
           {eyebrow}
         </div>
@@ -357,15 +356,14 @@ Restart ${selectedTool.label} to activate.`;
       {/* Hero */}
       <header className="mb-12 md:mb-16">
         <div
-          className="text-2xs font-semibold uppercase tracking-wider mb-3"
-          style={{ color: 'var(--brand)' }}
+          className="text-2xs font-semibold uppercase tracking-wider mb-3 text-brand"
         >
           Help & Quickstart
         </div>
         <h1 className="text-[32px] md:text-[40px] font-bold leading-tight text-text-primary tracking-tight">
           You don't need to memorize commands.
         </h1>
-        <p className="mt-4 text-[16px] md:text-lg text-text-secondary leading-relaxed max-w-3xl">
+        <p className="mt-4 text-md md:text-lg text-text-secondary leading-relaxed max-w-3xl">
           Install the MCP server for your AI tool, and your agent learns SessionFS automatically.
           Just tell it what you want.
         </p>
@@ -436,8 +434,7 @@ Restart ${selectedTool.label} to activate.`;
                 {useCase.prompts.map((prompt) => (
                   <li
                     key={prompt}
-                    className="text-[13.5px] italic leading-relaxed"
-                    style={{ color: 'var(--text-secondary)' }}
+                    className="text-[13.5px] italic leading-relaxed text-text-secondary"
                   >
                     "{prompt}"
                   </li>
@@ -480,26 +477,20 @@ Restart ${selectedTool.label} to activate.`;
         </div>
 
         <div
-          className="rounded-lg border overflow-hidden"
-          style={{
-            backgroundColor: 'var(--bg-secondary)',
-            borderColor: 'var(--border)',
-          }}
+          className="rounded-lg border overflow-hidden bg-bg-secondary border-border"
         >
-          <ul className="divide-y" style={{ borderColor: 'var(--border)' }}>
+          <ul className="divide-y divide-border">
             {CLI_COMMANDS.map((row) => (
               <li
                 key={row.cmd}
                 className="grid grid-cols-1 sm:grid-cols-[minmax(0,14rem)_1fr] gap-1 sm:gap-4 px-4 py-3"
-                style={{ borderColor: 'var(--border)' }}
               >
                 <code
-                  className="text-[12.5px] font-mono"
-                  style={{ color: 'var(--text-primary)' }}
+                  className="text-[12.5px] font-mono text-text-primary"
                 >
                   {row.cmd}
                 </code>
-                <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+                <span className="text-sm text-text-secondary">
                   {row.desc}
                 </span>
               </li>
@@ -510,8 +501,7 @@ Restart ${selectedTool.label} to activate.`;
         <div className="mt-4 text-sm">
           <a
             href={siteHref('/cli/')}
-            className="inline-flex items-center gap-1 transition-colors"
-            style={{ color: 'var(--brand)' }}
+            className="inline-flex items-center gap-1 transition-colors text-brand"
           >
             Full CLI reference
             <span aria-hidden="true">→</span>
@@ -565,14 +555,12 @@ function McpToolGroup({ label, tools }: { label: string; tools: McpTool[] }) {
         {tools.map((tool) => (
           <li key={tool.name}>
             <code
-              className="block text-[12.5px] font-mono mb-0.5"
-              style={{ color: 'var(--text-primary)' }}
+              className="block text-[12.5px] font-mono mb-0.5 text-text-primary"
             >
               {tool.name}
             </code>
             <span
-              className="block text-[12.5px] leading-snug"
-              style={{ color: 'var(--text-secondary)' }}
+              className="block text-[12.5px] leading-snug text-text-secondary"
             >
               {tool.desc}
             </span>
@@ -600,19 +588,15 @@ function ResourceLink({
       href={href}
       target={isExternal && !href.startsWith('mailto:') ? '_blank' : undefined}
       rel={isExternal && !href.startsWith('mailto:') ? 'noopener noreferrer' : undefined}
-      className="flex items-center gap-3 px-4 py-3 rounded-md border transition-colors hover:bg-surface-hover"
-      style={{
-        backgroundColor: 'var(--bg-secondary)',
-        borderColor: 'var(--border)',
-      }}
+      className="flex items-center gap-3 px-4 py-3 rounded-md border transition-colors hover:bg-surface-hover bg-bg-secondary border-border"
     >
-      <span className="text-[16px] leading-none" aria-hidden="true">
+      <span className="text-md leading-none" aria-hidden="true">
         {icon}
       </span>
-      <span className="text-base flex-1" style={{ color: 'var(--text-primary)' }}>
+      <span className="text-base flex-1 text-text-primary">
         {label}
       </span>
-      <span aria-hidden="true" style={{ color: 'var(--text-tertiary)' }}>
+      <span aria-hidden="true" className="text-text-tertiary">
         →
       </span>
     </a>

@@ -148,7 +148,7 @@ export default function AgentRunsTab({ projectId }: AgentRunsTabProps) {
       </p>
 
       {runs.length === 0 ? (
-        <div className="rounded-lg border border-border p-8 text-center" style={{ backgroundColor: 'var(--surface)' }}>
+        <div className="rounded-lg border border-border p-8 text-center bg-surface">
           <svg className="mx-auto mb-3 opacity-30" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--text-tertiary)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
           </svg>
@@ -220,7 +220,7 @@ export default function AgentRunsTab({ projectId }: AgentRunsTabProps) {
 
 function RunDetail({ run }: { run: AgentRun }) {
   return (
-    <div className="px-4 py-3 text-sm space-y-3" style={{ backgroundColor: 'var(--bg-sunken)' }}>
+    <div className="px-4 py-3 text-sm space-y-3 bg-bg-sunken">
       <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
         <div>
           <dt className="text-2xs uppercase tracking-[0.04em] text-text-tertiary">Tool</dt>
@@ -280,8 +280,7 @@ function RunDetail({ run }: { run: AgentRun }) {
             Findings ({run.findings.length})
           </h4>
           <pre
-            className="text-xs p-2 rounded-lg border border-border overflow-x-auto"
-            style={{ backgroundColor: 'var(--bg-primary)' }}
+            className="text-xs p-2 rounded-lg border border-border overflow-x-auto bg-bg-primary"
           >
             {JSON.stringify(run.findings, null, 2)}
           </pre>

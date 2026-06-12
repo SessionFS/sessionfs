@@ -57,7 +57,7 @@ export default function HandoffList() {
 
       {/* Error */}
       {error && (
-        <div className="mt-4 mb-4 p-3 rounded-lg text-sm" style={{ backgroundColor: 'rgba(240,64,96,0.1)', color: 'var(--danger)', border: '1px solid rgba(240,64,96,0.3)' }}>
+        <div className="mt-4 mb-4 p-3 rounded-lg text-sm text-danger" style={{ backgroundColor: 'rgba(240,64,96,0.1)', border: '1px solid rgba(240,64,96,0.3)' }}>
           Failed to load handoffs: {String(error)}
         </div>
       )}
@@ -77,8 +77,7 @@ export default function HandoffList() {
               onClick={() => navigate(`/handoffs/${h.id}`)}
               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate(`/handoffs/${h.id}`); } }}
               tabIndex={0}
-              className="rounded-xl p-4 cursor-pointer border border-border hover:border-border-strong transition-colors duration-150 focus:border-[var(--brand)] outline-none"
-              style={{ backgroundColor: 'var(--surface)' }}
+              className="rounded-xl p-4 cursor-pointer border border-border hover:border-border-strong transition-colors duration-150 focus:border-[var(--brand)] outline-none bg-surface"
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-center gap-3 min-w-0 flex-1">

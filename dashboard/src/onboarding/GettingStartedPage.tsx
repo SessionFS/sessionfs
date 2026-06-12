@@ -200,7 +200,7 @@ export default function GettingStartedPage() {
       </div>
 
       {/* Footer */}
-      <div className="mt-10 flex flex-col sm:flex-row items-center justify-between gap-4 pt-6 border-t" style={{ borderColor: 'var(--border)' }}>
+      <div className="mt-10 flex flex-col sm:flex-row items-center justify-between gap-4 pt-6 border-t border-border">
         <p className="text-sm text-text-tertiary">
           You can always find setup help at{' '}
           <Link to="/help" className="text-[var(--accent)] hover:underline">

@@ -8,8 +8,8 @@ interface SkeletonProps {
 function SkeletonBlock({ className, style }: { className?: string; style?: React.CSSProperties }) {
   return (
     <div
-      className={`rounded-sm animate-skeleton-pulse ${className ?? ''}`}
-      style={{ backgroundColor: 'var(--bg-tertiary)', ...style }}
+      className={`rounded-sm animate-skeleton-pulse bg-bg-tertiary ${className ?? ''}`}
+      style={style}
     />
   );
 }

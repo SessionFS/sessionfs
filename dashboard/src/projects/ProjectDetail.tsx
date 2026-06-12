@@ -294,19 +294,19 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
         >
           {/* Summary counters */}
           <div className="flex flex-wrap items-center gap-4 text-xs mb-2">
-            <span style={{ color: 'var(--text-secondary)' }}>
+            <span className="text-text-secondary">
               {health.total_entries} total
             </span>
-            <span style={{ color: 'var(--brand)' }}>
+            <span className="text-brand">
               {claimCount} claims
             </span>
-            <span style={{ color: 'var(--text-tertiary)' }}>
+            <span className="text-text-tertiary">
               {noteCount} notes
             </span>
             <span style={{ color: '#3b82f6' }}>
               {evidenceCount} evidence
             </span>
-            <span style={{ color: 'var(--text-secondary)' }}>
+            <span className="text-text-secondary">
               {activeClaimCount} active claims
             </span>
           </div>
@@ -315,19 +315,19 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
           <div className="flex flex-wrap items-center gap-3 text-xs mb-2">
             <span className="flex items-center gap-1">
               <FreshnessDot freshnessClass="current" />
-              <span style={{ color: 'var(--text-tertiary)' }}>{currentCount} current</span>
+              <span className="text-text-tertiary">{currentCount} current</span>
             </span>
             <span className="flex items-center gap-1">
               <FreshnessDot freshnessClass="aging" />
-              <span style={{ color: 'var(--text-tertiary)' }}>{agingCount} aging</span>
+              <span className="text-text-tertiary">{agingCount} aging</span>
             </span>
             <span className="flex items-center gap-1">
               <FreshnessDot freshnessClass="stale" />
-              <span style={{ color: 'var(--text-tertiary)' }}>{staleCount} stale</span>
+              <span className="text-text-tertiary">{staleCount} stale</span>
             </span>
             <span className="flex items-center gap-1">
               <FreshnessDot freshnessClass="superseded" />
-              <span style={{ color: 'var(--text-tertiary)' }}>{supersededCount} superseded</span>
+              <span className="text-text-tertiary">{supersededCount} superseded</span>
             </span>
           </div>
 
@@ -335,17 +335,17 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
           {(health.stale_entry_count > 0 || health.low_confidence_count > 0 || health.decayed_count > 0) && (
             <div className="flex flex-wrap items-center gap-4 text-sm mb-2">
               {health.stale_entry_count > 0 && (
-                <span style={{ color: 'var(--warning)' }}>
+                <span className="text-warning">
                   {health.stale_entry_count} stale {health.stale_entry_count === 1 ? 'entry' : 'entries'}
                 </span>
               )}
               {health.low_confidence_count > 0 && (
-                <span style={{ color: 'var(--text-tertiary)' }}>
+                <span className="text-text-tertiary">
                   {health.low_confidence_count} low-confidence
                 </span>
               )}
               {health.decayed_count > 0 && (
-                <span style={{ color: 'var(--text-tertiary)' }}>
+                <span className="text-text-tertiary">
                   {health.decayed_count} decayed
                 </span>
               )}
@@ -355,7 +355,7 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
           {health.recommendations.length > 0 && (
             <ul className="space-y-1">
               {health.recommendations.map((r, i) => (
-                <li key={i} className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                <li key={i} className="text-xs text-text-secondary">
                   {r}
                 </li>
               ))}
@@ -585,7 +585,7 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
                     {entry.supersession_reason && (
                       <>
                         <span>&middot;</span>
-                        <span style={{ color: 'var(--text-tertiary)' }}>{entry.supersession_reason}</span>
+                        <span className="text-text-tertiary">{entry.supersession_reason}</span>
                       </>
                     )}
                   </div>
