@@ -132,39 +132,70 @@ export default function ProjectsPage() {
       )}
 
       {!isLoading && projects && projects.length === 0 && !error && (
-        <div className="text-center py-20">
-          <div className="mb-4">
-            <svg
-              width="48"
-              height="48"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="var(--text-tertiary)"
-              strokeWidth="1.2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              className="opacity-30"
+        <div className="flex items-center justify-center py-10">
+          <Card
+            level="elevated"
+            className="max-w-[560px] w-full overflow-hidden"
+          >
+            {/* Dot-grid banner */}
+            <div
+              className="relative flex items-center justify-center py-10"
+              style={{
+                backgroundImage: 'var(--dot-grid)',
+                backgroundSize: '16px 16px',
+              }}
             >
-              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-            </svg>
-          </div>
-          <h2 className="text-[15px] font-semibold text-[var(--text-primary)] mb-1.5">
-            No projects yet
-          </h2>
-          <p className="text-[13px] text-[var(--text-tertiary)] max-w-md mx-auto mb-5 leading-relaxed">
-            Project contexts let you share instructions, conventions, and knowledge
-            across all sessions in a repository.
-          </p>
-          <Button onClick={() => setShowCreate(true)}>Create your first project</Button>
-          <p className="text-[var(--text-tertiary)] text-xs mt-4">
-            Or from the terminal: <code className="font-mono bg-[var(--bg-tertiary)] px-1.5 py-0.5 rounded text-[var(--text-secondary)]">sfs project set &lt;git-remote&gt;</code>
-          </p>
-          <p className="text-[var(--text-tertiary)] text-xs mt-3">
-            New to SessionFS?{' '}
-            <Link to="/getting-started" className="text-[var(--accent)] hover:underline">
-              Start here
-            </Link>
-          </p>
+              {/* Project folder illustration — folder with plus document */}
+              <svg
+                width="88"
+                height="72"
+                viewBox="0 0 88 72"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+                role="img"
+                aria-label="Project folder illustration"
+              >
+                {/* Folder shape */}
+                <path
+                  d="M8 12a2 2 0 0 1 2-2h22l4 6h36a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2V12z"
+                  stroke="var(--text-secondary)" strokeWidth="1.5"
+                />
+                {/* Plus document */}
+                <rect
+                  x="28" y="24" width="32" height="26" rx="4"
+                  stroke="var(--brand)" strokeWidth="1.5"
+                />
+                <line
+                  x1="44" y1="32" x2="44" y2="42"
+                  stroke="var(--brand)" strokeWidth="1.5" strokeLinecap="round"
+                />
+                <line
+                  x1="39" y1="37" x2="49" y2="37"
+                  stroke="var(--brand)" strokeWidth="1.5" strokeLinecap="round"
+                />
+              </svg>
+            </div>
+            {/* Content area */}
+            <div className="text-center px-6 pb-7 pt-5">
+              <h2 className="text-title text-[var(--text-primary)] mb-1.5">
+                No projects yet
+              </h2>
+              <p className="text-caption max-w-sm mx-auto mb-5 leading-relaxed">
+                Project contexts let you share instructions, conventions, and knowledge
+                across all sessions in a repository.
+              </p>
+              <Button onClick={() => setShowCreate(true)}>Create your first project</Button>
+              <p className="text-[var(--text-tertiary)] text-xs mt-4">
+                Or from the terminal: <code className="font-mono bg-[var(--bg-tertiary)] px-1.5 py-0.5 rounded text-[var(--text-secondary)]">sfs project set &lt;git-remote&gt;</code>
+              </p>
+              <p className="text-[var(--text-tertiary)] text-xs mt-3">
+                New to SessionFS?{' '}
+                <Link to="/getting-started" className="text-[var(--accent)] hover:underline">
+                  Start here
+                </Link>
+              </p>
+            </div>
+          </Card>
         </div>
       )}
 

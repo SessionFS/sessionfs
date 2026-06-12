@@ -14,7 +14,7 @@ import type { NavFilter } from '../components/BookmarkSidebar';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../auth/AuthContext';
 import { TOOL_COLORS } from '../utils/tools';
-import { Button } from '../components/ui';
+import { Button, Card } from '../components/ui';
 
 const CAPTURE_ONLY_TOOLS = new Set(['cursor', 'cline', 'roo-code', 'amp']);
 
@@ -769,36 +769,101 @@ export default function SessionList() {
 
         {/* Empty state */}
         {!isLoading && !showTrash && filteredSessions.length === 0 && !error && (
-          <div className="text-center py-16">
-            <p className="text-[var(--text-secondary)] text-base font-medium mb-2">No sessions yet</p>
-            {selectedFolderId ? (
+          selectedFolderId ? (
+            <div className="text-center py-16">
+              <p className="text-[var(--text-secondary)] text-base font-medium mb-2">No sessions yet</p>
               <p className="text-[var(--text-tertiary)] text-sm">
                 No sessions bookmarked in this folder yet.
               </p>
-            ) : (
-              <>
-                <p className="text-[var(--text-tertiary)] text-sm max-w-sm mx-auto mb-5">
-                  SessionFS captures sessions automatically from your AI tools.
-                  Get started by installing the MCP server for your tool.
-                </p>
-                <div className="flex items-center justify-center gap-3">
-                  <Link
-                    to="/getting-started"
-                    className="px-4 py-2 text-sm font-semibold bg-[var(--brand)] text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors"
+            </div>
+          ) : (
+            <div className="flex items-center justify-center py-10">
+              <Card
+                level="elevated"
+                className="max-w-[560px] w-full overflow-hidden"
+              >
+                {/* Dot-grid banner */}
+                <div
+                  className="relative flex items-center justify-center py-10"
+                  style={{
+                    backgroundImage: 'var(--dot-grid)',
+                    backgroundSize: '16px 16px',
+                  }}
+                >
+                  {/* Session card illustration — two overlapping cards with a plus */}
+                  <svg
+                    width="88"
+                    height="72"
+                    viewBox="0 0 88 72"
+                    fill="none"
+                    xmlns="http://www.w3.org/2000/svg"
+                    role="img"
+                    aria-label="Session cards illustration"
                   >
-                    Get Started
-                  </Link>
-                  <Link
-                    to="/help"
-                    className="px-4 py-2 text-sm font-medium text-[var(--text-secondary)] border rounded-lg hover:text-[var(--text-primary)] transition-colors"
-                    style={{ borderColor: 'var(--border)' }}
-                  >
-                    View Help
-                  </Link>
+                    {/* Back card */}
+                    <rect
+                      x="4" y="2" width="56" height="60" rx="6"
+                      stroke="var(--text-tertiary)" strokeWidth="1.5"
+                      strokeDasharray="4 3"
+                    />
+                    {/* Front card */}
+                    <rect
+                      x="18" y="10" width="56" height="60" rx="6"
+                      stroke="var(--text-secondary)" strokeWidth="1.5"
+                    />
+                    {/* Plus circle */}
+                    <circle
+                      cx="64" cy="26" r="10"
+                      stroke="var(--brand)" strokeWidth="1.5"
+                    />
+                    <line
+                      x1="64" y1="21" x2="64" y2="31"
+                      stroke="var(--brand)" strokeWidth="1.5" strokeLinecap="round"
+                    />
+                    <line
+                      x1="59" y1="26" x2="69" y2="26"
+                      stroke="var(--brand)" strokeWidth="1.5" strokeLinecap="round"
+                    />
+                    {/* Accent line on front card */}
+                    <line
+                      x1="31" y1="28" x2="52" y2="28"
+                      stroke="var(--text-tertiary)" strokeWidth="1" strokeLinecap="round"
+                    />
+                    <line
+                      x1="31" y1="36" x2="44" y2="36"
+                      stroke="var(--text-tertiary)" strokeWidth="1" strokeLinecap="round"
+                      opacity="0.6"
+                    />
+                  </svg>
                 </div>
-              </>
-            )}
-          </div>
+                {/* Content area */}
+                <div className="text-center px-6 pb-7 pt-5">
+                  <h2 className="text-title text-[var(--text-primary)] mb-1.5">
+                    No sessions yet
+                  </h2>
+                  <p className="text-caption max-w-sm mx-auto mb-5 leading-relaxed">
+                    SessionFS captures sessions automatically from your AI tools.
+                    Get started by installing the MCP server for your tool.
+                  </p>
+                  <div className="flex items-center justify-center gap-3">
+                    <Link
+                      to="/getting-started"
+                      className="px-4 py-2 text-sm font-semibold bg-[var(--brand)] text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors"
+                    >
+                      Get Started
+                    </Link>
+                    <Link
+                      to="/help"
+                      className="px-4 py-2 text-sm font-medium text-[var(--text-secondary)] border rounded-lg hover:text-[var(--text-primary)] transition-colors"
+                      style={{ borderColor: 'var(--border)' }}
+                    >
+                      View Help
+                    </Link>
+                  </div>
+                </div>
+              </Card>
+            </div>
+          )
         )}
 
         {/* Trash view */}

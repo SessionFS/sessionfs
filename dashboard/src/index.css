@@ -103,6 +103,8 @@
   --radius-lg: 12px;
   --radius-xl: 16px;
 
+  --dot-grid: radial-gradient(circle, color-mix(in srgb, var(--text-tertiary) 18%, transparent) 1px, transparent 1px);
+
   --brand-glow: color-mix(in srgb, var(--brand) 25%, transparent);
   --edge-highlight: rgba(255, 255, 255, 0.06);
   --shadow-overlay: inset 0 1px 0 var(--edge-highlight), var(--shadow-lg);
