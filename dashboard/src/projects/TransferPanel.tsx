@@ -103,15 +103,15 @@ export default function TransferPanel({
 
   return (
     <section aria-labelledby="transfer-heading" className="space-y-3">
-      <h3 id="transfer-heading" className="text-lg font-semibold text-[var(--text-primary)]">Transfer ownership</h3>
-      <p className="text-sm text-[var(--text-secondary)]">
+      <h3 id="transfer-heading" className="text-lg font-semibold text-text-primary">Transfer ownership</h3>
+      <p className="text-sm text-text-secondary">
         Currently {scopeLabel(currentScope, availableOrgs)}.{' '}
         Transferring moves the project's org scope; sessions and audit history are preserved.
       </p>
 
       {pendingForThisProject ? (
         <Card className="p-4 space-y-3" role="status">
-          <p className="text-sm text-[var(--text-secondary)]">
+          <p className="text-sm text-text-secondary">
             Pending transfer to {scopeLabel(pendingForThisProject.to_scope, availableOrgs)}.
             Waiting on {pendingForThisProject.target_user_id ?? '(target removed)'}.
           </p>
@@ -127,7 +127,7 @@ export default function TransferPanel({
           </Button>
         </Card>
       ) : destinations.length === 0 ? (
-        <p className="text-[13px] text-[var(--text-tertiary)]">No transfer destinations available.</p>
+        <p className="text-sm text-text-tertiary">No transfer destinations available.</p>
       ) : (
         <div className="flex items-end gap-3 flex-wrap">
           <Select

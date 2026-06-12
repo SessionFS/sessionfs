@@ -73,11 +73,11 @@ const STATUS_VARIANT: Record<string, 'default' | 'success' | 'warning' | 'danger
 };
 
 const SEVERITY_TONE: Record<string, string> = {
-  none: 'text-[var(--text-tertiary)]',
-  low: 'text-[var(--text-tertiary)]',
-  medium: 'text-[var(--warning)]',
-  high: 'text-[var(--danger)]',
-  critical: 'text-[var(--danger)] font-semibold',
+  none: 'text-text-tertiary',
+  low: 'text-text-tertiary',
+  medium: 'text-warning',
+  high: 'text-danger',
+  critical: 'text-danger font-semibold',
 };
 
 export default function AgentRunsTab({ projectId }: AgentRunsTabProps) {
@@ -93,8 +93,8 @@ export default function AgentRunsTab({ projectId }: AgentRunsTabProps) {
     limit: 50,
   });
 
-  if (isLoading) return <p className="text-[var(--text-tertiary)] p-4">Loading runs…</p>;
-  if (error) return <p role="alert" className="text-[var(--danger)] p-4">Failed to load runs: {String(error)}</p>;
+  if (isLoading) return <p className="text-text-tertiary p-4">Loading runs…</p>;
+  if (error) return <p role="alert" className="text-danger p-4">Failed to load runs: {String(error)}</p>;
   if (!data) return null;
 
   const runs = data;
@@ -103,8 +103,8 @@ export default function AgentRunsTab({ projectId }: AgentRunsTabProps) {
     <section aria-labelledby="agent-runs-heading" className="space-y-4">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <h2 id="agent-runs-heading" className="flex items-baseline gap-2">
-          <span className="text-lg font-semibold text-[var(--text-primary)]">Agent runs</span>
-          <span className="text-sm text-[var(--text-tertiary)]">
+          <span className="text-lg font-semibold text-text-primary">Agent runs</span>
+          <span className="text-sm text-text-tertiary">
             {runs.length} {runs.length === 1 ? 'run' : 'runs'}
           </span>
         </h2>
@@ -129,7 +129,7 @@ export default function AgentRunsTab({ projectId }: AgentRunsTabProps) {
             placeholder="persona"
             value={personaFilter}
             onChange={(e) => setPersonaFilter(e.target.value)}
-            className="w-28 bg-[var(--bg-sunken)] border border-[var(--border)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] font-mono placeholder:text-[var(--text-tertiary)] outline-none focus:border-[var(--brand)] focus:shadow-[0_0_0_3px_var(--brand-glow)]"
+            className="w-28 bg-bg-sunken border border-border rounded-lg px-3 py-2 text-sm text-text-primary font-mono placeholder:text-text-tertiary outline-none focus:border-[var(--brand)] focus:shadow-[0_0_0_3px_var(--brand-glow)]"
           />
           <Button
             variant="secondary"
@@ -142,19 +142,19 @@ export default function AgentRunsTab({ projectId }: AgentRunsTabProps) {
         </div>
       </div>
 
-      <p className="text-[11px] uppercase tracking-[0.04em] text-[var(--text-tertiary)]">
-        Runs are recorded by <code className="font-mono text-[var(--text-secondary)]">sfs agent run</code> in CI.
+      <p className="text-2xs uppercase tracking-[0.04em] text-text-tertiary">
+        Runs are recorded by <code className="font-mono text-text-secondary">sfs agent run</code> in CI.
         This tab is read-only; refreshes every 30 seconds while open.
       </p>
 
       {runs.length === 0 ? (
-        <div className="rounded-lg border border-[var(--border)] p-8 text-center" style={{ backgroundColor: 'var(--surface)' }}>
+        <div className="rounded-lg border border-border p-8 text-center" style={{ backgroundColor: 'var(--surface)' }}>
           <svg className="mx-auto mb-3 opacity-30" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--text-tertiary)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
           </svg>
-          <p className="text-[15px] font-semibold text-[var(--text-primary)] mb-1">No runs yet</p>
-          <p className="text-[13px] text-[var(--text-tertiary)]">
-            Wire up <code className="font-mono text-[var(--text-secondary)]">sfs agent run</code> in
+          <p className="text-md font-semibold text-text-primary mb-1">No runs yet</p>
+          <p className="text-sm text-text-tertiary">
+            Wire up <code className="font-mono text-text-secondary">sfs agent run</code> in
             your CI workflow to start recording.
           </p>
         </div>
@@ -166,7 +166,7 @@ export default function AgentRunsTab({ projectId }: AgentRunsTabProps) {
                 type="button"
                 onClick={() => setExpanded(expanded === r.id ? null : r.id)}
                 aria-expanded={expanded === r.id}
-                className="w-full text-left px-4 py-2.5 hover:bg-[var(--surface-hover)] transition-colors duration-150"
+                className="w-full text-left px-4 py-2.5 hover:bg-surface-hover transition-colors duration-150"
               >
                 <div className="flex items-center gap-3 text-sm flex-wrap">
                   <code className="text-mono-chip">{r.id}</code>
@@ -176,14 +176,14 @@ export default function AgentRunsTab({ projectId }: AgentRunsTabProps) {
                     label={r.status}
                     size="sm"
                   />
-                  <span className="font-mono text-[13px] text-[var(--text-secondary)]">{r.persona_name}</span>
-                  <span className="text-xs text-[var(--text-tertiary)]">via {r.trigger_source}</span>
+                  <span className="font-mono text-sm text-text-secondary">{r.persona_name}</span>
+                  <span className="text-xs text-text-tertiary">via {r.trigger_source}</span>
                   {r.severity && (
                     <span className={`text-xs ${SEVERITY_TONE[r.severity] ?? ''}`}>
                       severity: {r.severity}
                     </span>
                   )}
-                  <span className="text-xs text-[var(--text-tertiary)]">
+                  <span className="text-xs text-text-tertiary">
                     {r.findings_count} {r.findings_count === 1 ? 'finding' : 'findings'}
                   </span>
                   {r.policy_result && (
@@ -194,19 +194,19 @@ export default function AgentRunsTab({ projectId }: AgentRunsTabProps) {
                         size="sm"
                       />
                       {r.exit_code !== null && (
-                        <span className="font-mono text-xs text-[var(--text-tertiary)]">exit {r.exit_code}</span>
+                        <span className="font-mono text-xs text-text-tertiary">exit {r.exit_code}</span>
                       )}
                     </span>
                   )}
                   {!r.policy_result && (
-                    <span className="text-[var(--text-tertiary)] text-xs">—</span>
+                    <span className="text-text-tertiary text-xs">—</span>
                   )}
-                  <span className="ml-auto text-xs text-[var(--text-tertiary)]">
+                  <span className="ml-auto text-xs text-text-tertiary">
                     <RelativeDate iso={r.created_at} />
                   </span>
                 </div>
                 {r.result_summary && (
-                  <div className="text-sm text-[var(--text-tertiary)] mt-1 truncate">{r.result_summary}</div>
+                  <div className="text-sm text-text-tertiary mt-1 truncate">{r.result_summary}</div>
                 )}
               </button>
               {expanded === r.id && <RunDetail run={r} />}
@@ -223,19 +223,19 @@ function RunDetail({ run }: { run: AgentRun }) {
     <div className="px-4 py-3 text-sm space-y-3" style={{ backgroundColor: 'var(--bg-sunken)' }}>
       <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
         <div>
-          <dt className="text-[11px] uppercase tracking-[0.04em] text-[var(--text-tertiary)]">Tool</dt>
-          <dd className="font-mono text-[var(--text-primary)] mt-0.5">{run.tool}</dd>
+          <dt className="text-2xs uppercase tracking-[0.04em] text-text-tertiary">Tool</dt>
+          <dd className="font-mono text-text-primary mt-0.5">{run.tool}</dd>
         </div>
         <div>
-          <dt className="text-[11px] uppercase tracking-[0.04em] text-[var(--text-tertiary)]">Ticket</dt>
-          <dd className="font-mono text-[var(--text-primary)] mt-0.5">{run.ticket_id ?? '—'}</dd>
+          <dt className="text-2xs uppercase tracking-[0.04em] text-text-tertiary">Ticket</dt>
+          <dd className="font-mono text-text-primary mt-0.5">{run.ticket_id ?? '—'}</dd>
         </div>
         <div>
-          <dt className="text-[11px] uppercase tracking-[0.04em] text-[var(--text-tertiary)]">Trigger ref</dt>
-          <dd className="font-mono text-[var(--text-primary)] mt-0.5 truncate">{run.trigger_ref ?? '—'}</dd>
+          <dt className="text-2xs uppercase tracking-[0.04em] text-text-tertiary">Trigger ref</dt>
+          <dd className="font-mono text-text-primary mt-0.5 truncate">{run.trigger_ref ?? '—'}</dd>
         </div>
         <div>
-          <dt className="text-[11px] uppercase tracking-[0.04em] text-[var(--text-tertiary)]">CI provider</dt>
+          <dt className="text-2xs uppercase tracking-[0.04em] text-text-tertiary">CI provider</dt>
           <dd className="mt-0.5">
             {(() => {
               const href = safeHttpUrl(run.ci_run_url);
@@ -245,23 +245,23 @@ function RunDetail({ run }: { run: AgentRun }) {
                     href={href}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-[var(--brand)] hover:underline"
+                    className="text-brand hover:underline"
                   >
                     {run.ci_provider ?? 'open'}
                   </a>
                 );
               }
-              return <span className="text-[var(--text-primary)]">{run.ci_provider ?? '—'}</span>;
+              return <span className="text-text-primary">{run.ci_provider ?? '—'}</span>;
             })()}
           </dd>
         </div>
         <div>
-          <dt className="text-[11px] uppercase tracking-[0.04em] text-[var(--text-tertiary)]">Fail-on</dt>
-          <dd className="font-mono text-[var(--text-primary)] mt-0.5">{run.fail_on ?? '—'}</dd>
+          <dt className="text-2xs uppercase tracking-[0.04em] text-text-tertiary">Fail-on</dt>
+          <dd className="font-mono text-text-primary mt-0.5">{run.fail_on ?? '—'}</dd>
         </div>
         <div>
-          <dt className="text-[11px] uppercase tracking-[0.04em] text-[var(--text-tertiary)]">Duration</dt>
-          <dd className="font-mono text-[var(--text-primary)] mt-0.5">
+          <dt className="text-2xs uppercase tracking-[0.04em] text-text-tertiary">Duration</dt>
+          <dd className="font-mono text-text-primary mt-0.5">
             {run.duration_seconds !== null ? `${run.duration_seconds}s` : '—'}
           </dd>
         </div>
@@ -269,18 +269,18 @@ function RunDetail({ run }: { run: AgentRun }) {
 
       {run.result_summary && (
         <div>
-          <h4 className="text-micro text-[var(--text-tertiary)] mb-1">Summary</h4>
-          <p className="text-[var(--text-secondary)] whitespace-pre-wrap">{run.result_summary}</p>
+          <h4 className="text-micro text-text-tertiary mb-1">Summary</h4>
+          <p className="text-text-secondary whitespace-pre-wrap">{run.result_summary}</p>
         </div>
       )}
 
       {run.findings.length > 0 && (
         <div>
-          <h4 className="text-micro text-[var(--text-tertiary)] mb-1">
+          <h4 className="text-micro text-text-tertiary mb-1">
             Findings ({run.findings.length})
           </h4>
           <pre
-            className="text-xs p-2 rounded-lg border border-[var(--border)] overflow-x-auto"
+            className="text-xs p-2 rounded-lg border border-border overflow-x-auto"
             style={{ backgroundColor: 'var(--bg-primary)' }}
           >
             {JSON.stringify(run.findings, null, 2)}

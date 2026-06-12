@@ -88,7 +88,7 @@ function ClaimClassBadge({ claimClass }: { claimClass: string }) {
   const style = CLAIM_CLASS_STYLES[claimClass] || CLAIM_CLASS_STYLES.note;
   return (
     <span
-      className="inline-block rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
+      className="inline-block rounded-full px-1.5 py-0.5 text-2xs font-semibold uppercase tracking-wide"
       style={{
         backgroundColor: style.outline ? 'transparent' : style.bg,
         color: style.text,
@@ -132,8 +132,8 @@ function SupersedeDialog({
   const [supersedingId, setSupersedingId] = useState('');
   const [reason, setReason] = useState('');
   return (
-    <div className="mt-2 p-3 rounded-lg border border-[var(--border)] bg-[var(--bg-primary)]">
-      <p className="text-xs font-medium text-[var(--text-secondary)] mb-2">
+    <div className="mt-2 p-3 rounded-lg border border-border bg-bg-primary">
+      <p className="text-xs font-medium text-text-secondary mb-2">
         Supersede entry #{entryId}
       </p>
       <div className="flex gap-2 mb-2">
@@ -142,19 +142,19 @@ function SupersedeDialog({
           value={supersedingId}
           onChange={(e) => setSupersedingId(e.target.value)}
           placeholder="Superseding entry ID"
-          className="flex-1 px-2 py-1 text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--text-primary)] outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] placeholder:text-[var(--text-tertiary)]"
+          className="flex-1 px-2 py-1 text-xs bg-bg-primary border border-border rounded text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] placeholder:text-text-tertiary"
         />
       </div>
       <input
         value={reason}
         onChange={(e) => setReason(e.target.value)}
         placeholder="Reason for supersession"
-        className="w-full px-2 py-1 text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--text-primary)] outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] placeholder:text-[var(--text-tertiary)] mb-2"
+        className="w-full px-2 py-1 text-xs bg-bg-primary border border-border rounded text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] placeholder:text-text-tertiary mb-2"
       />
       <div className="flex gap-2 justify-end">
         <button
           onClick={onCancel}
-          className="text-xs text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] px-2 py-1"
+          className="text-xs text-text-tertiary hover:text-text-secondary px-2 py-1"
         >
           Cancel
         </button>
@@ -165,7 +165,7 @@ function SupersedeDialog({
             onConfirm(id, reason.trim());
           }}
           disabled={isPending || !supersedingId || !reason.trim()}
-          className="text-xs font-medium text-white bg-[var(--brand)] px-3 py-1 rounded hover:bg-[var(--brand-hover)] transition-colors disabled:opacity-50"
+          className="text-xs font-medium text-white bg-brand px-3 py-1 rounded hover:bg-[var(--brand-hover)] transition-colors disabled:opacity-50"
         >
           {isPending ? 'Saving…' : 'Confirm'}
         </button>
@@ -381,24 +381,24 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
 
       {/* Stale review queue */}
       {staleClaims.length > 0 && (
-        <div className="mb-4 rounded-lg border border-[var(--border)] bg-[var(--bg-primary)]">
+        <div className="mb-4 rounded-lg border border-border bg-bg-primary">
           <button
             onClick={() => setStaleQueueOpen(!staleQueueOpen)}
-            className="w-full flex items-center justify-between px-4 py-2.5 text-sm font-medium text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] transition-colors"
+            className="w-full flex items-center justify-between px-4 py-2.5 text-sm font-medium text-text-secondary hover:bg-surface-hover transition-colors"
           >
             <span>Stale Claims Review ({staleClaims.length})</span>
-            <span className="text-[10px]">{staleQueueOpen ? '\u25B2' : '\u25BC'}</span>
+            <span className="text-2xs">{staleQueueOpen ? '\u25B2' : '\u25BC'}</span>
           </button>
           {staleQueueOpen && (
-            <div className="border-t border-[var(--border)] px-4 py-3 space-y-2">
+            <div className="border-t border-border px-4 py-3 space-y-2">
               {staleClaims.map((entry) => (
                 <div
                   key={`stale-${entry.id}`}
-                  className="flex items-start gap-3 px-3 py-2 rounded border border-[var(--border)] bg-[var(--bg-elevated)]"
+                  className="flex items-start gap-3 px-3 py-2 rounded border border-border bg-bg-elevated"
                 >
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm text-[var(--text-primary)]">{entry.content}</p>
-                    <p className="text-xs text-[var(--text-tertiary)] mt-0.5">
+                    <p className="text-sm text-text-primary">{entry.content}</p>
+                    <p className="text-xs text-text-tertiary mt-0.5">
                       #{entry.id} &middot; {entry.entry_type}
                     </p>
                   </div>
@@ -406,20 +406,20 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
                     <button
                       onClick={() => handleStillValid(entry)}
                       disabled={refreshEntry.isPending}
-                      className="text-xs text-[var(--brand)] hover:underline px-2 py-1"
+                      className="text-xs text-brand hover:underline px-2 py-1"
                     >
                       Still Valid
                     </button>
                     <button
                       onClick={() => setSupersedeTarget(entry.id)}
-                      className="text-xs text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] px-2 py-1"
+                      className="text-xs text-text-tertiary hover:text-text-secondary px-2 py-1"
                     >
                       Supersede
                     </button>
                     <button
                       onClick={() => handleDismiss(entry)}
                       disabled={dismissEntry.isPending}
-                      className="text-xs text-[var(--text-tertiary)] hover:text-red-400 px-2 py-1"
+                      className="text-xs text-text-tertiary hover:text-red-400 px-2 py-1"
                     >
                       Dismiss
                     </button>
@@ -442,7 +442,7 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
       {/* Toolbar */}
       <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
         <div className="flex items-center gap-3 flex-wrap">
-          <label className="flex items-center gap-1.5 text-sm text-[var(--text-secondary)]">
+          <label className="flex items-center gap-1.5 text-sm text-text-secondary">
             <input
               type="checkbox"
               checked={pendingOnly}
@@ -454,7 +454,7 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
           <select
             value={typeFilter}
             onChange={(e) => setTypeFilter(e.target.value)}
-            className="text-sm bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg px-2 py-1 text-[var(--text-secondary)]"
+            className="text-sm bg-bg-primary border border-border rounded-lg px-2 py-1 text-text-secondary"
           >
             <option value="">All types</option>
             {entryTypes.map((t) => (
@@ -466,7 +466,7 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
           <select
             value={claimFilter}
             onChange={(e) => setClaimFilter(e.target.value)}
-            className="text-sm bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg px-2 py-1 text-[var(--text-secondary)]"
+            className="text-sm bg-bg-primary border border-border rounded-lg px-2 py-1 text-text-secondary"
           >
             <option value="">All classes</option>
             <option value="claim">Claim</option>
@@ -476,7 +476,7 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
           <select
             value={freshnessFilter}
             onChange={(e) => setFreshnessFilter(e.target.value)}
-            className="text-sm bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg px-2 py-1 text-[var(--text-secondary)]"
+            className="text-sm bg-bg-primary border border-border rounded-lg px-2 py-1 text-text-secondary"
           >
             <option value="">All freshness</option>
             <option value="current">Current</option>
@@ -505,9 +505,9 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
 
       {/* Entries list */}
       {isLoading ? (
-        <p className="text-[var(--text-tertiary)] text-sm py-4">Loading entries…</p>
+        <p className="text-text-tertiary text-sm py-4">Loading entries…</p>
       ) : !filteredEntries.length ? (
-        <p className="text-[var(--text-tertiary)] text-sm py-8 text-center">
+        <p className="text-text-tertiary text-sm py-8 text-center">
           No knowledge entries found. Entries are auto-extracted from sessions.
         </p>
       ) : (
@@ -517,10 +517,10 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
               key={entry.id}
               className={`px-4 py-3 rounded-lg border transition-colors ${
                 entry.freshness_class === 'superseded'
-                  ? 'border-[var(--border)] bg-[var(--bg-primary)] opacity-50'
+                  ? 'border-border bg-bg-primary opacity-50'
                   : entry.dismissed
-                    ? 'border-[var(--border)] bg-[var(--bg-primary)] opacity-60'
-                    : 'border-[var(--border)] bg-[var(--bg-elevated)]'
+                    ? 'border-border bg-bg-primary opacity-60'
+                    : 'border-border bg-bg-elevated'
               }`}
             >
               <div className="flex items-start gap-3">
@@ -531,16 +531,16 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
                 </div>
                 <div className="flex-1 min-w-0">
                   <p
-                    className={`text-sm text-[var(--text-primary)] ${
+                    className={`text-sm text-text-primary ${
                       entry.dismissed || entry.freshness_class === 'superseded'
-                        ? 'line-through text-[var(--text-tertiary)]'
+                        ? 'line-through text-text-tertiary'
                         : ''
                     }`}
                   >
                     {entry.content}
                   </p>
                   {/* Provenance block */}
-                  <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--text-tertiary)]">
+                  <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-text-tertiary">
                     <span>
                       <RelativeDate iso={entry.created_at} />
                     </span>
@@ -596,7 +596,7 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
                     <button
                       onClick={() => handlePromote(entry)}
                       disabled={promote.isPending}
-                      className="text-xs text-[var(--brand)] hover:underline px-2 py-1"
+                      className="text-xs text-brand hover:underline px-2 py-1"
                       title="Promote to Claim"
                     >
                       Promote
@@ -605,7 +605,7 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
                   {!entry.dismissed && entry.freshness_class !== 'superseded' && (
                     <button
                       onClick={() => setSupersedeTarget(supersedeTarget === entry.id ? null : entry.id)}
-                      className="text-xs text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] px-2 py-1"
+                      className="text-xs text-text-tertiary hover:text-text-secondary px-2 py-1"
                       title="Mark Superseded"
                     >
                       Supersede
@@ -615,7 +615,7 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
                     <button
                       onClick={() => handleDismiss(entry)}
                       disabled={dismissEntry.isPending}
-                      className="shrink-0 text-xs text-[var(--text-tertiary)] hover:text-red-400 transition-colors px-2 py-1"
+                      className="shrink-0 text-xs text-text-tertiary hover:text-red-400 transition-colors px-2 py-1"
                       title="Dismiss this entry"
                     >
                       Dismiss
@@ -634,7 +634,7 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
               )}
             </div>
           ))}
-          <p className="text-xs text-[var(--text-tertiary)] pt-2">
+          <p className="text-xs text-text-tertiary pt-2">
             {data && data.total > filteredEntries.length
               ? `Showing ${filteredEntries.length} of ${data.total} entries`
               : `${filteredEntries.length} ${filteredEntries.length === 1 ? 'entry' : 'entries'}`}
@@ -718,7 +718,7 @@ function PagesTab({ projectId }: { projectId: string }) {
   }
 
   if (isLoading) {
-    return <p className="p-5 text-[var(--text-tertiary)] text-sm">Loading pages…</p>;
+    return <p className="p-5 text-text-tertiary text-sm">Loading pages…</p>;
   }
 
   const pages = data?.pages || [];
@@ -727,7 +727,7 @@ function PagesTab({ projectId }: { projectId: string }) {
     <div className="p-5">
       {/* Toolbar */}
       <div className="flex items-center justify-between mb-4">
-        <span className="text-sm text-[var(--text-tertiary)]">
+        <span className="text-sm text-text-tertiary">
           {pages.length} {pages.length === 1 ? 'page' : 'pages'}
         </span>
         <Button onClick={() => setShowNewPage(true)}>+ New Page</Button>
@@ -735,7 +735,7 @@ function PagesTab({ projectId }: { projectId: string }) {
 
       {/* New page form */}
       {showNewPage && (
-        <div className="mb-4 px-4 py-3 rounded-lg border border-[var(--brand)] bg-[var(--bg-primary)]">
+        <div className="mb-4 px-4 py-3 rounded-lg border border-[var(--brand)] bg-bg-primary">
           <div className="flex gap-3 mb-2">
             <Input
               value={newSlug}
@@ -770,7 +770,7 @@ function PagesTab({ projectId }: { projectId: string }) {
 
       {/* Page list */}
       {!pages.length ? (
-        <p className="text-[var(--text-tertiary)] text-sm py-8 text-center">
+        <p className="text-text-tertiary text-sm py-8 text-center">
           No wiki pages yet. Create one to start documenting project knowledge.
         </p>
       ) : (
@@ -782,36 +782,36 @@ function PagesTab({ projectId }: { projectId: string }) {
             return (
               <div
                 key={page.slug}
-                className="rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] overflow-hidden"
+                className="rounded-lg border border-border bg-bg-elevated overflow-hidden"
               >
                 {/* Card header */}
                 <button
                   onClick={() => setSelectedSlug(isSelected ? null : page.slug)}
-                  className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-[var(--surface-hover)] transition-colors"
+                  className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-surface-hover transition-colors"
                 >
                   <span className="shrink-0 text-base" title={page.auto_generated ? 'Auto-generated' : 'User-written'}>
                     {page.auto_generated ? '\uD83D\uDCA1' : '\uD83D\uDCC4'}
                   </span>
                   <div className="flex-1 min-w-0">
-                    <span className="text-sm font-medium text-[var(--text-primary)]">
+                    <span className="text-sm font-medium text-text-primary">
                       {page.title || page.slug}
                     </span>
                     {page.title && (
-                      <span className="ml-2 text-xs text-[var(--text-tertiary)] font-mono">
+                      <span className="ml-2 text-xs text-text-tertiary font-mono">
                         {page.slug}
                       </span>
                     )}
                   </div>
-                  <div className="flex items-center gap-3 shrink-0 text-xs text-[var(--text-tertiary)]">
+                  <div className="flex items-center gap-3 shrink-0 text-xs text-text-tertiary">
                     <span>{page.word_count} words</span>
                     <span>{page.entry_count} entries</span>
-                    <span className="text-[10px]">{isSelected ? '\u25B2' : '\u25BC'}</span>
+                    <span className="text-2xs">{isSelected ? '\u25B2' : '\u25BC'}</span>
                   </div>
                 </button>
 
                 {/* Expanded detail */}
                 {isSelected && (
-                  <div className="border-t border-[var(--border)] px-4 py-3">
+                  <div className="border-t border-border px-4 py-3">
                     {page.auto_generated && !isEditing && (
                       <div className="mb-3 px-3 py-2 rounded-lg bg-[rgba(249,115,22,0.08)] border border-[rgba(249,115,22,0.2)] text-xs text-[#f97316]">
                         Auto-maintained. Manual edits may be overwritten during compilation.
@@ -823,7 +823,7 @@ function PagesTab({ projectId }: { projectId: string }) {
                         <Textarea
                           value={editDraft}
                           onChange={(e) => setEditDraft(e.target.value)}
-                          className="min-h-[300px] font-mono text-[14px]"
+                          className="min-h-[300px] font-mono text-base"
                           autoFocus
                         />
                         <div className="flex justify-end gap-3 mt-3">
@@ -837,23 +837,23 @@ function PagesTab({ projectId }: { projectId: string }) {
                       </div>
                     ) : (
                       <>
-                        <div className="prose prose-sm dark:prose-invert max-w-[65ch] text-[var(--text-secondary)]">
+                        <div className="prose prose-sm dark:prose-invert max-w-[65ch] text-text-secondary">
                           <ReactMarkdown>{pageDetail?.content ?? page.content ?? ''}</ReactMarkdown>
                         </div>
 
                         {/* Backlinks */}
                         {pageDetail?.backlinks && pageDetail.backlinks.length > 0 && (
-                          <div className="mt-4 pt-3 border-t border-[var(--border)]">
-                            <span className="text-xs font-medium text-[var(--text-tertiary)]">Backlinks:</span>
+                          <div className="mt-4 pt-3 border-t border-border">
+                            <span className="text-xs font-medium text-text-tertiary">Backlinks:</span>
                             <div className="flex flex-wrap gap-2 mt-1">
                               {pageDetail.backlinks.map((bl, idx) => (
                                 <span
                                   key={`${bl.source_type}-${bl.source_id}-${idx}`}
-                                  className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border border-[var(--border)] bg-[var(--bg-primary)] text-[var(--text-secondary)]"
+                                  className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border border-border bg-bg-primary text-text-secondary"
                                 >
-                                  <span className="text-[var(--text-tertiary)]">[{bl.source_type}]</span>
+                                  <span className="text-text-tertiary">[{bl.source_type}]</span>
                                   <span className="font-mono">{bl.source_id.length > 20 ? bl.source_id.slice(0, 20) + '..' : bl.source_id}</span>
-                                  <span className="text-[var(--text-tertiary)]">({bl.link_type})</span>
+                                  <span className="text-text-tertiary">({bl.link_type})</span>
                                 </span>
                               ))}
                             </div>
@@ -861,10 +861,10 @@ function PagesTab({ projectId }: { projectId: string }) {
                         )}
 
                         {/* Actions */}
-                        <div className="flex items-center gap-3 mt-4 pt-3 border-t border-[var(--border)]">
+                        <div className="flex items-center gap-3 mt-4 pt-3 border-t border-border">
                           <button
                             onClick={() => { setEditingSlug(page.slug); setEditDraft(pageDetail?.content ?? page.content ?? ''); }}
-                            className="text-xs text-[var(--brand)] hover:underline"
+                            className="text-xs text-brand hover:underline"
                           >
                             Edit
                           </button>
@@ -872,7 +872,7 @@ function PagesTab({ projectId }: { projectId: string }) {
                             <button
                               onClick={() => handleRegenerate(page.slug)}
                               disabled={regeneratePage.isPending}
-                              className="text-xs text-[var(--brand)] hover:underline disabled:opacity-50"
+                              className="text-xs text-brand hover:underline disabled:opacity-50"
                             >
                               {regeneratePage.isPending ? 'Regenerating…' : 'Regenerate'}
                             </button>
@@ -884,7 +884,7 @@ function PagesTab({ projectId }: { projectId: string }) {
                           >
                             Delete
                           </button>
-                          <span className="text-xs text-[var(--text-tertiary)] ml-auto">
+                          <span className="text-xs text-text-tertiary ml-auto">
                             Updated <RelativeDate iso={page.updated_at} />
                           </span>
                         </div>
@@ -908,14 +908,14 @@ function HistoryTab({ projectId }: { projectId: string }) {
   const { data, isLoading } = useCompilations(projectId);
 
   if (isLoading) {
-    return <p className="p-5 text-[var(--text-tertiary)] text-sm">Loading history…</p>;
+    return <p className="p-5 text-text-tertiary text-sm">Loading history…</p>;
   }
 
   const compilations = data?.compilations || [];
 
   if (!compilations.length) {
     return (
-      <p className="p-5 text-[var(--text-tertiary)] text-sm text-center py-8">
+      <p className="p-5 text-text-tertiary text-sm text-center py-8">
         No compilations yet. Compile pending entries to create the first compilation.
       </p>
     );
@@ -926,18 +926,18 @@ function HistoryTab({ projectId }: { projectId: string }) {
       {compilations.map((c) => (
         <div
           key={c.id}
-          className="px-4 py-3 rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)]"
+          className="px-4 py-3 rounded-lg border border-border bg-bg-elevated"
         >
           <div className="flex items-center justify-between">
-            <span className="text-sm font-medium text-[var(--text-primary)]">
+            <span className="text-sm font-medium text-text-primary">
               {c.entries_compiled} {c.entries_compiled === 1 ? 'entry' : 'entries'} compiled
             </span>
-            <span className="text-xs text-[var(--text-tertiary)]">
+            <span className="text-xs text-text-tertiary">
               <RelativeDate iso={c.compiled_at} />
             </span>
           </div>
           {c.context_after && c.context_before && (
-            <p className="text-xs text-[var(--text-tertiary)] mt-1">
+            <p className="text-xs text-text-tertiary mt-1">
               Context: {c.context_before.length} chars &rarr; {c.context_after.length} chars
             </p>
           )}
@@ -1041,7 +1041,7 @@ export default function ProjectDetail() {
   }
 
   if (isLoading) {
-    return <div className="p-8 text-[var(--text-tertiary)]">Loading project…</div>;
+    return <div className="p-8 text-text-tertiary">Loading project…</div>;
   }
 
   if (error || !project) {
@@ -1098,10 +1098,10 @@ export default function ProjectDetail() {
       <Card level="elevated" className="rounded-xl shadow-[var(--shadow-sm)]">
         <div className="px-5 pt-4 flex items-start justify-between">
           <div className="min-w-0 flex-1">
-            <h1 className="text-2xl font-semibold text-[var(--text-primary)] break-all">
+            <h1 className="text-2xl font-semibold text-text-primary break-all">
               {project.git_remote_normalized}
             </h1>
-            <div className="mt-1 flex flex-wrap items-center gap-2 text-[13px] text-[var(--text-tertiary)]">
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-text-tertiary">
               <span>
                 Created <RelativeDate iso={project.created_at} />
               </span>
@@ -1110,7 +1110,7 @@ export default function ProjectDetail() {
                 Updated <RelativeDate iso={project.updated_at} />
               </span>
             </div>
-            <label className="flex items-center gap-2 text-[13px] text-[var(--text-tertiary)] mt-1">
+            <label className="flex items-center gap-2 text-sm text-text-tertiary mt-1">
               <input
                 type="checkbox"
                 checked={autoNarrative}
@@ -1133,7 +1133,7 @@ export default function ProjectDetail() {
           <div className="flex items-center gap-2 shrink-0">
             <Dropdown
               trigger={
-                <button className="p-1.5 text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] rounded-lg transition-colors">
+                <button className="p-1.5 text-text-tertiary hover:text-text-secondary hover:bg-surface-hover rounded-lg transition-colors">
                   <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
                     <circle cx="12" cy="5" r="2" />
                     <circle cx="12" cy="12" r="2" />
@@ -1158,20 +1158,20 @@ export default function ProjectDetail() {
             don't have to navigate to the Entries tab to act. */}
         {!workflowHintDismissed && pendingCount > 0 && (
           <div className="mx-5 mt-3 flex items-center gap-2 px-3 py-2 rounded-lg bg-[rgba(26,115,232,0.06)] border border-[rgba(26,115,232,0.15)]">
-            <div className="flex items-center gap-1 text-xs text-[var(--text-tertiary)]">
+            <div className="flex items-center gap-1 text-xs text-text-tertiary">
               {['Entries', 'Compile', 'Context', 'Pages'].map((step, i) => (
                 <span key={step} className="flex items-center gap-1">
                   <span className={`font-medium ${
                     (i === 0 && activeTab === 'entries') ||
                     (i === 2 && activeTab === 'context') ||
                     (i === 3 && activeTab === 'pages')
-                      ? 'text-[var(--brand)]' : ''
+                      ? 'text-brand' : ''
                   }`}>{step}</span>
-                  {i < 3 && <span className="text-[var(--text-tertiary)] mx-0.5">&rarr;</span>}
+                  {i < 3 && <span className="text-text-tertiary mx-0.5">&rarr;</span>}
                 </span>
               ))}
             </div>
-            <span className="text-xs text-[var(--brand)] font-medium ml-1">
+            <span className="text-xs text-brand font-medium ml-1">
               {pendingCount} pending {pendingCount === 1 ? 'entry' : 'entries'} — not yet in context
             </span>
             <Button
@@ -1190,7 +1190,7 @@ export default function ProjectDetail() {
         )}
 
         {/* Tabs */}
-        <div className="px-5 mt-2 border-t border-[var(--border)] pt-2">
+        <div className="px-5 mt-2 border-t border-border pt-2">
           <Tabs
             bare
             activeKey={activeTab}
@@ -1201,7 +1201,7 @@ export default function ProjectDetail() {
                 <span className="inline-flex items-center gap-1.5">
                   {tab.label}
                   {tab.key === 'entries' && pendingCount > 0 && (
-                    <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[11px] font-semibold bg-[var(--brand)] text-white leading-none">
+                    <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-2xs font-semibold bg-brand text-white leading-none">
                       {pendingCount > 99 ? '99+' : pendingCount}
                     </span>
                   )}
@@ -1220,8 +1220,8 @@ export default function ProjectDetail() {
             <Card level="elevated" className="mb-3 rounded-xl shadow-[var(--shadow-sm)] px-5 py-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <h2 className="text-base font-semibold text-[var(--text-primary)]">Compiled Context</h2>
-                  <div className="flex items-center gap-3 mt-1 text-xs text-[var(--text-tertiary)]">
+                  <h2 className="text-base font-semibold text-text-primary">Compiled Context</h2>
+                  <div className="flex items-center gap-3 mt-1 text-xs text-text-tertiary">
                     {project.context_document ? (
                       <>
                         <span>{project.context_document.trim().split(/\s+/).length.toLocaleString()} words</span>
@@ -1255,7 +1255,7 @@ export default function ProjectDetail() {
                   <Textarea
                     value={draft}
                     onChange={(e) => setDraft(e.target.value)}
-                    className="min-h-[400px] font-mono text-[14px]"
+                    className="min-h-[400px] font-mono text-base"
                     placeholder={"Write your project context document here…\n\nThis will be shared with all sessions in this project."}
                     autoFocus
                   />
@@ -1271,17 +1271,17 @@ export default function ProjectDetail() {
                   </div>
                 </div>
               ) : project.context_document ? (
-                <div className="bg-[var(--surface)] border border-[var(--border)] rounded-lg p-5">
-                  <article className="prose prose-sm dark:prose-invert max-w-[65ch] text-[var(--text-secondary)] leading-relaxed">
+                <div className="bg-surface border border-border rounded-lg p-5">
+                  <article className="prose prose-sm dark:prose-invert max-w-[65ch] text-text-secondary leading-relaxed">
                     <ReactMarkdown>{project.context_document}</ReactMarkdown>
                   </article>
                 </div>
               ) : (
                 <div className="text-center py-12">
-                  <p className="text-[var(--text-tertiary)] text-[13px] mb-1">
+                  <p className="text-text-tertiary text-sm mb-1">
                     No context document yet.
                   </p>
-                  <p className="text-[13px] text-[var(--text-tertiary)] mb-4">
+                  <p className="text-sm text-text-tertiary mb-4">
                     Add knowledge entries, then compile to generate a context document.
                   </p>
                   <Button variant="ghost" onClick={handleEdit}>Write one manually</Button>
@@ -1349,9 +1349,9 @@ export default function ProjectDetail() {
       {/* Delete confirmation modal */}
       <Dialog open={showDeleteConfirm} onClose={() => setShowDeleteConfirm(false)} titleId="delete-project-title">
         <DialogHeader titleId="delete-project-title">Delete project?</DialogHeader>
-        <p className="text-sm text-[var(--text-tertiary)] mb-4">
+        <p className="text-sm text-text-tertiary mb-4">
           This will permanently delete the project context for{' '}
-          <span className="font-medium text-[var(--text-secondary)]">{project.git_remote_normalized}</span>.
+          <span className="font-medium text-text-secondary">{project.git_remote_normalized}</span>.
           This action cannot be undone.
         </p>
         <DialogFooter>

@@ -75,14 +75,14 @@ const BOARD_STATUSES = STATUS_FILTERS.filter((s) => s.value !== '');
 
 const KIND_TONE: Record<string, string> = {
   issue: 'bg-indigo-500/15 text-indigo-600',
-  task: 'bg-[var(--border)]/30 text-[var(--text-tertiary)]',
+  task: 'bg-[var(--border)]/30 text-text-tertiary',
 };
 
 const PRIORITY_TONE: Record<string, string> = {
-  low: 'text-[var(--text-tertiary)]',
+  low: 'text-text-tertiary',
   medium: '',
   high: 'text-amber-600',
-  critical: 'text-[var(--danger)]',
+  critical: 'text-danger',
 };
 
 /** Maps status to Badge tint variant semantic color. */
@@ -173,11 +173,11 @@ function StatusCell({ ticket, projectId }: { ticket: Ticket; projectId: string }
       trigger={() => (
         <button
           type="button"
-          className="inline-flex items-center gap-1.5 px-1 -mx-1 py-0.5 rounded hover:bg-[var(--surface-hover)] transition-colors"
+          className="inline-flex items-center gap-1.5 px-1 -mx-1 py-0.5 rounded hover:bg-surface-hover transition-colors"
         >
           <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: dotColor }} />
           <Badge variant={variant} tint label={label} size="sm" />
-          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-[var(--text-tertiary)]">
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-text-tertiary">
             <polyline points="2,3 5,6 8,3" />
           </svg>
         </button>
@@ -193,7 +193,7 @@ function KindBadge({ kind }: { kind: string }) {
   const label = kind === 'issue' ? 'Issue' : 'Task';
   return (
     <span
-      className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+      className={`inline-flex items-center rounded px-1.5 py-0.5 text-2xs font-semibold uppercase tracking-wide ${
         KIND_TONE[kind] ?? KIND_TONE.task
       }`}
     >
@@ -252,7 +252,7 @@ export default function TicketsTab({ projectId }: TicketsTabProps) {
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <h2 id="tickets-heading" className="text-lg font-semibold">
           Tickets
-          <span className="ml-2 text-sm text-[var(--text-tertiary)]">
+          <span className="ml-2 text-sm text-text-tertiary">
             {tickets.length} {tickets.length === 1 ? 'ticket' : 'tickets'}
           </span>
         </h2>
@@ -273,14 +273,14 @@ export default function TicketsTab({ projectId }: TicketsTabProps) {
           />
 
           {/* List / Board toggle */}
-          <div className="flex items-center rounded-lg border border-[var(--border)] bg-[var(--surface)] overflow-hidden">
+          <div className="flex items-center rounded-lg border border-border bg-surface overflow-hidden">
             <button
               type="button"
               onClick={() => handleViewMode('list')}
               className={`p-2 transition-colors ${
                 viewMode === 'list'
-                  ? 'bg-[var(--bg-elevated)] text-[var(--text-primary)]'
-                  : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)]'
+                  ? 'bg-bg-elevated text-text-primary'
+                  : 'text-text-tertiary hover:text-text-primary'
               }`}
               title="List view"
               aria-label="List view"
@@ -309,8 +309,8 @@ export default function TicketsTab({ projectId }: TicketsTabProps) {
               onClick={() => handleViewMode('board')}
               className={`p-2 transition-colors ${
                 viewMode === 'board'
-                  ? 'bg-[var(--bg-elevated)] text-[var(--text-primary)]'
-                  : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)]'
+                  ? 'bg-bg-elevated text-text-primary'
+                  : 'text-text-tertiary hover:text-text-primary'
               }`}
               title="Board view"
               aria-label="Board view"
@@ -384,12 +384,12 @@ interface ViewProps {
 
 function ListView({ tickets, projectId, selected, onSelect, onNavigate }: ViewProps) {
   return (
-    <ul className="border border-[var(--border)] rounded-lg divide-y divide-[var(--border)]">
+    <ul className="border border-border rounded-lg divide-y divide-[var(--border)]">
       {tickets.map((t) => (
         <li key={t.id}>
           <button
             type="button"
-            className={`w-full text-left px-3 py-2 hover:bg-[var(--surface)] flex items-start gap-3 border-l-2 ${
+            className={`w-full text-left px-3 py-2 hover:bg-surface flex items-start gap-3 border-l-2 ${
               t.kind === 'issue' ? 'border-indigo-500/60' : 'border-transparent'
             }`}
             onClick={() => onSelect(t.id)}
@@ -406,15 +406,15 @@ function ListView({ tickets, projectId, selected, onSelect, onNavigate }: ViewPr
                   {t.priority}
                 </span>
                 {t.assigned_to && (
-                  <span className="text-xs text-[var(--text-tertiary)]">
+                  <span className="text-xs text-text-tertiary">
                     → {t.assigned_to}
                   </span>
                 )}
               </div>
-              <div className="font-medium truncate text-[var(--text-primary)]">
+              <div className="font-medium truncate text-text-primary">
                 {t.title}
               </div>
-              <div className="text-xs text-[var(--text-tertiary)]">
+              <div className="text-xs text-text-tertiary">
                 <RelativeDate iso={t.updated_at} /> · {t.acceptance_criteria.length}{' '}
                 criteria
                 {t.depends_on.length > 0 ? ` · ${t.depends_on.length} deps` : ''}
@@ -461,15 +461,15 @@ function BoardView({ tickets, projectId, selected, onSelect, onNavigate }: ViewP
             return (
               <div key={status.value} className="flex-1 min-w-[180px] max-w-[260px]">
                 {/* Column header */}
-                <h3 className="text-micro uppercase font-semibold text-[var(--text-tertiary)] mb-2 px-1 flex items-center gap-1.5">
+                <h3 className="text-micro uppercase font-semibold text-text-tertiary mb-2 px-1 flex items-center gap-1.5">
                   {status.label}
-                  <span className="text-[var(--text-tertiary)]/60 tabular-nums">
+                  <span className="text-text-tertiary/60 tabular-nums">
                     {columnTickets.length}
                   </span>
                 </h3>
 
                 {columnTickets.length === 0 ? (
-                  <div className="border border-dashed border-[var(--border)] rounded-lg p-3 text-[12px] text-[var(--text-tertiary)] text-center">
+                  <div className="border border-dashed border-border rounded-lg p-3 text-xs text-text-tertiary text-center">
                     —
                   </div>
                 ) : (
@@ -500,7 +500,7 @@ function BoardView({ tickets, projectId, selected, onSelect, onNavigate }: ViewP
           <div className="space-y-3">
             <h2
               id="ticket-detail-title"
-              className="text-lg font-semibold text-[var(--text-primary)]"
+              className="text-lg font-semibold text-text-primary"
             >
               {selectedTicket.title}
             </h2>
@@ -532,7 +532,7 @@ function BoardCard({
     <button
       type="button"
       onClick={onToggle}
-      className={`w-full text-left bg-[var(--surface)] border border-[var(--border)] rounded-lg p-3 hover:bg-[var(--bg-elevated)] hover:border-[var(--border-strong)] transition-[background-color,border-color] duration-150 outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] ${
+      className={`w-full text-left bg-surface border border-border rounded-lg p-3 hover:bg-bg-elevated hover:border-border-strong transition-[background-color,border-color] duration-150 outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] ${
         isExpanded ? 'border-[var(--brand)] ring-1 ring-[var(--brand)]/30' : ''
       }`}
       aria-expanded={isExpanded}
@@ -541,21 +541,21 @@ function BoardCard({
       {/* Kind + ID row */}
       <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
         <KindBadge kind={t.kind} />
-        <span className="text-mono-chip text-[11px]">{t.id.slice(0, 12)}</span>
+        <span className="text-mono-chip text-2xs">{t.id.slice(0, 12)}</span>
       </div>
 
       {/* Title */}
-      <div className="text-[13px] font-medium text-[var(--text-primary)] mb-2 leading-snug line-clamp-2">
+      <div className="text-sm font-medium text-text-primary mb-2 leading-snug line-clamp-2">
         {t.title}
       </div>
 
       {/* Meta row */}
-      <div className="flex items-center gap-1.5 flex-wrap text-[11px] text-[var(--text-tertiary)]">
+      <div className="flex items-center gap-1.5 flex-wrap text-2xs text-text-tertiary">
         <span className={`uppercase tracking-wide font-semibold ${PRIORITY_TONE[t.priority] ?? ''}`}>
           {t.priority}
         </span>
         {t.assigned_to && (
-          <span className="text-mono-chip text-[11px]">{t.assigned_to}</span>
+          <span className="text-mono-chip text-2xs">{t.assigned_to}</span>
         )}
         {t.acceptance_criteria.length > 0 && (
           <>
@@ -585,11 +585,11 @@ function EmptyState({
 }) {
   if (kindFilter === 'issue') {
     return (
-      <div className="border border-[var(--border)] rounded-lg p-6 text-center text-[var(--text-tertiary)] space-y-1">
-        <p className="font-medium text-[15px] text-[var(--text-secondary)]">
+      <div className="border border-border rounded-lg p-6 text-center text-text-tertiary space-y-1">
+        <p className="font-medium text-md text-text-secondary">
           No Issues yet.
         </p>
-        <p className="text-[13px]">
+        <p className="text-sm">
           An Issue is a PM-triaged container that rolls up one or more Tasks. File
           an Issue when a user-facing problem needs cross-team work; file a Task
           for a single executor's unit of work.
@@ -598,7 +598,7 @@ function EmptyState({
     );
   }
   return (
-    <div className="border border-[var(--border)] rounded-lg p-6 text-center text-[var(--text-tertiary)]">
+    <div className="border border-border rounded-lg p-6 text-center text-text-tertiary">
       No tickets{' '}
       {statusFilter
         ? `with status "${statusFilter}"`
@@ -671,12 +671,12 @@ function TicketDetail({ projectId, ticketId, fallback, onNavigate }: DetailProps
   const canClose = t.kind === 'issue' && t.status === 'in_progress';
 
   return (
-    <div className="px-3 py-3 bg-[var(--surface)]/50 text-sm space-y-3 border-t border-[var(--border)]">
+    <div className="px-3 py-3 bg-surface/50 text-sm space-y-3 border-t border-border">
       {t.kind === 'task' && t.parent_ticket_id && (
         <div className="text-xs">
           <button
             type="button"
-            className="text-[var(--brand)] hover:underline outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] rounded"
+            className="text-brand hover:underline outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] rounded"
             onClick={() => onNavigate(t.parent_ticket_id!)}
           >
             ← Back to parent Issue:{' '}
@@ -685,7 +685,7 @@ function TicketDetail({ projectId, ticketId, fallback, onNavigate }: DetailProps
               <>
                 {' '}
                 — {parent.title}{' '}
-                <span className="text-[var(--text-tertiary)]">
+                <span className="text-text-tertiary">
                   ({parent.status})
                 </span>
               </>
@@ -694,18 +694,18 @@ function TicketDetail({ projectId, ticketId, fallback, onNavigate }: DetailProps
         </div>
       )}
 
-      <p className="whitespace-pre-wrap text-[var(--text-primary)]">
+      <p className="whitespace-pre-wrap text-text-primary">
         {t.description}
       </p>
 
       {t.acceptance_criteria.length > 0 && (
         <div>
-          <h4 className="text-micro uppercase font-semibold tracking-wide text-[var(--text-tertiary)] mb-1">
+          <h4 className="text-micro uppercase font-semibold tracking-wide text-text-tertiary mb-1">
             Acceptance criteria
           </h4>
           <ul className="space-y-0.5">
             {t.acceptance_criteria.map((c, i) => (
-              <li key={i} className="pl-3 text-[var(--text-secondary)]">
+              <li key={i} className="pl-3 text-text-secondary">
                 ☐ {c}
               </li>
             ))}
@@ -715,11 +715,11 @@ function TicketDetail({ projectId, ticketId, fallback, onNavigate }: DetailProps
 
       {t.kind === 'issue' && (
         <div>
-          <h4 className="text-micro uppercase font-semibold tracking-wide text-[var(--text-tertiary)] mb-1">
+          <h4 className="text-micro uppercase font-semibold tracking-wide text-text-tertiary mb-1">
             Children ({childIds.length})
           </h4>
           {childIds.length === 0 ? (
-            <p className="pl-3 text-[var(--text-tertiary)] text-xs">
+            <p className="pl-3 text-text-tertiary text-xs">
               No child Tasks yet. File a Task with this Issue as the parent to
               populate this rollup.
             </p>
@@ -732,10 +732,10 @@ function TicketDetail({ projectId, ticketId, fallback, onNavigate }: DetailProps
                   <li key={cid}>
                     <button
                       type="button"
-                      className="w-full text-left flex items-center gap-2 px-2 py-1 rounded hover:bg-[var(--bg-sunken)] outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+                      className="w-full text-left flex items-center gap-2 px-2 py-1 rounded hover:bg-bg-sunken outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
                       onClick={() => onNavigate(cid)}
                     >
-                      <span className="font-mono text-xs text-[var(--text-tertiary)]">
+                      <span className="font-mono text-xs text-text-tertiary">
                         {cid}
                       </span>
                       {child ? (
@@ -746,21 +746,21 @@ function TicketDetail({ projectId, ticketId, fallback, onNavigate }: DetailProps
                             label={formatStatusLabel(child.status)}
                             size="sm"
                           />
-                          <span className="truncate text-[var(--text-primary)]">
+                          <span className="truncate text-text-primary">
                             {child.title}
                           </span>
                           {child.assigned_to && (
-                            <span className="text-xs text-[var(--text-tertiary)]">
+                            <span className="text-xs text-text-tertiary">
                               → {child.assigned_to}
                             </span>
                           )}
                         </>
                       ) : q?.isError ? (
-                        <span className="text-xs text-[var(--danger)]">
+                        <span className="text-xs text-danger">
                           (failed to load)
                         </span>
                       ) : (
-                        <span className="text-xs text-[var(--text-tertiary)]">
+                        <span className="text-xs text-text-tertiary">
                           loading…
                         </span>
                       )}
@@ -775,12 +775,12 @@ function TicketDetail({ projectId, ticketId, fallback, onNavigate }: DetailProps
 
       {t.depends_on.length > 0 && (
         <div>
-          <h4 className="text-micro uppercase font-semibold tracking-wide text-[var(--text-tertiary)] mb-1">
+          <h4 className="text-micro uppercase font-semibold tracking-wide text-text-tertiary mb-1">
             Depends on
           </h4>
           <ul className="space-y-0.5">
             {t.depends_on.map((d) => (
-              <li key={d} className="font-mono text-xs text-[var(--text-tertiary)]">
+              <li key={d} className="font-mono text-xs text-text-tertiary">
                 {d}
               </li>
             ))}
@@ -790,10 +790,10 @@ function TicketDetail({ projectId, ticketId, fallback, onNavigate }: DetailProps
 
       {t.completion_notes && (
         <div>
-          <h4 className="text-micro uppercase font-semibold tracking-wide text-[var(--text-tertiary)] mb-1">
+          <h4 className="text-micro uppercase font-semibold tracking-wide text-text-tertiary mb-1">
             Completion notes
           </h4>
-          <p className="whitespace-pre-wrap text-[var(--text-secondary)]">
+          <p className="whitespace-pre-wrap text-text-secondary">
             {t.completion_notes}
           </p>
         </div>
@@ -801,20 +801,20 @@ function TicketDetail({ projectId, ticketId, fallback, onNavigate }: DetailProps
 
       {comments && comments.length > 0 && (
         <div>
-          <h4 className="text-micro uppercase font-semibold tracking-wide text-[var(--text-tertiary)] mb-1">
+          <h4 className="text-micro uppercase font-semibold tracking-wide text-text-tertiary mb-1">
             Comments ({comments.length})
           </h4>
           <ul className="space-y-2">
             {comments.map((c) => (
-              <li key={c.id} className="border-l-2 border-[var(--border)] pl-3">
-                <div className="text-xs text-[var(--text-tertiary)]">
+              <li key={c.id} className="border-l-2 border-border pl-3">
+                <div className="text-xs text-text-tertiary">
                   <span className="font-medium">
                     {c.author_persona ?? c.author_user_id.slice(0, 8)}
                   </span>
                   {' · '}
                   <RelativeDate iso={c.created_at} />
                 </div>
-                <p className="whitespace-pre-wrap text-sm text-[var(--text-primary)]">
+                <p className="whitespace-pre-wrap text-sm text-text-primary">
                   {c.content}
                 </p>
               </li>
@@ -978,7 +978,7 @@ function NewTicketModal({ projectId, onClose }: NewModalProps) {
               ]}
               title="Kind"
             />
-            <p className="text-[12px] text-[var(--text-tertiary)] mt-1">
+            <p className="text-xs text-text-tertiary mt-1">
               {kind === 'issue'
                 ? 'PM-triaged container. Requires project owner or org admin.'
                 : 'A single executor unit of work.'}
@@ -987,13 +987,13 @@ function NewTicketModal({ projectId, onClose }: NewModalProps) {
 
           {kind === 'task' && (
             <div>
-              <label className="text-[13px] font-medium text-[var(--text-secondary)] block mb-1">
+              <label className="text-sm font-medium text-text-secondary block mb-1">
                 Parent Issue (optional)
               </label>
               <select
                 value={parentTicketId}
                 onChange={(e) => setParentTicketId(e.target.value)}
-                className="w-full bg-[var(--bg-sunken)] border border-[var(--border)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] font-mono appearance-none focus:border-[var(--brand)] focus:shadow-[0_0_0_3px_var(--brand-glow)] outline-none"
+                className="w-full bg-bg-sunken border border-border rounded-lg px-3 py-2 text-sm text-text-primary font-mono appearance-none focus:border-[var(--brand)] focus:shadow-[0_0_0_3px_var(--brand-glow)] outline-none"
                 aria-label="Parent Issue"
               >
                 <option value="">— none —</option>

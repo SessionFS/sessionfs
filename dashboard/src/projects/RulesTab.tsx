@@ -85,10 +85,10 @@ interface CompiledOutputModalProps {
 function CompiledOutputModal({ tool, filename, content, tokenCount, onClose }: CompiledOutputModalProps) {
   return (
     <Dialog open onClose={onClose} titleId="compiled-output-title" className="max-w-3xl max-h-[80vh] flex flex-col !p-0">
-      <div className="flex items-center justify-between px-5 py-3 border-b border-[var(--border)]">
+      <div className="flex items-center justify-between px-5 py-3 border-b border-border">
         <div className="min-w-0">
           <DialogHeader titleId="compiled-output-title">{filename}</DialogHeader>
-          <p className="text-xs text-[var(--text-tertiary)] -mt-3">
+          <p className="text-xs text-text-tertiary -mt-3">
             {tool} &middot; {tokenCount.toLocaleString()} tokens
           </p>
         </div>
@@ -97,7 +97,7 @@ function CompiledOutputModal({ tool, filename, content, tokenCount, onClose }: C
           <Button variant="ghost" onClick={onClose}>Close</Button>
         </div>
       </div>
-      <pre className="flex-1 overflow-auto px-5 py-4 text-xs font-mono text-[var(--text-secondary)] whitespace-pre-wrap">
+      <pre className="flex-1 overflow-auto px-5 py-4 text-xs font-mono text-text-secondary whitespace-pre-wrap">
         {content}
       </pre>
     </Dialog>
@@ -115,41 +115,41 @@ function VersionViewerModal({ version, onClose }: VersionViewerModalProps) {
   const active = activeTool ? version.compiled_outputs[activeTool] : null;
   return (
     <Dialog open onClose={onClose} titleId="version-viewer-title" className="max-w-4xl max-h-[85vh] flex flex-col !p-0">
-      <div className="flex items-center justify-between px-5 py-3 border-b border-[var(--border)]">
+      <div className="flex items-center justify-between px-5 py-3 border-b border-border">
         <div className="min-w-0">
           <DialogHeader titleId="version-viewer-title">
             <span className="inline-flex items-center gap-2">
               <VersionBadge version={version.version} />
-              <span className="text-sm text-[var(--text-tertiary)] font-mono font-normal">
+              <span className="text-sm text-text-tertiary font-mono font-normal">
                 {version.content_hash?.slice(0, 8)}
               </span>
             </span>
           </DialogHeader>
-          <p className="text-xs text-[var(--text-tertiary)] -mt-3">
+          <p className="text-xs text-text-tertiary -mt-3">
             Compiled <RelativeDate iso={version.compiled_at} />
           </p>
         </div>
         <Button variant="ghost" onClick={onClose}>Close</Button>
       </div>
       {entries.length === 0 ? (
-        <p className="p-8 text-center text-sm text-[var(--text-tertiary)]">
+        <p className="p-8 text-center text-sm text-text-tertiary">
           No compiled outputs in this version.
         </p>
       ) : (
         <>
-          <div className="flex gap-1 px-5 pt-3 border-b border-[var(--border)] overflow-x-auto">
+          <div className="flex gap-1 px-5 pt-3 border-b border-border overflow-x-auto">
             {entries.map(([tool, out]) => (
               <button
                 key={tool}
                 onClick={() => setActiveTool(tool)}
                 className={`px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors ${
                   activeTool === tool
-                    ? 'text-[var(--brand)] border-b-2 border-[var(--brand)]'
-                    : 'text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]'
+                    ? 'text-brand border-b-2 border-[var(--brand)]'
+                    : 'text-text-tertiary hover:text-text-secondary'
                 }`}
               >
                 {tool}
-                <span className="ml-1.5 text-[10px] text-[var(--text-tertiary)]">
+                <span className="ml-1.5 text-2xs text-text-tertiary">
                   ({out.token_count.toLocaleString()}t)
                 </span>
               </button>
@@ -157,11 +157,11 @@ function VersionViewerModal({ version, onClose }: VersionViewerModalProps) {
           </div>
           {active && (
             <>
-              <div className="flex items-center justify-between px-5 py-2 text-xs text-[var(--text-tertiary)] border-b border-[var(--border)]">
+              <div className="flex items-center justify-between px-5 py-2 text-xs text-text-tertiary border-b border-border">
                 <span className="font-mono">{active.filename}</span>
                 <CopyButton text={active.content} label="Copy" />
               </div>
-              <pre className="flex-1 overflow-auto px-5 py-4 text-xs font-mono text-[var(--text-secondary)] whitespace-pre-wrap">
+              <pre className="flex-1 overflow-auto px-5 py-4 text-xs font-mono text-text-secondary whitespace-pre-wrap">
                 {active.content}
               </pre>
             </>
@@ -487,7 +487,7 @@ export default function RulesTab({ projectId }: { projectId: string }) {
   }
 
   if (isLoading) {
-    return <p className="p-5 text-[var(--text-tertiary)] text-sm">Loading rules…</p>;
+    return <p className="p-5 text-text-tertiary text-sm">Loading rules…</p>;
   }
 
   if (error || !rules) {
@@ -515,12 +515,12 @@ export default function RulesTab({ projectId }: { projectId: string }) {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <h2 className="text-base font-semibold text-[var(--text-primary)]">
+            <h2 className="text-base font-semibold text-text-primary">
               Project Rules
             </h2>
             <VersionBadge version={rules.version} />
           </div>
-          <p className="text-xs text-[var(--text-tertiary)] mt-0.5">
+          <p className="text-xs text-text-tertiary mt-0.5">
             Canonical rules for this project. Compile to generate tool-specific files. Updated{' '}
             <RelativeDate iso={rules.updated_at} />.
           </p>
@@ -537,7 +537,7 @@ export default function RulesTab({ projectId }: { projectId: string }) {
       {/* Static preferences */}
       <section aria-labelledby="static-prefs-heading">
         <div className="flex items-center justify-between mb-2">
-          <h3 id="static-prefs-heading" className="text-sm font-semibold text-[var(--text-primary)]">
+          <h3 id="static-prefs-heading" className="text-sm font-semibold text-text-primary">
             Static preferences
           </h3>
           {!editing && (
@@ -552,7 +552,7 @@ export default function RulesTab({ projectId }: { projectId: string }) {
               value={draft ?? ''}
               onChange={(e) => setDraft(e.target.value)}
               placeholder="Write canonical project preferences (markdown or plain text)…"
-              className="min-h-[240px] font-mono text-[14px]"
+              className="min-h-[240px] font-mono text-base"
               autoFocus
             />
             <div className="flex justify-end gap-3 mt-3">
@@ -563,9 +563,9 @@ export default function RulesTab({ projectId }: { projectId: string }) {
             </div>
           </div>
         ) : (
-          <pre className="px-3 py-3 text-[13px] font-mono bg-[var(--surface)] border border-[var(--border)] rounded-lg text-[var(--text-secondary)] whitespace-pre-wrap min-h-[80px]">
+          <pre className="px-3 py-3 text-sm font-mono bg-surface border border-border rounded-lg text-text-secondary whitespace-pre-wrap min-h-[80px]">
             {rules.static_rules || (
-              <span className="text-[var(--text-tertiary)] italic">
+              <span className="text-text-tertiary italic">
                 No static preferences set. Click Edit to add some.
               </span>
             )}
@@ -575,10 +575,10 @@ export default function RulesTab({ projectId }: { projectId: string }) {
 
       {/* Enabled tools */}
       <section aria-labelledby="tools-heading">
-        <h3 id="tools-heading" className="text-sm font-semibold text-[var(--text-primary)] mb-2">
+        <h3 id="tools-heading" className="text-sm font-semibold text-text-primary mb-2">
           Enabled tools
         </h3>
-        <p className="text-xs text-[var(--text-tertiary)] mb-2">
+        <p className="text-xs text-text-tertiary mb-2">
           Compiled rule files will only be generated for tools you enable.
         </p>
         <div className="flex flex-wrap gap-3">
@@ -587,7 +587,7 @@ export default function RulesTab({ projectId }: { projectId: string }) {
             return (
               <label
                 key={tool.value}
-                className="flex items-center gap-2 px-3 py-2 border border-[var(--border)] rounded-lg bg-[var(--bg-primary)] cursor-pointer hover:bg-[var(--surface-hover)] transition-colors"
+                className="flex items-center gap-2 px-3 py-2 border border-border rounded-lg bg-bg-primary cursor-pointer hover:bg-surface-hover transition-colors"
               >
                 <input
                   type="checkbox"
@@ -597,8 +597,8 @@ export default function RulesTab({ projectId }: { projectId: string }) {
                   className="accent-[var(--brand)]"
                   aria-label={`Enable ${tool.label}`}
                 />
-                <span className="text-sm text-[var(--text-primary)]">{tool.label}</span>
-                <span className="text-[10px] text-[var(--text-tertiary)] font-mono">
+                <span className="text-sm text-text-primary">{tool.label}</span>
+                <span className="text-2xs text-text-tertiary font-mono">
                   {tool.value}
                 </span>
               </label>
@@ -609,10 +609,10 @@ export default function RulesTab({ projectId }: { projectId: string }) {
 
       {/* Knowledge injection */}
       <section aria-labelledby="knowledge-heading">
-        <h3 id="knowledge-heading" className="text-sm font-semibold text-[var(--text-primary)] mb-2">
+        <h3 id="knowledge-heading" className="text-sm font-semibold text-text-primary mb-2">
           Knowledge injection
         </h3>
-        <label className="flex items-center gap-2 text-sm text-[var(--text-secondary)] mb-3">
+        <label className="flex items-center gap-2 text-sm text-text-secondary mb-3">
           <input
             type="checkbox"
             checked={rules.include_knowledge}
@@ -624,7 +624,7 @@ export default function RulesTab({ projectId }: { projectId: string }) {
         </label>
         {rules.include_knowledge && (
           <>
-            <p className="text-xs text-[var(--text-tertiary)] mb-2">
+            <p className="text-xs text-text-tertiary mb-2">
               Only active, durable claims are injected. Select which entry types to include.
             </p>
             <div className="flex flex-wrap gap-2 mb-3">
@@ -633,7 +633,7 @@ export default function RulesTab({ projectId }: { projectId: string }) {
                 return (
                   <label
                     key={kt.value}
-                    className="flex items-center gap-1.5 px-2.5 py-1 text-xs border border-[var(--border)] rounded-full bg-[var(--bg-primary)] cursor-pointer hover:bg-[var(--surface-hover)] transition-colors"
+                    className="flex items-center gap-1.5 px-2.5 py-1 text-xs border border-border rounded-full bg-bg-primary cursor-pointer hover:bg-surface-hover transition-colors"
                   >
                     <input
                       type="checkbox"
@@ -643,12 +643,12 @@ export default function RulesTab({ projectId }: { projectId: string }) {
                       className="accent-[var(--brand)]"
                       aria-label={`Knowledge type ${kt.label}`}
                     />
-                    <span className="text-[var(--text-primary)]">{kt.label}</span>
+                    <span className="text-text-primary">{kt.label}</span>
                   </label>
                 );
               })}
             </div>
-            <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+            <label className="flex items-center gap-2 text-xs text-text-secondary">
               Max tokens:
               <DebouncedTokenInput
                 ref={knowledgeTokensRef}
@@ -664,10 +664,10 @@ export default function RulesTab({ projectId }: { projectId: string }) {
 
       {/* Context injection */}
       <section aria-labelledby="context-heading">
-        <h3 id="context-heading" className="text-sm font-semibold text-[var(--text-primary)] mb-2">
+        <h3 id="context-heading" className="text-sm font-semibold text-text-primary mb-2">
           Context injection
         </h3>
-        <label className="flex items-center gap-2 text-sm text-[var(--text-secondary)] mb-3">
+        <label className="flex items-center gap-2 text-sm text-text-secondary mb-3">
           <input
             type="checkbox"
             checked={rules.include_context}
@@ -679,7 +679,7 @@ export default function RulesTab({ projectId }: { projectId: string }) {
         </label>
         {rules.include_context && (
           <>
-            <p className="text-xs text-[var(--text-tertiary)] mb-2">
+            <p className="text-xs text-text-tertiary mb-2">
               Select which sections of the compiled context document to include.
             </p>
             <div className="flex flex-wrap gap-2 mb-3">
@@ -688,7 +688,7 @@ export default function RulesTab({ projectId }: { projectId: string }) {
                 return (
                   <label
                     key={s.value}
-                    className="flex items-center gap-1.5 px-2.5 py-1 text-xs border border-[var(--border)] rounded-full bg-[var(--bg-primary)] cursor-pointer hover:bg-[var(--surface-hover)] transition-colors"
+                    className="flex items-center gap-1.5 px-2.5 py-1 text-xs border border-border rounded-full bg-bg-primary cursor-pointer hover:bg-surface-hover transition-colors"
                   >
                     <input
                       type="checkbox"
@@ -698,12 +698,12 @@ export default function RulesTab({ projectId }: { projectId: string }) {
                       className="accent-[var(--brand)]"
                       aria-label={`Context section ${s.label}`}
                     />
-                    <span className="text-[var(--text-primary)]">{s.label}</span>
+                    <span className="text-text-primary">{s.label}</span>
                   </label>
                 );
               })}
             </div>
-            <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+            <label className="flex items-center gap-2 text-xs text-text-secondary">
               Max tokens:
               <DebouncedTokenInput
                 ref={contextTokensRef}
@@ -720,13 +720,13 @@ export default function RulesTab({ projectId }: { projectId: string }) {
       {/* Tool overrides (read-only) */}
       {rules.tool_overrides && Object.keys(rules.tool_overrides).length > 0 && (
         <section aria-labelledby="overrides-heading">
-          <h3 id="overrides-heading" className="text-sm font-semibold text-[var(--text-primary)] mb-2">
+          <h3 id="overrides-heading" className="text-sm font-semibold text-text-primary mb-2">
             Tool overrides
-            <span className="ml-2 text-xs font-normal text-[var(--text-tertiary)]">
+            <span className="ml-2 text-xs font-normal text-text-tertiary">
               (read-only for v0.9.9)
             </span>
           </h3>
-          <pre className="px-3 py-3 text-[12px] font-mono bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-[var(--text-secondary)] whitespace-pre-wrap overflow-x-auto">
+          <pre className="px-3 py-3 text-xs font-mono bg-bg-primary border border-border rounded-lg text-text-secondary whitespace-pre-wrap overflow-x-auto">
             {JSON.stringify(rules.tool_overrides, null, 2)}
           </pre>
         </section>
@@ -735,10 +735,10 @@ export default function RulesTab({ projectId }: { projectId: string }) {
       {/* Compiled outputs (latest version) */}
       <section aria-labelledby="outputs-heading">
         <div className="flex items-center justify-between mb-2">
-          <h3 id="outputs-heading" className="text-sm font-semibold text-[var(--text-primary)]">
+          <h3 id="outputs-heading" className="text-sm font-semibold text-text-primary">
             Compiled outputs
             {displayVersionNumber !== null && (
-              <span className="ml-2 text-xs font-normal text-[var(--text-tertiary)]">
+              <span className="ml-2 text-xs font-normal text-text-tertiary">
                 {showingLatest ? '(latest — ' : '(viewing '}v{displayVersionNumber}
                 {showingLatest ? ')' : ')'}
               </span>
@@ -747,14 +747,14 @@ export default function RulesTab({ projectId }: { projectId: string }) {
           {!showingLatest && latestOutputsVersion !== null && (
             <button
               onClick={() => setSelectedVersion(null)}
-              className="text-xs text-[var(--brand)] hover:underline"
+              className="text-xs text-brand hover:underline"
             >
               Show latest
             </button>
           )}
         </div>
         {latestOutputsVersion === null ? (
-          <p className="text-xs text-[var(--text-tertiary)] italic">
+          <p className="text-xs text-text-tertiary italic">
             No versions compiled yet. Click Compile to generate the first version.
           </p>
         ) : (
@@ -769,26 +769,26 @@ export default function RulesTab({ projectId }: { projectId: string }) {
 
       {/* Version list */}
       <section aria-labelledby="versions-heading">
-        <h3 id="versions-heading" className="text-sm font-semibold text-[var(--text-primary)] mb-2">
+        <h3 id="versions-heading" className="text-sm font-semibold text-text-primary mb-2">
           Version history
         </h3>
         {versions.length === 0 ? (
-          <p className="text-xs text-[var(--text-tertiary)] italic">No versions yet.</p>
+          <p className="text-xs text-text-tertiary italic">No versions yet.</p>
         ) : (
           <div className="space-y-1.5">
             {versions.slice(0, 10).map((v) => (
               <button
                 key={v.version}
                 onClick={() => setSelectedVersion(v.version)}
-                className="w-full flex items-center justify-between px-3 py-2 text-left rounded-lg border border-[var(--border)] bg-[var(--bg-primary)] hover:bg-[var(--surface-hover)] transition-colors"
+                className="w-full flex items-center justify-between px-3 py-2 text-left rounded-lg border border-border bg-bg-primary hover:bg-surface-hover transition-colors"
               >
                 <div className="flex items-center gap-3">
                   <VersionBadge version={v.version} />
-                  <span className="text-xs font-mono text-[var(--text-tertiary)]">
+                  <span className="text-xs font-mono text-text-tertiary">
                     {v.content_hash?.slice(0, 8)}
                   </span>
                 </div>
-                <span className="text-xs text-[var(--text-tertiary)]">
+                <span className="text-xs text-text-tertiary">
                   <RelativeDate iso={v.compiled_at} />
                 </span>
               </button>
@@ -833,10 +833,10 @@ function CompiledOutputsList({
   const { data: detail, isLoading } = useRulesVersion(projectId, version);
 
   if (isLoading) {
-    return <p className="text-xs text-[var(--text-tertiary)]">Loading compiled outputs…</p>;
+    return <p className="text-xs text-text-tertiary">Loading compiled outputs…</p>;
   }
   if (!detail) {
-    return <p className="text-xs text-[var(--text-tertiary)] italic">No compiled outputs found.</p>;
+    return <p className="text-xs text-text-tertiary italic">No compiled outputs found.</p>;
   }
 
   const outputs = detail.compiled_outputs || {};
@@ -846,7 +846,7 @@ function CompiledOutputsList({
 
   if (cards.length === 0) {
     return (
-      <p className="text-xs text-[var(--text-tertiary)] italic">
+      <p className="text-xs text-text-tertiary italic">
         No compiled outputs for the enabled tools in this version.
       </p>
     );
@@ -857,23 +857,23 @@ function CompiledOutputsList({
       {cards.map(({ tool, output }) => (
         <div
           key={tool}
-          className="px-3 py-3 rounded-lg border border-[var(--border)] bg-[var(--bg-primary)]"
+          className="px-3 py-3 rounded-lg border border-border bg-bg-primary"
         >
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
-              <p className="text-sm font-medium text-[var(--text-primary)] truncate">{tool}</p>
-              <p className="text-xs font-mono text-[var(--text-tertiary)] truncate">
+              <p className="text-sm font-medium text-text-primary truncate">{tool}</p>
+              <p className="text-xs font-mono text-text-tertiary truncate">
                 {output!.filename}
               </p>
             </div>
-            <span className="text-[10px] text-[var(--text-tertiary)] shrink-0">
+            <span className="text-2xs text-text-tertiary shrink-0">
               {output!.token_count.toLocaleString()} tokens
             </span>
           </div>
           <div className="mt-2 flex justify-end">
             <button
               onClick={() => onView(tool)}
-              className="text-xs text-[var(--brand)] hover:underline"
+              className="text-xs text-brand hover:underline"
             >
               View
             </button>

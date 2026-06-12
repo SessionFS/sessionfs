@@ -49,7 +49,7 @@ export default function PersonasTab({ projectId }: PersonasTabProps) {
       <div className="flex items-center justify-between">
         <h2 id="personas-heading" className="text-lg font-semibold">
           Personas
-          <span className="ml-2 text-sm text-[var(--text-tertiary)]">
+          <span className="ml-2 text-sm text-text-tertiary">
             {data.length} {data.length === 1 ? 'persona' : 'personas'}
           </span>
         </h2>
@@ -63,8 +63,8 @@ export default function PersonasTab({ projectId }: PersonasTabProps) {
       </div>
 
       {data.length === 0 ? (
-        <div className="border border-[var(--border)] rounded-lg p-6 text-center text-[13px] text-[var(--text-tertiary)] space-y-1">
-          <p className="font-medium text-[15px] text-[var(--text-secondary)]">No personas yet.</p>
+        <div className="border border-border rounded-lg p-6 text-center text-sm text-text-tertiary space-y-1">
+          <p className="font-medium text-md text-text-secondary">No personas yet.</p>
           <p>
             Personas are reusable agent roles you can attach to tickets so every
             captured session is tagged with the agent's identity.
@@ -75,13 +75,13 @@ export default function PersonasTab({ projectId }: PersonasTabProps) {
           data={data}
           rowKey={(p) => p.id}
           columns={[
-            { key: 'name', header: 'Name', render: (p) => <span className="font-mono text-[var(--text-primary)]">{p.name}</span> },
+            { key: 'name', header: 'Name', render: (p) => <span className="font-mono text-text-primary">{p.name}</span> },
             { key: 'role', header: 'Role', render: (p) => <>{p.role}</> },
             {
               key: 'specs',
               header: 'Specializations',
               render: (p) => (
-                <span className="text-[var(--text-tertiary)]">
+                <span className="text-text-tertiary">
                   {p.specializations.length === 0
                     ? '—'
                     : p.specializations.slice(0, 3).join(', ') +
@@ -93,7 +93,7 @@ export default function PersonasTab({ projectId }: PersonasTabProps) {
               key: 'updated',
               header: 'Updated',
               render: (p) => (
-                <span className="text-[var(--text-tertiary)]">
+                <span className="text-text-tertiary">
                   <RelativeDate iso={p.updated_at} />
                 </span>
               ),
@@ -237,7 +237,7 @@ function PersonaEditModal({ state, onClose, onSubmit }: EditModalProps) {
           className="font-mono"
           placeholder="atlas"
         />
-        <p className="text-[12px] text-[var(--text-tertiary)] -mt-3">
+        <p className="text-xs text-text-tertiary -mt-3">
           ASCII only — letters, digits, dash, underscore. Immutable after create.
         </p>
 
@@ -297,17 +297,17 @@ function DeleteConfirmModal({ persona, onClose, onConfirm }: DeleteModalProps) {
   return (
     <Dialog open onClose={onClose} titleId="persona-delete-title">
       <DialogHeader titleId="persona-delete-title">Delete "{persona.name}"?</DialogHeader>
-      <p className="text-[13px] text-[var(--text-secondary)] mb-3">
+      <p className="text-sm text-text-secondary mb-3">
         The server refuses delete when non-terminal tickets still reference
         this persona. Check <code className="font-mono">--force</code> to
         override and orphan those tickets' assignments.
       </p>
-      <label className="flex items-center gap-2 text-[13px] mb-4 text-[var(--text-secondary)] cursor-pointer">
+      <label className="flex items-center gap-2 text-sm mb-4 text-text-secondary cursor-pointer">
         <input
           type="checkbox"
           checked={force}
           onChange={(e) => setForce(e.target.checked)}
-          className="w-4 h-4 rounded border-[var(--border)] accent-[var(--brand)]"
+          className="w-4 h-4 rounded border-border accent-[var(--brand)]"
         />
         <span>Force — proceed even if tickets reference this persona</span>
       </label>

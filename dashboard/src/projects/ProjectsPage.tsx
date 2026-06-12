@@ -40,21 +40,21 @@ function ProjectCard({ project, onClick }: { project: ProjectContext; onClick: (
     >
       {/* Title row */}
       <div className="flex items-start justify-between gap-3 mb-2">
-        <h2 className="text-[17px] font-bold text-[var(--text-primary)] truncate leading-snug group-hover:text-[var(--brand)] transition-colors">
+        <h2 className="text-lg font-bold text-text-primary truncate leading-snug group-hover:text-brand transition-colors">
           {displayName}
         </h2>
       </div>
 
       {/* Subtitle — repo path when name differs */}
       {project.name && project.name !== project.git_remote_normalized && (
-        <p className="text-xs text-[var(--text-tertiary)] font-mono truncate -mt-1 mb-2">
+        <p className="text-xs text-text-tertiary font-mono truncate -mt-1 mb-2">
           {project.git_remote_normalized}
         </p>
       )}
 
       {/* Context preview */}
       {preview && (
-        <p className="text-sm text-[var(--text-secondary)] leading-relaxed truncate mb-3">
+        <p className="text-sm text-text-secondary leading-relaxed truncate mb-3">
           {preview}
         </p>
       )}
@@ -62,7 +62,7 @@ function ProjectCard({ project, onClick }: { project: ProjectContext; onClick: (
       {/* Badges row */}
       <div className="flex items-center gap-2 flex-wrap">
         {/* Session count badge */}
-        <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-[var(--bg-tertiary)] text-[var(--text-secondary)] tabular-nums">
+        <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-bg-tertiary text-text-secondary tabular-nums">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="opacity-60">
             <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
           </svg>
@@ -78,7 +78,7 @@ function ProjectCard({ project, onClick }: { project: ProjectContext; onClick: (
         )}
 
         {/* Last updated */}
-        <span className="ml-auto text-xs text-[var(--text-tertiary)] tabular-nums shrink-0">
+        <span className="ml-auto text-xs text-text-tertiary tabular-nums shrink-0">
           <RelativeDate iso={project.updated_at} />
         </span>
       </div>
@@ -94,7 +94,7 @@ export default function ProjectsPage() {
   return (
     <div className="max-w-4xl mx-auto px-4 py-6">
       <div className="flex items-center justify-between mb-5">
-        <h1 className="text-3xl font-bold tracking-tight text-[var(--text-primary)]">Projects</h1>
+        <h1 className="text-3xl font-bold tracking-tight text-text-primary">Projects</h1>
         <Button onClick={() => setShowCreate(true)}>+ New Project</Button>
       </div>
 
@@ -107,12 +107,12 @@ export default function ProjectsPage() {
       {isLoading && (
         <div className="space-y-3">
           {[1, 2, 3].map((i) => (
-            <div key={i} className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl p-5 animate-pulse">
-              <div className="h-5 bg-[var(--bg-tertiary)] rounded w-1/3 mb-3" />
-              <div className="h-4 bg-[var(--bg-tertiary)] rounded w-2/3 mb-3" />
+            <div key={i} className="bg-bg-elevated border border-border rounded-xl p-5 animate-pulse">
+              <div className="h-5 bg-bg-tertiary rounded w-1/3 mb-3" />
+              <div className="h-4 bg-bg-tertiary rounded w-2/3 mb-3" />
               <div className="flex gap-2">
-                <div className="h-5 bg-[var(--bg-tertiary)] rounded-full w-20" />
-                <div className="h-5 bg-[var(--bg-tertiary)] rounded-full w-16" />
+                <div className="h-5 bg-bg-tertiary rounded-full w-20" />
+                <div className="h-5 bg-bg-tertiary rounded-full w-16" />
               </div>
             </div>
           ))}
@@ -177,7 +177,7 @@ export default function ProjectsPage() {
             </div>
             {/* Content area */}
             <div className="text-center px-6 pb-7 pt-5">
-              <h2 className="text-title text-[var(--text-primary)] mb-1.5">
+              <h2 className="text-title text-text-primary mb-1.5">
                 No projects yet
               </h2>
               <p className="text-caption max-w-sm mx-auto mb-5 leading-relaxed">
@@ -185,10 +185,10 @@ export default function ProjectsPage() {
                 across all sessions in a repository.
               </p>
               <Button onClick={() => setShowCreate(true)}>Create your first project</Button>
-              <p className="text-[var(--text-tertiary)] text-xs mt-4">
-                Or from the terminal: <code className="font-mono bg-[var(--bg-tertiary)] px-1.5 py-0.5 rounded text-[var(--text-secondary)]">sfs project set &lt;git-remote&gt;</code>
+              <p className="text-text-tertiary text-xs mt-4">
+                Or from the terminal: <code className="font-mono bg-bg-tertiary px-1.5 py-0.5 rounded text-text-secondary">sfs project set &lt;git-remote&gt;</code>
               </p>
-              <p className="text-[var(--text-tertiary)] text-xs mt-3">
+              <p className="text-text-tertiary text-xs mt-3">
                 New to SessionFS?{' '}
                 <Link to="/getting-started" className="text-[var(--accent)] hover:underline">
                   Start here
