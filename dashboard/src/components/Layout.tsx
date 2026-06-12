@@ -203,7 +203,7 @@ export default function Layout() {
   return (
     <div className="flex flex-col min-h-screen">
       <header
-        className="relative flex items-center justify-between px-5 overflow-hidden"
+        className="relative flex items-center justify-between px-5"
         style={{
           height: 56,
           borderBottom: '1px solid var(--border)',
