@@ -361,11 +361,8 @@ export default function Layout() {
               </svg>
             </Link>
           ) : (
-            <Link to="/" aria-label="SessionFS home" className="flex flex-col gap-1 hover:opacity-90 transition-opacity">
+            <Link to="/" aria-label="SessionFS home" className="flex items-center hover:opacity-90 transition-opacity">
               <Wordmark size="sm" showTagline={false} />
-              <span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--text-tertiary)] leading-tight">
-                Memory layer for AI coding agents
-              </span>
             </Link>
           )}
         </div>
@@ -418,6 +415,13 @@ export default function Layout() {
           }}
         >
           <div className="shell-divider pointer-events-none absolute inset-x-10 top-0 h-px" />
+          {/* Center: brand tagline (the pre-redesign header treatment) */}
+          <span
+            className="hidden md:block absolute left-1/2 -translate-x-1/2 text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)] pointer-events-none select-none whitespace-nowrap"
+            aria-hidden="true"
+          >
+            Memory layer for AI coding agents
+          </span>
           {/* Left: Hamburger (mobile) + page area */}
           <div className="flex items-center gap-2 shrink-0">
             <button
