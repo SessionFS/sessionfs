@@ -114,13 +114,13 @@ export default function SessionDetail() {
   );
 
   if (isLoading) {
-    return <div className="p-8 text-[var(--text-tertiary)]">Loading session…</div>;
+    return <div className="p-8 text-text-tertiary">Loading session…</div>;
   }
 
   if (error || !session) {
     return (
       <div className="p-8">
-        <button onClick={() => navigate('/')} className="text-[var(--brand)] text-sm mb-4 hover:underline">
+        <button onClick={() => navigate('/')} className="text-brand text-sm mb-4 hover:underline">
           &larr; Back
         </button>
         <p className="text-red-400">Failed to load session: {String(error)}</p>
@@ -198,7 +198,7 @@ export default function SessionDetail() {
       <div className="px-4 pt-3">
         <button
           onClick={() => navigate('/')}
-          className="text-[var(--brand)] text-sm hover:underline inline-flex items-center gap-1"
+          className="text-brand text-sm hover:underline inline-flex items-center gap-1"
         >
           <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="15 18 9 12 15 6" />
@@ -212,11 +212,11 @@ export default function SessionDetail() {
         {/* Top row: tool name + actions */}
         <div className="px-5 pt-4 flex items-start justify-between">
           <div className="flex items-center gap-3">
-            <span className="text-base font-semibold text-[var(--text-primary)]">
+            <span className="text-base font-semibold text-text-primary">
               {fullToolName(session.source_tool)}
             </span>
             {session.alias && (
-              <span className="text-sm text-[var(--brand)] font-mono">
+              <span className="text-sm text-brand font-mono">
                 {session.alias}
               </span>
             )}
@@ -227,7 +227,7 @@ export default function SessionDetail() {
             </Button>
             <Dropdown
               trigger={
-                <button className="p-1.5 text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] rounded-lg transition-colors" aria-label="Session actions">
+                <button className="p-1.5 text-text-tertiary hover:text-text-secondary hover:bg-surface-hover rounded-lg transition-colors" aria-label="Session actions">
                   <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
                     <circle cx="12" cy="5" r="2" />
                     <circle cx="12" cy="12" r="2" />
@@ -247,7 +247,7 @@ export default function SessionDetail() {
           <div className="px-5 mt-2">
             <div className="flex items-start gap-3 flex-wrap">
               <label className="flex-1 min-w-[12rem]">
-                <span className="block text-[11px] uppercase tracking-[0.02em] text-[var(--text-tertiary)] mb-1">Title</span>
+                <span className="block text-2xs uppercase tracking-[0.02em] text-text-tertiary mb-1">Title</span>
                 <input
                   type="text"
                   value={titleInput}
@@ -256,11 +256,11 @@ export default function SessionDetail() {
                   autoFocus
                   placeholder="Session title"
                   aria-label="Session title"
-                  className="w-full px-2 py-1 text-base bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+                  className="w-full px-2 py-1 text-base bg-bg-primary border border-border rounded-lg text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
                 />
               </label>
               <label className="w-56">
-                <span className="block text-[11px] uppercase tracking-[0.02em] text-[var(--text-tertiary)] mb-1">Alias</span>
+                <span className="block text-2xs uppercase tracking-[0.02em] text-text-tertiary mb-1">Alias</span>
                 <input
                   type="text"
                   value={aliasInput}
@@ -268,7 +268,7 @@ export default function SessionDetail() {
                   onKeyDown={handleMetaKeyDown}
                   placeholder="e.g. auth-debug"
                   aria-label="Session alias"
-                  className="w-full px-2 py-1 text-sm bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+                  className="w-full px-2 py-1 text-sm bg-bg-primary border border-border rounded-lg text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
                 />
               </label>
               <div className="flex items-center gap-2 mt-5">
@@ -281,7 +281,7 @@ export default function SessionDetail() {
               </div>
             </div>
             {metaError && (
-              <div className="text-[var(--danger)] text-xs mt-1">{metaError}</div>
+              <div className="text-danger text-xs mt-1">{metaError}</div>
             )}
           </div>
         ) : (
@@ -293,7 +293,7 @@ export default function SessionDetail() {
               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleMetaEdit(); } }}
               aria-label="Edit title and alias"
               title="Click to rename title and alias"
-              className="text-2xl font-semibold text-[var(--text-primary)] break-words leading-snug cursor-text hover:underline decoration-[var(--text-tertiary)] decoration-dotted underline-offset-4"
+              className="text-2xl font-semibold text-text-primary break-words leading-snug cursor-text hover:underline decoration-[var(--text-tertiary)] decoration-dotted underline-offset-4"
             >
               {session.title || 'Untitled session'}
             </h1>
@@ -301,36 +301,36 @@ export default function SessionDetail() {
         )}
 
         {/* Metadata row — session ID as mono-chip */}
-        <div className="px-5 mt-2 flex flex-wrap items-center gap-2 text-[13px]">
+        <div className="px-5 mt-2 flex flex-wrap items-center gap-2 text-sm">
           <span className="text-mono-chip">{session.id}</span>
           {session.model_id && session.model_id !== '<synthetic>' && (
             <>
-              <span className="text-[var(--text-tertiary)]">&middot;</span>
-              <span className="text-[var(--text-secondary)]">{abbreviateModel(session.model_id)}</span>
+              <span className="text-text-tertiary">&middot;</span>
+              <span className="text-text-secondary">{abbreviateModel(session.model_id)}</span>
             </>
           )}
-          <span className="text-[var(--text-tertiary)]">&middot;</span>
-          <span className="text-[var(--text-secondary)] tabular-nums">{session.message_count} msgs</span>
+          <span className="text-text-tertiary">&middot;</span>
+          <span className="text-text-secondary tabular-nums">{session.message_count} msgs</span>
           {totalTokens > 0 && (
             <>
-              <span className="text-[var(--text-tertiary)]">&middot;</span>
-              <span className="text-[var(--text-secondary)] tabular-nums">{formatTokens(totalTokens)} tokens</span>
+              <span className="text-text-tertiary">&middot;</span>
+              <span className="text-text-secondary tabular-nums">{formatTokens(totalTokens)} tokens</span>
             </>
           )}
           {durationStr && (
             <>
-              <span className="text-[var(--text-tertiary)]">&middot;</span>
-              <span className="text-[var(--text-secondary)]">{durationStr}</span>
+              <span className="text-text-tertiary">&middot;</span>
+              <span className="text-text-secondary">{durationStr}</span>
             </>
           )}
           {cost > 0 && (
             <>
-              <span className="text-[var(--text-tertiary)]">&middot;</span>
-              <span className="text-[var(--text-secondary)]">${cost.toFixed(4)}</span>
+              <span className="text-text-tertiary">&middot;</span>
+              <span className="text-text-secondary">${cost.toFixed(4)}</span>
             </>
           )}
-          <span className="text-[var(--text-tertiary)]">&middot;</span>
-          <span className="text-[var(--text-tertiary)]">
+          <span className="text-text-tertiary">&middot;</span>
+          <span className="text-text-tertiary">
             <RelativeDate iso={session.updated_at} />
           </span>
         </div>
@@ -340,7 +340,7 @@ export default function SessionDetail() {
           <div className="px-5 mt-2">
             <Link
               to={`/projects/${encodeURIComponent(session.git_remote_normalized)}`}
-              className="text-sm text-[var(--brand)] hover:underline inline-flex items-center gap-1"
+              className="text-sm text-brand hover:underline inline-flex items-center gap-1"
             >
               <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
@@ -354,15 +354,15 @@ export default function SessionDetail() {
         {(session.parent_session_id || session.tags.length > 0) && (
           <div className="px-5 mt-2 flex flex-wrap items-center gap-2">
             {session.parent_session_id && (
-              <span className="text-sm text-[var(--text-tertiary)]">
+              <span className="text-sm text-text-tertiary">
                 Forked from{' '}
-                <a href={`/sessions/${session.parent_session_id}`} className="text-[var(--brand)] hover:underline font-mono">
+                <a href={`/sessions/${session.parent_session_id}`} className="text-brand hover:underline font-mono">
                   {session.parent_session_id.slice(0, 16)}
                 </a>
               </span>
             )}
             {session.tags.map((t) => (
-              <span key={t} className="px-1.5 py-0.5 text-xs bg-[var(--bg-tertiary)] border border-[var(--border)] rounded text-[var(--text-secondary)]">
+              <span key={t} className="px-1.5 py-0.5 text-xs bg-bg-tertiary border border-border rounded text-text-secondary">
                 {t}
               </span>
             ))}
@@ -372,13 +372,13 @@ export default function SessionDetail() {
         {/* CLI commands (compact) */}
         <div className="px-5 mt-3 flex flex-wrap items-center gap-3 text-xs">
           <div className="flex items-center gap-1.5">
-            <code className="text-[var(--text-tertiary)] bg-[var(--bg-sunken)] px-2 py-0.5 rounded font-mono">
+            <code className="text-text-tertiary bg-bg-sunken px-2 py-0.5 rounded font-mono">
               sfs resume {session.id}
             </code>
             <CopyButton text={`sfs resume ${session.id}`} label="Copy" />
           </div>
           <div className="flex items-center gap-1.5">
-            <code className="text-[var(--text-tertiary)] bg-[var(--bg-sunken)] px-2 py-0.5 rounded font-mono">
+            <code className="text-text-tertiary bg-bg-sunken px-2 py-0.5 rounded font-mono">
               sfs show {session.id}
             </code>
             <CopyButton text={`sfs show ${session.id}`} label="Copy" />
@@ -389,7 +389,7 @@ export default function SessionDetail() {
         {auditReport && (
           <div className="px-5 mt-3 flex items-center gap-3">
             <AuditScoreBar score={auditReport.summary.trust_score} />
-            <span className="text-xs text-[var(--text-tertiary)]">
+            <span className="text-xs text-text-tertiary">
               Audited <RelativeDate iso={auditReport.timestamp} /> ({auditReport.model})
             </span>
           </div>
@@ -401,7 +401,7 @@ export default function SessionDetail() {
         {/* Quick preview */}
         {previewData && previewData.length > 0 && (
           <div className="px-5 mt-3 pb-1">
-            <div className="border-t border-[var(--border)] pt-3">
+            <div className="border-t border-border pt-3">
               <div className="space-y-1">
                 {previewData.map((m, i) => (
                   <div key={i} className="flex gap-2 text-sm">
@@ -414,7 +414,7 @@ export default function SessionDetail() {
                     }`}>
                       {m.role === 'assistant' ? 'AI' : m.role === 'user' ? 'You' : m.role}
                     </span>
-                    <span className="text-[var(--text-tertiary)] truncate">{m.text || '(no text)'}</span>
+                    <span className="text-text-tertiary truncate">{m.text || '(no text)'}</span>
                   </div>
                 ))}
               </div>
@@ -495,7 +495,7 @@ function BookmarksSection({ sessionId }: { sessionId: string }) {
       {!showAdd ? (
         <button
           onClick={() => setShowAdd(true)}
-          className="text-xs text-[var(--brand)] hover:underline"
+          className="text-xs text-brand hover:underline"
         >
           + Add to folder
         </button>
@@ -509,7 +509,7 @@ function BookmarksSection({ sessionId }: { sessionId: string }) {
                   onSettled: () => setShowAdd(false),
                 });
               }}
-              className="inline-flex items-center gap-1.5 px-2 py-1 text-xs text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] rounded transition-colors border border-[var(--border)]"
+              className="inline-flex items-center gap-1.5 px-2 py-1 text-xs text-text-secondary hover:bg-surface-hover rounded transition-colors border border-border"
             >
               <span
                 className="w-2 h-2 rounded-full shrink-0"
@@ -520,7 +520,7 @@ function BookmarksSection({ sessionId }: { sessionId: string }) {
           ))}
           <button
             onClick={() => setShowAdd(false)}
-            className="text-xs text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] px-1"
+            className="text-xs text-text-tertiary hover:text-text-secondary px-1"
           >
             Cancel
           </button>
@@ -575,9 +575,9 @@ function DLPScanSection({ session }: { session: object }) {
           <svg className="w-4 h-4 text-red-500 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
           </svg>
-          <span className="text-sm font-semibold text-[var(--text-primary)]">DLP Scan</span>
+          <span className="text-sm font-semibold text-text-primary">DLP Scan</span>
         </div>
-        <div className="text-xs text-[var(--text-tertiary)] mb-2">
+        <div className="text-xs text-text-tertiary mb-2">
           {scanResult.findings_count} finding{scanResult.findings_count !== 1 ? 's' : ''}
           {' · '}{actionLabel}
           {timeAgo && <>{' · '}Scanned {timeAgo}</>}
@@ -604,7 +604,7 @@ function AuditScoreBar({ score }: { score: number }) {
   return (
     <div className="flex items-center gap-2">
       <span className={`text-sm font-semibold tabular-nums ${textColor}`}>{pct}%</span>
-      <div className="w-24 h-1.5 bg-[var(--bg-tertiary)] rounded-full overflow-hidden">
+      <div className="w-24 h-1.5 bg-bg-tertiary rounded-full overflow-hidden">
         <div className={`h-full rounded-full transition-[width] duration-200 ${color}`} style={{ width: `${pct}%` }} />
       </div>
     </div>

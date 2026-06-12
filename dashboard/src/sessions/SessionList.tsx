@@ -440,13 +440,13 @@ export default function SessionList() {
 
         {/* ── Compact resume bar ── */}
         {!isLoading && !showTrash && mostRecent && (
-          <div className="flex items-center gap-3 px-4 h-16 bg-[var(--bg-elevated)] border border-[var(--border)] rounded-[var(--radius-lg)] mb-5">
+          <div className="flex items-center gap-3 px-4 h-16 bg-bg-elevated border border-border rounded-lg mb-5">
             {/* Left: eyebrow + title + meta */}
             <div className="flex-1 min-w-0 flex flex-col justify-center gap-0.5">
-              <span className="text-micro uppercase font-semibold text-[var(--text-tertiary)]">Continue where you left off</span>
+              <span className="text-micro uppercase font-semibold text-text-tertiary">Continue where you left off</span>
               <div className="flex items-center gap-2 min-w-0">
                 <span
-                  className="text-[15px] font-semibold text-[var(--text-primary)] truncate cursor-pointer hover:text-[var(--brand)] transition-colors"
+                  className="text-md font-semibold text-text-primary truncate cursor-pointer hover:text-brand transition-colors"
                   onClick={() => navigate(`/sessions/${mostRecent.id}`)}
                 >
                   {mostRecent.title || 'Untitled session'}
@@ -456,7 +456,7 @@ export default function SessionList() {
                   style={{ backgroundColor: TOOL_COLORS[mostRecent.source_tool] || 'var(--text-tertiary)' }}
                 />
                 <span className="text-mono-chip">{fullToolName(mostRecent.source_tool)}</span>
-                <span className="text-caption text-[var(--text-tertiary)]">
+                <span className="text-caption text-text-tertiary">
                   <RelativeDate iso={mostRecent.updated_at} />
                 </span>
               </div>
@@ -467,9 +467,9 @@ export default function SessionList() {
               {pendingHandoffs.length > 0 && (
                 <Link
                   to="/handoffs"
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-full bg-[var(--brand)]/10 text-[var(--brand)] hover:bg-[var(--brand)]/20 transition-colors"
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-full bg-brand/10 text-brand hover:bg-brand/20 transition-colors"
                 >
-                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--brand)]" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-brand" />
                   {pendingHandoffs.length} pending handoff{pendingHandoffs.length !== 1 ? 's' : ''}
                 </Link>
               )}
@@ -502,13 +502,13 @@ export default function SessionList() {
             <select
               value={toolFilter}
               onChange={(e) => { setToolFilter(e.target.value); setPage(1); }}
-              className="appearance-none bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 pr-8 text-[14px] font-medium text-[var(--text-secondary)] outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] cursor-pointer transition-colors"
+              className="appearance-none bg-surface border border-border rounded-lg px-3 py-2 pr-8 text-base font-medium text-text-secondary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] cursor-pointer transition-colors"
             >
               {TOOLS.map((t) => (
                 <option key={t} value={t}>{t === 'all' ? 'All Tools' : fullToolName(t)}</option>
               ))}
             </select>
-            <svg className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--text-tertiary)] pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-tertiary pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="6 9 12 15 18 9" />
             </svg>
           </div>
@@ -516,13 +516,13 @@ export default function SessionList() {
             <select
               value={dateRange}
               onChange={(e) => setDateRange(e.target.value)}
-              className="appearance-none bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 pr-8 text-[14px] font-medium text-[var(--text-secondary)] outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] cursor-pointer transition-colors"
+              className="appearance-none bg-surface border border-border rounded-lg px-3 py-2 pr-8 text-base font-medium text-text-secondary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] cursor-pointer transition-colors"
             >
               {DATE_RANGES.map((d) => (
                 <option key={d.value} value={d.value}>{d.label}</option>
               ))}
             </select>
-            <svg className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--text-tertiary)] pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-tertiary pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="6 9 12 15 18 9" />
             </svg>
           </div>
@@ -530,7 +530,7 @@ export default function SessionList() {
             <select
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value as SortKey)}
-              className="appearance-none bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 pr-8 text-[14px] font-medium text-[var(--text-secondary)] outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] cursor-pointer transition-colors"
+              className="appearance-none bg-surface border border-border rounded-lg px-3 py-2 pr-8 text-base font-medium text-text-secondary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] cursor-pointer transition-colors"
             >
               <option value="date">Sort: Date</option>
               <option value="tool">Sort: Tool</option>
@@ -538,13 +538,13 @@ export default function SessionList() {
               <option value="tokens">Sort: Tokens</option>
               <option value="title">Sort: Title</option>
             </select>
-            <svg className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--text-tertiary)] pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-tertiary pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="6 9 12 15 18 9" />
             </svg>
           </div>
           <button
             onClick={() => setSortDir(d => d === 'desc' ? 'asc' : 'desc')}
-            className="p-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+            className="p-2 rounded-lg border border-border bg-surface text-text-secondary hover:text-text-primary transition-colors"
             title={sortDir === 'desc' ? 'Showing most first — click for least first' : 'Showing least first — click for most first'}
             aria-label={`Sort direction: ${sortDir === 'desc' ? 'descending' : 'ascending'}`}
           >
@@ -557,10 +557,10 @@ export default function SessionList() {
             </svg>
           </button>
           {/* List/Grid view toggle */}
-          <div className="flex items-center rounded-lg border border-[var(--border)] bg-[var(--surface)] overflow-hidden">
+          <div className="flex items-center rounded-lg border border-border bg-surface overflow-hidden">
             <button
               onClick={() => handleViewMode('list')}
-              className={`p-2 transition-colors ${viewMode === 'list' ? 'bg-[var(--bg-elevated)] text-[var(--text-primary)]' : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)]'}`}
+              className={`p-2 transition-colors ${viewMode === 'list' ? 'bg-bg-elevated text-text-primary' : 'text-text-tertiary hover:text-text-primary'}`}
               title="List view"
               aria-label="List view"
               aria-pressed={viewMode === 'list'}
@@ -572,7 +572,7 @@ export default function SessionList() {
             </button>
             <button
               onClick={() => handleViewMode('grid')}
-              className={`p-2 transition-colors ${viewMode === 'grid' ? 'bg-[var(--bg-elevated)] text-[var(--text-primary)]' : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)]'}`}
+              className={`p-2 transition-colors ${viewMode === 'grid' ? 'bg-bg-elevated text-text-primary' : 'text-text-tertiary hover:text-text-primary'}`}
               title="Grid view"
               aria-label="Grid view"
               aria-pressed={viewMode === 'grid'}
@@ -588,7 +588,7 @@ export default function SessionList() {
               if (selectMode) clearSelection();
               else { setSelectMode(true); if (viewMode === 'grid') handleViewMode('list'); }
             }}
-            className="text-[13px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] px-3 py-2 border border-[var(--border)] rounded-lg"
+            className="text-sm text-text-tertiary hover:text-text-primary px-3 py-2 border border-border rounded-lg"
           >
             {selectMode ? 'Cancel' : 'Select'}
           </button>
@@ -612,16 +612,16 @@ export default function SessionList() {
               setSelectedIds(toSelect);
               addToast('warning', `Found ${toSelect.size} duplicate(s) across ${dupes.size} group(s) — oldest copies selected for review`);
             }}
-            className="text-[13px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] px-3 py-2 border border-[var(--border)] rounded-lg"
+            className="text-sm text-text-tertiary hover:text-text-primary px-3 py-2 border border-border rounded-lg"
           >
             Find Duplicates
           </button>
           <button
             onClick={() => { setShowTrash(!showTrash); clearSelection(); }}
-            className={`text-[13px] px-3 py-2 border rounded-lg transition-colors ${
+            className={`text-sm px-3 py-2 border rounded-lg transition-colors ${
               showTrash
-                ? 'text-[var(--text-primary)] border-[var(--brand)] bg-[var(--brand)]/10'
-                : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)] border-[var(--border)]'
+                ? 'text-text-primary border-[var(--brand)] bg-brand/10'
+                : 'text-text-tertiary hover:text-text-primary border-border'
             }`}
           >
             {showTrash ? 'Active' : 'Trash'}
@@ -639,17 +639,17 @@ export default function SessionList() {
         {isLoading && (
           <div className="space-y-3">
             {Array.from({length: 6}).map((_, i) => (
-              <div key={i} className="bg-[var(--bg-elevated,var(--surface))] border border-[var(--border)] rounded-xl p-4 animate-pulse">
+              <div key={i} className="bg-[var(--bg-elevated,var(--surface))] border border-border rounded-xl p-4 animate-pulse">
                 <div className="flex items-center gap-3">
-                  <div className="w-3 h-3 rounded-full bg-[var(--bg-tertiary)]" />
-                  <div className="h-4 w-24 rounded bg-[var(--bg-tertiary)]" />
-                  <div className="h-3 w-32 rounded bg-[var(--bg-tertiary)]" />
+                  <div className="w-3 h-3 rounded-full bg-bg-tertiary" />
+                  <div className="h-4 w-24 rounded bg-bg-tertiary" />
+                  <div className="h-3 w-32 rounded bg-bg-tertiary" />
                   <div className="flex-1" />
-                  <div className="h-3 w-16 rounded bg-[var(--bg-tertiary)]" />
+                  <div className="h-3 w-16 rounded bg-bg-tertiary" />
                 </div>
                 <div className="mt-2 flex items-center gap-3 pl-6">
-                  <div className="h-3 w-16 rounded bg-[var(--bg-tertiary)]" />
-                  <div className="h-3 w-64 rounded bg-[var(--bg-tertiary)]" />
+                  <div className="h-3 w-16 rounded bg-bg-tertiary" />
+                  <div className="h-3 w-64 rounded bg-bg-tertiary" />
                 </div>
               </div>
             ))}
@@ -703,7 +703,7 @@ export default function SessionList() {
             )}
 
             {/* Pagination */}
-            <div className="flex items-center justify-between mt-4 text-sm text-[var(--text-tertiary)]">
+            <div className="flex items-center justify-between mt-4 text-sm text-text-tertiary">
               <span>
                 Page {page} -- {filteredSessions.length} sessions
                 {totalSessions > 0 && ` (${totalSessions} total)`}
@@ -712,7 +712,7 @@ export default function SessionList() {
                 {page > 1 && (
                   <button
                     onClick={() => setPage((p) => p - 1)}
-                    className="px-3 py-1.5 bg-[var(--surface)] border border-[var(--border)] rounded-lg hover:border-[var(--border-strong)] transition-colors text-[var(--text-secondary)]"
+                    className="px-3 py-1.5 bg-surface border border-border rounded-lg hover:border-border-strong transition-colors text-text-secondary"
                   >
                     Previous
                   </button>
@@ -720,7 +720,7 @@ export default function SessionList() {
                 {hasMore && (
                   <button
                     onClick={() => setPage((p) => p + 1)}
-                    className="px-3 py-1.5 bg-[var(--surface)] border border-[var(--border)] rounded-lg hover:border-[var(--border-strong)] transition-colors text-[var(--text-secondary)]"
+                    className="px-3 py-1.5 bg-surface border border-border rounded-lg hover:border-border-strong transition-colors text-text-secondary"
                   >
                     Next
                   </button>
@@ -730,7 +730,7 @@ export default function SessionList() {
 
             {/* ── Insights strip ── */}
             {insights && (
-              <div className="mt-4 py-6 border-t border-[var(--border)] text-[12px] text-[var(--text-tertiary)] flex flex-wrap items-center gap-1">
+              <div className="mt-4 py-6 border-t border-border text-xs text-text-tertiary flex flex-wrap items-center gap-1">
                 {insights.toolMix && <><span>Tool Mix: {insights.toolMix}</span><span className="opacity-40">&middot;</span></>}
                 <span>{formatTokens(insights.tokensToday)} tokens today</span>
                 {insights.peak && <><span className="opacity-40">&middot;</span><span>Peak: {insights.peak}</span></>}
@@ -743,8 +743,8 @@ export default function SessionList() {
         {!isLoading && !showTrash && filteredSessions.length === 0 && !error && (
           selectedFolderId ? (
             <div className="text-center py-16">
-              <p className="text-[var(--text-secondary)] text-base font-medium mb-2">No sessions yet</p>
-              <p className="text-[var(--text-tertiary)] text-sm">
+              <p className="text-text-secondary text-base font-medium mb-2">No sessions yet</p>
+              <p className="text-text-tertiary text-sm">
                 No sessions bookmarked in this folder yet.
               </p>
             </div>
@@ -810,7 +810,7 @@ export default function SessionList() {
                 </div>
                 {/* Content area */}
                 <div className="text-center px-6 pb-7 pt-5">
-                  <h2 className="text-title text-[var(--text-primary)] mb-1.5">
+                  <h2 className="text-title text-text-primary mb-1.5">
                     No sessions yet
                   </h2>
                   <p className="text-caption max-w-sm mx-auto mb-5 leading-relaxed">
@@ -820,14 +820,13 @@ export default function SessionList() {
                   <div className="flex items-center justify-center gap-3">
                     <Link
                       to="/getting-started"
-                      className="px-4 py-2 text-sm font-semibold bg-[var(--brand)] text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors"
+                      className="px-4 py-2 text-sm font-semibold bg-brand text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors"
                     >
                       Get Started
                     </Link>
                     <Link
                       to="/help"
-                      className="px-4 py-2 text-sm font-medium text-[var(--text-secondary)] border rounded-lg hover:text-[var(--text-primary)] transition-colors"
-                      style={{ borderColor: 'var(--border)' }}
+                      className="px-4 py-2 text-sm font-medium text-text-secondary border border-border rounded-lg hover:text-text-primary transition-colors"
                     >
                       View Help
                     </Link>
@@ -843,20 +842,20 @@ export default function SessionList() {
 
       {/* ── Bulk selection toolbar ── */}
       {selectedIds.size > 0 && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-lg)] px-5 py-3 flex items-center gap-4">
-          <span className="text-[14px] font-medium text-[var(--text-primary)]">
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-bg-elevated border border-border rounded-xl shadow-[var(--shadow-lg)] px-5 py-3 flex items-center gap-4">
+          <span className="text-base font-medium text-text-primary">
             {selectedIds.size} selected
           </span>
-          <button onClick={selectAll} className="text-[13px] text-[var(--brand)] hover:underline">
+          <button onClick={selectAll} className="text-sm text-brand hover:underline">
             Select all
           </button>
           <button
             onClick={handleBulkDelete}
-            className="px-4 py-2 bg-red-500 text-white rounded-lg text-[13px] font-semibold hover:bg-red-600 transition-colors"
+            className="px-4 py-2 bg-red-500 text-white rounded-lg text-sm font-semibold hover:bg-red-600 transition-colors"
           >
             Delete selected
           </button>
-          <button onClick={clearSelection} className="text-[13px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)]">
+          <button onClick={clearSelection} className="text-sm text-text-tertiary hover:text-text-primary">
             Cancel
           </button>
         </div>
@@ -896,7 +895,7 @@ function GridGroup({
 
   return (
     <div className={`mb-5 ${isFirst ? 'mt-0' : 'mt-8'}`}>
-      <h3 className="text-micro font-semibold uppercase text-[var(--text-tertiary)] pt-3 pb-2 mb-3 border-b border-[var(--border)] col-span-full">
+      <h3 className="text-micro font-semibold uppercase text-text-tertiary pt-3 pb-2 mb-3 border-b border-border col-span-full">
         {label}
       </h3>
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
@@ -935,14 +934,14 @@ function SessionGridCard({
       onClick={onClick}
       onKeyDown={(e) => { if (e.key === 'Enter') onClick(); }}
       tabIndex={0}
-      className="group bg-[var(--surface)] border border-[var(--border)] rounded-lg cursor-pointer hover:bg-[var(--bg-elevated)] hover:border-[var(--border-strong)] transition-[background-color,border-color] duration-150 ease-out outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] flex flex-col"
+      className="group bg-surface border border-border rounded-lg cursor-pointer hover:bg-bg-elevated hover:border-border-strong transition-[background-color,border-color] duration-150 ease-out outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] flex flex-col"
     >
       {/* Body */}
       <div className="px-4 pt-[14px] pb-2 flex-1 min-w-0">
-        <h4 className="text-[15px] font-semibold text-[var(--text-primary)] truncate mb-1.5">
-          {s.title || <span className="text-[var(--text-tertiary)] italic">Untitled session</span>}
+        <h4 className="text-md font-semibold text-text-primary truncate mb-1.5">
+          {s.title || <span className="text-text-tertiary italic">Untitled session</span>}
         </h4>
-        <div className="flex flex-wrap items-center gap-1 text-[12px] text-[var(--text-tertiary)]">
+        <div className="flex flex-wrap items-center gap-1 text-xs text-text-tertiary">
           <span
             className="w-2 h-2 rounded-full shrink-0"
             style={{ backgroundColor: toolColor }}
@@ -967,13 +966,13 @@ function SessionGridCard({
       </div>
       {/* Footer */}
       <div className="px-4 pb-3 flex items-center justify-between">
-        <span className="text-[12px] text-[var(--text-tertiary)]">
+        <span className="text-xs text-text-tertiary">
           <RelativeDate iso={s.updated_at} />
         </span>
         <div className="flex items-center gap-1.5">
           <button
             onClick={(e) => { e.stopPropagation(); onResume(); }}
-            className="px-2.5 py-1 text-xs font-semibold text-white bg-[var(--brand)] rounded-md hover:opacity-90 transition-opacity opacity-0 group-hover:opacity-100 group-focus:opacity-100"
+            className="px-2.5 py-1 text-xs font-semibold text-white bg-brand rounded-md hover:opacity-90 transition-opacity opacity-0 group-hover:opacity-100 group-focus:opacity-100"
           >
             Resume
           </button>
@@ -995,7 +994,7 @@ function TrashView() {
 
   if (isLoading) {
     return (
-      <div className="py-8 text-center text-[var(--text-tertiary)]">
+      <div className="py-8 text-center text-text-tertiary">
         Loading deleted sessions...
       </div>
     );
@@ -1014,8 +1013,8 @@ function TrashView() {
   if (deletedSessions.length === 0) {
     return (
       <div className="text-center py-16">
-        <p className="text-[var(--text-secondary)] mb-2">Trash is empty</p>
-        <p className="text-[var(--text-tertiary)] text-sm">
+        <p className="text-text-secondary mb-2">Trash is empty</p>
+        <p className="text-text-tertiary text-sm">
           Deleted sessions appear here for 30 days before being permanently removed.
         </p>
       </div>
@@ -1040,7 +1039,7 @@ function TrashView() {
 
   return (
     <div className="space-y-2">
-      <p className="text-xs text-[var(--text-tertiary)] mb-3">
+      <p className="text-xs text-text-tertiary mb-3">
         {deletedSessions.length} deleted session{deletedSessions.length !== 1 ? 's' : ''}. Sessions are permanently removed after 30 days.
       </p>
       {deletedSessions.map((s: SessionSummary) => {
@@ -1049,7 +1048,7 @@ function TrashView() {
         return (
           <div
             key={s.id}
-            className="bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg px-4 py-3 flex items-center gap-3 opacity-75 hover:opacity-100 transition-opacity"
+            className="bg-bg-primary border border-border rounded-lg px-4 py-3 flex items-center gap-3 opacity-75 hover:opacity-100 transition-opacity"
           >
             <span
               className="w-2 h-2 rounded-full shrink-0"
@@ -1057,12 +1056,12 @@ function TrashView() {
             />
             <div className="flex-1 min-w-0">
               <span
-                className="text-sm font-medium text-[var(--text-secondary)] truncate block"
+                className="text-sm font-medium text-text-secondary truncate block"
                 title="Restore to view session details"
               >
                 {s.title || 'Untitled session'}
               </span>
-              <div className="flex items-center gap-2 text-[11px] text-[var(--text-tertiary)] mt-0.5">
+              <div className="flex items-center gap-2 text-2xs text-text-tertiary mt-0.5">
                 <span>{fullToolName(s.source_tool)}</span>
                 <span className="opacity-40">&middot;</span>
                 <span>Deleted <RelativeDate iso={sd.deleted_at} /></span>
@@ -1074,7 +1073,7 @@ function TrashView() {
                 )}
               </div>
             </div>
-            <span className={`px-2 py-0.5 text-[10px] font-medium rounded-full ${
+            <span className={`px-2 py-0.5 text-2xs font-medium rounded-full ${
               scopeLabel === 'everywhere'
                 ? 'bg-red-500/10 text-red-400'
                 : 'bg-yellow-500/10 text-yellow-400'
@@ -1131,7 +1130,7 @@ function DateGroup({
 
   return (
     <div className={`mb-5 ${isFirst ? 'mt-0' : 'mt-8'}`}>
-      <h3 className="text-micro font-semibold uppercase text-[var(--text-tertiary)] pt-3 pb-2 mb-3 border-b border-[var(--border)]">
+      <h3 className="text-micro font-semibold uppercase text-text-tertiary pt-3 pb-2 mb-3 border-b border-border">
         {label}
       </h3>
       <div className="flex flex-col gap-1.5">
@@ -1172,7 +1171,7 @@ function DateGroup({
                 lineageBadge={hasChildren ? (
                   <button
                     onClick={(e) => { e.stopPropagation(); onToggleGroup(group.root.id); }}
-                    className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[13px] font-medium text-[var(--brand)] hover:bg-[var(--brand)]/10 transition-colors"
+                    className="flex items-center gap-1.5 px-2 py-1 rounded-md text-sm font-medium text-brand hover:bg-brand/10 transition-colors"
                     title={isExpanded ? 'Collapse follow-ups' : 'Expand follow-ups'}
                   >
                     <span>{group.children.length === 1 ? '1 follow-up' : `${group.children.length} follow-ups`}</span>
@@ -1191,7 +1190,7 @@ function DateGroup({
                 ) : undefined}
               />
               {hasChildren && isExpanded && (
-                <div className="flex flex-col gap-1 mt-1 ml-6 border-l border-[var(--border)] pl-3">
+                <div className="flex flex-col gap-1 mt-1 ml-6 border-l border-border pl-3">
                   {group.children.map((child) => (
                     <SessionRow
                       key={child.id}
@@ -1254,7 +1253,7 @@ function SessionRow({
       onClick={onClick}
       onKeyDown={(e) => { if (e.key === ' ') { e.preventDefault(); onClick(); } else { onKeyDown(e); } }}
       tabIndex={0}
-      className={`group bg-[var(--surface)] border border-[var(--border)] rounded-lg cursor-pointer hover:bg-[var(--bg-elevated)] hover:border-[var(--border-strong)] transition-[background-color,border-color] duration-150 ease-out outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] ${isChild ? 'px-3 py-3' : 'px-4 py-[14px]'} ${selected ? 'ring-1 ring-[var(--brand)] bg-[var(--brand)]/5' : ''}`}
+      className={`group bg-surface border border-border rounded-lg cursor-pointer hover:bg-bg-elevated hover:border-border-strong transition-[background-color,border-color] duration-150 ease-out outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] ${isChild ? 'px-3 py-3' : 'px-4 py-[14px]'} ${selected ? 'ring-1 ring-[var(--brand)] bg-brand/5' : ''}`}
     >
       {/* Line 1: Title + hover actions + timestamp */}
       <div className="flex items-center gap-3 mb-1">
@@ -1263,19 +1262,19 @@ function SessionRow({
             type="checkbox"
             checked={selected || false}
             onChange={() => onToggleSelect?.()}
-            className="w-4 h-4 rounded border-[var(--border)] accent-[var(--brand)] mr-3 shrink-0"
+            className="w-4 h-4 rounded border-border accent-[var(--brand)] mr-3 shrink-0"
             onClick={(e) => e.stopPropagation()}
           />
         )}
         <span
-          className={`font-semibold text-[var(--text-primary)] truncate flex-1 ${isChild ? 'text-[13px]' : 'text-[15px]'}`}
+          className={`font-semibold text-text-primary truncate flex-1 ${isChild ? 'text-sm' : 'text-md'}`}
           onClick={onNavigate ? (e) => { e.stopPropagation(); onNavigate(); } : undefined}
           style={onNavigate ? { cursor: 'pointer' } : undefined}
         >
-          {isChild && <span className="text-[var(--text-tertiary)] mr-1">&#8627;</span>}
-          {s.title || <span className="text-[var(--text-tertiary)] italic">Untitled session</span>}
+          {isChild && <span className="text-text-tertiary mr-1">&#8627;</span>}
+          {s.title || <span className="text-text-tertiary italic">Untitled session</span>}
           {s.parent_session_id && !isChild && (
-            <span className="text-[var(--text-tertiary)] text-xs ml-1.5">&crarr; fork</span>
+            <span className="text-text-tertiary text-xs ml-1.5">&crarr; fork</span>
           )}
         </span>
         <div className="ml-auto flex items-center gap-2 shrink-0">
@@ -1284,21 +1283,21 @@ function SessionRow({
             {onNavigate && (
               <button
                 onClick={(e) => { e.stopPropagation(); onNavigate(); }}
-                className="px-2 py-0.5 text-xs font-medium text-[var(--text-secondary)] bg-[var(--surface)] border border-[var(--border)] rounded hover:bg-[var(--surface-hover)] transition-colors opacity-0 group-hover:opacity-100"
+                className="px-2 py-0.5 text-xs font-medium text-text-secondary bg-surface border border-border rounded hover:bg-surface-hover transition-colors opacity-0 group-hover:opacity-100"
               >
                 View
               </button>
             )}
             <button
               onClick={(e) => { e.stopPropagation(); onResume(); }}
-              className="px-2.5 py-1 text-xs font-semibold text-white bg-[var(--brand)] rounded-md hover:opacity-90 transition-opacity opacity-0 group-hover:opacity-100 group-focus:opacity-100"
+              className="px-2.5 py-1 text-xs font-semibold text-white bg-brand rounded-md hover:opacity-90 transition-opacity opacity-0 group-hover:opacity-100 group-focus:opacity-100"
             >
               Resume
             </button>
           </div>
           {lineageBadge}
           <TrustBadge score={(s as SessionSummaryWithAudit).audit_trust_score} />
-          <span className={`text-[var(--text-tertiary)] ${isChild ? 'text-[12px]' : 'text-[13px]'}`}>
+          <span className={`text-text-tertiary ${isChild ? 'text-xs' : 'text-sm'}`}>
             <RelativeDate iso={s.updated_at} />
           </span>
           <div onClick={(e) => e.stopPropagation()}>
@@ -1307,7 +1306,7 @@ function SessionRow({
         </div>
       </div>
       {/* Line 2: tool name + session id as mono-chips; counts + model as text-tertiary */}
-      <div className={`flex items-center gap-1.5 ${isChild ? 'text-[12px]' : 'text-[13px]'} text-[var(--text-tertiary)]`}>
+      <div className={`flex items-center gap-1.5 ${isChild ? 'text-xs' : 'text-sm'} text-text-tertiary`}>
         <span
           className="w-2 h-2 rounded-full shrink-0"
           style={{ backgroundColor: TOOL_COLORS[s.source_tool] || 'var(--text-tertiary)' }}
@@ -1431,13 +1430,13 @@ function FolderDropdown({
     <div ref={wrapperRef} className="relative">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="appearance-none bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 pr-8 text-[14px] font-medium text-[var(--text-secondary)] outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] cursor-pointer transition-colors flex items-center gap-2"
+        className="appearance-none bg-surface border border-border rounded-lg px-3 py-2 pr-8 text-base font-medium text-text-secondary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] cursor-pointer transition-colors flex items-center gap-2"
       >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-[var(--text-tertiary)]">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-text-tertiary">
           <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
         </svg>
         <span className="truncate max-w-[140px]">{currentLabel}</span>
-        <svg className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--text-tertiary)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <svg className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-tertiary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <polyline points="6 9 12 15 18 9" />
         </svg>
       </button>
@@ -1454,34 +1453,34 @@ function FolderDropdown({
           {/* All Sessions */}
           <button
             onClick={() => { onSelectFilter('all'); onSelectFolder(null); setOpen(false); }}
-            className={`w-full text-left px-3 py-1.5 text-[13px] flex items-center gap-2 transition-colors duration-150 ${
+            className={`w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 transition-colors duration-150 ${
               navFilter === 'all' && !selectedFolderId
-                ? 'bg-[var(--surface-active)] text-[var(--text-primary)] font-semibold'
-                : 'text-[var(--text-secondary)] hover:bg-[var(--surface-hover)]'
+                ? 'bg-surface-active text-text-primary font-semibold'
+                : 'text-text-secondary hover:bg-surface-hover'
             }`}
           >
             <span className="flex-1">All Sessions</span>
-            <span className="text-[12px] font-medium text-[var(--text-tertiary)] tabular-nums">{totalCount}</span>
+            <span className="text-xs font-medium text-text-tertiary tabular-nums">{totalCount}</span>
           </button>
 
           {/* Bookmarked */}
           <button
             onClick={() => { onSelectFilter('bookmarked'); onSelectFolder(null); setOpen(false); }}
-            className={`w-full text-left px-3 py-1.5 text-[13px] flex items-center gap-2 transition-colors duration-150 ${
+            className={`w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 transition-colors duration-150 ${
               navFilter === 'bookmarked' && !selectedFolderId
-                ? 'bg-[var(--surface-active)] text-[var(--text-primary)] font-semibold'
-                : 'text-[var(--text-secondary)] hover:bg-[var(--surface-hover)]'
+                ? 'bg-surface-active text-text-primary font-semibold'
+                : 'text-text-secondary hover:bg-surface-hover'
             }`}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
               <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
             </svg>
             <span className="flex-1">Bookmarked</span>
-            <span className="text-[12px] font-medium text-[var(--text-tertiary)] tabular-nums">{bookmarkedCount}</span>
+            <span className="text-xs font-medium text-text-tertiary tabular-nums">{bookmarkedCount}</span>
           </button>
 
           {/* Divider */}
-          <div className="border-t border-[var(--border)] my-1" />
+          <div className="border-t border-border my-1" />
 
           {/* Folders */}
           {folders.map((f) => (
@@ -1497,7 +1496,7 @@ function FolderDropdown({
                       if (e.key === 'Escape') setEditingFolder(null);
                     }}
                     autoFocus
-                    className="w-full px-1.5 py-0.5 text-sm bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--text-primary)] outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+                    className="w-full px-1.5 py-0.5 text-sm bg-bg-primary border border-border rounded text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
                   />
                   <div className="flex gap-1">
                     {PRESET_COLORS.map((c) => (
@@ -1512,13 +1511,13 @@ function FolderDropdown({
                   <div className="flex gap-1">
                     <button
                       onClick={() => handleSaveEdit(f.id)}
-                      className="px-2 py-0.5 text-xs bg-[var(--brand)] text-white rounded hover:opacity-90"
+                      className="px-2 py-0.5 text-xs bg-brand text-white rounded hover:opacity-90"
                     >
                       Save
                     </button>
                     <button
                       onClick={() => setEditingFolder(null)}
-                      className="px-2 py-0.5 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+                      className="px-2 py-0.5 text-xs text-text-tertiary hover:text-text-secondary"
                     >
                       Cancel
                     </button>
@@ -1528,10 +1527,10 @@ function FolderDropdown({
                 <div className="flex items-center group">
                   <button
                     onClick={() => { onSelectFolder(f.id); onSelectFilter(f.id); setOpen(false); }}
-                    className={`flex-1 flex items-center gap-2 px-3 py-1.5 text-[13px] transition-colors duration-150 text-left ${
+                    className={`flex-1 flex items-center gap-2 px-3 py-1.5 text-sm transition-colors duration-150 text-left ${
                       selectedFolderId === f.id
-                        ? 'bg-[var(--surface-active)] text-[var(--text-primary)] font-semibold'
-                        : 'text-[var(--text-secondary)] hover:bg-[var(--surface-hover)]'
+                        ? 'bg-surface-active text-text-primary font-semibold'
+                        : 'text-text-secondary hover:bg-surface-hover'
                     }`}
                   >
                     <span
@@ -1539,14 +1538,14 @@ function FolderDropdown({
                       style={{ backgroundColor: f.color || '#4f9cf7' }}
                     />
                     <span className="truncate flex-1">{f.name}</span>
-                    <span className="text-[var(--text-tertiary)] text-[12px] font-medium tabular-nums">{f.bookmark_count}</span>
+                    <span className="text-text-tertiary text-xs font-medium tabular-nums">{f.bookmark_count}</span>
                   </button>
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
                       handleStartEdit(f.id, f.name, f.color || '');
                     }}
-                    className="px-1 text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] opacity-0 group-hover:opacity-100 transition-opacity text-xs mr-1"
+                    className="px-1 text-text-tertiary hover:text-text-secondary opacity-0 group-hover:opacity-100 transition-opacity text-xs mr-1"
                     title="Rename folder"
                   >
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1559,7 +1558,7 @@ function FolderDropdown({
                       e.stopPropagation();
                       handleDelete(f.id);
                     }}
-                    className="px-1 text-[var(--text-tertiary)] hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity text-xs"
+                    className="px-1 text-text-tertiary hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity text-xs"
                     title="Delete folder"
                   >
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1573,12 +1572,12 @@ function FolderDropdown({
           ))}
 
           {folders.length === 0 && !showCreate && (
-            <div className="px-3 py-1.5 text-xs text-[var(--text-tertiary)]">No folders yet</div>
+            <div className="px-3 py-1.5 text-xs text-text-tertiary">No folders yet</div>
           )}
 
           {/* Create folder inline */}
           {showCreate && (
-            <div className="mx-2 mt-1 p-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded space-y-2">
+            <div className="mx-2 mt-1 p-2 bg-bg-primary border border-border rounded space-y-2">
               <input
                 type="text"
                 value={newName}
@@ -1589,7 +1588,7 @@ function FolderDropdown({
                 }}
                 placeholder="Folder name"
                 autoFocus
-                className="w-full px-2 py-1 text-sm bg-[var(--bg-secondary)] border border-[var(--border)] rounded text-[var(--text-primary)] outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+                className="w-full px-2 py-1 text-sm bg-bg-secondary border border-border rounded text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
               />
               <div className="flex gap-1">
                 {PRESET_COLORS.map((c) => (
@@ -1605,13 +1604,13 @@ function FolderDropdown({
                 <button
                   onClick={handleCreate}
                   disabled={!newName.trim() || createFolder.isPending}
-                  className="px-2 py-0.5 text-xs bg-[var(--brand)] text-white rounded hover:opacity-90 disabled:opacity-50"
+                  className="px-2 py-0.5 text-xs bg-brand text-white rounded hover:opacity-90 disabled:opacity-50"
                 >
                   Create
                 </button>
                 <button
                   onClick={() => setShowCreate(false)}
-                  className="px-2 py-0.5 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+                  className="px-2 py-0.5 text-xs text-text-tertiary hover:text-text-secondary"
                 >
                   Cancel
                 </button>
@@ -1620,11 +1619,11 @@ function FolderDropdown({
           )}
 
           {/* Footer actions */}
-          <div className="border-t border-[var(--border)] mt-1 pt-1">
+          <div className="border-t border-border mt-1 pt-1">
             {!showCreate && (
               <button
                 onClick={() => setShowCreate(true)}
-                className="w-full text-left px-3 py-1.5 text-[13px] text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] flex items-center gap-2 transition-colors duration-150"
+                className="w-full text-left px-3 py-1.5 text-sm text-text-secondary hover:bg-surface-hover flex items-center gap-2 transition-colors duration-150"
               >
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
@@ -1674,7 +1673,7 @@ function BookmarkDropdown({ sessionId, isBookmarked: initialBookmarked }: { sess
     <div className="relative" ref={ref}>
       <button
         onClick={handleIconClick}
-        className={`transition-[transform,color,background-color] duration-150 text-sm p-1 rounded hover:bg-[var(--surface-hover)] ${bookmarked ? 'text-[var(--brand)]' : 'text-[var(--text-tertiary)] hover:text-[var(--brand)]'} ${popping ? 'scale-125' : ''}`}
+        className={`transition-[transform,color,background-color] duration-150 text-sm p-1 rounded hover:bg-surface-hover ${bookmarked ? 'text-brand' : 'text-text-tertiary hover:text-brand'} ${popping ? 'scale-125' : ''}`}
         title="Bookmark"
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill={bookmarked ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1682,9 +1681,9 @@ function BookmarkDropdown({ sessionId, isBookmarked: initialBookmarked }: { sess
         </svg>
       </button>
       {open && (
-        <div className="absolute right-0 top-8 z-20 bg-[var(--bg-elevated,var(--surface))] border border-[var(--border)] rounded-lg shadow-[var(--shadow-md)] py-1 min-w-[140px]">
+        <div className="absolute right-0 top-8 z-20 bg-[var(--bg-elevated,var(--surface))] border border-border rounded-lg shadow-[var(--shadow-md)] py-1 min-w-[140px]">
           {folders.length === 0 && (
-            <div className="px-3 py-1.5 text-sm text-[var(--text-tertiary)]">No folders yet</div>
+            <div className="px-3 py-1.5 text-sm text-text-tertiary">No folders yet</div>
           )}
           {folders.map((f) => (
             <button
@@ -1695,7 +1694,7 @@ function BookmarkDropdown({ sessionId, isBookmarked: initialBookmarked }: { sess
                   onError: () => setOpen(false),
                 });
               }}
-              className="w-full text-left px-3 py-1.5 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] flex items-center gap-2 transition-colors"
+              className="w-full text-left px-3 py-1.5 text-sm text-text-secondary hover:bg-surface-hover flex items-center gap-2 transition-colors"
             >
               <span
                 className="w-2 h-2 rounded-full shrink-0"

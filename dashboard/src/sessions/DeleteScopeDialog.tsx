@@ -60,11 +60,11 @@ export default function DeleteScopeDialog({
           aria-labelledby="delete-scope-title"
           onKeyDown={handleKeyDown}
           tabIndex={-1}
-          className="pointer-events-auto w-full max-w-md bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-lg)] p-6 outline-none"
+          className="pointer-events-auto w-full max-w-md bg-bg-elevated border border-border rounded-xl shadow-[var(--shadow-lg)] p-6 outline-none"
         >
           <h3
             id="delete-scope-title"
-            className="text-base font-semibold text-[var(--text-primary)] mb-4"
+            className="text-base font-semibold text-text-primary mb-4"
           >
             {title}
           </h3>
@@ -76,8 +76,8 @@ export default function DeleteScopeDialog({
                 key={opt.value}
                 className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
                   scope === opt.value
-                    ? 'border-[var(--brand)] bg-[var(--brand)]/5'
-                    : 'border-[var(--border)] hover:border-[var(--border-strong)]'
+                    ? 'border-[var(--brand)] bg-brand/5'
+                    : 'border-border hover:border-border-strong'
                 }`}
               >
                 <input
@@ -89,10 +89,10 @@ export default function DeleteScopeDialog({
                   className="mt-0.5 accent-[var(--brand)]"
                 />
                 <div>
-                  <span className="text-sm font-medium text-[var(--text-primary)]">
+                  <span className="text-sm font-medium text-text-primary">
                     {opt.label}
                   </span>
-                  <p className="text-xs text-[var(--text-tertiary)] mt-0.5">
+                  <p className="text-xs text-text-tertiary mt-0.5">
                     {opt.description}
                   </p>
                 </div>
@@ -103,7 +103,7 @@ export default function DeleteScopeDialog({
           <div className="flex justify-end gap-3">
             <button
               onClick={onCancel}
-              className="px-3 py-1.5 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+              className="px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary transition-colors"
             >
               Cancel
             </button>

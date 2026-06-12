@@ -79,7 +79,7 @@ export default function ConversationView({ sessionId, initialPage }: Props) {
             </Button>
           )}
         </div>
-        <span className="text-[13px] text-[var(--text-tertiary)]">
+        <span className="text-sm text-text-tertiary">
           {total} messages
         </span>
       </div>
@@ -89,11 +89,11 @@ export default function ConversationView({ sessionId, initialPage }: Props) {
 
       {messages.length === 0 && !isLoading && (
         <div className="flex flex-col items-center justify-center py-16">
-          <svg className="w-10 h-10 text-[var(--text-tertiary)] mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <svg className="w-10 h-10 text-text-tertiary mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
             <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
           </svg>
-          <p className="text-[15px] font-semibold text-[var(--text-primary)] mb-1">No messages yet</p>
-          <p className="text-[13px] text-[var(--text-tertiary)]">This session contains no messages.</p>
+          <p className="text-md font-semibold text-text-primary mb-1">No messages yet</p>
+          <p className="text-sm text-text-tertiary">This session contains no messages.</p>
         </div>
       )}
 

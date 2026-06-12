@@ -90,7 +90,7 @@ export default function SettingsPage() {
 
   return (
     <div className="max-w-2xl mx-auto px-4 py-8">
-      <h1 className="text-3xl font-bold tracking-tight text-[var(--text-primary)] mb-6">Settings</h1>
+      <h1 className="text-3xl font-bold tracking-tight text-text-primary mb-6">Settings</h1>
 
       <Tabs
         tabs={tabs}
@@ -122,14 +122,14 @@ function AccountTab({ profile, logout }: { profile: any; logout: () => void }) {
     <div className="space-y-5">
       {profile && (
         <Card level="elevated" className="p-5">
-          <h2 className="text-lg font-semibold text-[var(--text-primary)] mb-4">Account</h2>
+          <h2 className="text-lg font-semibold text-text-primary mb-4">Account</h2>
           <div className="space-y-3">
             <div>
-              <label className="text-[13px] text-[var(--text-tertiary)] block mb-1">Email</label>
-              <div className="text-sm text-[var(--text-primary)]">{profile.email}</div>
+              <label className="text-sm text-text-tertiary block mb-1">Email</label>
+              <div className="text-sm text-text-primary">{profile.email}</div>
             </div>
-            <div className="flex gap-4 text-sm text-[var(--text-secondary)]">
-              <span>Tier: <span className="text-[var(--text-primary)] font-medium capitalize">{profile.tier}</span></span>
+            <div className="flex gap-4 text-sm text-text-secondary">
+              <span>Tier: <span className="text-text-primary font-medium capitalize">{profile.tier}</span></span>
               <span>Verified: {profile.email_verified
                 ? <span className="text-green-500">yes</span>
                 : <span className="text-yellow-500">no</span>
@@ -148,7 +148,7 @@ function AccountTab({ profile, logout }: { profile: any; logout: () => void }) {
               <polyline points="1 20 1 14 7 14" />
               <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
             </svg>
-            <h2 className="text-lg font-semibold text-[var(--text-primary)]">Last Sync</h2>
+            <h2 className="text-lg font-semibold text-text-primary">Last Sync</h2>
             {profile.latest_version && profile.last_client_version === profile.latest_version && (
               <span className="ml-auto px-2.5 py-0.5 bg-green-500/10 text-green-500 rounded-full text-xs font-medium">
                 Up to date
@@ -162,20 +162,20 @@ function AccountTab({ profile, logout }: { profile: any; logout: () => void }) {
           </div>
           <div className="grid grid-cols-2 gap-4 text-sm">
             <div>
-              <span className="text-[13px] text-[var(--text-tertiary)] block mb-0.5">Package version</span>
-              <span className="text-[var(--text-primary)] font-mono">{profile.last_client_version}</span>
+              <span className="text-sm text-text-tertiary block mb-0.5">Package version</span>
+              <span className="text-text-primary font-mono">{profile.last_client_version}</span>
             </div>
             <div>
-              <span className="text-[13px] text-[var(--text-tertiary)] block mb-0.5">Platform</span>
-              <span className="text-[var(--text-primary)]">{profile.last_client_platform || '-'}</span>
+              <span className="text-sm text-text-tertiary block mb-0.5">Platform</span>
+              <span className="text-text-primary">{profile.last_client_platform || '-'}</span>
             </div>
             <div>
-              <span className="text-[13px] text-[var(--text-tertiary)] block mb-0.5">Device</span>
-              <span className="text-[var(--text-primary)] font-mono">{profile.last_client_device || '-'}</span>
+              <span className="text-sm text-text-tertiary block mb-0.5">Device</span>
+              <span className="text-text-primary font-mono">{profile.last_client_device || '-'}</span>
             </div>
             <div>
-              <span className="text-[13px] text-[var(--text-tertiary)] block mb-0.5">Last synced</span>
-              <span className="text-[var(--text-primary)]">
+              <span className="text-sm text-text-tertiary block mb-0.5">Last synced</span>
+              <span className="text-text-primary">
                 {profile.last_sync_at ? new Date(profile.last_sync_at).toLocaleString() : '-'}
               </span>
             </div>
@@ -183,8 +183,8 @@ function AccountTab({ profile, logout }: { profile: any; logout: () => void }) {
           {profile.latest_version && profile.last_client_version !== profile.latest_version && (
             <div className="mt-4 p-3 bg-yellow-500/5 border border-yellow-500/20 rounded-lg text-sm">
               <p className="text-yellow-500 font-medium">New version available</p>
-              <p className="text-[var(--text-tertiary)] mt-1">
-                Run <code className="bg-[var(--surface)] px-1.5 py-0.5 rounded text-[var(--text-secondary)]">pip install --upgrade sessionfs</code> to update from {profile.last_client_version} to {profile.latest_version}.
+              <p className="text-text-tertiary mt-1">
+                Run <code className="bg-surface px-1.5 py-0.5 rounded text-text-secondary">pip install --upgrade sessionfs</code> to update from {profile.last_client_version} to {profile.latest_version}.
               </p>
             </div>
           )}
@@ -211,12 +211,12 @@ function ConnectionTab() {
   return (
     <div className="space-y-5">
       <Card level="elevated" className="p-5">
-        <h2 className="text-lg font-semibold text-[var(--text-primary)] mb-4">Connection</h2>
+        <h2 className="text-lg font-semibold text-text-primary mb-4">Connection</h2>
 
         <div className="mb-4">
-          <label className="text-[13px] text-[var(--text-tertiary)] block mb-1">Server URL</label>
+          <label className="text-sm text-text-tertiary block mb-1">Server URL</label>
           <div className="flex items-center gap-2">
-            <code className="text-sm text-[var(--text-secondary)] bg-[var(--surface)] border border-[var(--border)] px-3 py-2 rounded-lg flex-1">
+            <code className="text-sm text-text-secondary bg-surface border border-border px-3 py-2 rounded-lg flex-1">
               {auth.baseUrl}
             </code>
             <CopyButton text={auth.baseUrl} />
@@ -224,9 +224,9 @@ function ConnectionTab() {
         </div>
 
         <div>
-          <label className="text-[13px] text-[var(--text-tertiary)] block mb-1">API Key</label>
+          <label className="text-sm text-text-tertiary block mb-1">API Key</label>
           <div className="flex items-center gap-2">
-            <code className="text-sm text-[var(--text-secondary)] bg-[var(--surface)] border border-[var(--border)] px-3 py-2 rounded-lg flex-1 font-mono">
+            <code className="text-sm text-text-secondary bg-surface border border-border px-3 py-2 rounded-lg flex-1 font-mono">
               {maskedKey}
             </code>
             <CopyButton text={auth.apiKey} />
@@ -350,17 +350,17 @@ function JudgeTab() {
     <div className="space-y-5">
       {/* Judge Configuration */}
       <Card level="elevated" className="p-5">
-        <h2 className="text-lg font-semibold text-[var(--text-primary)] mb-2">Judge Configuration</h2>
-        <p className="text-sm text-[var(--text-tertiary)] mb-4">
+        <h2 className="text-lg font-semibold text-text-primary mb-2">Judge Configuration</h2>
+        <p className="text-sm text-text-tertiary mb-4">
           Configure the LLM used for session audits. Your key is stored server-side and used only for audit requests.
         </p>
 
         {judgeLoading ? (
-          <div className="text-sm text-[var(--text-tertiary)] py-2">Loading settings…</div>
+          <div className="text-sm text-text-tertiary py-2">Loading settings…</div>
         ) : (
           <>
             <div className="mb-4">
-              <label className="text-[13px] text-[var(--text-tertiary)] block mb-1">Provider</label>
+              <label className="text-sm text-text-tertiary block mb-1">Provider</label>
               <Select
                 value={judgeProvider}
                 onChange={(e) => handleProviderChange(e.target.value)}
@@ -369,9 +369,9 @@ function JudgeTab() {
             </div>
 
             <div className="mb-4">
-              <label className="text-[13px] text-[var(--text-tertiary)] block mb-1">
+              <label className="text-sm text-text-tertiary block mb-1">
                 Model
-                {discovering && <span className="text-[var(--text-tertiary)] opacity-50 ml-2">discovering…</span>}
+                {discovering && <span className="text-text-tertiary opacity-50 ml-2">discovering…</span>}
               </label>
               {judgeBaseUrl && discoveredModels.length > 0 ? (
                 <Select
@@ -432,7 +432,7 @@ function JudgeTab() {
                 className="font-mono"
               />
               <FieldError message={judgeErrors.baseUrl} />
-              <p className="text-xs text-[var(--text-tertiary)] opacity-60 mt-1">
+              <p className="text-xs text-text-tertiary opacity-60 mt-1">
                 Leave blank for provider default. Set for LiteLLM, vLLM, Ollama, or any OpenAI-compatible gateway.
               </p>
             </div>
@@ -461,7 +461,7 @@ function JudgeTab() {
             <div className="text-sm">
               {judgeSaved && <span className="text-green-500">Key saved</span>}
               {!judgeSaved && keySet && <span className="text-green-500">Key saved</span>}
-              {!judgeSaved && !keySet && <span className="text-[var(--text-tertiary)]">No key configured</span>}
+              {!judgeSaved && !keySet && <span className="text-text-tertiary">No key configured</span>}
             </div>
 
             {saveJudge.isError && (
@@ -498,7 +498,7 @@ function PreferencesTab() {
   return (
     <div className="space-y-5">
       <Card level="elevated" className="p-5">
-        <h2 className="text-lg font-semibold text-[var(--text-primary)] mb-4">Appearance</h2>
+        <h2 className="text-lg font-semibold text-text-primary mb-4">Appearance</h2>
         <div>
           <Select
             value={theme}
@@ -510,7 +510,7 @@ function PreferencesTab() {
             ]}
             title="Theme"
           />
-          <p className="text-xs text-[var(--text-tertiary)] opacity-60 mt-1.5">
+          <p className="text-xs text-text-tertiary opacity-60 mt-1.5">
             Choose how SessionFS looks. System follows your OS preference.
           </p>
         </div>
@@ -543,17 +543,17 @@ function AutoAuditSection() {
 
   return (
     <Card level="elevated" className="p-5">
-      <h2 className="text-lg font-semibold text-[var(--text-primary)] mb-3">Auto-audit</h2>
+      <h2 className="text-lg font-semibold text-text-primary mb-3">Auto-audit</h2>
       <div className="space-y-2">
         {[
           { value: 'manual', label: 'Manual only -- run audits when you choose' },
           { value: 'on_sync', label: 'On sync -- automatically audit after each push' },
           { value: 'on_pr', label: 'On PR/MR -- audit when a pull/merge request is opened' },
         ].map(({ value, label }) => (
-          <label key={value} className="flex items-center gap-2.5 text-sm text-[var(--text-secondary)] cursor-pointer">
+          <label key={value} className="flex items-center gap-2.5 text-sm text-text-secondary cursor-pointer">
             <input type="radio" name="audit-trigger" checked={current === value}
               onChange={() => update.mutate(value)} disabled={update.isPending}
-              className="text-[var(--brand)] focus-visible:ring-[var(--brand)]" />
+              className="text-brand focus-visible:ring-[var(--brand)]" />
             {label}
           </label>
         ))}
@@ -583,24 +583,24 @@ function AutosyncSection() {
 
   return (
     <Card level="elevated" className="p-5">
-      <h2 className="text-lg font-semibold text-[var(--text-primary)] mb-2">Autosync</h2>
-      <p className="text-sm text-[var(--text-tertiary)] mb-3">
+      <h2 className="text-lg font-semibold text-text-primary mb-2">Autosync</h2>
+      <p className="text-sm text-text-tertiary mb-3">
         Automatically sync sessions to the cloud. The daemon pushes changes after a short debounce period.
       </p>
 
       {isLoading ? (
-        <div className="text-sm text-[var(--text-tertiary)] py-2">Loading…</div>
+        <div className="text-sm text-text-tertiary py-2">Loading…</div>
       ) : (
         <div className="space-y-2">
           {(['off', 'all', 'selective'] as const).map((mode) => (
-            <label key={mode} className="flex items-center gap-2.5 text-sm text-[var(--text-secondary)] cursor-pointer">
+            <label key={mode} className="flex items-center gap-2.5 text-sm text-text-secondary cursor-pointer">
               <input
                 type="radio"
                 name="sync-mode"
                 checked={currentMode === mode}
                 onChange={() => updateMode.mutate(mode)}
                 disabled={updateMode.isPending}
-                className="text-[var(--brand)] focus-visible:ring-[var(--brand)]"
+                className="text-brand focus-visible:ring-[var(--brand)]"
               />
               {mode === 'off' && 'Off -- Manual sync only (sfs push)'}
               {mode === 'all' && 'All sessions -- Sync everything automatically'}
@@ -674,8 +674,8 @@ export function GitHubIntegrationSection() {
 
   return (
     <Card level="elevated" className="p-5">
-      <h2 className="text-lg font-semibold text-[var(--text-primary)] mb-2">GitHub Integration</h2>
-      <p className="text-sm text-[var(--text-tertiary)] mb-4">
+      <h2 className="text-lg font-semibold text-text-primary mb-2">GitHub Integration</h2>
+      <p className="text-sm text-text-tertiary mb-4">
         Automatically post AI context comments on pull requests showing which sessions contributed to the code.
       </p>
 
@@ -686,42 +686,42 @@ export function GitHubIntegrationSection() {
       )}
 
       {isLoading ? (
-        <div className="text-sm text-[var(--text-tertiary)] py-2">Loading…</div>
+        <div className="text-sm text-text-tertiary py-2">Loading…</div>
       ) : connected ? (
         <>
           <div className="flex items-center gap-2 mb-4">
             <span className="inline-block w-2 h-2 rounded-full bg-green-500" />
-            <span className="text-sm text-[var(--text-primary)]">
+            <span className="text-sm text-text-primary">
               Connected to <span className="font-medium">{ghSettings.account_login}</span>
-              <span className="text-[var(--text-tertiary)] ml-1">({ghSettings.account_type})</span>
+              <span className="text-text-tertiary ml-1">({ghSettings.account_type})</span>
             </span>
           </div>
 
           <div className="space-y-2 mb-4">
-            <label className="flex items-center gap-2.5 text-sm text-[var(--text-secondary)] cursor-pointer">
+            <label className="flex items-center gap-2.5 text-sm text-text-secondary cursor-pointer">
               <input
                 type="checkbox"
                 checked={ghSettings.auto_comment ?? true}
                 onChange={(e) => updateSettings.mutate({ auto_comment: e.target.checked })}
-                className="rounded border-[var(--border)] bg-[var(--surface)] text-[var(--brand)] focus-visible:ring-[var(--brand)]"
+                className="rounded border-border bg-surface text-brand focus-visible:ring-[var(--brand)]"
               />
               Auto-comment on PRs
             </label>
-            <label className="flex items-center gap-2.5 text-sm text-[var(--text-secondary)] cursor-pointer">
+            <label className="flex items-center gap-2.5 text-sm text-text-secondary cursor-pointer">
               <input
                 type="checkbox"
                 checked={ghSettings.include_trust_score ?? true}
                 onChange={(e) => updateSettings.mutate({ include_trust_score: e.target.checked })}
-                className="rounded border-[var(--border)] bg-[var(--surface)] text-[var(--brand)] focus-visible:ring-[var(--brand)]"
+                className="rounded border-border bg-surface text-brand focus-visible:ring-[var(--brand)]"
               />
               Include trust scores
             </label>
-            <label className="flex items-center gap-2.5 text-sm text-[var(--text-secondary)] cursor-pointer">
+            <label className="flex items-center gap-2.5 text-sm text-text-secondary cursor-pointer">
               <input
                 type="checkbox"
                 checked={ghSettings.include_session_links ?? true}
                 onChange={(e) => updateSettings.mutate({ include_session_links: e.target.checked })}
-                className="rounded border-[var(--border)] bg-[var(--surface)] text-[var(--brand)] focus-visible:ring-[var(--brand)]"
+                className="rounded border-border bg-surface text-brand focus-visible:ring-[var(--brand)]"
               />
               Include session links
             </label>
@@ -735,19 +735,19 @@ export function GitHubIntegrationSection() {
             href="https://github.com/apps/sessionfs-ai-context/installations/new"
             target="_blank"
             rel="noopener noreferrer"
-            className="text-sm text-[var(--brand)] hover:underline"
+            className="text-sm text-brand hover:underline"
           >
             Manage installation
           </a>
         </>
       ) : (
         <div>
-          <p className="text-sm text-[var(--text-tertiary)] mb-3">Not connected</p>
+          <p className="text-sm text-text-tertiary mb-3">Not connected</p>
           <a
             href="https://github.com/apps/sessionfs-ai-context/installations/new"
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-block bg-[var(--brand)] text-white rounded-lg px-5 py-2.5 text-sm font-semibold hover:bg-[var(--brand-hover)] transition-colors"
+            className="inline-block bg-brand text-white rounded-lg px-5 py-2.5 text-sm font-semibold hover:bg-[var(--brand-hover)] transition-colors"
           >
             Connect GitHub
           </a>
@@ -816,8 +816,8 @@ function DLPTab() {
     return (
       <div className="space-y-5">
         <Card level="elevated" className="p-5">
-          <h2 className="text-lg font-semibold text-[var(--text-primary)] mb-2">Data Loss Prevention</h2>
-          <p className="text-sm text-[var(--text-tertiary)]">
+          <h2 className="text-lg font-semibold text-text-primary mb-2">Data Loss Prevention</h2>
+          <p className="text-sm text-text-tertiary">
             DLP scanning is available for Team and Enterprise plans.
           </p>
         </Card>
@@ -830,8 +830,8 @@ function DLPTab() {
     return (
       <div className="space-y-5">
         <Card level="elevated" className="p-5">
-          <h2 className="text-lg font-semibold text-[var(--text-primary)] mb-2">Data Loss Prevention</h2>
-          <p className="text-sm text-[var(--text-tertiary)]">
+          <h2 className="text-lg font-semibold text-text-primary mb-2">Data Loss Prevention</h2>
+          <p className="text-sm text-text-tertiary">
             Only organization admins can configure DLP policies.
           </p>
         </Card>
@@ -861,13 +861,13 @@ function DLPTab() {
   return (
     <div className="space-y-5">
       <Card level="elevated" className="p-5">
-        <h2 className="text-lg font-semibold text-[var(--text-primary)] mb-2">Data Loss Prevention</h2>
-        <p className="text-sm text-[var(--text-tertiary)] mb-4">
+        <h2 className="text-lg font-semibold text-text-primary mb-2">Data Loss Prevention</h2>
+        <p className="text-sm text-text-tertiary mb-4">
           Automatically scan synced sessions for sensitive data such as secrets and protected health information.
         </p>
 
         {isLoading ? (
-          <div className="text-sm text-[var(--text-tertiary)] py-2">Loading policy…</div>
+          <div className="text-sm text-text-tertiary py-2">Loading policy…</div>
         ) : (
           <>
             {/* Enable toggle */}
@@ -876,7 +876,7 @@ function DLPTab() {
                 onClick={handleToggle}
                 disabled={updatePolicy.isPending}
                 className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] ${
-                  enabled ? 'bg-[var(--brand)]' : 'bg-[var(--border)]'
+                  enabled ? 'bg-brand' : 'bg-[var(--border)]'
                 }`}
                 role="switch"
                 aria-checked={enabled}
@@ -887,24 +887,24 @@ function DLPTab() {
                   }`}
                 />
               </button>
-              <span className="text-sm text-[var(--text-primary)] font-medium">
+              <span className="text-sm text-text-primary font-medium">
                 {enabled ? 'Enabled' : 'Disabled'}
               </span>
             </div>
 
             {/* Mode selector */}
             <div className="mb-5">
-              <label className="text-[13px] text-[var(--text-tertiary)] block mb-2">Mode</label>
+              <label className="text-sm text-text-tertiary block mb-2">Mode</label>
               <div className="space-y-2">
                 {DLP_MODES.map(({ value, label }) => (
-                  <label key={value} className="flex items-center gap-2.5 text-sm text-[var(--text-secondary)] cursor-pointer">
+                  <label key={value} className="flex items-center gap-2.5 text-sm text-text-secondary cursor-pointer">
                     <input
                       type="radio"
                       name="dlp-mode"
                       checked={mode === value}
                       onChange={() => handleModeChange(value)}
                       disabled={updatePolicy.isPending || !enabled}
-                      className="text-[var(--brand)] focus-visible:ring-[var(--brand)]"
+                      className="text-brand focus-visible:ring-[var(--brand)]"
                     />
                     {label}
                   </label>
@@ -914,20 +914,20 @@ function DLPTab() {
 
             {/* Categories */}
             <div>
-              <label className="text-[13px] text-[var(--text-tertiary)] block mb-2">Categories</label>
+              <label className="text-sm text-text-tertiary block mb-2">Categories</label>
               <div className="space-y-2">
                 {DLP_CATEGORIES.map(({ value, label, description }) => (
-                  <label key={value} className="flex items-start gap-2.5 text-sm text-[var(--text-secondary)] cursor-pointer">
+                  <label key={value} className="flex items-start gap-2.5 text-sm text-text-secondary cursor-pointer">
                     <input
                       type="checkbox"
                       checked={categories.includes(value)}
                       onChange={() => handleCategoryToggle(value)}
                       disabled={updatePolicy.isPending || !enabled}
-                      className="mt-0.5 rounded border-[var(--border)] bg-[var(--surface)] text-[var(--brand)] focus-visible:ring-[var(--brand)]"
+                      className="mt-0.5 rounded border-border bg-surface text-brand focus-visible:ring-[var(--brand)]"
                     />
                     <div>
-                      <span className="text-[var(--text-primary)] font-medium">{label}</span>
-                      <span className="block text-xs text-[var(--text-tertiary)]">{description}</span>
+                      <span className="text-text-primary font-medium">{label}</span>
+                      <span className="block text-xs text-text-tertiary">{description}</span>
                     </div>
                   </label>
                 ))}

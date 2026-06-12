@@ -90,11 +90,11 @@ export default function AuditTab({ sessionId, messageCount, sessionTitle, onJump
   if (!isLoading && (is404 || (!report && !error))) {
     return (
       <div className="flex flex-col items-center justify-center py-16">
-        <svg className="w-10 h-10 text-[var(--text-tertiary)] mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <svg className="w-10 h-10 text-text-tertiary mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
           <path d="M9 12l2 2 4-4m6 2a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" />
         </svg>
-        <p className="text-[15px] font-semibold text-[var(--text-primary)] mb-1">No audit yet</p>
-        <p className="text-[13px] text-[var(--text-tertiary)] mb-4">
+        <p className="text-md font-semibold text-text-primary mb-1">No audit yet</p>
+        <p className="text-sm text-text-tertiary mb-4">
           Auditing evaluates factual claims in the conversation against tool output evidence.
         </p>
         <Button onClick={() => setShowModal(true)}>
@@ -381,7 +381,7 @@ const CATEGORY_LABELS: Record<string, string> = {
 
 function SeverityBadge({ severity }: { severity: string }) {
   return (
-    <span className={`px-2 py-0.5 text-[10px] rounded uppercase font-medium ${SEVERITY_STYLES[severity] || SEVERITY_STYLES.low}`}>
+    <span className={`px-2 py-0.5 text-2xs rounded uppercase font-medium ${SEVERITY_STYLES[severity] || SEVERITY_STYLES.low}`}>
       {severity}
     </span>
   );
@@ -402,7 +402,7 @@ function ConfidenceBar({ confidence }: { confidence: number }) {
       <div className="w-12 h-1.5 bg-bg-tertiary rounded-full overflow-hidden">
         <div className={`h-full rounded-full ${color}`} style={{ width: `${confidence}%` }} />
       </div>
-      <span className="text-[10px] text-text-muted tabular-nums">{confidence}%</span>
+      <span className="text-2xs text-text-muted tabular-nums">{confidence}%</span>
     </div>
   );
 }
@@ -448,12 +448,12 @@ function FindingCard({
       >
         <SeverityBadge severity={finding.severity} />
         {finding.category && (
-          <span className="px-2 py-0.5 text-[10px] rounded bg-bg-tertiary text-text-muted">
+          <span className="px-2 py-0.5 text-2xs rounded bg-bg-tertiary text-text-muted">
             {CATEGORY_LABELS[finding.category] || finding.category}
           </span>
         )}
         {finding.cwe_id && (
-          <span className="px-2 py-0.5 text-[10px] rounded bg-bg-tertiary text-orange-400 font-mono">
+          <span className="px-2 py-0.5 text-2xs rounded bg-bg-tertiary text-orange-400 font-mono">
             {finding.cwe_id}
           </span>
         )}
@@ -472,7 +472,7 @@ function FindingCard({
 
       {/* Claim text always visible */}
       <div className="px-3 pb-2">
-        <p className="text-[15px] font-medium text-[var(--text-primary)]">{finding.claim}</p>
+        <p className="text-md font-medium text-text-primary">{finding.claim}</p>
       </div>
 
       {/* Expanded evidence viewer */}
@@ -482,7 +482,7 @@ function FindingCard({
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {/* Left: claim and explanation */}
             <div>
-              <span className="text-[10px] text-text-muted uppercase block mb-1">Claim & Explanation</span>
+              <span className="text-2xs text-text-muted uppercase block mb-1">Claim & Explanation</span>
               <div className="bg-bg-tertiary border border-border rounded p-2 text-xs text-text-secondary space-y-2">
                 <p className="font-medium text-text-primary">{finding.claim}</p>
                 <p>{finding.explanation}</p>
@@ -491,22 +491,22 @@ function FindingCard({
 
             {/* Right: evidence */}
             <div>
-              <span className="text-[10px] text-text-muted uppercase block mb-1">Evidence</span>
+              <span className="text-2xs text-text-muted uppercase block mb-1">Evidence</span>
               {finding.evidence_snippets && finding.evidence_snippets.length > 0 ? (
                 <div className="space-y-1.5">
                   {finding.evidence_snippets.map((snippet, i) => (
                     <div key={i} className="bg-bg-tertiary border border-border rounded overflow-hidden">
-                      <div className="px-2 py-0.5 bg-bg-tertiary border-b border-border/50 text-[10px] text-text-muted">
+                      <div className="px-2 py-0.5 bg-bg-tertiary border-b border-border/50 text-2xs text-text-muted">
                         Message #{snippet.message_index}
                       </div>
-                      <pre className="px-2 py-1.5 text-[13px] text-[var(--text-tertiary)] overflow-x-auto whitespace-pre-wrap max-h-32 overflow-y-auto font-mono">
+                      <pre className="px-2 py-1.5 text-sm text-text-tertiary overflow-x-auto whitespace-pre-wrap max-h-32 overflow-y-auto font-mono">
                         {snippet.text}
                       </pre>
                     </div>
                   ))}
                 </div>
               ) : finding.evidence ? (
-                <pre className="bg-bg-tertiary border border-border rounded px-2 py-1.5 text-[13px] text-[var(--text-tertiary)] overflow-x-auto whitespace-pre-wrap max-h-40 overflow-y-auto font-mono">
+                <pre className="bg-bg-tertiary border border-border rounded px-2 py-1.5 text-sm text-text-tertiary overflow-x-auto whitespace-pre-wrap max-h-40 overflow-y-auto font-mono">
                   {finding.evidence}
                 </pre>
               ) : (
@@ -585,7 +585,7 @@ function MetricCard({ label, value, color }: { label: string; value: string; col
   return (
     <Card className="p-3 text-center">
       <div className={`text-3xl font-bold tabular-nums ${color}`}>{value}</div>
-      <div className="text-micro text-[var(--text-tertiary)] uppercase mt-0.5">{label}</div>
+      <div className="text-micro text-text-tertiary uppercase mt-0.5">{label}</div>
     </Card>
   );
 }
@@ -668,7 +668,7 @@ function DownloadDropdown({ report, sessionTitle }: { report: AuditReport; sessi
   return (
     <Dropdown
       trigger={
-        <button className="px-3 py-1.5 text-sm border border-[var(--border)] text-[var(--text-secondary)] rounded hover:bg-[var(--bg-tertiary)] transition-colors inline-flex items-center gap-1">
+        <button className="px-3 py-1.5 text-sm border border-border text-text-secondary rounded hover:bg-bg-tertiary transition-colors inline-flex items-center gap-1">
           Export
           <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />

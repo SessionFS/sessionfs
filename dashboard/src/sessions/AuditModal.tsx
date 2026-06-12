@@ -177,9 +177,9 @@ export default function AuditModal({ open, sessionId, sessionTitle, messageCount
         />
 
         <div>
-          <label className="block text-[13px] font-medium text-[var(--text-secondary)] mb-1">
+          <label className="block text-sm font-medium text-text-secondary mb-1">
             Model
-            {discovering && <span className="text-[var(--text-tertiary)] ml-2">discovering…</span>}
+            {discovering && <span className="text-text-tertiary ml-2">discovering…</span>}
           </label>
           {hasBaseUrl && discoveredModels.length > 0 ? (
             <Select
@@ -218,15 +218,15 @@ export default function AuditModal({ open, sessionId, sessionTitle, messageCount
         </div>
 
         <div>
-          <label className="block text-[13px] font-medium text-[var(--text-secondary)] mb-1">API Key</label>
+          <label className="block text-sm font-medium text-text-secondary mb-1">API Key</label>
           {hasSavedKey && (
             <div className="flex items-center gap-2 mb-2">
-              <label className="flex items-center gap-1.5 text-sm text-[var(--text-secondary)] cursor-pointer">
+              <label className="flex items-center gap-1.5 text-sm text-text-secondary cursor-pointer">
                 <input
                   type="checkbox"
                   checked={useSavedKey}
                   onChange={(e) => setUseSavedKey(e.target.checked)}
-                  className="rounded border-[var(--border)]"
+                  className="rounded border-border"
                 />
                 Use saved API key
               </label>
@@ -254,8 +254,8 @@ export default function AuditModal({ open, sessionId, sessionTitle, messageCount
         </div>
 
         <div>
-          <label className="block text-[13px] font-medium text-[var(--text-secondary)] mb-1">
-            Base URL <span className="text-[var(--text-tertiary)]">(optional)</span>
+          <label className="block text-sm font-medium text-text-secondary mb-1">
+            Base URL <span className="text-text-tertiary">(optional)</span>
           </label>
           <div className="flex gap-2 mb-1">
             <Input
@@ -270,7 +270,7 @@ export default function AuditModal({ open, sessionId, sessionTitle, messageCount
                 type="button"
                 onClick={handleTestConnection}
                 disabled={testStatus === 'testing'}
-                className="px-2 py-1.5 text-xs border border-[var(--border)] rounded hover:bg-[var(--bg-tertiary)] transition-colors whitespace-nowrap text-[var(--text-secondary)]"
+                className="px-2 py-1.5 text-xs border border-border rounded hover:bg-bg-tertiary transition-colors whitespace-nowrap text-text-secondary"
               >
                 {testStatus === 'testing' ? 'Testing…' :
                  testStatus === 'ok' ? 'Connected' :
@@ -279,15 +279,15 @@ export default function AuditModal({ open, sessionId, sessionTitle, messageCount
             )}
           </div>
           {testStatus === 'ok' && <p className="text-xs text-green-400 mb-3">Connection successful ({discoveredModels.length} models found)</p>}
-          {testStatus === 'fail' && <p className="text-xs text-[var(--danger)] mb-3">Connection failed — check URL and API key</p>}
-          {!baseUrl && <p className="text-xs text-[var(--text-tertiary)] mb-1">Leave blank for provider default. Set for LiteLLM, vLLM, Ollama.</p>}
+          {testStatus === 'fail' && <p className="text-xs text-danger mb-3">Connection failed — check URL and API key</p>}
+          {!baseUrl && <p className="text-xs text-text-tertiary mb-1">Leave blank for provider default. Set for LiteLLM, vLLM, Ollama.</p>}
         </div>
 
-        <div className="text-sm text-[var(--text-tertiary)]">
+        <div className="text-sm text-text-tertiary">
           Estimated cost: ~${estimatedCost} ({messageCount} messages)
         </div>
 
-        <div className="text-sm text-[var(--text-tertiary)] bg-[var(--bg-sunken)] border border-[var(--border)] rounded-lg px-3 py-2">
+        <div className="text-sm text-text-tertiary bg-bg-sunken border border-border rounded-lg px-3 py-2">
           {hasSavedKey && useSavedKey && !apiKey
             ? 'Using your saved API key from Settings.'
             : hasBaseUrl && !apiKey
@@ -296,7 +296,7 @@ export default function AuditModal({ open, sessionId, sessionTitle, messageCount
         </div>
 
         {!!error && (
-          <div className="text-sm text-[var(--danger)] bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">
+          <div className="text-sm text-danger bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">
             {error}
           </div>
         )}

@@ -74,22 +74,22 @@ function MobileFilterSheet({
   return (
     <div className="fixed inset-0 z-50 md:hidden" role="dialog" aria-modal="true" aria-labelledby="search-filter-title">
       <div className="absolute inset-0 bg-black/45" onClick={onClose} />
-      <div className="absolute inset-x-0 bottom-0 rounded-t-3xl border border-[var(--border)] bg-[var(--bg-elevated)] shadow-[var(--shadow-lg)]">
+      <div className="absolute inset-x-0 bottom-0 rounded-t-3xl border border-border bg-bg-elevated shadow-[var(--shadow-lg)]">
         <div ref={dialogRef} className="px-4 pb-5 pt-4">
           <div className="mx-auto mb-4 h-1.5 w-12 rounded-full bg-[var(--border)]" />
           <div className="mb-4 flex items-start justify-between gap-3">
             <div>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--text-tertiary)]">
+              <p className="text-2xs font-semibold uppercase tracking-[0.12em] text-text-tertiary">
                 Search Filters
               </p>
-              <h2 id="search-filter-title" className="mt-1 text-lg font-semibold text-[var(--text-primary)]">
+              <h2 id="search-filter-title" className="mt-1 text-lg font-semibold text-text-primary">
                 Refine results
               </h2>
             </div>
             <button
               type="button"
               onClick={onClose}
-              className="flex h-9 w-9 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-hover)]"
+              className="flex h-9 w-9 items-center justify-center rounded-full border border-border bg-surface text-text-secondary transition-colors hover:bg-surface-hover"
               aria-label="Close filters"
             >
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
@@ -101,11 +101,11 @@ function MobileFilterSheet({
 
           <div className="space-y-4">
             <label className="block">
-              <span className="mb-1.5 block text-sm font-medium text-[var(--text-secondary)]">Tool</span>
+              <span className="mb-1.5 block text-sm font-medium text-text-secondary">Tool</span>
               <select
                 value={draftTool}
                 onChange={(e) => setDraftTool(e.target.value)}
-                className="w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+                className="w-full rounded-xl border border-border bg-surface px-3 py-2.5 text-sm text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
               >
                 {TOOLS.map((t) => (
                   <option key={t.value} value={t.value}>{t.label}</option>
@@ -114,11 +114,11 @@ function MobileFilterSheet({
             </label>
 
             <label className="block">
-              <span className="mb-1.5 block text-sm font-medium text-[var(--text-secondary)]">Date range</span>
+              <span className="mb-1.5 block text-sm font-medium text-text-secondary">Date range</span>
               <select
                 value={draftDays}
                 onChange={(e) => setDraftDays(Number(e.target.value))}
-                className="w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+                className="w-full rounded-xl border border-border bg-surface px-3 py-2.5 text-sm text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
               >
                 {DATE_RANGES.map((d) => (
                   <option key={d.value} value={d.value}>{d.label}</option>
@@ -136,7 +136,7 @@ function MobileFilterSheet({
                 onApply('', 0);
                 onClose();
               }}
-              className="rounded-lg px-3 py-2 text-sm font-medium text-[var(--text-tertiary)] transition-colors hover:text-[var(--text-secondary)]"
+              className="rounded-lg px-3 py-2 text-sm font-medium text-text-tertiary transition-colors hover:text-text-secondary"
             >
               Clear all
             </button>
@@ -144,7 +144,7 @@ function MobileFilterSheet({
               <button
                 type="button"
                 onClick={onClose}
-                className="rounded-lg border border-[var(--border)] px-4 py-2 text-sm font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-hover)]"
+                className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-text-secondary transition-colors hover:bg-surface-hover"
               >
                 Cancel
               </button>
@@ -154,7 +154,7 @@ function MobileFilterSheet({
                   onApply(draftTool, draftDays);
                   onClose();
                 }}
-                className="rounded-lg bg-[var(--brand)] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[var(--brand-hover)]"
+                className="rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[var(--brand-hover)]"
               >
                 Apply filters
               </button>
@@ -232,7 +232,7 @@ export default function SearchResults() {
           <button
             type="button"
             onClick={() => setMobileFiltersOpen(true)}
-            className="inline-flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface)] px-3.5 py-2 text-sm font-medium text-[var(--text-secondary)] shadow-[var(--shadow-sm)] transition-colors hover:bg-[var(--surface-hover)]"
+            className="inline-flex items-center gap-2 rounded-full border border-border bg-surface px-3.5 py-2 text-sm font-medium text-text-secondary shadow-[var(--shadow-sm)] transition-colors hover:bg-surface-hover"
             aria-haspopup="dialog"
             aria-expanded={mobileFiltersOpen}
             aria-label="Open search filters"
@@ -244,7 +244,7 @@ export default function SearchResults() {
             </svg>
             Filters
             {activeFilterCount > 0 && (
-              <span className="rounded-full bg-[var(--brand)] px-1.5 py-0.5 text-[11px] font-semibold text-white">
+              <span className="rounded-full bg-brand px-1.5 py-0.5 text-2xs font-semibold text-white">
                 {activeFilterCount}
               </span>
             )}
@@ -255,12 +255,12 @@ export default function SearchResults() {
               aria-label="Active search filters"
             >
               {tool && (
-                <span className="rounded-full border border-[var(--border)] bg-[var(--surface)] px-3 py-1 text-xs font-medium text-[var(--text-secondary)]">
+                <span className="rounded-full border border-border bg-surface px-3 py-1 text-xs font-medium text-text-secondary">
                   {activeToolLabel}
                 </span>
               )}
               {days > 0 && (
-                <span className="rounded-full border border-[var(--border)] bg-[var(--surface)] px-3 py-1 text-xs font-medium text-[var(--text-secondary)]">
+                <span className="rounded-full border border-border bg-surface px-3 py-1 text-xs font-medium text-text-secondary">
                   {activeDateLabel}
                 </span>
               )}
@@ -329,7 +329,7 @@ export default function SearchResults() {
                   <span className="text-sm font-medium text-text-primary truncate flex-1">
                     {r.title || r.alias || 'Untitled session'}
                   </span>
-                  <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-accent/15 text-accent shrink-0">
+                  <span className="text-2xs font-medium px-1.5 py-0.5 rounded bg-accent/15 text-accent shrink-0">
                     {abbreviateTool(r.source_tool)}
                   </span>
                   <span className="text-sm text-text-muted shrink-0">
