@@ -35,7 +35,7 @@ export default function LicensesTab() {
       <div className="mb-4">
         <Select
           value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
+          onValueChange={(v) => setStatusFilter(v)}
           options={[
             { value: 'all', label: 'All statuses' },
             { value: 'active', label: 'Active' },

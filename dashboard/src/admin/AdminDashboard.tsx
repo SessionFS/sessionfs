@@ -471,7 +471,7 @@ function UserRow({
                 <label className="text-sm text-text-tertiary">Tier:</label>
                 <Select
                   value={selectedTier}
-                  onChange={(e) => onPendingTierChange(e.target.value)}
+                  onValueChange={(v) => onPendingTierChange(v)}
                   options={TIERS.map((t) => ({ value: t, label: t }))}
                 />
                 {tierChanged && (

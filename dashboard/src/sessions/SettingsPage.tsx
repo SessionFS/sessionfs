@@ -363,7 +363,7 @@ function JudgeTab() {
               <label className="text-sm text-text-tertiary block mb-1">Provider</label>
               <Select
                 value={judgeProvider}
-                onChange={(e) => handleProviderChange(e.target.value)}
+                onValueChange={(v) => handleProviderChange(v)}
                 options={[...PROVIDERS]}
               />
             </div>
@@ -376,7 +376,7 @@ function JudgeTab() {
               {judgeBaseUrl && discoveredModels.length > 0 ? (
                 <Select
                   value={judgeModel}
-                  onChange={(e) => { setJudgeModel(e.target.value); setJudgeSaved(false); }}
+                  onValueChange={(v) => { setJudgeModel(v); setJudgeSaved(false); }}
                   options={[
                     { value: '', label: 'Select a model…' },
                     ...discoveredModels.map((m) => ({ value: m.id, label: m.id + (m.owned_by ? ` (${m.owned_by})` : '') })),
@@ -403,7 +403,7 @@ function JudgeTab() {
               ) : (
                 <Select
                   value={judgeModel}
-                  onChange={(e) => { setJudgeModel(e.target.value); setJudgeSaved(false); }}
+                  onValueChange={(v) => { setJudgeModel(v); setJudgeSaved(false); }}
                   options={providerModels}
                 />
               )}
@@ -502,7 +502,7 @@ function PreferencesTab() {
         <div>
           <Select
             value={theme}
-            onChange={(e) => handleThemeChange(e.target.value)}
+            onValueChange={(v) => handleThemeChange(v)}
             options={[
               { value: 'light', label: 'Light' },
               { value: 'dark', label: 'Dark' },

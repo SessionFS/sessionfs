@@ -172,7 +172,7 @@ export default function AuditModal({ open, sessionId, sessionTitle, messageCount
         <Select
           title="Provider"
           value={provider}
-          onChange={(e: React.ChangeEvent<HTMLSelectElement>) => handleProviderChange(e.target.value)}
+          onValueChange={(v) => handleProviderChange(v)}
           options={providerOptions}
         />
 
@@ -184,7 +184,7 @@ export default function AuditModal({ open, sessionId, sessionTitle, messageCount
           {hasBaseUrl && discoveredModels.length > 0 ? (
             <Select
               value={model}
-              onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setModel(e.target.value)}
+              onValueChange={(v) => setModel(v)}
               options={[{ value: '', label: 'Select a model…' }, ...modelSelectOptions]}
             />
           ) : hasBaseUrl ? (
@@ -198,9 +198,9 @@ export default function AuditModal({ open, sessionId, sessionTitle, messageCount
             <>
               <Select
                 value={models.some((m) => m.value === model) ? model : '__custom__'}
-                onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
-                  if (e.target.value === '__custom__') setModel('');
-                  else setModel(e.target.value);
+                onValueChange={(v) => {
+                  if (v === '__custom__') setModel('');
+                  else setModel(v);
                 }}
                 options={[...models.map((m) => ({ value: m.value, label: m.label }))]}
               />
