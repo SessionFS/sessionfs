@@ -56,7 +56,7 @@ export default function Wordmark({
       </svg>
       {showTagline && (
         <span className="hidden xl:block text-2xs font-semibold uppercase tracking-[0.16em] text-text-tertiary">
-          Memory layer for AI coding agents
+          Memory Layer For AI Agents
         </span>
       )}
     </div>

@@ -395,7 +395,7 @@ export default function Layout() {
             className="hidden md:block absolute left-1/2 -translate-x-1/2 text-2xs font-semibold uppercase tracking-[0.18em] text-text-tertiary pointer-events-none select-none whitespace-nowrap"
             aria-hidden="true"
           >
-            Memory layer for AI coding agents
+            Memory Layer For AI Agents
           </span>
           {/* Left: Hamburger (mobile) + page area */}
           <div className="flex items-center gap-2 shrink-0">
@@ -560,7 +560,7 @@ export default function Layout() {
         <footer className="text-center py-8 text-2xs text-text-tertiary border-t border-border">
           <span className="font-semibold text-text-secondary">SessionFS</span>
           <span className="mx-2 text-text-tertiary">·</span>
-          Memory layer for AI coding agents
+          Memory Layer For AI Agents
           <span className="mx-2 text-text-tertiary">·</span>
           v{__APP_VERSION__}
           <span className="mx-2 text-text-tertiary">·</span>

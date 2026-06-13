@@ -95,7 +95,7 @@ describe('Layout', () => {
     renderLayout();
 
     expect(screen.getByLabelText('SessionFS home')).toBeInTheDocument();
-    expect(screen.getAllByText(/memory layer for ai coding agents/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/memory layer for ai agents/i).length).toBeGreaterThan(0);
     expect(screen.getByText('Dashboard home')).toBeInTheDocument();
   });
 
