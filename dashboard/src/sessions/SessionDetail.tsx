@@ -113,6 +113,20 @@ export default function SessionDetail() {
     [handleMetaSave],
   );
 
+  // Derived + memoized BEFORE any early return so every hook runs
+  // unconditionally on every render (Rules of Hooks). session may be
+  // undefined during loading/error — keep these null-safe; the values
+  // are only consumed after the guards below.
+  const captureOnly = !!session && ['cursor', 'cline', 'roo-code', 'amp'].includes(session.source_tool);
+  const resumeTool = captureOnly ? 'claude-code' : (session?.source_tool ?? 'claude-code');
+  const moreMenuItems = useMemo(() => [
+    { key: 'resume', label: `Resume in ${fullToolName(resumeTool)}` },
+    { key: 'audit', label: 'Run Audit' },
+    { key: 'rename', label: 'Rename (Title & Alias)' },
+    { key: 'sep', label: '', separator: true as const },
+    { key: 'delete', label: 'Delete Session', danger: true as const },
+  ], [resumeTool]);
+
   if (isLoading) {
     return <div className="p-8 text-text-tertiary">Loading session…</div>;
   }
@@ -140,18 +154,8 @@ export default function SessionDetail() {
 
   const toolColor = TOOL_COLORS[session.source_tool] || 'var(--text-tertiary)';
 
-  // More-menu: resume command + items
-  const captureOnly = ['cursor', 'cline', 'roo-code', 'amp'].includes(session.source_tool);
-  const resumeTool = captureOnly ? 'claude-code' : session.source_tool;
+  // resumeTool/moreMenuItems are computed above the guards (Rules of Hooks).
   const resumeCmd = `sfs resume ${session.id} --in ${resumeTool}`;
-
-  const moreMenuItems = useMemo(() => [
-    { key: 'resume', label: `Resume in ${fullToolName(resumeTool)}` },
-    { key: 'audit', label: 'Run Audit' },
-    { key: 'rename', label: 'Rename (Title & Alias)' },
-    { key: 'sep', label: '', separator: true as const },
-    { key: 'delete', label: 'Delete Session', danger: true as const },
-  ], [resumeTool]);
 
   function handleMoreSelect(key: string) {
     switch (key) {
