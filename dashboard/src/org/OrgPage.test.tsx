@@ -241,8 +241,9 @@ describe('OrgPage', () => {
     const emailInput = await screen.findByPlaceholderText(/colleague@company\.com/i);
     await user.type(emailInput, 'newbie@example.com');
 
-    const roleSelect = screen.getByRole('combobox');
-    await user.selectOptions(roleSelect, 'admin');
+    // Role is a Dropdown now (not a native select): open it, pick Admin.
+    await user.click(screen.getByRole('button', { name: /^Member$/ }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Admin' }));
 
     await user.click(screen.getByRole('button', { name: /send invite/i }));
 

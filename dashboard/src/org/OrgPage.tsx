@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
 import { getAvatarColor } from '../utils/avatar';
+import { Dropdown } from '../components/ui';
 import OrgSettingsTab from './OrgSettingsTab';
 
 export default function OrgPage() {
@@ -135,14 +136,28 @@ export default function OrgPage() {
             </div>
             <div>
               <label className="block text-sm text-text-tertiary mb-1">Role</label>
-              <select
-                value={inviteRole}
-                onChange={(e) => setInviteRole(e.target.value)}
-                className="bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text-secondary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
-              >
-                <option value="member">Member</option>
-                <option value="admin">Admin</option>
-              </select>
+              <Dropdown
+                menuLabel="Select role"
+                minWidthClass="min-w-[140px]"
+                trigger={(open) => (
+                  <button
+                    type="button"
+                    aria-haspopup="menu"
+                    aria-expanded={open}
+                    className="flex items-center justify-between gap-2 w-[140px] bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text-secondary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+                  >
+                    <span>{inviteRole === 'admin' ? 'Admin' : 'Member'}</span>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-text-tertiary">
+                      <polyline points="6 9 12 15 18 9" />
+                    </svg>
+                  </button>
+                )}
+                items={[
+                  { key: 'member', label: 'Member' },
+                  { key: 'admin', label: 'Admin' },
+                ]}
+                onSelect={(key) => setInviteRole(key)}
+              />
             </div>
             <button
               onClick={() => inviteMutation.mutate()}
