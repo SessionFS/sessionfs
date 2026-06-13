@@ -14,7 +14,7 @@ import type { NavFilter } from '../components/BookmarkSidebar';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../auth/AuthContext';
 import { TOOL_COLORS } from '../utils/tools';
-import { Button, Card } from '../components/ui';
+import { Button, Card, Select } from '../components/ui';
 
 const CAPTURE_ONLY_TOOLS = new Set(['cursor', 'cline', 'roo-code', 'amp']);
 
@@ -498,50 +498,33 @@ export default function SessionList() {
             totalCount={allSessionsCount}
             bookmarkedCount={totalBookmarked}
           />
-          <div className="relative">
-            <select
-              value={toolFilter}
-              onChange={(e) => { setToolFilter(e.target.value); setPage(1); }}
-              className="appearance-none bg-surface border border-border rounded-lg px-3 py-2 pr-8 text-base font-medium text-text-secondary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] cursor-pointer transition-colors"
-            >
-              {TOOLS.map((t) => (
-                <option key={t} value={t}>{t === 'all' ? 'All Tools' : fullToolName(t)}</option>
-              ))}
-            </select>
-            <svg className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-tertiary pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="6 9 12 15 18 9" />
-            </svg>
-          </div>
-          <div className="relative">
-            <select
-              value={dateRange}
-              onChange={(e) => setDateRange(e.target.value)}
-              className="appearance-none bg-surface border border-border rounded-lg px-3 py-2 pr-8 text-base font-medium text-text-secondary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] cursor-pointer transition-colors"
-            >
-              {DATE_RANGES.map((d) => (
-                <option key={d.value} value={d.value}>{d.label}</option>
-              ))}
-            </select>
-            <svg className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-tertiary pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="6 9 12 15 18 9" />
-            </svg>
-          </div>
-          <div className="relative">
-            <select
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value as SortKey)}
-              className="appearance-none bg-surface border border-border rounded-lg px-3 py-2 pr-8 text-base font-medium text-text-secondary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] cursor-pointer transition-colors"
-            >
-              <option value="date">Sort: Date</option>
-              <option value="tool">Sort: Tool</option>
-              <option value="messages">Sort: Messages</option>
-              <option value="tokens">Sort: Tokens</option>
-              <option value="title">Sort: Title</option>
-            </select>
-            <svg className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-tertiary pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="6 9 12 15 18 9" />
-            </svg>
-          </div>
+          <Select
+            aria-label="Filter by tool"
+            value={toolFilter}
+            onValueChange={(v) => { setToolFilter(v); setPage(1); }}
+            options={TOOLS.map((t) => ({ value: t, label: t === 'all' ? 'All Tools' : fullToolName(t) }))}
+            className="!w-auto bg-surface text-base font-medium text-text-secondary transition-colors"
+          />
+          <Select
+            aria-label="Filter by date range"
+            value={dateRange}
+            onValueChange={setDateRange}
+            options={DATE_RANGES.map((d) => ({ value: d.value, label: d.label }))}
+            className="!w-auto bg-surface text-base font-medium text-text-secondary transition-colors"
+          />
+          <Select
+            aria-label="Sort sessions"
+            value={sortBy}
+            onValueChange={(v) => setSortBy(v as SortKey)}
+            options={[
+              { value: 'date', label: 'Sort: Date' },
+              { value: 'tool', label: 'Sort: Tool' },
+              { value: 'messages', label: 'Sort: Messages' },
+              { value: 'tokens', label: 'Sort: Tokens' },
+              { value: 'title', label: 'Sort: Title' },
+            ]}
+            className="!w-auto bg-surface text-base font-medium text-text-secondary transition-colors"
+          />
           <button
             onClick={() => setSortDir(d => d === 'desc' ? 'asc' : 'desc')}
             className="p-2 rounded-lg border border-border bg-surface text-text-secondary hover:text-text-primary transition-colors"

@@ -5,6 +5,7 @@ import { abbreviateTool } from '../utils/models';
 import { renderSnippet } from '../utils/highlight';
 import RelativeDate from '../components/RelativeDate';
 import { useFocusTrap } from '../hooks/useFocusTrap';
+import { Select } from '../components/ui';
 
 const TOOLS = [
   { label: 'All Tools', value: '' },
@@ -100,31 +101,20 @@ function MobileFilterSheet({
           </div>
 
           <div className="space-y-4">
-            <label className="block">
-              <span className="mb-1.5 block text-sm font-medium text-text-secondary">Tool</span>
-              <select
-                value={draftTool}
-                onChange={(e) => setDraftTool(e.target.value)}
-                className="w-full rounded-xl border border-border bg-surface px-3 py-2.5 text-sm text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
-              >
-                {TOOLS.map((t) => (
-                  <option key={t.value} value={t.value}>{t.label}</option>
-                ))}
-              </select>
-            </label>
-
-            <label className="block">
-              <span className="mb-1.5 block text-sm font-medium text-text-secondary">Date range</span>
-              <select
-                value={draftDays}
-                onChange={(e) => setDraftDays(Number(e.target.value))}
-                className="w-full rounded-xl border border-border bg-surface px-3 py-2.5 text-sm text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
-              >
-                {DATE_RANGES.map((d) => (
-                  <option key={d.value} value={d.value}>{d.label}</option>
-                ))}
-              </select>
-            </label>
+            <Select
+              title="Tool"
+              value={draftTool}
+              onValueChange={setDraftTool}
+              options={TOOLS.map((t) => ({ value: t.value, label: t.label }))}
+              className="bg-surface rounded-xl px-3 py-2.5"
+            />
+            <Select
+              title="Date range"
+              value={String(draftDays)}
+              onValueChange={(v) => setDraftDays(Number(v))}
+              options={DATE_RANGES.map((d) => ({ value: String(d.value), label: d.label }))}
+              className="bg-surface rounded-xl px-3 py-2.5"
+            />
           </div>
 
           <div className="mt-5 flex items-center justify-between gap-3">
@@ -202,28 +192,21 @@ export default function SearchResults() {
       {/* Filters sidebar */}
       <aside className="w-48 shrink-0 hidden md:block">
         <h3 className="text-sm uppercase tracking-wider text-text-muted mb-2">Filters</h3>
-
-        <label className="block text-sm text-text-secondary mb-1 mt-3">Tool</label>
-        <select
+        <Select
+          title="Tool"
           value={tool}
-          onChange={(e) => setTool(e.target.value)}
-          className="w-full px-2 py-1.5 bg-bg-secondary border border-border rounded text-sm text-text-secondary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
-        >
-          {TOOLS.map((t) => (
-            <option key={t.value} value={t.value}>{t.label}</option>
-          ))}
-        </select>
-
-        <label className="block text-sm text-text-secondary mb-1 mt-3">Date range</label>
-        <select
-          value={days}
-          onChange={(e) => setDays(Number(e.target.value))}
-          className="w-full px-2 py-1.5 bg-bg-secondary border border-border rounded text-sm text-text-secondary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
-        >
-          {DATE_RANGES.map((d) => (
-            <option key={d.value} value={d.value}>{d.label}</option>
-          ))}
-        </select>
+          onValueChange={setTool}
+          options={TOOLS.map((t) => ({ value: t.value, label: t.label }))}
+          className="!px-2 !py-1.5 bg-bg-secondary rounded"
+        />
+        <div className="mt-3" />
+        <Select
+          title="Date range"
+          value={String(days)}
+          onValueChange={(v) => setDays(Number(v))}
+          options={DATE_RANGES.map((d) => ({ value: String(d.value), label: d.label }))}
+          className="!px-2 !py-1.5 bg-bg-secondary rounded"
+        />
       </aside>
 
       {/* Results */}
