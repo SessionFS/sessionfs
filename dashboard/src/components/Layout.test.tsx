@@ -102,7 +102,7 @@ describe('Layout', () => {
   // ── Account menu tests ──
 
   describe('account menu', () => {
-    it('is identity + logout only — navigation lives in the sidebar, not duplicated here', async () => {
+    it('is identity + Settings/Help/Logout — primary nav lives in the sidebar, not duplicated here', async () => {
       useMeMock.mockReturnValue({
         data: {
           tier: 'team',
@@ -113,18 +113,21 @@ describe('Layout', () => {
       renderLayout();
       await openAccountMenu();
 
-      // Identity header (non-interactive) + Logout are the only menu contents.
+      // Identity header (non-interactive) + the account/utility items + Logout.
       expect(screen.getByText('team@acme.corp')).toBeInTheDocument();
+      expect(screen.getByRole('menuitem', { name: 'Settings' })).toBeInTheDocument();
+      expect(screen.getByRole('menuitem', { name: 'Help' })).toBeInTheDocument();
       expect(screen.getByRole('menuitem', { name: 'Logout' })).toBeInTheDocument();
 
-      // Navigation must NOT be duplicated in the account menu (it's in the sidebar).
-      for (const name of ['Organization', 'Invites', 'Billing', 'Settings', 'Help', 'Admin']) {
+      // Settings/Help are the conventional account-menu exception; primary
+      // navigation must NOT be duplicated in the account menu (it's in the sidebar).
+      for (const name of ['Organization', 'Invites', 'Billing', 'Admin', 'Sessions', 'Projects', 'Handoffs']) {
         expect(screen.queryByRole('menuitem', { name })).not.toBeInTheDocument();
       }
       expect(screen.queryByRole('menuitem', { name: /Theme:/ })).not.toBeInTheDocument();
     });
 
-    it('shows the same minimal menu for a solo user (no org duplication either)', async () => {
+    it('shows the same account menu for a solo user (Settings/Help/Logout, no org nav)', async () => {
       useMeMock.mockReturnValue({
         data: {
           tier: 'free',
@@ -136,10 +139,23 @@ describe('Layout', () => {
       await openAccountMenu();
 
       expect(screen.getByText('solo@sessionfs.dev')).toBeInTheDocument();
+      expect(screen.getByRole('menuitem', { name: 'Settings' })).toBeInTheDocument();
+      expect(screen.getByRole('menuitem', { name: 'Help' })).toBeInTheDocument();
       expect(screen.getByRole('menuitem', { name: 'Logout' })).toBeInTheDocument();
-      for (const name of ['Organization', 'Invites', 'Billing', 'Settings', 'Help', 'Admin']) {
+      for (const name of ['Organization', 'Invites', 'Billing', 'Admin']) {
         expect(screen.queryByRole('menuitem', { name })).not.toBeInTheDocument();
       }
+    });
+
+    it('navigates to /settings when the Settings menuitem is clicked', async () => {
+      renderLayout();
+      await openAccountMenu();
+
+      await userEvent.click(screen.getByRole('menuitem', { name: 'Settings' }));
+      // Menu closes on select; navigation happened within the MemoryRouter.
+      await waitFor(() => {
+        expect(screen.queryByRole('menu', { name: 'Account menu' })).not.toBeInTheDocument();
+      });
     });
 
     it('calls logout when Logout menuitem is clicked', async () => {
@@ -175,11 +191,14 @@ describe('Layout', () => {
       });
     });
 
-    it('supports keyboard navigation (ArrowDown + Enter selects the only item, Logout)', async () => {
+    it('supports keyboard navigation (ArrowDown through items, Enter selects Logout)', async () => {
       renderLayout();
       await openAccountMenu();
 
-      // Logout is the single enabled menuitem now (identity header is non-interactive).
+      // Enabled menuitems in order (identity header + separators are skipped):
+      // Settings → Help → Logout. Arrow down to the last item, then select it.
+      await userEvent.keyboard('{ArrowDown}'); // Settings
+      await userEvent.keyboard('{ArrowDown}'); // Help
       await userEvent.keyboard('{ArrowDown}'); // Logout (active)
       await userEvent.keyboard('{Enter}');      // Select Logout
 

@@ -1,5 +1,5 @@
 import { useState, useEffect, type ReactNode } from 'react';
-import { Link, Outlet, useLocation } from 'react-router-dom';
+import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { useHandoffInbox } from '../hooks/useHandoffs';
 import { useMe } from '../hooks/useMe';
@@ -167,6 +167,7 @@ function SidebarLink({
 // ── Layout ──
 export default function Layout() {
   const { logout } = useAuth();
+  const navigate = useNavigate();
   const location = useLocation();
   const inbox = useHandoffInbox();
   const me = useMe();
@@ -259,18 +260,24 @@ export default function Layout() {
     <><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></>
   );
 
-  // Account menu = identity + sign-out only. All navigation (Organization,
-  // Invites, Billing, Settings, Help, Admin) lives in the sidebar now;
-  // theme has its own header toggle. Keeping nav here would duplicate the
-  // sidebar — so it intentionally doesn't.
+  // Account menu = identity + account/utility items (Settings, Help) + sign-out.
+  // Primary navigation (Sessions, Projects, Handoffs, Organization, Invites,
+  // Billing, Admin) lives in the sidebar and is intentionally NOT duplicated
+  // here; theme has its own header toggle. Settings/Help are the conventional
+  // account-menu exception and also remain pinned at the sidebar bottom.
   const accountMenuItems: Array<{ key: string; label: string; icon?: ReactNode; danger?: boolean; disabled?: boolean; separator?: boolean; header?: boolean; badge?: string }> = [
     { key: 'identity', label: me.data?.email || 'Unknown', icon: tierBadgeEl, header: true },
+    { key: 'settings-sep', label: '', separator: true as const },
+    { key: 'settings', label: 'Settings', icon: settingsIcon },
+    { key: 'help', label: 'Help', icon: helpIcon },
     { key: 'logout-sep', label: '', separator: true as const },
     { key: 'logout', label: 'Logout', icon: logoutIconEl, danger: true },
   ];
 
   function handleAccountMenuSelect(key: string) {
     switch (key) {
+      case 'settings': navigate('/settings'); break;
+      case 'help': navigate('/help'); break;
       case 'logout': logout(); break;
     }
   }
