@@ -14,6 +14,7 @@
  */
 
 import { useState } from 'react';
+import { Select } from '../components/ui';
 
 import { useMe } from '../hooks/useMe';
 import { useToast } from '../hooks/useToast';
@@ -117,16 +118,15 @@ export default function MembersTab({ orgId }: MembersTabProps) {
               required
             />
           </label>
-          <label>
-            Role
-            <select
-              value={inviteRole}
-              onChange={(e) => setInviteRole(e.target.value as 'admin' | 'member')}
-            >
-              <option value="member">Member</option>
-              <option value="admin">Admin</option>
-            </select>
-          </label>
+          <Select
+            title="Role"
+            value={inviteRole}
+            onValueChange={(v) => setInviteRole(v as 'admin' | 'member')}
+            options={[
+              { value: 'member', label: 'Member' },
+              { value: 'admin', label: 'Admin' },
+            ]}
+          />
           <button type="submit" disabled={invite.isPending || !inviteEmail.trim()}>
             {invite.isPending ? 'Inviting…' : 'Send invite'}
           </button>
