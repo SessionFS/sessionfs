@@ -1,5 +1,5 @@
 import { useState, useCallback, isValidElement, type ReactNode } from 'react';
-import Markdown from 'react-markdown';
+import Markdown, { type Components } from 'react-markdown';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -271,9 +271,13 @@ function CopyButton({ text, label }: { text: string; label: string }) {
 
 // ── Markdown Components (replaces prose prose-invert prose-sm) ──────
 
-const markdownComponents = {
+// `node` is the markdown AST node react-markdown injects; we destructure it
+// out of every handler so it is never spread onto a DOM element (React would
+// warn about an unrecognized `node` prop). Typed as react-markdown's
+// `Components` so the per-element props are inferred — no explicit `any`.
+const markdownComponents: Components = {
   // Inline code — distinguished from fenced code blocks
-  code({ children, className, ...props }: any) {
+  code({ node, children, className, ...props }) {
     if (className?.startsWith('language-')) {
       // Fenced code block — leave styling to the <pre> wrapper
       return (
@@ -289,11 +293,11 @@ const markdownComponents = {
     );
   },
   // Fenced code blocks — wrapped in a sunken well with language label + copy
-  pre({ children, ...props }: any) {
+  pre({ node, children, ...props }) {
     let lang = '';
     let codeContent = '';
     if (isValidElement(children)) {
-      const cp = children.props as any;
+      const cp = children.props as { className?: string; children?: ReactNode };
       if (cp.className?.startsWith('language-')) {
         lang = cp.className.replace('language-', '');
       }
@@ -311,22 +315,22 @@ const markdownComponents = {
       </div>
     );
   },
-  h1: ({ children, ...props }: any) => (
+  h1: ({ node, children, ...props }) => (
     <h1 className="text-lg font-semibold text-text-primary mt-6 mb-2" {...props}>{children}</h1>
   ),
-  h2: ({ children, ...props }: any) => (
+  h2: ({ node, children, ...props }) => (
     <h2 className="text-md font-semibold text-text-primary mt-5 mb-1.5" {...props}>{children}</h2>
   ),
-  h3: ({ children, ...props }: any) => (
+  h3: ({ node, children, ...props }) => (
     <h3 className="text-base font-semibold text-text-primary mt-4 mb-1" {...props}>{children}</h3>
   ),
-  h4: ({ children, ...props }: any) => (
+  h4: ({ node, children, ...props }) => (
     <h4 className="text-sm font-semibold text-text-primary mt-3 mb-1" {...props}>{children}</h4>
   ),
-  p: ({ children, ...props }: any) => (
+  p: ({ node, children, ...props }) => (
     <p className="text-sm text-text-secondary leading-relaxed my-2" {...props}>{children}</p>
   ),
-  a: ({ children, href, ...props }: any) => (
+  a: ({ node, children, href, ...props }) => (
     <a
       className="text-[var(--brand)] hover:text-[var(--brand-hover)] underline underline-offset-2 transition-colors duration-150"
       href={href}
@@ -335,23 +339,23 @@ const markdownComponents = {
       {children}
     </a>
   ),
-  ul: ({ children, ...props }: any) => (
+  ul: ({ node, children, ...props }) => (
     <ul className="list-disc pl-5 my-2 space-y-0.5 text-sm text-text-secondary" {...props}>{children}</ul>
   ),
-  ol: ({ children, ...props }: any) => (
+  ol: ({ node, children, ...props }) => (
     <ol className="list-decimal pl-5 my-2 space-y-0.5 text-sm text-text-secondary" {...props}>{children}</ol>
   ),
-  li: ({ children, ...props }: any) => (
+  li: ({ node, children, ...props }) => (
     <li className="text-sm text-text-secondary" {...props}>{children}</li>
   ),
-  blockquote: ({ children, ...props }: any) => (
+  blockquote: ({ node, children, ...props }) => (
     <blockquote className="border-l-2 border-border pl-3 my-2 text-text-tertiary italic" {...props}>{children}</blockquote>
   ),
-  hr: (props: any) => <hr className="border-border my-4" {...props} />,
-  strong: ({ children, ...props }: any) => (
+  hr: ({ node, ...props }) => <hr className="border-border my-4" {...props} />,
+  strong: ({ node, children, ...props }) => (
     <strong className="font-semibold text-text-primary" {...props}>{children}</strong>
   ),
-  em: ({ children, ...props }: any) => (
+  em: ({ node, children, ...props }) => (
     <em className="italic text-text-secondary" {...props}>{children}</em>
   ),
 };
