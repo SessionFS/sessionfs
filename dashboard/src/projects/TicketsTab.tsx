@@ -387,27 +387,23 @@ function ListView({ tickets, projectId, selected, onSelect, onNavigate }: ViewPr
     <ul className="border border-border rounded-lg divide-y divide-[var(--border)]">
       {tickets.map((t) => (
         <li key={t.id}>
+          {/* Row container is NOT interactive. The expand trigger (title/meta)
+              is a <button>; the StatusCell action is a SIBLING, not a
+              descendant — so no interactive control nests inside a button. */}
           <div
-            role="button"
-            tabIndex={0}
-            className={`w-full text-left px-3 py-2 hover:bg-surface flex items-start gap-3 border-l-2 cursor-pointer outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] ${
+            className={`px-3 py-2 hover:bg-surface flex items-start gap-3 border-l-2 ${
               t.kind === 'issue' ? 'border-indigo-500/60' : 'border-transparent'
             }`}
-            onClick={() => onSelect(t.id)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(t.id); }
-            }}
-            aria-expanded={selected === t.id}
           >
-            <div className="flex-1 min-w-0">
+            <button
+              type="button"
+              onClick={() => onSelect(t.id)}
+              aria-expanded={selected === t.id}
+              className="flex-1 min-w-0 text-left cursor-pointer rounded-sm outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+            >
               <div className="flex items-center gap-2 text-sm flex-wrap">
                 <span className="text-mono-chip">{t.id}</span>
                 <KindBadge kind={t.kind} />
-                {/* Status action is interactive — keep its clicks/keys from
-                    bubbling to row select (and out of the row's role=button). */}
-                <span onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
-                  <StatusCell ticket={t} projectId={projectId} />
-                </span>
                 <span
                   className={`text-xs uppercase tracking-wide ${PRIORITY_TONE[t.priority] ?? ''}`}
                 >
@@ -432,6 +428,10 @@ function ListView({ tickets, projectId, selected, onSelect, onNavigate }: ViewPr
                     }`
                   : ''}
               </div>
+            </button>
+            {/* Independent status action — sibling of the expand button. */}
+            <div className="shrink-0">
+              <StatusCell ticket={t} projectId={projectId} />
             </div>
           </div>
           {selected === t.id && (

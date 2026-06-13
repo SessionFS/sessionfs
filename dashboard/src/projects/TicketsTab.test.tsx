@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import TicketsTab from './TicketsTab';
@@ -108,6 +108,24 @@ describe('TicketsTab', () => {
     fireEvent.click(screen.getByText('Add session export'));
     expect(screen.getByText('Implement export endpoint.')).toBeInTheDocument();
     expect(screen.getByText(/CLI works/)).toBeInTheDocument();
+  });
+
+  it('status action is independent of row select — opening it does not expand the row (R2)', async () => {
+    const user = userEvent.setup();
+    render(<TicketsTab projectId="proj_1" />);
+    // The collapsed row has exactly two buttons: the expand trigger (carries
+    // aria-expanded) and the status action (a sibling, not nested in it).
+    const row = screen.getByText('Add session export').closest('li') as HTMLElement;
+    const statusBtn = within(row)
+      .getAllByRole('button')
+      .find((b) => !b.hasAttribute('aria-expanded'));
+    expect(statusBtn).toBeTruthy();
+
+    await user.click(statusBtn!);
+    // The status menu opened (an action is offered) ...
+    expect(screen.getByRole('menuitem', { name: /Approve/i })).toBeInTheDocument();
+    // ... and the row did NOT expand (detail body stays absent).
+    expect(screen.queryByText('Implement export endpoint.')).toBeNull();
   });
 
   it('shows approve + dismiss buttons for a suggested ticket', () => {
