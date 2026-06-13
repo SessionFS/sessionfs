@@ -56,7 +56,7 @@ export default function ConversationView({ sessionId, initialPage }: Props) {
   const totalPages = Math.ceil(total / PAGE_SIZE);
 
   return (
-    <div className="flex flex-col gap-3 p-4">
+    <div className="flex flex-col gap-6 p-4">
       <div ref={topRef} />
 
       {/* Order toggle + pagination */}

@@ -482,6 +482,108 @@ describe('ContentBlock — non-tool blocks', () => {
     expect(screen.getByText('world')).toBeInTheDocument();
   });
 
+  it('renders inline code with accent styling', () => {
+    const block = { type: 'text', text: 'Use the `api.call()` method' };
+    render(<ContentBlock block={block} />);
+
+    const code = screen.getByText('api.call()');
+    expect(code.tagName).toBe('CODE');
+    expect(code.className).toMatch(/accent/);
+  });
+
+  it('renders fenced code block with language label', () => {
+    const block = {
+      type: 'text',
+      text: '```tsx\nconst x: number = 1;\n```',
+    };
+    render(<ContentBlock block={block} />);
+
+    expect(screen.getByText('tsx')).toBeInTheDocument();
+    expect(screen.getByText(/const x/)).toBeInTheDocument();
+  });
+
+  it('renders fenced code block with copy button', () => {
+    const block = {
+      type: 'text',
+      text: '```python\nprint("hello")\n```',
+    };
+    render(<ContentBlock block={block} />);
+
+    // Language label
+    expect(screen.getByText('python')).toBeInTheDocument();
+    // Copy button on the code block
+    const copyButtons = screen.getAllByLabelText('Copy code');
+    expect(copyButtons.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('renders fenced code without language as "code" label', () => {
+    const block = {
+      type: 'text',
+      text: '```\necho "no lang"\n```',
+    };
+    render(<ContentBlock block={block} />);
+
+    expect(screen.getByText('code')).toBeInTheDocument();
+  });
+
+  it('renders markdown headings with design tokens', () => {
+    const block = {
+      type: 'text',
+      text: '## Section Title\n\nParagraph text.',
+    };
+    render(<ContentBlock block={block} />);
+
+    const heading = screen.getByText('Section Title');
+    expect(heading.tagName).toBe('H2');
+  });
+
+  it('renders markdown links with brand color', () => {
+    const block = {
+      type: 'text',
+      text: '[Click here](https://example.com)',
+    };
+    render(<ContentBlock block={block} />);
+
+    const link = screen.getByText('Click here');
+    expect(link.tagName).toBe('A');
+    expect(link).toHaveAttribute('href', 'https://example.com');
+    expect(link.className).toMatch(/brand/);
+  });
+
+  it('renders markdown lists', () => {
+    const block = {
+      type: 'text',
+      text: '- Item one\n- Item two\n- Item three',
+    };
+    render(<ContentBlock block={block} />);
+
+    expect(screen.getByText('Item one')).toBeInTheDocument();
+    expect(screen.getByText('Item two')).toBeInTheDocument();
+    expect(screen.getByText('Item three')).toBeInTheDocument();
+  });
+
+  it('renders blockquote quietly', () => {
+    const block = {
+      type: 'text',
+      text: '> A quoted passage',
+    };
+    render(<ContentBlock block={block} />);
+
+    const quote = screen.getByText(/A quoted passage/);
+    const bq = quote.closest('blockquote');
+    expect(bq).toBeInTheDocument();
+  });
+
+  it('renders prose without the generic prose-invert class', () => {
+    const block = { type: 'text', text: 'Sample text' };
+    render(<ContentBlock block={block} />);
+
+    // The outer wrapper should NOT contain prose-invert
+    const wrapper = screen.getByText('Sample text').closest('[class*="max-w-"]');
+    expect(wrapper?.className).not.toMatch(/prose-invert/);
+    expect(wrapper?.className).not.toMatch(/prose-sm/);
+  });
+
   it('renders image block', () => {
     const block = {
       type: 'image',

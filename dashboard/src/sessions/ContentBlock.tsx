@@ -1,4 +1,4 @@
-import { useState, useCallback, type ReactNode } from 'react';
+import { useState, useCallback, isValidElement, type ReactNode } from 'react';
 import Markdown from 'react-markdown';
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -269,6 +269,93 @@ function CopyButton({ text, label }: { text: string; label: string }) {
   );
 }
 
+// ── Markdown Components (replaces prose prose-invert prose-sm) ──────
+
+const markdownComponents = {
+  // Inline code — distinguished from fenced code blocks
+  code({ children, className, ...props }: any) {
+    if (className?.startsWith('language-')) {
+      // Fenced code block — leave styling to the <pre> wrapper
+      return (
+        <code className={`font-mono text-xs ${className}`} {...props}>
+          {children}
+        </code>
+      );
+    }
+    return (
+      <code className="font-mono text-xs bg-bg-sunken text-[var(--accent)] px-1 py-0.5 rounded" {...props}>
+        {children}
+      </code>
+    );
+  },
+  // Fenced code blocks — wrapped in a sunken well with language label + copy
+  pre({ children, ...props }: any) {
+    let lang = '';
+    let codeContent = '';
+    if (isValidElement(children)) {
+      const cp = children.props as any;
+      if (cp.className?.startsWith('language-')) {
+        lang = cp.className.replace('language-', '');
+      }
+      codeContent = String(cp.children ?? '');
+    }
+    return (
+      <div className="bg-bg-sunken border border-border rounded-lg overflow-hidden my-3">
+        <div className="flex items-center justify-between px-3 py-1.5 border-b border-border">
+          <span className="text-2xs font-mono text-text-tertiary">{lang || 'code'}</span>
+          <CopyButton text={codeContent} label="Copy code" />
+        </div>
+        <pre className="px-3 py-2 overflow-x-auto text-xs font-mono text-text-secondary whitespace-pre-wrap" {...props}>
+          {children}
+        </pre>
+      </div>
+    );
+  },
+  h1: ({ children, ...props }: any) => (
+    <h1 className="text-lg font-semibold text-text-primary mt-6 mb-2" {...props}>{children}</h1>
+  ),
+  h2: ({ children, ...props }: any) => (
+    <h2 className="text-md font-semibold text-text-primary mt-5 mb-1.5" {...props}>{children}</h2>
+  ),
+  h3: ({ children, ...props }: any) => (
+    <h3 className="text-base font-semibold text-text-primary mt-4 mb-1" {...props}>{children}</h3>
+  ),
+  h4: ({ children, ...props }: any) => (
+    <h4 className="text-sm font-semibold text-text-primary mt-3 mb-1" {...props}>{children}</h4>
+  ),
+  p: ({ children, ...props }: any) => (
+    <p className="text-sm text-text-secondary leading-relaxed my-2" {...props}>{children}</p>
+  ),
+  a: ({ children, href, ...props }: any) => (
+    <a
+      className="text-[var(--brand)] hover:text-[var(--brand-hover)] underline underline-offset-2 transition-colors duration-150"
+      href={href}
+      {...props}
+    >
+      {children}
+    </a>
+  ),
+  ul: ({ children, ...props }: any) => (
+    <ul className="list-disc pl-5 my-2 space-y-0.5 text-sm text-text-secondary" {...props}>{children}</ul>
+  ),
+  ol: ({ children, ...props }: any) => (
+    <ol className="list-decimal pl-5 my-2 space-y-0.5 text-sm text-text-secondary" {...props}>{children}</ol>
+  ),
+  li: ({ children, ...props }: any) => (
+    <li className="text-sm text-text-secondary" {...props}>{children}</li>
+  ),
+  blockquote: ({ children, ...props }: any) => (
+    <blockquote className="border-l-2 border-border pl-3 my-2 text-text-tertiary italic" {...props}>{children}</blockquote>
+  ),
+  hr: (props: any) => <hr className="border-border my-4" {...props} />,
+  strong: ({ children, ...props }: any) => (
+    <strong className="font-semibold text-text-primary" {...props}>{children}</strong>
+  ),
+  em: ({ children, ...props }: any) => (
+    <em className="italic text-text-secondary" {...props}>{children}</em>
+  ),
+};
+
 // ── Main ContentBlock Dispatcher ───────────────────────────────────
 
 export default function ContentBlock({ block }: BlockProps) {
@@ -276,8 +363,10 @@ export default function ContentBlock({ block }: BlockProps) {
 
   if (type === 'text') {
     return (
-      <div className="prose prose-invert prose-sm max-w-[65ch] [&_pre]:bg-bg-sunken [&_pre]:border [&_pre]:border-border [&_pre]:rounded-lg [&_code]:text-sm">
-        <Markdown>{String(block.text || '')}</Markdown>
+      <div className="max-w-[72ch] text-sm text-text-secondary">
+        <Markdown components={markdownComponents}>
+          {String(block.text || '')}
+        </Markdown>
       </div>
     );
   }
@@ -794,14 +883,15 @@ function ThinkingBlock({ text }: { text: string }) {
   return (
     <div className="rounded-lg bg-bg-sunken border border-border">
       <button
+        type="button"
         onClick={() => setOpen(!open)}
-        className="w-full px-3 py-1.5 text-left text-sm text-text-tertiary hover:text-text-secondary transition-colors flex items-center gap-2"
+        className="w-full px-3 py-1.5 text-left text-xs text-text-tertiary hover:text-text-secondary transition-colors flex items-center gap-2"
       >
-        <span>Thinking</span>
-        <span>{open ? '▲' : '▼'}</span>
+        <span className="text-2xs font-mono uppercase tracking-wider">Thinking</span>
+        <span className="text-text-tertiary">{open ? '▲' : '▼'}</span>
       </button>
       {open && (
-        <pre className="px-3 py-2 border-t border-border text-sm text-text-tertiary whitespace-pre-wrap max-h-80 overflow-y-auto">
+        <pre className="px-3 py-2 border-t border-border text-xs text-text-tertiary whitespace-pre-wrap max-h-60 overflow-y-auto leading-relaxed">
           {text}
         </pre>
       )}
