@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { Button, Card, Input, Textarea, Select, Dialog, DialogHeader, DialogFooter, Tabs, Table, Dropdown, Tooltip, Kbd, KbdShortcut } from '../';
@@ -156,30 +156,116 @@ describe('Select', () => {
     { value: 'b', label: 'Beta' },
   ];
 
-  it('renders options', () => {
-    render(<Select options={opts} />);
+  it('renders combobox trigger', () => {
+    render(<Select value="" onValueChange={vi.fn()} options={opts} />);
     expect(screen.getByRole('combobox')).toBeInTheDocument();
-    expect(screen.getByText('Alpha')).toBeInTheDocument();
-    expect(screen.getByText('Beta')).toBeInTheDocument();
+  });
+
+  it('opens panel on click and shows options', async () => {
+    render(<Select value="" onValueChange={vi.fn()} options={opts} />);
+    await userEvent.click(screen.getByRole('combobox'));
+    expect(screen.getByRole('listbox')).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Alpha' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Beta' })).toBeInTheDocument();
+  });
+
+  it('calls onValueChange when option is clicked', async () => {
+    const onChange = vi.fn();
+    render(<Select value="a" onValueChange={onChange} options={opts} />);
+    // Open the panel
+    fireEvent.click(screen.getByRole('combobox'));
+    // Click the button inside the option (role="option" is the <li>, onClick is on the inner <button>)
+    fireEvent.click(
+      within(screen.getByRole('option', { name: 'Beta' })).getByRole('button'),
+    );
+    expect(onChange).toHaveBeenCalledWith('b');
+  });
+
+  it('shows selected value as trigger text', () => {
+    render(<Select value="b" onValueChange={vi.fn()} options={opts} />);
+    expect(screen.getByRole('combobox')).toHaveTextContent('Beta');
+  });
+
+  it('shows placeholder when no value selected', () => {
+    render(
+      <Select
+        value=""
+        onValueChange={vi.fn()}
+        options={opts}
+        placeholder="Pick one"
+      />,
+    );
+    expect(screen.getByRole('combobox')).toHaveTextContent('Pick one');
   });
 
   it('shows error state', () => {
-    render(<Select options={opts} error="Pick one" />);
+    render(<Select value="" onValueChange={vi.fn()} options={opts} error="Pick one" />);
     expect(screen.getByRole('alert')).toHaveTextContent('Pick one');
   });
 
+  it('closes on Escape', async () => {
+    render(<Select value="" onValueChange={vi.fn()} options={opts} />);
+    await userEvent.click(screen.getByRole('combobox'));
+    expect(screen.getByRole('listbox')).toBeInTheDocument();
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() => {
+      expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    });
+  });
+
+  it('supports keyboard navigation with ArrowDown / Enter', async () => {
+    const onChange = vi.fn();
+    render(<Select value="" onValueChange={onChange} options={opts} />);
+    await userEvent.click(screen.getByRole('combobox'));
+    // ArrowDown to first option
+    await userEvent.keyboard('{ArrowDown}');
+    await userEvent.keyboard('{Enter}');
+    expect(onChange).toHaveBeenCalledWith('a');
+  });
+
   it('associates label with select via htmlFor with explicit id', () => {
-    render(<Select id="field-assign-to" title="Assign to persona" options={opts} />);
+    render(
+      <Select
+        id="field-assign-to"
+        title="Assign to persona"
+        value=""
+        onValueChange={vi.fn()}
+        options={opts}
+      />,
+    );
     const select = screen.getByLabelText('Assign to persona');
     expect(select).toBeInTheDocument();
     expect(select.id).toBe('field-assign-to');
   });
 
   it('associates label with select via auto-generated id when no explicit id', () => {
-    render(<Select title="Priority" options={opts} />);
+    render(
+      <Select
+        title="Priority"
+        value=""
+        onValueChange={vi.fn()}
+        options={opts}
+      />,
+    );
     const select = screen.getByLabelText('Priority');
     expect(select).toBeInTheDocument();
     expect(select.id).toBeTruthy();
+  });
+
+  it('has aria-haspopup and aria-expanded', async () => {
+    render(<Select value="" onValueChange={vi.fn()} options={opts} />);
+    const trigger = screen.getByRole('combobox');
+    expect(trigger).toHaveAttribute('aria-haspopup', 'listbox');
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    await userEvent.click(trigger);
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('marks selected option with aria-selected', async () => {
+    render(<Select value="a" onValueChange={vi.fn()} options={opts} />);
+    await userEvent.click(screen.getByRole('combobox'));
+    expect(screen.getByRole('option', { name: 'Alpha' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('option', { name: 'Beta' })).toHaveAttribute('aria-selected', 'false');
   });
 });
 
