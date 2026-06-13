@@ -1,5 +1,5 @@
 import { useState, useEffect, type ReactNode } from 'react';
-import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { Link, Outlet, useLocation } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { useHandoffInbox } from '../hooks/useHandoffs';
 import { useMe } from '../hooks/useMe';
@@ -168,7 +168,6 @@ function SidebarLink({
 export default function Layout() {
   const { logout } = useAuth();
   const location = useLocation();
-  const navigate = useNavigate();
   const inbox = useHandoffInbox();
   const me = useMe();
   const isAdmin = me.data?.tier === 'admin';
@@ -259,38 +258,19 @@ export default function Layout() {
   const logoutIconEl = mkIcon(
     <><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></>
   );
-  const themeIconEl = mkIcon(
-    <><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" /></>
-  );
 
+  // Account menu = identity + sign-out only. All navigation (Organization,
+  // Invites, Billing, Settings, Help, Admin) lives in the sidebar now;
+  // theme has its own header toggle. Keeping nav here would duplicate the
+  // sidebar — so it intentionally doesn't.
   const accountMenuItems: Array<{ key: string; label: string; icon?: ReactNode; danger?: boolean; disabled?: boolean; separator?: boolean; header?: boolean; badge?: string }> = [
     { key: 'identity', label: me.data?.email || 'Unknown', icon: tierBadgeEl, header: true },
-    ...(hasOrg
-      ? [
-          { key: 'org-sep', label: '', separator: true as const },
-          { key: 'organization', label: 'Organization', icon: orgIcon },
-          { key: 'invites', label: 'Invites', icon: invitesIcon, badge: invitesPendingCount > 0 ? String(invitesPendingCount) : undefined },
-          { key: 'billing', label: 'Billing', icon: billingIcon },
-          { key: 'personal-sep', label: '', separator: true as const },
-        ]
-      : []),
-    { key: 'settings', label: 'Settings', icon: settingsIcon },
-    { key: 'help', label: 'Help', icon: helpIcon },
-    { key: 'theme', label: `Theme: ${theme === 'dark' ? 'Dark' : 'Light'}`, icon: themeIconEl },
-    ...(isAdmin ? [{ key: 'admin', label: 'Admin', icon: adminIcon }] : []),
     { key: 'logout-sep', label: '', separator: true as const },
     { key: 'logout', label: 'Logout', icon: logoutIconEl, danger: true },
   ];
 
   function handleAccountMenuSelect(key: string) {
     switch (key) {
-      case 'organization': navigate('/settings/organization'); break;
-      case 'invites': navigate('/invites'); break;
-      case 'billing': navigate('/settings/billing'); break;
-      case 'settings': navigate('/settings'); break;
-      case 'help': navigate('/help'); break;
-      case 'admin': navigate('/admin'); break;
-      case 'theme': toggleTheme(); break;
       case 'logout': logout(); break;
     }
   }
