@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import AgentRunsTab from './AgentRunsTab';
@@ -131,7 +131,7 @@ describe('AgentRunsTab', () => {
     render(<AgentRunsTab projectId="proj_1" />);
     await user.click(screen.getByRole('combobox', { name: /Filter by status/i }));
     await user.click(
-      within(screen.getByRole('option', { name: 'Failed' })).getByRole('button'),
+      screen.getByRole('option', { name: 'Failed' }),
     );
     expect(hooks.useAgentRuns).toHaveBeenLastCalledWith(
       'proj_1',

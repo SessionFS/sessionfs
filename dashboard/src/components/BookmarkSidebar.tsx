@@ -1,11 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import type { FolderResponse } from '../api/client';
 import { useFolders, useCreateFolder, useUpdateFolder, useDeleteFolder } from '../hooks/useBookmarks';
-
-const PRESET_COLORS = [
-  '#4f9cf7', '#3ddc84', '#bc8cff', '#f0a040',
-  '#f04060', '#40c4f0', '#f0c040', '#f06090',
-];
+import { FOLDER_COLORS as PRESET_COLORS, DEFAULT_FOLDER_COLOR } from '../utils/folderColors';
 
 export type NavFilter = 'all' | 'bookmarked' | 'in-repo' | string; // string = folder ID
 
@@ -205,7 +201,7 @@ export default function BookmarkSidebar({
                 >
                   <span
                     className="w-2.5 h-2.5 rounded-full shrink-0"
-                    style={{ backgroundColor: f.color || '#4f9cf7' }}
+                    style={{ backgroundColor: f.color || DEFAULT_FOLDER_COLOR }}
                   />
                   <span className="truncate flex-1">{f.name}</span>
                   <span className="text-text-tertiary text-xs font-medium tabular-nums">{f.bookmark_count}</span>

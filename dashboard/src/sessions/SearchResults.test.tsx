@@ -74,13 +74,13 @@ describe('SearchResults', () => {
     // Select tool: open combobox, click option button
     await user.click(within(dialog).getByRole('combobox', { name: 'Tool' }));
     await user.click(
-      within(within(dialog).getByRole('option', { name: 'Codex' })).getByRole('button'),
+      within(dialog).getByRole('option', { name: 'Codex' }),
     );
 
     // Select date range: open combobox, click option button
     await user.click(within(dialog).getByRole('combobox', { name: 'Date range' }));
     await user.click(
-      within(within(dialog).getByRole('option', { name: 'Last 30 days' })).getByRole('button'),
+      within(dialog).getByRole('option', { name: 'Last 30 days' }),
     );
 
     await user.click(within(dialog).getByRole('button', { name: /apply filters/i }));

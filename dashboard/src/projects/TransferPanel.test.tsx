@@ -5,7 +5,7 @@
  * pending-cancel branches, and toast wiring.
  */
 
-import { render, screen, within } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -118,7 +118,7 @@ describe('TransferPanel', () => {
     const user = userEvent.setup();
     await user.click(screen.getByRole('combobox', { name: 'Destination' }));
     await user.click(
-      within(screen.getByRole('option', { name: 'Beta Co' })).getByRole('button'),
+      screen.getByRole('option', { name: 'Beta Co' }),
     );
     await user.click(screen.getByRole('button', { name: /initiate transfer/i }));
 
@@ -146,7 +146,7 @@ describe('TransferPanel', () => {
     const user = userEvent.setup();
     await user.click(screen.getByRole('combobox', { name: 'Destination' }));
     await user.click(
-      within(screen.getByRole('option', { name: 'Beta Co' })).getByRole('button'),
+      screen.getByRole('option', { name: 'Beta Co' }),
     );
     await user.click(screen.getByRole('button', { name: /initiate transfer/i }));
 
@@ -220,7 +220,7 @@ describe('TransferPanel', () => {
     const user = userEvent.setup();
     await user.click(screen.getByRole('combobox', { name: 'Destination' }));
     await user.click(
-      within(screen.getByRole('option', { name: 'Beta Co' })).getByRole('button'),
+      screen.getByRole('option', { name: 'Beta Co' }),
     );
     await user.click(screen.getByRole('button', { name: /initiate transfer/i }));
 

@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { Button, Card, Input, Textarea, Select, Dialog, DialogHeader, DialogFooter, Tabs, Table, Dropdown, Tooltip, Kbd, KbdShortcut } from '../';
@@ -174,10 +174,8 @@ describe('Select', () => {
     render(<Select value="a" onValueChange={onChange} options={opts} />);
     // Open the panel
     fireEvent.click(screen.getByRole('combobox'));
-    // Click the button inside the option (role="option" is the <li>, onClick is on the inner <button>)
-    fireEvent.click(
-      within(screen.getByRole('option', { name: 'Beta' })).getByRole('button'),
-    );
+    // Options are <li role="option"> (no nested focusable button); click directly.
+    fireEvent.click(screen.getByRole('option', { name: 'Beta' }));
     expect(onChange).toHaveBeenCalledWith('b');
   });
 

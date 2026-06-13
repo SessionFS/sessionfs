@@ -142,41 +142,71 @@ export function Select({
     return () => document.removeEventListener('mousedown', handleClick);
   }, [open, close]);
 
-  // Keyboard
-  useEffect(() => {
-    if (!open) return;
-    function handleKey(e: KeyboardEvent) {
+  // Single keyboard handler on the combobox trigger (which retains focus —
+  // the listbox uses aria-activedescendant, not roving focus). Handles both
+  // the closed-and-focused case (open on Arrow/Enter/Space) and navigation
+  // while open — matching the native <select> keyboard contract it replaces.
+  const selectedIndex = options.findIndex((o) => o.value === value);
+  function openAt(index: number) {
+    setActiveIndex(index < 0 ? 0 : index);
+    setOpen(true);
+  }
+  function handleTriggerKeyDown(e: React.KeyboardEvent) {
+    if (disabled) return;
+    if (!open) {
       switch (e.key) {
-        case 'Escape':
-          e.preventDefault();
-          close();
-          break;
         case 'ArrowDown':
-          e.preventDefault();
-          setActiveIndex((prev) => {
-            const next = prev + 1;
-            return next >= options.length ? 0 : next;
-          });
-          break;
         case 'ArrowUp':
-          e.preventDefault();
-          setActiveIndex((prev) => {
-            const next = prev - 1;
-            return next < 0 ? options.length - 1 : next;
-          });
-          break;
         case 'Enter':
+        case ' ':
           e.preventDefault();
-          if (activeIndex >= 0 && options[activeIndex]) {
-            onValueChange(options[activeIndex].value);
-            close();
-          }
+          openAt(selectedIndex);
+          break;
+        case 'Home':
+          e.preventDefault();
+          openAt(0);
+          break;
+        case 'End':
+          e.preventDefault();
+          openAt(options.length - 1);
           break;
       }
+      return;
     }
-    document.addEventListener('keydown', handleKey);
-    return () => document.removeEventListener('keydown', handleKey);
-  }, [open, activeIndex, options, onValueChange, close]);
+    switch (e.key) {
+      case 'Escape':
+        e.preventDefault();
+        close();
+        break;
+      case 'Tab':
+        close();
+        break;
+      case 'ArrowDown':
+        e.preventDefault();
+        setActiveIndex((prev) => (prev + 1 >= options.length ? 0 : prev + 1));
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        setActiveIndex((prev) => (prev - 1 < 0 ? options.length - 1 : prev - 1));
+        break;
+      case 'Home':
+        e.preventDefault();
+        setActiveIndex(0);
+        break;
+      case 'End':
+        e.preventDefault();
+        setActiveIndex(options.length - 1);
+        break;
+      case 'Enter':
+      case ' ':
+        e.preventDefault();
+        if (activeIndex >= 0 && options[activeIndex]) {
+          onValueChange(options[activeIndex].value);
+          close();
+        }
+        break;
+    }
+  }
 
   // Scroll active into view
   useEffect(() => {
@@ -186,6 +216,8 @@ export function Select({
   }, [activeIndex]);
 
   const selectedLabel = options.find((o) => o.value === value)?.label;
+  const listId = `${controlId}-listbox`;
+  const optionId = (i: number) => `${controlId}-opt-${i}`;
 
   return (
     <FieldWrapper label={title} htmlFor={controlId} error={error}>
@@ -197,9 +229,12 @@ export function Select({
           role="combobox"
           aria-haspopup="listbox"
           aria-expanded={open}
+          aria-controls={open ? listId : undefined}
+          aria-activedescendant={open && activeIndex >= 0 ? optionId(activeIndex) : undefined}
           aria-label={ariaLabel}
           className={`${baseField} flex items-center justify-between gap-2 text-left ${!selectedLabel ? 'text-text-tertiary' : ''} ${error ? errorField : ''} ${className}`}
           onClick={() => !disabled && setOpen((v) => !v)}
+          onKeyDown={handleTriggerKeyDown}
         >
           <span className="truncate">{selectedLabel || placeholder}</span>
           <svg
@@ -220,34 +255,39 @@ export function Select({
             className="absolute top-full left-0 mt-1 z-40 min-w-full rounded-lg py-1 border border-border bg-overlay"
             style={{ boxShadow: 'var(--shadow-overlay)' }}
           >
-            <ul ref={listRef} role="listbox" aria-label={title || 'Select option'}>
+            {/* Listbox popup with aria-activedescendant — options are NOT
+                separately focusable; focus stays on the combobox trigger. */}
+            <ul ref={listRef} id={listId} role="listbox" aria-label={title || 'Select option'}>
               {options.map((opt, i) => {
                 const isSelected = opt.value === value;
                 const isActive = i === activeIndex;
                 return (
-                  <li key={opt.value} role="option" aria-selected={isSelected}>
-                    <button
-                      type="button"
-                      data-option-index={i}
-                      className={`w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 transition-colors duration-150 outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] rounded-sm ${
-                        isActive
-                          ? 'bg-surface-active text-text-primary'
-                          : 'text-text-secondary hover:bg-surface-hover'
-                      }`}
-                      onClick={() => {
-                        onValueChange(opt.value);
-                        close();
-                      }}
-                    >
-                      <span className="w-4 shrink-0">
-                        {isSelected && (
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                            <polyline points="20 6 9 17 4 12" />
-                          </svg>
-                        )}
-                      </span>
-                      <span className="flex-1 truncate">{opt.label}</span>
-                    </button>
+                  <li
+                    key={opt.value}
+                    id={optionId(i)}
+                    role="option"
+                    aria-selected={isSelected}
+                    data-option-index={i}
+                    onMouseEnter={() => setActiveIndex(i)}
+                    onMouseDown={(e) => e.preventDefault() /* keep focus on the trigger */}
+                    onClick={() => {
+                      onValueChange(opt.value);
+                      close();
+                    }}
+                    className={`cursor-pointer mx-1 px-2 py-1.5 text-sm flex items-center gap-2 transition-colors duration-150 rounded-sm ${
+                      isActive
+                        ? 'bg-surface-active text-text-primary'
+                        : 'text-text-secondary'
+                    }`}
+                  >
+                    <span className="w-4 shrink-0">
+                      {isSelected && (
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                      )}
+                    </span>
+                    <span className="flex-1 truncate">{opt.label}</span>
                   </li>
                 );
               })}

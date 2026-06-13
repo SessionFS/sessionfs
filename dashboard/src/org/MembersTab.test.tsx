@@ -149,7 +149,7 @@ describe('MembersTab', () => {
     // Open the role combobox and select "Admin"
     await user.click(within(form).getByRole('combobox', { name: /^role/i }));
     await user.click(
-      within(within(form).getByRole('option', { name: 'Admin' })).getByRole('button'),
+      within(form).getByRole('option', { name: 'Admin' }),
     );
     await user.click(within(form).getByRole('button', { name: /send invite/i }));
 

@@ -387,19 +387,27 @@ function ListView({ tickets, projectId, selected, onSelect, onNavigate }: ViewPr
     <ul className="border border-border rounded-lg divide-y divide-[var(--border)]">
       {tickets.map((t) => (
         <li key={t.id}>
-          <button
-            type="button"
-            className={`w-full text-left px-3 py-2 hover:bg-surface flex items-start gap-3 border-l-2 ${
+          <div
+            role="button"
+            tabIndex={0}
+            className={`w-full text-left px-3 py-2 hover:bg-surface flex items-start gap-3 border-l-2 cursor-pointer outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] ${
               t.kind === 'issue' ? 'border-indigo-500/60' : 'border-transparent'
             }`}
             onClick={() => onSelect(t.id)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(t.id); }
+            }}
             aria-expanded={selected === t.id}
           >
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 text-sm flex-wrap">
                 <span className="text-mono-chip">{t.id}</span>
                 <KindBadge kind={t.kind} />
-                <StatusCell ticket={t} projectId={projectId} />
+                {/* Status action is interactive — keep its clicks/keys from
+                    bubbling to row select (and out of the row's role=button). */}
+                <span onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+                  <StatusCell ticket={t} projectId={projectId} />
+                </span>
                 <span
                   className={`text-xs uppercase tracking-wide ${PRIORITY_TONE[t.priority] ?? ''}`}
                 >
@@ -425,7 +433,7 @@ function ListView({ tickets, projectId, selected, onSelect, onNavigate }: ViewPr
                   : ''}
               </div>
             </div>
-          </button>
+          </div>
           {selected === t.id && (
             <TicketDetail
               projectId={projectId}

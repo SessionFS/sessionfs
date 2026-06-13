@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import TicketsTab from './TicketsTab';
@@ -98,7 +98,7 @@ describe('TicketsTab', () => {
     render(<TicketsTab projectId="proj_1" />);
     await user.click(screen.getByRole('combobox', { name: /Filter by status/i }));
     await user.click(
-      within(screen.getByRole('option', { name: 'Review' })).getByRole('button'),
+      screen.getByRole('option', { name: 'Review' }),
     );
     expect(hooks.useTickets).toHaveBeenLastCalledWith('proj_1', { status: 'review' });
   });
@@ -141,7 +141,7 @@ describe('TicketsTab', () => {
     render(<TicketsTab projectId="proj_1" />);
     await user.click(screen.getByRole('combobox', { name: /Filter by kind/i }));
     await user.click(
-      within(screen.getByRole('option', { name: 'Issues' })).getByRole('button'),
+      screen.getByRole('option', { name: 'Issues' }),
     );
     expect(hooks.useTickets).toHaveBeenLastCalledWith('proj_1', {
       status: undefined,
@@ -165,7 +165,7 @@ describe('TicketsTab', () => {
     render(<TicketsTab projectId="proj_1" />);
     await user.click(screen.getByRole('combobox', { name: /Filter by kind/i }));
     await user.click(
-      within(screen.getByRole('option', { name: 'Issues' })).getByRole('button'),
+      screen.getByRole('option', { name: 'Issues' }),
     );
     expect(screen.getByText(/No Issues yet/i)).toBeInTheDocument();
     expect(screen.getByText(/PM-triaged container/i)).toBeInTheDocument();
@@ -296,7 +296,7 @@ describe('TicketsTab', () => {
     // Switch to Issue
     await user.click(kindTrigger);
     await user.click(
-      within(screen.getByRole('option', { name: 'Issue' })).getByRole('button'),
+      screen.getByRole('option', { name: 'Issue' }),
     );
     // Parent Issue picker hidden for Issues
     expect(screen.queryByRole('combobox', { name: /Parent Issue/ })).toBeNull();

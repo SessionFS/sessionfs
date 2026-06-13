@@ -1,6 +1,7 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { FOLDER_COLORS as PRESET_COLORS, DEFAULT_FOLDER_COLOR } from '../utils/folderColors';
 import { useSessions, useDeletedSessions, useRestoreSession } from '../hooks/useSessions';
 import { useFolders, useAddBookmark, useFolderSessions, useCreateFolder, useUpdateFolder, useDeleteFolder } from '../hooks/useBookmarks';
 import type { SessionSummary, SessionDetail, HandoffListResponse } from '../api/client';
@@ -17,11 +18,6 @@ import { TOOL_COLORS } from '../utils/tools';
 import { Button, Card, Select } from '../components/ui';
 
 const CAPTURE_ONLY_TOOLS = new Set(['cursor', 'cline', 'roo-code', 'amp']);
-
-const PRESET_COLORS = [
-  '#4f9cf7', '#3ddc84', '#bc8cff', '#f0a040',
-  '#f04060', '#40c4f0', '#f0c040', '#f06090',
-];
 
 interface SessionSummaryWithAudit extends SessionSummary {
   audit_trust_score?: number | null;
@@ -1518,7 +1514,7 @@ function FolderDropdown({
                   >
                     <span
                       className="w-2.5 h-2.5 rounded-full shrink-0"
-                      style={{ backgroundColor: f.color || '#4f9cf7' }}
+                      style={{ backgroundColor: f.color || DEFAULT_FOLDER_COLOR }}
                     />
                     <span className="truncate flex-1">{f.name}</span>
                     <span className="text-text-tertiary text-xs font-medium tabular-nums">{f.bookmark_count}</span>
@@ -1681,7 +1677,7 @@ function BookmarkDropdown({ sessionId, isBookmarked: initialBookmarked }: { sess
             >
               <span
                 className="w-2 h-2 rounded-full shrink-0"
-                style={{ backgroundColor: f.color || '#4f9cf7' }}
+                style={{ backgroundColor: f.color || DEFAULT_FOLDER_COLOR }}
               />
               {f.name}
             </button>

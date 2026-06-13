@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -321,7 +321,7 @@ describe('SessionList empty state', () => {
     // Open the sort combobox and select "Sort: Tool"
     await user.click(screen.getByRole('combobox', { name: 'Sort sessions' }));
     await user.click(
-      within(screen.getByRole('option', { name: 'Sort: Tool' })).getByRole('button'),
+      screen.getByRole('option', { name: 'Sort: Tool' }),
     );
 
     expect(screen.queryByRole('heading', { name: 'Today' })).not.toBeInTheDocument();
