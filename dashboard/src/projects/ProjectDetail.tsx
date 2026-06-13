@@ -31,7 +31,7 @@ import PersonasTab from './PersonasTab';
 import TicketsTab from './TicketsTab';
 import AgentRunsTab from './AgentRunsTab';
 import { useMyOrgs } from '../transfers/useTransfers';
-import { Tabs, Card, Button, Input, Textarea, Dialog, DialogHeader, DialogFooter, Dropdown } from '../components/ui';
+import { Tabs, Card, Button, Input, Textarea, Select, Dialog, DialogHeader, DialogFooter, Dropdown } from '../components/ui';
 
 type ProjectTab =
   | 'context'
@@ -451,38 +451,40 @@ function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
             />
             Pending only
           </label>
-          <select
+          <Select
+            aria-label="Filter by entry type"
             value={typeFilter}
-            onChange={(e) => setTypeFilter(e.target.value)}
-            className="text-sm bg-bg-primary border border-border rounded-lg px-2 py-1 text-text-secondary"
-          >
-            <option value="">All types</option>
-            {entryTypes.map((t) => (
-              <option key={t} value={t}>
-                {t}
-              </option>
-            ))}
-          </select>
-          <select
+            onValueChange={setTypeFilter}
+            options={[
+              { value: '', label: 'All types' },
+              ...entryTypes.map((t) => ({ value: t, label: t })),
+            ]}
+            className="!w-auto !px-2 !py-1 bg-bg-primary text-sm"
+          />
+          <Select
+            aria-label="Filter by claim class"
             value={claimFilter}
-            onChange={(e) => setClaimFilter(e.target.value)}
-            className="text-sm bg-bg-primary border border-border rounded-lg px-2 py-1 text-text-secondary"
-          >
-            <option value="">All classes</option>
-            <option value="claim">Claim</option>
-            <option value="note">Note</option>
-            <option value="evidence">Evidence</option>
-          </select>
-          <select
+            onValueChange={setClaimFilter}
+            options={[
+              { value: '', label: 'All classes' },
+              { value: 'claim', label: 'Claim' },
+              { value: 'note', label: 'Note' },
+              { value: 'evidence', label: 'Evidence' },
+            ]}
+            className="!w-auto !px-2 !py-1 bg-bg-primary text-sm"
+          />
+          <Select
+            aria-label="Filter by freshness"
             value={freshnessFilter}
-            onChange={(e) => setFreshnessFilter(e.target.value)}
-            className="text-sm bg-bg-primary border border-border rounded-lg px-2 py-1 text-text-secondary"
-          >
-            <option value="">All freshness</option>
-            <option value="current">Current</option>
-            <option value="aging">Aging</option>
-            <option value="stale">Stale</option>
-          </select>
+            onValueChange={setFreshnessFilter}
+            options={[
+              { value: '', label: 'All freshness' },
+              { value: 'current', label: 'Current' },
+              { value: 'aging', label: 'Aging' },
+              { value: 'stale', label: 'Stale' },
+            ]}
+            className="!w-auto !px-2 !py-1 bg-bg-primary text-sm"
+          />
         </div>
         <div className="flex items-center gap-2">
           <Button

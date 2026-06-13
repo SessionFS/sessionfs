@@ -112,14 +112,14 @@ export default function AgentRunsTab({ projectId }: AgentRunsTabProps) {
           <Select
             aria-label="Filter by status"
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
+            onValueChange={setStatusFilter}
             options={STATUS_FILTERS}
             className="w-auto min-w-[110px]"
           />
           <Select
             aria-label="Filter by trigger"
             value={triggerFilter}
-            onChange={(e) => setTriggerFilter(e.target.value)}
+            onValueChange={setTriggerFilter}
             options={TRIGGER_FILTERS}
             className="w-auto min-w-[130px]"
           />

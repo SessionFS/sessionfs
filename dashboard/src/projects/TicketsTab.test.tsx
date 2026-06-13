@@ -1,4 +1,5 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import TicketsTab from './TicketsTab';
 
@@ -92,11 +93,13 @@ describe('TicketsTab', () => {
     expect(screen.getByText(/2 criteria/)).toBeInTheDocument();
   });
 
-  it('filters by status', () => {
+  it('filters by status', async () => {
+    const user = userEvent.setup();
     render(<TicketsTab projectId="proj_1" />);
-    fireEvent.change(screen.getByLabelText(/Filter by status/i), {
-      target: { value: 'review' },
-    });
+    await user.click(screen.getByRole('combobox', { name: /Filter by status/i }));
+    await user.click(
+      within(screen.getByRole('option', { name: 'Review' })).getByRole('button'),
+    );
     expect(hooks.useTickets).toHaveBeenLastCalledWith('proj_1', { status: 'review' });
   });
 
@@ -133,11 +136,13 @@ describe('TicketsTab', () => {
     expect(screen.getByRole('heading', { name: /New ticket/i })).toBeInTheDocument();
   });
 
-  it('filters by kind', () => {
+  it('filters by kind', async () => {
+    const user = userEvent.setup();
     render(<TicketsTab projectId="proj_1" />);
-    fireEvent.change(screen.getByLabelText(/Filter by kind/i), {
-      target: { value: 'issue' },
-    });
+    await user.click(screen.getByRole('combobox', { name: /Filter by kind/i }));
+    await user.click(
+      within(screen.getByRole('option', { name: 'Issues' })).getByRole('button'),
+    );
     expect(hooks.useTickets).toHaveBeenLastCalledWith('proj_1', {
       status: undefined,
       kind: 'issue',
@@ -154,12 +159,14 @@ describe('TicketsTab', () => {
     expect(screen.getByText('Issue')).toBeInTheDocument();
   });
 
-  it('shows the Issues empty-state explainer when kind=Issues filter has no rows', () => {
+  it('shows the Issues empty-state explainer when kind=Issues filter has no rows', async () => {
+    const user = userEvent.setup();
     hooks.useTickets.mockReturnValue({ data: [], isLoading: false, error: null });
     render(<TicketsTab projectId="proj_1" />);
-    fireEvent.change(screen.getByLabelText(/Filter by kind/i), {
-      target: { value: 'issue' },
-    });
+    await user.click(screen.getByRole('combobox', { name: /Filter by kind/i }));
+    await user.click(
+      within(screen.getByRole('option', { name: 'Issues' })).getByRole('button'),
+    );
     expect(screen.getByText(/No Issues yet/i)).toBeInTheDocument();
     expect(screen.getByText(/PM-triaged container/i)).toBeInTheDocument();
   });
@@ -277,14 +284,22 @@ describe('TicketsTab', () => {
     expect(screen.queryByRole('button', { name: /Close Issue/i })).toBeNull();
   });
 
-  it('exposes a kind selector and conditional Parent Issue picker in the new ticket modal', () => {
+  it('exposes a kind selector and conditional Parent Issue picker in the new ticket modal', async () => {
+    const user = userEvent.setup();
     render(<TicketsTab projectId="proj_1" />);
     fireEvent.click(screen.getByRole('button', { name: /New ticket/i }));
-    const kindSelect = screen.getByLabelText(/Ticket kind/i) as HTMLSelectElement;
-    expect(kindSelect.value).toBe('task');
-    expect(screen.getByLabelText(/Parent Issue/i)).toBeInTheDocument();
-    fireEvent.change(kindSelect, { target: { value: 'issue' } });
-    expect(screen.queryByLabelText(/Parent Issue/i)).toBeNull();
+    // Kind selector shows "Task" selected by default
+    const kindTrigger = screen.getByRole('combobox', { name: 'Kind' });
+    expect(kindTrigger).toHaveTextContent('Task');
+    // Parent Issue picker is visible when kind is task
+    expect(screen.getByRole('combobox', { name: /Parent Issue/ })).toBeInTheDocument();
+    // Switch to Issue
+    await user.click(kindTrigger);
+    await user.click(
+      within(screen.getByRole('option', { name: 'Issue' })).getByRole('button'),
+    );
+    // Parent Issue picker hidden for Issues
+    expect(screen.queryByRole('combobox', { name: /Parent Issue/ })).toBeNull();
   });
 
   /* ── Board view drawer (phase 3 fix C2) ── */

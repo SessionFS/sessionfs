@@ -133,9 +133,8 @@ export default function TransferPanel({
           <Select
             title="Destination"
             value={selectedDest}
-            onChange={(e) => setSelectedDest(e.target.value)}
+            onValueChange={setSelectedDest}
             options={destinations}
-            aria-label="Transfer destination"
             className="w-auto min-w-[180px]"
           />
           <Button

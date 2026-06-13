@@ -1,4 +1,5 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import AgentRunsTab from './AgentRunsTab';
 
@@ -125,11 +126,13 @@ describe('AgentRunsTab', () => {
     expect(screen.queryByRole('link', { name: /github/i })).toBeNull();
   });
 
-  it('filters by status', () => {
+  it('filters by status', async () => {
+    const user = userEvent.setup();
     render(<AgentRunsTab projectId="proj_1" />);
-    fireEvent.change(screen.getByLabelText(/Filter by status/i), {
-      target: { value: 'failed' },
-    });
+    await user.click(screen.getByRole('combobox', { name: /Filter by status/i }));
+    await user.click(
+      within(screen.getByRole('option', { name: 'Failed' })).getByRole('button'),
+    );
     expect(hooks.useAgentRuns).toHaveBeenLastCalledWith(
       'proj_1',
       expect.objectContaining({ status: 'failed' }),

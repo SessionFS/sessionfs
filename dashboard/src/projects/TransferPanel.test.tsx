@@ -5,7 +5,7 @@
  * pending-cancel branches, and toast wiring.
  */
 
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -59,7 +59,8 @@ beforeEach(() => {
 });
 
 describe('TransferPanel', () => {
-  it('lists destinations excluding the current scope (personal source)', () => {
+  it('lists destinations excluding the current scope (personal source)', async () => {
+    const user = userEvent.setup();
     render(
       <TransferPanel
         projectId="proj_x"
@@ -67,13 +68,16 @@ describe('TransferPanel', () => {
         availableOrgs={ORGS}
       />,
     );
-    const select = screen.getByLabelText(/transfer destination/i);
-    const options = Array.from(select.querySelectorAll('option')).map((o) => o.value);
+    const combobox = screen.getByRole('combobox', { name: 'Destination' });
+    await user.click(combobox);
+    const listbox = screen.getByRole('listbox');
+    const options = Array.from(listbox.querySelectorAll('[role="option"]')).map((o) => o.textContent);
     // Personal is excluded (it's the current scope), but both orgs appear.
-    expect(options).toEqual(['org_alpha', 'org_beta']);
+    expect(options).toEqual(['Alpha Co', 'Beta Co']);
   });
 
-  it('lists destinations excluding the current org scope', () => {
+  it('lists destinations excluding the current org scope', async () => {
+    const user = userEvent.setup();
     render(
       <TransferPanel
         projectId="proj_x"
@@ -81,9 +85,11 @@ describe('TransferPanel', () => {
         availableOrgs={ORGS}
       />,
     );
-    const select = screen.getByLabelText(/transfer destination/i);
-    const options = Array.from(select.querySelectorAll('option')).map((o) => o.value);
-    expect(options).toEqual(['personal', 'org_beta']);
+    const combobox = screen.getByRole('combobox', { name: 'Destination' });
+    await user.click(combobox);
+    const listbox = screen.getByRole('listbox');
+    const options = Array.from(listbox.querySelectorAll('[role="option"]')).map((o) => o.textContent);
+    expect(options).toEqual(['Personal', 'Beta Co']);
   });
 
   it('shows an empty-destinations message when no candidates are available', () => {
@@ -95,7 +101,7 @@ describe('TransferPanel', () => {
       />,
     );
     expect(screen.getByText(/no transfer destinations available/i)).toBeInTheDocument();
-    expect(screen.queryByLabelText(/transfer destination/i)).toBeNull();
+    expect(screen.queryByRole('combobox', { name: 'Destination' })).toBeNull();
   });
 
   it('initiate fires the mutation with the chosen destination', async () => {
@@ -110,7 +116,10 @@ describe('TransferPanel', () => {
       />,
     );
     const user = userEvent.setup();
-    await user.selectOptions(screen.getByLabelText(/transfer destination/i), 'org_beta');
+    await user.click(screen.getByRole('combobox', { name: 'Destination' }));
+    await user.click(
+      within(screen.getByRole('option', { name: 'Beta Co' })).getByRole('button'),
+    );
     await user.click(screen.getByRole('button', { name: /initiate transfer/i }));
 
     expect(initiate.mutate).toHaveBeenCalledWith(
@@ -135,7 +144,10 @@ describe('TransferPanel', () => {
       />,
     );
     const user = userEvent.setup();
-    await user.selectOptions(screen.getByLabelText(/transfer destination/i), 'org_beta');
+    await user.click(screen.getByRole('combobox', { name: 'Destination' }));
+    await user.click(
+      within(screen.getByRole('option', { name: 'Beta Co' })).getByRole('button'),
+    );
     await user.click(screen.getByRole('button', { name: /initiate transfer/i }));
 
     expect(toastApi.addToast).toHaveBeenCalledWith(
@@ -179,7 +191,7 @@ describe('TransferPanel', () => {
       />,
     );
     // The destination form is hidden while a pending transfer exists.
-    expect(screen.queryByLabelText(/transfer destination/i)).toBeNull();
+    expect(screen.queryByRole('combobox', { name: 'Destination' })).toBeNull();
     expect(screen.getByText(/pending transfer to beta co/i)).toBeInTheDocument();
 
     const user = userEvent.setup();
@@ -206,7 +218,10 @@ describe('TransferPanel', () => {
       />,
     );
     const user = userEvent.setup();
-    await user.selectOptions(screen.getByLabelText(/transfer destination/i), 'org_beta');
+    await user.click(screen.getByRole('combobox', { name: 'Destination' }));
+    await user.click(
+      within(screen.getByRole('option', { name: 'Beta Co' })).getByRole('button'),
+    );
     await user.click(screen.getByRole('button', { name: /initiate transfer/i }));
 
     expect(toastApi.addToast).toHaveBeenCalledWith(

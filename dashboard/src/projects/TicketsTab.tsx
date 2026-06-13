@@ -260,14 +260,14 @@ export default function TicketsTab({ projectId }: TicketsTabProps) {
           <Select
             aria-label="Filter by kind"
             value={kindFilter}
-            onChange={(e) => setKindFilter(e.target.value)}
+            onValueChange={setKindFilter}
             options={KIND_FILTERS}
             className="w-auto"
           />
           <Select
             aria-label="Filter by status"
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
+            onValueChange={setStatusFilter}
             options={STATUS_FILTERS}
             className="w-auto"
           />
@@ -968,15 +968,14 @@ function NewTicketModal({ projectId, onClose }: NewModalProps) {
             <Select
               id="field-kind"
               value={kind}
-              onChange={(e) =>
-                setKind(e.target.value as 'task' | 'issue')
+              onValueChange={(v) =>
+                setKind(v as 'task' | 'issue')
               }
-              aria-label="Ticket kind"
+              title="Kind"
               options={[
                 { value: 'task', label: 'Task' },
                 { value: 'issue', label: 'Issue' },
               ]}
-              title="Kind"
             />
             <p className="text-xs text-text-tertiary mt-1">
               {kind === 'issue'
@@ -986,24 +985,18 @@ function NewTicketModal({ projectId, onClose }: NewModalProps) {
           </div>
 
           {kind === 'task' && (
-            <div>
-              <label className="text-sm font-medium text-text-secondary block mb-1">
-                Parent Issue (optional)
-              </label>
-              <select
-                value={parentTicketId}
-                onChange={(e) => setParentTicketId(e.target.value)}
-                className="w-full bg-bg-sunken border border-border rounded-lg px-3 py-2 text-sm text-text-primary font-mono appearance-none focus:border-[var(--brand)] focus:shadow-[0_0_0_3px_var(--brand-glow)] outline-none"
-                aria-label="Parent Issue"
-              >
-                <option value="">— none —</option>
-                {issueOptions.map((iss) => (
-                  <option key={iss.id} value={iss.id}>
-                    {iss.id} · {iss.title.slice(0, 50)}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <Select
+              value={parentTicketId}
+              onValueChange={setParentTicketId}
+              title="Parent Issue (optional)"
+              options={[
+                { value: '', label: '— none —' },
+                ...issueOptions.map((iss) => ({
+                  value: iss.id,
+                  label: `${iss.id} · ${iss.title.slice(0, 50)}`,
+                })),
+              ]}
+            />
           )}
         </div>
 
@@ -1040,8 +1033,8 @@ function NewTicketModal({ projectId, onClose }: NewModalProps) {
           <Select
             id="field-priority"
             value={priority}
-            onChange={(e) =>
-              setPriority(e.target.value as typeof priority)
+            onValueChange={(v) =>
+              setPriority(v as typeof priority)
             }
             title="Priority"
             options={[
