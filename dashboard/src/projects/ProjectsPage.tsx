@@ -90,12 +90,52 @@ export default function ProjectsPage() {
   const navigate = useNavigate();
   const { data: projects, isLoading, error } = useProjects();
   const [showCreate, setShowCreate] = useState(false);
+  const [viewMode, setViewMode] = useState<'list' | 'grid'>(() => {
+    const stored = typeof window !== 'undefined' ? window.localStorage.getItem('sfs-projects-view') : null;
+    return stored === 'grid' ? 'grid' : 'list';
+  });
+  function handleViewMode(mode: 'list' | 'grid') {
+    setViewMode(mode);
+    try { window.localStorage.setItem('sfs-projects-view', mode); } catch { /* noop */ }
+  }
+  const listClass = viewMode === 'grid'
+    ? 'grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3'
+    : 'space-y-3';
 
   return (
-    <div className="max-w-4xl mx-auto px-4 py-6">
+    <div className={`${viewMode === 'grid' ? 'max-w-7xl' : 'max-w-4xl'} mx-auto px-4 py-6`}>
       <div className="flex items-center justify-between mb-5">
         <h1 className="text-3xl font-bold tracking-tight text-text-primary">Projects</h1>
-        <Button onClick={() => setShowCreate(true)}>+ New Project</Button>
+        <div className="flex items-center gap-3">
+          {/* List/Grid view toggle (mirrors Sessions) */}
+          <div className="flex items-center rounded-lg border border-border bg-surface overflow-hidden">
+            <button
+              onClick={() => handleViewMode('list')}
+              className={`p-2 transition-colors ${viewMode === 'list' ? 'bg-bg-elevated text-text-primary' : 'text-text-tertiary hover:text-text-primary'}`}
+              title="List view"
+              aria-label="List view"
+              aria-pressed={viewMode === 'list'}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" />
+                <line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" />
+              </svg>
+            </button>
+            <button
+              onClick={() => handleViewMode('grid')}
+              className={`p-2 transition-colors ${viewMode === 'grid' ? 'bg-bg-elevated text-text-primary' : 'text-text-tertiary hover:text-text-primary'}`}
+              title="Grid view"
+              aria-label="Grid view"
+              aria-pressed={viewMode === 'grid'}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" />
+                <rect x="3" y="14" width="7" height="7" /><rect x="14" y="14" width="7" height="7" />
+              </svg>
+            </button>
+          </div>
+          <Button onClick={() => setShowCreate(true)}>+ New Project</Button>
+        </div>
       </div>
 
       {error && (
@@ -120,7 +160,7 @@ export default function ProjectsPage() {
       )}
 
       {!isLoading && projects && projects.length > 0 && (
-        <div className="space-y-3">
+        <div className={listClass}>
           {projects.map((p) => (
             <ProjectCard
               key={p.id}
