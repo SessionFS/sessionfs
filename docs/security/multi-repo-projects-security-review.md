@@ -190,3 +190,68 @@ Each item is a gate; "verified" requires a passing negative test where a test is
 ---
 
 **SENTINEL VERDICT: APPROVED-WITH-CONDITIONS** — merge engine and cross-org/service-key model are sound; ship only after the 6 must-fix conditions (forgeable-link verification F1, provider_repo_id de-crediting F2, 409/410 enumeration leaks F3/F4, resolver-authorizes-nothing F5, link/merge rate limiting F6) are implemented and the 14-item checklist passes. Must-fix: 6 (1 HIGH, 5 MEDIUM).
+
+---
+
+# Re-review (S2) — Amendment Pass
+
+**Reviewer:** Sentinel (security owner)
+**Design under review:** `docs/design/multi-repo-projects.md` as amended by Atlas (commit `3556cd2`, S1 amendment row + new §11 Security Conditions).
+**Date:** 2026-06-15
+**Trigger:** S1 returned APPROVED-WITH-CONDITIONS (1 HIGH F1 + 5 MED F2–F6 + 4 LOW). Atlas folded all conditions into the binding doc. This pass verifies each condition is actually closed and adversarially reviews the NEW mechanism F1 introduces (verified-vs-unverified displacement).
+
+## Verdict
+
+**APPROVED.** All 6 must-fix conditions and the 4 LOW items are genuinely addressed in the amended design. The new verified-ownership / displacement mechanism is sound — no new must-fix finding. Two non-blocking implementation notes (N1, N2) and one residual-risk acknowledgement (R-A) are recorded below for the build phase; none gate the design. Build may proceed once Shield-SR's code-review checklist (§8.2) passes against the actual implementation.
+
+**New must-fix findings: 0.**
+
+## Condition-by-condition confirmation
+
+### F1 (HIGH) — verified-vs-unverified ownership model — CLOSED
+
+The hijack hole is closed at the design level. The binding rule is now: linking a global-unique remote requires `user_is_project_admin` on the target project **AND** a verification stamp (§4.1, §6.1, §11/F1). A forged `workspace.json` session tag is explicitly stated as attacker-controlled and is no longer sufficient to claim a remote — the "captured a session" predicate (the S1 attack vector) is dropped from the link authz path entirely. Verified against code:
+
+- `auth/project_access.py:68-96` `user_is_project_admin` is real and is owner-OR-`OrgMember.role=='admin'`, service-keys excluded — exactly the actor-side check the design binds to. Good.
+- `github_app.py:46-76` `get_installation_token(installation_id)` exists, so the `github_app` verification path is realizable. `GitHubInstallation` (`models.py:526-540`) is keyed by `id` (installation id) and bound to a nullable `user_id` — so the design's F2 rule "use ONLY the linker's own installation token" maps cleanly onto `GitHubInstallation.user_id == linker.id`. Good.
+
+**Adversarial review of the NEW mechanism:**
+
+- **(a) Can `github_app` verification be forged/bypassed?** No design-level forgery path. Verification is a server-side installation-token call to GitHub (`GET /repos/{owner}/{repo}` or the installation's accessible-repo set); the client supplies no proof material that the server trusts. The one thing the implementation MUST get right (recorded as **N1** below): the verification must confirm the repo is reachable by **the linker's own installation** (`GitHubInstallation.user_id == linker.id`), not by *any* installation the server holds a token for. Using a global/foreign app token would turn the check into a confused-deputy oracle — S1/F2 already forbids cross-installation resolution; the displacement path must obey the same rule. Design language (§6.2 "Server derivation uses ONLY the linker's own installation token; cross-installation resolution is forbidden") covers this; it is a build-time gate, not a design hole.
+- **(b) Can displacement be ABUSED?** The displacement matrix (§4.1, §6.2) only permits `verified(github_app)` to displace `unverified(owner_attested|legacy_backfill)`. To gain `github_app` verification an attacker must actually pass the GitHub installation check for that repo — i.e. genuinely control it. So an attacker cannot displace a legitimate holder unless they truly own the repo, in which case displacement is the *correct* outcome (the real owner reclaims a squatted remote). Verified↔verified is a 409 (no auto-displacement, manual/support resolution) — so a second genuine installation cannot grief the first. Grief-via-repeated-displace is bounded: once a verified row holds the remote, further verified requests hit the 409 path (no churn), and F6 rate limits cap attempt volume. **No abuse path.**
+- **(c) Does `owner_attested` (unverified) still allow squatting a public remote globally until a verified claimant appears?** Yes — residual, and it is acceptable and now documented. An owner-attested link reserves the global-unique remote without proof. But: (i) it requires `user_is_project_admin` standing (not the cheap forged-session path S1 flagged), raising the bar materially; (ii) it is fully displaceable by any later `github_app`-verified claimant via the swap, so the squat cannot survive a real owner showing up; (iii) the `added_by_user_id` FK + L4 audit snapshot make the squatter attributable. The blast radius is "temporary namespace reservation, auto-reversible by the true owner" — a denial-of-convenience, not data access. This is the correct residual posture for the self-hosted/non-GitHub/app-not-installed reality where no oracle-free proof exists. Recorded as **R-A**.
+- **(d) TOCTOU/atomicity in the swap?** The procedure (§4.1) is `SELECT … FOR UPDATE` the existing row (and its project row) → unlink → audit → insert → commit, all in one transaction. The row lock plus the `UNIQUE(git_remote_normalized)` constraint serialize concurrent claimants: a second displacer blocks on the FOR UPDATE, and on resume re-reads the now-verified holder and falls to the 409 path. The unique constraint is the backstop if the lock is ever bypassed. **No TOCTOU hole at the design level.** Build note **N2**: the verification (GitHub API call) should be performed BEFORE opening the swap transaction (or its result captured before the FOR UPDATE), so a slow external call does not hold the row lock for the network round-trip — a liveness/lock-contention concern, not a correctness one.
+- **(e) Can `legacy_backfill` rows be wrongly displaced?** They are displaceable only by `github_app`-verified claims (§6.2 / §3.2 backfill note) — i.e. only by someone who genuinely controls the repo. An unverified claim cannot touch them. This is intentional and correct: it lets a real owner reclaim a remote that a pre-feature squatter grabbed via the old forged-session path, while protecting legitimate existing projects from any unverified challenger. **Correct.**
+
+F1 is closed; the new mechanism is sound.
+
+### F2 (MED) — de-credit provider_repo_id — CLOSED
+§3.1 schema comments, §4.1, §6.2, and Appendix B.5 now all state provider_repo_id is server-derived (caller input ignored), frequently NULL, and a best-effort rename-survival nicety — NOT the hijack/DoS defense. Verified against code: `GitHubInstallation` (`models.py:526-540`) indeed stores no repo list and no repo IDs, so the S1 claim that derivation requires a live per-repo API call (and is NULL for the common case) holds. The load-bearing control is correctly relocated to F1's verification. Closed.
+
+### F3 (MED) — 409 existing_project_id leak — CLOSED
+§4.1 and §11/F3 gate `existing_project_id` behind `user_can_access_project` on the *owning* project; unauthorized/cross-org callers get an opaque 409 with no identifier. Negative test specified (org-A probing org-B → no id). Closed.
+
+### F4 (MED) — tombstone 410 access-check-first — CLOSED
+§5.9 and §3.3/A2 now resolve with `follow_tombstone=False` first, run `user_can_access_project` on the SOURCE (tombstone) before disclosing `merged_into`, and return opaque 404/403 to unauthorized callers. Both the by-id and by-remote routes are covered. Tests specified. Closed.
+
+### F5 (MED) — resolver authorizes nothing + re-auth on target + hop-cap — CLOSED
+§3.3 makes the binding rule explicit in the resolver docstring ("RESOLVES; it NEVER authorizes"); all 16 rewritten sites are instructed to run the access check against the resolved/redirected target. Hop-cap (≤8, logged error, fail-safe return) is present on both `resolve_project_by_remote` and `resolve_project_by_id`. The service-key corollary (allowlist check runs on the resolved target; source-scoped key denied on target post-merge) is captured in Appendix B.1 + checklist item 9. Closed. (Note: F5 closure is design-binding; the actual 16-site enforcement is a Shield-SR code-review gate — §8.2 item F5.)
+
+### F6 (MED) — rate limits on link + merge — CLOSED (design) + Forge follow-up
+§6.6 specifies app-layer per-user/per-project sliding-window caps on link, unlink, and merge (incl. dry-run), with example thresholds, and mandates a Forge ticket for durable edge/multi-replica limiting (Cloud Armor / API Gateway), to be referenced in the implementation commit. This matches the S1 requirement that in-memory limits are convenience-only. Closed at design level; Forge edge-limiting remains an owned follow-up (R-A list).
+
+### 4 LOW — all addressed
+- **L1** (audit denials) — promoted from optional to recommended in §5.1; cross-org merge + unauthorized link denials routed through AdminAction. Addressed.
+- **L2** (`sfs security scan` parity) — noted; no new local secret files in v1. Addressed.
+- **L3** (block merge on pending transfer) — added to Phase-1 preconditions in §5.12 pseudocode for BOTH source and target, in either direction. Verified in pseudocode (lines for `source_transfer`/`target_transfer` → 400). Addressed.
+- **L4** (attestation survives user deletion) — §5.1 + §3.1 comments require a plain-string user_id + email snapshot in the audit row, FK kept ON DELETE SET NULL for hygiene only. Addressed.
+
+## Non-blocking implementation notes (for Shield-SR / Atlas at build)
+
+- **N1 — Verification must use the linker's OWN installation.** The `github_app` path must verify the repo against `GitHubInstallation.user_id == linker.id` (or the linker's org installation), never an arbitrary server-held token. A foreign/global app token would be a confused-deputy oracle and could mint `verified=true` for a repo the linker does not control — which would then (wrongly) enable displacement. The design already forbids cross-installation resolution (§6.2); this note makes the binding explicit for the displacement path too. Shield-SR: gate at code review.
+- **N2 — Do the GitHub API call OUTSIDE the swap transaction.** Perform verification before `SELECT … FOR UPDATE` so the external round-trip does not hold the row lock. Liveness only; correctness is unaffected (the unique constraint + re-read on the displaced path are the backstops).
+- **R-A — Residual risks (acknowledged, not blocking):** (1) owner-attested squatting of a remote until a verified owner reclaims it — bounded, auto-reversible, attributable; acceptable. (2) Edge rate limiting depends on the Forge ticket landing; until then app-layer limits are per-replica only. (3) The broader pre-existing forged-`git_remote_normalized` weakness (predicate #3 trusts it for *read* access, and project-CREATE still trusts it for squatting) is out of scope for this feature — §6.2 notes the create-path hardening as a follow-up; the separate predicate-#3 down-weighting remains a Sentinel-owned follow-up ticket as recorded in S1.
+
+## S2 verdict
+
+**SENTINEL RE-REVIEW VERDICT: APPROVED** — all 6 must-fix conditions (F1–F6) and 4 LOW are closed in the amended design; the new verified-vs-unverified displacement mechanism is adversarially sound (no forgery, no abusive/grief displacement, atomic swap with no TOCTOU, legacy rows protected from unverified challengers). New must-fix findings: 0. Build may proceed; Shield-SR verifies the §8.2 checklist (esp. F1 verification-via-own-installation, F5 16-site re-authorization) against the implementation.
