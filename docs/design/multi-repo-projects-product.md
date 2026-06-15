@@ -40,12 +40,12 @@
 **CLI (primary path — developers are in the terminal):**
 
 ```bash
-# In the repo you want to link INTO an existing project:
-sfs project link --to <project-id-or-name>
+# In any directory, link a remote into an existing project:
+sfs project link-repo <remote> [--project-id <id>]
 ```
 
 This:
-1. Resolves the current directory's git remote.
+1. Normalizes the provided git remote URL.
 2. Validates the remote isn't already linked to another project (one repo ∈ exactly one project).
 3. Validates org membership if the target project is org-scoped.
 4. Links the repo into the project.
@@ -92,19 +92,19 @@ $ sfs project merge proj_backend --into proj_frontend
 
 Dry-run: folding "backend" (proj_backend) into "frontend" (proj_frontend)
 
-Personas (3 to merge, 1 collision):
-  ✓ atlas          — unique, will be copied
-  ✓ scribe         — unique, will be copied
+Personas (3 to reassign, 1 collision):
+  ✓ atlas          — unique, will be reassigned
+  ✓ scribe         — unique, will be reassigned
   ⚠ prism          — COLLISION: both projects have "prism"
                      → keep target's "prism" (frontend), rename source's to "prism (from backend)"
 
-Tickets (5 to merge):
-  ✓ tk_001 "Add auth endpoint"     — unique
-  ✓ tk_002 "Fix CORS"              — unique
+Tickets (5 to reassign):
+  ✓ tk_001 "Add auth endpoint"     — reassigned to target
+  ✓ tk_002 "Fix CORS"              — reassigned to target
   ... (3 more)
 
-Knowledge entries (47 to merge):
-  All unique — will be copied
+Knowledge entries (47 to reassign):
+  All unique — will be reassigned
 
 Rules:
   ⚠ COLLISION: both projects have compiled rules
@@ -113,7 +113,7 @@ Rules:
 Wiki pages (2 to merge):
   ✓ architecture.md  — unique
 
-Summary: 57 items to merge, 2 collisions (auto-resolved with defaults).
+Summary: 57 items to reassign, 2 collisions (auto-resolved with defaults).
 Run with --execute to apply.
 ```
 
@@ -143,8 +143,8 @@ Choose [1-4] (default: 1):
 |--------|---------------------------|-----------|
 | **Personas** | Keep target's version. Rename source's to `<name> (from <source-project-name>)`. | The target project is the "survivor" — the user explicitly chose A as the destination. A's personas keep their canonical names. B's personas are preserved (no data loss) but disambiguated. The user can manually reconcile afterward. |
 | **Rules** | Keep target's compiled rules. Archive source's compiled rules as a snapshot wiki page `rules (from <source-project-name>)`. | Rules are the project's governance surface. Merging two rule sets automatically is unpredictable — different LLM tools, different team conventions. Preserving the source as a reference page lets the user merge manually with full context. |
-| **Tickets** | All tickets are copied with new IDs in the target project. A `merged_from_project` / `merged_from_ticket_id` provenance field is written on each. Open tickets keep their status. Closed tickets are copied as closed. | Tickets are the coordination record. No collisions possible (IDs are unique across projects). Provenance matters for audit. |
-| **Knowledge entries** | All entries are copied. Entries with identical `entity_ref` slugs get a `(from <source>)` suffix on the slug (not silently deduped). | KB entries are the memory record. Near-duplicate detection is best-effort via entity_ref; true semantic dedup is a future LLM-powered feature. We err on the side of preserving data. |
+| **Tickets** | All tickets are reassigned in place — `project_id` is updated from source to target. No new IDs, no copy semantics. Open tickets stay open. Closed tickets stay closed. | Ticket IDs are globally unique, so no collisions are possible. `depends_on` references remain valid because all tickets end up under the same project (dependencies are validated same-project at creation). This is the simplest correct model — no `merged_from` provenance needed. |
+| **Knowledge entries** | All entries are reassigned. Entries that are exact duplicates (same `entry_type` + normalized content) are silently skipped to avoid literal duplicates. No LLM semantic dedup (house rule: no server-side LLM keys). | KB entries are the memory record. We err on the side of preserving data, but literal duplicates serve no one. A future client-side `sfs project dedup` could do semantic dedup. |
 | **Wiki pages** | Wiki pages with identical slugs get a `(from <source>)` suffix. | Same reasoning as KB entries. |
 
 **Why "keep target" and not "keep newest" or "field-merge"?**
@@ -212,7 +212,7 @@ No tier plumbing. The link-repo, unlink-repo, and merge endpoints check ownershi
 
 1. **Changelog entry** (release day): "Projects can now span multiple repos. Link your frontend, backend, and infra repos into one project — shared memory, shared personas, shared tickets. Free for everyone."
 2. **In-dashboard banner** (release day, dismissible): "New: multi-repo projects. Link your repos →" linking to the Repos tab. Shown to users with 2+ projects on the same org.
-3. **CLI hint on `sfs project show`** (release day): If the user has other projects in the same org, add a line: `Tip: link repos into one project with 'sfs project link'.`
+3. **CLI hint on `sfs project show`** (release day): If the user has other projects in the same org, add a line: `Tip: link repos into one project with 'sfs project link-repo'.`
 4. **Email to existing users** (release week): "You have N projects across M repos. Multi-repo projects let you consolidate them into shared workspaces. Here's how."
 5. **Docs page** (release day): `docs/multi-repo-projects.md` — user-facing guide with examples.
 
@@ -245,7 +245,7 @@ Existing split projects continue to work exactly as today. Users are not forced 
 **Recommendation:** **One repo ∈ exactly one project.** This is a hard constraint. Rationale:
 - If repo R is in both projects, sessions from R would feed two separate KBs — which KB is authoritative?
 - Tickets referencing R's sessions would have ambiguous project scope.
-- The data model (Atlas's join table) enforces this with a unique constraint on `repo_id`.
+- The data model (Atlas's join table) enforces this with a unique constraint on `git_remote_normalized` (and a `provider`+`provider_repo_id` partial unique index for rename survival).
 
 **Workaround for the user:** The shared library team should have its own project. Product A and Product B can cross-reference tickets. Future: project-to-project links / "shared KB sections" — but this is a v2 feature, not v1.
 
@@ -269,7 +269,7 @@ Existing split projects continue to work exactly as today. Users are not forced 
 | "Merge is instant and perfect" | Collisions require manual review. The dry-run shows everything upfront. | Default `--dry-run` with no side effects. |
 | "My free-tier project should support multi-repo" | It does — multi-repo is free for all tiers. | No gating; works everywhere. |
 | "I can delete the source project after merge" | It's auto-soft-deleted. Sessions remain accessible. | The merge output confirms this explicitly. |
-| "Renaming a repo on GitHub breaks the link" | The git remote is the link key. Renaming a repo changes its normalized remote. | Atlas should design for this: store the GitHub `repo_id` (stable integer) alongside the `git_remote_normalized`, and update the normalized string on rename events. If that's not in v1, document: "If you rename a repo on GitHub, re-link it with `sfs project link`." |
+| "Renaming a repo on GitHub breaks the link" | The git remote is the link key. Renaming a repo changes its normalized remote. | **Resolved in v1.** The `project_repos` schema includes `provider` + `provider_repo_id` (stable across renames). A rename-survival handler (follow-up: sync-repo-names / GitHub webhook) matches on `(provider, provider_repo_id)` and updates `git_remote_normalized` in place. Until that handler ships, users can manually update with `sfs project unlink-repo` + `sfs project link-repo`. |
 
 ### 7.5 Atlas Open Decisions this doc resolves
 
@@ -288,7 +288,7 @@ This section is the handoff to Atlas's `multi-repo-projects.md`:
 
 | Decision | Recommendation |
 |----------|---------------|
-| **Linking model** | Explicit link — user runs `sfs project link --to <project>`. Never auto-guess. |
+| **Linking model** | Explicit link — user runs `sfs project link-repo <remote>`. Never auto-guess. |
 | **Merge collision default** | Keep target, rename source to `<name> (from <project>)`. No field-merge. |
 | **Merge dry-run** | Mandatory default. `--execute` required to mutate. `--interactive` for per-collision control. |
 | **Repo exclusivity** | One repo ∈ exactly one project. Hard constraint. |

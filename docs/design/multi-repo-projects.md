@@ -1,10 +1,16 @@
 # Binding Design — Multi-Repo Projects
 
-**Status:** Draft — awaiting CEO + Codex review
+**Status:** Revised — R1 (Codex) addressed 3 HIGH + 4 MED + 3 LOW + merge matrix added, 2026-06-15
 **Author:** Atlas (backend/data-model)
 **Date:** 2026-06-15
-**Companion:** `docs/design/multi-repo-projects-product.md` (Compass — linking UX + merge collision policy; not yet present at time of writing)
+**Companion:** `docs/design/multi-repo-projects-product.md` (Compass — linking UX + merge collision policy)
 **Security gate:** Sentinel pre-build pass required before implementation (see §8)
+
+## Revision History
+
+| Rev | Date | Changes |
+|-----|------|---------|
+| R1 | 2026-06-15 | Codex R1: 3 HIGH (primary-demotion order, stranded personas, tombstone-aware resolvers) + 4 MED (exhaustive resolver list 11→16, ticket reassign-in-place, is_primary partial index, provider fields) + 3 LOW (JSONB→Text JSON, promote source rules when target none, CLI link-repo naming). CEO calls applied: ticket=reassign-in-place, CLI=link-repo. Per-table merge matrix added. |
 
 ---
 
@@ -25,21 +31,61 @@ Every design decision below is grounded in these references. All line numbers ve
 | Session model | `src/sessionfs/server/db/models.py:170` | `Session.git_remote_normalized` — nullable, no unique constraint (sessions carry the tag, never enforce it) |
 | Session→project FK | `src/sessionfs/server/db/models.py:193-197` | `Session.project_id` — nullable FK to `projects.id`, `ondelete="SET NULL"` |
 
-### 2.2 Resolvers That Assume 1 Remote → 1 Project
+### 2.2 Resolvers That Assume 1 Remote → 1 Project (EXHAUSTIVE — 16 sites)
 
-| Resolver | File:Line | Pattern |
-|----------|-----------|---------|
-| `_resolve_project_id_for_session` | `src/sessionfs/server/routes/sessions.py:501-560` | `select(Project).where(git_remote_normalized == X).with_for_update()` → `.scalar_one_or_none()` at line 543 |
-| `GET /api/v1/projects/{git_remote_normalized:path}` | `src/sessionfs/server/routes/projects.py:362-383` | Same pattern, `.scalar_one_or_none()` at line 378 |
-| MCP `_resolve_project_id` | `src/sessionfs/mcp/server.py:2603-2635` | HTTP `GET /api/v1/projects/{normalized}`, expects exactly one JSON object |
-| CLI `_resolve_project_id` | `src/sessionfs/cli/cmd_project.py:1086-1107` | HTTP `GET /api/v1/projects/{normalized}`, expects exactly one |
-| `_check_repo_access` | `src/sessionfs/server/routes/projects.py:74-82` | `select(Session.id).where(user_id=X, git_remote_normalized=Y)` — grants access per-repo |
-| `list_projects` | `src/sessionfs/server/routes/projects.py:85-119` | Resolves via `distinct(Session.git_remote_normalized)` for the user — projects surfaced by repo match |
-| `validate_provenance_for_sender` | `src/sessionfs/server/services/handoff_helpers.py:155-161` | `select(Project).where(git_remote_normalized == session.git_remote_normalized)` → `.scalar_one_or_none()` |
-| `assert_service_key_handoff_boundary` | `src/sessionfs/server/services/handoff_helpers.py:475-565` | Git-remote fallback at line 521-528; `len(matching) > 1` is a 403 `service_key_project_ambiguous` error at line 529-544 |
-| Project transfer snapshot | `src/sessionfs/server/routes/project_transfers.py:320` | `project_git_remote_snapshot=project.git_remote_normalized` |
-| Org member project snapshot | `src/sessionfs/server/routes/org_members.py:828` | `project_git_remote_snapshot=project.git_remote_normalized` |
-| Session sync (POST + PUT) | `src/sessionfs/server/routes/sessions.py:790-840,1604-1702,1837,1919` | Extracts git_remote from workspace, passes to `_resolve_project_id_for_session`, also used in auto-extract-knowledge gating |
+All verified by exhaustive grep of `git_remote_normalized` across `src/sessionfs/server`, `src/sessionfs/mcp`, `src/sessionfs/cli` on 2026-06-15.
+
+**A. Direct project-resolution sites (use `Project.git_remote_normalized` in WHERE clause — must route through `project_repos`):**
+
+| # | Resolver | File:Line | Pattern |
+|---|----------|-----------|---------|
+| A1 | `_resolve_project_id_for_session` | `routes/sessions.py:537-543` | `select(Project).where(git_remote_normalized == X).with_for_update()` → `.scalar_one_or_none()` |
+| A2 | `GET /api/v1/projects/{git_remote_normalized:path}` | `routes/projects.py:376-378` | Same pattern, `.scalar_one_or_none()` |
+| A3 | `PUT /api/v1/projects/{git_remote_normalized:path}/context` | `routes/projects.py:410` | `select(Project).where(git_remote_normalized == X)` → `.scalar_one_or_none()` |
+| A4 | `POST /api/v1/projects/` (create) duplicate check | `routes/projects.py:261` | `select(Project).where(git_remote_normalized == body.git_remote_normalized)` — must also check `project_repos` |
+| A5 | `validate_provenance_for_sender` | `handoff_helpers.py:155-161` | `select(Project).where(git_remote_normalized == session.git_remote_normalized)` → `.scalar_one_or_none()` |
+| A6 | `validate_attachments` | `handoff_helpers.py:215-221` | `select(Project).where(git_remote_normalized == session.git_remote_normalized)` → `.scalar_one_or_none()` |
+| A7 | `assert_service_key_handoff_boundary` (legacy fallback) | `handoff_helpers.py:521-546` | `select(Project).where(git_remote_normalized == session.git_remote_normalized)` → `.scalars().all()`, `len(matching) > 1` is 403 |
+| A8 | `_get_project_or_404` (rules.py UUID/remote dual resolver) | `routes/rules.py:145-148` | `select(Project).where(Project.git_remote_normalized == project_id)` fallback after UUID try |
+| A9 | Handoff create — attachment project_id resolution | `routes/handoffs.py:344-350` | `select(Project.id).where(git_remote_normalized == session.git_remote_normalized)` |
+| A10 | Handoff claim — persona-only project_id resolution | `routes/handoffs.py:916-928` | `select(Project.id).where(git_remote_normalized == source_session.git_remote_normalized)` |
+
+**B. Access-predicate sites (use `Session.git_remote_normalized` JOIN/WHERE against `Project.git_remote_normalized` — must switch to `Session.project_id` or join through `project_repos`):**
+
+| # | Site | File:Line | Pattern |
+|---|------|-----------|---------|
+| B1 | `user_can_access_project` predicate #3 | `auth/project_access.py:55-65` | `Session.git_remote_normalized == project.git_remote_normalized` — checks if user has sessions on the project's remote |
+| B2 | `_accessible_project_ids` path #3 | `handoff_helpers.py:116-126` | `select(Project.id).join(Session, Session.git_remote_normalized == Project.git_remote_normalized).where(user_id=X)` |
+| B3 | `_get_project_or_404` access check (rules.py) | `routes/rules.py:153-158` | `Session.git_remote_normalized == project.git_remote_normalized` — same pattern as B1 |
+| B4 | `list_projects` remote resolution | `routes/projects.py:124` | `Project.git_remote_normalized.in_(user_remotes)` — projects matched by session remote |
+| B5 | `list_projects` session count aggregation | `routes/projects.py:134-145` | `select(Session.git_remote_normalized, count).where(git_remote_normalized.in_(remotes)).group_by(...)` |
+| B6 | `_check_repo_access` | `routes/projects.py:74-82` | `Session.git_remote_normalized == git_remote` — grants access per-repo |
+
+**C. Remote-propagated-through-session sites (no change needed — these write/read the Session row's denormalized `git_remote_normalized` tag, which survives as a per-session metadata column):**
+
+| # | Site | File:Line | Why no change |
+|---|------|-----------|---------------|
+| C1 | Session sync POST + PUT — extracts workspace remote | `routes/sessions.py:790-795,1604-1609,1837,2184` | Passes through A1 for project resolution; session keeps its denormalized tag |
+| C2 | Session sync — auto-extract-knowledge gating | `routes/sessions.py:1734-1736,1872-1874` | Uses `git_remote_normalized` as a boolean "has remote?" gate; session-level, not project-resolution |
+| C3 | Handoff create — stores denormalized remote on handoff row | `routes/handoffs.py:851` | `git_remote_normalized=source_session.git_remote_normalized` — denormalized snapshot, unchanged |
+| C4 | `_resolve_project_id_for_session` — session FK scan | `routes/sessions.py:1919` | `select(Project).where(git_remote_normalized == git_remote)` — already covered by A1's change |
+| C5 | Webhook session matching (GitHub/GitLab PR events) | `routes/webhooks.py:142,344` | `Session.git_remote_normalized == normalized` — filters sessions by repo for PR matching; NOT project resolution. No change needed. |
+
+**D. Client-side sites (HTTP callers — server-side route change covers them; error messages only):**
+
+| # | Site | File:Line | Change |
+|---|------|-----------|--------|
+| D1 | MCP `_resolve_project_id` | `mcp/server.py:2603-2635` | HTTP `GET /api/v1/projects/{normalized}` — server covers resolution. Update 404 error message to mention `sfs project link-repo`. |
+| D2 | MCP `CloudClient.get_project_context` | `mcp/cloud_client.py:93-98` | Same HTTP call pattern. No server-side change needed. |
+| D3 | CLI `_resolve_project_id` | `cli/cmd_project.py:1086-1107` | Same HTTP call pattern. Update error message to mention `link-repo`. |
+| D4 | CLI `cmd_rules._recent_tool_usage` | `cli/cmd_rules.py:301` | Queries LOCAL SQLite index by remote — session-scoped, not project resolution. No change needed. |
+
+**E. Snapshot/display sites (read `project.git_remote_normalized` for audit/display — use primary remote helper):**
+
+| # | Site | File:Line | Change |
+|---|------|-----------|--------|
+| E1 | Project transfer snapshot | `routes/project_transfers.py:320` | Read `get_primary_remote(project_id)` instead of `project.git_remote_normalized` |
+| E2 | Org member project snapshot | `routes/org_members.py:828` | Same — use `get_primary_remote()` |
 
 ### 2.3 Normalization
 
@@ -63,7 +109,7 @@ These all carry FK `project_id` and are already scoped to the unit we want share
 5. `context_compilations`
 6. `knowledge_pages`
 7. `wiki_page_revisions`
-8. `project_rules` (UNIQUE on `project_id` — see merge issue §5.6)
+8. `project_rules` (UNIQUE on `project_id` — see merge matrix §5.12)
 9. `knowledge_links`
 10. `agent_personas`
 11. `tickets`
@@ -73,7 +119,7 @@ These all carry FK `project_id` and are already scoped to the unit we want share
 
 ### 2.6 The Ambiguity Guard That Becomes an Invariant
 
-`assert_service_key_handoff_boundary` (`handoff_helpers.py:529-544`) currently treats `len(matching) > 1` as a 403 error. With the new global-unique constraint on `project_repos`, this case becomes **provably impossible** — the guard converts from a runtime ambiguity detector into a compile-time invariant backed by the database. Document this.
+`assert_service_key_handoff_boundary` (`handoff_helpers.py:529-544`) currently treats `len(matching) > 1` as a 403 error. With the new global-unique constraint on `project_repos`, this case becomes **provably impossible** — the guard converts from a runtime ambiguity detector into a compile-time invariant backed by the database. The error is kept as defense-in-depth; if it ever fires, a database constraint has been violated.
 
 ---
 
@@ -89,6 +135,10 @@ CREATE TABLE project_repos (
     project_id      VARCHAR(64) NOT NULL
                         REFERENCES projects(id) ON DELETE CASCADE,
     git_remote_normalized VARCHAR(255) NOT NULL,
+    -- Provider identity for rename survival (v1):
+    -- Stable across GitHub renames; NULL for self-hosted/unknown providers.
+    provider        VARCHAR(20),          -- e.g. 'github', 'gitlab', 'bitbucket'
+    provider_repo_id VARCHAR(100),        -- stable integer-as-string, e.g. GitHub repo ID
     is_primary      BOOLEAN NOT NULL DEFAULT FALSE,
     added_by_user_id VARCHAR(64)
                         REFERENCES users(id) ON DELETE SET NULL,
@@ -97,20 +147,23 @@ CREATE TABLE project_repos (
     -- Each remote belongs to exactly one project (global uniqueness).
     CONSTRAINT uq_project_repos_remote UNIQUE (git_remote_normalized),
 
-    -- One primary remote per project (for display / backward compat).
-    -- Partial unique index: only one row per project_id where is_primary IS TRUE.
-    -- Implemented as a conditional unique index.
-    CONSTRAINT uq_project_repos_primary UNIQUE (project_id, is_primary)
-        -- Note: in PostgreSQL this is a partial index:
-        --   CREATE UNIQUE INDEX uq_project_repos_primary
-        --       ON project_repos (project_id) WHERE is_primary IS TRUE;
-        -- SQLite doesn't support partial indexes; enforce at application layer
-        -- with SELECT FOR UPDATE + rowcount guard pattern.
-
-    -- Index for lookup-by-remote (primary query path).
-    -- Covered by uq_project_repos_remote's implicit index in PG;
-    -- explicit in migration for SQLite clarity.
+    -- Each provider repo_id belongs to exactly one project (rename survival).
+    -- Partial: only enforced when provider_repo_id IS NOT NULL.
+    CONSTRAINT uq_project_repos_provider_repo UNIQUE (provider, provider_repo_id)
+        -- Implemented as partial unique index in Alembic (see below).
 );
+
+-- PostgreSQL:
+--   CREATE UNIQUE INDEX uq_project_repos_primary
+--       ON project_repos (project_id) WHERE is_primary IS TRUE;
+--   CREATE UNIQUE INDEX uq_project_repos_provider_repo
+--       ON project_repos (provider, provider_repo_id)
+--       WHERE provider_repo_id IS NOT NULL;
+--
+-- SQLite 3.8.0+ supports partial indexes with the same syntax.
+-- Alembic: op.create_index('uq_project_repos_primary', 'project_repos',
+--   ['project_id'], unique=True, postgresql_where=text('is_primary IS TRUE'),
+--   sqlite_where=text('is_primary IS TRUE'))
 
 CREATE INDEX idx_project_repos_project ON project_repos (project_id);
 ```
@@ -132,6 +185,8 @@ class ProjectRepo(Base):
     git_remote_normalized: Mapped[str] = mapped_column(
         String(255), nullable=False
     )
+    provider: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    provider_repo_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     is_primary: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     added_by_user_id: Mapped[str | None] = mapped_column(
         String(64), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
@@ -141,13 +196,35 @@ class ProjectRepo(Base):
     )
 ```
 
-**Decision: Keep `projects.git_remote_normalized`.** This column remains as the project's **primary/display remote** for backward compatibility. It is denormalized from `project_repos WHERE is_primary IS TRUE`. During the backfill migration, every existing project's current `git_remote_normalized` becomes the primary repo. Old clients that query `GET /projects/{remote}` against a non-primary remote will still work via the new resolver (see §3.3). New clients should use project-by-ID endpoints where possible.
+**Partial unique indexes in Alembic (migration 049):**
 
-**Rationale for keeping the column:**
-- Zero breakage for existing API consumers, CLI, MCP, and dashboard
-- The column is used in 10+ response shapes (`ProjectResponse`, transfer snapshots, org member snapshots)
-- Removing it would require a multi-release deprecation cycle with no benefit
-- The join table is the source of truth; the column is a cached primary reference
+```python
+# One primary per project (partial: WHERE is_primary IS TRUE)
+op.create_index(
+    "uq_project_repos_primary",
+    "project_repos",
+    ["project_id"],
+    unique=True,
+    postgresql_where=sa.text("is_primary IS TRUE"),
+    sqlite_where=sa.text("is_primary IS TRUE"),
+)
+
+# One project per provider repo_id (partial: WHERE provider_repo_id IS NOT NULL)
+op.create_index(
+    "uq_project_repos_provider_repo",
+    "project_repos",
+    ["provider", "provider_repo_id"],
+    unique=True,
+    postgresql_where=sa.text("provider_repo_id IS NOT NULL"),
+    sqlite_where=sa.text("provider_repo_id IS NOT NULL"),
+)
+```
+
+**Application-level enforcement (defense-in-depth):** Before any `project_repos` write that sets `is_primary=True`, run a SELECT FOR UPDATE on the project's existing repo rows and swap `is_primary=FALSE` on the old primary in the same transaction. For `provider`+`provider_repo_id`, validate uniqueness with a pre-insert SELECT before relying on the partial index alone.
+
+**Why NOT a plain `UNIQUE(project_id, is_primary)`:** That would allow only ONE non-primary repo per project (the tuple `(project_id, FALSE)` could appear once). We need N-1 non-primary repos. The partial index `WHERE is_primary IS TRUE` correctly enforces exactly one primary.
+
+**Decision: Keep `projects.git_remote_normalized`.** This column remains as the project's **primary/display remote** for backward compatibility. It is denormalized from `project_repos WHERE is_primary IS TRUE`. During the backfill migration, every existing project's current `git_remote_normalized` becomes the primary repo. Old clients that query `GET /projects/{remote}` against a non-primary remote will still work via the new resolver (see §3.3). New clients should use project-by-ID endpoints where possible.
 
 ### 3.2 Migration (049 — Additive)
 
@@ -155,46 +232,43 @@ class ProjectRepo(Base):
 
 **Upgrade:**
 
-1. Create `project_repos` table with all columns, constraints, and indexes
-2. Backfill: one row per existing project from `projects.git_remote_normalized` with `is_primary = TRUE`
+1. Create `project_repos` table with all columns (including `provider`, `provider_repo_id`), constraints, and indexes
+2. Create two partial unique indexes (primary, provider_repo_id) — use cross-DB-safe Alembic with `postgresql_where` + `sqlite_where`
+3. Add `merged_into_project_id` (nullable FK to `projects.id`, `ON DELETE SET NULL`) + `merged_at` (nullable TIMESTAMPTZ) to `projects`
+4. Create `project_merge_audit` table (see §5.10)
+5. Backfill: one row per existing project from `projects.git_remote_normalized` with `is_primary = TRUE`
    ```sql
    INSERT INTO project_repos (id, project_id, git_remote_normalized, is_primary, created_at)
    SELECT gen_random_uuid()::text, id, git_remote_normalized, TRUE, NOW()
    FROM projects
    WHERE git_remote_normalized IS NOT NULL AND git_remote_normalized != '';
    ```
-   (Use SQLite-compatible UUID generation in the migration helper; the existing `_gen_id()` utility is available.)
-3. No DROP or ALTER of `projects.git_remote_normalized` — retained for backward compat
-4. No NOT NULL changes on existing columns
+   (Use SQLite-compatible UUID generation via the existing `_gen_id()` utility.)
 
-**Downgrade:** Drop `project_repos` table. (No data loss risk — the column on `projects` was never removed.)
+**Downgrade:** Drop `project_repos` table + `project_merge_audit` table. Drop `merged_into_project_id` + `merged_at` columns from `projects`. No data loss risk — the column on `projects` was never removed.
 
 **Zero downtime:** Additive-only. Old code ignores the new table. New code queries the new table first, falls back to the old column.
 
 ### 3.3 Resolution Changes — Every Site
-
-The core pattern change: **every `select(Project).where(git_remote_normalized == X)` becomes a two-step lookup through `project_repos`.**
 
 #### New Shared Helper
 
 ```python
 # src/sessionfs/server/services/project_resolver.py (NEW)
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-from sessionfs.server.db.models import Project, ProjectRepo
-
 async def resolve_project_by_remote(
     db: AsyncSession,
     git_remote_normalized: str,
     *,
     for_update: bool = False,
+    follow_tombstone: bool = True,
 ) -> Project | None:
     """Resolve a project from a git remote via the project_repos join table.
 
     Dual-read: project_repos first, then fallback to projects.git_remote_normalized
-    for backward compatibility during transition. Once all rows are backfilled and
-    old clients are upgraded, the fallback can be removed (future cleanup ticket).
+    for backward compatibility. Tombstone-aware: if the resolved project has
+    merged_into_project_id, follows the chain transparently (unless
+    follow_tombstone=False, used only by merge endpoint itself).
 
     Returns None when no project owns this remote.
     """
@@ -211,43 +285,86 @@ async def resolve_project_by_remote(
         stmt = stmt.with_for_update(of=Project)
     result = await db.execute(stmt)
     project = result.scalar_one_or_none()
-    if project is not None:
-        return project
 
     # Fallback: legacy projects.git_remote_normalized column
-    # (for rows that haven't been backfilled or old direct writes)
-    stmt = select(Project).where(
-        Project.git_remote_normalized == git_remote_normalized
+    if project is None:
+        stmt = select(Project).where(
+            Project.git_remote_normalized == git_remote_normalized
+        )
+        if for_update:
+            stmt = stmt.with_for_update()
+        result = await db.execute(stmt)
+        project = result.scalar_one_or_none()
+
+    # Tombstone redirect: follow merged_into_project_id chain
+    if project is not None and follow_tombstone and project.merged_into_project_id:
+        project = await db.get(Project, project.merged_into_project_id)
+        # Chain-follow: if the target was itself merged, continue
+        while project is not None and project.merged_into_project_id:
+            project = await db.get(Project, project.merged_into_project_id)
+
+    return project
+
+
+async def get_primary_remote(db: AsyncSession, project_id: str) -> str | None:
+    """Return the primary git_remote_normalized for a project."""
+    result = await db.execute(
+        select(ProjectRepo.git_remote_normalized)
+        .where(ProjectRepo.project_id == project_id, ProjectRepo.is_primary == True)  # noqa: E712
+        .limit(1)
     )
-    if for_update:
-        stmt = stmt.with_for_update()
-    result = await db.execute(stmt)
-    return result.scalar_one_or_none()
+    row = result.scalar_one_or_none()
+    return row if row else None
+
+
+async def resolve_project_by_id(
+    db: AsyncSession,
+    project_id: str,
+    *,
+    follow_tombstone: bool = True,
+) -> Project | None:
+    """Get project by ID, optionally following tombstone chain."""
+    project = await db.get(Project, project_id)
+    if project is not None and follow_tombstone and project.merged_into_project_id:
+        project = await db.get(Project, project.merged_into_project_id)
+        while project is not None and project.merged_into_project_id:
+            project = await db.get(Project, project.merged_into_project_id)
+    return project
 ```
 
-#### Site-by-Site Changes
+#### Site-by-Site Changes (All 16 Sites)
 
-| # | Site | File:Line | Change |
-|---|------|-----------|--------|
-| 1 | `_resolve_project_id_for_session` | `routes/sessions.py:537-543` | Replace `select(Project).where(git_remote_normalized == X).with_for_update()` with `await resolve_project_by_remote(db, git_remote_normalized, for_update=True)` |
-| 2 | `GET /api/v1/projects/{git_remote_normalized:path}` | `routes/projects.py:376-378` | Replace `select(Project).where(git_remote_normalized == X)` with `await resolve_project_by_remote(db, git_remote_normalized)` |
-| 3 | MCP `_resolve_project_id` | `mcp/server.py:2625-2627` | No DB change needed (this is an HTTP client). The server-side route (#2) handles the resolution. However: the MCP tool's error message on 404 should mention multi-repo ("No project found for {normalized}. Run: sfs project init, or link this repo to an existing project with: sfs project link-repo") |
-| 4 | CLI `_resolve_project_id` | `cli/cmd_project.py:1103-1107` | Same as #3 — server-side resolution covers this. Update error message to mention `link-repo`. |
-| 5 | `_check_repo_access` | `routes/projects.py:74-82` | **Needs redesign:** currently checks `Session.git_remote_normalized == Y`. Must now find the project via `resolve_project_by_remote`, then check if user has sessions for ANY repo owned by that project. Or simpler: just check if user has sessions with `project_id == resolved_project.id` (the `sessions.project_id` FK, which is set at sync time by `_resolve_project_id_for_session`). |
-| 6 | `list_projects` | `routes/projects.py:108-114` | Currently resolves via `distinct(Session.git_remote_normalized)`. Must change to: (a) find all session remotes, (b) resolve each to a project via `project_repos` + fallback, (c) UNION with org-membership and ownership queries. Dedup by project_id. |
-| 7 | `validate_provenance_for_sender` | `handoff_helpers.py:155-161` | Replace `select(Project).where(git_remote_normalized == session.git_remote_normalized)` with `await resolve_project_by_remote(db, session.git_remote_normalized)`. **Also check `session.project_id` first** as the authoritative anchor (mirrors the handoff boundary guard's R6 fix pattern at `handoff_helpers.py:515-520`). |
-| 8 | `assert_service_key_handoff_boundary` | `handoff_helpers.py:521-546` | Replace the legacy fallback block (lines 521-546) with `await resolve_project_by_remote(db, source_session.git_remote_normalized)`. The `len(matching) > 1` ambiguity error is now **provably unreachable** (the UNIQUE constraint on `project_repos.git_remote_normalized` guarantees at most one project per remote). Keep the error as a defense-in-depth invariant check — if it ever fires, the database constraint has been violated. |
-| 9 | Session sync (POST + PUT) | `routes/sessions.py:790-795,1604-1609,1837,1919` | Already passes through `_resolve_project_id_for_session` (#1). The `git_remote_normalized` column on `Session` stays as a denormalized tag; `session.project_id` is also set from the resolver. **No change needed** — the resolver handles the indirection. |
-| 10 | Project transfer snapshots | `routes/project_transfers.py:320` | `project_git_remote_snapshot` currently reads `project.git_remote_normalized`. After migration, this should read the PRIMARY remote from `project_repos`. Add a helper `get_primary_remote(db, project_id)` that returns the `is_primary=True` row's normalized remote. |
-| 11 | Org member audit | `routes/org_members.py:828` | Same as #10 — use `get_primary_remote()`. |
+**Group A — Direct project-resolution sites (10 sites):**
 
-### 3.4 The `is_primary` One-Per-Project Invariant
+| # | Site | Change |
+|---|------|--------|
+| A1 | `_resolve_project_id_for_session` (`routes/sessions.py:537-543`) | Replace `select(Project).where(git_remote_normalized == X).with_for_update()` → `await resolve_project_by_remote(db, X, for_update=True)` |
+| A2 | `GET /api/v1/projects/{git_remote_normalized:path}` (`routes/projects.py:376-378`) | Replace `scalar_one_or_none()` → `await resolve_project_by_remote(db, X)`. Tombstone-aware: return `410 Gone` with `{"merged_into": target_id}` when resolved project is a tombstone reached via fallback (the primary path already follows the chain). |
+| A3 | `PUT /api/v1/projects/{git_remote_normalized:path}/context` (`routes/projects.py:410`) | Same replacement as A2 |
+| A4 | `POST /api/v1/projects/` duplicate check (`routes/projects.py:261`) | Extend check: also query `project_repos` for existing link: `select(ProjectRepo).where(git_remote_normalized == X)` |
+| A5 | `validate_provenance_for_sender` (`handoff_helpers.py:155-161`) | Replace with `await resolve_project_by_remote(db, session.git_remote_normalized)`. **Also check `session.project_id` first** as authoritative anchor (mirrors A7's R6 pattern). |
+| A6 | `validate_attachments` (`handoff_helpers.py:215-221`) | Replace with `await resolve_project_by_remote(db, session.git_remote_normalized)`. Prefer `session.project_id` first. |
+| A7 | `assert_service_key_handoff_boundary` legacy fallback (`handoff_helpers.py:521-546`) | Replace lines 521-546 with `await resolve_project_by_remote(db, source_session.git_remote_normalized)`. The `len(matching) > 1` ambiguity check is now unreachable — keep as defense-in-depth assertion. |
+| A8 | `_get_project_or_404` remote fallback (`routes/rules.py:145-148`) | Replace `select(Project).where(git_remote_normalized == project_id)` with `await resolve_project_by_remote(db, project_id)`. Tombstone-aware: 410 if resolved-to-tombstone. |
+| A9 | Handoff create attachment resolution (`routes/handoffs.py:344-350`) | Replace with `await resolve_project_by_remote(db, session.git_remote_normalized)`. Prefer `session.project_id` first. |
+| A10 | Handoff claim persona-only resolution (`routes/handoffs.py:916-928`) | Replace with `await resolve_project_by_remote(db, source_session.git_remote_normalized)`. Prefer `source_session.project_id` first. |
 
-The primary remote is the one shown in `ProjectResponse.git_remote_normalized` and stored in `project_transfers.project_git_remote_snapshot`. Enforce exactly one primary per project:
+**Group B — Access-predicate sites (6 sites):**
 
-- **On link:** if `is_primary=True` is requested, atomically swap: `UPDATE project_repos SET is_primary=FALSE WHERE project_id=X` then `INSERT ... is_primary=TRUE`. In a single transaction with SELECT FOR UPDATE on the project's existing repo rows.
-- **On unlink:** if unlinking the primary, auto-promote the oldest remaining repo to primary. If it's the LAST repo, deny unlink (a project must have at least one repo — see Open Decision Q4).
-- **Application-level guard:** Before any write, assert exactly one primary per project. The partial unique index in PostgreSQL enforces this at the DB level; SQLite enforces via the app-level SELECT FOR UPDATE serialization pattern.
+| # | Site | Change |
+|---|------|--------|
+| B1 | `user_can_access_project` predicate #3 (`auth/project_access.py:55-65`) | Replace `Session.git_remote_normalized == project.git_remote_normalized` with `Session.project_id == project.id`. After multi-repo, `project.git_remote_normalized` is only the primary remote — users with sessions on non-primary repos would falsely fail the check. `Session.project_id` is set at sync time by A1 and is the correct project anchor. |
+| B2 | `_accessible_project_ids` path #3 (`handoff_helpers.py:116-126`) | Replace the `join(Session, Session.git_remote_normalized == Project.git_remote_normalized)` with `select(Session.project_id).where(Session.user_id == X, Session.project_id.isnot(None))` — collect distinct `project_id`s the user has sessions for, then UNION with owner/org-member queries. |
+| B3 | `_get_project_or_404` access check (`routes/rules.py:153-158`) | Replace `Session.git_remote_normalized == project.git_remote_normalized` with `Session.project_id == project.id` (same pattern as B1). |
+| B4 | `list_projects` remote matching (`routes/projects.py:124`) | Replace `Project.git_remote_normalized.in_(user_remotes)` with a subquery through `project_repos`: `Project.id.in_(select(ProjectRepo.project_id).where(ProjectRepo.git_remote_normalized.in_(user_remotes)))`. Also keep the legacy `Project.git_remote_normalized.in_(user_remotes)` as fallback (OR condition). |
+| B5 | `list_projects` session count (`routes/projects.py:134-145`) | Replace `select(Session.git_remote_normalized, count).group_by(Session.git_remote_normalized)` with `select(Session.project_id, count).group_by(Session.project_id)` filtered to sessions with non-null project_id. Match counts to projects by `project.id`, not `git_remote_normalized`. |
+| B6 | `_check_repo_access` (`routes/projects.py:74-82`) | Replace `Session.git_remote_normalized == git_remote` with: (a) resolve project via `resolve_project_by_remote`, (b) check `Session.project_id == resolved_project.id` OR keep the git_remote match for sessions that predate project linkage. |
+
+**Group C — No change needed (5 sites — see table in §2.2C).**
+
+**Group D — Client-side error messages only (4 sites — see table in §2.2D).**
+
+**Group E — Use `get_primary_remote()` (2 sites — see table in §2.2E).**
 
 ---
 
@@ -264,7 +381,9 @@ Link a repo to a project.
 ```json
 {
   "git_remote": "https://github.com/acme/backend.git",
-  "is_primary": false
+  "is_primary": false,
+  "provider": "github",
+  "provider_repo_id": "123456789"
 }
 ```
 
@@ -272,21 +391,21 @@ Link a repo to a project.
 - `201` — linked, returns `ProjectRepoResponse`
 - `409` — repo already linked to another project: `{"error": "repo_already_linked", "existing_project_id": "...", "message": "This repo is already linked to project X. Unlink it there first, or merge the projects (see: sfs project merge)."}`
 - `403` — not authorized
-- `422` — last repo unlink denied (see Q4)
+- `422` — last repo unlink denied (see §7 Q4)
 
 #### `DELETE /api/v1/projects/{project_id}/repos/{repo_id}`
 Unlink a repo.
 
-**Authz:** Same as link. Cannot unlink the last repo (see Q4).
+**Authz:** Same as link. Cannot unlink the last repo (see §7 Q4).
 
 #### `GET /api/v1/projects/{project_id}/repos`
-List all repos for a project. Returns `ProjectRepoResponse[]` with `is_primary` flag.
+List all repos for a project. Returns `ProjectRepoResponse[]` with `is_primary`, `provider`, `provider_repo_id` fields.
 
 #### `POST /api/v1/projects/{project_id}/merge`
 Merge another project into this one. See §5 for full design.
 
 #### `GET /api/v1/projects/{git_remote_normalized:path}` (existing — updated)
-No API surface change. The resolver now finds the project through `project_repos` (see §3.3 #2). Response still includes `git_remote_normalized` — now the primary remote.
+No API surface change. The resolver now finds the project through `project_repos` (see §3.3 A2). Response still includes `git_remote_normalized` — now the primary remote. Tombstones return `410 Gone`.
 
 ### 4.2 CLI Commands
 
@@ -295,6 +414,7 @@ sfs project link-repo <remote> [--primary] [--project-id <id>]
     # Links a repo to a project. If --project-id is omitted, resolves
     # the current repo's project and links <remote> to it.
     # --primary makes this the display remote.
+    # Example: sfs project link-repo github.com/acme/backend.git
 
 sfs project unlink-repo <remote> [--project-id <id>]
     # Unlinks a repo. Refuses if it's the last repo.
@@ -328,8 +448,8 @@ The v0.10.13 incident (`tk_bc3c02a63e994717`) taught us that multi-commit destru
 
 1. **Single atomic transaction** — all or nothing. If anything fails mid-merge, the entire transaction rolls back and both projects are untouched.
 2. **Dry-run first** — `dry_run=True` (default) performs all validation and reports what WOULD happen without writing. `dry_run=False` executes.
-3. **Audit-logged** — a new `project_merge_audit` table records every merge attempt with before/after snapshots (project IDs, owner IDs, repo lists, entity counts per table).
-4. **NOT undoable automatically** — like `bulk_promote`, the merge is one-way. The dry-run report IS the undo plan (the user can see exactly what will happen and decide).
+3. **Audit-logged** — a `project_merge_audit` table records every merge attempt with before/after snapshots.
+4. **NOT undoable automatically** — like `bulk_promote`, the merge is one-way. The dry-run report IS the undo plan.
 
 ### 5.2 Endpoint
 
@@ -346,107 +466,134 @@ The v0.10.13 incident (`tk_bc3c02a63e994717`) taught us that multi-commit destru
 **Authz:**
 - Caller must OWN both projects OR be org admin of both projects' orgs
 - Both projects must be in the same org (or both personal)
-- Cross-org merges are DENIED (data-stays-access-revoked invariant — you can't merge a personal project into an org project without explicit transfer first)
+- Cross-org merges are DENIED (data-stays-access-revoked invariant)
+- Neither project may already be a tombstone (merged_into_project_id IS NULL on both)
 
-### 5.3 Entity Reassignment (14 Tables)
+### 5.3 Ticket Model: REASSIGN-IN-PLACE (CEO Decision)
 
-For each of the 14 project-scoped tables, reassign `project_id` from source → target:
+Tickets are reassigned by updating `project_id` directly:
 
 ```sql
--- Pattern repeated per table:
-UPDATE <table> SET project_id = :target_id WHERE project_id = :source_id;
+UPDATE tickets SET project_id = :target_id WHERE project_id = :source_id;
 ```
 
-**Table-specific considerations:**
+**Rationale:** Ticket IDs are globally unique (UUIDs). `depends_on` references are same-project at creation time (validated by `_validate_dependencies_same_project`). After reassignment, all tickets from both projects live under the same `project_id`, so all `depends_on` references remain valid. **No ID remapping, no `merged_from_ticket_id` provenance column, no copy semantics.** This is the simplest correct model.
 
-| Table | Considerations |
-|-------|---------------|
-| `sessions` | `project_id` is nullable FK with `ON DELETE SET NULL`. Straight UPDATE. Sessions keep their original `git_remote_normalized` tag (denormalized, unchanged). |
-| `agent_personas` | **Dedup required.** See §5.4. |
-| `project_rules` | **Conflict.** UNIQUE on `project_id`. Only one rules row survives per project. See §5.6. |
-| `knowledge_entries` | **Dedup desired.** Entries with same `entry_type` + `content` hash may be duplicates. See §5.5. |
-| `knowledge_pages` | **Slug collisions.** Same slug on both projects → rename source slug to `{slug}-merged-{source_project_id}` with a `merged_from_project_id` note in `wiki_page_revisions`. |
-| `wiki_page_revisions` | Re-point `page_id` (after slug collision resolution above). |
-| `tickets` | Preserve FSM state, `lease_epoch`, `depends_on`. Re-point `parent_ticket_id` if pointing within source project. `depends_on` entries referencing source-project tickets must be rewritten to the new IDs. |
-| `agent_runs` | Straight reassign. `persona_name` + `ticket_id` are plain strings (no FK), survive unchanged. |
-| `handoff_attachments` | Straight reassign. `project_id` is NOT NULL; FK handles cascade. |
-| `context_compilations` | Straight reassign. |
-| `retrieval_audit_contexts` | Straight reassign. |
-| `retrieval_audit_events` | Straight reassign. |
-| `knowledge_links` | Straight reassign. |
-| `project_transfers` | Straight reassign. |
-
-### 5.4 Persona Dedup
+### 5.4 Persona Handling
 
 The `uq_persona_project_name` constraint (models.py:1220) means two personas with the same `name` cannot coexist in the target project.
 
-**Policy (Open Decision Q2 — see §7):** The collision resolution policy is a Compass/CEO decision. The mechanism supports any of these:
+**Overarching rule: EVERY source persona is reassigned to the target.** No persona is left on the tombstone project.
 
-**Option A — Rename source personas (recommended):** Source-project personas that collide with target-project personas get `name = "{original}-{source_project_id_suffix}"` (e.g., `atlas-proj_abc123`). The target persona wins. Audit log records the rename.
-
-**Option B — Target wins, source dropped:** Source persona is NOT migrated. Sessions that referenced the source persona still carry `persona_name` as a plain string (no FK), so they survive. The persona row itself is soft-deleted (`is_active=False`).
-
-**Option C — Merge content:** Combine both persona contents into one (append source content to target with a `--- merged from {source_project_id} ---` divider). Risky — persona content is markdown injected verbatim into context windows; concatenation could produce unbounded prompts.
-
-**Mechanism (shared across options):**
 ```python
-async def _dedupe_personas(db, source_id, target_id, policy: str):
-    source_personas = await db.execute(
+async def _apply_persona_policy(db, source_id, target_id, policy):
+    """Reassign ALL source personas to target, handling collisions per policy."""
+    source_personas = (await db.execute(
         select(AgentPersona).where(AgentPersona.project_id == source_id)
-    )
-    target_names = set(await db.execute(
-        select(AgentPersona.name).where(AgentPersona.project_id == target_id)
-    ))
+    )).scalars().all()
 
+    target_names = set((await db.execute(
+        select(AgentPersona.name).where(AgentPersona.project_id == target_id)
+    )).scalars().all())
+
+    renames = []
     for persona in source_personas:
         if persona.name in target_names:
             if policy == "rename":
-                persona.name = f"{persona.name}-{source_id[:8]}"
+                new_name = f"{persona.name} (from {source_id[:8]})"
+                persona.name = new_name
+                renames.append({"old": persona.name, "new": new_name})
             elif policy == "skip":
-                persona.is_active = False  # soft-delete
+                persona.is_active = False  # soft-delete; survives as reference
             elif policy == "merge_content":
-                target = await db.execute(
+                target_p = (await db.execute(
                     select(AgentPersona).where(
                         AgentPersona.project_id == target_id,
                         AgentPersona.name == persona.name,
                     )
-                ).scalar_one()
-                target.content = f"{target.content}\n\n--- merged from {source_id} ---\n{persona.content}"
+                )).scalar_one()
+                target_p.content = (
+                    f"{target_p.content}\n\n"
+                    f"--- merged from project {source_id[:8]} ---\n"
+                    f"{persona.content}"
+                )
                 persona.is_active = False
-        # else: no collision, persona name unchanged
+        # REASSIGN — even colliding personas move to target
+        # (colliders are renamed/soft-deleted by policy above)
+        persona.project_id = target_id
+
+    return renames
 ```
+
+**Policy (Compass recommendation — apply as default):** Keep target's persona, rename source's to `<name> (from <source-id-prefix>)`. Users can override with the CLI `--interactive` flag at merge time. The merge audit records all renames.
 
 ### 5.5 Knowledge Entry Dedup
 
-Two projects may have the same knowledge entry (same concept, added independently). The merge should avoid literal duplicates.
+Best-effort exact-match dedup (no LLM — house rules: no server-side LLM keys):
 
-**Mechanism:** For each source entry, check if a semantically equivalent entry exists in the target:
-- Same `entry_type` AND `content` normalized (stripped whitespace, lowercased)
-- If match found: skip the source entry, log in audit
-- If no match: reassign
+```python
+async def _dedupe_knowledge_entries(db, source_id, target_id):
+    """Skip source entries that have an exact content+type match in target."""
+    target_entries = (await db.execute(
+        select(KnowledgeEntry.entry_type, KnowledgeEntry.content, KnowledgeEntry.id)
+        .where(KnowledgeEntry.project_id == target_id)
+    )).all()
+    # Build lookup key: (entry_type, normalized_content)
+    target_keys = {
+        (e.entry_type, _normalize_content(e.content)): e.id
+        for e in target_entries
+    }
 
-This is a **best-effort exact-match dedup**, not semantic dedup (which would require an LLM call — no server-side LLM keys per house rules). A future `sfs project dedup` command could do semantic dedup client-side.
+    source_entries = (await db.execute(
+        select(KnowledgeEntry).where(KnowledgeEntry.project_id == source_id)
+    )).scalars().all()
+
+    skipped = []
+    for entry in source_entries:
+        key = (entry.entry_type, _normalize_content(entry.content))
+        if key in target_keys:
+            skipped.append(entry.id)
+            # Don't reassign — it's a duplicate
+        else:
+            entry.project_id = target_id  # reassign unique entries
+
+    return skipped
+```
 
 ### 5.6 ProjectRules Conflict
 
 `ProjectRules` has `unique=True` on `project_id` (models.py:1086). Only one rules row per project.
 
-**Policy:** Target rules WIN. Source rules are archived as a `wiki_page_revision` with slug `_merged_rules_{source_project_id}` so they're recoverable. The merge audit records the source rules hash.
+**Policy (with Codex LOW-9 fix):**
 
-**Rationale:** Rules are the most actively curated project artifact. Overwriting the target's rules with source rules would be surprising and destructive. Preserving source rules as a wiki page makes them searchable and copyable without breaking the target.
+| Source has rules? | Target has rules? | Action |
+|-------------------|-------------------|--------|
+| YES | YES | **Conflict.** Target rules WIN. Source rules archived as `_merged_rules_{source_id[:8]}` wiki page. |
+| YES | NO | **Promote.** Reassign source rules to target (`UPDATE project_rules SET project_id = :target_id WHERE project_id = :source_id`). |
+| NO | YES | Nothing to do. Target already has rules. |
+| NO | NO | Nothing to do. |
 
 ### 5.7 Wiki Page Slug Collisions
 
-If both projects have a page at slug `architecture`, the source page is renamed to `architecture-merged-{source_id[:8]}`. Its revision history stays intact. A `merged_from_project_id` field on `WikiPageRevision` (new nullable column in migration 049) records the origin.
+If both projects have a page at slug `architecture`, the source page is renamed to `architecture (from {source_id[:8]})`. Its revision history stays intact. The merge audit records the rename.
 
-### 5.8 Repo Reassignment
+### 5.8 Repo Reassignment (with HIGH-1 Fix — Primary Demotion Order)
 
-All `project_repos` rows for the source project get `project_id = target_id`. The source project's primary remote becomes a non-primary repo under the target (unless the target has no primary set, in which case the source's primary becomes the target's primary). The source project itself is **NOT deleted** — it is marked with a new `merged_into_project_id` column (nullable FK to `projects.id`, `ON DELETE SET NULL`).
+**The problem:** If both projects have an `is_primary=true` repo row, reassigning source repos to target BEFORE demoting the source primary violates the partial unique index `WHERE is_primary IS TRUE`.
+
+**The fix — ordered write sequence within the merge transaction:**
+
+1. **Lock** both projects' `project_repos` rows with `SELECT ... FOR UPDATE`
+2. **Demote source primary first:** `UPDATE project_repos SET is_primary = FALSE WHERE project_id = :source_id AND is_primary IS TRUE`
+3. **Reassign all source repos:** `UPDATE project_repos SET project_id = :target_id WHERE project_id = :source_id`
+   - If the target already has a primary, the source's ex-primary stays non-primary (demoted in step 2)
+   - If the target has NO primary (edge case: all target repos unlinked?), the source's ex-primary becomes the target's effective primary. Promote it: pick the oldest reassigned repo and set `is_primary = TRUE`
+4. **Single commit**
 
 ### 5.9 Source Project Tombstone
 
-Add to `projects`:
 ```python
+# Add to Project model:
 merged_into_project_id: Mapped[str | None] = mapped_column(
     String(64),
     ForeignKey("projects.id", ondelete="SET NULL"),
@@ -460,118 +607,188 @@ merged_at: Mapped[datetime | None] = mapped_column(
 A merged project:
 - Returns `410 Gone` on `GET /api/v1/projects/{id}` with `{"merged_into": "<target_id>", "message": "This project was merged into <target_id>."}`
 - Its repos now belong to the target
-- Its `project_repos` rows are reassigned
-- Access to the tombstone project is still governed by the original owner (read-only for audit)
+- Access to the tombstone is read-only for audit (original owner)
+- Resolvers transparently follow the tombstone chain (see `resolve_project_by_remote`)
 
-### 5.10 Merge Audit Table
+### 5.10 Merge Audit Table (LOW-8 Fix: cross-DB Text JSON)
 
 ```sql
 CREATE TABLE project_merge_audit (
-    id              VARCHAR(64) PRIMARY KEY,
-    source_project_id VARCHAR(64),  -- nullable after source project delete
-    target_project_id VARCHAR(64),  -- nullable after target project delete
+    id                  VARCHAR(64) PRIMARY KEY,
+    source_project_id   VARCHAR(64),   -- nullable after project delete
+    target_project_id   VARCHAR(64),
     initiated_by_user_id VARCHAR(64) REFERENCES users(id) ON DELETE SET NULL,
-    dry_run         BOOLEAN NOT NULL DEFAULT TRUE,
-    persona_policy  VARCHAR(20) NOT NULL,    -- 'rename' | 'skip' | 'merge_content'
-    stats           JSONB NOT NULL DEFAULT '{}',  -- per-table counts before/after
-    persona_renames JSONB NOT NULL DEFAULT '[]',  -- [{old_name, new_name}]
-    slug_renames    JSONB NOT NULL DEFAULT '[]',  -- [{old_slug, new_slug}]
-    rules_archived  BOOLEAN NOT NULL DEFAULT FALSE,
-    error_message   TEXT,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    dry_run             BOOLEAN NOT NULL DEFAULT TRUE,
+    persona_policy      VARCHAR(20) NOT NULL,  -- 'rename' | 'skip' | 'merge_content'
+    stats               TEXT NOT NULL DEFAULT '{}',          -- JSON object
+    persona_renames     TEXT NOT NULL DEFAULT '[]',          -- JSON array
+    slug_renames        TEXT NOT NULL DEFAULT '[]',          -- JSON array
+    skipped_ke_ids      TEXT NOT NULL DEFAULT '[]',          -- JSON array
+    rules_action        VARCHAR(20),  -- 'archived' | 'promoted' | 'none'
+    error_message       TEXT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ```
 
-### 5.11 Transaction Structure
+House convention: `Text` columns with `NOT NULL DEFAULT '{}'/'[]'` for JSON payloads, matching existing patterns (`agent_runs.findings`, `ticket_edits.old_value/new_value`).
+
+### 5.11 Per-Table Merge Matrix
+
+This is the single source of truth for the merge implementer. The transaction pseudocode in §5.12 follows this order exactly.
+
+| Table | Mutation | Order | Uniqueness at risk | Collision behavior | Rollback/audit note |
+|-------|----------|-------|--------------------|--------------------|---------------------|
+| `project_repos` | **Demote primary** (source), then **reassign** all to target | 1 | `uq_project_repos_primary` partial index (source + target primaries collide) | Demote source primary BEFORE reassign. If target has no primary, promote oldest source repo. | Lock rows with FOR UPDATE first. |
+| `agent_personas` | **Reassign** all to target | 2 | `uq_persona_project_name` (project_id, name) | Collision: rename source to `{name} (from {source_id[:8]})` (default). Also: skip, merge_content. | Records renames in `persona_renames`. |
+| `project_rules` | **Promote** if target none; **archive** source + keep target if both exist | 3 | `project_rules.project_id` UNIQUE | Target wins on conflict. Source archived as `_merged_rules_{source_id[:8]}` wiki page. | Records action in `rules_action`. |
+| `knowledge_pages` | **Reassign**, rename slug collisions | 4 | `knowledge_pages` slug uniqueness within project | Rename source slug to `{slug} (from {source_id[:8]})`. | Records renames in `slug_renames`. |
+| `wiki_page_revisions` | **Reassign** (after page slug resolution) | 5 | None (revisions are FK'd to pages) | Page re-pointing handled by slug collision step. | |
+| `knowledge_entries` | **Reassign** unique; **skip** exact duplicates | 6 | None (entries are FK'd to project, no name uniqueness) | Exact (entry_type, normalized_content) match → skip. No LLM semantic dedup. | Records skipped IDs in `skipped_ke_ids`. |
+| `knowledge_links` | **Reassign** | 7 | None | Straight reassign. | |
+| `tickets` | **Reassign-in-place** | 8 | None (ticket IDs globally unique) | No collision possible. `depends_on` stays valid (same-project validation at creation). | CEO decision: reassign, not copy. |
+| `agent_runs` | **Reassign** | 9 | None | Straight reassign. `persona_name`/`ticket_id` are plain strings, survive unchanged. | |
+| `sessions` | **Reassign** | 10 | None (nullable FK, ON DELETE SET NULL) | Straight reassign. Sessions keep original `git_remote_normalized` tag (denormalized). | |
+| `handoff_attachments` | **Reassign** | 11 | None | Straight reassign. | |
+| `project_transfers` | **Reassign** | 12 | None | Straight reassign. | |
+| `context_compilations` | **Reassign** | 13 | None | Straight reassign. | |
+| `retrieval_audit_contexts` | **Reassign** | 14 | None | Straight reassign. | |
+| `retrieval_audit_events` | **Reassign** | 15 | None | Straight reassign. | |
+
+### 5.12 Transaction Pseudocode (matches merge matrix order)
 
 ```python
 async def merge_projects(db, source_id, target_id, user_id, dry_run, persona_policy):
-    # Phase 1: READ — validate preconditions (all in the same transaction)
+    # Phase 1: READ — validate preconditions (all in same transaction)
     source = await db.get(Project, source_id)
     target = await db.get(Project, target_id)
     if not source or not target:
         raise HTTPException(404)
     if source.org_id != target.org_id:
-        raise HTTPException(400, "Cross-org merges are not supported")
+        raise HTTPException(400, "Cross-org merges are not supported. Transfer first.")
     if source.merged_into_project_id is not None:
         raise HTTPException(400, "Source project was already merged")
     if target.merged_into_project_id is not None:
         raise HTTPException(400, "Target project was already merged")
 
-    # Pre-compute all collision data
+    # Pre-compute collisions
     persona_collisions = await _detect_persona_collisions(db, source_id, target_id)
     slug_collisions = await _detect_slug_collisions(db, source_id, target_id)
     ke_duplicates = await _detect_ke_duplicates(db, source_id, target_id)
+    source_has_rules = await _has_rules(db, source_id)
+    target_has_rules = await _has_rules(db, target_id)
 
-    # Build stats for dry-run report
     stats = await _compute_merge_stats(db, source_id, target_id,
-                                        persona_collisions, slug_collisions, ke_duplicates)
+        persona_collisions, slug_collisions, ke_duplicates,
+        source_has_rules, target_has_rules)
+
+    # Write audit row FIRST (separate transaction — survives merge failure)
+    audit = ProjectMergeAudit(...)
+    db.add(audit)
+    await db.commit()  # audit is durable before merge begins
 
     if dry_run:
-        return {"dry_run": True, "stats": stats, "persona_collisions": persona_collisions,
-                "slug_collisions": slug_collisions, "ke_duplicates": ke_duplicates}
+        return {"dry_run": True, "stats": stats, ...}
 
     # Phase 2: WRITE — single atomic transaction
-    # (everything below is inside the same transaction as the reads above)
+    # (new transaction — if any step fails, everything rolls back EXCEPT the audit row)
+    async with db.begin():
+        # ORDER MATTERS — follows merge matrix exactly:
 
-    # 1. Reassign repos
-    await db.execute(
-        update(ProjectRepo).where(ProjectRepo.project_id == source_id)
-        .values(project_id=target_id)
-    )
-
-    # 2. Handle personas (dedup per policy)
-    persona_renames = await _apply_persona_policy(db, source_id, target_id, persona_policy)
-
-    # 3. Handle wiki page slugs
-    slug_renames = await _apply_slug_renames(db, source_id, target_id, slug_collisions)
-
-    # 4. Archive source rules as wiki page, reassign target rules only row
-    source_rules = await db.execute(
-        select(ProjectRules).where(ProjectRules.project_id == source_id)
-    ).scalar_one_or_none()
-    if source_rules:
-        await _archive_rules_as_wiki_page(db, source_rules, target_id, source_id)
-        await db.delete(source_rules)
-
-    # 5. Reassign all 14 tables
-    for table_model in PROJECT_SCOPED_TABLES:
-        if table_model is AgentPersona:  # already handled above
-            continue
-        if table_model is ProjectRules:  # already handled above
-            continue
+        # Step 1: PROJECT_REPOS — lock + demote source primary + reassign
         await db.execute(
-            update(table_model).where(table_model.project_id == source_id)
+            select(ProjectRepo).where(ProjectRepo.project_id.in_([source_id, target_id]))
+            .with_for_update()
+        )
+        # Demote source primary FIRST (HIGH-1 fix)
+        await db.execute(
+            update(ProjectRepo).where(
+                ProjectRepo.project_id == source_id, ProjectRepo.is_primary == True  # noqa: E712
+            ).values(is_primary=False)
+        )
+        # Reassign all source repos to target
+        await db.execute(
+            update(ProjectRepo).where(ProjectRepo.project_id == source_id)
+            .values(project_id=target_id)
+        )
+        # If target has no primary, promote oldest source repo
+        target_primary = await db.execute(
+            select(ProjectRepo).where(
+                ProjectRepo.project_id == target_id, ProjectRepo.is_primary == True  # noqa: E712
+            )
+        ).scalar_one_or_none()
+        if not target_primary:
+            oldest = await db.execute(
+                select(ProjectRepo).where(ProjectRepo.project_id == target_id)
+                .order_by(ProjectRepo.created_at.asc()).limit(1)
+            ).scalar_one_or_none()
+            if oldest:
+                oldest.is_primary = True
+
+        # Step 2: AGENT_PERSONAS — reassign ALL, dedupe collisions (HIGH-2 fix)
+        persona_renames = await _apply_persona_policy(db, source_id, target_id, persona_policy)
+
+        # Step 3: PROJECT_RULES — promote or archive (LOW-9 fix)
+        rules_action = "none"
+        source_rules = await db.execute(
+            select(ProjectRules).where(ProjectRules.project_id == source_id)
+        ).scalar_one_or_none()
+        if source_rules:
+            if target_has_rules:
+                await _archive_rules_as_wiki_page(db, source_rules, target_id, source_id)
+                await db.delete(source_rules)
+                rules_action = "archived"
+            else:
+                source_rules.project_id = target_id
+                rules_action = "promoted"
+
+        # Step 4: KNOWLEDGE_PAGES — reassign + rename slug collisions
+        slug_renames = await _apply_slug_renames(db, source_id, target_id, slug_collisions)
+
+        # Step 5: WIKI_PAGE_REVISIONS — reassign (after slug resolution)
+        await db.execute(
+            update(WikiPageRevision).where(WikiPageRevision.page_id.in_(
+                select(KnowledgePage.id).where(KnowledgePage.project_id == source_id)
+            )).values(/* handled by page reassign */)
+        )
+        # (Revisions follow pages; slug renames above update page slugs)
+
+        # Steps 6-15: Remaining tables — reassign in order
+        for model in [KnowledgeEntry, KnowledgeLink, Ticket, AgentRun,
+                       SessionModel, HandoffAttachment, ProjectTransfer,
+                       ContextCompilation, RetrievalAuditContext, RetrievalAuditEvent]:
+            await db.execute(
+                update(model).where(model.project_id == source_id)
+                .values(project_id=target_id)
+            )
+
+        # Step 16: Mark source as tombstone
+        source.merged_into_project_id = target_id
+        source.merged_at = func.now()
+
+        # Step 17: Catch-up UPDATE for concurrent-sync race (HIGH-3 fix)
+        # Sessions that landed on source_id during the merge get re-pointed.
+        # After this, the tombstone redirect in resolve_project_by_remote()
+        # handles any remaining edge cases on subsequent lookups.
+        await db.execute(
+            update(SessionModel).where(SessionModel.project_id == source_id)
             .values(project_id=target_id)
         )
 
-    # 6. Mark source as merged tombstone
-    source.merged_into_project_id = target_id
-    source.merged_at = func.now()
+    # Commit happens at context-manager exit — all-or-nothing
 
-    # 7. Write audit row
-    audit = ProjectMergeAudit(
-        id=generate_id(),
-        source_project_id=source_id,
-        target_project_id=target_id,
-        initiated_by_user_id=user_id,
-        dry_run=False,
-        persona_policy=persona_policy,
-        stats=stats,
-        persona_renames=persona_renames,
-        slug_renames=slug_renames,
-        rules_archived=source_rules is not None,
-    )
-    db.add(audit)
-
-    # Single commit for everything
-    await db.commit()
     return {"dry_run": False, "stats": stats, "audit_id": audit.id}
 ```
 
-### 5.12 Rollback Guarantee
+### 5.13 Rollback + Race Guarantee
 
-If ANY step in Phase 2 fails (constraint violation, unexpected NULL, whatever), the entire transaction rolls back. Both projects are untouched. The error is logged to `project_merge_audit.error_message` in a separate transaction (the audit row from the failed attempt is written outside the merge txn using a nested transaction or a background task — but since we don't have background workers, we write the audit row FIRST in its own transaction, then attempt the merge in a second transaction).
+- **Atomicity:** Single `async with db.begin()` block. Any step failure → full rollback. Both projects untouched.
+- **Audit survival:** Audit row committed in a prior transaction, so failed merges are recorded (with `error_message` populated).
+- **Concurrent-sync race (HIGH-3 fix):**
+  - (a) Step 17 (catch-up UPDATE) catches sessions that landed on `source_id` during the merge window
+  - (b) `resolve_project_by_remote()` is tombstone-aware — transparently follows `merged_into_project_id` chain, so any post-merge session sync that resolves via a source-project remote lands on the target
+  - (c) `resolve_project_by_id()` (new helper, see §3.3) also follows the chain for project-by-ID lookups
+  - (d) Residual window: a session synced AFTER step 17 but BEFORE the tombstone is committed (impossible — same transaction). If a session somehow has `project_id=source_id` after merge completes, the FK (`ON DELETE SET NULL`) does NOT fire because the source project is a tombstone, not deleted. The tombstone redirect in the resolver closes this on the NEXT lookup. This window is acceptably small and self-healing.
+- **NOT relying on FK cleanup:** Appendix B.2's original claim that `ON DELETE SET NULL` would clean up stranded sessions was wrong — tombstones are never deleted. The catch-up UPDATE + tombstone-aware resolvers are the correct fix.
 
 ---
 
@@ -581,38 +798,36 @@ If ANY step in Phase 2 fails (constraint violation, unexpected NULL, whatever), 
 
 1. **Project owner** — always
 2. **Org admin** (for org-scoped projects) — always
-3. **Repo-access check:** The linking user must have captured at least one session on the target remote, OR be the project owner / org admin. This prevents hijacking — you can't link `facebook/react` to your personal project unless you've actually worked in that repo.
+3. **Repo-access check:** The linking user must have captured at least one session on the target remote, OR be the project owner / org admin.
 
 ### 6.2 Repo Hijacking Prevention
 
-The global `UNIQUE(git_remote_normalized)` on `project_repos` is the enforcement point:
-- A repo can only belong to ONE project
-- Linking a repo that's already linked returns 409 with the existing project ID
-- The user must unlink first, or merge the projects
+The global `UNIQUE(git_remote_normalized)` on `project_repos` + `UNIQUE(provider, provider_repo_id)` partial index prevent double-linking at the database level. The `provider_repo_id` constraint additionally catches rename-bypass attempts (renaming a repo on GitHub → different normalized remote → same provider_repo_id → UNIQUE violation).
 
 ### 6.3 Cross-Org Boundary
 
 - A repo linked to an org-scoped project is "owned" by that org
 - Linking the same repo to a different org's project is rejected (409)
 - Merging projects across orgs is DENIED (400)
-- Service keys: the `assert_service_key_can_access_project` check in `handoff_helpers.py:561-564` already validates project-level access. With multi-repo, the project boundary is unchanged — service keys get access to ALL repos under a project, which is the desired behavior (service keys work at project granularity).
+- Service keys: the `assert_service_key_can_access_project` check in `handoff_helpers.py:561-564` validates project-level access. With multi-repo, the project boundary is unchanged — service keys get access to ALL repos under a project.
 
 ### 6.4 Who Can Merge Projects
 
 Both projects must be owned by the same entity:
 - **Both personal:** Caller must own both
 - **Both same org:** Caller must be org admin of that org
-- **Mixed (personal + org):** DENIED. Use project transfer first (`POST /api/v1/projects/{id}/transfer`), then merge.
+- **Mixed (personal + org):** DENIED. Use project transfer first, then merge.
 
 ### 6.5 Sentinel Pre-Build Security Pass
 
 Before any implementation code is written, Sentinel must review:
 1. Repo hijacking vector (linking a repo you don't control)
-2. Cross-org repo linking
+2. Cross-org repo linking bypass via `provider_repo_id`
 3. Merge authz (can a non-owner merge two projects?)
-4. Service key behavior post-merge (do scoped project_ids get rewritten?)
+4. Service key behavior post-merge (scoped `project_ids` — see Appendix B.1)
 5. Audit trail completeness (can a malicious merge be detected post-hoc?)
 6. Tombstone project access (can the old owner still read the tombstone?)
+7. Tombstone redirect — does it leak the target project ID to unauthorized users on `GET /projects/{remote}`?
 
 ---
 
@@ -620,46 +835,23 @@ Before any implementation code is written, Sentinel must review:
 
 ### Q1: Each repo belongs to exactly one project — confirm?
 
-**Recommendation: YES.** This is the cornerstone invariant. Without it:
-- Resolution is ambiguous (which project does `resolve_project_by_remote` return?)
-- The handoff boundary guard (`assert_service_key_handoff_boundary`) can't anchor service keys
-- Merging becomes an n:m reconciliation problem instead of simple reassignment
-
-The global UNIQUE constraint on `project_repos.git_remote_normalized` enforces this at the database level. A repo is either unowned or owned by exactly one project.
+**Recommendation: YES.** Enforced by `UNIQUE(git_remote_normalized)` + `UNIQUE(provider, provider_repo_id)` on `project_repos`.
 
 ### Q2: Persona collision policy + Rules collision policy
 
-**Status:** Deferred to Compass companion doc (`docs/design/multi-repo-projects-product.md`). The mechanism supports all three options (rename, skip, merge_content).
-
-**Atlas recommendation:** **Option A (rename source personas)** for personas, **target wins + archive source** for rules. Rationale:
-- Personas: renaming preserves all data; the user can manually merge content afterward if desired. Skipping loses data. Merging content risks unbounded prompt injection.
-- Rules: rules are the most actively curated artifact. Overwriting would be surprising. Archiving as a wiki page preserves the source rules for reference.
+**Resolved by Compass companion (§3):** Keep target, rename source to `<name> (from <project>)`. Rules: keep target, archive source as wiki page snapshot (promote source when target has none — LOW-9). User can override with `--interactive` at merge time.
 
 ### Q3: Is multi-repo / merge a tiered feature?
 
-**RESOLVED — NO. Multi-repo (linking AND merge) is FREE for all tiers. CEO decision, 2026-06-15.**
-
-Both repo-linking and project-merge are available to every tier including Free. Multi-repo is a fundamental data-model correction, not a premium feature — gating it would punish users who organically have multi-repo products, and the product stance is that this stays free.
-
-**Implementation consequence:** Do NOT add a `multi_repo_projects` tier feature, a `check_feature()` gate, or any `multi_repo_requires_team` / upgrade-prompt error path on the link-repo, unlink-repo, or merge endpoints. Those endpoints enforce ownership/org authz only (see §6) — no tier check. This supersedes the earlier "merge could be Team+" hedge and the Compass companion's original Team-tier recommendation (now also corrected).
+**RESOLVED — FREE for all tiers (CEO decision, 2026-06-15).** No tier plumbing. No `multi_repo_projects` feature gate. No `check_feature()` call. Ownership/org authz only.
 
 ### Q4: Must a project have at least one repo?
 
-**Recommendation: YES.** A project with zero repos is unreachable via the git-remote-based resolution paths (which is how the CLI, MCP, and session sync all discover projects). Without at least one repo, the project is an orphan accessible only by knowing its UUID.
-
-**Enforcement:**
-- `DELETE /repos/{id}` returns 422 if it would leave the project with zero repos
-- `POST /merge` folds all repos into the target (source becomes a tombstone with zero repos — this is the ONE exception; the tombstone is explicitly marked as merged and returns 410)
-- Project deletion (existing behavior) cascades through `project_repos` via `ON DELETE CASCADE`
+**Recommendation: YES.** Enforcement: `DELETE /repos/{id}` returns 422 on last repo. Merge is the exception — the source becomes a tombstone with zero repos (explicitly marked via `merged_into_project_id`).
 
 ### Q5: Should `projects.git_remote_normalized` ever be dropped?
 
-**Recommendation: NOT YET.** Keep it for at least two releases as a denormalized primary-remote cache. Once all resolvers use `project_repos` and the fallback path has been exercised in production for a full release cycle, file a cleanup ticket to:
-1. Make the column nullable (it's currently NOT NULL)
-2. Drop it in a subsequent migration
-3. Remove the fallback path from `resolve_project_by_remote`
-
-This is a v0.12+ cleanup, not a v0.11 concern.
+**Recommendation: NOT YET.** Keep for at least two releases as a denormalized primary-remote cache. v0.12+ cleanup ticket.
 
 ---
 
@@ -667,47 +859,51 @@ This is a v0.12+ cleanup, not a v0.11 concern.
 
 ### 8.1 Codex Review Checklist
 
-- [ ] Schema: `project_repos` table — are constraints correct? Is the partial unique index for `is_primary` handled correctly for both PG and SQLite?
-- [ ] Migration: backfill correct? Any edge case with empty `git_remote_normalized` on existing projects?
-- [ ] Resolver: every `scalar_one_or_none()` site changed? Any missed?
-- [ ] Dual-read fallback: does the fallback create a window where a newly-created project (with `project_repos` row) is shadowed by a stale `projects.git_remote_normalized`? (No — `project_repos` is checked FIRST.)
-- [ ] Merge: atomic transaction boundaries correct? Audit row written BEFORE merge attempt?
-- [ ] Merge: persona dedup — what happens if BOTH projects have personas with the same name AND both are referenced by active tickets?
-- [ ] Merge: ticket `depends_on` rewriting — are self-references within the source project handled? What about cross-project `depends_on`?
-- [ ] Merge: `project_rules` — if the target has NO rules but the source does, should source rules be promoted instead of archived?
-- [ ] Merge: wiki page slug collision — if the renamed slug `{slug}-merged-{id}` also collides (unlikely but possible with truncated IDs)?
-- [ ] Tombstone: `GET /projects/{id}` for a merged project — does the 410 response leak the target project ID to unauthorized users?
+- [ ] Schema: `project_repos` table — are constraints correct? Partial unique indexes for both PG and SQLite?
+- [ ] `provider` + `provider_repo_id`: nullable correctly? UNIQUE partial index handles NULLs?
+- [ ] Migration: backfill correct? Any edge case with empty `git_remote_normalized`?
+- [ ] Resolver: all 16 sites changed correctly? Any missed?
+- [ ] Tombstone-aware resolvers: does `resolve_project_by_remote` follow chains correctly? Cycle detection? (A→B→A is prevented by precondition check, but defense-in-depth?)
+- [ ] Dual-read fallback: `project_repos` checked FIRST (no shadowing window)
+- [ ] Merge: write order follows merge matrix (primary demotion BEFORE reassign)
+- [ ] Merge: ALL personas reassigned (HIGH-2 — no stranded personas)
+- [ ] Merge: catch-up UPDATE for sessions (HIGH-3 — no sessions stranded on tombstone)
+- [ ] Merge: ticket `depends_on` — reassign-in-place means no rewriting needed. Confirm same-project validation at creation guarantees this.
+- [ ] Merge: `project_rules` promotion when target has none (LOW-9)
+- [ ] Merge: persona dedup — what if both projects have same-named persona AND both are referenced by active tickets?
+- [ ] Tombstone: `GET /projects/{id}` for merged project — 410 response doesn't leak target ID to unauthorized users?
 - [ ] CLI: error messages guide users to `link-repo` when a remote isn't found?
-- [ ] Service keys: does a service key scoped to the source project's ID still work after merge? (No — project ID changes. Service key scopes would need rewriting or the key would lose access.)
-- [ ] Race: two users simultaneously linking the same remote to different projects? (UNIQUE constraint + 409 on integrity error.)
-- [ ] Race: merge + concurrent session sync? (Session sync resolves project_id at write time; merge is a separate transaction. A session synced during merge might land on either project_id. Acceptable — the session FK is best-effort metadata.)
+- [ ] Service keys: scoped `project_ids` post-merge (Appendix B.1)
+- [ ] Race: two users simultaneously linking same remote to different projects? (UNIQUE constraint + 409)
+- [ ] Race: merge + concurrent session sync? (Catch-up UPDATE + tombstone redirect close the window.)
 
 ### 8.2 Shield-SR Security Review Checklist
 
 - [ ] Repo hijacking: can a user link a repo they don't have access to?
-- [ ] Cross-org linking: can a repo be linked to two orgs simultaneously? (UNIQUE constraint prevents this at DB level, but is the app-layer check watertight?)
+- [ ] Provider-repo-ID bypass: can linking with a forged `provider_repo_id` block a legitimate link?
+- [ ] Cross-org linking: UNIQUE constraint prevents DB-level double-link, but is app-layer check watertight?
 - [ ] Merge authz: can a non-owner merge two projects? Org-membership edge cases?
-- [ ] Service key project boundary: does `assert_service_key_handoff_boundary` behave correctly when a project has multiple repos?
-- [ ] Tombstone data leak: can a former org member still read a tombstone project they once had access to?
-- [ ] Audit completeness: is every merge mutation recorded in `project_merge_audit`?
-- [ ] Migration safety: does the backfill handle all existing rows correctly?
-- [ ] Downgrade safety: can migration 049 be cleanly downgraded?
-- [ ] `merged_into_project_id` — any risk of circular merges (A→B→A)? Enforced by pre-condition check.
+- [ ] Service key project boundary: `assert_service_key_handoff_boundary` correct with multi-repo?
+- [ ] Tombstone data leak: can a former org member read a tombstone they once had access to?
+- [ ] Tombstone redirect: does resolving by a tombstone's remote leak the target project's existence/info?
+- [ ] Audit completeness: every merge mutation recorded in `project_merge_audit`?
+- [ ] Migration safety: backfill handles all existing rows? Downgrade clean?
+- [ ] Circular merge prevention: preconditions enforce `merged_into_project_id IS NULL` on both source and target?
 
 ---
 
-## 9. Implementation Order (Recommended)
+## 9. Implementation Order
 
-1. **Migration 049** — `project_repos` table + backfill + `merged_into_project_id` on projects + `project_merge_audit` table
-2. **Shared helper** — `resolve_project_by_remote()` with dual-read fallback
-3. **Resolver changes** — all 11 sites in §3.3, one at a time with targeted tests
+1. **Migration 049** — `project_repos` + partial indexes + `merged_into_project_id` on projects + `project_merge_audit`
+2. **Shared helpers** — `resolve_project_by_remote()`, `resolve_project_by_id()`, `get_primary_remote()`
+3. **Resolver changes** — all 16 sites in §3.3, in order: Group A first (project resolution), then Group B (access predicates), then Group E (snapshots)
 4. **API endpoints** — link-repo, unlink-repo, list-repos
 5. **API endpoint** — merge (dry-run first, then live)
 6. **CLI commands** — link-repo, unlink-repo, repos, merge
-7. **Backfill cleanup** — verify every existing project has a `project_repos` row; add a startup health check
-8. **Deprecation plan** — file ticket to drop `projects.git_remote_normalized` in v0.12+
-9. **Dashboard** — Prism designs and builds the repo-manager panel
-10. **Sentinel security pass** — before merge endpoint ships to production
+7. **Backfill verification** — startup health check that every project has ≥1 `project_repos` row
+8. **Deprecation plan** — file ticket for v0.12+ `projects.git_remote_normalized` cleanup
+9. **Dashboard** — Prism: repo-manager panel
+10. **Sentinel security pass** — before merge endpoint ships
 
 ---
 
@@ -717,21 +913,38 @@ This is a v0.12+ cleanup, not a v0.11 concern.
 |------|--------|
 | `src/sessionfs/server/db/models.py` | Add `ProjectRepo`, `ProjectMergeAudit` models; add `merged_into_project_id` + `merged_at` to `Project` |
 | `src/sessionfs/server/db/migrations/versions/049_multi_repo_projects.py` | NEW — migration |
-| `src/sessionfs/server/services/project_resolver.py` | NEW — `resolve_project_by_remote()` helper |
-| `src/sessionfs/server/routes/sessions.py` | Replace 3 `scalar_one_or_none()` sites with helper |
-| `src/sessionfs/server/routes/projects.py` | Replace resolver + add link/unlink/list/merge endpoints |
-| `src/sessionfs/server/services/handoff_helpers.py` | Replace 2 direct query sites with helper |
-| `src/sessionfs/mcp/server.py` | Update error messages; no resolver change (HTTP client) |
-| `src/sessionfs/cli/cmd_project.py` | Add 4 commands + update error messages |
-| `src/sessionfs/server/routes/project_transfers.py` | Use `get_primary_remote()` for snapshot |
-| `src/sessionfs/server/routes/org_members.py` | Use `get_primary_remote()` for snapshot |
+| `src/sessionfs/server/services/project_resolver.py` | NEW — `resolve_project_by_remote()`, `resolve_project_by_id()`, `get_primary_remote()` |
+| `src/sessionfs/server/routes/sessions.py` | Replace `scalar_one_or_none()` with `resolve_project_by_remote()` (A1) |
+| `src/sessionfs/server/routes/projects.py` | Replace resolver (A2, A3, A4) + add link/unlink/list/merge endpoints + fix B4, B5, B6 |
+| `src/sessionfs/server/auth/project_access.py` | Replace `Session.git_remote_normalized` with `Session.project_id` (B1) |
+| `src/sessionfs/server/services/handoff_helpers.py` | Replace direct queries (A5, A6, A7) + fix `_accessible_project_ids` (B2) |
+| `src/sessionfs/server/routes/rules.py` | Replace resolver (A8) + fix access check (B3) |
+| `src/sessionfs/server/routes/handoffs.py` | Replace direct queries (A9, A10) |
+| `src/sessionfs/server/routes/project_transfers.py` | Use `get_primary_remote()` (E1) |
+| `src/sessionfs/server/routes/org_members.py` | Use `get_primary_remote()` (E2) |
+| `src/sessionfs/mcp/server.py` | Update error messages (D1) |
+| `src/sessionfs/cli/cmd_project.py` | Add 4 commands + update error messages (D3) |
 
-## Appendix B: Edge Cases Not Yet Resolved
+## Appendix B: Edge Cases
 
-1. **Service key `project_ids` allowlist post-merge:** If a service key is scoped to `project_ids: ["proj_A"]` and proj_A is merged into proj_B, should the key's scope auto-update to `["proj_B"]`? Or should the key lose access? (Recommend: DO NOT auto-update — the key was explicitly scoped to A. Merging is a destructive operation that should require explicit key re-scoping.)
+### B.1 Service Key `project_ids` Allowlist Post-Merge
 
-2. **Session `project_id` during merge race:** A session syncing concurrently with a merge may get `project_id = source_id` just before the merge transaction commits. After merge, `source_id` is a tombstone. The session's FK (`ON DELETE SET NULL`) will set it to NULL — the session becomes unlinked but not lost. Acceptable for v0.11; a future improvement could re-resolve orphan sessions on next sync.
+If a service key is scoped to `project_ids: ["proj_A"]` and proj_A is merged into proj_B, should the key's scope auto-update? **Recommendation: DO NOT auto-update.** The key was explicitly scoped to A. Merging is a destructive operation requiring explicit key re-scoping. The merge audit records the event; the key admin must consciously decide whether to extend trust.
 
-3. **Knowledge entry entity_ref cross-references:** Some KB entries reference other entries by `entity_ref`. If those entries get new IDs during merge dedup, entity_refs become dangling. This is pre-existing behavior (entity_refs are best-effort string tags, not FKs). A future `sfs project repair-entity-refs` command could fix these.
+### B.2 Session `project_id` During Merge Race (HIGH-3 — CORRECTED)
 
-4. **Merge with active project transfer:** If project A has a pending transfer, can it be merged? (Recommend: NO — require transfers to be resolved first.)
+**Original (wrong):** Claimed `ON DELETE SET NULL` would clean up stranded sessions. This was incorrect — tombstones are never deleted, so the FK never fires.
+
+**Corrected:** (a) Step 17 catch-up UPDATE inside the merge transaction re-points sessions that landed on source_id during the merge; (b) `resolve_project_by_remote()` and `resolve_project_by_id()` are tombstone-aware and transparently follow the chain; (c) the residual window (session synced after merge completes) is self-healing on the next lookup. A session with `project_id=source_id` that is looked up via its git remote will resolve to the target via the tombstone redirect.
+
+### B.3 Knowledge Entry entity_ref Cross-References
+
+Some KB entries reference other entries by `entity_ref`. If dedup skips source entries, entity_refs pointing to them become dangling. Pre-existing behavior (entity_refs are best-effort string tags, not FKs). Future `sfs project repair-entity-refs` command.
+
+### B.4 Merge with Active Project Transfer
+
+If project A has a pending transfer, can it be merged? **Recommendation: NO.** Require transfers to be resolved (accepted/rejected/cancelled) first.
+
+### B.5 Provider Repo Rename Survival
+
+When a GitHub repo is renamed, `git_remote_normalized` changes but `provider_repo_id` stays the same. The `UNIQUE(provider, provider_repo_id)` partial index detects that the renamed repo is already linked and rejects a duplicate link. To handle the rename gracefully (update the old row rather than reject), a future `sfs project sync-repo-names` or GitHub-rename-webhook handler can match on `(provider, provider_repo_id)` and update `git_remote_normalized` in place. v1 ships the schema; the rename handler is a follow-up.
