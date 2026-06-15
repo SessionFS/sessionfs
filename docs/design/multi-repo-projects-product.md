@@ -187,38 +187,33 @@ This matters because: a user running `sfs resume` in repo A should not see sessi
 
 ## 5. Tier & Monetization Fit
 
-### Recommendation: Team tier
+### RESOLVED — FREE for all tiers (CEO decision, 2026-06-15)
 
-**Multi-repo projects are a Team feature.** Rationale:
+**Multi-repo projects are NOT monetized.** Repo-linking AND project-merge are available to every tier, including Free. This supersedes the original Team-tier recommendation that appeared in an earlier draft of this section.
 
-1. **It's team-shaped.** Multi-repo is inherently a team coordination concept. A single developer with one repo doesn't need it. The moment you have N repos that should share memory/identity/coordination, you're coordinating across a team — even if that team is 2 people.
-2. **Consistent with the tier ladder.** The Team tier's value proposition is shared coordination: `team_management`, `team_handoff`, `agent_tickets`, `agent_runs`. Multi-repo projects are the same category — shared memory/identity/coordination across a team's full surface area.
-3. **Free tier is not degraded.** Single-repo projects remain free forever. Nothing is taken away.
-4. **Pro tier is not degraded.** A Pro user with multiple repos can still create separate projects for each (today's behavior). They just can't link them. The upgrade path is natural: "You have 3 projects. Link them into one with Team."
-5. **Clear upgrade trigger.** When a user runs `sfs project link` on a Free/Starter/Pro tier, the CLI responds: `Multi-repo projects require the Team tier. Upgrade at https://sessionfs.dev/account/upgrade`. The server enforces this with a 402/403 and a structured error code `multi_repo_requires_team`.
+Rationale:
+1. **It's a data-model correction, not a premium feature.** A project spanning multiple repos is the *correct* model; the single-repo limitation was an implementation constraint, not a deliberate value boundary. Charging to remove a limitation we imposed punishes users who organically have multi-repo products.
+2. **Consistent with "free individual tier forever."** Many solo and small-team developers legitimately have a frontend + backend repo for one product. They should not hit a paywall to make SessionFS model their reality correctly.
+3. **No upgrade-trigger, no error path.** Do NOT add a `multi_repo_projects` feature gate, a `check_feature()` call, or a `multi_repo_requires_team` error. The link/unlink/merge endpoints enforce ownership/org authz only.
 
-### New tier feature gate
+### Implementation note for Atlas
 
-Add `multi_repo_projects` to the Team and Enterprise feature sets in `src/sessionfs/server/tiers.py`. Gate the link-repo endpoint and the merge endpoint on `check_feature(ctx, "multi_repo_projects")`.
-
-### Merge pricing note
-
-Project merge (`sfs project merge`) is also gated at Team+. It's a one-time migration operation — users doing it are consolidating split projects, which means they're already a team with multiple projects. Making merge a Team feature means: (a) free-tier users with one project never need it, (b) Pro users with split projects get a natural upgrade path to consolidate.
+No tier plumbing. The link-repo, unlink-repo, and merge endpoints check ownership + org boundary (§7.3) and nothing else. The dry-run default on merge is a safety affordance for everyone, not a paywall preview.
 
 ## 6. Rollout & Communications
 
 ### Target audience for rollout
 
-**Primary:** Existing teams with 2+ projects that are really one product. These are the users who feel the fragmentation pain daily. They are almost certainly on Team or Enterprise already (because team coordination features require it).
+**Primary:** Anyone — solo or team — with 2+ projects that are really one product (frontend + backend, infra + app, microservices). These are the users who feel the fragmentation pain daily, across every tier.
 
-**Secondary:** Pro users who have separate frontend/backend projects and haven't upgraded yet. The multi-repo feature gives them a concrete reason to move to Team.
+**Secondary:** New users onboarding a multi-repo product, who should discover linking early so they never split their memory/identity in the first place.
 
 ### Communication sequence
 
-1. **Changelog entry** (release day): "Projects can now span multiple repos. Link your frontend, backend, and infra repos into one project — shared memory, shared personas, shared tickets. Team tier."
-2. **In-dashboard banner** (release day, dismissible): "New: multi-repo projects. Link your repos →" linking to the Repos tab. Only shown to users with 2+ projects on the same org.
-3. **CLI hint on `sfs project show`** (release day): If the user has other projects in the same org, add a line: `Tip: link repos into one project with 'sfs project link' (Team tier).`
-4. **Email to Team/Enterprise admins** (release week): "Your org has N projects across M repos. Multi-repo projects let you consolidate them into shared workspaces. Here's how."
+1. **Changelog entry** (release day): "Projects can now span multiple repos. Link your frontend, backend, and infra repos into one project — shared memory, shared personas, shared tickets. Free for everyone."
+2. **In-dashboard banner** (release day, dismissible): "New: multi-repo projects. Link your repos →" linking to the Repos tab. Shown to users with 2+ projects on the same org.
+3. **CLI hint on `sfs project show`** (release day): If the user has other projects in the same org, add a line: `Tip: link repos into one project with 'sfs project link'.`
+4. **Email to existing users** (release week): "You have N projects across M repos. Multi-repo projects let you consolidate them into shared workspaces. Here's how."
 5. **Docs page** (release day): `docs/multi-repo-projects.md` — user-facing guide with examples.
 
 ### No forced migration
@@ -227,7 +222,6 @@ Existing split projects continue to work exactly as today. Users are not forced 
 
 ### Risk of confusion
 
-- **"Why can't I link my projects?"** — Pro/Free users who see the feature mentioned but can't use it. Mitigation: the CLI and dashboard make the tier requirement clear in the error message, with a direct upgrade link.
 - **"Which project do I link into which?"** — Users with 3+ split projects may be unsure about the "correct" merge order. Mitigation: the `--dry-run` output shows the full merge plan before execution, so they can experiment safely.
 
 ## 7. Risks & Edge Cases (Product Lens)
@@ -273,7 +267,7 @@ Existing split projects continue to work exactly as today. Users are not forced 
 | "Linking repos = merging their sessions" | Sessions stay per-repo. The KB aggregates across repos, but the session list in `sfs sessions` is still repo-scoped. | Document clearly: "Sessions are per-repo. The KB, personas, tickets, and rules are shared." |
 | "I can link any repo" | Org-boundary check rejects cross-org repos. | Clear error message with the org name. |
 | "Merge is instant and perfect" | Collisions require manual review. The dry-run shows everything upfront. | Default `--dry-run` with no side effects. |
-| "My free-tier project should support multi-repo" | Multi-repo is Team+. Free tier is single-repo forever. | Clear tier-gating message with upgrade path. |
+| "My free-tier project should support multi-repo" | It does — multi-repo is free for all tiers. | No gating; works everywhere. |
 | "I can delete the source project after merge" | It's auto-soft-deleted. Sessions remain accessible. | The merge output confirms this explicitly. |
 | "Renaming a repo on GitHub breaks the link" | The git remote is the link key. Renaming a repo changes its normalized remote. | Atlas should design for this: store the GitHub `repo_id` (stable integer) alongside the `git_remote_normalized`, and update the normalized string on rename events. If that's not in v1, document: "If you rename a repo on GitHub, re-link it with `sfs project link`." |
 
@@ -285,7 +279,7 @@ This section is the handoff to Atlas's `multi-repo-projects.md`:
 2. **Merge collision policy for rules:** Keep target. Archive source as a wiki page snapshot.
 3. **Repo exclusivity:** One repo ∈ exactly one project. Unique constraint on the join table.
 4. **Org boundary:** All repos in a project must be in the same SessionFS org.
-5. **Tier gate:** `multi_repo_projects` feature, Team tier+.
+5. **Tier gate:** NONE — free for all tiers (CEO decision). No `multi_repo_projects` feature, no `check_feature`, no upgrade-prompt error. Ownership/org authz only.
 6. **Project naming:** No change to the data model. The existing `name` field on Project is already editable. Default stays as the primary (first-linked) repo name.
 
 ---
@@ -299,6 +293,6 @@ This section is the handoff to Atlas's `multi-repo-projects.md`:
 | **Merge dry-run** | Mandatory default. `--execute` required to mutate. `--interactive` for per-collision control. |
 | **Repo exclusivity** | One repo ∈ exactly one project. Hard constraint. |
 | **Org boundary** | All repos must be in the same SessionFS org as the project. |
-| **Tier** | Team+. `multi_repo_projects` feature gate. |
+| **Tier** | FREE for all tiers (CEO decision). No tier gate. |
 | **Source project post-merge** | Soft-deleted with `merged_into_project_id` provenance. |
 | **Project name** | Existing editable `name` field. Nudge rename on second repo link. |

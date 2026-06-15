@@ -637,10 +637,11 @@ The global UNIQUE constraint on `project_repos.git_remote_normalized` enforces t
 
 ### Q3: Is multi-repo / merge a tiered feature?
 
-**Recommendation: NO for multi-repo itself (linking repos). YES for merge.**
+**RESOLVED — NO. Multi-repo (linking AND merge) is FREE for all tiers. CEO decision, 2026-06-15.**
 
-- **Multi-repo linking** should be available to all tiers (including Free). It's a fundamental data-model correction, not a premium feature. Gating it behind a tier would punish users who organically have multi-repo products.
-- **Merge** could reasonably be Team+ (it's a one-time cleanup operation, not an ongoing need). However, the dry-run default makes it safe for all tiers — users can see what would happen without paying. Defer to Compass/CEO.
+Both repo-linking and project-merge are available to every tier including Free. Multi-repo is a fundamental data-model correction, not a premium feature — gating it would punish users who organically have multi-repo products, and the product stance is that this stays free.
+
+**Implementation consequence:** Do NOT add a `multi_repo_projects` tier feature, a `check_feature()` gate, or any `multi_repo_requires_team` / upgrade-prompt error path on the link-repo, unlink-repo, or merge endpoints. Those endpoints enforce ownership/org authz only (see §6) — no tier check. This supersedes the earlier "merge could be Team+" hedge and the Compass companion's original Team-tier recommendation (now also corrected).
 
 ### Q4: Must a project have at least one repo?
 
