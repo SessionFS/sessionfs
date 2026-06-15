@@ -46,7 +46,7 @@ Click a session to open its detail view (`/sessions/:id`). The header shows the 
 
 ### Messages Tab
 
-The default tab displays the conversation transcript with paginated messages (50 per page). Use the order toggle to switch between oldest-first and newest-first. Sidechain and empty messages can be filtered out for readability. Click a page number or use the jump control to navigate long sessions.
+The default tab displays the full captured conversation as a readable transcript with paginated messages (50 per page). Tool calls and tool results are rendered with tool-aware formatting — file edits, command runs, and search results show as structured blocks rather than raw JSON. Use the order toggle to switch between oldest-first and newest-first. Sidechain and empty messages can be filtered out for readability. Click a page number or use the jump control to navigate long sessions.
 
 ### Summary Tab
 
@@ -156,6 +156,12 @@ The Admin page (`/admin`) is only visible to users with the **admin** tier.
 
 ---
 
+## Sessions Sidebar and Layout
+
+The dashboard uses a dark-first, design-token UI with a grouped left sidebar for fast navigation across sessions, projects, handoffs, and settings. The session list supports both list and grid layouts — toggle between them to scan many sessions at a glance or focus on detail.
+
+---
+
 ## Light and Dark Mode
 
-The dashboard supports both light and dark themes. It follows your system preference by default. You can override the theme from the layout header.
+The dashboard is dark-first and supports both light and dark themes. It follows your system preference by default. You can override the theme from the layout header.

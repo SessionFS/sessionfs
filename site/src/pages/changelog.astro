@@ -17,14 +17,51 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.10.28 -->
+      <!-- v0.10.30 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.10.30</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">June 14, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Dashboard Redesign &mdash; Dark-First UI &middot; Real Transcript View &middot; New Brand Tagline</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Complete dashboard visual redesign.</strong> The web dashboard is rebuilt on a dark-first, design-token UI &mdash; consistent color, spacing, and typography tokens across every surface. A new grouped left sidebar makes navigation across sessions, projects, handoffs, and settings faster, and the session list adds list / grid layout toggles so you can scan many sessions at a glance or focus on detail. The dashboard remains a management interface, not a chat app &mdash; you interact with your AI tools natively and use the dashboard to review, resume, and share the resulting sessions.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Real captured-session transcript view.</strong> Session detail now renders the full captured conversation as a readable transcript with tool-aware formatting &mdash; file edits, command runs, and search results display as structured blocks instead of raw JSON. The transcript keeps pagination, the oldest/newest order toggle, and the sidechain / empty-message filters from before.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>New brand tagline: &ldquo;Memory Layer For AI Agents.&rdquo;</strong> SessionFS is positioned as the memory and coordination layer for AI agents &mdash; capture every session, build organizational knowledge, and give your next AI agent everything the last one learned. Tagline and messaging updated across the site and product.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Frontend + site only &mdash; no backend changes, no new database migrations (still 48), no new MCP tools (still 62), no new CLI commands, no auth changes. 2,179 backend + 369 dashboard UI tests passing (dashboard suite grew from 198 to 369 with the redesign). 9 supported tools unchanged. Shield-SR pre-release security review CLEAN.</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.10.29 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.10.29</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">June 11, 2026</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Named Auth Profiles &mdash; Multi-Account On One Device &middot; Cloud Dashboard CORS Fix</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Named auth profiles.</strong> Run more than one SessionFS identity on a single machine &mdash; for example a personal account and a work org account &mdash; without re-authenticating each time. A single identity switch now governs coordination, sync, and the daemon consistently. Precedence is <span class="font-mono text-accent text-sm">SESSIONFS_API_KEY</span> &gt; <span class="font-mono text-accent text-sm">SESSIONFS_PROFILE</span> &gt; the active profile &gt; default config, with zero migration for existing single-account users. Each named profile gets an isolated local store and trash list. New CLI: <span class="font-mono text-accent text-sm">sfs auth login --profile</span> / <span class="font-mono text-accent text-sm">use</span> / <span class="font-mono text-accent text-sm">profiles</span> / <span class="font-mono text-accent text-sm">whoami</span>. The daemon pins the profile it starts with so a mid-run switch can't flip identity underneath it.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Cloud dashboard 428 fix on Context / Knowledge Injection settings.</strong> Saving rules from the hosted dashboard on a separate domain returned a 428. Root cause: a CORS gap hid the <span class="font-mono text-accent text-sm">ETag</span> header from cross-origin JavaScript, so the dashboard replayed an empty <span class="font-mono text-accent text-sm">If-Match</span>. Fix exposes the <span class="font-mono text-accent text-sm">ETag</span> header on cross-origin reads, plus drift-guard tests.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Security hardening.</strong> Raw API keys are now written with atomic 0600 permissions; react-router bumped 7.13.2 &rarr; 7.17.0. Shield-SR pre-release security review CLEAN.</li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.10.28 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
             <span class="text-brand font-semibold">v0.10.28</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">June 3, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Coordination + Recovery Surface &mdash; <span class="font-mono text-accent text-sm">update_ticket</span> Verb &middot; Admin Key Recovery &middot; Org Invite Resend &middot; <span class="font-mono text-accent text-sm">/compile</span> Single-Pass</h2>
         <ul class="space-y-2 text-base text-muted">
