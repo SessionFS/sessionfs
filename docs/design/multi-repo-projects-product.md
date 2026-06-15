@@ -260,6 +260,8 @@ Existing split projects continue to work exactly as today. Users are not forced 
 
 **Recommendation:** **All repos in a linked project must belong to the same SessionFS org as the project.** Cross-org repo linking is rejected with a clear error: `Repo "org-a/frontend" belongs to a different organization. Projects cannot span organizations.`
 
+**Exception — verified reclaim:** When a verified owner reclaims their repo via displacement (binding doc §6.2), the FINAL state places the repo in the verified owner's project/org and removes it from the unverified (possibly cross-org) holder. Normal (non-reclaim) cross-org linking remains rejected. The displacement audit trail records the cross-org transition for forensics.
+
 **Rationale:**
 - Orgs are the billing and access-control boundary. Mixing orgs within one project creates ambiguous billing (who pays for the KB storage?) and access-control confusion (an org-b member sees org-a's repo data?).
 - The `org_id` FK on the project already scopes it. Each linked repo's `git_remote_normalized` must resolve to the same SessionFS org.
@@ -270,7 +272,7 @@ Existing split projects continue to work exactly as today. Users are not forced 
 | Expectation | Reality | Mitigation |
 |-------------|---------|------------|
 | "Linking repos = merging their sessions" | Sessions stay per-repo. The KB aggregates across repos, but the session list in `sfs sessions` is still repo-scoped. | Document clearly: "Sessions are per-repo. The KB, personas, tickets, and rules are shared." |
-| "I can link any repo" | Org-boundary check rejects cross-org repos. Additionally, link requires project admin standing (owner or org-admin), and verification depends on GitHub App installation. Non-GitHub/self-hosted repos are owner-attested. | Clear error messages for each case. Dashboard prompts App install for verified linking. |
+| "I can link any repo" | Org-boundary check rejects cross-org repos (exception: verified reclaim can displace an unverified cross-org squatter — the repo ends up in the verified owner's project). Additionally, link requires project admin standing (owner or org-admin), and verification depends on GitHub App installation. Non-GitHub/self-hosted repos are owner-attested. | Clear error messages for each case. Dashboard prompts App install for verified linking. |
 | "Merge is instant and perfect" | Collisions require manual review. The dry-run shows everything upfront. | Default `--dry-run` with no side effects. |
 | "My free-tier project should support multi-repo" | It does — multi-repo is free for all tiers. | No gating; works everywhere. |
 | "I can delete the source project after merge" | It's auto-soft-deleted. Sessions remain accessible. | The merge output confirms this explicitly. |

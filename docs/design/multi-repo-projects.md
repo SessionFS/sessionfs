@@ -1,10 +1,10 @@
 # Binding Design — Multi-Repo Projects
 
-**Status:** ✅ Codex VERIFIED-CLEAN (R5) + Sentinel APPROVED-WITH-CONDITIONS — conditions folded into design (S1 amendment below); re-review pending on implementation. Review history: R1 (3 HIGH + 4 MED + 3 LOW) → R2 (0 HIGH, 4 MED + 1 LOW) → R3 (3 MED + 2 LOW) → R4 (1 MED + 1 LOW) → R5 CLEAN.
+**Status:** ✅ Codex VERIFIED-CLEAN (R5) + Sentinel APPROVED-WITH-CONDITIONS — conditions folded into design (S1 amendment); Codex re-review of S1 amendment fixed (S2). Review history: R1 (3 HIGH + 4 MED + 3 LOW) → R2 (0 HIGH, 4 MED + 1 LOW) → R3 (3 MED + 2 LOW) → R4 (1 MED + 1 LOW) → R5 CLEAN. S1: Sentinel amendment. S2: Codex re-review of S1 amendment (displacement coherence + resolver error + verified semantics).
 **Author:** Atlas (backend/data-model)
 **Date:** 2026-06-15
 **Companion:** `docs/design/multi-repo-projects-product.md` (Compass — linking UX + merge collision policy)
-**Security gate:** Sentinel pre-build pass completed 2026-06-15 — 6 must-fix conditions (1 HIGH + 5 MEDIUM) + 4 LOW folded into this document (§11). Implementation re-review required before ship.
+**Security gate:** Sentinel pre-build pass completed 2026-06-15 — 6 must-fix conditions (1 HIGH + 5 MEDIUM) + 4 LOW folded into this document (§11). Codex re-review of S1 amendment completed 2026-06-15 — 1 HIGH + 2 MED + 1 LOW fixed (S2). Implementation re-review required before ship.
 
 ## Revision History
 
@@ -15,6 +15,7 @@
 | R3 | 2026-06-15 | Codex R3: 3 MED + 2 LOW. MED-1: skip/merge_content collision policies now assign a legal archived unique name (`{name}-{src8}-archived`, ≤50 chars, `^[A-Za-z0-9_-]$`) BEFORE reassigning to target_id — no uq_persona_project_name violation, no tombstone stranding. MED-2: KnowledgeLink pseudocode rewritten: compute remapped key BEFORE mutation; duplicates are `db.delete()`'d; running set guards self-collision; no mutate-then-flush. MED-3: execute path writes an ATTEMPT audit row (status='started') in a separate session BEFORE mutation, then outcome-updates to 'completed'/'failed' in exception handler — survives rollback; dry-run stays zero-write; `status` column added to `project_merge_audit`. LOW-4: stale `(from <project>)` text replaced with `{name}-{src8}` in §7 and summary sections. LOW-5: companion wiki slug aligned to `{slug}-{src8}`; all `(from <source>)` suffixes swept and replaced. |
 | R4 | 2026-06-15 | Codex R4: 1 MED + 1 LOW (audit-contract cleanup). MED-1: narrowed audit guarantee — precondition/authz rejections (404, cross-org, already-merged) are refused BEFORE the `started` audit row exists and are covered by standard request/access logging; only *validated* execute mutation attempts are merge-audited; §5.11 ordering now explicit (preconditions first, not merge-audited). LOW-2: added `skipped_link_ids TEXT NOT NULL DEFAULT '[]'` column to `project_merge_audit` (mirrors `skipped_ke_ids`); outcome-update now persists it. |
 | S1 | 2026-06-15 | **Sentinel amendment** (6 must-fix + 4 LOW from `docs/security/multi-repo-projects-security-review.md`). **F1 (HIGH):** verified-vs-unverified ownership model — added `verified` (bool, NOT NULL DEFAULT false) + `verification_method` (enum: `github_app`/`owner_attested`/`legacy_backfill`) to `project_repos`; github_app installation proof for GitHub remotes; owner_attested fallback for non-GitHub/self-hosted; verified-beats-unverified displacement with documented swap rules; legacy_backfill grandfathering for existing rows (migration 049). Noted pre-existing project-create squatting fix as §6 hardening follow-up. **F2 (MED):** de-credited `provider_repo_id` as hijack/DoS defense — documented as best-effort rename-survival nicety (frequently NULL); F1 verification is the load-bearing control. **F3 (MED):** 409 `repo_already_linked` gates `existing_project_id` behind `user_can_access_project` on the owning project; unauthorized callers get opaque 409. **F4 (MED):** tombstone 410 runs access check on source BEFORE disclosing `merged_into` target; unauthorized callers get opaque 404/403. **F5 (MED):** resolver redirect re-authorizes on the resolved/redirected target project at all 16 rewritten sites; added hop-cap ≤8 with logged error as defense-in-depth. **F6 (MED):** app-layer rate limits on link + merge (incl. dry-run); Forge ticket filed for durable edge/multi-replica rate limiting. **4 LOW:** audit denials (L1); `sfs security scan` parity (L2); block merge when transfer pending (L3, §5.11 Phase 1); attestation snapshot survives user deletion (L4, §5.1). New **§11 Security Conditions** cross-referencing the review + updated §8.2 checklist. Companion doc updated for GitHub app-install linking UX. |
+| S2 | 2026-06-15 | **Codex re-review fixes of Sentinel amendment.** **HIGH-1 (displacement coherence):** displacement DELETEs the unverified row (never UPDATEs `project_id=NULL` — column is `NOT NULL`). Holder zero-repo after displacement → new `repo_reclaimed` orphaned state (distinct from merge tombstone; keeps its own KB/personas/tickets/rules with NO auto-import to claimant; owner can re-link to revive). Holder other-repos → promote new primary + refresh `git_remote_normalized`. Added `projects.repo_reclaimed_at` column (migration 049 additive). New **§3.4 Project Lifecycle States** (active/merged/repo_reclaimed with per-state resolver behavior). Q4 amended: zero-repo permitted ONLY in merged OR repo_reclaimed states. **MED-2 (resolver error):** hop-cap exceedance raises typed `ProjectResolutionLoopError` (never a silent Project return); both resolver paths fixed; route-level mapping to 409/500 documented. **MED-3 (verified semantics):** `verified=true` ONLY for `github_app`; `owner_attested` + `legacy_backfill` ALWAYS `verified=false`. Schema comment corrected; both docs swept. **LOW-4 (cross-org carve-out):** verified reclaim displaces cross-org unverified squatter; FINAL state in verified owner's org only. Normal cross-org linking still rejected. Binding §6.3 + companion §7.3 updated. **Sentinel build notes N1 (confused-deputy: linker's OWN installation token) + N2 (liveness: GitHub API call outside swap txn)** folded into §8.2 checklist + §11. |
 
 ---
 
@@ -147,12 +148,13 @@ CREATE TABLE project_repos (
     provider_repo_id VARCHAR(100),        -- stable integer-as-string, e.g. GitHub repo ID
     is_primary      BOOLEAN NOT NULL DEFAULT FALSE,
     -- Sentinel F1: repo-link anti-hijack ownership verification.
-    --   verified=true  → ownership was proven (github_app) or explicitly
-    --                     attested (owner_attested). Verified rows can displace
-    --                     unverified rows on the same UNIQUE(git_remote_normalized).
+    --   verified=true  → ownership was proven (github_app ONLY).
+    --                     Verified rows can displace unverified rows
+    --                     on the same UNIQUE(git_remote_normalized).
     --   verified=false → caller claimed ownership but could not prove it
     --                     (owner_attested for non-GitHub/self-hosted/app-not-installed,
     --                     or legacy_backfill for pre-existing rows at migration).
+    --   owner_attested and legacy_backfill are ALWAYS verified=false.
     --   Displacement rules documented in §6.2.
     verified        BOOLEAN NOT NULL DEFAULT FALSE,
     verification_method VARCHAR(20),      -- 'github_app' | 'owner_attested' | 'legacy_backfill'
@@ -255,6 +257,14 @@ op.create_index(
 
 **Decision: Keep `projects.git_remote_normalized`.** This column remains as the project's **primary/display remote** for backward compatibility. It is denormalized from `project_repos WHERE is_primary IS TRUE`. During the backfill migration, every existing project's current `git_remote_normalized` becomes the primary repo. Old clients that query `GET /projects/{remote}` against a non-primary remote will still work via the new resolver (see §3.3). New clients should use project-by-ID endpoints where possible.
 
+**`projects` table additions (migration 049):**
+
+| Column | Type | Purpose |
+|--------|------|---------|
+| `merged_into_project_id` | VARCHAR(64) FK→projects(id) ON DELETE SET NULL, nullable | Tombstone marker — set when this project was merged into another. See §5.9. |
+| `merged_at` | TIMESTAMPTZ, nullable | When the merge occurred. |
+| `repo_reclaimed_at` | TIMESTAMPTZ, nullable | Set when ALL repos were reclaimed by verified owners via displacement (§6.2). The project enters the `repo_reclaimed` orphaned state — distinct from a merge tombstone. It retains all its own KB/personas/tickets/rules (NOT merged into the claimant). Hidden from the active project list but readable by its owner (audit trail). The owner may re-link a different repo to revive it (clear `repo_reclaimed_at`, transition back to `active`). See §3.4. |
+
 ### 3.2 Migration (049 — Additive)
 
 **File:** `src/sessionfs/server/db/migrations/versions/049_multi_repo_projects.py`
@@ -263,7 +273,7 @@ op.create_index(
 
 1. Create `project_repos` table with all columns (including `provider`, `provider_repo_id`), constraints, and indexes
 2. Create two partial unique indexes (primary, provider_repo_id) — use cross-DB-safe Alembic with `postgresql_where` + `sqlite_where`
-3. Add `merged_into_project_id` (nullable FK to `projects.id`, `ON DELETE SET NULL`) + `merged_at` (nullable TIMESTAMPTZ) to `projects`
+3. Add `merged_into_project_id` (nullable FK to `projects.id`, `ON DELETE SET NULL`) + `merged_at` (nullable TIMESTAMPTZ) + `repo_reclaimed_at` (nullable TIMESTAMPTZ) to `projects`
 4. Create `project_merge_audit` table (see §5.10)
 5. Backfill: one row per existing project from `projects.git_remote_normalized` with `is_primary = TRUE`, **`verified = FALSE, verification_method = 'legacy_backfill'`** (Sentinel F1: existing rows are grandfathered — NOT displaceable by a new *unverified* claim, but ARE displaceable by a *verified* claim so a real owner can reclaim a squatted legacy remote).
    ```sql
@@ -274,7 +284,7 @@ op.create_index(
    ```
    (Use SQLite-compatible UUID generation via the existing `_gen_id()` utility.)
 
-**Downgrade:** Drop `project_repos` table + `project_merge_audit` table. Drop `merged_into_project_id` + `merged_at` columns from `projects`. No data loss risk — the column on `projects` was never removed.
+**Downgrade:** Drop `project_repos` table + `project_merge_audit` table. Drop `merged_into_project_id` + `merged_at` + `repo_reclaimed_at` columns from `projects`. No data loss risk — the columns on `projects` were never removed.
 
 **Zero downtime:** Additive-only. Old code ignores the new table. New code queries the new table first, falls back to the old column.
 
@@ -307,8 +317,10 @@ async def resolve_project_by_remote(
 
     Hop-cap: the tombstone chain is bounded at ≤8 hops (belt-and-suspenders;
     preconditions prevent cycles, but data corruption or future code paths
-    could introduce one). Exceeding the hop cap logs an error and returns
-    the last-resolved project so the caller can fail safely.
+    could introduce one). Exceeding the hop cap raises a typed
+    ProjectResolutionLoopError — never a silent normal Project return.
+    Callers (routes) map it to a 409/500; no caller ever operates on a
+    corrupt-chain project unknowingly.
 
     Returns None when no project owns this remote.
     """
@@ -345,14 +357,11 @@ async def resolve_project_by_remote(
         while project is not None and project.merged_into_project_id:
             hops += 1
             if hops > HOP_CAP:
-                # Log error but return the last-resolved project so the
-                # caller can fail safely (do not crash or return None).
-                logger.error(
-                    "resolve_project_by_remote: tombstone hop cap (%d) exceeded "
-                    "for remote %s — possible data corruption",
-                    HOP_CAP, git_remote_normalized,
+                raise ProjectResolutionLoopError(
+                    f"resolve_project_by_remote: tombstone hop cap ({HOP_CAP}) "
+                    f"exceeded for remote {git_remote_normalized} — "
+                    f"possible data corruption"
                 )
-                break
             project = await db.get(Project, project.merged_into_project_id)
 
     return project
@@ -377,7 +386,8 @@ async def resolve_project_by_id(
 ) -> Project | None:
     """Get project by ID, optionally following tombstone chain.
 
-    Same hop-cap as resolve_project_by_remote (≤8) — see F5.
+    Same hop-cap as resolve_project_by_remote (≤8). Raises
+    ProjectResolutionLoopError on exceedance — never a silent return.
     """
     project = await db.get(Project, project_id)
     if project is not None and follow_tombstone and project.merged_into_project_id:
@@ -386,14 +396,16 @@ async def resolve_project_by_id(
         while project is not None and project.merged_into_project_id:
             hops += 1
             if hops > HOP_CAP:
-                logger.error(
-                    "resolve_project_by_id: tombstone hop cap (%d) exceeded "
-                    "for project %s", HOP_CAP, project_id
+                raise ProjectResolutionLoopError(
+                    f"resolve_project_by_id: tombstone hop cap ({HOP_CAP}) "
+                    f"exceeded for project {project_id} — "
+                    f"possible data corruption"
                 )
-                break
             project = await db.get(Project, project.merged_into_project_id)
     return project
 ```
+
+**Route-level error mapping:** `ProjectResolutionLoopError` is a typed exception defined in `src/sessionfs/server/services/project_resolver.py`. Both `resolve_project_by_remote` and `resolve_project_by_id` raise it on hop-cap exceedance. Routes map it to `409 Conflict` with `{"error": "resolution_loop", "message": "..."}`, falling back to `500 Internal Server Error` if a route doesn't catch it explicitly. **Neither resolver path ever returns a normal `Project` on hop-cap exceedance** — callers cannot unknowingly operate on a corrupt-chain project.
 
 #### Site-by-Site Changes (All 16 Sites)
 
@@ -429,6 +441,34 @@ async def resolve_project_by_id(
 
 **Group E — Use `get_primary_remote()` (2 sites — see table in §2.2E).**
 
+### 3.4 Project Lifecycle States
+
+A project is in exactly one of three lifecycle states, derived from its columns:
+
+| State | Condition | Resolver behavior | List visibility |
+|-------|-----------|-------------------|-----------------|
+| **`active`** | `merged_into_project_id IS NULL` AND `repo_reclaimed_at IS NULL` | Normal resolution. `resolve_project_by_remote` returns this project directly. | Visible in project list. |
+| **`merged`** (tombstone) | `merged_into_project_id IS NOT NULL` | `resolve_project_by_remote` / `resolve_project_by_id` follow the tombstone chain transparently (hop-cap ≤8). Routes MUST re-authorize on the resolved target. `GET /projects/{id}` returns `410 Gone` with `merged_into` target (gated by access check on source first — §6.5 F4). | Hidden from project list. Accessible by direct ID lookup for audit. |
+| **`repo_reclaimed`** (orphaned) | `repo_reclaimed_at IS NOT NULL` AND `merged_into_project_id IS NULL` | Treated as an orphaned project — **NOT redirected** like a tombstone. Resolves to itself normally (the project still exists and its data is intact). `GET /projects/{id}` returns the project with a `repo_reclaimed: true` flag. | Hidden from the active project list. Readable by its owner (audit trail). Dashboard surfaces a notice: "All repos were reclaimed by verified owners. Link a new repo to revive this project." |
+
+**Transitions:**
+
+- `active` → `merged`: merge execution (§5.12). Sets `merged_into_project_id` + `merged_at`. All repos reassigned to target.
+- `active` → `repo_reclaimed`: displacement removes the LAST repo (§6.2). Sets `repo_reclaimed_at = NOW()`.
+- `repo_reclaimed` → `active`: owner links a new repo to the project. Clears `repo_reclaimed_at = NULL`.
+- `merged` → (no transition): merge is permanent. A merged tombstone cannot be revived.
+
+**`repo_reclaimed` vs `merged` — critical distinction:**
+
+| | `merged` (tombstone) | `repo_reclaimed` (orphaned) |
+|---|---|---|
+| Cause | User-initiated merge | Verified owner reclaims repo via displacement |
+| Repos | All moved to target | All reclaimed by verified owners |
+| KB / personas / tickets / rules | Reassigned to target project | **Kept intact** on this project (squatter-poisoning guard) |
+| Resolver | Redirects to target | Returns this project (no redirect) |
+| Revivable? | No (permanent) | Yes — owner can re-link a repo |
+| Dashboard | "Merged into X" | "Repos reclaimed — link a repo to revive" |
+
 ---
 
 ## 4. API + CLI Surface
@@ -452,16 +492,20 @@ Linking a repo claims a globally-unique `git_remote_normalized`. The caller must
 
 | Requester | Holder | Result |
 |-----------|--------|--------|
-| Verified (`github_app`) | Unverified (`owner_attested` or `legacy_backfill`) | **Displace.** Atomically unlink the unverified row from its project (audited; a `repo_reclaimed` event/notification surfaces it to the displaced project), then grant the remote to the verified claimant. |
+| Verified (`github_app`) | Unverified (`owner_attested` or `legacy_backfill`) | **Displace.** Atomically DELETE the unverified row from its project (audited; a `repo_reclaimed` event surfaces it to the displaced project). If the holder is left with zero repos, it enters the `repo_reclaimed` orphaned state (§3.4); if the displaced row was primary and other repos remain, promote a new primary. Then INSERT the verified row for the claimant. |
 | Verified (`github_app`) | Verified (`github_app`) | **409 genuine conflict.** Both have proven ownership. Manual/support resolution required. |
 | Unverified (`owner_attested`) | Any (verified or unverified) | **409.** Unverified claims cannot displace anyone. |
 
 **Atomic displacement procedure:**
-1. `SELECT ... FOR UPDATE` lock the existing `project_repos` row (and its project row for FK safety).
-2. Unlink: `UPDATE project_repos SET project_id = NULL` (or DELETE, with the old values captured for audit).
-3. Write an audit row recording the displacement (old project_id, old `verified`/`verification_method`, displaced_at, displaced_by_user_id).
-4. INSERT the new verified row.
-5. Commit. The displaced project gets a `repo_reclaimed` notification so the admin knows a remote was reclaimed by a verified owner.
+1. `SELECT ... FOR UPDATE` lock the existing (unverified) `project_repos` row AND the holder project row for FK safety.
+2. **DELETE the unverified row** — frees the `UNIQUE(git_remote_normalized)` for the verified claimant's insert. The `SELECT FOR UPDATE` + UNIQUE constraint together act as the atomic backstop. **NEVER sets `project_id=NULL`** (the column is `NOT NULL`).
+3. Write a `repo_reclaimed` audit event recording the displacement (old project_id, old `verified`/`verification_method`, displaced_at, displaced_by_user_id, the reclaimed remote).
+4. **Handle the holder project's remaining repos:**
+   - If the displaced row was `is_primary` and the holder has **other repos**: promote the oldest remaining repo to primary (`UPDATE project_repos SET is_primary = TRUE ... ORDER BY created_at ASC LIMIT 1`) and refresh `projects.git_remote_normalized` from the new primary.
+   - If the displaced row was the holder's **only repo** (zero repos remain): the holder project enters the **`repo_reclaimed`** orphaned state — `UPDATE projects SET repo_reclaimed_at = NOW() WHERE id = :holder_id`. The holder keeps ALL its own project-scoped data (KB, personas, tickets, rules). **NEVER auto-import into the claimant** (squatter-poisoning guard — Codex explicit). The orphaned project is hidden from the active project list but readable by its owner (audit trail). A dashboard notice surfaces the state. The owner may re-link a different repo to revive it (transition back to `active`, clearing `repo_reclaimed_at`).
+   - If the displaced row was non-primary and other repos remain: no structural change to the holder beyond the row deletion.
+5. INSERT the new verified row into the claimant project.
+6. Commit.
 
 **Request:**
 ```json
@@ -841,6 +885,9 @@ merged_into_project_id: Mapped[str | None] = mapped_column(
 merged_at: Mapped[datetime | None] = mapped_column(
     DateTime(timezone=True), nullable=True
 )
+repo_reclaimed_at: Mapped[datetime | None] = mapped_column(
+    DateTime(timezone=True), nullable=True
+)
 ```
 
 A merged project:
@@ -848,6 +895,7 @@ A merged project:
 - Its repos now belong to the target
 - Access to the tombstone is read-only for audit (original owner)
 - Resolvers transparently follow the tombstone chain (see `resolve_project_by_remote`), but routes MUST run the access check against the resolved/redirected target, not the input remote (Sentinel F5 — see §3.3 resolver contract)
+- **Distinct from `repo_reclaimed`:** a merged tombstone's KB/personas/tickets/rules were reassigned to the target. A `repo_reclaimed` project's data stays with the orphaned project (§3.4).
 
 ### 5.10 Merge Audit Table (LOW-8 Fix: cross-DB Text JSON)
 
@@ -1166,7 +1214,7 @@ The global `UNIQUE(git_remote_normalized)` on `project_repos` is the primary dat
 
 | Requester | Holder | Result |
 |-----------|--------|--------|
-| Verified (`github_app`) | Unverified (`owner_attested` or `legacy_backfill`) | **Displace.** Atomic swap (lock existing row → unlink → audit → insert verified row). A `repo_reclaimed` notification surfaces the displacement to the displaced project's admin. |
+| Verified (`github_app`) | Unverified (`owner_attested` or `legacy_backfill`) | **Displace.** Atomic DELETE of the unverified row (lock → delete → handle holder-project state → audit → insert verified row for claimant). If the holder is left with zero repos, it enters the `repo_reclaimed` orphaned state (distinct from merge tombstone; keeps its own KB/personas/tickets/rules — NEVER auto-imported). A `repo_reclaimed` event surfaces the displacement to the displaced project's admin. |
 | Verified (`github_app`) | Verified (`github_app`) | **409 genuine conflict.** Both have proven ownership. Manual/support resolution required. |
 | Unverified (`owner_attested`) | Any (verified or unverified) | **409.** Unverified claims cannot displace anyone. |
 
@@ -1179,7 +1227,7 @@ The global `UNIQUE(git_remote_normalized)` on `project_repos` is the primary dat
 ### 6.3 Cross-Org Boundary
 
 - A repo linked to an org-scoped project is "owned" by that org
-- Linking the same repo to a different org's project is rejected (409)
+- Linking the same repo to a different org's project is rejected (409) — **with one exception:** a verified owner reclaiming their repo via displacement (§6.2) places the repo in the verified owner's project/org and removes it from the unverified (possibly cross-org) holder. The FINAL state has the repo ONLY in the verified owner's project. Normal (non-reclaim) cross-org linking remains rejected.
 - Merging projects across orgs is DENIED (400)
 - Service keys: the `assert_service_key_can_access_project` check in `handoff_helpers.py:561-564` validates project-level access. With multi-repo, the project boundary is unchanged — service keys get access to ALL repos under a project.
 
@@ -1227,7 +1275,11 @@ The only existing limiter is `auth/rate_limit.py`'s `SlidingWindowRateLimiter` �
 
 ### Q4: Must a project have at least one repo?
 
-**Recommendation: YES.** Enforcement: `DELETE /repos/{id}` returns 422 on last repo. Merge is the exception — the source becomes a tombstone with zero repos (explicitly marked via `merged_into_project_id`).
+**YES, with two explicit exceptions.** Enforcement: `DELETE /repos/{id}` returns 422 on last repo (normal unlink cannot orphan a project). Zero-repo projects are permitted ONLY in two lifecycle states:
+- **`merged` tombstone** — source project after a merge; all repos reassigned to target (§5.9).
+- **`repo_reclaimed` orphaned** — all repos reclaimed by verified owners via displacement (§6.2); project retains its own data.
+
+Active projects (`merged_into_project_id IS NULL` AND `repo_reclaimed_at IS NULL`) must have ≥1 repo. See §3.4 for the full lifecycle state machine.
 
 ### Q5: Should `projects.git_remote_normalized` ever be dropped?
 
@@ -1262,12 +1314,15 @@ The only existing limiter is `auth/rate_limit.py`'s `SlidingWindowRateLimiter` �
 - [ ] KnowledgeLink: is entry-ID mapping built before link reassignment? Are duplicates detected and skipped? Does the in-flight dedup guard prevent self-collision within the batch? (MED-4)
 - [ ] `provider_repo_id`: is it server-derived from git_remote, never trusted from caller input? (LOW-5)
 - [ ] **[F1] `verified` + `verification_method` columns:** migration 049 backfill correct? `legacy_backfill` for existing rows?
-- [ ] **[F1] Displacement logic:** verified-vs-unverified, verified-vs-verified, unverified-vs-any rules correct? Atomic swap with audit?
+- [ ] **[F1] Displacement logic:** verified-vs-unverified, verified-vs-verified, unverified-vs-any rules correct? Atomic DELETE (never UPDATE project_id=NULL)? Holder zero-repo → `repo_reclaimed`? Holder other-repos → promote new primary?
+- [ ] **[F1] `repo_reclaimed` orphaned state:** distinct from merge tombstone? Keeps its own KB/personas/tickets/rules (NEVER auto-imported)? Hidden from active list but readable by owner? Re-link revives it?
 - [ ] **[F5] Resolver re-authorization:** do all 16 rewritten sites run access check on the resolved/redirected target, not the input remote?
-- [ ] **[F5] Hop-cap:** does `resolve_project_by_remote` / `resolve_project_by_id` have a bounded tombstone-follow loop (≤8)?
+- [ ] **[F5] Hop-cap:** does `resolve_project_by_remote` / `resolve_project_by_id` raise `ProjectResolutionLoopError` (never a silent Project return) on exceedance? Route-level mapping to 409/500?
 - [ ] **[F4] Tombstone 410:** does the route run access check on the source BEFORE disclosing `merged_into`?
+- [ ] **[MED-3] Verified semantics:** `verified=true` ONLY for `github_app`? `owner_attested` and `legacy_backfill` ALWAYS `verified=false`? Schema comment authoritative?
+- [ ] **[LOW-4] Cross-org verified reclaim:** does verified displacement carve out cross-org rejection? FINAL state in verified owner's org only? Normal cross-org linking still rejected?
 
-### 8.2 Shield-SR Security Review Checklist (Updated for Sentinel S1)
+### 8.2 Shield-SR Security Review Checklist (Updated for Sentinel S1 + S2)
 
 This checklist is aligned with the Binding Implementation Security Checklist in `docs/security/multi-repo-projects-security-review.md`. Each item gates implementation; "verified" requires a passing negative test where one is feasible. See §11 for the full cross-reference.
 
@@ -1286,6 +1341,8 @@ This checklist is aligned with the Binding Implementation Security Checklist in 
 - [ ] **[Dry-run] Provably zero DB writes** — no audit row, no row locks beyond reads. *Test:* row-count delta == 0.
 - [ ] **[Regression] No raw secrets / cross-tenant identifiers in 4xx bodies, logs, or merge-audit stats.** `project_id` appears only to authorized callers (F3, F4).
 - [ ] **[Migration] Backfill 049** creates exactly one `is_primary` repo per existing project with `verified=false, verification_method='legacy_backfill'`; empty/NULL `git_remote_normalized` projects produce no orphan rows. Dual-read fallback queries `project_repos` first (no shadowing). Downgrade clean.
+- [ ] **[N1 — Sentinel build note] GitHub App verification uses the LINKER'S OWN installation token** — never a global/shared token. The installation lookup is scoped to the authenticated user's own installations; cross-installation resolution is forbidden. This prevents a confused-deputy attack where a user with App access on repo A uses that token to "verify" repo B that they don't control.
+- [ ] **[N2 — Sentinel build note] GitHub API call is OUTSIDE the swap transaction.** The `GET /repos/{owner}/{repo}` verification call (installation token) is made BEFORE acquiring the `SELECT FOR UPDATE` lock on `project_repos`. The swap transaction (lock → DELETE → handle holder state → INSERT → commit) contains only DB writes — no live HTTP calls. This avoids holding row locks during network I/O (liveness). If the GitHub API call fails, the swap is never attempted.
 
 ---
 
@@ -1494,8 +1551,17 @@ When a GitHub repo is renamed, `git_remote_normalized` changes but `provider_rep
 | L3 | Block merge when a project transfer is pending (either direction, either side) | Added to Phase 1 preconditions in merge pseudocode | §5.11, §5.12 |
 | L4 | Link attestation snapshot survives user deletion | `added_by_user_id` FK is ON DELETE SET NULL for hygiene; audit row carries linker's user_id + email snapshot at link time | §5.1 |
 
+### Sentinel Build Notes (Non-Blocking — Implementation Guidance)
+
+These two notes from Sentinel's pre-build pass are folded here as implementation guidance for the engineer building the displacement and verification paths.
+
+**N1 — GitHub App verification MUST use the linker's OWN installation token (confused-deputy defense).** The server resolves the GitHub App installation from the *authenticated user's* own installations — never from a global token or another user's installation. A user who installed the App on repo-A must not be able to use that installation's token to "verify" ownership of repo-B (which they don't control). Implementation: scope the installation lookup to `GET /user/installations` for the authenticated user, then use THAT installation's token for `GET /repos/{owner}/{repo}`. If the repo is not in the user's own installation set, verification fails → fall back to `owner_attested` (verified=false).
+
+**N2 — GitHub API call is OUTSIDE the swap transaction (liveness).** The `GET /repos/{owner}/{repo}` verification call (installation token) is made BEFORE acquiring the `SELECT FOR UPDATE` lock on `project_repos`. The swap transaction (lock → DELETE → handle holder state → INSERT → commit) contains only DB writes — no live HTTP calls. Holding a row lock during a potentially slow network call to api.github.com would block concurrent link/merge operations and create a liveness risk. If the GitHub API call fails, the swap is never attempted.
+
 ### Residual Risk & Owners
 
 - **Forged `git_remote_normalized` is a pre-existing platform weakness** (predates this feature; predicate #3 already trusts it for read access). This review hard-gates it for the *new* global-unique link/claim path (F1). A broader follow-up — verifying repo provenance at session-sync time, or down-weighting predicate #3 generally — is a separate Sentinel ticket. **Owner: Sentinel (follow-up ticket).**
 - **Edge rate limiting** for link/merge — **Owner: Forge** (F6).
-- **Design-doc amendments** for F1/F2/F3/F4/F5/F6 + LOW — **Owner: Atlas** (this amendment; complete).
+- **Design-doc amendments** for F1/F2/F3/F4/F5/F6 + LOW — **Owner: Atlas** (S1 amendment; complete).
+- **Design-doc amendments for displacement coherence + resolver error + verified semantics** — **Owner: Atlas** (S2 amendment; this commit).
