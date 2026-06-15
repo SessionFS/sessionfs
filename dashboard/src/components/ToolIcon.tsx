@@ -50,7 +50,7 @@ export default function ToolIcon({ tool, size = 'sm', showLabel = true }: ToolIc
         {entry.label.charAt(0).toUpperCase()}
       </span>
       {showLabel && (
-        <span className="text-[var(--text-secondary)]" style={{ fontSize: size === 'sm' ? 13 : 14 }}>
+        <span className="text-text-secondary" style={{ fontSize: size === 'sm' ? 13 : 14 }}>
           {entry.label}
         </span>
       )}

@@ -203,7 +203,7 @@ describe('SessionDetail', () => {
     renderPage();
     const user = userEvent.setup();
 
-    await user.click(screen.getByRole('button', { name: /^summary$/i }));
+    await user.click(screen.getByRole('tab', { name: /summary/i }));
 
     await waitFor(() => {
       expect(screen.getByTestId('summary-tab')).toBeInTheDocument();
@@ -221,7 +221,7 @@ describe('SessionDetail', () => {
     renderPage();
     const user = userEvent.setup();
 
-    await user.click(screen.getByRole('button', { name: /^audit$/i }));
+    await user.click(screen.getByRole('tab', { name: /audit/i }));
 
     await waitFor(() => {
       expect(screen.getByTestId('audit-tab')).toBeInTheDocument();
@@ -344,5 +344,49 @@ describe('SessionDetail', () => {
     expect(
       await screen.findByRole('dialog', { name: /hand off session/i }),
     ).toBeInTheDocument();
+  });
+
+  // ── Loading → loaded transition (regression: 865cf4e) ──────────
+
+  it('survives the loading→loaded transition without React hooks errors', () => {
+    // First call to useSession → loading
+    hooks.useSession.mockReturnValueOnce({
+      data: undefined,
+      isLoading: true,
+      error: null,
+      refetch: vi.fn(),
+    });
+    // All subsequent calls → loaded. mockReturnValueOnce + mockReturnValue
+    // is the closest simulation of a React Query hook transitioning from
+    // loading to settled in a single test render cycle.
+    hooks.useSession.mockReturnValue({
+      data: baseSession(),
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+
+    const { rerender } = renderPage();
+
+    // Loading state visible — hooks ran in loading mode, early-returned
+    expect(screen.getByText(/loading session/i)).toBeInTheDocument();
+
+    // Re-render with the same tree. useSession now returns loaded data.
+    // If ANY hook (useMemo, useCallback, etc.) was called AFTER an early
+    // return in either branch, React throws "Rendered fewer/more hooks
+    // than expected" and the test fails here — that's the exact gap
+    // that hid the white-screen crash fixed in 865cf4e.
+    rerender(
+      <MemoryRouter initialEntries={['/sessions/ses_abc123']}>
+        <Routes>
+          <Route path="/sessions/:id" element={<SessionDetail />} />
+          <Route path="/" element={<div>home</div>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    // If we get here without React throwing, the hooks invariant held.
+    // The loaded render should show the conversation view.
+    expect(screen.getByTestId('conversation-view')).toBeInTheDocument();
   });
 });

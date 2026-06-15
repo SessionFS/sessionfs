@@ -140,7 +140,7 @@ function TaskToasts({ tasks, onDismiss }: { tasks: BackgroundTask[]; onDismiss: 
           {/* Content */}
           <div className="flex-1 min-w-0">
             <div className="text-sm font-medium text-text-primary truncate">
-              {task.status === 'running' && 'Auditing session...'}
+              {task.status === 'running' && 'Auditing session…'}
               {task.status === 'completed' && 'Audit complete'}
               {task.status === 'failed' && 'Audit failed'}
             </div>

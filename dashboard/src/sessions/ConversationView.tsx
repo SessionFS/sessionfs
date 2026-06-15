@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useMessages } from '../hooks/useMessages';
 import MessageBlock from './MessageBlock';
+import { Button } from '../components/ui/Button';
 
 const PAGE_SIZE = 50;
 
@@ -47,7 +48,7 @@ export default function ConversationView({ sessionId, initialPage }: Props) {
   }
 
   if (isLoading && !data) {
-    return <div className="p-4 text-text-muted">Loading messages...</div>;
+    return <div className="p-4 text-text-muted">Loading messages…</div>;
   }
 
   const messages = data?.messages || [];
@@ -55,28 +56,30 @@ export default function ConversationView({ sessionId, initialPage }: Props) {
   const totalPages = Math.ceil(total / PAGE_SIZE);
 
   return (
-    <div className="flex flex-col gap-3 p-4">
+    <div className="flex flex-col gap-6 p-4">
       <div ref={topRef} />
 
       {/* Order toggle + pagination */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <button
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={() => { setOrder(o => o === 'newest' ? 'oldest' : 'newest'); setPage(1); }}
-            className="text-[13px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] px-3 py-1.5 border border-[var(--border)] rounded-lg transition-colors"
           >
             {order === 'newest' ? 'Newest first' : 'Oldest first'}
-          </button>
+          </Button>
           {order === 'oldest' && totalPages > 1 && (
-            <button
+            <Button
+              variant="ghost"
+              size="sm"
               onClick={() => setPage(totalPages)}
-              className="text-[13px] text-[var(--brand)] hover:underline"
             >
               Jump to latest →
-            </button>
+            </Button>
           )}
         </div>
-        <span className="text-[13px] text-[var(--text-tertiary)]">
+        <span className="text-sm text-text-tertiary">
           {total} messages
         </span>
       </div>
@@ -85,11 +88,17 @@ export default function ConversationView({ sessionId, initialPage }: Props) {
       )}
 
       {messages.length === 0 && !isLoading && (
-        <p className="text-text-muted text-sm">No messages in this session.</p>
+        <div className="flex flex-col items-center justify-center py-16">
+          <svg className="w-10 h-10 text-text-tertiary mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+          </svg>
+          <p className="text-md font-semibold text-text-primary mb-1">No messages yet</p>
+          <p className="text-sm text-text-tertiary">This session contains no messages.</p>
+        </div>
       )}
 
       {isLoading && messages.length === 0 && (
-        <p className="text-text-muted text-sm">Loading page {page}...</p>
+        <p className="text-text-muted text-sm">Loading page {page}…</p>
       )}
 
       {messages.map((msg, i) => (
@@ -118,15 +127,15 @@ function Pagination({
   isLoading: boolean;
 }) {
   // Build page numbers: show first, last, current, and neighbors
-  const pages: (number | '...')[] = [];
+  const pages: (number | '…')[] = [];
   const addPage = (p: number) => { if (!pages.includes(p)) pages.push(p); };
 
   addPage(1);
-  if (page > 3) pages.push('...');
+  if (page > 3) pages.push('…');
   for (let p = Math.max(2, page - 1); p <= Math.min(totalPages - 1, page + 1); p++) {
     addPage(p);
   }
-  if (page < totalPages - 2) pages.push('...');
+  if (page < totalPages - 2) pages.push('…');
   if (totalPages > 1) addPage(totalPages);
 
   return (
@@ -143,8 +152,8 @@ function Pagination({
           Prev
         </button>
         {pages.map((p, i) =>
-          p === '...' ? (
-            <span key={`dots-${i}`} className="px-1 text-text-muted text-sm">...</span>
+          p === '…' ? (
+            <span key={`dots-${i}`} className="px-1 text-text-muted text-sm">…</span>
           ) : (
             <button
               key={p}

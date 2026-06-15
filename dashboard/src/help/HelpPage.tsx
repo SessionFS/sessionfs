@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { getItem as lsGet } from '../utils/storage';
+import { Card } from '../components/ui';
 
 type Tool = {
   id: string;
@@ -101,7 +102,7 @@ const CLI_COMMANDS: CliCommand[] = [
   { cmd: 'sfs project edit', desc: 'Edit project context for this repo' },
   { cmd: 'sfs rules init', desc: 'Set up canonical project rules (enables per-tool compilers)' },
   { cmd: 'sfs rules edit', desc: 'Edit canonical static preferences in $EDITOR' },
-  { cmd: 'sfs rules compile', desc: 'Compile canonical rules to tool files (CLAUDE.md, codex.md, …)' },
+  { cmd: 'sfs rules compile', desc: 'Compile canonical rules to tool files (CLAUDE.md, codex.md, ...)' },
   { cmd: 'sfs dlp scan <id>', desc: 'Scan for secrets/PHI' },
 ];
 
@@ -143,7 +144,7 @@ const MCP_KNOWLEDGE_WRITE: McpTool[] = [
 
 const MCP_RULES: McpTool[] = [
   { name: 'get_rules', desc: 'Canonical project rules + compilation config' },
-  { name: 'get_compiled_rules', desc: 'Compiled rule text for a tool (CLAUDE.md, codex.md, …)' },
+  { name: 'get_compiled_rules', desc: 'Compiled rule text for a tool (CLAUDE.md, codex.md, ...)' },
 ];
 
 const MCP_PERSONAS: McpTool[] = [
@@ -218,7 +219,7 @@ function TerminalCopyButton({ text }: { text: string }) {
       onClick={handleCopy}
       aria-label="Copy command"
       aria-live="polite"
-      className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors"
+      className="inline-flex items-center gap-1.5 px-2.5 py-1 text-2xs font-medium rounded-md transition-colors"
       style={{
         backgroundColor: 'rgba(255,255,255,0.06)',
         color,
@@ -259,7 +260,7 @@ function TerminalCopyButton({ text }: { text: string }) {
 function Terminal({ command, output }: { command: string; output: string }) {
   return (
     <div
-      className="rounded-[var(--radius-md)] overflow-hidden border"
+      className="rounded-md overflow-hidden border"
       style={{
         backgroundColor: '#0b0d12',
         borderColor: 'rgba(255,255,255,0.08)',
@@ -280,7 +281,7 @@ function Terminal({ command, output }: { command: string; output: string }) {
           <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: '#28c840' }} />
         </div>
         <span
-          className="text-[11px] font-mono"
+          className="text-2xs font-mono"
           style={{ color: 'rgba(255,255,255,0.4)' }}
         >
           terminal
@@ -289,7 +290,7 @@ function Terminal({ command, output }: { command: string; output: string }) {
       </div>
       {/* Body */}
       <pre
-        className="px-4 py-4 text-[13px] font-mono leading-relaxed overflow-x-auto whitespace-pre"
+        className="px-4 py-4 text-sm font-mono leading-relaxed overflow-x-auto whitespace-pre"
         style={{ color: 'rgba(255,255,255,0.92)' }}
       >
         <span style={{ color: 'rgba(255,255,255,0.45)' }}>$ </span>
@@ -306,17 +307,16 @@ function SectionHeading({ eyebrow, title, subtitle }: { eyebrow?: string; title:
     <div className="mb-6">
       {eyebrow && (
         <div
-          className="text-[11px] font-semibold uppercase tracking-wider mb-2"
-          style={{ color: 'var(--brand)' }}
+          className="text-2xs font-semibold uppercase tracking-wider mb-2 text-brand"
         >
           {eyebrow}
         </div>
       )}
-      <h2 className="text-[22px] font-bold text-[var(--text-primary)] leading-tight">
+      <h2 className="text-[22px] font-bold text-text-primary leading-tight">
         {title}
       </h2>
       {subtitle && (
-        <p className="mt-1.5 text-[14px] text-[var(--text-secondary)] leading-relaxed">
+        <p className="mt-1.5 text-base text-text-secondary leading-relaxed">
           {subtitle}
         </p>
       )}
@@ -356,15 +356,14 @@ Restart ${selectedTool.label} to activate.`;
       {/* Hero */}
       <header className="mb-12 md:mb-16">
         <div
-          className="text-[11px] font-semibold uppercase tracking-wider mb-3"
-          style={{ color: 'var(--brand)' }}
+          className="text-2xs font-semibold uppercase tracking-wider mb-3 text-brand"
         >
           Help & Quickstart
         </div>
-        <h1 className="text-[32px] md:text-[40px] font-bold leading-tight text-[var(--text-primary)] tracking-tight">
+        <h1 className="text-[32px] md:text-[40px] font-bold leading-tight text-text-primary tracking-tight">
           You don't need to memorize commands.
         </h1>
-        <p className="mt-4 text-[16px] md:text-[17px] text-[var(--text-secondary)] leading-relaxed max-w-3xl">
+        <p className="mt-4 text-md md:text-lg text-text-secondary leading-relaxed max-w-3xl">
           Install the MCP server for your AI tool, and your agent learns SessionFS automatically.
           Just tell it what you want.
         </p>
@@ -388,7 +387,7 @@ Restart ${selectedTool.label} to activate.`;
                 role="tab"
                 aria-selected={active}
                 onClick={() => setSelectedTool(tool)}
-                className="px-3.5 py-1.5 text-[13px] font-medium rounded-full border transition-colors"
+                className="px-3.5 py-1.5 text-sm font-medium rounded-full border transition-colors"
                 style={{
                   backgroundColor: active ? 'var(--brand)' : 'transparent',
                   color: active ? 'var(--text-inverse)' : 'var(--text-secondary)',
@@ -403,7 +402,7 @@ Restart ${selectedTool.label} to activate.`;
 
         <Terminal command={selectedTool.command} output={fakeOutput} />
 
-        <p className="mt-4 text-[13px] text-[var(--text-tertiary)] text-center md:text-left">
+        <p className="mt-4 text-sm text-text-tertiary text-center md:text-left">
           That's it. Your AI agent now knows how to use SessionFS.
         </p>
       </section>
@@ -418,19 +417,16 @@ Restart ${selectedTool.label} to activate.`;
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {USE_CASES.map((useCase) => (
-            <div
+            <Card
               key={useCase.title}
-              className="rounded-[var(--radius-lg)] border p-5"
-              style={{
-                backgroundColor: 'var(--bg-secondary)',
-                borderColor: 'var(--border)',
-              }}
+              level="surface"
+              className="p-5"
             >
               <div className="flex items-center gap-2 mb-3">
-                <span className="text-[18px] leading-none" aria-hidden="true">
+                <span className="text-lg leading-none" aria-hidden="true">
                   {useCase.icon}
                 </span>
-                <h3 className="text-[15px] font-semibold text-[var(--text-primary)]">
+                <h3 className="text-md font-semibold text-text-primary">
                   {useCase.title}
                 </h3>
               </div>
@@ -438,14 +434,13 @@ Restart ${selectedTool.label} to activate.`;
                 {useCase.prompts.map((prompt) => (
                   <li
                     key={prompt}
-                    className="text-[13.5px] italic leading-relaxed"
-                    style={{ color: 'var(--text-secondary)' }}
+                    className="text-[13.5px] italic leading-relaxed text-text-secondary"
                   >
                     "{prompt}"
                   </li>
                 ))}
               </ul>
-            </div>
+            </Card>
           ))}
         </div>
       </section>
@@ -459,7 +454,7 @@ Restart ${selectedTool.label} to activate.`;
         />
 
         <div
-          className="rounded-[var(--radius-md)] overflow-hidden border mb-6"
+          className="rounded-md overflow-hidden border mb-6"
           style={{
             backgroundColor: '#0b0d12',
             borderColor: 'rgba(255,255,255,0.08)',
@@ -467,7 +462,7 @@ Restart ${selectedTool.label} to activate.`;
           }}
         >
           <pre
-            className="px-4 py-4 text-[13px] font-mono leading-relaxed overflow-x-auto"
+            className="px-4 py-4 text-sm font-mono leading-relaxed overflow-x-auto"
             style={{ color: 'rgba(255,255,255,0.92)' }}
           >
             <span style={{ color: 'rgba(255,255,255,0.45)' }}>$ </span>
@@ -482,26 +477,20 @@ Restart ${selectedTool.label} to activate.`;
         </div>
 
         <div
-          className="rounded-[var(--radius-lg)] border overflow-hidden"
-          style={{
-            backgroundColor: 'var(--bg-secondary)',
-            borderColor: 'var(--border)',
-          }}
+          className="rounded-lg border overflow-hidden bg-bg-secondary border-border"
         >
-          <ul className="divide-y" style={{ borderColor: 'var(--border)' }}>
+          <ul className="divide-y divide-border">
             {CLI_COMMANDS.map((row) => (
               <li
                 key={row.cmd}
                 className="grid grid-cols-1 sm:grid-cols-[minmax(0,14rem)_1fr] gap-1 sm:gap-4 px-4 py-3"
-                style={{ borderColor: 'var(--border)' }}
               >
                 <code
-                  className="text-[12.5px] font-mono"
-                  style={{ color: 'var(--text-primary)' }}
+                  className="text-[12.5px] font-mono text-text-primary"
                 >
                   {row.cmd}
                 </code>
-                <span className="text-[13px]" style={{ color: 'var(--text-secondary)' }}>
+                <span className="text-sm text-text-secondary">
                   {row.desc}
                 </span>
               </li>
@@ -509,11 +498,10 @@ Restart ${selectedTool.label} to activate.`;
           </ul>
         </div>
 
-        <div className="mt-4 text-[13px]">
+        <div className="mt-4 text-sm">
           <a
             href={siteHref('/cli/')}
-            className="inline-flex items-center gap-1 transition-colors"
-            style={{ color: 'var(--brand)' }}
+            className="inline-flex items-center gap-1 transition-colors text-brand"
           >
             Full CLI reference
             <span aria-hidden="true">→</span>
@@ -559,38 +547,27 @@ Restart ${selectedTool.label} to activate.`;
 
 function McpToolGroup({ label, tools }: { label: string; tools: McpTool[] }) {
   return (
-    <div
-      className="rounded-[var(--radius-lg)] border p-4"
-      style={{
-        backgroundColor: 'var(--bg-secondary)',
-        borderColor: 'var(--border)',
-      }}
-    >
-      <div
-        className="text-[11px] font-semibold uppercase tracking-wider mb-3"
-        style={{ color: 'var(--text-tertiary)' }}
-      >
+    <Card level="surface" className="p-4">
+      <div className="text-micro text-text-tertiary uppercase mb-3">
         {label}
       </div>
       <ul className="space-y-3">
         {tools.map((tool) => (
           <li key={tool.name}>
             <code
-              className="block text-[12.5px] font-mono mb-0.5"
-              style={{ color: 'var(--text-primary)' }}
+              className="block text-[12.5px] font-mono mb-0.5 text-text-primary"
             >
               {tool.name}
             </code>
             <span
-              className="block text-[12.5px] leading-snug"
-              style={{ color: 'var(--text-secondary)' }}
+              className="block text-[12.5px] leading-snug text-text-secondary"
             >
               {tool.desc}
             </span>
           </li>
         ))}
       </ul>
-    </div>
+    </Card>
   );
 }
 
@@ -611,25 +588,15 @@ function ResourceLink({
       href={href}
       target={isExternal && !href.startsWith('mailto:') ? '_blank' : undefined}
       rel={isExternal && !href.startsWith('mailto:') ? 'noopener noreferrer' : undefined}
-      className="flex items-center gap-3 px-4 py-3 rounded-[var(--radius-md)] border transition-colors"
-      style={{
-        backgroundColor: 'var(--bg-secondary)',
-        borderColor: 'var(--border)',
-      }}
-      onMouseEnter={(e) => {
-        e.currentTarget.style.backgroundColor = 'var(--surface-hover)';
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.backgroundColor = 'var(--bg-secondary)';
-      }}
+      className="flex items-center gap-3 px-4 py-3 rounded-md border transition-colors hover:bg-surface-hover bg-bg-secondary border-border"
     >
-      <span className="text-[16px] leading-none" aria-hidden="true">
+      <span className="text-md leading-none" aria-hidden="true">
         {icon}
       </span>
-      <span className="text-[14px] flex-1" style={{ color: 'var(--text-primary)' }}>
+      <span className="text-base flex-1 text-text-primary">
         {label}
       </span>
-      <span aria-hidden="true" style={{ color: 'var(--text-tertiary)' }}>
+      <span aria-hidden="true" className="text-text-tertiary">
         →
       </span>
     </a>

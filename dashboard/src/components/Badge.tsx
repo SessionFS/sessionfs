@@ -31,6 +31,15 @@ const VARIANT_STYLES: Record<string, { bg: string; text: string; border: string 
   },
 };
 
+// Tint variant: soft color-mix background, no border, semantic text color
+const TINT_SEMANTIC_COLORS: Record<string, string> = {
+  default: 'var(--text-secondary)',
+  success: 'var(--accent)',
+  warning: 'var(--warning)',
+  danger: 'var(--danger)',
+  info: 'var(--info)',
+};
+
 const TOOL_COLORS: Record<string, { bg: string; text: string; border: string }> = {
   'claude-code': {
     bg: 'rgba(217,119,6,0.12)',
@@ -78,15 +87,32 @@ interface BadgeProps {
   variant?: 'default' | 'success' | 'warning' | 'danger' | 'info' | 'tool';
   label: string;
   size?: 'sm' | 'md';
+  /** Soft color-mix background, no border, semantic text — for status pills */
+  tint?: boolean;
 }
 
-export function Badge({ variant = 'default', label, size = 'sm' }: BadgeProps) {
+export function Badge({ variant = 'default', label, size = 'sm', tint = false }: BadgeProps) {
   const styles =
     variant === 'tool'
       ? TOOL_COLORS[label.toLowerCase()] || VARIANT_STYLES.tool
       : VARIANT_STYLES[variant] || VARIANT_STYLES.default;
 
   const sizeClass = size === 'sm' ? 'px-1.5 py-0.5 text-xs' : 'px-2 py-0.5 text-sm';
+
+  if (tint) {
+    const semanticColor = TINT_SEMANTIC_COLORS[variant] || TINT_SEMANTIC_COLORS.default;
+    return (
+      <span
+        className={`inline-block rounded-full font-medium ${sizeClass}`}
+        style={{
+          backgroundColor: `color-mix(in srgb, ${semanticColor} 15%, transparent)`,
+          color: semanticColor,
+        }}
+      >
+        {label}
+      </span>
+    );
+  }
 
   return (
     <span

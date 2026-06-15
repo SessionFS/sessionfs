@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import AdminDashboard from './AdminDashboard';
@@ -29,26 +29,29 @@ vi.mock('./LicensesTab', () => ({
   default: () => <div data-testid="licenses-tab">Licenses tab content</div>,
 }));
 
-vi.mock('./ConfirmModal', () => ({
-  default: ({
-    open,
-    title,
-    onConfirm,
-    onCancel,
-  }: {
-    open: boolean;
-    title: string;
-    onConfirm: () => void;
-    onCancel: () => void;
-  }) =>
-    open ? (
-      <div role="dialog" aria-label={title}>
-        <p>{title}</p>
-        <button onClick={onConfirm}>Confirm</button>
-        <button onClick={onCancel}>Cancel</button>
-      </div>
-    ) : null,
-}));
+vi.mock('../components/ui', async () => {
+  const actual = await vi.importActual<typeof import('../components/ui')>('../components/ui');
+  return {
+    ...actual,
+    Dialog: ({
+      open,
+      children,
+    }: {
+      open: boolean;
+      onClose: () => void;
+      titleId: string;
+      className?: string;
+      children: React.ReactNode;
+    }) =>
+      open ? <div role="dialog">{children}</div> : null,
+    DialogHeader: ({ children }: { titleId: string; children: React.ReactNode }) => (
+      <h2>{children}</h2>
+    ),
+    DialogFooter: ({ children }: { children: React.ReactNode }) => (
+      <div>{children}</div>
+    ),
+  };
+});
 
 function makeMutation(overrides: Record<string, unknown> = {}) {
   return {
@@ -159,7 +162,7 @@ describe('AdminDashboard', () => {
     renderPage();
     const user = userEvent.setup();
 
-    await user.click(screen.getByRole('button', { name: /^licenses$/i }));
+    await user.click(screen.getByRole('tab', { name: /^licenses$/i }));
 
     expect(await screen.findByTestId('licenses-tab')).toBeInTheDocument();
   });
@@ -184,7 +187,7 @@ describe('AdminDashboard', () => {
     renderPage();
     const user = userEvent.setup();
 
-    await user.click(screen.getByRole('button', { name: /^activity$/i }));
+    await user.click(screen.getByRole('tab', { name: /^activity$/i }));
 
     // After switching to Activity tab, a change_tier entry should appear
     await waitFor(() => {
@@ -218,12 +221,12 @@ describe('AdminDashboard', () => {
     const deleteBtn = await screen.findByRole('button', { name: /delete user/i });
     await user.click(deleteBtn);
 
-    // Confirm dialog appears (from our stubbed ConfirmModal)
+    // Confirm dialog appears (stubbed Dialog primitive renders children)
     const dialog = await screen.findByRole('dialog');
     expect(dialog).toBeInTheDocument();
 
-    // Click Confirm
-    await user.click(screen.getByRole('button', { name: /^confirm$/i }));
+    // Click Delete User button inside the dialog
+    await user.click(within(dialog).getByRole('button', { name: /^delete user$/i }));
 
     await waitFor(() => {
       expect(deleteMut.mutate).toHaveBeenCalledWith({ userId: 'user_abc' });

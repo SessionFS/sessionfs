@@ -9,6 +9,8 @@
  * The backend enforces the actual authorization (Phase 2, KB 246). This
  * UI mirrors enough of it to avoid pointless API calls — but the server
  * is load-bearing.
+ *
+ * Phase 3 restyle: onto Select + Button + Card primitives.
  */
 
 import { useState } from 'react';
@@ -20,6 +22,7 @@ import {
   useInitiateTransfer,
   useTransfers,
 } from '../transfers/useTransfers';
+import { Button, Card, Select } from '../components/ui';
 
 interface OrgOption {
   org_id: string;
@@ -99,50 +102,49 @@ export default function TransferPanel({
   };
 
   return (
-    <section aria-labelledby="transfer-heading">
-      <h3 id="transfer-heading">Transfer ownership</h3>
-      <p className="text-sm text-[var(--text-secondary)]">
+    <section aria-labelledby="transfer-heading" className="space-y-3">
+      <h3 id="transfer-heading" className="text-lg font-semibold text-text-primary">Transfer ownership</h3>
+      <p className="text-sm text-text-secondary">
         Currently {scopeLabel(currentScope, availableOrgs)}.{' '}
         Transferring moves the project's org scope; sessions and audit history are preserved.
       </p>
 
       {pendingForThisProject ? (
-        <div role="status">
-          <p>
+        <Card className="p-4 space-y-3" role="status">
+          <p className="text-sm text-text-secondary">
             Pending transfer to {scopeLabel(pendingForThisProject.to_scope, availableOrgs)}.
             Waiting on {pendingForThisProject.target_user_id ?? '(target removed)'}.
           </p>
-          <button
+          <Button
+            variant="danger"
+            size="sm"
             onClick={handleCancel}
             disabled={cancel.isPending}
+            loading={cancel.isPending}
             aria-label="Cancel pending transfer"
           >
-            {cancel.isPending ? 'Cancelling…' : 'Cancel transfer'}
-          </button>
-        </div>
+            Cancel transfer
+          </Button>
+        </Card>
       ) : destinations.length === 0 ? (
-        <p className="text-[var(--text-tertiary)]">No transfer destinations available.</p>
+        <p className="text-sm text-text-tertiary">No transfer destinations available.</p>
       ) : (
-        <div>
-          <label>
-            Destination
-            <select
-              value={selectedDest}
-              onChange={(e) => setSelectedDest(e.target.value)}
-              aria-label="Transfer destination"
-            >
-              {destinations.map((d) => (
-                <option key={d.value} value={d.value}>{d.label}</option>
-              ))}
-            </select>
-          </label>
-          <button
+        <div className="flex items-end gap-3 flex-wrap">
+          <Select
+            title="Destination"
+            value={selectedDest}
+            onValueChange={setSelectedDest}
+            options={destinations}
+            className="w-auto min-w-[180px]"
+          />
+          <Button
             onClick={handleInitiate}
             disabled={initiate.isPending || !selectedDest}
+            loading={initiate.isPending}
             aria-label="Initiate transfer"
           >
-            {initiate.isPending ? 'Transferring…' : 'Transfer project'}
-          </button>
+            Transfer project
+          </Button>
         </div>
       )}
     </section>

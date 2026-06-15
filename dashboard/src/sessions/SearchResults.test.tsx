@@ -70,8 +70,19 @@ describe('SearchResults', () => {
     await user.click(screen.getByRole('button', { name: /open search filters/i }));
 
     const dialog = screen.getByRole('dialog', { name: /refine results/i });
-    await user.selectOptions(within(dialog).getByLabelText('Tool'), 'codex');
-    await user.selectOptions(within(dialog).getByLabelText('Date range'), '30');
+
+    // Select tool: open combobox, click option button
+    await user.click(within(dialog).getByRole('combobox', { name: 'Tool' }));
+    await user.click(
+      within(dialog).getByRole('option', { name: 'Codex' }),
+    );
+
+    // Select date range: open combobox, click option button
+    await user.click(within(dialog).getByRole('combobox', { name: 'Date range' }));
+    await user.click(
+      within(dialog).getByRole('option', { name: 'Last 30 days' }),
+    );
+
     await user.click(within(dialog).getByRole('button', { name: /apply filters/i }));
 
     await waitFor(() => {
@@ -94,6 +105,8 @@ describe('SearchResults', () => {
     await user.click(screen.getByRole('button', { name: /open search filters/i }));
     const dialog = screen.getByRole('dialog', { name: /refine results/i });
 
+    // Open the Tool combobox to reveal options
+    await user.click(within(dialog).getByRole('combobox', { name: 'Tool' }));
     expect(within(dialog).getByRole('option', { name: 'Gemini CLI' })).toBeInTheDocument();
     expect(within(dialog).getByRole('option', { name: 'Copilot' })).toBeInTheDocument();
   });
