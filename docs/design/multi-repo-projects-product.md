@@ -1,0 +1,304 @@
+# Multi-Repo Projects — Product Companion
+
+**Author:** Compass (product lead)
+**Status:** Design — feeds Atlas's `multi-repo-projects.md` Open Decisions
+**Date:** 2026-06-15
+
+## 1. Who Has This Problem & How Acute
+
+### Segment by pain level
+
+| Segment | Example | Pain | Adoption blocker? |
+|---------|---------|------|-------------------|
+| **Frontend + backend pairs** | React dashboard + FastAPI server | HIGH — same personas ("atlas", "prism") duplicated across two projects, same KB entries re-entered, tickets filed in one project invisible to the other | **Yes.** These teams are SessionFS's core ICP. They hit this on day 2. |
+| **Multi-service teams** | 4–12 microservices, each a repo | HIGH — teams fragment identity/coordination across N projects, or abandon the product for a single "coordinator" repo and lose per-service granularity | **Yes, at scale.** The 4+ service case makes the product feel broken. |
+| **Infra + app** | Terraform/Helm repo + application repo | MEDIUM — infra changes (deploys, config) live in a separate project from the app tickets they enable. Cross-linking is manual. | **Friction, not blocker.** These teams work around it with ticket cross-references. |
+| **Monorepo-adjacent** | One monorepo + 1–2 side repos (shared libs, docs site) | LOW — the monorepo carries most of the weight; side repos are read-only or docs-only | **Nice to have.** Not the wedge. |
+| **Solo developer** | Single repo, personal project | NONE | Not applicable. |
+
+**Verdict:** This is a **real adoption blocker** for the core ICP (multi-service teams, frontend+backend pairs). It undermines the "Memory Layer For AI Agents" positioning because memory/identity/coordination are scoped to a single repo, so teams with N repos get N fragmented memory layers — the opposite of the promise.
+
+### When do users hit this?
+- **Day 1:** First repo works beautifully. `sfs init`, auto-create project, personas, KB — everything clicks.
+- **Day 2:** Second repo. User runs `sfs init` in the backend repo. A new project is created. They now have two separate "atlas" personas, two KBs, two ticket boards. Confusion sets in.
+- **Week 2:** Third repo. The team has stopped using personas/tickets because managing them across projects is more work than not having them. They use SessionFS as a session logger only — the coordination wedge is lost.
+
+## 2. Linking UX & Mental Model
+
+### Recommendation: Explicit link model
+
+**The user explicitly links additional repos into an existing project.** We never auto-guess that two repos belong to the same project.
+
+**Why not auto-guess:**
+1. **Same repo name, different products.** `org/api` could be the backend for Product A or Product B. The git remote alone carries no product-boundary signal.
+2. **Cost of false positive >> cost of false negative.** Incorrectly merging two unrelated repos' KBs, personas, and tickets is data-corrupting. Missing a link opportunity is a minor UX friction the user can fix with one command.
+3. **Org boundaries.** Repos in different GitHub orgs may not belong to the same SessionFS org, or may require cross-org project semantics we haven't designed yet.
+4. **User intent is the only reliable signal.** "These repos are one product" is a human judgment. We ask once, explicitly.
+
+### How the user links repos
+
+**CLI (primary path — developers are in the terminal):**
+
+```bash
+# In the repo you want to link INTO an existing project:
+sfs project link --to <project-id-or-name>
+```
+
+This:
+1. Resolves the current directory's git remote.
+2. Validates the remote isn't already linked to another project (one repo ∈ exactly one project).
+3. Validates org membership if the target project is org-scoped.
+4. Links the repo into the project.
+5. Outputs: `Linked github.com/org/backend-repo → "Platform API" (proj_abc123).`
+
+**Dashboard (secondary path — project admin view):**
+
+A "Repos" tab on the project detail page shows the linked repo set. An "Add repo" button opens a modal where the user pastes a git remote URL (`github.com/org/repo-name`). Validation runs server-side. This is the admin/org-owner path — useful when a tech lead is setting up the project structure before the team onboards.
+
+**`sfs project init` inside an already-linked repo:**
+- If the current directory's remote is already linked to a project, `sfs project init` prints: `This repo is already part of project "Platform API" (proj_abc123).` and exits 0. It does NOT create a second project.
+- If the remote is unlinked, `sfs project init` behaves exactly as today: creates a new project, auto-names it from the repo name. The user can later link more repos into it.
+
+### Project naming when it's no longer "the repo"
+
+**Default:** The project keeps the name of the **first repo linked** (the primary). The user can rename it at any time — `sfs project set --name "Platform API"`.
+
+**Recommendation:** When a user links a second repo, the CLI prompts: `Project "backend" now spans 2 repos. Rename it? [Platform API]:` with the current name as default. This is a one-time nudge, not a forced rename — many projects already have good names from their primary repo.
+
+### Repo display: primary vs linked
+
+- The **first repo** in a project is the **primary**. It has no special privileges beyond being the default name source. It can be changed later (Atlas follow-up — not v1).
+- All linked repos are equal for KB, persona, ticket, and rules access. There is no "primary repo can write KB, linked repos are read-only" — that defeats the purpose.
+- The dashboard Repos tab shows the set as a flat list with the primary marked with a subtle star/home indicator. No hierarchy.
+
+### Why not "projects contain many repos" from the start?
+
+The single-repo default is correct for the **individual tier** (free forever, solo devs, one repo = one project = one person). Multi-repo is a team concept. The complexity should only surface when the user crosses into team coordination territory. This keeps the v1 simplicity for the free tier and only expands the model when the need is real.
+
+## 3. Merge UX — Consolidating Existing Split Projects
+
+This is the migration path for users who already have duplicated personas/KBs across projects that should be one.
+
+### The flow: "Fold project B into project A"
+
+```
+sfs project merge <source-project-id> --into <target-project-id>
+```
+
+**Step 1: Dry-run (default, no `--execute` flag)**
+
+```
+$ sfs project merge proj_backend --into proj_frontend
+
+Dry-run: folding "backend" (proj_backend) into "frontend" (proj_frontend)
+
+Personas (3 to merge, 1 collision):
+  ✓ atlas          — unique, will be copied
+  ✓ scribe         — unique, will be copied
+  ⚠ prism          — COLLISION: both projects have "prism"
+                     → keep target's "prism" (frontend), rename source's to "prism (from backend)"
+
+Tickets (5 to merge):
+  ✓ tk_001 "Add auth endpoint"     — unique
+  ✓ tk_002 "Fix CORS"              — unique
+  ... (3 more)
+
+Knowledge entries (47 to merge):
+  All unique — will be copied
+
+Rules:
+  ⚠ COLLISION: both projects have compiled rules
+    → keep target's rules, archive source's as "rules (from backend)" snapshot
+
+Wiki pages (2 to merge):
+  ✓ architecture.md  — unique
+
+Summary: 57 items to merge, 2 collisions (auto-resolved with defaults).
+Run with --execute to apply.
+```
+
+**Step 2: Execute with optional overrides**
+
+```bash
+sfs project merge proj_backend --into proj_frontend --execute
+# Or with per-collision control:
+sfs project merge proj_backend --into proj_frontend --execute --interactive
+```
+
+`--interactive` prompts per collision:
+```
+Collision: persona "prism" exists in both projects.
+[1] Keep target's "prism" (frontend) + rename source's to "prism (from backend)"
+[2] Overwrite target with source's "prism"
+[3] Keep both separate (skip merge for this persona)
+[4] Field-merge (take target's role/description, source's scopes)
+Choose [1-4] (default: 1):
+```
+
+### Collision policy (the key decision Atlas defers to us)
+
+**Recommendation: Keep target, rename source — with `--interactive` override.**
+
+| Entity | Default collision behavior | Rationale |
+|--------|---------------------------|-----------|
+| **Personas** | Keep target's version. Rename source's to `<name> (from <source-project-name>)`. | The target project is the "survivor" — the user explicitly chose A as the destination. A's personas keep their canonical names. B's personas are preserved (no data loss) but disambiguated. The user can manually reconcile afterward. |
+| **Rules** | Keep target's compiled rules. Archive source's compiled rules as a snapshot wiki page `rules (from <source-project-name>)`. | Rules are the project's governance surface. Merging two rule sets automatically is unpredictable — different LLM tools, different team conventions. Preserving the source as a reference page lets the user merge manually with full context. |
+| **Tickets** | All tickets are copied with new IDs in the target project. A `merged_from_project` / `merged_from_ticket_id` provenance field is written on each. Open tickets keep their status. Closed tickets are copied as closed. | Tickets are the coordination record. No collisions possible (IDs are unique across projects). Provenance matters for audit. |
+| **Knowledge entries** | All entries are copied. Entries with identical `entity_ref` slugs get a `(from <source>)` suffix on the slug (not silently deduped). | KB entries are the memory record. Near-duplicate detection is best-effort via entity_ref; true semantic dedup is a future LLM-powered feature. We err on the side of preserving data. |
+| **Wiki pages** | Wiki pages with identical slugs get a `(from <source>)` suffix. | Same reasoning as KB entries. |
+
+**Why "keep target" and not "keep newest" or "field-merge"?**
+- **Keep target** is the simplest mental model: the user declared A as the winner. Predictable, no heuristics.
+- **Keep newest** sounds fair but breaks when the source project was more actively maintained (its personas are newer — now the target loses its own history).
+- **Field-merge** (e.g., persona A's role + persona B's scopes) is seductive but dangerous: two "atlas" personas may have different scopes for good reason (one backend, one frontend). Merging them creates a hybrid persona that has access to everything — a privilege escalation vector. Not safe as a default.
+
+### Post-merge: what happens to the source project?
+
+The source project is **soft-deleted** (not hard-deleted). Its sessions remain individually accessible but the project no longer appears in the project list or dashboard. This preserves the session history for audit while removing the duplicate project from the active surface.
+
+A `merged_into_project_id` field on the source project records where it went, for audit trail and potential undo (Atlas follow-up — not v1, but the field should exist from day one).
+
+## 4. What "Project" Means to the User Afterward
+
+The project remains the **unit of shared memory, identity, coordination, and governance** — it just now spans multiple repos.
+
+| Concept | Before | After |
+|---------|--------|-------|
+| **Scope** | One git repo | One or more git repos |
+| **Memory (KB)** | Scoped to one repo's sessions | Scoped to all linked repos' sessions |
+| **Identity (Personas)** | Scoped to one repo | Shared across all linked repos |
+| **Coordination (Tickets)** | Scoped to one repo | Shared across all linked repos |
+| **Governance (Rules)** | Scoped to one repo | Shared across all linked repos. Rules compilers (`sfs rules compile`) run from any linked repo and produce the same canonical rules — the project's rule set is singular. |
+| **Sessions** | Each session belongs to one repo | Unchanged. Sessions remain per-repo. Their `project_id` already links them to the project. |
+| **Dashboard** | Project page shows one repo | Project page gains a Repos tab listing the linked set. The project name is editable and no longer tied to any single repo's name. |
+
+### Repo identity within a project
+
+Each repo retains its own git remote identity. Sessions, captures, and the daemon still operate per-repo. The project is the **aggregation layer** — it doesn't replace the repo as the capture unit, it groups repos for the shared surfaces (KB, personas, tickets, rules).
+
+This matters because: a user running `sfs resume` in repo A should not see sessions from repo B by default. The session list is still per-repo. But `sfs project ask "what's our auth pattern?"` searches the KB across ALL linked repos — that's the value.
+
+### Dashboard follow-up (Prism — note, don't design pixels)
+
+- New **Repos tab** on ProjectDetail: lists linked repos, shows primary, "Add repo" button.
+- Project name is editable in the header (inline rename, not a separate settings page).
+- The project list (`/projects`) shows repo count as a badge (`3 repos`) next to projects with multiple repos.
+- Session provenance in the conversation view already shows the repo — no change needed.
+
+## 5. Tier & Monetization Fit
+
+### Recommendation: Team tier
+
+**Multi-repo projects are a Team feature.** Rationale:
+
+1. **It's team-shaped.** Multi-repo is inherently a team coordination concept. A single developer with one repo doesn't need it. The moment you have N repos that should share memory/identity/coordination, you're coordinating across a team — even if that team is 2 people.
+2. **Consistent with the tier ladder.** The Team tier's value proposition is shared coordination: `team_management`, `team_handoff`, `agent_tickets`, `agent_runs`. Multi-repo projects are the same category — shared memory/identity/coordination across a team's full surface area.
+3. **Free tier is not degraded.** Single-repo projects remain free forever. Nothing is taken away.
+4. **Pro tier is not degraded.** A Pro user with multiple repos can still create separate projects for each (today's behavior). They just can't link them. The upgrade path is natural: "You have 3 projects. Link them into one with Team."
+5. **Clear upgrade trigger.** When a user runs `sfs project link` on a Free/Starter/Pro tier, the CLI responds: `Multi-repo projects require the Team tier. Upgrade at https://sessionfs.dev/account/upgrade`. The server enforces this with a 402/403 and a structured error code `multi_repo_requires_team`.
+
+### New tier feature gate
+
+Add `multi_repo_projects` to the Team and Enterprise feature sets in `src/sessionfs/server/tiers.py`. Gate the link-repo endpoint and the merge endpoint on `check_feature(ctx, "multi_repo_projects")`.
+
+### Merge pricing note
+
+Project merge (`sfs project merge`) is also gated at Team+. It's a one-time migration operation — users doing it are consolidating split projects, which means they're already a team with multiple projects. Making merge a Team feature means: (a) free-tier users with one project never need it, (b) Pro users with split projects get a natural upgrade path to consolidate.
+
+## 6. Rollout & Communications
+
+### Target audience for rollout
+
+**Primary:** Existing teams with 2+ projects that are really one product. These are the users who feel the fragmentation pain daily. They are almost certainly on Team or Enterprise already (because team coordination features require it).
+
+**Secondary:** Pro users who have separate frontend/backend projects and haven't upgraded yet. The multi-repo feature gives them a concrete reason to move to Team.
+
+### Communication sequence
+
+1. **Changelog entry** (release day): "Projects can now span multiple repos. Link your frontend, backend, and infra repos into one project — shared memory, shared personas, shared tickets. Team tier."
+2. **In-dashboard banner** (release day, dismissible): "New: multi-repo projects. Link your repos →" linking to the Repos tab. Only shown to users with 2+ projects on the same org.
+3. **CLI hint on `sfs project show`** (release day): If the user has other projects in the same org, add a line: `Tip: link repos into one project with 'sfs project link' (Team tier).`
+4. **Email to Team/Enterprise admins** (release week): "Your org has N projects across M repos. Multi-repo projects let you consolidate them into shared workspaces. Here's how."
+5. **Docs page** (release day): `docs/multi-repo-projects.md` — user-facing guide with examples.
+
+### No forced migration
+
+Existing split projects continue to work exactly as today. Users are not forced to merge. The merge tool is offered, not imposed. This is critical: some teams may have legitimate reasons for separate projects (different products, different teams, different compliance boundaries). We respect that.
+
+### Risk of confusion
+
+- **"Why can't I link my projects?"** — Pro/Free users who see the feature mentioned but can't use it. Mitigation: the CLI and dashboard make the tier requirement clear in the error message, with a direct upgrade link.
+- **"Which project do I link into which?"** — Users with 3+ split projects may be unsure about the "correct" merge order. Mitigation: the `--dry-run` output shows the full merge plan before execution, so they can experiment safely.
+
+## 7. Risks & Edge Cases (Product Lens)
+
+### 7.1 Repo moving between projects
+
+**Scenario:** A user removes repo R from project A and links it to project B.
+
+**Risk:** Project A's KB contains entries sourced from sessions on repo R. After the move, those entries reference a repo that's no longer in the project. Tickets may reference sessions from repo R.
+
+**Recommendation:** Repo unlink is allowed, but:
+- Existing KB entries and tickets are NOT deleted or moved. They stay in project A with their session provenance intact. The data was created in project A's context and belongs there.
+- New sessions on repo R flow into project B.
+- If the user wants to move the KB entries too, that's a separate operation (`sfs project merge` with a scope filter — Atlas follow-up, not v1).
+- The dashboard Repos tab shows a "formerly linked" section if there are entries referencing a removed repo.
+
+### 7.2 A repo that legitimately belongs to two products
+
+**Scenario:** A shared library repo (`org/shared-utils`) is used by both Product A and Product B. Both teams want it in their project for KB/ticket context.
+
+**Recommendation:** **One repo ∈ exactly one project.** This is a hard constraint. Rationale:
+- If repo R is in both projects, sessions from R would feed two separate KBs — which KB is authoritative?
+- Tickets referencing R's sessions would have ambiguous project scope.
+- The data model (Atlas's join table) enforces this with a unique constraint on `repo_id`.
+
+**Workaround for the user:** The shared library team should have its own project. Product A and Product B can cross-reference tickets. Future: project-to-project links / "shared KB sections" — but this is a v2 feature, not v1.
+
+### 7.3 Org boundaries
+
+**Scenario:** A user tries to link `github.com/org-a/frontend` into a project owned by `org-b`.
+
+**Recommendation:** **All repos in a linked project must belong to the same SessionFS org as the project.** Cross-org repo linking is rejected with a clear error: `Repo "org-a/frontend" belongs to a different organization. Projects cannot span organizations.`
+
+**Rationale:**
+- Orgs are the billing and access-control boundary. Mixing orgs within one project creates ambiguous billing (who pays for the KB storage?) and access-control confusion (an org-b member sees org-a's repo data?).
+- The `org_id` FK on the project already scopes it. Each linked repo's `git_remote_normalized` must resolve to the same SessionFS org.
+- Cross-org collaboration is a future feature (organization federation / project sharing) — not v1.
+
+### 7.4 What breaks in user expectations
+
+| Expectation | Reality | Mitigation |
+|-------------|---------|------------|
+| "Linking repos = merging their sessions" | Sessions stay per-repo. The KB aggregates across repos, but the session list in `sfs sessions` is still repo-scoped. | Document clearly: "Sessions are per-repo. The KB, personas, tickets, and rules are shared." |
+| "I can link any repo" | Org-boundary check rejects cross-org repos. | Clear error message with the org name. |
+| "Merge is instant and perfect" | Collisions require manual review. The dry-run shows everything upfront. | Default `--dry-run` with no side effects. |
+| "My free-tier project should support multi-repo" | Multi-repo is Team+. Free tier is single-repo forever. | Clear tier-gating message with upgrade path. |
+| "I can delete the source project after merge" | It's auto-soft-deleted. Sessions remain accessible. | The merge output confirms this explicitly. |
+| "Renaming a repo on GitHub breaks the link" | The git remote is the link key. Renaming a repo changes its normalized remote. | Atlas should design for this: store the GitHub `repo_id` (stable integer) alongside the `git_remote_normalized`, and update the normalized string on rename events. If that's not in v1, document: "If you rename a repo on GitHub, re-link it with `sfs project link`." |
+
+### 7.5 Atlas Open Decisions this doc resolves
+
+This section is the handoff to Atlas's `multi-repo-projects.md`:
+
+1. **Merge collision policy for personas:** Keep target, rename source to `<name> (from <project>)`. Field-merge is explicitly rejected as a default (privilege escalation risk). User can override with `--interactive`.
+2. **Merge collision policy for rules:** Keep target. Archive source as a wiki page snapshot.
+3. **Repo exclusivity:** One repo ∈ exactly one project. Unique constraint on the join table.
+4. **Org boundary:** All repos in a project must be in the same SessionFS org.
+5. **Tier gate:** `multi_repo_projects` feature, Team tier+.
+6. **Project naming:** No change to the data model. The existing `name` field on Project is already editable. Default stays as the primary (first-linked) repo name.
+
+---
+
+## Summary of Compass Recommendations
+
+| Decision | Recommendation |
+|----------|---------------|
+| **Linking model** | Explicit link — user runs `sfs project link --to <project>`. Never auto-guess. |
+| **Merge collision default** | Keep target, rename source to `<name> (from <project>)`. No field-merge. |
+| **Merge dry-run** | Mandatory default. `--execute` required to mutate. `--interactive` for per-collision control. |
+| **Repo exclusivity** | One repo ∈ exactly one project. Hard constraint. |
+| **Org boundary** | All repos must be in the same SessionFS org as the project. |
+| **Tier** | Team+. `multi_repo_projects` feature gate. |
+| **Source project post-merge** | Soft-deleted with `merged_into_project_id` provenance. |
+| **Project name** | Existing editable `name` field. Nudge rename on second repo link. |
