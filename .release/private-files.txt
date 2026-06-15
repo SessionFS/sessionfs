@@ -12,6 +12,9 @@ src/spikes/
 # Security docs (threat models, audit reports)
 docs/security/
 
+# Internal design docs (pre-build architecture/binding designs)
+docs/design/
+
 # Business strategy
 docs/positioning.md
 docs/pricing.md
