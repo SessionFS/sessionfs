@@ -13,6 +13,7 @@
 | R1 | 2026-06-15 | Codex R1: 3 HIGH (primary-demotion order, stranded personas, tombstone-aware resolvers) + 4 MED (exhaustive resolver list 11→16, ticket reassign-in-place, is_primary partial index, provider fields) + 3 LOW (JSONB→Text JSON, promote source rules when target none, CLI link-repo naming). CEO calls applied: ticket=reassign-in-place, CLI=link-repo. Per-table merge matrix added. |
 | R2 | 2026-06-15 | Codex R2: 4 MED + 1 LOW. MED-1: dry-run writes zero DB rows (audit-row creation moved after dry-run return). MED-2: persona collision rename produces legal ASCII slug `{name}-{src8}` ≤50 chars (verified against `personas.py:45` regex `^[A-Za-z0-9_-]{1,50}$`); human-readable note in audit only; in-flight collision guard against other renamed personas. MED-3: wiki revision reassign uses `(project_id, page_slug)` not nonexistent `page_id` FK (verified `models.py:1054-1058`); revision-number uniqueness handled with offset numbering. MED-4: KnowledgeLink is map+dedup+reassign (not straight reassign) to avoid `uq_kl_link` violation (verified `models.py:1178`); entry-ID mapping from KnowledgeEntry dedup feeds link rewriting. LOW-5: `provider_repo_id` is server-derived/verified, not caller-trusted under unique constraint; added to Sentinel checklist. Residual: §10 test plan added. |
 | R3 | 2026-06-15 | Codex R3: 3 MED + 2 LOW. MED-1: skip/merge_content collision policies now assign a legal archived unique name (`{name}-{src8}-archived`, ≤50 chars, `^[A-Za-z0-9_-]$`) BEFORE reassigning to target_id — no uq_persona_project_name violation, no tombstone stranding. MED-2: KnowledgeLink pseudocode rewritten: compute remapped key BEFORE mutation; duplicates are `db.delete()`'d; running set guards self-collision; no mutate-then-flush. MED-3: execute path writes an ATTEMPT audit row (status='started') in a separate session BEFORE mutation, then outcome-updates to 'completed'/'failed' in exception handler — survives rollback; dry-run stays zero-write; `status` column added to `project_merge_audit`. LOW-4: stale `(from <project>)` text replaced with `{name}-{src8}` in §7 and summary sections. LOW-5: companion wiki slug aligned to `{slug}-{src8}`; all `(from <source>)` suffixes swept and replaced. |
+| R4 | 2026-06-15 | Codex R4: 1 MED + 1 LOW (audit-contract cleanup). MED-1: narrowed audit guarantee — precondition/authz rejections (404, cross-org, already-merged) are refused BEFORE the `started` audit row exists and are covered by standard request/access logging; only *validated* execute mutation attempts are merge-audited; §5.11 ordering now explicit (preconditions first, not merge-audited). LOW-2: added `skipped_link_ids TEXT NOT NULL DEFAULT '[]'` column to `project_merge_audit` (mirrors `skipped_ke_ids`); outcome-update now persists it. |
 
 ---
 
@@ -449,7 +450,7 @@ The v0.10.13 incident (`tk_bc3c02a63e994717`) taught us that multi-commit destru
 
 1. **Single atomic transaction** — all or nothing. If anything fails mid-merge, the entire transaction rolls back and both projects are untouched.
 2. **Dry-run first** — `dry_run=True` (default) performs all validation and reports what WOULD happen without writing. **Provably non-mutating: zero DB rows written.** No audit row, no locks beyond reads. `dry_run=False` executes.
-3. **Audit-logged** — a `project_merge_audit` table records every merge attempt. An ATTEMPT row (status='started') is written in a SEPARATE transaction BEFORE any merge mutation. On success the row is outcome-updated to 'completed'; on failure the exception handler outcome-updates it to 'failed' via a fresh session — the audit row survives rollback of the merge transaction. Dry-run writes nothing.
+3. **Audit-logged** — every *validated* execute mutation attempt is recorded in `project_merge_audit` (status `started` → `completed`/`failed`). Precondition and authorization rejections (404 not-found, cross-org, already-merged) are refused BEFORE the merge audit row is created and are covered by the standard request/access log, not the merge audit. An ATTEMPT row (status='started') is written in a SEPARATE transaction BEFORE any merge mutation. On success the row is outcome-updated to 'completed'; on failure the exception handler outcome-updates it to 'failed' via a fresh session — the audit row survives rollback of the merge transaction. Dry-run writes nothing. (Security-relevant denials such as cross-org merge attempts MAY additionally be recorded via the existing AdminAction audit path as a Sentinel-driven follow-up; not a v1 requirement.)
 4. **NOT undoable automatically** — like `bulk_promote`, the merge is one-way. The dry-run report IS the undo plan.
 
 ### 5.2 Endpoint
@@ -786,6 +787,7 @@ CREATE TABLE project_merge_audit (
     persona_renames     TEXT NOT NULL DEFAULT '[]',          -- JSON array
     slug_renames        TEXT NOT NULL DEFAULT '[]',          -- JSON array
     skipped_ke_ids      TEXT NOT NULL DEFAULT '[]',          -- JSON array
+    skipped_link_ids    TEXT NOT NULL DEFAULT '[]',          -- JSON array
     rules_action        VARCHAR(20),  -- 'archived' | 'promoted' | 'none'
     error_message       TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -798,6 +800,8 @@ House convention: `Text` columns with `NOT NULL DEFAULT '{}'/'[]'` for JSON payl
 
 This is the single source of truth for the merge implementer. The transaction pseudocode in §5.12 follows this order exactly.
 
+**Ordering is explicit:** Precondition checks (Phase 1 — project existence, org match, not-already-merged) come FIRST and are NOT merge-audited. These rejections (404/400) are covered by standard request/access logging. The `project_merge_audit` `started` row is written only AFTER preconditions pass and a real mutation is about to begin (Phase 2). The merge matrix steps below (1–15) execute within the merge transaction (Phase 3).
+
 | Table | Mutation | Order | Uniqueness at risk | Collision behavior | Rollback/audit note |
 |-------|----------|-------|--------------------|--------------------|---------------------|
 | `project_repos` | **Demote primary** (source), then **reassign** all to target | 1 | `uq_project_repos_primary` partial index (source + target primaries collide) | Demote source primary BEFORE reassign. If target has no primary, promote oldest source repo. | Lock rows with FOR UPDATE first. |
@@ -806,7 +810,7 @@ This is the single source of truth for the merge implementer. The transaction ps
 | `knowledge_pages` | **Reassign**; rename slug collisions to `{slug}-{src8}` | 4 | `knowledge_pages` slug uniqueness within project | Rename source slug. Revisions follow atomically in the same step (linked by `project_id`+`page_slug`, not a `page_id` FK). | Records renames in `slug_renames`. |
 | `wiki_page_revisions` | **Reassign** (handled atomically WITH page slug rename — NOT a separate step) | 5 | `uq_wiki_revisions_number` (project_id, page_slug, revision_number) | No renumbering needed: renamed pages get a unique slug, non-colliding pages get unique project_id. | Audit via slug_renames; revisions are FK'd to pages by (project_id, page_slug). |
 | `knowledge_entries` | **Reassign** unique; **skip** exact duplicates | 6 | None (entries are FK'd to project, no name uniqueness) | Exact (entry_type, normalized_content) match → skip. No LLM semantic dedup. | Records skipped IDs in `skipped_ke_ids`. |
-| `knowledge_links` | **Map + dedup + reassign** (not straight reassign) | 7 | `uq_kl_link` (project_id, source_type, source_id, target_type, target_id) | Rewrite source_id/target_id through entry-ID map from KE dedup step. Skip links that duplicate an existing target link. In-flight guard prevents self-collision. | Records skipped IDs. |
+| `knowledge_links` | **Map + dedup + reassign** (not straight reassign) | 7 | `uq_kl_link` (project_id, source_type, source_id, target_type, target_id) | Rewrite source_id/target_id through entry-ID map from KE dedup step. Skip links that duplicate an existing target link. In-flight guard prevents self-collision. | Records skipped IDs in `skipped_link_ids`. |
 | `tickets` | **Reassign-in-place** | 8 | None (ticket IDs globally unique) | No collision possible. `depends_on` stays valid (same-project validation at creation). | CEO decision: reassign, not copy. |
 | `agent_runs` | **Reassign** | 9 | None | Straight reassign. `persona_name`/`ticket_id` are plain strings, survive unchanged. | |
 | `sessions` | **Reassign** | 10 | None (nullable FK, ON DELETE SET NULL) | Straight reassign. Sessions keep original `git_remote_normalized` tag (denormalized). | |
@@ -880,6 +884,7 @@ async def merge_projects(
                 persona_renames="[]",   # populated on outcome
                 slug_renames="[]",
                 skipped_ke_ids="[]",
+                skipped_link_ids="[]",
                 rules_action=None,
             )
             audit_db.add(audit)
@@ -998,6 +1003,7 @@ async def merge_projects(
                         persona_renames=json.dumps(persona_renames),
                         slug_renames=json.dumps(slug_renames),
                         skipped_ke_ids=json.dumps(skipped_ke_ids),
+                        skipped_link_ids=json.dumps(skipped_link_ids),
                         rules_action=rules_action,
                     )
                 )
@@ -1028,7 +1034,7 @@ async def merge_projects(
 ### 5.13 Rollback + Race Guarantee
 
 - **Atomicity:** Single `async with db.begin()` block. Any step failure → full rollback. Both projects untouched.
-- **Audit survival (MED-3 fix):** The ATTEMPT audit row is written in a SEPARATE transaction (Phase 2) BEFORE the merge mutation begins. On success, the row is outcome-updated to `status='completed'` (Phase 4). On failure, the exception handler outcome-updates it to `status='failed'` via a FRESH session that is unaffected by the merge transaction's rollback. This guarantees every execute attempt — successful, failed, or blocked — leaves a durable audit trail. Dry-run writes nothing.
+- **Audit survival (MED-3 fix):** The ATTEMPT audit row is written in a SEPARATE transaction (Phase 2) AFTER precondition validation passes but BEFORE the merge mutation begins. On success, the row is outcome-updated to `status='completed'` (Phase 4). On failure, the exception handler outcome-updates it to `status='failed'` via a FRESH session that is unaffected by the merge transaction's rollback. This guarantees every *validated* execute attempt — successful or failed — leaves a durable audit trail. Precondition and authorization rejections (404, cross-org, already-merged) are refused before the audit row exists and are covered by standard request/access logging. Dry-run writes nothing.
 - **Concurrent-sync race (HIGH-3 fix):**
   - (a) Step 17 (catch-up UPDATE) catches sessions that landed on `source_id` during the merge window
   - (b) `resolve_project_by_remote()` is tombstone-aware — transparently follows `merged_into_project_id` chain, so any post-merge session sync that resolves via a source-project remote lands on the target
