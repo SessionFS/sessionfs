@@ -12,6 +12,7 @@
 |-----|------|---------|
 | R1 | 2026-06-15 | Codex R1: 3 HIGH (primary-demotion order, stranded personas, tombstone-aware resolvers) + 4 MED (exhaustive resolver list 11→16, ticket reassign-in-place, is_primary partial index, provider fields) + 3 LOW (JSONB→Text JSON, promote source rules when target none, CLI link-repo naming). CEO calls applied: ticket=reassign-in-place, CLI=link-repo. Per-table merge matrix added. |
 | R2 | 2026-06-15 | Codex R2: 4 MED + 1 LOW. MED-1: dry-run writes zero DB rows (audit-row creation moved after dry-run return). MED-2: persona collision rename produces legal ASCII slug `{name}-{src8}` ≤50 chars (verified against `personas.py:45` regex `^[A-Za-z0-9_-]{1,50}$`); human-readable note in audit only; in-flight collision guard against other renamed personas. MED-3: wiki revision reassign uses `(project_id, page_slug)` not nonexistent `page_id` FK (verified `models.py:1054-1058`); revision-number uniqueness handled with offset numbering. MED-4: KnowledgeLink is map+dedup+reassign (not straight reassign) to avoid `uq_kl_link` violation (verified `models.py:1178`); entry-ID mapping from KnowledgeEntry dedup feeds link rewriting. LOW-5: `provider_repo_id` is server-derived/verified, not caller-trusted under unique constraint; added to Sentinel checklist. Residual: §10 test plan added. |
+| R3 | 2026-06-15 | Codex R3: 3 MED + 2 LOW. MED-1: skip/merge_content collision policies now assign a legal archived unique name (`{name}-{src8}-archived`, ≤50 chars, `^[A-Za-z0-9_-]$`) BEFORE reassigning to target_id — no uq_persona_project_name violation, no tombstone stranding. MED-2: KnowledgeLink pseudocode rewritten: compute remapped key BEFORE mutation; duplicates are `db.delete()`'d; running set guards self-collision; no mutate-then-flush. MED-3: execute path writes an ATTEMPT audit row (status='started') in a separate session BEFORE mutation, then outcome-updates to 'completed'/'failed' in exception handler — survives rollback; dry-run stays zero-write; `status` column added to `project_merge_audit`. LOW-4: stale `(from <project>)` text replaced with `{name}-{src8}` in §7 and summary sections. LOW-5: companion wiki slug aligned to `{slug}-{src8}`; all `(from <source>)` suffixes swept and replaced. |
 
 ---
 
@@ -448,7 +449,7 @@ The v0.10.13 incident (`tk_bc3c02a63e994717`) taught us that multi-commit destru
 
 1. **Single atomic transaction** — all or nothing. If anything fails mid-merge, the entire transaction rolls back and both projects are untouched.
 2. **Dry-run first** — `dry_run=True` (default) performs all validation and reports what WOULD happen without writing. **Provably non-mutating: zero DB rows written.** No audit row, no locks beyond reads. `dry_run=False` executes.
-3. **Audit-logged** — a `project_merge_audit` table records every merge attempt with before/after snapshots.
+3. **Audit-logged** — a `project_merge_audit` table records every merge attempt. An ATTEMPT row (status='started') is written in a SEPARATE transaction BEFORE any merge mutation. On success the row is outcome-updated to 'completed'; on failure the exception handler outcome-updates it to 'failed' via a fresh session — the audit row survives rollback of the merge transaction. Dry-run writes nothing.
 4. **NOT undoable automatically** — like `bulk_promote`, the merge is one-way. The dry-run report IS the undo plan.
 
 ### 5.2 Endpoint
@@ -532,7 +533,23 @@ async def _apply_persona_policy(db, source_id, target_id, policy):
                 persona.name = new_name
                 target_names.add(new_name)  # guard against rename-rename collision
             elif policy == "skip":
-                persona.is_active = False  # soft-delete; survives as reference
+                # Rename to legal archived unique name before reassign
+                # to avoid uq_persona_project_name collision with target's
+                # same-named persona. No tombstone stranding.
+                archived_name = _legal_rename(
+                    persona.name, f"{SOURCE_SUFFIX}-archived", target_names
+                )
+                renames.append({
+                    "old_name": persona.name,
+                    "new_name": archived_name,
+                    "display_note": f"Archived '{persona.name}' "
+                                    f"(source project {source_id[:8]}) — "
+                                    f"skipped due to collision with target's "
+                                    f"persona of same name.",
+                })
+                persona.name = archived_name
+                persona.is_active = False
+                target_names.add(archived_name)
             elif policy == "merge_content":
                 target_p = (await db.execute(
                     select(AgentPersona).where(
@@ -545,14 +562,29 @@ async def _apply_persona_policy(db, source_id, target_id, policy):
                     f"--- merged from project {source_id[:8]} ---\n"
                     f"{persona.content}"
                 )
+                # Rename source to legal archived unique name before reassign
+                # to avoid uq_persona_project_name collision.
+                archived_name = _legal_rename(
+                    persona.name, f"{SOURCE_SUFFIX}-archived", target_names
+                )
+                renames.append({
+                    "old_name": persona.name,
+                    "new_name": archived_name,
+                    "display_note": f"Archived '{persona.name}' "
+                                    f"(source project {source_id[:8]}) — "
+                                    f"content merged into target's persona "
+                                    f"of same name.",
+                })
+                persona.name = archived_name
                 persona.is_active = False
-        # REASSIGN — even colliding personas move to target
+                target_names.add(archived_name)
+        # REASSIGN — every source persona moves to target (with unique name)
         persona.project_id = target_id
 
     return renames
 ```
 
-**Policy (Compass recommendation — apply as default):** Keep target's persona name. Rename colliding source personas to `{name}-{src8}` (e.g. `prism-a1b2c3d4`), a legal slug ≤50 chars. The human-readable explanation lives in the audit row's `persona_renames` JSON (`display_note` field). Users can override with the CLI `--interactive` flag at merge time. The merge audit records all renames.
+**Policy (Compass recommendation — apply as default):** Keep target's persona name. For `rename` policy, rename colliding source personas to `{name}-{src8}` (e.g. `prism-a1b2c3d4`), a legal slug ≤50 chars. For `skip` and `merge_content` policies, the source persona is renamed to `{name}-{src8}-archived` BEFORE reassign — this avoids the `uq_persona_project_name` violation (same-named persona already exists in target) while keeping the persona on the target project (no tombstone stranding). The human-readable explanation lives in the audit row's `persona_renames` JSON (`display_note` field). Users can override with the CLI `--interactive` flag at merge time. The merge audit records all renames.
 
 ### 5.5 Knowledge Entry Dedup + KnowledgeLink Rewriting
 
@@ -600,7 +632,14 @@ async def _dedupe_knowledge_entries(db, source_id, target_id):
 ```python
 async def _reassign_knowledge_links(db, source_id, target_id, entry_id_map):
     """Reassign source links, rewriting IDs through the entry map and
-    merging duplicates with target links."""
+    merging duplicates with target links.
+
+    COMPUTE BEFORE MUTATE: the remapped key is computed FIRST from the
+    entry_id_map WITHOUT mutating the ORM row. Duplicates are db.delete()'d.
+    Only non-duplicate rows are mutated and flushed — this avoids the
+    uq_kl_link violation that a mutate-then-check-then-flush pattern would
+    cause (the ORM would still flush the already-mutated duplicate row).
+    """
     source_links = (await db.execute(
         select(KnowledgeLink).where(KnowledgeLink.project_id == source_id)
     )).scalars().all()
@@ -609,29 +648,28 @@ async def _reassign_knowledge_links(db, source_id, target_id, entry_id_map):
     target_links = (await db.execute(
         select(KnowledgeLink).where(KnowledgeLink.project_id == target_id)
     )).scalars().all()
-    target_link_keys = {
+    running_keys = {
         (lk.source_type, lk.source_id, lk.target_type, lk.target_id)
         for lk in target_links
     }
 
     skipped_link_ids = []
     for link in source_links:
-        # Rewrite source_id + target_id through the entry map
+        # Compute remapped key BEFORE mutating the row
         new_source_id = entry_id_map.get(link.source_id, link.source_id)
         new_target_id = entry_id_map.get(link.target_id, link.target_id)
+        key = (link.source_type, new_source_id, link.target_type, new_target_id)
 
-        link.project_id = target_id
-        link.source_id = new_source_id
-        link.target_id = new_target_id
-
-        # Dedup: skip if target already has this link
-        key = (link.source_type, link.source_id, link.target_type, link.target_id)
-        if key in target_link_keys:
+        if key in running_keys:
+            # Duplicate — delete the source link, do NOT mutate+flush it
             skipped_link_ids.append(link.id)
-            # Don't add — it duplicates an existing target link
+            await db.delete(link)
         else:
-            target_link_keys.add(key)  # in-flight guard: prevent self-collision
-            # Link is already mutated in-place; will be flushed
+            # Non-duplicate — safe to mutate and flush
+            running_keys.add(key)
+            link.project_id = target_id
+            link.source_id = new_source_id
+            link.target_id = new_target_id
 
     return skipped_link_ids
 ```
@@ -736,6 +774,13 @@ CREATE TABLE project_merge_audit (
     target_project_id   VARCHAR(64),
     initiated_by_user_id VARCHAR(64) REFERENCES users(id) ON DELETE SET NULL,
     dry_run             BOOLEAN NOT NULL DEFAULT TRUE,
+    status              VARCHAR(20) NOT NULL DEFAULT 'completed',
+                        -- 'started' | 'completed' | 'failed'
+                        -- 'started' = merge in progress (attempt row written
+                        --   in a separate tx before mutation begins).
+                        -- 'completed' = merge succeeded (outcome update).
+                        -- 'failed' = merge failed (outcome update from
+                        --   exception handler; survives rollback).
     persona_policy      VARCHAR(20) NOT NULL,  -- 'rename' | 'skip' | 'merge_content'
     stats               TEXT NOT NULL DEFAULT '{}',          -- JSON object
     persona_renames     TEXT NOT NULL DEFAULT '[]',          -- JSON array
@@ -774,8 +819,18 @@ This is the single source of truth for the merge implementer. The transaction ps
 ### 5.12 Transaction Pseudocode (matches merge matrix order)
 
 ```python
-async def merge_projects(db, source_id, target_id, user_id, dry_run, persona_policy):
+async def merge_projects(
+    db: AsyncSession,           # primary session for reads + mutations
+    source_id: str,
+    target_id: str,
+    user_id: str,
+    dry_run: bool,
+    persona_policy: str,
+    session_factory,            # factory for fresh sessions (audit survival)
+):
+    # ==================================================================
     # Phase 1: READ — validate preconditions (all in same transaction)
+    # ==================================================================
     source = await db.get(Project, source_id)
     target = await db.get(Project, target_id)
     if not source or not target:
@@ -800,129 +855,180 @@ async def merge_projects(db, source_id, target_id, user_id, dry_run, persona_pol
 
     if dry_run:
         # Dry-run: ZERO DB writes. Validate + return stats only.
+        # No audit row, no locks beyond reads.
         return {"dry_run": True, "stats": stats,
                 "persona_collisions": persona_collisions,
                 "slug_collisions": slug_collisions,
                 "ke_duplicates": ke_duplicates}
 
-    # Phase 2: WRITE — single atomic transaction
-    # Audit row is created INSIDE the write transaction and committed
-    # atomically with the merge — if the merge fails, no audit row is
-    # left behind (the error is returned to the caller instead).
-    async with db.begin():
-        # ORDER MATTERS — follows merge matrix exactly:
-
-        # Step 1: PROJECT_REPOS — lock + demote source primary + reassign
-        await db.execute(
-            select(ProjectRepo).where(ProjectRepo.project_id.in_([source_id, target_id]))
-            .with_for_update()
-        )
-        # Demote source primary FIRST (HIGH-1 fix)
-        await db.execute(
-            update(ProjectRepo).where(
-                ProjectRepo.project_id == source_id, ProjectRepo.is_primary == True  # noqa: E712
-            ).values(is_primary=False)
-        )
-        # Reassign all source repos to target
-        await db.execute(
-            update(ProjectRepo).where(ProjectRepo.project_id == source_id)
-            .values(project_id=target_id)
-        )
-        # If target has no primary, promote oldest source repo
-        target_primary = await db.execute(
-            select(ProjectRepo).where(
-                ProjectRepo.project_id == target_id, ProjectRepo.is_primary == True  # noqa: E712
+    # ==================================================================
+    # Phase 2: WRITE ATTEMPT AUDIT ROW (separate transaction — survives
+    #          rollback of the merge transaction below)
+    # ==================================================================
+    audit_id = generate_id()
+    async with session_factory() as audit_db:
+        async with audit_db.begin():
+            audit = ProjectMergeAudit(
+                id=audit_id,
+                source_project_id=source_id,
+                target_project_id=target_id,
+                initiated_by_user_id=user_id,
+                dry_run=False,
+                status="started",
+                persona_policy=persona_policy,
+                stats=json.dumps(stats),
+                persona_renames="[]",   # populated on outcome
+                slug_renames="[]",
+                skipped_ke_ids="[]",
+                rules_action=None,
             )
-        ).scalar_one_or_none()
-        if not target_primary:
-            oldest = await db.execute(
-                select(ProjectRepo).where(ProjectRepo.project_id == target_id)
-                .order_by(ProjectRepo.created_at.asc()).limit(1)
-            ).scalar_one_or_none()
-            if oldest:
-                oldest.is_primary = True
+            audit_db.add(audit)
+        # Committed immediately — durable before mutation begins
 
-        # Step 2: AGENT_PERSONAS — reassign ALL, dedupe collisions (HIGH-2 fix)
-        persona_renames = await _apply_persona_policy(db, source_id, target_id, persona_policy)
+    # ==================================================================
+    # Phase 3: MERGE MUTATIONS — single atomic transaction
+    # ==================================================================
+    persona_renames = []
+    slug_renames = []
+    skipped_ke_ids = []
+    skipped_link_ids = []
+    rules_action = "none"
 
-        # Step 3: PROJECT_RULES — promote or archive (LOW-9 fix)
-        rules_action = "none"
-        source_rules = await db.execute(
-            select(ProjectRules).where(ProjectRules.project_id == source_id)
-        ).scalar_one_or_none()
-        if source_rules:
-            if target_has_rules:
-                await _archive_rules_as_wiki_page(db, source_rules, target_id, source_id)
-                await db.delete(source_rules)
-                rules_action = "archived"
-            else:
-                source_rules.project_id = target_id
-                rules_action = "promoted"
+    try:
+        async with db.begin():
+            # ORDER MATTERS — follows merge matrix exactly:
 
-        # Step 4: KNOWLEDGE_PAGES — reassign + rename slug collisions
-        # ALSO reassign wiki_page_revisions atomically (MED-3 fix)
-        slug_renames = await _apply_slug_renames(db, source_id, target_id, slug_collisions)
-
-        # Step 5: (merged into Step 4 — wiki_page_revisions follow pages atomically)
-
-        # Step 6: KNOWLEDGE_ENTRIES — dedup + build entry-ID map
-        entry_id_map, skipped_ke_ids = await _dedupe_knowledge_entries(
-            db, source_id, target_id
-        )
-
-        # Step 7: KNOWLEDGE_LINKS — map + dedup + reassign (MED-4 fix)
-        skipped_link_ids = await _reassign_knowledge_links(
-            db, source_id, target_id, entry_id_map
-        )
-
-        # Steps 8-15: Remaining tables — straight reassign in order
-        for model in [Ticket, AgentRun, SessionModel, HandoffAttachment,
-                       ProjectTransfer, ContextCompilation,
-                       RetrievalAuditContext, RetrievalAuditEvent]:
+            # Step 1: PROJECT_REPOS — lock + demote source primary + reassign
             await db.execute(
-                update(model).where(model.project_id == source_id)
+                select(ProjectRepo).where(
+                    ProjectRepo.project_id.in_([source_id, target_id])
+                ).with_for_update()
+            )
+            await db.execute(
+                update(ProjectRepo).where(
+                    ProjectRepo.project_id == source_id,
+                    ProjectRepo.is_primary == True  # noqa: E712
+                ).values(is_primary=False)
+            )
+            await db.execute(
+                update(ProjectRepo).where(ProjectRepo.project_id == source_id)
+                .values(project_id=target_id)
+            )
+            target_primary = await db.execute(
+                select(ProjectRepo).where(
+                    ProjectRepo.project_id == target_id,
+                    ProjectRepo.is_primary == True  # noqa: E712
+                )
+            ).scalar_one_or_none()
+            if not target_primary:
+                oldest = await db.execute(
+                    select(ProjectRepo).where(ProjectRepo.project_id == target_id)
+                    .order_by(ProjectRepo.created_at.asc()).limit(1)
+                ).scalar_one_or_none()
+                if oldest:
+                    oldest.is_primary = True
+
+            # Step 2: AGENT_PERSONAS — reassign ALL, dedupe collisions
+            persona_renames = await _apply_persona_policy(
+                db, source_id, target_id, persona_policy
+            )
+
+            # Step 3: PROJECT_RULES — promote or archive
+            rules_action = "none"
+            source_rules = await db.execute(
+                select(ProjectRules).where(ProjectRules.project_id == source_id)
+            ).scalar_one_or_none()
+            if source_rules:
+                if target_has_rules:
+                    await _archive_rules_as_wiki_page(
+                        db, source_rules, target_id, source_id
+                    )
+                    await db.delete(source_rules)
+                    rules_action = "archived"
+                else:
+                    source_rules.project_id = target_id
+                    rules_action = "promoted"
+
+            # Step 4–5: KNOWLEDGE_PAGES + wiki_page_revisions (atomically)
+            slug_renames = await _apply_slug_renames(
+                db, source_id, target_id, slug_collisions
+            )
+
+            # Step 6: KNOWLEDGE_ENTRIES — dedup + build entry-ID map
+            entry_id_map, skipped_ke_ids = await _dedupe_knowledge_entries(
+                db, source_id, target_id
+            )
+
+            # Step 7: KNOWLEDGE_LINKS — map + dedup + reassign (compute before mutate)
+            skipped_link_ids = await _reassign_knowledge_links(
+                db, source_id, target_id, entry_id_map
+            )
+
+            # Steps 8-15: Remaining tables — straight reassign in order
+            for model in [Ticket, AgentRun, SessionModel, HandoffAttachment,
+                           ProjectTransfer, ContextCompilation,
+                           RetrievalAuditContext, RetrievalAuditEvent]:
+                await db.execute(
+                    update(model).where(model.project_id == source_id)
+                    .values(project_id=target_id)
+                )
+
+            # Step 16: Mark source as tombstone
+            source.merged_into_project_id = target_id
+            source.merged_at = func.now()
+
+            # Step 17: Catch-up UPDATE for concurrent-sync race
+            await db.execute(
+                update(SessionModel).where(SessionModel.project_id == source_id)
                 .values(project_id=target_id)
             )
 
-        # Step 16: Mark source as tombstone
-        source.merged_into_project_id = target_id
-        source.merged_at = func.now()
+        # Merge transaction committed — all-or-nothing success
 
-        # Step 17: Catch-up UPDATE for concurrent-sync race (HIGH-3 fix)
-        # Sessions that landed on source_id during the merge get re-pointed.
-        # After this, the tombstone redirect in resolve_project_by_remote()
-        # handles any remaining edge cases on subsequent lookups.
-        await db.execute(
-            update(SessionModel).where(SessionModel.project_id == source_id)
-            .values(project_id=target_id)
-        )
+        # ==================================================================
+        # Phase 4: OUTCOME UPDATE — mark audit row 'completed' (fresh session)
+        # ==================================================================
+        async with session_factory() as audit_db:
+            async with audit_db.begin():
+                result = await audit_db.execute(
+                    update(ProjectMergeAudit)
+                    .where(ProjectMergeAudit.id == audit_id)
+                    .values(
+                        status="completed",
+                        persona_renames=json.dumps(persona_renames),
+                        slug_renames=json.dumps(slug_renames),
+                        skipped_ke_ids=json.dumps(skipped_ke_ids),
+                        rules_action=rules_action,
+                    )
+                )
+                if result.rowcount == 0:
+                    # Audit row missing — should never happen, but don't crash
+                    pass
 
-        # Step 18: Write audit row (atomically with the merge — MED-1 fix)
-        audit = ProjectMergeAudit(
-            id=generate_id(),
-            source_project_id=source_id,
-            target_project_id=target_id,
-            initiated_by_user_id=user_id,
-            dry_run=False,
-            persona_policy=persona_policy,
-            stats=json.dumps(stats),
-            persona_renames=json.dumps(persona_renames),
-            slug_renames=json.dumps(slug_renames),
-            skipped_ke_ids=json.dumps(skipped_ke_ids),
-            rules_action=rules_action,
-        )
-        db.add(audit)
-        await db.flush()  # surface audit.id before commit
+        return {"dry_run": False, "stats": stats, "audit_id": audit_id}
 
-    # Commit happens at context-manager exit — all-or-nothing
-
-    return {"dry_run": False, "stats": stats, "audit_id": audit.id}
+    except Exception as exc:
+        # ==================================================================
+        # Phase 4 (failure path): OUTCOME UPDATE — mark audit row 'failed'
+        # Fresh session survives the rolled-back merge transaction.
+        # ==================================================================
+        async with session_factory() as audit_db:
+            async with audit_db.begin():
+                await audit_db.execute(
+                    update(ProjectMergeAudit)
+                    .where(ProjectMergeAudit.id == audit_id)
+                    .values(
+                        status="failed",
+                        error_message=f"{type(exc).__name__}: {exc}",
+                    )
+                )
+        raise  # re-raise after audit update
 ```
 
 ### 5.13 Rollback + Race Guarantee
 
 - **Atomicity:** Single `async with db.begin()` block. Any step failure → full rollback. Both projects untouched.
-- **Audit survival:** Audit row is written INSIDE the merge transaction (step 18), so it commits atomically with the merge or not at all. If the merge fails, the error is returned to the caller; no orphan audit row is left behind. (Dry-run writes nothing — MED-1.)
+- **Audit survival (MED-3 fix):** The ATTEMPT audit row is written in a SEPARATE transaction (Phase 2) BEFORE the merge mutation begins. On success, the row is outcome-updated to `status='completed'` (Phase 4). On failure, the exception handler outcome-updates it to `status='failed'` via a FRESH session that is unaffected by the merge transaction's rollback. This guarantees every execute attempt — successful, failed, or blocked — leaves a durable audit trail. Dry-run writes nothing.
 - **Concurrent-sync race (HIGH-3 fix):**
   - (a) Step 17 (catch-up UPDATE) catches sessions that landed on `source_id` during the merge window
   - (b) `resolve_project_by_remote()` is tombstone-aware — transparently follows `merged_into_project_id` chain, so any post-merge session sync that resolves via a source-project remote lands on the target
@@ -979,7 +1085,7 @@ Before any implementation code is written, Sentinel must review:
 
 ### Q2: Persona collision policy + Rules collision policy
 
-**Resolved by Compass companion (§3):** Keep target, rename source to `<name> (from <project>)`. Rules: keep target, archive source as wiki page snapshot (promote source when target has none — LOW-9). User can override with `--interactive` at merge time.
+**Resolved by Compass companion (§3):** Keep target, rename source to `{name}-{src8}` (legal ASCII slug ≤50 chars; e.g. `prism-a1b2c3d4`). Human-readable "(from <project>)" context lives only in the audit row's `persona_renames.display_note` JSON. Rules: keep target, archive source as wiki page snapshot (promote source when target has none — LOW-9). User can override with `--interactive` at merge time.
 
 ### Q3: Is multi-repo / merge a tiered feature?
 
