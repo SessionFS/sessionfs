@@ -1,6 +1,6 @@
 # Binding Design — Multi-Repo Projects
 
-**Status:** ✅ Codex VERIFIED-CLEAN (R5) + Sentinel APPROVED-WITH-CONDITIONS — conditions folded into design (S1 amendment); Codex re-review of S1 amendment fixed (S2). Review history: R1 (3 HIGH + 4 MED + 3 LOW) → R2 (0 HIGH, 4 MED + 1 LOW) → R3 (3 MED + 2 LOW) → R4 (1 MED + 1 LOW) → R5 CLEAN. S1: Sentinel amendment. S2: Codex re-review of S1 amendment (displacement coherence + resolver error + verified semantics).
+**Status:** ✅ FINAL — design approved for implementation. Codex VERIFIED-CLEAN (R5) → Sentinel pre-build pass APPROVED-WITH-CONDITIONS (S1, all 6 must-fix + 4 LOW folded in) → Sentinel re-review APPROVED (S2) → Codex amendment re-review: all displacement/resolver findings closed, final LOW handoff-consistency fix applied (S2-fix). No remaining correctness or security blocker. Implementation proceeds under Issue tk_4732d94b2c034739 (5 phase tickets); Shield-SR verifies the §8.2 checklist at code-review time before the merge endpoint ships. Review history: R1 (3 HIGH + 4 MED + 3 LOW) → R2 → R3 → R4 → R5 CLEAN; Sentinel S1 (1 HIGH + 5 MED + 4 LOW) → S2 APPROVED; Codex amendment re-review (1 HIGH + 2 MED + 1 LOW) → closed.
 **Author:** Atlas (backend/data-model)
 **Date:** 2026-06-15
 **Companion:** `docs/design/multi-repo-projects-product.md` (Compass — linking UX + merge collision policy)
@@ -1411,13 +1411,13 @@ These tests MUST be written alongside the implementation, keyed to the merge mat
 
 ## 10. Implementation Order
 
-1. **Migration 049** — `project_repos` + partial indexes + `merged_into_project_id` on projects + `project_merge_audit`
+1. **Migration 049** — `project_repos` + partial indexes + `merged_into_project_id` + `merged_at` + `repo_reclaimed_at` on projects + `project_merge_audit`
 2. **Shared helpers** — `resolve_project_by_remote()`, `resolve_project_by_id()`, `get_primary_remote()`
 3. **Resolver changes** — all 16 sites in §3.3, in order: Group A first (project resolution), then Group B (access predicates), then Group E (snapshots)
 4. **API endpoints** — link-repo, unlink-repo, list-repos
 5. **API endpoint** — merge (dry-run first, then live)
 6. **CLI commands** — link-repo, unlink-repo, repos, merge
-7. **Backfill verification** — startup health check that every project has ≥1 `project_repos` row
+7. **Backfill verification** — startup health check that every **active** project (`merged_into_project_id IS NULL` AND `repo_reclaimed_at IS NULL`) has ≥1 `project_repos` row; `merged` and `repo_reclaimed` projects are permitted zero repos (§3.4 lifecycle states)
 8. **Deprecation plan** — file ticket for v0.12+ `projects.git_remote_normalized` cleanup
 9. **Dashboard** — Prism: repo-manager panel
 10. **Sentinel security pass** — before merge endpoint ships
@@ -1428,7 +1428,7 @@ These tests MUST be written alongside the implementation, keyed to the merge mat
 
 | File | Change |
 |------|--------|
-| `src/sessionfs/server/db/models.py` | Add `ProjectRepo`, `ProjectMergeAudit` models; add `merged_into_project_id` + `merged_at` to `Project` |
+| `src/sessionfs/server/db/models.py` | Add `ProjectRepo`, `ProjectMergeAudit` models; add `merged_into_project_id` + `merged_at` + `repo_reclaimed_at` to `Project` |
 | `src/sessionfs/server/db/migrations/versions/049_multi_repo_projects.py` | NEW — migration |
 | `src/sessionfs/server/services/project_resolver.py` | NEW — `resolve_project_by_remote()`, `resolve_project_by_id()`, `get_primary_remote()` |
 | `src/sessionfs/server/routes/sessions.py` | Replace `scalar_one_or_none()` with `resolve_project_by_remote()` (A1) |
