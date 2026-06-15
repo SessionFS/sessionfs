@@ -1,7 +1,7 @@
 # Multi-Repo Projects — Product Companion
 
 **Author:** Compass (product lead)
-**Status:** Design — feeds Atlas's `multi-repo-projects.md` Open Decisions
+**Status:** Design — feeds Atlas's `multi-repo-projects.md` Open Decisions. Sentinel S1 amendment folded in (verified-vs-unverified linking UX).
 **Date:** 2026-06-15
 
 ## 1. Who Has This Problem & How Acute
@@ -46,14 +46,16 @@ sfs project link-repo <remote> [--project-id <id>]
 
 This:
 1. Normalizes the provided git remote URL.
-2. Validates the remote isn't already linked to another project (one repo ∈ exactly one project).
-3. Validates org membership if the target project is org-scoped.
-4. Links the repo into the project.
-5. Outputs: `Linked github.com/org/backend-repo → "Platform API" (proj_abc123).`
+2. Checks whether the repo is already linked to another project (one repo ∈ exactly one project). If so, the CLI reports whether the existing link is verified or unverified — a verified owner can displace an unverified link (see below).
+3. Validates admin standing on the target project (owner or org-admin).
+4. **Verifies repo ownership:** If the SessionFS GitHub App is installed on the repo's owner, the server proves control via the installation — the link is recorded as **verified** (`verified=true`). For non-GitHub remotes, self-hosted instances, or repos where the App isn't installed, the link is recorded as **owner-attested** (`verified=false`) — the admin asserts they control the repo, but the server cannot prove it. An owner-attested link can be displaced by a verified claim from the repo's real owner later.
+5. Outputs: `Linked github.com/org/backend-repo → "Platform API" (proj_abc123). Verified via GitHub App.` (or `Owner-attested — install the SessionFS GitHub App for verified linking.`)
+
+**GitHub App installation for verified linking:** To link a GitHub repo with full verification, the SessionFS GitHub App must be installed on the repo's owner (user or organization). Without the App, linking still works but is recorded as owner-attested. The dashboard Repos tab shows a "Verify" prompt next to owner-attested repos with a link to install the App. Sentinel F1 (security review) requires this distinction to prevent repo-name squatting.
 
 **Dashboard (secondary path — project admin view):**
 
-A "Repos" tab on the project detail page shows the linked repo set. An "Add repo" button opens a modal where the user pastes a git remote URL (`github.com/org/repo-name`). Validation runs server-side. This is the admin/org-owner path — useful when a tech lead is setting up the project structure before the team onboards.
+A "Repos" tab on the project detail page shows the linked repo set with each repo's verification status (verified ✓ / owner-attested ⚠). An "Add repo" button opens a modal where the user pastes a git remote URL (`github.com/org/repo-name`). Validation runs server-side. If the SessionFS GitHub App is installed on the repo's owner, the link auto-verifies; otherwise the dashboard prompts to install the App for verified linking. This is the admin/org-owner path — useful when a tech lead is setting up the project structure before the team onboards.
 
 **`sfs project init` inside an already-linked repo:**
 - If the current directory's remote is already linked to a project, `sfs project init` prints: `This repo is already part of project "Platform API" (proj_abc123).` and exits 0. It does NOT create a second project.
@@ -69,7 +71,8 @@ A "Repos" tab on the project detail page shows the linked repo set. An "Add repo
 
 - The **first repo** in a project is the **primary**. It has no special privileges beyond being the default name source. It can be changed later (Atlas follow-up — not v1).
 - All linked repos are equal for KB, persona, ticket, and rules access. There is no "primary repo can write KB, linked repos are read-only" — that defeats the purpose.
-- The dashboard Repos tab shows the set as a flat list with the primary marked with a subtle star/home indicator. No hierarchy.
+- The dashboard Repos tab shows the set as a flat list with the primary marked with a subtle star/home indicator, and each repo shows its verification status: **verified ✓** (GitHub App confirmed ownership) or **owner-attested ⚠** (admin asserted ownership; installable GitHub App for verification). No hierarchy.
+- **Displacement:** If a verified owner later links a repo that was already linked as owner-attested (by a different project), the unverified link is displaced — the repo moves to the verified owner's project. The displaced project's admin receives a notification. This prevents repo-name squatting (Sentinel F1).
 
 ### Why not "projects contain many repos" from the start?
 
@@ -267,7 +270,7 @@ Existing split projects continue to work exactly as today. Users are not forced 
 | Expectation | Reality | Mitigation |
 |-------------|---------|------------|
 | "Linking repos = merging their sessions" | Sessions stay per-repo. The KB aggregates across repos, but the session list in `sfs sessions` is still repo-scoped. | Document clearly: "Sessions are per-repo. The KB, personas, tickets, and rules are shared." |
-| "I can link any repo" | Org-boundary check rejects cross-org repos. | Clear error message with the org name. |
+| "I can link any repo" | Org-boundary check rejects cross-org repos. Additionally, link requires project admin standing (owner or org-admin), and verification depends on GitHub App installation. Non-GitHub/self-hosted repos are owner-attested. | Clear error messages for each case. Dashboard prompts App install for verified linking. |
 | "Merge is instant and perfect" | Collisions require manual review. The dry-run shows everything upfront. | Default `--dry-run` with no side effects. |
 | "My free-tier project should support multi-repo" | It does — multi-repo is free for all tiers. | No gating; works everywhere. |
 | "I can delete the source project after merge" | It's auto-soft-deleted. Sessions remain accessible. | The merge output confirms this explicitly. |
