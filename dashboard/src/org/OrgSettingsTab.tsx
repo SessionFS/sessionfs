@@ -33,6 +33,7 @@ import {
   useOrgSettings,
   useUpdateOrgSettings,
 } from './useOrgSettings';
+import { Button, Input } from '../components/ui';
 
 interface OrgSettingsTabProps {
   orgId: string;
@@ -97,24 +98,23 @@ export default function OrgSettingsTab({ orgId, canEdit }: OrgSettingsTabProps) 
   };
 
   const field = (key: keyof FormState, label: string, hint: string) => (
-    <label className="block">
-      <span className="block text-[13px] text-[var(--text-tertiary)] mb-1">{label}</span>
-      <input
+    <div className="flex flex-col gap-1">
+      <Input
         type="number"
         value={form[key]}
-        onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))}
+        onChange={(e: React.ChangeEvent<HTMLInputElement>) => setForm((f) => ({ ...f, [key]: e.target.value }))}
         disabled={!canEdit || update.isPending}
         aria-label={label}
-        className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 text-sm"
+        title={label}
       />
-      <span className="block text-[12px] text-[var(--text-tertiary)] mt-1">{hint}</span>
-    </label>
+      <span className="text-xs text-text-tertiary">{hint}</span>
+    </div>
   );
 
   return (
     <section aria-labelledby="org-settings-heading">
       <h3 id="org-settings-heading">Org defaults</h3>
-      <p className="text-sm text-[var(--text-secondary)]">
+      <p className="text-sm text-text-secondary">
         Creation defaults for new projects added to this org. Existing
         projects keep their current values; change a project's own KB
         knobs from the project settings to override. Leave a field
@@ -136,14 +136,16 @@ export default function OrgSettingsTab({ orgId, canEdit }: OrgSettingsTabProps) 
           'KB section page limit',
           'Maximum pages a single KB section can generate (1-200).',
         )}
-        <button
+        <Button
           type="submit"
+          variant="primary"
           disabled={!canEdit || update.isPending}
+          loading={update.isPending}
           title={canEdit ? undefined : 'Only org admins can change settings'}
           aria-label="Save org settings"
         >
-          {update.isPending ? 'Saving…' : 'Save settings'}
-        </button>
+          Save settings
+        </Button>
       </form>
     </section>
   );

@@ -17,7 +17,7 @@ export const ToastContext = createContext<ToastContextValue | null>(null);
 const BORDER_COLORS: Record<Toast['type'], string> = {
   success: 'border-l-[var(--accent)]',
   error: 'border-l-[var(--danger)]',
-  info: 'border-l-[var(--brand)]',
+  info: 'border-l-brand',
   warning: 'border-l-[var(--warning)]',
 };
 
@@ -83,12 +83,13 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: string)
   return (
     <div
       role="status"
-      className={`pointer-events-auto bg-[var(--bg-elevated)] border border-[var(--border)] rounded-lg shadow-lg p-3 pr-8 border-l-[3px] ${BORDER_COLORS[toast.type]} transition-all duration-200 ease-out min-w-[250px] max-w-sm ${visible ? 'translate-x-0 opacity-100' : 'translate-x-full opacity-0'}`}
+      className={`pointer-events-auto border border-border rounded-lg p-3 pr-8 border-l-[3px] bg-overlay ${BORDER_COLORS[toast.type]} transition-[transform,opacity] duration-200 ease-out min-w-[250px] max-w-sm ${visible ? 'translate-x-0 opacity-100' : 'translate-x-full opacity-0'}`}
+      style={{ boxShadow: 'var(--shadow-overlay)' }}
     >
-      <p className="text-sm text-[var(--text-primary)]">{toast.message}</p>
+      <p className="text-sm text-text-primary">{toast.message}</p>
       <button
         onClick={() => onDismiss(toast.id)}
-        className="absolute top-2 right-2 text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors"
+        className="absolute top-2 right-2 text-text-tertiary hover:text-text-secondary transition-colors"
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M18 6L6 18M6 6l12 12" />

@@ -239,7 +239,7 @@ describe('ProjectDetail', () => {
     renderPage();
     const user = userEvent.setup();
 
-    await user.click(screen.getByRole('button', { name: /^entries/i }));
+    await user.click(screen.getByRole('tab', { name: /entries/i }));
 
     // The entry text should appear once the tab renders it
     await waitFor(() => {
@@ -266,7 +266,7 @@ describe('ProjectDetail', () => {
     await user.click(moreBtn!);
 
     // "Delete Project" menu item appears
-    const deleteMenuItem = await screen.findByRole('button', { name: /delete project/i });
+    const deleteMenuItem = await screen.findByRole('menuitem', { name: /delete project/i });
     await user.click(deleteMenuItem);
 
     // Confirmation dialog must appear before actual delete

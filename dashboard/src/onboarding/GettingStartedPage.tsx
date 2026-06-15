@@ -5,6 +5,7 @@ import { useAuth } from '../auth/AuthContext';
 import { setItem } from '../utils/storage';
 import CopyButton from '../components/CopyButton';
 import Wordmark from '../components/Wordmark';
+import { Card, Button } from '../components/ui';
 
 /**
  * Scope the dismissal flag to (baseUrl, apiKey-hash) so different accounts
@@ -86,19 +87,19 @@ export default function GettingStartedPage() {
     <div className="max-w-2xl mx-auto px-5 py-10 md:py-16">
       {/* API key banner — shown once after signup */}
       {showKeyBanner && signupApiKey && (
-        <div className="mb-6 p-4 bg-[var(--bg-elevated)] border border-[var(--brand)]/30 rounded-lg">
+        <div className="mb-6 p-4 bg-bg-elevated border border-[var(--brand)]/30 rounded-lg">
           <div className="flex items-center justify-between gap-3 mb-1">
-            <p className="text-sm font-medium text-[var(--text-primary)]">Your API key</p>
+            <p className="text-sm font-medium text-text-primary">Your API key</p>
             <button
               onClick={() => setShowKeyBanner(false)}
-              className="text-xs text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+              className="text-xs text-text-tertiary hover:text-text-secondary"
             >
               Dismiss
             </button>
           </div>
-          <p className="text-xs text-[var(--text-tertiary)] mb-2">Save this now — you will not see it again.</p>
+          <p className="text-xs text-text-tertiary mb-2">Save this now — you will not see it again.</p>
           <div className="flex items-center gap-2">
-            <code className="flex-1 text-xs font-mono bg-[var(--bg-primary)] px-3 py-1.5 rounded border border-[var(--border)] truncate">
+            <code className="flex-1 text-xs font-mono bg-bg-primary px-3 py-1.5 rounded border border-border truncate">
               {signupApiKey}
             </code>
             <CopyButton text={signupApiKey} />
@@ -111,10 +112,10 @@ export default function GettingStartedPage() {
         <div className="inline-block mb-4">
           <Wordmark size="lg" />
         </div>
-        <h1 className="text-2xl md:text-3xl font-bold text-[var(--text-primary)] tracking-tight">
+        <h1 className="text-2xl md:text-3xl font-bold text-text-primary tracking-tight">
           Get started with SessionFS
         </h1>
-        <p className="mt-2 text-sm text-[var(--text-secondary)] max-w-md mx-auto">
+        <p className="mt-2 text-sm text-text-secondary max-w-md mx-auto">
           Three steps to capture, sync, and share your AI coding sessions.
         </p>
       </div>
@@ -155,9 +156,9 @@ export default function GettingStartedPage() {
               <span style={{ color: '#a5d6ff' }}>{selectedTool.command}</span>
             </pre>
           </div>
-          <p className="mt-3 text-xs text-[var(--text-tertiary)]">
+          <p className="mt-3 text-xs text-text-tertiary">
             Or install the CLI first:{' '}
-            <code className="font-mono bg-[var(--bg-tertiary)] px-1.5 py-0.5 rounded text-[var(--text-secondary)]">
+            <code className="font-mono bg-bg-tertiary px-1.5 py-0.5 rounded text-text-secondary">
               pip install sessionfs && sfs init
             </code>
           </p>
@@ -170,7 +171,7 @@ export default function GettingStartedPage() {
           description="Start a coding session in your AI tool. SessionFS captures it automatically."
           done={hasSession}
         >
-          <p className="text-sm text-[var(--text-secondary)]">
+          <p className="text-sm text-text-secondary">
             Or push an existing session manually:
           </p>
           <div className="mt-2 rounded-lg border overflow-hidden" style={{ backgroundColor: '#0b0d12', borderColor: 'rgba(255,255,255,0.08)' }}>
@@ -190,7 +191,7 @@ export default function GettingStartedPage() {
         >
           <Link
             to="/projects"
-            className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-semibold bg-[var(--brand)] text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors"
+            className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-semibold bg-brand text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors"
           >
             Create Project
             <span aria-hidden="true">&rarr;</span>
@@ -199,19 +200,16 @@ export default function GettingStartedPage() {
       </div>
 
       {/* Footer */}
-      <div className="mt-10 flex flex-col sm:flex-row items-center justify-between gap-4 pt-6 border-t" style={{ borderColor: 'var(--border)' }}>
-        <p className="text-sm text-[var(--text-tertiary)]">
+      <div className="mt-10 flex flex-col sm:flex-row items-center justify-between gap-4 pt-6 border-t border-border">
+        <p className="text-sm text-text-tertiary">
           You can always find setup help at{' '}
           <Link to="/help" className="text-[var(--accent)] hover:underline">
             Help
           </Link>
         </p>
-        <button
-          onClick={handleSkip}
-          className="text-sm font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
-        >
+        <Button variant="ghost" size="sm" onClick={handleSkip}>
           Skip to Dashboard &rarr;
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -231,12 +229,10 @@ function StepCard({
   children: React.ReactNode;
 }) {
   return (
-    <div
-      className="rounded-[var(--radius-lg)] border p-5 md:p-6"
-      style={{
-        backgroundColor: 'var(--bg-secondary)',
-        borderColor: done ? 'var(--brand)' : 'var(--border)',
-      }}
+    <Card
+      level="surface"
+      className="p-5 md:p-6"
+      topEdge={done ? 'var(--brand)' : undefined}
     >
       <div className="flex items-start gap-4">
         {/* Step indicator */}
@@ -258,15 +254,15 @@ function StepCard({
         </div>
 
         <div className="flex-1 min-w-0">
-          <h2 className="text-base font-semibold text-[var(--text-primary)] mb-1">
+          <h2 className="text-base font-semibold text-text-primary mb-1">
             {title}
           </h2>
-          <p className="text-sm text-[var(--text-secondary)] mb-4">
+          <p className="text-sm text-text-secondary mb-4">
             {description}
           </p>
           {children}
         </div>
       </div>
-    </div>
+    </Card>
   );
 }

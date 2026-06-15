@@ -1,6 +1,7 @@
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
 import { formatBytes } from '../utils/format';
+import { Card, Button } from '../components/ui';
 
 const TIERS = [
   {
@@ -116,7 +117,7 @@ export default function BillingPage() {
   });
 
   if (isLoading) {
-    return <div className="text-center py-12 text-[var(--text-tertiary)]">Loading billing...</div>;
+    return <div className="text-center py-12 text-text-tertiary">Loading billing…</div>;
   }
 
   const currentTier = billing?.tier || 'free';
@@ -131,22 +132,22 @@ export default function BillingPage() {
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-8">
-      <h1 className="text-3xl font-bold tracking-tight text-[var(--text-primary)] mb-6">Billing</h1>
+      <h1 className="text-3xl font-bold tracking-tight text-text-primary mb-6">Billing</h1>
 
       {/* Current plan info */}
-      <div className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl p-6 mb-8">
+      <Card level="elevated" className="p-6 mb-8">
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-[13px] text-[var(--text-tertiary)] mb-1">Current Plan</p>
+            <p className="text-sm text-text-tertiary mb-1">Current Plan</p>
             <div className="flex items-center gap-2">
-              <p className="text-2xl font-semibold text-[var(--text-primary)] capitalize">{currentTier}</p>
+              <p className="text-2xl font-semibold text-text-primary capitalize">{currentTier}</p>
               {isBeta && (
                 <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-[var(--accent)]/15 text-[var(--accent)]">
                   Beta — all features included
                 </span>
               )}
               {!isBeta && (
-                <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-[var(--brand)]/15 text-[var(--brand)]">
+                <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-brand/15 text-brand">
                   Current plan
                 </span>
               )}
@@ -154,44 +155,44 @@ export default function BillingPage() {
           </div>
           {(billing?.storage_limit_bytes ?? 0) > 0 && billing && (
             <div className="text-right">
-              <p className="text-sm text-[var(--text-tertiary)] mb-1">Storage</p>
-              <p className="text-lg font-medium text-[var(--text-primary)]">
+              <p className="text-sm text-text-tertiary mb-1">Storage</p>
+              <p className="text-lg font-medium text-text-primary">
                 {formatBytes(billing.storage_used_bytes ?? 0)} / {formatBytes(billing.storage_limit_bytes ?? 0)}
               </p>
               <div className="w-48 h-2 bg-[var(--border)] rounded-full mt-2 overflow-hidden">
                 <div
-                  className="h-full bg-[var(--brand)] rounded-full transition-all"
+                  className="h-full bg-brand rounded-full transition-[width] duration-200"
                   style={{ width: `${storagePct}%` }}
                 />
               </div>
-              <p className="text-xs text-[var(--text-tertiary)] mt-1">{storagePct.toFixed(0)}% used</p>
+              <p className="text-xs text-text-tertiary mt-1">{storagePct.toFixed(0)}% used</p>
             </div>
           )}
         </div>
 
         {hasSubscription && (!isOrgMember || isOrgAdmin) && (
-          <div className="mt-5 pt-4 border-t border-[var(--border)] flex gap-3">
-            <button
+          <div className="mt-5 pt-4 border-t border-border flex gap-3">
+            <Button
+              variant="primary"
               onClick={() => portalMutation.mutate(undefined)}
-              disabled={portalMutation.isPending}
-              className="bg-[var(--brand)] text-white rounded-lg px-5 py-2.5 text-sm font-semibold hover:bg-[var(--brand-hover)] transition-colors disabled:opacity-50"
+              loading={portalMutation.isPending}
             >
-              {portalMutation.isPending ? 'Redirecting...' : 'Manage Subscription'}
-            </button>
-            <button
+              Manage Subscription
+            </Button>
+            <Button
+              variant="secondary"
               onClick={() => portalMutation.mutate(undefined)}
-              disabled={portalMutation.isPending}
-              className="px-5 py-2.5 text-sm font-medium border border-[var(--border)] text-[var(--text-secondary)] rounded-lg hover:bg-[var(--surface-hover)] transition-colors disabled:opacity-50"
+              loading={portalMutation.isPending}
             >
-              {portalMutation.isPending ? 'Redirecting...' : 'View Invoices'}
-            </button>
+              View Invoices
+            </Button>
             {portalMutation.isError && (
               <p className="text-red-500 text-sm self-center">{String(portalMutation.error)}</p>
             )}
           </div>
         )}
         {hasSubscription && isOrgMember && !isOrgAdmin && !hasPersonalSub && (
-          <p className="mt-4 text-sm text-[var(--text-tertiary)]">
+          <p className="mt-4 text-sm text-text-tertiary">
             Subscription is managed by your organization admin.
           </p>
         )}
@@ -200,22 +201,22 @@ export default function BillingPage() {
             <p className="text-sm text-yellow-600 font-medium mb-2">
               You have a personal subscription that is still active
             </p>
-            <p className="text-xs text-[var(--text-tertiary)] mb-3">
+            <p className="text-xs text-text-tertiary mb-3">
               Your organization provides your plan. Cancel your personal subscription to avoid duplicate charges.
             </p>
-            <button
+            <Button
+              variant="secondary"
               onClick={() => portalMutation.mutate('personal')}
-              disabled={portalMutation.isPending}
-              className="px-4 py-2 text-sm font-medium border border-yellow-500/30 text-yellow-600 rounded-lg hover:bg-yellow-500/10 transition-colors disabled:opacity-50"
+              loading={portalMutation.isPending}
             >
-              {portalMutation.isPending ? 'Redirecting...' : 'Manage Personal Subscription'}
-            </button>
+              Manage Personal Subscription
+            </Button>
             {portalMutation.isError && (
               <p className="text-red-500 text-xs mt-2">{String(portalMutation.error)}</p>
             )}
           </div>
         )}
-      </div>
+      </Card>
 
       {/* Tier cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -224,25 +225,27 @@ export default function BillingPage() {
           const isPro = t.popular;
 
           return (
-            <div
+            <Card
               key={t.tier}
-              className={`bg-[var(--bg-elevated)] rounded-xl border p-5 transition-colors ${
-                isPro ? 'border-[var(--brand)] ring-1 ring-[var(--brand)]' : 'border-[var(--border)]'
-              } ${isCurrent ? 'bg-[var(--brand)]/[0.03]' : ''}`}
+              level="elevated"
+              topEdge={isCurrent ? 'var(--brand)' : undefined}
+              className={`p-5 transition-colors ${
+                isPro ? '!border-[var(--brand)] ring-1 ring-[var(--brand)]' : ''
+              }`}
             >
               {isPro && (
-                <span className="text-xs font-medium text-[var(--brand)] uppercase tracking-wide">Popular</span>
+                <span className="text-xs font-medium text-brand uppercase tracking-wide">Popular</span>
               )}
-              <h3 className="text-xl font-semibold text-[var(--text-primary)] mt-1">{t.name}</h3>
-              <p className="text-3xl font-bold text-[var(--text-primary)] mt-2">
+              <h3 className="text-xl font-semibold text-text-primary mt-1">{t.name}</h3>
+              <p className="text-3xl font-bold text-text-primary mt-2">
                 {t.price}
-                <span className="text-sm font-normal text-[var(--text-tertiary)]">{t.period}</span>
+                <span className="text-sm font-normal text-text-tertiary">{t.period}</span>
               </p>
 
-              <ul className="mt-4 space-y-2 text-[14px]">
+              <ul className="mt-4 space-y-2 text-base">
                 {t.features.map((f) => (
-                  <li key={f} className="flex items-start gap-2 text-[var(--text-secondary)]">
-                    <span className="text-green-500 mt-0.5 flex-shrink-0">&#10003;</span>
+                  <li key={f} className="flex items-start gap-2 text-text-secondary">
+                    <span className="text-[var(--accent)] mt-0.5 flex-shrink-0">&#10003;</span>
                     {f}
                   </li>
                 ))}
@@ -250,36 +253,34 @@ export default function BillingPage() {
 
               <div className="mt-6">
                 {isCurrent ? (
-                  <span className="block text-center py-2 text-[var(--text-tertiary)] text-sm">Current plan</span>
+                  <span className="block text-center py-2 text-text-tertiary text-sm">Current plan</span>
                 ) : t.tier === 'free' ? null : isOrgMember && (t.tier === 'starter' || t.tier === 'pro') ? (
-                  <span className="block text-center py-2 text-[var(--text-tertiary)] text-sm">Managed by org</span>
+                  <span className="block text-center py-2 text-text-tertiary text-sm">Managed by org</span>
                 ) : isOrgMember && !isOrgAdmin && t.tier === 'team' ? (
-                  <span className="block text-center py-2 text-[var(--text-tertiary)] text-sm">Admin only</span>
+                  <span className="block text-center py-2 text-text-tertiary text-sm">Admin only</span>
                 ) : isBeta ? (
-                  <span className="block text-center py-2 text-[var(--text-tertiary)] text-sm">Coming soon</span>
+                  <span className="block text-center py-2 text-text-tertiary text-sm">Coming soon</span>
                 ) : hasSubscription ? (
-                  <button
+                  <Button
+                    variant="secondary"
                     onClick={() => portalMutation.mutate(undefined)}
-                    disabled={portalMutation.isPending}
-                    className="w-full py-2.5 px-5 rounded-lg text-sm font-medium border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] transition-colors disabled:opacity-50"
+                    loading={portalMutation.isPending}
+                    className="w-full"
                   >
-                    {portalMutation.isPending ? 'Redirecting...' : 'Change plan'}
-                  </button>
+                    Change plan
+                  </Button>
                 ) : (
-                  <button
+                  <Button
+                    variant={isPro ? 'primary' : 'secondary'}
                     onClick={() => checkoutMutation.mutate(t.tier)}
-                    disabled={checkoutMutation.isPending}
-                    className={`w-full py-2.5 px-5 rounded-lg text-sm font-semibold transition-colors disabled:opacity-50 ${
-                      isPro
-                        ? 'bg-[var(--brand)] text-white hover:bg-[var(--brand-hover)]'
-                        : 'border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--surface-hover)]'
-                    }`}
+                    loading={checkoutMutation.isPending}
+                    className="w-full"
                   >
-                    {checkoutMutation.isPending ? 'Redirecting...' : 'Upgrade'}
-                  </button>
+                    Upgrade
+                  </Button>
                 )}
               </div>
-            </div>
+            </Card>
           );
         })}
       </div>
@@ -290,23 +291,23 @@ export default function BillingPage() {
         </p>
       )}
 
-      <p className="text-center text-sm text-[var(--text-tertiary)] mt-8">
-        Need Enterprise? <a href="mailto:enterprise@sessionfs.dev" className="text-[var(--brand)] hover:underline">Contact sales</a>
+      <p className="text-center text-sm text-text-tertiary mt-8">
+        Need Enterprise? <a href="mailto:enterprise@sessionfs.dev" className="text-brand hover:underline">Contact sales</a>
         {' · '}
-        <a href="https://sessionfs.dev/enterprise/" className="text-[var(--brand)] hover:underline">Learn more</a>
+        <a href="https://sessionfs.dev/enterprise/" className="text-brand hover:underline">Learn more</a>
       </p>
 
       {/* Storage usage */}
       {billing?.storage_used_bytes != null && (
-        <div className="mt-8 pt-6 border-t border-[var(--border)]">
-          <h2 className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--text-tertiary)] mb-3">Storage Usage</h2>
+        <div className="mt-8 pt-6 border-t border-border">
+          <h2 className="text-2xs font-semibold uppercase tracking-[0.08em] text-text-tertiary mb-3">Storage Usage</h2>
           <div className="w-full h-3 bg-[var(--border)] rounded-full overflow-hidden">
             <div
-              className="h-full bg-[var(--brand)] rounded-full transition-all"
+              className="h-full bg-brand rounded-full transition-[width] duration-200"
               style={{ width: `${Math.min(100, billing.storage_limit_bytes > 0 ? (billing.storage_used_bytes / billing.storage_limit_bytes) * 100 : 0)}%` }}
             />
           </div>
-          <p className="text-sm text-[var(--text-tertiary)] mt-2">
+          <p className="text-sm text-text-tertiary mt-2">
             {formatBytes(billing.storage_used_bytes)} used
             {billing.storage_limit_bytes > 0 && ` of ${formatBytes(billing.storage_limit_bytes)}`}
           </p>

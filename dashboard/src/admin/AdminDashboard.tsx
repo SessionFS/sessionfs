@@ -9,10 +9,10 @@ import {
 } from '../hooks/useAdmin';
 import type { AdminUser } from '../api/client';
 import RelativeDate from '../components/RelativeDate';
-import ConfirmModal from './ConfirmModal';
 import LicensesTab from './LicensesTab';
 import { getAvatarColor } from '../utils/avatar';
 import { formatBytes } from '../utils/format';
+import { Card, Button, Input, Select, Table, Tabs, Dialog, DialogHeader, DialogFooter } from '../components/ui';
 
 type AdminTab = 'users' | 'licenses' | 'activity';
 
@@ -88,16 +88,16 @@ export default function AdminDashboard() {
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-6">
-      <h1 className="text-3xl font-bold tracking-tight text-[var(--text-primary)] mb-6">Admin</h1>
+      <h1 className="text-3xl font-bold tracking-tight text-text-primary mb-6">Admin</h1>
 
       {/* Overview Cards */}
       {statsLoading && (
-        <div className="text-[var(--text-tertiary)] text-sm mb-6">Loading stats...</div>
+        <div className="text-text-tertiary text-sm mb-6">Loading stats…</div>
       )}
       {stats && (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
           {/* Users card */}
-          <div className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl p-5">
+          <Card level="elevated" className="p-5">
             <div className="flex items-start gap-3">
               <div className="w-9 h-9 rounded-lg bg-blue-500/10 flex items-center justify-center flex-shrink-0">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--info)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -108,17 +108,17 @@ export default function AdminDashboard() {
                 </svg>
               </div>
               <div>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--text-tertiary)] mb-1">Users</p>
-                <p className="text-3xl font-bold text-[var(--text-primary)] tabular-nums">{stats.users.total}</p>
-                <p className="text-xs text-[var(--text-tertiary)] mt-1">
+                <p className="text-2xs font-semibold uppercase tracking-[0.08em] text-text-tertiary mb-1">Users</p>
+                <p className="text-3xl font-bold text-text-primary tabular-nums">{stats.users.total}</p>
+                <p className="text-xs text-text-tertiary mt-1">
                   {stats.users.verified} verified, {stats.users.total - stats.users.verified} pending
                 </p>
               </div>
             </div>
-          </div>
+          </Card>
 
           {/* Sessions card */}
-          <div className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl p-5">
+          <Card level="elevated" className="p-5">
             <div className="flex items-start gap-3">
               <div className="w-9 h-9 rounded-lg bg-green-500/10 flex items-center justify-center flex-shrink-0">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -128,17 +128,17 @@ export default function AdminDashboard() {
                 </svg>
               </div>
               <div>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--text-tertiary)] mb-1">Sessions</p>
-                <p className="text-3xl font-bold text-[var(--text-primary)] tabular-nums">{stats.sessions.total}</p>
-                <p className="text-xs text-[var(--text-tertiary)] mt-1">
+                <p className="text-2xs font-semibold uppercase tracking-[0.08em] text-text-tertiary mb-1">Sessions</p>
+                <p className="text-3xl font-bold text-text-primary tabular-nums">{stats.sessions.total}</p>
+                <p className="text-xs text-text-tertiary mt-1">
                   {activeTools} active tool{activeTools !== 1 ? 's' : ''}
                 </p>
               </div>
             </div>
-          </div>
+          </Card>
 
           {/* Storage card */}
-          <div className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl p-5">
+          <Card level="elevated" className="p-5">
             <div className="flex items-start gap-3">
               <div className="w-9 h-9 rounded-lg bg-purple-500/10 flex items-center justify-center flex-shrink-0">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8b5cf6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -148,165 +148,174 @@ export default function AdminDashboard() {
                 </svg>
               </div>
               <div className="flex-1">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--text-tertiary)] mb-1">Storage</p>
-                <p className="text-3xl font-bold text-[var(--text-primary)] tabular-nums">{formatBytes(storageUsed)}</p>
+                <p className="text-2xs font-semibold uppercase tracking-[0.08em] text-text-tertiary mb-1">Storage</p>
+                <p className="text-3xl font-bold text-text-primary tabular-nums">{formatBytes(storageUsed)}</p>
                 {storageLimit > 0 && (
                   <>
                     <div className="w-full h-1.5 bg-[var(--border)] rounded-full mt-2 overflow-hidden">
                       <div
-                        className="h-full bg-purple-500 rounded-full transition-all"
+                        className="h-full bg-purple-500 rounded-full transition-[width] duration-200"
                         style={{ width: `${storagePct}%` }}
                       />
                     </div>
-                    <p className="text-xs text-[var(--text-tertiary)] mt-1">
+                    <p className="text-xs text-text-tertiary mt-1">
                       {storagePct.toFixed(0)}% of {formatBytes(storageLimit)}
                     </p>
                   </>
                 )}
               </div>
             </div>
-          </div>
+          </Card>
         </div>
       )}
 
       {/* Tab Navigation */}
-      <div className="flex gap-0 border-b border-[var(--border)] mb-6">
-        {tabs.map((t) => (
-          <button
-            key={t.key}
-            onClick={() => setActiveTab(t.key)}
-            className={`px-4 py-2 text-[14px] font-medium transition-colors ${
-              activeTab === t.key
-                ? 'text-[var(--text-primary)] border-b-2 border-[var(--brand)] -mb-px'
-                : 'text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {activeTab === 'licenses' && <LicensesTab />}
-
-      {/* Activity tab */}
-      {activeTab === 'activity' && (
-        <section>
-          {actionsData && actionsData.actions.length > 0 ? (
-            <div className="border border-[var(--border)] rounded-xl overflow-hidden">
-              <table className="w-full text-[14px]">
-                <thead>
-                  <tr className="bg-[var(--bg-elevated)] text-[13px] font-semibold text-[var(--text-tertiary)]">
-                    <th className="px-4 py-3 text-left">Admin</th>
-                    <th className="px-4 py-3 text-left">Action</th>
-                    <th className="px-4 py-3 text-left">Target</th>
-                    <th className="px-4 py-3 text-left w-28">When</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {actionsData.actions.map((action) => (
-                    <tr key={action.id} className="border-t border-[var(--border)] hover:bg-[var(--surface-hover)] transition-colors">
-                      <td className="px-4 py-3 text-[var(--text-secondary)] font-mono text-xs">{action.admin_id.slice(0, 8)}</td>
-                      <td className="px-4 py-3 text-[var(--text-primary)]">{action.action}</td>
-                      <td className="px-4 py-3 text-[var(--text-tertiary)] font-mono text-xs">{action.target_type}:{action.target_id.slice(0, 12)}</td>
-                      <td className="px-4 py-3 text-[var(--text-tertiary)] text-xs">
-                        <RelativeDate iso={action.created_at} />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div className="text-center py-12 text-[var(--text-tertiary)] text-sm">No recent actions</div>
-          )}
-        </section>
-      )}
-
-      {/* User Management */}
-      {activeTab === 'users' && (
-        <section>
-          <div className="mb-4">
-            <input
-              type="text"
-              value={emailSearch}
-              onChange={(e) => setEmailSearch(e.target.value)}
-              placeholder="Search by email..."
-              className="w-full max-w-sm bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] focus:outline-none focus:border-[var(--brand)]"
-            />
-          </div>
-
-          {usersError && (
-            <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-500 text-sm">
-              Failed to load users: {String(usersError)}
-            </div>
-          )}
-
-          {usersLoading && (
-            <div className="text-[var(--text-tertiary)] text-sm">Loading users...</div>
-          )}
-
-          {usersData && usersData.users.length > 0 && (
-            <div className="border border-[var(--border)] rounded-xl overflow-hidden">
-              <table className="w-full text-[14px]">
-                <thead>
-                  <tr className="bg-[var(--bg-elevated)] text-[13px] font-semibold text-[var(--text-tertiary)]">
-                    <th className="px-4 py-3 text-left">User</th>
-                    <th className="px-4 py-3 text-left w-24">Tier</th>
-                    <th className="px-4 py-3 text-center w-20">Verified</th>
-                    <th className="px-4 py-3 text-right w-20">Sessions</th>
-                    <th className="px-4 py-3 text-left w-28">Created</th>
-                    <th className="px-4 py-3 text-center w-12"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {usersData.users.map((user) => (
-                    <UserRow
-                      key={user.id}
-                      user={user}
-                      expanded={expandedUserId === user.id}
-                      pendingTier={pendingTier[user.id]}
-                      onToggle={() => handleToggleExpand(user.id)}
-                      onPendingTierChange={(tier) =>
-                        setPendingTier((prev) => ({ ...prev, [user.id]: tier }))
-                      }
-                      onSaveTier={() => handleChangeTier(user.id)}
-                      onVerify={() => handleVerify(user.id)}
-                      onDelete={() => setConfirmDelete(user)}
-                      isSavingTier={changeTier.isPending}
-                      isVerifying={verifyUser.isPending}
-                    />
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {usersData && usersData.users.length === 0 && !usersLoading && (
-            <div className="text-center py-12 text-[var(--text-tertiary)] text-sm">No users found</div>
-          )}
-
-          {usersData && (
-            <div className="mt-3 text-sm text-[var(--text-tertiary)]">
-              Showing {usersData.users.length} of {usersData.total} users
-            </div>
-          )}
-        </section>
-      )}
-
-      {/* Delete confirmation modal */}
-      <ConfirmModal
-        open={!!confirmDelete}
-        title="Delete User"
-        message={
-          confirmDelete
-            ? `Are you sure you want to deactivate ${confirmDelete.email}? This will revoke API keys, remove org memberships, and disable the account.`
-            : ''
-        }
-        confirmLabel="Delete User"
-        destructive
-        onConfirm={handleDeleteConfirm}
-        onCancel={() => setConfirmDelete(null)}
+      <Tabs
+        bare
+        tabs={tabs}
+        activeKey={activeTab}
+        onChange={(key) => setActiveTab(key as AdminTab)}
       />
+
+      {/* Tab content */}
+        {activeTab === 'licenses' && <div role="tabpanel"><LicensesTab /></div>}
+
+        {/* Activity tab */}
+        {activeTab === 'activity' && (
+          <section role="tabpanel">
+            {actionsData && actionsData.actions.length > 0 ? (
+              <Table
+                columns={[
+                  {
+                    key: 'admin',
+                    header: 'Admin',
+                    width: 'w-24',
+                    render: (action) => (
+                      <span className="font-mono text-xs text-text-secondary">
+                        {action.admin_id.slice(0, 8)}
+                      </span>
+                    ),
+                  },
+                  {
+                    key: 'action',
+                    header: 'Action',
+                    render: (action) => (
+                      <span className="text-text-primary">{action.action}</span>
+                    ),
+                  },
+                  {
+                    key: 'target',
+                    header: 'Target',
+                    render: (action) => (
+                      <span className="font-mono text-xs text-text-tertiary">
+                        {action.target_type}:{action.target_id.slice(0, 12)}
+                      </span>
+                    ),
+                  },
+                  {
+                    key: 'when',
+                    header: 'When',
+                    width: 'w-28',
+                    render: (action) => (
+                      <span className="text-xs text-text-tertiary">
+                        <RelativeDate iso={action.created_at} />
+                      </span>
+                    ),
+                  },
+                ]}
+                data={actionsData.actions}
+                rowKey={(action) => action.id}
+              />
+            ) : (
+              <div className="text-center py-12 text-text-tertiary text-sm">No recent actions</div>
+            )}
+          </section>
+        )}
+
+        {/* User Management */}
+        {activeTab === 'users' && (
+          <section role="tabpanel">
+            <div className="mb-4">
+              <Input
+                type="text"
+                value={emailSearch}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEmailSearch(e.target.value)}
+                placeholder="Search by email…"
+                title="Search users"
+              />
+            </div>
+
+            {usersError && (
+              <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-500 text-sm">
+                Failed to load users: {String(usersError)}
+              </div>
+            )}
+
+            {usersLoading && (
+              <div className="text-text-tertiary text-sm">Loading users…</div>
+            )}
+
+            {usersData && usersData.users.length > 0 && (
+              <div className="border border-border rounded-xl overflow-hidden">
+                <table className="w-full text-base">
+                  <thead>
+                    <tr className="bg-bg-elevated text-sm font-semibold text-text-tertiary">
+                      <th className="px-4 py-3 text-left">User</th>
+                      <th className="px-4 py-3 text-left w-24">Tier</th>
+                      <th className="px-4 py-3 text-center w-20">Verified</th>
+                      <th className="px-4 py-3 text-right w-20">Sessions</th>
+                      <th className="px-4 py-3 text-left w-28">Created</th>
+                      <th className="px-4 py-3 text-center w-12"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {usersData.users.map((user) => (
+                      <UserRow
+                        key={user.id}
+                        user={user}
+                        expanded={expandedUserId === user.id}
+                        pendingTier={pendingTier[user.id]}
+                        onToggle={() => handleToggleExpand(user.id)}
+                        onPendingTierChange={(tier) =>
+                          setPendingTier((prev) => ({ ...prev, [user.id]: tier }))
+                        }
+                        onSaveTier={() => handleChangeTier(user.id)}
+                        onVerify={() => handleVerify(user.id)}
+                        onDelete={() => setConfirmDelete(user)}
+                        isSavingTier={changeTier.isPending}
+                        isVerifying={verifyUser.isPending}
+                      />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {usersData && usersData.users.length === 0 && !usersLoading && (
+              <div className="text-center py-12 text-text-tertiary text-sm">No users found</div>
+            )}
+
+            {usersData && (
+              <div className="mt-3 text-sm text-text-tertiary">
+                Showing {usersData.users.length} of {usersData.total} users
+              </div>
+            )}
+          </section>
+        )}
+
+      {/* Delete confirmation dialog */}
+      <Dialog open={!!confirmDelete} onClose={() => setConfirmDelete(null)} titleId="delete-user-title">
+        <DialogHeader titleId="delete-user-title">Delete User</DialogHeader>
+        <p className="text-sm text-text-secondary mb-6">
+          {confirmDelete
+            ? `Are you sure you want to deactivate ${confirmDelete.email}? This will revoke API keys, remove org memberships, and disable the account.`
+            : ''}
+        </p>
+        <DialogFooter>
+          <Button variant="secondary" onClick={() => setConfirmDelete(null)}>Cancel</Button>
+          <Button variant="danger" onClick={handleDeleteConfirm}>Delete User</Button>
+        </DialogFooter>
+      </Dialog>
     </div>
   );
 }
@@ -338,7 +347,8 @@ function ActionMenu({ children, onToggle }: { children: React.ReactNode; onToggl
           setOpen(!open);
           onToggle();
         }}
-        className="w-7 h-7 flex items-center justify-center rounded-md text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] transition-colors"
+        className="w-7 h-7 flex items-center justify-center rounded-md text-text-tertiary hover:text-text-primary hover:bg-surface-hover transition-colors"
+        aria-label="Actions"
       >
         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
           <circle cx="8" cy="3" r="1.5" />
@@ -347,7 +357,13 @@ function ActionMenu({ children, onToggle }: { children: React.ReactNode; onToggl
         </svg>
       </button>
       {open && (
-        <div className="absolute right-0 top-8 z-20 bg-[var(--bg-elevated)] border border-[var(--border)] rounded-lg shadow-[var(--shadow-md)] py-1 min-w-[140px]">
+        <div
+          className="absolute right-0 top-8 z-20 rounded-lg py-1 min-w-[140px] shadow-[var(--shadow-md)]"
+          style={{
+            backgroundColor: 'var(--overlay)',
+            border: '1px solid var(--border)',
+          }}
+        >
           {children}
         </div>
       )}
@@ -392,14 +408,14 @@ function UserRow({
   return (
     <>
       <tr
-        className="border-t border-[var(--border)] hover:bg-[var(--surface-hover)] transition-colors"
+        className="border-t border-border hover:bg-surface-hover transition-colors"
       >
         <td className="px-4 py-3">
           <div className="flex items-center gap-2.5">
             <span className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-medium flex-shrink-0 ${avatarColor}`}>
               {user.email.charAt(0).toUpperCase()}
             </span>
-            <span className="text-[var(--text-primary)] truncate">{user.email}</span>
+            <span className="text-text-primary truncate">{user.email}</span>
           </div>
         </td>
         <td className="px-4 py-3">
@@ -409,22 +425,22 @@ function UserRow({
         </td>
         <td className="px-4 py-3 text-center">
           {user.email_verified ? (
-            <span className="text-green-500" title="Verified">&#10003;</span>
+            <span className="text-[var(--accent)]" title="Verified">&#10003;</span>
           ) : (
-            <span className="text-red-500" title="Not verified">&#10007;</span>
+            <span className="text-danger" title="Not verified">&#10007;</span>
           )}
         </td>
-        <td className="px-4 py-3 text-right text-[var(--text-secondary)] tabular-nums">
+        <td className="px-4 py-3 text-right text-text-secondary tabular-nums">
           {user.session_count}
         </td>
-        <td className="px-4 py-3 text-[var(--text-tertiary)] text-xs">
+        <td className="px-4 py-3 text-text-tertiary text-xs">
           <RelativeDate iso={user.created_at} />
         </td>
         <td className="px-4 py-3 text-center">
           <ActionMenu onToggle={() => {}}>
             <button
               onClick={(e) => { e.stopPropagation(); onToggle(); }}
-              className="w-full text-left px-3 py-1.5 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] transition-colors"
+              className="w-full text-left px-3 py-1.5 text-sm text-text-secondary hover:bg-surface-hover transition-colors"
             >
               Manage
             </button>
@@ -432,14 +448,14 @@ function UserRow({
               <button
                 onClick={(e) => { e.stopPropagation(); onVerify(); }}
                 disabled={isVerifying}
-                className="w-full text-left px-3 py-1.5 text-sm text-green-500 hover:bg-[var(--surface-hover)] transition-colors disabled:opacity-50"
+                className="w-full text-left px-3 py-1.5 text-sm text-green-500 hover:bg-surface-hover transition-colors disabled:opacity-50"
               >
-                {isVerifying ? 'Verifying...' : 'Verify Email'}
+                {isVerifying ? 'Verifying…' : 'Verify Email'}
               </button>
             )}
             <button
               onClick={(e) => { e.stopPropagation(); onDelete(); }}
-              className="w-full text-left px-3 py-1.5 text-sm text-red-500 hover:bg-[var(--surface-hover)] transition-colors"
+              className="w-full text-left px-3 py-1.5 text-sm text-red-500 hover:bg-surface-hover transition-colors"
             >
               Delete User
             </button>
@@ -447,33 +463,30 @@ function UserRow({
         </td>
       </tr>
       {expanded && (
-        <tr className="border-t border-[var(--border)] bg-[var(--surface-hover)]">
+        <tr className="border-t border-border bg-surface-hover">
           <td colSpan={6} className="px-4 py-4">
             <div className="flex flex-wrap items-center gap-4">
               {/* Change Tier */}
               <div className="flex items-center gap-2">
-                <label className="text-sm text-[var(--text-tertiary)]">Tier:</label>
-                <select
+                <label className="text-sm text-text-tertiary">Tier:</label>
+                <Select
                   value={selectedTier}
-                  onChange={(e) => onPendingTierChange(e.target.value)}
-                  className="bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-1.5 text-sm text-[var(--text-secondary)] focus:outline-none focus:border-[var(--brand)]"
-                >
-                  {TIERS.map((t) => (
-                    <option key={t} value={t}>{t}</option>
-                  ))}
-                </select>
+                  onValueChange={(v) => onPendingTierChange(v)}
+                  options={TIERS.map((t) => ({ value: t, label: t }))}
+                />
                 {tierChanged && (
-                  <button
+                  <Button
+                    variant="primary"
+                    size="sm"
                     onClick={(e) => { e.stopPropagation(); onSaveTier(); }}
-                    disabled={isSavingTier}
-                    className="bg-[var(--brand)] text-white rounded-lg px-3 py-1.5 text-sm font-medium hover:bg-[var(--brand-hover)] transition-colors disabled:opacity-50"
+                    loading={isSavingTier}
                   >
-                    {isSavingTier ? 'Saving...' : 'Save'}
-                  </button>
+                    Save
+                  </Button>
                 )}
               </div>
 
-              <span className="text-xs text-[var(--text-tertiary)] ml-auto font-mono">
+              <span className="text-xs text-text-tertiary ml-auto font-mono">
                 ID: {user.id}
               </span>
             </div>

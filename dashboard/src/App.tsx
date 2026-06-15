@@ -45,7 +45,7 @@ function AdminRoute({ children }: { children: React.ReactNode }) {
   const { auth } = useAuth();
   const me = useMe();
   if (!auth) return <Navigate to="/login" replace />;
-  if (me.isLoading) return <div className="text-center py-12 text-text-muted">Loading...</div>;
+  if (me.isLoading) return <div className="text-center py-12 text-text-muted">Loading…</div>;
   if (me.data?.tier !== 'admin') return <Navigate to="/" replace />;
   return <>{children}</>;
 }

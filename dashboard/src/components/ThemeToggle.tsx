@@ -4,27 +4,47 @@ import { getItem as lsGet, setItem as lsSet } from '../utils/storage';
 function getInitialTheme(): 'light' | 'dark' {
   const stored = lsGet('sfs-theme');
   if (stored === 'light' || stored === 'dark') return stored;
-  if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
-    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-  }
+  // No stored preference — default to dark. System preference is ignored
+  // because the dashboard ships dark-first; users toggle explicitly.
   return 'dark';
 }
 
-export default function ThemeToggle() {
-  const [theme, setTheme] = useState<'light' | 'dark'>(getInitialTheme);
+interface ThemeToggleProps {
+  /** Controlled theme value. When set with onToggle, the component is fully controlled. */
+  theme?: 'light' | 'dark';
+  /** Called when the user toggles. When provided, the component is fully controlled. */
+  onToggle?: () => void;
+}
+
+export default function ThemeToggle({ theme: controlledTheme, onToggle }: ThemeToggleProps) {
+  const [internalTheme, setInternalTheme] = useState<'light' | 'dark'>(getInitialTheme);
+
+  const theme = controlledTheme ?? internalTheme;
+
+  const toggle = () => {
+    document.documentElement.classList.add('theme-switching');
+    if (onToggle) {
+      onToggle();
+    } else {
+      setInternalTheme((t) => (t === 'dark' ? 'light' : 'dark'));
+    }
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        document.documentElement.classList.remove('theme-switching');
+      });
+    });
+  };
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     lsSet('sfs-theme', theme);
   }, [theme]);
 
-  const toggle = () => setTheme((t) => (t === 'dark' ? 'light' : 'dark'));
-
   return (
     <button
       onClick={toggle}
       aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
-      className="flex items-center justify-center w-8 h-8 rounded-[var(--radius-md)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] transition-colors"
+      className="flex items-center justify-center w-8 h-8 rounded-md text-text-secondary hover:text-text-primary hover:bg-surface-hover transition-colors"
     >
       {theme === 'dark' ? (
         /* Sun icon */

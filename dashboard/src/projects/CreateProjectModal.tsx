@@ -82,11 +82,11 @@ export default function CreateProjectModal({ onClose, onCreated }: Props) {
           aria-modal="true"
           aria-labelledby="create-project-title"
           onKeyDown={(e) => { if (e.key === 'Escape') onClose(); }}
-          className="pointer-events-auto w-full max-w-md bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-lg)] p-6"
+          className="pointer-events-auto w-full max-w-md bg-bg-elevated border border-border rounded-xl shadow-[var(--shadow-lg)] p-6"
         >
-          <h2 id="create-project-title" className="text-lg font-semibold text-[var(--text-primary)] mb-4">New Project</h2>
+          <h2 id="create-project-title" className="text-lg font-semibold text-text-primary mb-4">New Project</h2>
           <form onSubmit={handleSubmit}>
-            <label className="block text-sm text-[var(--text-secondary)] mb-1">
+            <label className="block text-sm text-text-secondary mb-1">
               Git Remote URL
             </label>
             <input
@@ -96,28 +96,28 @@ export default function CreateProjectModal({ onClose, onCreated }: Props) {
               onBlur={handleBlur}
               placeholder="github.com/acme/repo"
               autoFocus
-              className="w-full px-3 py-2 text-sm bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)] placeholder:text-[var(--text-tertiary)]"
+              className="w-full px-3 py-2 text-sm bg-bg-primary border border-border rounded-lg text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] placeholder:text-text-tertiary"
             />
             <FieldError message={errors.git_remote_normalized} />
             {name && (
-              <p className="mt-2 text-xs text-[var(--text-tertiary)]">
-                Project name: <span className="text-[var(--text-secondary)] font-medium">{name}</span>
+              <p className="mt-2 text-xs text-text-tertiary">
+                Project name: <span className="text-text-secondary font-medium">{name}</span>
               </p>
             )}
             <div className="flex justify-end gap-3 mt-6">
               <button
                 type="button"
                 onClick={onClose}
-                className="px-3 py-1.5 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+                className="px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary transition-colors"
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={!remote.trim() || createProject.isPending}
-                className="px-4 py-1.5 text-sm bg-[var(--brand)] text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                className="px-4 py-1.5 text-sm bg-brand text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {createProject.isPending ? 'Creating...' : 'Create'}
+                {createProject.isPending ? 'Creating…' : 'Create'}
               </button>
             </div>
           </form>

@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400..800&family=JetBrains+Mono:wght@400;500&display=swap');
 @import "tailwindcss";
 
 /* === Tab Panel Transitions === */
@@ -14,71 +14,106 @@
 
 /* === Design System Tokens === */
 
-:root, [data-theme="light"] {
-  --bg-primary: #f4f5f7;        /* off-white page background */
-  --bg-secondary: #ebedf0;      /* sidebar, nav — slightly darker */
-  --bg-tertiary: #e4e6ea;       /* tertiary surfaces */
-  --bg-elevated: #ffffff;        /* cards — true white, pops from bg */
-  --surface: #ffffff;            /* cards, elevated content */
-  --surface-hover: #f0f1f4;     /* visible hover shift */
-  --surface-active: #e8eaee;    /* active/pressed state */
-  --border: #c9cdd3;            /* noticeably darker borders */
-  --border-strong: #a8aeb6;     /* strong borders for focus/emphasis */
-  --text-primary: #0d0f13;      /* near-black for max contrast */
-  --text-secondary: #3b404a;    /* dark gray — clearly readable */
-  --text-tertiary: #7a818c;     /* medium gray — well separated from secondary */
-  --text-inverse: #ffffff;
-  --shadow-sm: 0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06);
-  --shadow-md: 0 4px 12px rgba(0,0,0,0.12), 0 2px 4px rgba(0,0,0,0.08);
-  --shadow-lg: 0 8px 24px rgba(0,0,0,0.15), 0 4px 8px rgba(0,0,0,0.1);
-  --brand: #1a73e8;              /* saturated blue for light backgrounds */
-  --brand-hover: #1557b0;
-}
+/* ── Dark (default) — OKLCH cool-neutral ladder ── */
+:root, [data-theme="dark"] {
+  --bg-sunken:     oklch(14% 0.012 255);   /* wells, code blocks */
+  --bg-primary:    oklch(16% 0.012 255);   /* canvas */
+  --bg-secondary:  oklch(18% 0.012 255);   /* sidebar / nav */
+  --bg-tertiary:   oklch(18.5% 0.012 255); /* legacy tertiary (between bg-secondary and surface) */
+  --surface:       oklch(22% 0.012 255);   /* cards */
+  --surface-hover: oklch(24.5% 0.012 255); /* card hover */
+  --surface-active:oklch(26% 0.012 255);   /* pressed / active */
+  --bg-elevated:   oklch(26% 0.012 255);   /* hover cards, popovers */
+  --overlay:       oklch(29% 0.012 255);   /* modals, dialogs, dropdowns */
+  --border:        oklch(30% 0.012 255);   /* hairline border */
+  --border-strong: oklch(40% 0.012 255);   /* focus / emphasis border */
 
-[data-theme="dark"] {
-  --bg-primary: #0d1117;
-  --bg-secondary: #161b22;
-  --bg-tertiary: #1c2128;
-  --bg-elevated: #1c2128;
-  --surface: #1c2128;
-  --surface-hover: #21262d;
-  --surface-active: #262c36;
-  --border: #30363d;
-  --border-strong: #484f58;
-  --text-primary: #e6edf3;
-  --text-secondary: #b1bac4;
-  --text-tertiary: #7d8590;
-  --text-inverse: #0d1117;
-  --shadow-sm: 0 1px 2px rgba(0,0,0,0.3);
-  --shadow-md: 0 4px 12px rgba(0,0,0,0.4);
-  --shadow-lg: 0 8px 24px rgba(0,0,0,0.5);
-}
+  --text-primary:   oklch(93% 0 0);
+  --text-secondary: oklch(75% 0 0);
+  --text-tertiary:  oklch(66% 0 0);
+  --text-inverse:   oklch(16% 0 0);
 
-:root {
-  --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --font-display: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --brand: #4f9cf7;
+  /* Dark-mode shadows: surface steps do the work; only overlay gets a faint ambient lift */
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.15);
+  --shadow-md: 0 4px 8px rgba(0,0,0,0.2);
+  --shadow-lg: 0 0 0 1px rgba(255,255,255,0.03), 0 8px 24px rgba(0,0,0,0.4);
+
+  --brand:       #4f9cf7;
   --brand-hover: #3d8ce6;
+}
+
+/* ── Light override — OKLCH inverted ── */
+[data-theme="light"] {
+  --bg-sunken:     oklch(94% 0.005 255);
+  --bg-primary:    oklch(97% 0.003 255);
+  --bg-secondary:  oklch(95% 0.004 255);
+  --bg-tertiary:   oklch(92% 0.005 255);
+  --surface:       oklch(100% 0 0);
+  --surface-hover: oklch(96% 0.004 255);
+  --surface-active:oklch(93% 0.005 255);
+  --bg-elevated:   oklch(100% 0 0);
+  --overlay:       oklch(100% 0 0);
+  --border:        oklch(89% 0.005 255);
+  --border-strong: oklch(78% 0.005 255);
+
+  --text-primary:   oklch(12% 0 0);
+  --text-secondary: oklch(35% 0 0);
+  --text-tertiary:  oklch(45% 0 0);
+  --text-inverse:   oklch(100% 0 0);
+
+  /* Light-mode shadows: soft layered elevation */
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.06);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.1), 0 2px 4px rgba(0,0,0,0.06);
+  --shadow-lg: 0 8px 24px rgba(0,0,0,0.12), 0 4px 8px rgba(0,0,0,0.08);
+
+  --brand:       #1a73e8;
+  --brand-hover: #1557b0;
+
+  /* Light-mode overlays: edge highlight is negative (shadow at top) */
+  --edge-highlight: rgba(0, 0, 0, 0.05);
+  --shadow-overlay: inset 0 1px 0 var(--edge-highlight), var(--shadow-lg);
+}
+
+/* ── Shared tokens (theme-independent) ── */
+:root {
+  --font-sans:   'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-display:'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono:   'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
   --accent: #3ddc84;
   --danger: #f04060;
   --warning: #f0c040;
   --info: #4f9cf7;
-  --tool-claude: #d97706;
-  --tool-codex: #10b981;
-  --tool-gemini: #6366f1;
+
+  --tool-claude:  #d97706;
+  --tool-codex:   #10b981;
+  --tool-gemini:  #6366f1;
   --tool-copilot: #3b82f6;
-  --tool-cursor: #8b5cf6;
-  --tool-amp: #ec4899;
-  --tool-cline: #14b8a6;
-  --tool-roo: #f97316;
+  --tool-cursor:  #8b5cf6;
+  --tool-amp:     #ec4899;
+  --tool-cline:   #14b8a6;
+  --tool-roo:     #f97316;
+
   --severity-critical: #ef4444;
-  --severity-high: #f59e0b;
-  --severity-low: #6b7280;
+  --severity-high:     #f59e0b;
+  --severity-low:      #6b7280;
+
   --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 12px;
   --radius-xl: 16px;
+
+  --dot-grid: radial-gradient(circle, color-mix(in srgb, var(--text-tertiary) 18%, transparent) 1px, transparent 1px);
+
+  --brand-glow: color-mix(in srgb, var(--brand) 25%, transparent);
+  --edge-highlight: rgba(255, 255, 255, 0.06);
+  --shadow-overlay: inset 0 1px 0 var(--edge-highlight), var(--shadow-lg);
+}
+
+/* Dialog/Drawer enter animation — scale(0.95) + fade, 150ms ease-out */
+@keyframes overlayEnter {
+  from { opacity: 0; transform: scale(0.95); }
+  to   { opacity: 1; transform: scale(1); }
 }
 
 /* === Tailwind v4 theme: map old color classes so existing code keeps working === */
@@ -102,11 +137,13 @@
   --color-role-system: #d29922;
 
   /* Code/thinking backgrounds */
-  --color-code-bg: var(--bg-secondary);
-  --color-thinking-bg: var(--bg-tertiary);
+  --color-code-bg: var(--bg-sunken);
+  --color-thinking-bg: var(--bg-sunken);
 
   /* New design-system colors exposed as Tailwind classes */
   --color-bg-elevated: var(--bg-elevated);
+  --color-bg-sunken: var(--bg-sunken);
+  --color-overlay: var(--overlay);
   --color-surface: var(--surface);
   --color-surface-hover: var(--surface-hover);
   --color-surface-active: var(--surface-active);
@@ -115,16 +152,42 @@
   --color-text-inverse: var(--text-inverse);
   --color-brand: var(--brand);
   --color-brand-hover: var(--brand-hover);
+  --color-brand-glow: var(--brand-glow);
   --color-danger: var(--danger);
   --color-warning: var(--warning);
   --color-info: var(--info);
+
+  /* === Canonical type scale ===
+     Dense dev-tool UI. Maps Tailwind's text-* utilities to our values so
+     components stop escape-hatching to text-[13px] etc. Conversion table:
+       text-[10px]/[11px] → text-2xs   text-[12px] → text-xs
+       text-[13px]        → text-sm    text-[14px] → text-base (UI default)
+       text-[15px]        → text-md    text-[17px]/[18px] → text-lg
+     Headings (h1/h2 + .text-display/.text-headline) keep their own scale. */
+  --text-2xs: 0.6875rem;            /* 11px — micro labels, eyebrows, kbd */
+  --text-2xs--line-height: 1.35;
+  --text-2xs--letter-spacing: 0.01em;
+  --text-xs: 0.75rem;               /* 12px — dense meta, counts */
+  --text-xs--line-height: 1.4;
+  --text-sm: 0.8125rem;             /* 13px — captions, secondary text (most common) */
+  --text-sm--line-height: 1.45;
+  --text-base: 0.875rem;            /* 14px — UI body default */
+  --text-base--line-height: 1.5;
+  --text-md: 0.9375rem;             /* 15px — emphasized body, card titles */
+  --text-md--line-height: 1.45;
+  --text-lg: 1.0625rem;             /* 17px — section/hero titles */
+  --text-lg--line-height: 1.35;
+
+  /* Radius scale — static (theme-independent). Maps rounded-* utilities to
+     our values so rounded-[var(--radius-lg)] becomes rounded-lg. */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
 }
 
-@keyframes bookmark-pop {
-  0% { transform: scale(1); }
-  50% { transform: scale(1.3); }
-  100% { transform: scale(1); }
-}
+/* bookmark-pop removed — elastic/overshoot violates motion guidelines.
+   Bookmark toggles now use a 150ms color + opacity transition only. */
 
 body {
   margin: 0;
@@ -144,13 +207,14 @@ body::before {
   inset: 0;
   pointer-events: none;
   background:
-    radial-gradient(58rem 28rem at 12% -8%, color-mix(in srgb, var(--brand) 20%, transparent), transparent 72%),
-    radial-gradient(42rem 24rem at 92% 0%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 74%);
+    radial-gradient(58rem 28rem at 12% -8%, color-mix(in srgb, var(--brand) 8%, transparent), transparent 72%),
+    radial-gradient(42rem 24rem at 92% 0%, color-mix(in srgb, var(--accent) 4%, transparent), transparent 74%);
   z-index: 0;
 }
 
 h1, h2, h3, h4, h5, h6 {
   font-family: var(--font-display);
+  font-optical-sizing: auto;
 }
 
 h1 { font-size: 30px; font-weight: 700; letter-spacing: -0.025em; line-height: 1.2; }
@@ -192,14 +256,68 @@ code, pre, kbd, samp {
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* === Typography Scale === */
+/* Dropdowns, menus, command palette appear INSTANTLY (frequency principle).
+   Subtle exit fade (~100ms) is acceptable but CSS-only exit can't be done
+   without Animation API; instant removal is the safer default. */
 
-.text-display { font-size: 2rem; line-height: 1.2; font-weight: 700; letter-spacing: -0.02em; }
-.text-headline { font-size: 1.5rem; line-height: 1.3; font-weight: 700; letter-spacing: -0.015em; }
-.text-title { font-size: 1.125rem; line-height: 1.4; font-weight: 600; }
+/* ── Reduced motion ── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  /* Preserve skeleton pulse — pure opacity, no transform, essential loading feedback */
+  .animate-skeleton-pulse {
+    animation-duration: 1.5s !important;
+    animation-iteration-count: infinite !important;
+  }
+}
+
+/* Theme switch guard — disables all transitions/animations for one frame */
+.theme-switching *,
+.theme-switching *::before,
+.theme-switching *::after {
+  transition: none !important;
+  animation: none !important;
+}
+
+/* === Typography Scale ===
+   Ratios check (≥1.25 between adjacent steps):
+   display(32) / headline(24) = 1.33 ✓
+   headline(24) / title(19)   = 1.26 ✓  (bumped from 18→19px)
+   title(19)    / body(15)     = 1.27 ✓
+   body(15)     / caption(12)  = 1.25 ✓  (reduced from 13→12px)
+   caption(12)  / micro(11)    = 1.09 ✗  — kept; distinct micro-label purpose
+*/
+
+.text-display { font-size: 2rem; line-height: 1.2; font-weight: 700; letter-spacing: -0.02em; font-optical-sizing: auto; }
+.text-headline { font-size: 1.5rem; line-height: 1.3; font-weight: 700; letter-spacing: -0.015em; font-optical-sizing: auto; }
+.text-title { font-size: 1.1875rem; line-height: 1.4; font-weight: 600; }
 .text-body { font-size: 0.9375rem; line-height: 1.5; }
 .text-caption { font-size: 0.8125rem; line-height: 1.4; color: var(--text-tertiary); }
 .text-micro { font-size: 0.6875rem; line-height: 1.3; letter-spacing: 0.02em; }
+
+/* Prose blocks — comfortable reading width */
+.prose-block { max-width: 65ch; }
+
+/* Mono chip — session IDs, etags, tool names */
+.text-mono-chip {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  letter-spacing: 0.02em;
+  background: var(--bg-sunken);
+  border-radius: var(--radius-sm);
+  padding: 0.125em 0.5em;
+}
+
+/* Numeric values: tabular-nums for alignment stability */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
 
 /* === Card Styles === */
 

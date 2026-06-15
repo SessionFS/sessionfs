@@ -5,6 +5,7 @@ import type { SearchResult } from '../hooks/useSearch';
 import { abbreviateTool } from '../utils/models';
 import { renderSnippet } from '../utils/highlight';
 import RelativeDate from './RelativeDate';
+import { Kbd } from './ui/Kbd';
 
 interface GroupedResults {
   sessions: SearchResult[];
@@ -41,7 +42,7 @@ const GROUP_LABELS: Record<keyof GroupedResults, string> = {
 
 const GROUP_ORDER: (keyof GroupedResults)[] = ['sessions', 'projects', 'handoffs'];
 
-export default function SearchBar() {
+export default function SearchBar({ inputId, className }: { inputId?: string; className?: string }) {
   const navigate = useNavigate();
   const [input, setInput] = useState('');
   const [query, setQuery] = useState('');
@@ -174,7 +175,7 @@ export default function SearchBar() {
 
     return (
       <li key={key} role="presentation">
-        <div className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-text-muted select-none">
+        <div className="px-3 py-1.5 text-micro font-semibold uppercase text-text-tertiary select-none">
           {GROUP_LABELS[key]}
         </div>
         <ul role="group" aria-label={GROUP_LABELS[key]}>
@@ -191,8 +192,8 @@ export default function SearchBar() {
                 data-index={flatIdx}
                 onMouseEnter={() => setActiveIndex(flatIdx)}
                 onClick={() => selectResult(r.session_id)}
-                className={`flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors border-b border-border/50 last:border-b-0 ${
-                  isActive ? 'bg-accent/10' : 'bg-transparent'
+                className={`flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors duration-150 border-b border-border/50 last:border-b-0 ${
+                  isActive ? 'bg-surface-active shadow-[0_0_0_1px_var(--brand-glow)]' : 'bg-transparent'
                 }`}
               >
                 <div className="flex-1 min-w-0">
@@ -200,16 +201,16 @@ export default function SearchBar() {
                     <span className="text-sm text-text-primary truncate flex-1">
                       {r.title || r.alias || 'Untitled session'}
                     </span>
-                    <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-accent/15 text-accent shrink-0">
+                    <span className="text-2xs font-medium px-1.5 py-0.5 rounded bg-brand/15 text-brand shrink-0">
                       {abbreviateTool(r.source_tool)}
                     </span>
-                    <span className="text-[10px] text-text-muted shrink-0">
+                    <span className="text-2xs text-text-tertiary shrink-0">
                       <RelativeDate iso={r.updated_at} />
                     </span>
                   </div>
                   {r.matches[0] && (
                     <p
-                      className="text-xs text-text-secondary truncate [&_mark]:bg-accent/20 [&_mark]:text-accent [&_mark]:px-0.5 [&_mark]:rounded"
+                      className="text-xs text-text-secondary truncate [&_mark]:bg-brand/20 [&_mark]:text-brand [&_mark]:px-0.5 [&_mark]:rounded"
                       dangerouslySetInnerHTML={{
                         __html: renderSnippet(r.matches[0].snippet),
                       }}
@@ -217,9 +218,9 @@ export default function SearchBar() {
                   )}
                 </div>
                 <span
-                  className={`text-[11px] font-medium px-2 py-0.5 rounded shrink-0 transition-opacity ${
+                  className={`text-2xs font-medium px-2 py-0.5 rounded shrink-0 transition-opacity ${
                     isActive
-                      ? 'opacity-100 text-accent bg-accent/10'
+                      ? 'opacity-100 text-brand bg-brand/10'
                       : 'opacity-0'
                   }`}
                 >
@@ -234,7 +235,7 @@ export default function SearchBar() {
   }
 
   return (
-    <div ref={wrapperRef} className="relative flex-1 max-w-md mx-4">
+    <div ref={wrapperRef} className={className || 'relative flex-1 max-w-md mx-4'}>
       <div className="relative">
         <svg
           className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted"
@@ -251,6 +252,7 @@ export default function SearchBar() {
         </svg>
         <input
           ref={inputRef}
+          id={inputId}
           type="text"
           role="combobox"
           aria-label="Search sessions"
@@ -265,12 +267,12 @@ export default function SearchBar() {
             if (results.length > 0) setOpen(true);
           }}
           onKeyDown={handleKeyDown}
-          placeholder="Search sessions... (\u2318K)"
-          className="w-full pl-8 pr-12 py-1.5 bg-bg-tertiary border border-border rounded-lg text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 transition-colors"
+          placeholder="Search sessions… (\u2318K)"
+          className="w-full pl-8 pr-12 py-1.5 bg-bg-sunken border border-border rounded-lg text-sm text-text-primary placeholder:text-text-tertiary focus-visible:outline-none focus-visible:border-[var(--brand)] transition-[background-color,border-color,box-shadow] duration-150 ease-out focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
         />
-        <kbd className="absolute right-2.5 top-1/2 -translate-y-1/2 hidden sm:inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-medium text-text-muted bg-bg-primary border border-border rounded">
-          <span className="text-[11px]">{'\u2318'}</span>K
-        </kbd>
+        <span className="absolute right-2.5 top-1/2 -translate-y-1/2 hidden sm:inline-flex">
+          <Kbd>{'\u2318'}K</Kbd>
+        </span>
       </div>
 
       {open && flatItems.length > 0 && (
@@ -279,7 +281,12 @@ export default function SearchBar() {
           id={listboxId}
           role="listbox"
           aria-label="Search results"
-          className="absolute top-full left-0 right-0 mt-1 bg-bg-secondary border border-border rounded-lg shadow-lg overflow-auto max-h-[360px] z-50"
+          className="absolute top-full left-0 right-0 mt-1 border border-border rounded-lg overflow-auto max-h-[360px] z-50 bg-overlay"
+          style={{
+            boxShadow: 'var(--shadow-overlay)',
+            maskImage: 'linear-gradient(to bottom, black 0%, black calc(100% - 20px), transparent 100%)',
+            WebkitMaskImage: 'linear-gradient(to bottom, black 0%, black calc(100% - 20px), transparent 100%)',
+          }}
         >
           {GROUP_ORDER.map((key) => renderGroup(key))}
           <li role="presentation">
@@ -288,7 +295,7 @@ export default function SearchBar() {
                 setOpen(false);
                 navigate(`/search?q=${encodeURIComponent(input.trim())}`);
               }}
-              className="w-full px-3 py-2 text-xs text-accent hover:bg-bg-tertiary transition-colors text-center border-t border-border"
+              className="w-full px-3 py-2 text-xs text-brand hover:bg-surface-hover transition-colors duration-150 text-center border-t border-border"
             >
               View all results
             </button>
@@ -300,7 +307,8 @@ export default function SearchBar() {
         <div
           role="listbox"
           id={listboxId}
-          className="absolute top-full left-0 right-0 mt-1 bg-bg-secondary border border-border rounded-lg shadow-lg z-50 px-3 py-3 text-sm text-text-muted text-center"
+          className="absolute top-full left-0 right-0 mt-1 border border-border rounded-lg z-50 px-3 py-3 text-sm text-text-tertiary text-center bg-overlay"
+          style={{ boxShadow: 'var(--shadow-overlay)' }}
         >
           No results found
         </div>

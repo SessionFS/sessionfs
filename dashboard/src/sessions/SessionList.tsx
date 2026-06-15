@@ -1,19 +1,21 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { FOLDER_COLORS as PRESET_COLORS, DEFAULT_FOLDER_COLOR } from '../utils/folderColors';
 import { useSessions, useDeletedSessions, useRestoreSession } from '../hooks/useSessions';
-import { useFolders, useAddBookmark, useFolderSessions } from '../hooks/useBookmarks';
+import { useFolders, useAddBookmark, useFolderSessions, useCreateFolder, useUpdateFolder, useDeleteFolder } from '../hooks/useBookmarks';
 import type { SessionSummary, SessionDetail, HandoffListResponse } from '../api/client';
 import DeleteScopeDialog from './DeleteScopeDialog';
 import type { DeleteScope } from './DeleteScopeDialog';
 import { abbreviateModel, fullToolName } from '../utils/models';
 import { formatTokens } from '../utils/tokens';
 import RelativeDate from '../components/RelativeDate';
-import BookmarkSidebar, { MobileNavChips } from '../components/BookmarkSidebar';
+import { MobileNavChips } from '../components/BookmarkSidebar';
 import type { NavFilter } from '../components/BookmarkSidebar';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../auth/AuthContext';
 import { TOOL_COLORS } from '../utils/tools';
+import { Button, Card, Select } from '../components/ui';
 
 const CAPTURE_ONLY_TOOLS = new Set(['cursor', 'cline', 'roo-code', 'amp']);
 
@@ -160,6 +162,10 @@ export default function SessionList() {
   const [showTrash, setShowTrash] = useState(false);
   const [showBulkDeleteDialog, setShowBulkDeleteDialog] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [viewMode, setViewMode] = useState<'list' | 'grid'>(() => {
+    const stored = typeof window !== 'undefined' ? window.localStorage.getItem('sfs-sessions-view') : null;
+    return stored === 'grid' ? 'grid' : 'list';
+  });
 
   function toggleSelect(id: string) {
     setSelectedIds(prev => {
@@ -172,6 +178,12 @@ export default function SessionList() {
 
   function selectAll() {
     setSelectedIds(new Set(sessions.map(s => s.id)));
+  }
+
+  // Persist view mode
+  function handleViewMode(mode: 'list' | 'grid') {
+    setViewMode(mode);
+    try { window.localStorage.setItem('sfs-sessions-view', mode); } catch { /* noop */ }
   }
 
   function clearSelection() {
@@ -407,22 +419,8 @@ export default function SessionList() {
     addToast('success', `Resume command copied${CAPTURE_ONLY_TOOLS.has(tool) ? ` (${tool} is capture-only, using claude-code)` : ''}`);
   }
 
-  const latestHandoff = pendingHandoffs.length > 0 ? pendingHandoffs[0] : null;
-
   return (
-    <div className="flex flex-1 min-h-0">
-      <BookmarkSidebar
-        selectedFilter={navFilter}
-        onSelectFilter={(f) => { setNavFilter(f); setPage(1); }}
-        totalCount={allSessionsCount}
-        bookmarkedCount={totalBookmarked}
-        inRepoCount={0}
-        inRepoLabel={null}
-        handoffCount={pendingHandoffs.length}
-        selectedFolderId={selectedFolderId}
-        onSelectFolder={(id) => { setSelectedFolderId(id); setPage(1); }}
-      />
-      <div className="flex-1 max-w-7xl mx-auto px-4 py-4 overflow-y-auto">
+    <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4">
 
         {/* Mobile nav chips */}
         <MobileNavChips
@@ -432,129 +430,100 @@ export default function SessionList() {
           bookmarkedCount={totalBookmarked}
           inRepoCount={0}
           inRepoLabel={null}
-          handoffCount={pendingHandoffs.length}
           selectedFolderId={selectedFolderId}
           onSelectFolder={(id) => { setSelectedFolderId(id); setPage(1); }}
         />
 
-        {/* ── Hero: Best next action ── */}
+        {/* ── Compact resume bar ── */}
         {!isLoading && !showTrash && mostRecent && (
-          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl px-5 py-4 mb-5 shadow-[var(--shadow-sm)]">
-            <div className="flex flex-col sm:flex-row sm:items-center gap-4">
-              {/* Left: session to resume */}
-              <div className="flex-1 min-w-0">
-                <h2
-                  className="text-xl font-semibold text-[var(--text-primary)] truncate cursor-pointer hover:text-[var(--brand)] transition-colors"
+          <div className="flex items-center gap-3 px-4 h-16 bg-bg-elevated border border-border rounded-lg mb-5">
+            {/* Left: eyebrow + title + meta */}
+            <div className="flex-1 min-w-0 flex flex-col justify-center gap-0.5">
+              <span className="text-micro uppercase font-semibold text-text-tertiary">Continue where you left off</span>
+              <div className="flex items-center gap-2 min-w-0">
+                <span
+                  className="text-md font-semibold text-text-primary truncate cursor-pointer hover:text-brand transition-colors"
                   onClick={() => navigate(`/sessions/${mostRecent.id}`)}
                 >
                   {mostRecent.title || 'Untitled session'}
-                </h2>
-                <div className="flex items-center gap-2 mt-1 text-sm text-[var(--text-tertiary)]">
-                  <span
-                    className="w-2 h-2 rounded-full shrink-0"
-                    style={{ backgroundColor: TOOL_COLORS[mostRecent.source_tool] || '#6B7280' }}
-                  />
-                  <span>{fullToolName(mostRecent.source_tool)}</span>
-                  {mostRecent.model_id && mostRecent.model_id !== '<synthetic>' && (
-                    <>
-                      <span className="opacity-40">&middot;</span>
-                      <span>{abbreviateModel(mostRecent.model_id)}</span>
-                    </>
-                  )}
-                  <span className="opacity-40">&middot;</span>
+                </span>
+                <span
+                  className="w-2 h-2 rounded-full shrink-0"
+                  style={{ backgroundColor: TOOL_COLORS[mostRecent.source_tool] || 'var(--text-tertiary)' }}
+                />
+                <span className="text-mono-chip">{fullToolName(mostRecent.source_tool)}</span>
+                <span className="text-caption text-text-tertiary">
                   <RelativeDate iso={mostRecent.updated_at} />
-                </div>
-                <div className="mt-3 flex items-center gap-3">
-                  <button
-                    onClick={() => handleResume(mostRecent)}
-                    className="px-4 py-2 bg-[var(--brand)] text-white text-sm font-semibold rounded-lg hover:opacity-90 transition-opacity"
-                  >
-                    {CAPTURE_ONLY_TOOLS.has(mostRecent.source_tool) ? 'Resume in Claude Code' : 'Resume'}
-                  </button>
-                  <button
-                    onClick={() => navigate(`/sessions/${mostRecent.id}`)}
-                    className="px-4 py-2 border border-[var(--border)] text-sm font-medium text-[var(--text-secondary)] rounded-lg hover:bg-[var(--surface-hover)] transition-colors"
-                  >
-                    View
-                  </button>
-                </div>
+                </span>
               </div>
+            </div>
 
-              {/* Right: compact status chips */}
-              <div className="flex sm:flex-col items-start gap-2 shrink-0">
-                {pendingHandoffs.length > 0 ? (
-                  <Link
-                    to={latestHandoff ? `/handoffs/${latestHandoff.id}` : '#'}
-                    className="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-[var(--brand)] bg-[var(--brand)]/10 rounded-lg hover:bg-[var(--brand)]/20 transition-colors"
-                  >
-                    <span className="w-2 h-2 rounded-full bg-[var(--brand)] animate-pulse" />
-                    {pendingHandoffs.length} pending handoff{pendingHandoffs.length !== 1 ? 's' : ''}
-                  </Link>
-                ) : (
-                  <span className="inline-flex items-center gap-2 px-3 py-1.5 text-sm text-[var(--text-tertiary)]">
-                    No pending handoffs
-                  </span>
-                )}
+            {/* Right: pending handoff badge + actions */}
+            <div className="flex items-center gap-2 shrink-0">
+              {pendingHandoffs.length > 0 && (
                 <Link
-                  to="/projects"
-                  className="inline-flex items-center gap-1 px-3 py-1.5 text-sm text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors"
+                  to="/handoffs"
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-full bg-brand/10 text-brand hover:bg-brand/20 transition-colors"
                 >
-                  Projects <span aria-hidden="true">&rarr;</span>
+                  <span className="w-1.5 h-1.5 rounded-full bg-brand" />
+                  {pendingHandoffs.length} pending handoff{pendingHandoffs.length !== 1 ? 's' : ''}
                 </Link>
-              </div>
+              )}
+              <Button
+                onClick={() => handleResume(mostRecent)}
+              >
+                {CAPTURE_ONLY_TOOLS.has(mostRecent.source_tool) ? 'Resume in Claude Code' : 'Resume'}
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => navigate(`/sessions/${mostRecent.id}`)}
+              >
+                View
+              </Button>
             </div>
           </div>
         )}
 
         {/* ── Filters row ── */}
         <div className="flex flex-wrap items-center gap-3 mb-4">
-          <div className="relative">
-            <select
-              value={toolFilter}
-              onChange={(e) => { setToolFilter(e.target.value); setPage(1); }}
-              className="appearance-none bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 pr-8 text-[14px] font-medium text-[var(--text-secondary)] focus:outline-none focus:border-[var(--brand)] cursor-pointer transition-colors"
-            >
-              {TOOLS.map((t) => (
-                <option key={t} value={t}>{t === 'all' ? 'All Tools' : fullToolName(t)}</option>
-              ))}
-            </select>
-            <svg className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--text-tertiary)] pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="6 9 12 15 18 9" />
-            </svg>
-          </div>
-          <div className="relative">
-            <select
-              value={dateRange}
-              onChange={(e) => setDateRange(e.target.value)}
-              className="appearance-none bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 pr-8 text-[14px] font-medium text-[var(--text-secondary)] focus:outline-none focus:border-[var(--brand)] cursor-pointer transition-colors"
-            >
-              {DATE_RANGES.map((d) => (
-                <option key={d.value} value={d.value}>{d.label}</option>
-              ))}
-            </select>
-            <svg className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--text-tertiary)] pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="6 9 12 15 18 9" />
-            </svg>
-          </div>
-          <div className="relative">
-            <select
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value as SortKey)}
-              className="appearance-none bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 pr-8 text-[14px] font-medium text-[var(--text-secondary)] focus:outline-none focus:border-[var(--brand)] cursor-pointer transition-colors"
-            >
-              <option value="date">Sort: Date</option>
-              <option value="tool">Sort: Tool</option>
-              <option value="messages">Sort: Messages</option>
-              <option value="tokens">Sort: Tokens</option>
-              <option value="title">Sort: Title</option>
-            </select>
-            <svg className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--text-tertiary)] pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="6 9 12 15 18 9" />
-            </svg>
-          </div>
+          <FolderDropdown
+            navFilter={navFilter}
+            selectedFolderId={selectedFolderId}
+            onSelectFilter={(f) => { setNavFilter(f); setPage(1); }}
+            onSelectFolder={(id) => { setSelectedFolderId(id); setPage(1); }}
+            totalCount={allSessionsCount}
+            bookmarkedCount={totalBookmarked}
+          />
+          <Select
+            aria-label="Filter by tool"
+            value={toolFilter}
+            onValueChange={(v) => { setToolFilter(v); setPage(1); }}
+            options={TOOLS.map((t) => ({ value: t, label: t === 'all' ? 'All Tools' : fullToolName(t) }))}
+            className="!w-auto bg-surface text-base font-medium text-text-secondary transition-colors"
+          />
+          <Select
+            aria-label="Filter by date range"
+            value={dateRange}
+            onValueChange={setDateRange}
+            options={DATE_RANGES.map((d) => ({ value: d.value, label: d.label }))}
+            className="!w-auto bg-surface text-base font-medium text-text-secondary transition-colors"
+          />
+          <Select
+            aria-label="Sort sessions"
+            value={sortBy}
+            onValueChange={(v) => setSortBy(v as SortKey)}
+            options={[
+              { value: 'date', label: 'Sort: Date' },
+              { value: 'tool', label: 'Sort: Tool' },
+              { value: 'messages', label: 'Sort: Messages' },
+              { value: 'tokens', label: 'Sort: Tokens' },
+              { value: 'title', label: 'Sort: Title' },
+            ]}
+            className="!w-auto bg-surface text-base font-medium text-text-secondary transition-colors"
+          />
           <button
             onClick={() => setSortDir(d => d === 'desc' ? 'asc' : 'desc')}
-            className="p-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+            className="p-2 rounded-lg border border-border bg-surface text-text-secondary hover:text-text-primary transition-colors"
             title={sortDir === 'desc' ? 'Showing most first — click for least first' : 'Showing least first — click for most first'}
             aria-label={`Sort direction: ${sortDir === 'desc' ? 'descending' : 'ascending'}`}
           >
@@ -566,9 +535,39 @@ export default function SessionList() {
               )}
             </svg>
           </button>
+          {/* List/Grid view toggle */}
+          <div className="flex items-center rounded-lg border border-border bg-surface overflow-hidden">
+            <button
+              onClick={() => handleViewMode('list')}
+              className={`p-2 transition-colors ${viewMode === 'list' ? 'bg-bg-elevated text-text-primary' : 'text-text-tertiary hover:text-text-primary'}`}
+              title="List view"
+              aria-label="List view"
+              aria-pressed={viewMode === 'list'}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" />
+                <line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" />
+              </svg>
+            </button>
+            <button
+              onClick={() => handleViewMode('grid')}
+              className={`p-2 transition-colors ${viewMode === 'grid' ? 'bg-bg-elevated text-text-primary' : 'text-text-tertiary hover:text-text-primary'}`}
+              title="Grid view"
+              aria-label="Grid view"
+              aria-pressed={viewMode === 'grid'}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" />
+                <rect x="3" y="14" width="7" height="7" /><rect x="14" y="14" width="7" height="7" />
+              </svg>
+            </button>
+          </div>
           <button
-            onClick={() => { if (selectMode) clearSelection(); else setSelectMode(true); }}
-            className="text-[13px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] px-3 py-2 border border-[var(--border)] rounded-lg"
+            onClick={() => {
+              if (selectMode) clearSelection();
+              else { setSelectMode(true); if (viewMode === 'grid') handleViewMode('list'); }
+            }}
+            className="text-sm text-text-tertiary hover:text-text-primary px-3 py-2 border border-border rounded-lg"
           >
             {selectMode ? 'Cancel' : 'Select'}
           </button>
@@ -592,16 +591,16 @@ export default function SessionList() {
               setSelectedIds(toSelect);
               addToast('warning', `Found ${toSelect.size} duplicate(s) across ${dupes.size} group(s) — oldest copies selected for review`);
             }}
-            className="text-[13px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] px-3 py-2 border border-[var(--border)] rounded-lg"
+            className="text-sm text-text-tertiary hover:text-text-primary px-3 py-2 border border-border rounded-lg"
           >
             Find Duplicates
           </button>
           <button
             onClick={() => { setShowTrash(!showTrash); clearSelection(); }}
-            className={`text-[13px] px-3 py-2 border rounded-lg transition-colors ${
+            className={`text-sm px-3 py-2 border rounded-lg transition-colors ${
               showTrash
-                ? 'text-[var(--text-primary)] border-[var(--brand)] bg-[var(--brand)]/10'
-                : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)] border-[var(--border)]'
+                ? 'text-text-primary border-[var(--brand)] bg-brand/10'
+                : 'text-text-tertiary hover:text-text-primary border-border'
             }`}
           >
             {showTrash ? 'Active' : 'Trash'}
@@ -619,17 +618,17 @@ export default function SessionList() {
         {isLoading && (
           <div className="space-y-3">
             {Array.from({length: 6}).map((_, i) => (
-              <div key={i} className="bg-[var(--bg-elevated,var(--surface))] border border-[var(--border)] rounded-xl p-4 animate-pulse">
+              <div key={i} className="bg-[var(--bg-elevated,var(--surface))] border border-border rounded-xl p-4 animate-pulse">
                 <div className="flex items-center gap-3">
-                  <div className="w-3 h-3 rounded-full bg-[var(--bg-tertiary)]" />
-                  <div className="h-4 w-24 rounded bg-[var(--bg-tertiary)]" />
-                  <div className="h-3 w-32 rounded bg-[var(--bg-tertiary)]" />
+                  <div className="w-3 h-3 rounded-full bg-bg-tertiary" />
+                  <div className="h-4 w-24 rounded bg-bg-tertiary" />
+                  <div className="h-3 w-32 rounded bg-bg-tertiary" />
                   <div className="flex-1" />
-                  <div className="h-3 w-16 rounded bg-[var(--bg-tertiary)]" />
+                  <div className="h-3 w-16 rounded bg-bg-tertiary" />
                 </div>
                 <div className="mt-2 flex items-center gap-3 pl-6">
-                  <div className="h-3 w-16 rounded bg-[var(--bg-tertiary)]" />
-                  <div className="h-3 w-64 rounded bg-[var(--bg-tertiary)]" />
+                  <div className="h-3 w-16 rounded bg-bg-tertiary" />
+                  <div className="h-3 w-64 rounded bg-bg-tertiary" />
                 </div>
               </div>
             ))}
@@ -639,34 +638,51 @@ export default function SessionList() {
         {/* ── Session list ── */}
         {!isLoading && !showTrash && filteredSessions.length > 0 && (
           <>
-            {grouped.mode === 'tool' ? (
-              grouped.toolGroups.map((group, index) => (
-                <DateGroup
-                  key={group.label}
-                  label={group.label}
-                  sessions={group.sessions}
-                  onRowClick={handleRowClick}
-                  onRowKeyDown={handleRowKeyDown}
-                  onResume={handleResume}
-                  expandedGroups={expandedGroups}
-                  onToggleGroup={toggleGroup}
-                  isFirst={index === 0}
-                  selectMode={selectMode}
-                  selectedIds={selectedIds}
-                  onToggleSelect={toggleSelect}
-                  isInFolder={!!selectedFolderId}
-                />
-              ))
+            {viewMode === 'grid' ? (
+              /* Grid view */
+              grouped.mode === 'tool' ? (
+                grouped.toolGroups.map((group, index) => (
+                  <GridGroup key={group.label} label={group.label} sessions={group.sessions} isFirst={index === 0}
+                    onRowClick={handleRowClick} onResume={handleResume} isInFolder={!!selectedFolderId} />
+                ))
+              ) : (
+                <>
+                  <GridGroup label="Today" sessions={grouped.today} isFirst onRowClick={handleRowClick} onResume={handleResume} isInFolder={!!selectedFolderId} />
+                  <GridGroup label="This Week" sessions={grouped.thisWeek} onRowClick={handleRowClick} onResume={handleResume} isInFolder={!!selectedFolderId} />
+                  <GridGroup label="Earlier" sessions={grouped.earlier} onRowClick={handleRowClick} onResume={handleResume} isInFolder={!!selectedFolderId} />
+                </>
+              )
             ) : (
-              <>
-                <DateGroup label="Today" sessions={grouped.today} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} isFirst selectMode={selectMode} selectedIds={selectedIds} onToggleSelect={toggleSelect} isInFolder={!!selectedFolderId} />
-                <DateGroup label="This Week" sessions={grouped.thisWeek} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} selectMode={selectMode} selectedIds={selectedIds} onToggleSelect={toggleSelect} isInFolder={!!selectedFolderId} />
-                <DateGroup label="Earlier" sessions={grouped.earlier} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} selectMode={selectMode} selectedIds={selectedIds} onToggleSelect={toggleSelect} isInFolder={!!selectedFolderId} />
-              </>
+              /* List view */
+              grouped.mode === 'tool' ? (
+                grouped.toolGroups.map((group, index) => (
+                  <DateGroup
+                    key={group.label}
+                    label={group.label}
+                    sessions={group.sessions}
+                    onRowClick={handleRowClick}
+                    onRowKeyDown={handleRowKeyDown}
+                    onResume={handleResume}
+                    expandedGroups={expandedGroups}
+                    onToggleGroup={toggleGroup}
+                    isFirst={index === 0}
+                    selectMode={selectMode}
+                    selectedIds={selectedIds}
+                    onToggleSelect={toggleSelect}
+                    isInFolder={!!selectedFolderId}
+                  />
+                ))
+              ) : (
+                <>
+                  <DateGroup label="Today" sessions={grouped.today} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} isFirst selectMode={selectMode} selectedIds={selectedIds} onToggleSelect={toggleSelect} isInFolder={!!selectedFolderId} />
+                  <DateGroup label="This Week" sessions={grouped.thisWeek} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} selectMode={selectMode} selectedIds={selectedIds} onToggleSelect={toggleSelect} isInFolder={!!selectedFolderId} />
+                  <DateGroup label="Earlier" sessions={grouped.earlier} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} selectMode={selectMode} selectedIds={selectedIds} onToggleSelect={toggleSelect} isInFolder={!!selectedFolderId} />
+                </>
+              )
             )}
 
             {/* Pagination */}
-            <div className="flex items-center justify-between mt-4 text-sm text-[var(--text-tertiary)]">
+            <div className="flex items-center justify-between mt-4 text-sm text-text-tertiary">
               <span>
                 Page {page} -- {filteredSessions.length} sessions
                 {totalSessions > 0 && ` (${totalSessions} total)`}
@@ -675,7 +691,7 @@ export default function SessionList() {
                 {page > 1 && (
                   <button
                     onClick={() => setPage((p) => p - 1)}
-                    className="px-3 py-1.5 bg-[var(--surface)] border border-[var(--border)] rounded-lg hover:border-[var(--border-strong)] transition-colors text-[var(--text-secondary)]"
+                    className="px-3 py-1.5 bg-surface border border-border rounded-lg hover:border-border-strong transition-colors text-text-secondary"
                   >
                     Previous
                   </button>
@@ -683,7 +699,7 @@ export default function SessionList() {
                 {hasMore && (
                   <button
                     onClick={() => setPage((p) => p + 1)}
-                    className="px-3 py-1.5 bg-[var(--surface)] border border-[var(--border)] rounded-lg hover:border-[var(--border-strong)] transition-colors text-[var(--text-secondary)]"
+                    className="px-3 py-1.5 bg-surface border border-border rounded-lg hover:border-border-strong transition-colors text-text-secondary"
                   >
                     Next
                   </button>
@@ -693,7 +709,7 @@ export default function SessionList() {
 
             {/* ── Insights strip ── */}
             {insights && (
-              <div className="mt-4 py-6 border-t border-[var(--border)] text-[12px] text-[var(--text-tertiary)] flex flex-wrap items-center gap-1">
+              <div className="mt-4 py-6 border-t border-border text-xs text-text-tertiary flex flex-wrap items-center gap-1">
                 {insights.toolMix && <><span>Tool Mix: {insights.toolMix}</span><span className="opacity-40">&middot;</span></>}
                 <span>{formatTokens(insights.tokensToday)} tokens today</span>
                 {insights.peak && <><span className="opacity-40">&middot;</span><span>Peak: {insights.peak}</span></>}
@@ -704,58 +720,121 @@ export default function SessionList() {
 
         {/* Empty state */}
         {!isLoading && !showTrash && filteredSessions.length === 0 && !error && (
-          <div className="text-center py-16">
-            <p className="text-[var(--text-secondary)] text-base font-medium mb-2">No sessions yet</p>
-            {selectedFolderId ? (
-              <p className="text-[var(--text-tertiary)] text-sm">
+          selectedFolderId ? (
+            <div className="text-center py-16">
+              <p className="text-text-secondary text-base font-medium mb-2">No sessions yet</p>
+              <p className="text-text-tertiary text-sm">
                 No sessions bookmarked in this folder yet.
               </p>
-            ) : (
-              <>
-                <p className="text-[var(--text-tertiary)] text-sm max-w-sm mx-auto mb-5">
-                  SessionFS captures sessions automatically from your AI tools.
-                  Get started by installing the MCP server for your tool.
-                </p>
-                <div className="flex items-center justify-center gap-3">
-                  <Link
-                    to="/getting-started"
-                    className="px-4 py-2 text-sm font-semibold bg-[var(--brand)] text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors"
+            </div>
+          ) : (
+            <div className="flex items-center justify-center py-10">
+              <Card
+                level="elevated"
+                className="max-w-[560px] w-full overflow-hidden"
+              >
+                {/* Dot-grid banner */}
+                <div
+                  className="relative flex items-center justify-center py-10"
+                  style={{
+                    backgroundImage: 'var(--dot-grid)',
+                    backgroundSize: '16px 16px',
+                  }}
+                >
+                  {/* Session card illustration — two overlapping cards with a plus */}
+                  <svg
+                    width="88"
+                    height="72"
+                    viewBox="0 0 88 72"
+                    fill="none"
+                    xmlns="http://www.w3.org/2000/svg"
+                    role="img"
+                    aria-label="Session cards illustration"
                   >
-                    Get Started
-                  </Link>
-                  <Link
-                    to="/help"
-                    className="px-4 py-2 text-sm font-medium text-[var(--text-secondary)] border rounded-lg hover:text-[var(--text-primary)] transition-colors"
-                    style={{ borderColor: 'var(--border)' }}
-                  >
-                    View Help
-                  </Link>
+                    {/* Back card */}
+                    <rect
+                      x="4" y="2" width="56" height="60" rx="6"
+                      stroke="var(--text-tertiary)" strokeWidth="1.5"
+                      strokeDasharray="4 3"
+                    />
+                    {/* Front card */}
+                    <rect
+                      x="18" y="10" width="56" height="60" rx="6"
+                      stroke="var(--text-secondary)" strokeWidth="1.5"
+                    />
+                    {/* Plus circle */}
+                    <circle
+                      cx="64" cy="26" r="10"
+                      stroke="var(--brand)" strokeWidth="1.5"
+                    />
+                    <line
+                      x1="64" y1="21" x2="64" y2="31"
+                      stroke="var(--brand)" strokeWidth="1.5" strokeLinecap="round"
+                    />
+                    <line
+                      x1="59" y1="26" x2="69" y2="26"
+                      stroke="var(--brand)" strokeWidth="1.5" strokeLinecap="round"
+                    />
+                    {/* Accent line on front card */}
+                    <line
+                      x1="31" y1="28" x2="52" y2="28"
+                      stroke="var(--text-tertiary)" strokeWidth="1" strokeLinecap="round"
+                    />
+                    <line
+                      x1="31" y1="36" x2="44" y2="36"
+                      stroke="var(--text-tertiary)" strokeWidth="1" strokeLinecap="round"
+                      opacity="0.6"
+                    />
+                  </svg>
                 </div>
-              </>
-            )}
-          </div>
+                {/* Content area */}
+                <div className="text-center px-6 pb-7 pt-5">
+                  <h2 className="text-title text-text-primary mb-1.5">
+                    No sessions yet
+                  </h2>
+                  <p className="text-caption max-w-sm mx-auto mb-5 leading-relaxed">
+                    SessionFS captures sessions automatically from your AI tools.
+                    Get started by installing the MCP server for your tool.
+                  </p>
+                  <div className="flex items-center justify-center gap-3">
+                    <Link
+                      to="/getting-started"
+                      className="px-4 py-2 text-sm font-semibold bg-brand text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors"
+                    >
+                      Get Started
+                    </Link>
+                    <Link
+                      to="/help"
+                      className="px-4 py-2 text-sm font-medium text-text-secondary border border-border rounded-lg hover:text-text-primary transition-colors"
+                    >
+                      View Help
+                    </Link>
+                  </div>
+                </div>
+              </Card>
+            </div>
+          )
         )}
 
         {/* Trash view */}
         {showTrash && <TrashView />}
-      </div>
 
       {/* ── Bulk selection toolbar ── */}
       {selectedIds.size > 0 && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-[var(--bg-elevated)] border border-[var(--border)] rounded-xl shadow-[var(--shadow-lg)] px-5 py-3 flex items-center gap-4">
-          <span className="text-[14px] font-medium text-[var(--text-primary)]">
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-bg-elevated border border-border rounded-xl shadow-[var(--shadow-lg)] px-5 py-3 flex items-center gap-4">
+          <span className="text-base font-medium text-text-primary">
             {selectedIds.size} selected
           </span>
-          <button onClick={selectAll} className="text-[13px] text-[var(--brand)] hover:underline">
+          <button onClick={selectAll} className="text-sm text-brand hover:underline">
             Select all
           </button>
           <button
             onClick={handleBulkDelete}
-            className="px-4 py-2 bg-red-500 text-white rounded-lg text-[13px] font-semibold hover:bg-red-600 transition-colors"
+            className="px-4 py-2 bg-red-500 text-white rounded-lg text-sm font-semibold hover:bg-red-600 transition-colors"
           >
             Delete selected
           </button>
-          <button onClick={clearSelection} className="text-[13px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)]">
+          <button onClick={clearSelection} className="text-sm text-text-tertiary hover:text-text-primary">
             Cancel
           </button>
         </div>
@@ -774,6 +853,117 @@ export default function SessionList() {
   );
 }
 
+/* ── Grid-grouped session section ── */
+
+function GridGroup({
+  label,
+  sessions,
+  isFirst,
+  onRowClick,
+  onResume,
+  isInFolder,
+}: {
+  label: string;
+  sessions: SessionSummary[];
+  isFirst?: boolean;
+  onRowClick: (id: string) => void;
+  onResume: (s: SessionSummary) => void;
+  isInFolder?: boolean;
+}) {
+  if (sessions.length === 0) return null;
+
+  return (
+    <div className={`mb-5 ${isFirst ? 'mt-0' : 'mt-8'}`}>
+      <h3 className="text-micro font-semibold uppercase text-text-tertiary pt-3 pb-2 mb-3 border-b border-border col-span-full">
+        {label}
+      </h3>
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+        {sessions.map((s) => (
+          <SessionGridCard
+            key={s.id}
+            session={s}
+            onClick={() => onRowClick(s.id)}
+            onResume={() => onResume(s)}
+            isBookmarked={!!isInFolder}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ── Grid-view session card ── */
+
+function SessionGridCard({
+  session: s,
+  onClick,
+  onResume,
+  isBookmarked,
+}: {
+  session: SessionSummary;
+  onClick: () => void;
+  onResume: () => void;
+  isBookmarked?: boolean;
+}) {
+  const toolColor = TOOL_COLORS[s.source_tool] || 'var(--text-tertiary)';
+
+  return (
+    <div
+      role="button"
+      onClick={onClick}
+      onKeyDown={(e) => { if (e.key === 'Enter') onClick(); }}
+      tabIndex={0}
+      className="group bg-surface border border-border rounded-lg cursor-pointer hover:bg-bg-elevated hover:border-border-strong transition-[background-color,border-color] duration-150 ease-out outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] flex flex-col"
+    >
+      {/* Body */}
+      <div className="px-4 pt-[14px] pb-2 flex-1 min-w-0">
+        <h4 className="text-md font-semibold text-text-primary truncate mb-1.5">
+          {s.title || <span className="text-text-tertiary italic">Untitled session</span>}
+        </h4>
+        <div className="flex flex-wrap items-center gap-1 text-xs text-text-tertiary">
+          <span
+            className="w-2 h-2 rounded-full shrink-0"
+            style={{ backgroundColor: toolColor }}
+          />
+          <span className="text-mono-chip">{fullToolName(s.source_tool)}</span>
+          <span className="text-mono-chip">{s.id.slice(0, 12)}</span>
+          <span className="opacity-40">&middot;</span>
+          <span className="tabular-nums">{s.message_count} msgs</span>
+          {(s.total_input_tokens + s.total_output_tokens) > 0 && (
+            <>
+              <span className="opacity-40">&middot;</span>
+              <span className="tabular-nums">{formatTokens(s.total_input_tokens + s.total_output_tokens)}</span>
+            </>
+          )}
+          {s.model_id && s.model_id !== '<synthetic>' && (
+            <>
+              <span className="opacity-40">&middot;</span>
+              <span>{abbreviateModel(s.model_id)}</span>
+            </>
+          )}
+        </div>
+      </div>
+      {/* Footer */}
+      <div className="px-4 pb-3 flex items-center justify-between">
+        <span className="text-xs text-text-tertiary">
+          <RelativeDate iso={s.updated_at} />
+        </span>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={(e) => { e.stopPropagation(); onResume(); }}
+            className="px-2.5 py-1 text-xs font-semibold text-white bg-brand rounded-md hover:opacity-90 transition-opacity opacity-0 group-hover:opacity-100 group-focus:opacity-100"
+          >
+            Resume
+          </button>
+          <div onClick={(e) => e.stopPropagation()}>
+            <BookmarkDropdown sessionId={s.id} isBookmarked={isBookmarked} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Trash view ── */
 
 function TrashView() {
@@ -783,7 +973,7 @@ function TrashView() {
 
   if (isLoading) {
     return (
-      <div className="py-8 text-center text-[var(--text-tertiary)]">
+      <div className="py-8 text-center text-text-tertiary">
         Loading deleted sessions...
       </div>
     );
@@ -802,8 +992,8 @@ function TrashView() {
   if (deletedSessions.length === 0) {
     return (
       <div className="text-center py-16">
-        <p className="text-[var(--text-secondary)] mb-2">Trash is empty</p>
-        <p className="text-[var(--text-tertiary)] text-sm">
+        <p className="text-text-secondary mb-2">Trash is empty</p>
+        <p className="text-text-tertiary text-sm">
           Deleted sessions appear here for 30 days before being permanently removed.
         </p>
       </div>
@@ -828,7 +1018,7 @@ function TrashView() {
 
   return (
     <div className="space-y-2">
-      <p className="text-xs text-[var(--text-tertiary)] mb-3">
+      <p className="text-xs text-text-tertiary mb-3">
         {deletedSessions.length} deleted session{deletedSessions.length !== 1 ? 's' : ''}. Sessions are permanently removed after 30 days.
       </p>
       {deletedSessions.map((s: SessionSummary) => {
@@ -837,7 +1027,7 @@ function TrashView() {
         return (
           <div
             key={s.id}
-            className="bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg px-4 py-3 flex items-center gap-3 opacity-75 hover:opacity-100 transition-opacity"
+            className="bg-bg-primary border border-border rounded-lg px-4 py-3 flex items-center gap-3 opacity-75 hover:opacity-100 transition-opacity"
           >
             <span
               className="w-2 h-2 rounded-full shrink-0"
@@ -845,12 +1035,12 @@ function TrashView() {
             />
             <div className="flex-1 min-w-0">
               <span
-                className="text-sm font-medium text-[var(--text-secondary)] truncate block"
+                className="text-sm font-medium text-text-secondary truncate block"
                 title="Restore to view session details"
               >
                 {s.title || 'Untitled session'}
               </span>
-              <div className="flex items-center gap-2 text-[11px] text-[var(--text-tertiary)] mt-0.5">
+              <div className="flex items-center gap-2 text-2xs text-text-tertiary mt-0.5">
                 <span>{fullToolName(s.source_tool)}</span>
                 <span className="opacity-40">&middot;</span>
                 <span>Deleted <RelativeDate iso={sd.deleted_at} /></span>
@@ -862,20 +1052,21 @@ function TrashView() {
                 )}
               </div>
             </div>
-            <span className={`px-2 py-0.5 text-[10px] font-medium rounded-full ${
+            <span className={`px-2 py-0.5 text-2xs font-medium rounded-full ${
               scopeLabel === 'everywhere'
                 ? 'bg-red-500/10 text-red-400'
                 : 'bg-yellow-500/10 text-yellow-400'
             }`}>
               {scopeLabel}
             </span>
-            <button
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={() => handleRestore(s.id)}
-              disabled={restoreSession.isPending}
-              className="px-3 py-1.5 text-xs font-medium text-[var(--brand)] border border-[var(--brand)]/30 rounded-lg hover:bg-[var(--brand)]/10 transition-colors disabled:opacity-50"
+              loading={restoreSession.isPending}
             >
               Restore
-            </button>
+            </Button>
           </div>
         );
       })}
@@ -917,8 +1108,8 @@ function DateGroup({
   const lineageGroups = groupByLineage(sessions);
 
   return (
-    <div className={`mb-5 ${isFirst ? 'mt-0' : 'mt-6'}`}>
-      <h3 className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--text-tertiary)] pb-2 mb-3 border-b border-[var(--border)]">
+    <div className={`mb-5 ${isFirst ? 'mt-0' : 'mt-8'}`}>
+      <h3 className="text-micro font-semibold uppercase text-text-tertiary pt-3 pb-2 mb-3 border-b border-border">
         {label}
       </h3>
       <div className="flex flex-col gap-1.5">
@@ -952,7 +1143,6 @@ function DateGroup({
                 }}
                 onResume={() => onResume(group.root)}
                 onNavigate={hasChildren ? () => onRowClick(group.root.id) : undefined}
-                hasChildren={hasChildren}
                 isBookmarked={!!isInFolder}
                 selectMode={selectMode}
                 selected={selectedIds.has(group.root.id)}
@@ -960,7 +1150,7 @@ function DateGroup({
                 lineageBadge={hasChildren ? (
                   <button
                     onClick={(e) => { e.stopPropagation(); onToggleGroup(group.root.id); }}
-                    className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[13px] font-medium text-[var(--brand)] hover:bg-[var(--brand)]/10 transition-colors"
+                    className="flex items-center gap-1.5 px-2 py-1 rounded-md text-sm font-medium text-brand hover:bg-brand/10 transition-colors"
                     title={isExpanded ? 'Collapse follow-ups' : 'Expand follow-ups'}
                   >
                     <span>{group.children.length === 1 ? '1 follow-up' : `${group.children.length} follow-ups`}</span>
@@ -979,7 +1169,7 @@ function DateGroup({
                 ) : undefined}
               />
               {hasChildren && isExpanded && (
-                <div className="flex flex-col gap-1 mt-1 ml-6 border-l-2 border-[var(--brand)]/30 pl-3 space-y-1">
+                <div className="flex flex-col gap-1 mt-1 ml-6 border-l border-border pl-3">
                   {group.children.map((child) => (
                     <SessionRow
                       key={child.id}
@@ -1019,7 +1209,6 @@ function SessionRow({
   onNavigate,
   lineageBadge,
   isChild,
-  hasChildren,
   isBookmarked,
   selectMode,
   selected,
@@ -1032,7 +1221,6 @@ function SessionRow({
   onNavigate?: () => void;
   lineageBadge?: React.ReactNode;
   isChild?: boolean;
-  hasChildren?: boolean;
   isBookmarked?: boolean;
   selectMode?: boolean;
   selected?: boolean;
@@ -1044,7 +1232,7 @@ function SessionRow({
       onClick={onClick}
       onKeyDown={(e) => { if (e.key === ' ') { e.preventDefault(); onClick(); } else { onKeyDown(e); } }}
       tabIndex={0}
-      className={`group bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg cursor-pointer hover:bg-[var(--surface-hover)] hover:shadow-[var(--shadow-sm)] transition-all duration-150 focus:bg-[var(--surface-hover)] outline-none focus:ring-1 focus:ring-[var(--brand)] ${isChild ? 'px-3 py-3' : 'px-4 py-4'} ${hasChildren ? 'border-l-[3px] border-l-[var(--brand)]/40' : ''} ${selected ? 'ring-1 ring-[var(--brand)] bg-[var(--brand)]/5' : ''}`}
+      className={`group bg-surface border border-border rounded-lg cursor-pointer hover:bg-bg-elevated hover:border-border-strong transition-[background-color,border-color] duration-150 ease-out outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] ${isChild ? 'px-3 py-3' : 'px-4 py-[14px]'} ${selected ? 'ring-1 ring-[var(--brand)] bg-brand/5' : ''}`}
     >
       {/* Line 1: Title + hover actions + timestamp */}
       <div className="flex items-center gap-3 mb-1">
@@ -1053,19 +1241,19 @@ function SessionRow({
             type="checkbox"
             checked={selected || false}
             onChange={() => onToggleSelect?.()}
-            className="w-4 h-4 rounded border-[var(--border)] accent-[var(--brand)] mr-3 shrink-0"
+            className="w-4 h-4 rounded border-border accent-[var(--brand)] mr-3 shrink-0"
             onClick={(e) => e.stopPropagation()}
           />
         )}
         <span
-          className={`font-semibold text-[var(--text-primary)] truncate flex-1 ${isChild ? 'text-[14px]' : 'text-base'}`}
+          className={`font-semibold text-text-primary truncate flex-1 ${isChild ? 'text-sm' : 'text-md'}`}
           onClick={onNavigate ? (e) => { e.stopPropagation(); onNavigate(); } : undefined}
           style={onNavigate ? { cursor: 'pointer' } : undefined}
         >
-          {isChild && <span className="text-[var(--text-tertiary)] mr-1">&#8627;</span>}
-          {s.title || <span className="text-[var(--text-tertiary)] italic">Untitled session</span>}
+          {isChild && <span className="text-text-tertiary mr-1">&#8627;</span>}
+          {s.title || <span className="text-text-tertiary italic">Untitled session</span>}
           {s.parent_session_id && !isChild && (
-            <span className="text-[var(--text-tertiary)] text-xs ml-1.5">&crarr; fork</span>
+            <span className="text-text-tertiary text-xs ml-1.5">&crarr; fork</span>
           )}
         </span>
         <div className="ml-auto flex items-center gap-2 shrink-0">
@@ -1074,21 +1262,21 @@ function SessionRow({
             {onNavigate && (
               <button
                 onClick={(e) => { e.stopPropagation(); onNavigate(); }}
-                className="px-2 py-0.5 text-xs font-medium text-[var(--text-secondary)] bg-[var(--surface)] border border-[var(--border)] rounded hover:bg-[var(--surface-hover)] transition-colors opacity-0 group-hover:opacity-100"
+                className="px-2 py-0.5 text-xs font-medium text-text-secondary bg-surface border border-border rounded hover:bg-surface-hover transition-colors opacity-0 group-hover:opacity-100"
               >
                 View
               </button>
             )}
             <button
               onClick={(e) => { e.stopPropagation(); onResume(); }}
-              className="px-2.5 py-1 text-xs font-semibold text-white bg-[var(--brand)] rounded-md hover:opacity-90 transition-opacity opacity-0 group-hover:opacity-100 group-focus:opacity-100"
+              className="px-2.5 py-1 text-xs font-semibold text-white bg-brand rounded-md hover:opacity-90 transition-opacity opacity-0 group-hover:opacity-100 group-focus:opacity-100"
             >
               Resume
             </button>
           </div>
           {lineageBadge}
           <TrustBadge score={(s as SessionSummaryWithAudit).audit_trust_score} />
-          <span className={`text-[var(--text-tertiary)] ${isChild ? 'text-[12px]' : 'text-[13px]'}`}>
+          <span className={`text-text-tertiary ${isChild ? 'text-xs' : 'text-sm'}`}>
             <RelativeDate iso={s.updated_at} />
           </span>
           <div onClick={(e) => e.stopPropagation()}>
@@ -1096,15 +1284,14 @@ function SessionRow({
           </div>
         </div>
       </div>
-      {/* Line 2: Tool dot + tool name + metadata */}
-      <div className={`flex items-center gap-2 ${isChild ? 'text-[11px]' : 'text-[12px]'} text-[var(--text-tertiary)] opacity-70`}>
+      {/* Line 2: tool name + session id as mono-chips; counts + model as text-tertiary */}
+      <div className={`flex items-center gap-1.5 ${isChild ? 'text-xs' : 'text-sm'} text-text-tertiary`}>
         <span
           className="w-2 h-2 rounded-full shrink-0"
-          style={{ backgroundColor: TOOL_COLORS[s.source_tool] || '#6B7280' }}
+          style={{ backgroundColor: TOOL_COLORS[s.source_tool] || 'var(--text-tertiary)' }}
         />
-        <span className="font-medium whitespace-nowrap">{fullToolName(s.source_tool)}</span>
-        <span className="opacity-40">&middot;</span>
-        <span className="font-mono">{s.id.slice(0, 12)}</span>
+        <span className="text-mono-chip">{fullToolName(s.source_tool)}</span>
+        <span className="text-mono-chip">{s.id.slice(0, 12)}</span>
         <span className="opacity-40">&middot;</span>
         <span className="tabular-nums">{s.message_count} msgs</span>
         {!isChild && (s.total_input_tokens + s.total_output_tokens) > 0 && (
@@ -1120,6 +1307,312 @@ function SessionRow({
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ── Folder scope dropdown (replaces desktop BookmarkSidebar rail) ── */
+
+function FolderDropdown({
+  navFilter,
+  selectedFolderId,
+  onSelectFilter,
+  onSelectFolder,
+  totalCount,
+  bookmarkedCount,
+}: {
+  navFilter: NavFilter;
+  selectedFolderId: string | null;
+  onSelectFilter: (f: NavFilter) => void;
+  onSelectFolder: (id: string | null) => void;
+  totalCount: number;
+  bookmarkedCount: number;
+}) {
+  const { data } = useFolders();
+  const createFolder = useCreateFolder();
+  const updateFolder = useUpdateFolder();
+  const deleteFolder = useDeleteFolder();
+
+  const [open, setOpen] = useState(false);
+  const [showCreate, setShowCreate] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newColor, setNewColor] = useState(PRESET_COLORS[0]);
+  const [editingFolder, setEditingFolder] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editColor, setEditColor] = useState('');
+  const wrapperRef = useRef<HTMLDivElement>(null);
+
+  const folders = data?.folders ?? [];
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return;
+    function handleClick(e: MouseEvent) {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
+        setOpen(false);
+        setShowCreate(false);
+        setEditingFolder(null);
+      }
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [open]);
+
+  function handleCreate() {
+    if (!newName.trim()) return;
+    createFolder.mutate({ name: newName.trim(), color: newColor }, {
+      onSuccess: () => {
+        setNewName('');
+        setNewColor(PRESET_COLORS[0]);
+        setShowCreate(false);
+      },
+    });
+  }
+
+  function handleStartEdit(folderId: string, name: string, color: string) {
+    setEditingFolder(folderId);
+    setEditName(name);
+    setEditColor(color || PRESET_COLORS[0]);
+  }
+
+  function handleSaveEdit(folderId: string) {
+    if (!editName.trim()) return;
+    updateFolder.mutate({
+      folderId,
+      updates: { name: editName.trim(), color: editColor },
+    }, {
+      onSuccess: () => setEditingFolder(null),
+    });
+  }
+
+  function handleDelete(folderId: string) {
+    deleteFolder.mutate(folderId, {
+      onSuccess: () => {
+        if (selectedFolderId === folderId) {
+          onSelectFolder(null);
+          onSelectFilter('all');
+        }
+      },
+    });
+  }
+
+  // Resolve current label
+  let currentLabel = 'All Sessions';
+  if (navFilter === 'bookmarked') {
+    currentLabel = 'Bookmarked';
+  } else if (selectedFolderId) {
+    const f = folders.find((f) => f.id === selectedFolderId);
+    if (f) currentLabel = f.name;
+  }
+
+  return (
+    <div ref={wrapperRef} className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="appearance-none bg-surface border border-border rounded-lg px-3 py-2 pr-8 text-base font-medium text-text-secondary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] cursor-pointer transition-colors flex items-center gap-2"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-text-tertiary">
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+        </svg>
+        <span className="truncate max-w-[140px]">{currentLabel}</span>
+        <svg className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-tertiary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+
+      {open && (
+        <div
+          className="absolute top-full left-0 mt-1 z-40 min-w-[220px] rounded-lg py-1"
+          style={{
+            backgroundColor: 'var(--overlay)',
+            border: '1px solid var(--border)',
+            boxShadow: 'var(--shadow-overlay)',
+          }}
+        >
+          {/* All Sessions */}
+          <button
+            onClick={() => { onSelectFilter('all'); onSelectFolder(null); setOpen(false); }}
+            className={`w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 transition-colors duration-150 ${
+              navFilter === 'all' && !selectedFolderId
+                ? 'bg-surface-active text-text-primary font-semibold'
+                : 'text-text-secondary hover:bg-surface-hover'
+            }`}
+          >
+            <span className="flex-1">All Sessions</span>
+            <span className="text-xs font-medium text-text-tertiary tabular-nums">{totalCount}</span>
+          </button>
+
+          {/* Bookmarked */}
+          <button
+            onClick={() => { onSelectFilter('bookmarked'); onSelectFolder(null); setOpen(false); }}
+            className={`w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 transition-colors duration-150 ${
+              navFilter === 'bookmarked' && !selectedFolderId
+                ? 'bg-surface-active text-text-primary font-semibold'
+                : 'text-text-secondary hover:bg-surface-hover'
+            }`}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+              <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
+            </svg>
+            <span className="flex-1">Bookmarked</span>
+            <span className="text-xs font-medium text-text-tertiary tabular-nums">{bookmarkedCount}</span>
+          </button>
+
+          {/* Divider */}
+          <div className="border-t border-border my-1" />
+
+          {/* Folders */}
+          {folders.map((f) => (
+            <div key={f.id}>
+              {editingFolder === f.id ? (
+                <div className="px-3 py-1.5 space-y-1.5">
+                  <input
+                    type="text"
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleSaveEdit(f.id);
+                      if (e.key === 'Escape') setEditingFolder(null);
+                    }}
+                    autoFocus
+                    className="w-full px-1.5 py-0.5 text-sm bg-bg-primary border border-border rounded text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+                  />
+                  <div className="flex gap-1">
+                    {PRESET_COLORS.map((c) => (
+                      <button
+                        key={c}
+                        onClick={() => setEditColor(c)}
+                        className={`w-4 h-4 rounded-full border-2 ${editColor === c ? 'border-white' : 'border-transparent'}`}
+                        style={{ backgroundColor: c }}
+                      />
+                    ))}
+                  </div>
+                  <div className="flex gap-1">
+                    <button
+                      onClick={() => handleSaveEdit(f.id)}
+                      className="px-2 py-0.5 text-xs bg-brand text-white rounded hover:opacity-90"
+                    >
+                      Save
+                    </button>
+                    <button
+                      onClick={() => setEditingFolder(null)}
+                      className="px-2 py-0.5 text-xs text-text-tertiary hover:text-text-secondary"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center group">
+                  <button
+                    onClick={() => { onSelectFolder(f.id); onSelectFilter(f.id); setOpen(false); }}
+                    className={`flex-1 flex items-center gap-2 px-3 py-1.5 text-sm transition-colors duration-150 text-left ${
+                      selectedFolderId === f.id
+                        ? 'bg-surface-active text-text-primary font-semibold'
+                        : 'text-text-secondary hover:bg-surface-hover'
+                    }`}
+                  >
+                    <span
+                      className="w-2.5 h-2.5 rounded-full shrink-0"
+                      style={{ backgroundColor: f.color || DEFAULT_FOLDER_COLOR }}
+                    />
+                    <span className="truncate flex-1">{f.name}</span>
+                    <span className="text-text-tertiary text-xs font-medium tabular-nums">{f.bookmark_count}</span>
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleStartEdit(f.id, f.name, f.color || '');
+                    }}
+                    className="px-1 text-text-tertiary hover:text-text-secondary opacity-0 group-hover:opacity-100 transition-opacity text-xs mr-1"
+                    title="Rename folder"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                    </svg>
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDelete(f.id);
+                    }}
+                    className="px-1 text-text-tertiary hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity text-xs"
+                    title="Delete folder"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="3 6 5 6 21 6" />
+                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                    </svg>
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+
+          {folders.length === 0 && !showCreate && (
+            <div className="px-3 py-1.5 text-xs text-text-tertiary">No folders yet</div>
+          )}
+
+          {/* Create folder inline */}
+          {showCreate && (
+            <div className="mx-2 mt-1 p-2 bg-bg-primary border border-border rounded space-y-2">
+              <input
+                type="text"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleCreate();
+                  if (e.key === 'Escape') setShowCreate(false);
+                }}
+                placeholder="Folder name"
+                autoFocus
+                className="w-full px-2 py-1 text-sm bg-bg-secondary border border-border rounded text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+              />
+              <div className="flex gap-1">
+                {PRESET_COLORS.map((c) => (
+                  <button
+                    key={c}
+                    onClick={() => setNewColor(c)}
+                    className={`w-4 h-4 rounded-full border-2 ${newColor === c ? 'border-white' : 'border-transparent'}`}
+                    style={{ backgroundColor: c }}
+                  />
+                ))}
+              </div>
+              <div className="flex gap-1">
+                <button
+                  onClick={handleCreate}
+                  disabled={!newName.trim() || createFolder.isPending}
+                  className="px-2 py-0.5 text-xs bg-brand text-white rounded hover:opacity-90 disabled:opacity-50"
+                >
+                  Create
+                </button>
+                <button
+                  onClick={() => setShowCreate(false)}
+                  className="px-2 py-0.5 text-xs text-text-tertiary hover:text-text-secondary"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Footer actions */}
+          <div className="border-t border-border mt-1 pt-1">
+            {!showCreate && (
+              <button
+                onClick={() => setShowCreate(true)}
+                className="w-full text-left px-3 py-1.5 text-sm text-text-secondary hover:bg-surface-hover flex items-center gap-2 transition-colors duration-150"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+                New Folder
+              </button>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1159,7 +1652,7 @@ function BookmarkDropdown({ sessionId, isBookmarked: initialBookmarked }: { sess
     <div className="relative" ref={ref}>
       <button
         onClick={handleIconClick}
-        className={`transition-colors text-sm p-1 rounded hover:bg-[var(--surface-hover)] ${bookmarked ? 'text-[var(--brand)]' : 'text-[var(--text-tertiary)] hover:text-[var(--brand)]'} ${popping ? 'animate-[bookmark-pop_200ms_ease-out]' : ''}`}
+        className={`transition-[transform,color,background-color] duration-150 text-sm p-1 rounded hover:bg-surface-hover ${bookmarked ? 'text-brand' : 'text-text-tertiary hover:text-brand'} ${popping ? 'scale-125' : ''}`}
         title="Bookmark"
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill={bookmarked ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1167,9 +1660,9 @@ function BookmarkDropdown({ sessionId, isBookmarked: initialBookmarked }: { sess
         </svg>
       </button>
       {open && (
-        <div className="absolute right-0 top-8 z-20 bg-[var(--bg-elevated,var(--surface))] border border-[var(--border)] rounded-lg shadow-[var(--shadow-md)] py-1 min-w-[140px]">
+        <div className="absolute right-0 top-8 z-20 bg-[var(--bg-elevated,var(--surface))] border border-border rounded-lg shadow-[var(--shadow-md)] py-1 min-w-[140px]">
           {folders.length === 0 && (
-            <div className="px-3 py-1.5 text-sm text-[var(--text-tertiary)]">No folders yet</div>
+            <div className="px-3 py-1.5 text-sm text-text-tertiary">No folders yet</div>
           )}
           {folders.map((f) => (
             <button
@@ -1180,11 +1673,11 @@ function BookmarkDropdown({ sessionId, isBookmarked: initialBookmarked }: { sess
                   onError: () => setOpen(false),
                 });
               }}
-              className="w-full text-left px-3 py-1.5 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] flex items-center gap-2 transition-colors"
+              className="w-full text-left px-3 py-1.5 text-sm text-text-secondary hover:bg-surface-hover flex items-center gap-2 transition-colors"
             >
               <span
                 className="w-2 h-2 rounded-full shrink-0"
-                style={{ backgroundColor: f.color || '#4f9cf7' }}
+                style={{ backgroundColor: f.color || DEFAULT_FOLDER_COLOR }}
               />
               {f.name}
             </button>
