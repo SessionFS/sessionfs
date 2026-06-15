@@ -96,7 +96,8 @@ Personas (3 to reassign, 1 collision):
   ✓ atlas          — unique, will be reassigned
   ✓ scribe         — unique, will be reassigned
   ⚠ prism          — COLLISION: both projects have "prism"
-                     → keep target's "prism" (frontend), rename source's to "prism (from backend)"
+                     → keep target's "prism", rename source's to "prism-x5k2m9a1"
+                     (legal ASCII slug; "(from backend)" saved as display note)
 
 Tickets (5 to reassign):
   ✓ tk_001 "Add auth endpoint"     — reassigned to target
@@ -128,7 +129,8 @@ sfs project merge proj_backend --into proj_frontend --execute --interactive
 `--interactive` prompts per collision:
 ```
 Collision: persona "prism" exists in both projects.
-[1] Keep target's "prism" (frontend) + rename source's to "prism (from backend)"
+[1] Keep target's "prism" (frontend) + rename source's to "prism-x5k2m9a1"
+    (legal ASCII slug; display note records the human-readable origin)
 [2] Overwrite target with source's "prism"
 [3] Keep both separate (skip merge for this persona)
 [4] Field-merge (take target's role/description, source's scopes)
@@ -141,7 +143,7 @@ Choose [1-4] (default: 1):
 
 | Entity | Default collision behavior | Rationale |
 |--------|---------------------------|-----------|
-| **Personas** | Keep target's version. Rename source's to `<name> (from <source-project-name>)`. | The target project is the "survivor" — the user explicitly chose A as the destination. A's personas keep their canonical names. B's personas are preserved (no data loss) but disambiguated. The user can manually reconcile afterward. |
+| **Personas** | Keep target's name. Rename source's to `{name}-{src8}` (e.g. `prism-a1b2c3d4`), a legal ASCII slug per the `^[A-Za-z0-9_-]{1,50}$` regex. The human-readable explanation ("Renamed from 'prism' in source project abc12345") is stored in the audit record's `persona_renames` JSON, NOT in the `name` field. | The target project is the "survivor" — the user explicitly chose A as the destination. A's personas keep their canonical names. B's personas are preserved (no data loss) but disambiguated with a machine-safe identifier. The user can manually reconcile afterward (perhaps rename to a friendlier but still-legal name via `sfs persona update`). |
 | **Rules** | Keep target's compiled rules. Archive source's compiled rules as a snapshot wiki page `rules (from <source-project-name>)`. | Rules are the project's governance surface. Merging two rule sets automatically is unpredictable — different LLM tools, different team conventions. Preserving the source as a reference page lets the user merge manually with full context. |
 | **Tickets** | All tickets are reassigned in place — `project_id` is updated from source to target. No new IDs, no copy semantics. Open tickets stay open. Closed tickets stay closed. | Ticket IDs are globally unique, so no collisions are possible. `depends_on` references remain valid because all tickets end up under the same project (dependencies are validated same-project at creation). This is the simplest correct model — no `merged_from` provenance needed. |
 | **Knowledge entries** | All entries are reassigned. Entries that are exact duplicates (same `entry_type` + normalized content) are silently skipped to avoid literal duplicates. No LLM semantic dedup (house rule: no server-side LLM keys). | KB entries are the memory record. We err on the side of preserving data, but literal duplicates serve no one. A future client-side `sfs project dedup` could do semantic dedup. |
@@ -275,7 +277,7 @@ Existing split projects continue to work exactly as today. Users are not forced 
 
 This section is the handoff to Atlas's `multi-repo-projects.md`:
 
-1. **Merge collision policy for personas:** Keep target, rename source to `<name> (from <project>)`. Field-merge is explicitly rejected as a default (privilege escalation risk). User can override with `--interactive`.
+1. **Merge collision policy for personas:** Keep target's name. Rename source to `{name}-{src8}` (legal ASCII slug ≤50 chars; e.g. `prism-a1b2c3d4`). Human-readable note lives in audit record. Field-merge is explicitly rejected as a default (privilege escalation risk). User can override with `--interactive`.
 2. **Merge collision policy for rules:** Keep target. Archive source as a wiki page snapshot.
 3. **Repo exclusivity:** One repo ∈ exactly one project. Unique constraint on the join table.
 4. **Org boundary:** All repos in a project must be in the same SessionFS org.
@@ -289,7 +291,7 @@ This section is the handoff to Atlas's `multi-repo-projects.md`:
 | Decision | Recommendation |
 |----------|---------------|
 | **Linking model** | Explicit link — user runs `sfs project link-repo <remote>`. Never auto-guess. |
-| **Merge collision default** | Keep target, rename source to `<name> (from <project>)`. No field-merge. |
+| **Merge collision default** | Keep target, rename source to `{name}-{src8}` (legal ASCII slug ≤50 chars). No field-merge. |
 | **Merge dry-run** | Mandatory default. `--execute` required to mutate. `--interactive` for per-collision control. |
 | **Repo exclusivity** | One repo ∈ exactly one project. Hard constraint. |
 | **Org boundary** | All repos must be in the same SessionFS org as the project. |

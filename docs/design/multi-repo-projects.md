@@ -11,6 +11,7 @@
 | Rev | Date | Changes |
 |-----|------|---------|
 | R1 | 2026-06-15 | Codex R1: 3 HIGH (primary-demotion order, stranded personas, tombstone-aware resolvers) + 4 MED (exhaustive resolver list 11→16, ticket reassign-in-place, is_primary partial index, provider fields) + 3 LOW (JSONB→Text JSON, promote source rules when target none, CLI link-repo naming). CEO calls applied: ticket=reassign-in-place, CLI=link-repo. Per-table merge matrix added. |
+| R2 | 2026-06-15 | Codex R2: 4 MED + 1 LOW. MED-1: dry-run writes zero DB rows (audit-row creation moved after dry-run return). MED-2: persona collision rename produces legal ASCII slug `{name}-{src8}` ≤50 chars (verified against `personas.py:45` regex `^[A-Za-z0-9_-]{1,50}$`); human-readable note in audit only; in-flight collision guard against other renamed personas. MED-3: wiki revision reassign uses `(project_id, page_slug)` not nonexistent `page_id` FK (verified `models.py:1054-1058`); revision-number uniqueness handled with offset numbering. MED-4: KnowledgeLink is map+dedup+reassign (not straight reassign) to avoid `uq_kl_link` violation (verified `models.py:1178`); entry-ID mapping from KnowledgeEntry dedup feeds link rewriting. LOW-5: `provider_repo_id` is server-derived/verified, not caller-trusted under unique constraint; added to Sentinel checklist. Residual: §10 test plan added. |
 
 ---
 
@@ -381,11 +382,10 @@ Link a repo to a project.
 ```json
 {
   "git_remote": "https://github.com/acme/backend.git",
-  "is_primary": false,
-  "provider": "github",
-  "provider_repo_id": "123456789"
+  "is_primary": false
 }
 ```
+`provider` and `provider_repo_id` are **server-derived**, not caller-supplied. The server resolves them from the provided `git_remote` using the configured provider (e.g. GitHub App installation context already available server-side). This prevents reservation/DoS attacks where an attacker could link a forged `provider_repo_id` to block a legitimate repo from being linked later (LOW-5). If server-side resolution fails (e.g. self-hosted GitLab, unknown provider), the fields are stored as NULL — the `UNIQUE(git_remote_normalized)` constraint remains the primary uniqueness guard.
 
 **Responses:**
 - `201` — linked, returns `ProjectRepoResponse`
@@ -447,7 +447,7 @@ The hardest part. Users who already have split projects (same logical product, d
 The v0.10.13 incident (`tk_bc3c02a63e994717`) taught us that multi-commit destructive operations are dangerous. The merge MUST be:
 
 1. **Single atomic transaction** — all or nothing. If anything fails mid-merge, the entire transaction rolls back and both projects are untouched.
-2. **Dry-run first** — `dry_run=True` (default) performs all validation and reports what WOULD happen without writing. `dry_run=False` executes.
+2. **Dry-run first** — `dry_run=True` (default) performs all validation and reports what WOULD happen without writing. **Provably non-mutating: zero DB rows written.** No audit row, no locks beyond reads. `dry_run=False` executes.
 3. **Audit-logged** — a `project_merge_audit` table records every merge attempt with before/after snapshots.
 4. **NOT undoable automatically** — like `bulk_promote`, the merge is one-way. The dry-run report IS the undo plan.
 
@@ -485,7 +485,28 @@ The `uq_persona_project_name` constraint (models.py:1220) means two personas wit
 
 **Overarching rule: EVERY source persona is reassigned to the target.** No persona is left on the tombstone project.
 
+**Name constraint:** Persona names MUST match `^[A-Za-z0-9_-]{1,50}$` (`src/sessionfs/server/routes/personas.py:45`). Spaces, parentheses, and other characters are INVALID. The rename slug uses a legal ASCII-safe format.
+
 ```python
+MAX_PERSONA_NAME = 50
+SOURCE_SUFFIX = source_id[:8]  # 8 chars, fits within max
+
+def _legal_rename(base_name: str, suffix: str, seen: set[str]) -> str:
+    """Produce a legal, unique, ≤50-char rename. Truncates base if needed."""
+    # Reserve space for '-' + suffix
+    max_base = MAX_PERSONA_NAME - len(suffix) - 1
+    truncated = base_name[:max_base]
+    candidate = f"{truncated}-{suffix}"
+    # If collision with existing (should be near-impossible with 8-char suffix),
+    # append incrementing counter
+    attempt = candidate
+    i = 1
+    while attempt in seen:
+        attempt = f"{candidate[:MAX_PERSONA_NAME - 2]}-{i}"
+        i += 1
+    return attempt
+
+
 async def _apply_persona_policy(db, source_id, target_id, policy):
     """Reassign ALL source personas to target, handling collisions per policy."""
     source_personas = (await db.execute(
@@ -496,13 +517,20 @@ async def _apply_persona_policy(db, source_id, target_id, policy):
         select(AgentPersona.name).where(AgentPersona.project_id == target_id)
     )).scalars().all())
 
-    renames = []
+    renames = []       # [{old_name, new_name, display_note}]
     for persona in source_personas:
         if persona.name in target_names:
             if policy == "rename":
-                new_name = f"{persona.name} (from {source_id[:8]})"
+                new_name = _legal_rename(persona.name, SOURCE_SUFFIX, target_names)
+                renames.append({
+                    "old_name": persona.name,
+                    "new_name": new_name,
+                    "display_note": f"Renamed from '{persona.name}' "
+                                    f"(source project {source_id[:8]}) — "
+                                    f"collided with target's persona of same name.",
+                })
                 persona.name = new_name
-                renames.append({"old": persona.name, "new": new_name})
+                target_names.add(new_name)  # guard against rename-rename collision
             elif policy == "skip":
                 persona.is_active = False  # soft-delete; survives as reference
             elif policy == "merge_content":
@@ -519,26 +547,28 @@ async def _apply_persona_policy(db, source_id, target_id, policy):
                 )
                 persona.is_active = False
         # REASSIGN — even colliding personas move to target
-        # (colliders are renamed/soft-deleted by policy above)
         persona.project_id = target_id
 
     return renames
 ```
 
-**Policy (Compass recommendation — apply as default):** Keep target's persona, rename source's to `<name> (from <source-id-prefix>)`. Users can override with the CLI `--interactive` flag at merge time. The merge audit records all renames.
+**Policy (Compass recommendation — apply as default):** Keep target's persona name. Rename colliding source personas to `{name}-{src8}` (e.g. `prism-a1b2c3d4`), a legal slug ≤50 chars. The human-readable explanation lives in the audit row's `persona_renames` JSON (`display_note` field). Users can override with the CLI `--interactive` flag at merge time. The merge audit records all renames.
 
-### 5.5 Knowledge Entry Dedup
+### 5.5 Knowledge Entry Dedup + KnowledgeLink Rewriting
 
-Best-effort exact-match dedup (no LLM — house rules: no server-side LLM keys):
+**KnowledgeEntry dedup:** Best-effort exact-match dedup (no LLM — house rules: no server-side LLM keys).
 
 ```python
 async def _dedupe_knowledge_entries(db, source_id, target_id):
-    """Skip source entries that have an exact content+type match in target."""
+    """Build an entry-ID mapping, skip exact dupes, return the map.
+    
+    Returns a dict: source_entry_id → target_equivalent_id.
+    Reassigned (non-dup) entries map to themselves (identity).
+    """
     target_entries = (await db.execute(
         select(KnowledgeEntry.entry_type, KnowledgeEntry.content, KnowledgeEntry.id)
         .where(KnowledgeEntry.project_id == target_id)
     )).all()
-    # Build lookup key: (entry_type, normalized_content)
     target_keys = {
         (e.entry_type, _normalize_content(e.content)): e.id
         for e in target_entries
@@ -548,17 +578,65 @@ async def _dedupe_knowledge_entries(db, source_id, target_id):
         select(KnowledgeEntry).where(KnowledgeEntry.project_id == source_id)
     )).scalars().all()
 
-    skipped = []
+    entry_id_map = {}  # source_id → target_id (or self for reassigned)
+    skipped_ids = []
     for entry in source_entries:
         key = (entry.entry_type, _normalize_content(entry.content))
         if key in target_keys:
-            skipped.append(entry.id)
-            # Don't reassign — it's a duplicate
+            entry_id_map[entry.id] = target_keys[key]  # redirect to target equivalent
+            skipped_ids.append(entry.id)
+            # Do NOT reassign — it's a duplicate
         else:
-            entry.project_id = target_id  # reassign unique entries
+            entry.project_id = target_id  # reassign unique entry
+            entry_id_map[entry.id] = entry.id  # identity mapping (stable ID)
 
-    return skipped
+    return entry_id_map, skipped_ids
 ```
+
+**KnowledgeLink handling (MED-4 fix):** `KnowledgeLink` has a uniqueness constraint `uq_kl_link` on `(project_id, source_type, source_id, target_type, target_id)` (`models.py:1178`). Straight reassign would violate this if the target already has the same link. And links referencing a skipped (deduped) source entry would dangle.
+
+**Fix — map + dedup + reassign:**
+
+```python
+async def _reassign_knowledge_links(db, source_id, target_id, entry_id_map):
+    """Reassign source links, rewriting IDs through the entry map and
+    merging duplicates with target links."""
+    source_links = (await db.execute(
+        select(KnowledgeLink).where(KnowledgeLink.project_id == source_id)
+    )).scalars().all()
+
+    # Fetch existing target links for dedup
+    target_links = (await db.execute(
+        select(KnowledgeLink).where(KnowledgeLink.project_id == target_id)
+    )).scalars().all()
+    target_link_keys = {
+        (lk.source_type, lk.source_id, lk.target_type, lk.target_id)
+        for lk in target_links
+    }
+
+    skipped_link_ids = []
+    for link in source_links:
+        # Rewrite source_id + target_id through the entry map
+        new_source_id = entry_id_map.get(link.source_id, link.source_id)
+        new_target_id = entry_id_map.get(link.target_id, link.target_id)
+
+        link.project_id = target_id
+        link.source_id = new_source_id
+        link.target_id = new_target_id
+
+        # Dedup: skip if target already has this link
+        key = (link.source_type, link.source_id, link.target_type, link.target_id)
+        if key in target_link_keys:
+            skipped_link_ids.append(link.id)
+            # Don't add — it duplicates an existing target link
+        else:
+            target_link_keys.add(key)  # in-flight guard: prevent self-collision
+            # Link is already mutated in-place; will be flushed
+
+    return skipped_link_ids
+```
+
+The entry-ID map is built during KnowledgeEntry dedup (§5.5 step) and fed to link reassignment. Links referencing skipped entries are rewritten to point at the target's equivalent entry; links that would duplicate an existing target link are dropped.
 
 ### 5.6 ProjectRules Conflict
 
@@ -575,7 +653,46 @@ async def _dedupe_knowledge_entries(db, source_id, target_id):
 
 ### 5.7 Wiki Page Slug Collisions
 
-If both projects have a page at slug `architecture`, the source page is renamed to `architecture (from {source_id[:8]})`. Its revision history stays intact. The merge audit records the rename.
+If both projects have a page at slug `architecture`, the source page is renamed to a legal slug (e.g. `architecture-{source_id[:8]}`). The merge audit records the rename.
+
+**Page/revision relationship:** `KnowledgePage` and `WikiPageRevision` are linked by `(project_id, page_slug)` — there is NO `page_id` FK (`models.py:1054-1058`). When a slug is renamed, the revisions must follow atomically:
+
+```python
+async def _apply_slug_renames(db, source_id, target_id, slug_collisions):
+    """Rename colliding source pages + reassign their revisions."""
+    renames = []
+    for old_slug, new_slug in slug_collisions:
+        # 1. Rename the KnowledgePage row
+        await db.execute(
+            update(KnowledgePage)
+            .where(KnowledgePage.project_id == source_id, KnowledgePage.slug == old_slug)
+            .values(slug=new_slug, project_id=target_id)
+        )
+        # 2. Re-point ALL revisions for this slug (project_id + page_slug)
+        await db.execute(
+            update(WikiPageRevision)
+            .where(WikiPageRevision.project_id == source_id,
+                   WikiPageRevision.page_slug == old_slug)
+            .values(project_id=target_id, page_slug=new_slug)
+        )
+        renames.append({"old_slug": old_slug, "new_slug": new_slug})
+
+    # 3. Reassign NON-colliding pages + their revisions
+    await db.execute(
+        update(KnowledgePage)
+        .where(KnowledgePage.project_id == source_id)
+        .values(project_id=target_id)
+    )
+    await db.execute(
+        update(WikiPageRevision)
+        .where(WikiPageRevision.project_id == source_id)
+        .values(project_id=target_id)
+    )
+
+    return renames
+```
+
+**Revision-number uniqueness:** `uq_wiki_revisions_number` is `(project_id, page_slug, revision_number)` (`models.py:1046-1050`). After reassigning source revisions to the target project with a NEW slug (via rename), there is zero risk of collision because the target project has no revisions for that slug yet. The source-only slug case (no collision) is safe because `revision_number` sequences are per-page and the source page didn't exist in the target. **No renumbering needed** — uniqueness is preserved by the slug being distinct.
 
 ### 5.8 Repo Reassignment (with HIGH-1 Fix — Primary Demotion Order)
 
@@ -639,12 +756,12 @@ This is the single source of truth for the merge implementer. The transaction ps
 | Table | Mutation | Order | Uniqueness at risk | Collision behavior | Rollback/audit note |
 |-------|----------|-------|--------------------|--------------------|---------------------|
 | `project_repos` | **Demote primary** (source), then **reassign** all to target | 1 | `uq_project_repos_primary` partial index (source + target primaries collide) | Demote source primary BEFORE reassign. If target has no primary, promote oldest source repo. | Lock rows with FOR UPDATE first. |
-| `agent_personas` | **Reassign** all to target | 2 | `uq_persona_project_name` (project_id, name) | Collision: rename source to `{name} (from {source_id[:8]})` (default). Also: skip, merge_content. | Records renames in `persona_renames`. |
+| `agent_personas` | **Reassign** all to target | 2 | `uq_persona_project_name` (project_id, name) | Collision: rename source to `{name}-{src8}` (legal ASCII slug ≤50 chars; human-readable note in audit). Also: skip, merge_content. In-flight guard: each rename added to `target_names` set. | Records renames in `persona_renames` (old_name, new_name, display_note). |
 | `project_rules` | **Promote** if target none; **archive** source + keep target if both exist | 3 | `project_rules.project_id` UNIQUE | Target wins on conflict. Source archived as `_merged_rules_{source_id[:8]}` wiki page. | Records action in `rules_action`. |
-| `knowledge_pages` | **Reassign**, rename slug collisions | 4 | `knowledge_pages` slug uniqueness within project | Rename source slug to `{slug} (from {source_id[:8]})`. | Records renames in `slug_renames`. |
-| `wiki_page_revisions` | **Reassign** (after page slug resolution) | 5 | None (revisions are FK'd to pages) | Page re-pointing handled by slug collision step. | |
+| `knowledge_pages` | **Reassign**; rename slug collisions to `{slug}-{src8}` | 4 | `knowledge_pages` slug uniqueness within project | Rename source slug. Revisions follow atomically in the same step (linked by `project_id`+`page_slug`, not a `page_id` FK). | Records renames in `slug_renames`. |
+| `wiki_page_revisions` | **Reassign** (handled atomically WITH page slug rename — NOT a separate step) | 5 | `uq_wiki_revisions_number` (project_id, page_slug, revision_number) | No renumbering needed: renamed pages get a unique slug, non-colliding pages get unique project_id. | Audit via slug_renames; revisions are FK'd to pages by (project_id, page_slug). |
 | `knowledge_entries` | **Reassign** unique; **skip** exact duplicates | 6 | None (entries are FK'd to project, no name uniqueness) | Exact (entry_type, normalized_content) match → skip. No LLM semantic dedup. | Records skipped IDs in `skipped_ke_ids`. |
-| `knowledge_links` | **Reassign** | 7 | None | Straight reassign. | |
+| `knowledge_links` | **Map + dedup + reassign** (not straight reassign) | 7 | `uq_kl_link` (project_id, source_type, source_id, target_type, target_id) | Rewrite source_id/target_id through entry-ID map from KE dedup step. Skip links that duplicate an existing target link. In-flight guard prevents self-collision. | Records skipped IDs. |
 | `tickets` | **Reassign-in-place** | 8 | None (ticket IDs globally unique) | No collision possible. `depends_on` stays valid (same-project validation at creation). | CEO decision: reassign, not copy. |
 | `agent_runs` | **Reassign** | 9 | None | Straight reassign. `persona_name`/`ticket_id` are plain strings, survive unchanged. | |
 | `sessions` | **Reassign** | 10 | None (nullable FK, ON DELETE SET NULL) | Straight reassign. Sessions keep original `git_remote_normalized` tag (denormalized). | |
@@ -681,16 +798,17 @@ async def merge_projects(db, source_id, target_id, user_id, dry_run, persona_pol
         persona_collisions, slug_collisions, ke_duplicates,
         source_has_rules, target_has_rules)
 
-    # Write audit row FIRST (separate transaction — survives merge failure)
-    audit = ProjectMergeAudit(...)
-    db.add(audit)
-    await db.commit()  # audit is durable before merge begins
-
     if dry_run:
-        return {"dry_run": True, "stats": stats, ...}
+        # Dry-run: ZERO DB writes. Validate + return stats only.
+        return {"dry_run": True, "stats": stats,
+                "persona_collisions": persona_collisions,
+                "slug_collisions": slug_collisions,
+                "ke_duplicates": ke_duplicates}
 
     # Phase 2: WRITE — single atomic transaction
-    # (new transaction — if any step fails, everything rolls back EXCEPT the audit row)
+    # Audit row is created INSIDE the write transaction and committed
+    # atomically with the merge — if the merge fails, no audit row is
+    # left behind (the error is returned to the caller instead).
     async with db.begin():
         # ORDER MATTERS — follows merge matrix exactly:
 
@@ -742,20 +860,25 @@ async def merge_projects(db, source_id, target_id, user_id, dry_run, persona_pol
                 rules_action = "promoted"
 
         # Step 4: KNOWLEDGE_PAGES — reassign + rename slug collisions
+        # ALSO reassign wiki_page_revisions atomically (MED-3 fix)
         slug_renames = await _apply_slug_renames(db, source_id, target_id, slug_collisions)
 
-        # Step 5: WIKI_PAGE_REVISIONS — reassign (after slug resolution)
-        await db.execute(
-            update(WikiPageRevision).where(WikiPageRevision.page_id.in_(
-                select(KnowledgePage.id).where(KnowledgePage.project_id == source_id)
-            )).values(/* handled by page reassign */)
-        )
-        # (Revisions follow pages; slug renames above update page slugs)
+        # Step 5: (merged into Step 4 — wiki_page_revisions follow pages atomically)
 
-        # Steps 6-15: Remaining tables — reassign in order
-        for model in [KnowledgeEntry, KnowledgeLink, Ticket, AgentRun,
-                       SessionModel, HandoffAttachment, ProjectTransfer,
-                       ContextCompilation, RetrievalAuditContext, RetrievalAuditEvent]:
+        # Step 6: KNOWLEDGE_ENTRIES — dedup + build entry-ID map
+        entry_id_map, skipped_ke_ids = await _dedupe_knowledge_entries(
+            db, source_id, target_id
+        )
+
+        # Step 7: KNOWLEDGE_LINKS — map + dedup + reassign (MED-4 fix)
+        skipped_link_ids = await _reassign_knowledge_links(
+            db, source_id, target_id, entry_id_map
+        )
+
+        # Steps 8-15: Remaining tables — straight reassign in order
+        for model in [Ticket, AgentRun, SessionModel, HandoffAttachment,
+                       ProjectTransfer, ContextCompilation,
+                       RetrievalAuditContext, RetrievalAuditEvent]:
             await db.execute(
                 update(model).where(model.project_id == source_id)
                 .values(project_id=target_id)
@@ -774,6 +897,23 @@ async def merge_projects(db, source_id, target_id, user_id, dry_run, persona_pol
             .values(project_id=target_id)
         )
 
+        # Step 18: Write audit row (atomically with the merge — MED-1 fix)
+        audit = ProjectMergeAudit(
+            id=generate_id(),
+            source_project_id=source_id,
+            target_project_id=target_id,
+            initiated_by_user_id=user_id,
+            dry_run=False,
+            persona_policy=persona_policy,
+            stats=json.dumps(stats),
+            persona_renames=json.dumps(persona_renames),
+            slug_renames=json.dumps(slug_renames),
+            skipped_ke_ids=json.dumps(skipped_ke_ids),
+            rules_action=rules_action,
+        )
+        db.add(audit)
+        await db.flush()  # surface audit.id before commit
+
     # Commit happens at context-manager exit — all-or-nothing
 
     return {"dry_run": False, "stats": stats, "audit_id": audit.id}
@@ -782,7 +922,7 @@ async def merge_projects(db, source_id, target_id, user_id, dry_run, persona_pol
 ### 5.13 Rollback + Race Guarantee
 
 - **Atomicity:** Single `async with db.begin()` block. Any step failure → full rollback. Both projects untouched.
-- **Audit survival:** Audit row committed in a prior transaction, so failed merges are recorded (with `error_message` populated).
+- **Audit survival:** Audit row is written INSIDE the merge transaction (step 18), so it commits atomically with the merge or not at all. If the merge fails, the error is returned to the caller; no orphan audit row is left behind. (Dry-run writes nothing — MED-1.)
 - **Concurrent-sync race (HIGH-3 fix):**
   - (a) Step 17 (catch-up UPDATE) catches sessions that landed on `source_id` during the merge window
   - (b) `resolve_project_by_remote()` is tombstone-aware — transparently follows `merged_into_project_id` chain, so any post-merge session sync that resolves via a source-project remote lands on the target
@@ -802,7 +942,7 @@ async def merge_projects(db, source_id, target_id, user_id, dry_run, persona_pol
 
 ### 6.2 Repo Hijacking Prevention
 
-The global `UNIQUE(git_remote_normalized)` on `project_repos` + `UNIQUE(provider, provider_repo_id)` partial index prevent double-linking at the database level. The `provider_repo_id` constraint additionally catches rename-bypass attempts (renaming a repo on GitHub → different normalized remote → same provider_repo_id → UNIQUE violation).
+The global `UNIQUE(git_remote_normalized)` on `project_repos` + `UNIQUE(provider, provider_repo_id)` partial index prevent double-linking at the database level. `provider_repo_id` is server-derived (not caller-supplied), preventing reservation/DoS attacks where an attacker could link a forged ID to block a legitimate repo. The provider-ID constraint additionally catches rename-bypass attempts (renaming a repo on GitHub → different normalized remote → same provider_repo_id → UNIQUE violation).
 
 ### 6.3 Cross-Org Boundary
 
@@ -876,11 +1016,16 @@ Before any implementation code is written, Sentinel must review:
 - [ ] Service keys: scoped `project_ids` post-merge (Appendix B.1)
 - [ ] Race: two users simultaneously linking same remote to different projects? (UNIQUE constraint + 409)
 - [ ] Race: merge + concurrent session sync? (Catch-up UPDATE + tombstone redirect close the window.)
+- [ ] Dry-run: provably zero DB writes? No audit row, no locks beyond reads? (MED-1)
+- [ ] Persona rename: are generated names legal under `^[A-Za-z0-9_-]{1,50}$`? In-flight collision guard against rename-rename collision? (MED-2)
+- [ ] Wiki revisions: are they reassigned by `(project_id, page_slug)` not a nonexistent `page_id` FK? Is `uq_wiki_revisions_number` preserved after reassign? (MED-3)
+- [ ] KnowledgeLink: is entry-ID mapping built before link reassignment? Are duplicates detected and skipped? Does the in-flight dedup guard prevent self-collision within the batch? (MED-4)
+- [ ] `provider_repo_id`: is it server-derived from git_remote, never trusted from caller input? (LOW-5)
 
 ### 8.2 Shield-SR Security Review Checklist
 
 - [ ] Repo hijacking: can a user link a repo they don't have access to?
-- [ ] Provider-repo-ID bypass: can linking with a forged `provider_repo_id` block a legitimate link?
+- [ ] Provider-repo-ID injection: is the server-derived path watertight? Can a caller forge provider metadata to DoS/reserve a legitimate repo? (LOW-5: server resolves provider_repo_id from git_remote; caller input is ignored.)
 - [ ] Cross-org linking: UNIQUE constraint prevents DB-level double-link, but is app-layer check watertight?
 - [ ] Merge authz: can a non-owner merge two projects? Org-membership edge cases?
 - [ ] Service key project boundary: `assert_service_key_handoff_boundary` correct with multi-repo?
@@ -892,7 +1037,70 @@ Before any implementation code is written, Sentinel must review:
 
 ---
 
-## 9. Implementation Order
+## 9. Test Plan (Design-Time — Implement at Build)
+
+These tests MUST be written alongside the implementation, keyed to the merge matrix (§5.11). One test class per merge step.
+
+### 9.1 Project Repos (Step 1)
+- [ ] Primary demotion: source+target both have primary → demote fires first → reassign succeeds → only target primary remains
+- [ ] Primary promotion: target has no primary → oldest source repo promoted to primary after reassign
+- [ ] Last-repo guard: unlinking last repo → 422
+- [ ] provider_repo_id uniqueness: linking same (provider, repo_id) where both non-null → IntegrityError / app-level guard
+
+### 9.2 Personas (Step 2)
+- [ ] Unique names: all source personas reassigned, no name collisions with target → success
+- [ ] Name collision — rename: source "atlas" collides → renamed to `atlas-a1b2c3d4` (legal regex) → target now has both
+- [ ] Name collision — truncation: persona name is 50 chars → truncated to 41 + `-` + 8-char suffix = 50 → passes regex
+- [ ] Name collision — rename-rename: two source personas both collide AND would produce the same rename slug → suffix counter increments → both get unique names
+- [ ] Name collision — skip: source persona is_active=False after merge, not visible in target
+- [ ] Name collision — merge_content: source persona content appended to target persona content
+- [ ] ALL source personas reassigned: zero personas remain on source project_id after merge
+
+### 9.3 ProjectRules (Step 3)
+- [ ] Source+target both have rules → source archived as wiki page, target kept
+- [ ] Source has rules, target none → source reassigned (promoted)
+- [ ] Neither has rules → no change
+
+### 9.4 Knowledge Pages + Wiki Revisions (Steps 4-5)
+- [ ] Slug collision: source "architecture" collides → renamed to `architecture-a1b2c3d4` → revisions follow with new `(project_id, page_slug)`
+- [ ] No collision: all pages + revisions reassigned, `uq_wiki_revisions_number` preserved
+- [ ] Revision numbering: source page with 5 revisions, no target conflict → all 5 reassigned, (project_id, page_slug, rev_N) tuples unique
+
+### 9.5 Knowledge Entries (Step 6)
+- [ ] Exact duplicate: same (entry_type, normalized_content) → source skipped, target equivalent ID recorded in entry_id_map
+- [ ] Near-duplicate (not exact): different whitespace → both kept (no semantic dedup)
+- [ ] Unique: source entry with no match → reassigned, identity-mapped in entry_id_map
+
+### 9.6 Knowledge Links (Step 7)
+- [ ] Reference to deduped entry: link.source_id is a skipped entry → rewritten to target's equivalent entry ID via entry_id_map
+- [ ] Duplicate link: source link matches existing target link → skipped
+- [ ] Self-collision guard: two source links would become duplicates of each other after rewrite → second one skipped
+- [ ] Both source_id and target_id rewritten through map: verify both directions
+
+### 9.7 Tickets (Step 8)
+- [ ] All tickets reassigned: UPDATE tickets SET project_id=target → success
+- [ ] depends_on validity: ticket with depends_on referencing another source ticket → both reassigned → reference still valid (same project now)
+- [ ] Cross-project depends_on: confirm it CANNOT exist today (enforced at creation)
+
+### 9.8 Sessions + Catch-up (Steps 10, 17)
+- [ ] Concurrent session sync: simulate session landing on source_id during merge → step 17 catch-up catches it → session ends up on target
+- [ ] Tombstone redirect: after merge, resolve_project_by_remote(source_remote) → returns target project (not tombstone)
+
+### 9.9 Merge Transaction Integrity
+- [ ] Atomic rollback: inject failure mid-merge → both projects untouched, zero rows changed
+- [ ] Dry-run: call with dry_run=True → zero DB writes, no audit row, stats returned correctly
+- [ ] Double-merge guard: attempt to merge already-merged project → 400
+
+### 9.10 Endpoint Tests
+- [ ] POST link-repo: success, 409 (already linked), 403 (not authorized), 422 (cross-org)
+- [ ] DELETE unlink-repo: success, 422 (last repo)
+- [ ] GET repos: returns list with is_primary, provider, provider_repo_id
+- [ ] GET /projects/{remote}: resolves through project_repos, tombstone-aware (410 for merged)
+- [ ] POST merge: dry-run returns stats, execute returns audit_id, 400 cross-org, 400 already-merged
+
+---
+
+## 10. Implementation Order
 
 1. **Migration 049** — `project_repos` + partial indexes + `merged_into_project_id` on projects + `project_merge_audit`
 2. **Shared helpers** — `resolve_project_by_remote()`, `resolve_project_by_id()`, `get_primary_remote()`
