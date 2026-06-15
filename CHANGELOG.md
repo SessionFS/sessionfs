@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.30] - 2026-06-14
+
+**Dashboard visual redesign — top-tier, dark-first "mission control for AI sessions."** A multi-phase craft pass over the entire web dashboard, reviewed across multiple consolidated Codex rounds to VERIFIED-CLEAN. Frontend + product-site only: no backend changes, no DB migrations (still 001–048), no MCP tool changes (still 62), no auth changes. Backend remains 2179 tests; dashboard 369 UI tests (was 198).
+
+### Added
+
+- **Design-token foundation** — dark-first OKLCH color ladder, a canonical named type scale (`text-2xs` → `text-lg`), and a radius scale, all in Tailwind v4 `@theme`. Semantic utilities (`bg-surface`, `text-text-primary`, `border-border`, `--bg-sunken` wells, hairline borders) replace ad-hoc inline styles and arbitrary `[var(--…)]` classes across the app.
+- **`ui/` primitive library** — Button, Card, Input/Textarea/Select, Dialog, Tabs, Table, Dropdown, Tooltip, Kbd. The Select/Dropdown is a custom anchored, keyboard-accessible (`aria-activedescendant`) listbox that fixes the detached far-right native-popup bug.
+- **Grouped left sidebar** replacing the old top nav (shared config with the mobile drawer), with hero activation cards for empty states and a compact resume bar.
+- **List/grid view toggle** on both Sessions and Projects (persisted per-view to `localStorage`).
+- **Captured-session conversation redesign** — tool-aware rendering replaces raw `JSON.stringify` dumps: Bash commands in terminal-style wells, Edit/MultiEdit as real added/removed diffs, file-path/pattern chips, `tool_result` in sunken wells with error detection + line-clamp + copy; a real transcript with speaker hierarchy (role accent rails + uppercase role chips), assistant markdown on our type scale with copy-able fenced-code wells, and de-emphasized collapsible thinking blocks.
+- **Account/avatar menu** with Settings · Help · Logout (primary navigation stays in the sidebar, not duplicated).
+
+### Changed
+
+- **Brand tagline → "Memory Layer For AI Agents"** across the dashboard (header, footer, wordmark) and the product site (meta/OG, layout, landing).
+- **Security hardening:** `react-router-dom` / `@tanstack/react-query` / `react-markdown` moved from `devDependencies` to `dependencies` so the release `npm audit --omit=dev` gate covers them (react-router resolves to 7.17.0, clearing 2 HIGH advisories); a `site/` esbuild override (`>=0.28.1`) clears 6 HIGH transitive build-time advisories.
+
+### Fixed
+
+- **SessionDetail white-screen crash** — a `useMemo` and derived values were computed after the loading/error early-return guards, so the loaded render invoked more hooks than the loading render ("Rendered more hooks than during the previous render"). Hoisted them above the guards; added a loading→loaded transition regression test that fails on any hook-after-early-return.
+- **Avatar menu missing Settings** — the earlier account-menu slim removed all items including Settings; restored Settings + Help (the conventional account-menu items) while keeping primary nav sidebar-only.
+- Header overflow that clipped the account menu; dead handoffs docs links; dark-theme text contrast on raised surfaces.
+
 ## [0.10.29] - 2026-06-11
 
 **Named auth profiles (multi-account on one device) + cloud dashboard 428 fix.** Two workstreams, both Codex-reviewed to CLEAN (profiles R1 1 HIGH + 2 MED + 1 LOW → R2 1 MED → R3 VERIFIED-CLEAN; CORS R1 CLEAN). No DB migrations (still 001–048). MCP tool count unchanged (62).
