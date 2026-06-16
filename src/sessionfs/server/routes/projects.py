@@ -72,10 +72,22 @@ class ProjectResponse(BaseModel):
 
 
 async def _check_repo_access(db: AsyncSession, user_id: str, git_remote: str) -> bool:
-    """Check if user has sessions in this repo (grants read/write access)."""
+    """Check if user has sessions in this repo (grants read/write access).
+
+    P2 (§3.3 B6): resolve the project for this remote first, then
+    check by project_id (not git_remote_normalized).  After multi-repo,
+    project.git_remote_normalized is only the primary remote; a user
+    with sessions on non-primary repos should still have access.
+    """
+    from sessionfs.server.services.project_resolver import (
+        resolve_project_by_remote,
+    )
+    project = await resolve_project_by_remote(db, git_remote)
+    if project is None:
+        return False
     stmt = (
         select(Session.id)
-        .where(Session.user_id == user_id, Session.git_remote_normalized == git_remote)
+        .where(Session.user_id == user_id, Session.project_id == project.id)
         .limit(1)
     )
     result = await db.execute(stmt)
@@ -115,34 +127,46 @@ async def list_projects(
 
     # Get projects: owned by user OR scoped to an org the user is a
     # member of OR matching user's session remotes.
+    # P2 (§3.3 B4): match through project_repos (any of the project's
+    # repos matches a remote the user has sessions on) with legacy
+    # primary-remote fallback.
     user_org_ids_stmt = select(OrgMember.org_id).where(OrgMember.user_id == user.id)
     conditions = [
         Project.owner_id == user.id,
         Project.org_id.in_(user_org_ids_stmt),
     ]
     if user_remotes:
-        conditions.append(Project.git_remote_normalized.in_(user_remotes))
+        from sessionfs.server.db.models import ProjectRepo
+        multi_repo_match = select(ProjectRepo.project_id).where(
+            ProjectRepo.git_remote_normalized.in_(user_remotes)
+        )
+        conditions.append(or_(
+            Project.git_remote_normalized.in_(user_remotes),  # legacy fallback
+            Project.id.in_(multi_repo_match),                  # multi-repo path
+        ))
     stmt = select(Project).where(or_(*conditions)).order_by(Project.updated_at.desc())
     result = await db.execute(stmt)
     projects: list[Project] = list(result.scalars().all())
 
-    # Count sessions per git remote for the user
+    # P2 (§3.3 B5): count sessions by project_id, not git_remote_normalized.
+    # After multi-repo, a user may have sessions on any of the project's
+    # repos — all count toward the same project.
     if projects:
-        remotes = [p.git_remote_normalized for p in projects]
+        project_ids = [p.id for p in projects]
         count_stmt = (
             select(
-                Session.git_remote_normalized,
+                Session.project_id,
                 func.count(Session.id).label("cnt"),
             )
             .where(
                 Session.user_id == user.id,
-                Session.git_remote_normalized.in_(remotes),
+                Session.project_id.in_(project_ids),
             )
-            .group_by(Session.git_remote_normalized)
+            .group_by(Session.project_id)
         )
         count_result = await db.execute(count_stmt)
         session_counts: dict[str, int] = {
-            row.git_remote_normalized: row.cnt for row in count_result
+            row.project_id: row.cnt for row in count_result
         }
     else:
         session_counts = {}
@@ -156,7 +180,7 @@ async def list_projects(
             owner_id=p.owner_id,
             created_at=p.created_at,
             updated_at=p.updated_at,
-            session_count=session_counts.get(p.git_remote_normalized, 0),
+            session_count=session_counts.get(p.id, 0),
             auto_narrative=getattr(p, "auto_narrative", False),
             kb_retention_days=getattr(p, "kb_retention_days", 180),
             kb_max_context_words=getattr(p, "kb_max_context_words", 8000),
@@ -257,11 +281,20 @@ async def create_project(
 ) -> ProjectResponse:
     """Create a project context for a repository."""
     check_feature(ctx, "project_context")
-    # Check for existing project
+    # Check for existing project — both the legacy projects table column
+    # AND the project_repos join table (multi-repo P2 A4).
     stmt = select(Project).where(Project.git_remote_normalized == body.git_remote_normalized)
     result = await db.execute(stmt)
     existing = result.scalar_one_or_none()
     if existing:
+        raise HTTPException(409, "Project already exists for this repository")
+    from sessionfs.server.db.models import ProjectRepo
+    repo_check = await db.execute(
+        select(ProjectRepo.id).where(
+            ProjectRepo.git_remote_normalized == body.git_remote_normalized,
+        ).limit(1)
+    )
+    if repo_check.scalar_one_or_none() is not None:
         raise HTTPException(409, "Project already exists for this repository")
 
     # v0.10.0 Phase 5 — validate org_id if provided. Caller must be a
@@ -370,15 +403,61 @@ async def get_project(
     User must be the project owner, a member of the project's org
     (v0.10.22 — tk_7a457574c5624e12), or have captured at least one
     session on this git remote.
+
+    Multi-repo aware (P2): resolves through project_repos join table.
+    Tombstone-aware (F4): merged projects return 410 with merged_into
+    target, gated by access check on the source first.  Unauthorized
+    callers get opaque 404 — the target id is never leaked.
     """
     from sessionfs.server.auth.project_access import user_can_access_project
+    from sessionfs.server.services.project_resolver import (
+        ProjectResolutionLoopError,
+        resolve_project_by_id,
+        resolve_project_by_remote,
+    )
 
-    stmt = select(Project).where(Project.git_remote_normalized == git_remote_normalized)
-    result = await db.execute(stmt)
-    project = result.scalar_one_or_none()
+    # Resolve without following tombstones first — we need to detect
+    # the tombstone so we can run F4's access-on-source-before-disclose.
+    try:
+        project = await resolve_project_by_remote(
+            db, git_remote_normalized, follow_tombstone=False,
+        )
+    except ProjectResolutionLoopError:
+        raise HTTPException(409, {
+            "error": "resolution_loop",
+            "message": "Project resolution exceeded hop limit — possible data corruption.",
+        })
+
     if not project:
         raise HTTPException(404, "No project context found")
 
+    # F4 tombstone: source access check before disclosing merged_into.
+    if project.merged_into_project_id:
+        if not await user_can_access_project(db, user.id, project):
+            # Unauthorized → opaque 404 (do not leak tombstone existence).
+            raise HTTPException(404, "No project context found")
+        # F5: re-authorize on the resolved/redirected target.
+        target = await resolve_project_by_id(
+            db, project.merged_into_project_id,
+        )
+        if target is None:
+            raise HTTPException(404, "No project context found")
+        if not await user_can_access_project(db, user.id, target):
+            raise HTTPException(403, "No access to this project")
+        raise HTTPException(
+            status_code=410,
+            detail={
+                "error": "project_merged",
+                "merged_into": target.id,
+                "message": (
+                    f"This project was merged into "
+                    f"{target.name or target.id[:12]}."
+                ),
+            },
+        )
+
+    # Not a tombstone — run access check on the resolved project (F5:
+    # resolver resolves, we authorize).
     if not await user_can_access_project(db, user.id, project):
         raise HTTPException(403, "No access to this project")
 
@@ -404,12 +483,25 @@ async def update_project_context(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Update the project context document."""
-    from sessionfs.server.auth.project_access import user_can_access_project
+    """Update the project context document.
 
-    stmt = select(Project).where(Project.git_remote_normalized == git_remote_normalized)
-    result = await db.execute(stmt)
-    project = result.scalar_one_or_none()
+    Multi-repo aware (P2): resolves through project_repos join table.
+    F5: access check runs against the resolved project (resolver
+    resolves, we authorize).
+    """
+    from sessionfs.server.auth.project_access import user_can_access_project
+    from sessionfs.server.services.project_resolver import (
+        ProjectResolutionLoopError,
+        resolve_project_by_remote,
+    )
+
+    try:
+        project = await resolve_project_by_remote(db, git_remote_normalized)
+    except ProjectResolutionLoopError:
+        raise HTTPException(409, {
+            "error": "resolution_loop",
+            "message": "Project resolution exceeded hop limit — possible data corruption.",
+        })
     if not project:
         raise HTTPException(404, "No project context found")
 

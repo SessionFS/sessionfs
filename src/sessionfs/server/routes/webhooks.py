@@ -135,7 +135,10 @@ async def _handle_pr_event(payload: dict) -> None:
                 installation.include_session_links if installation else True
             )
 
-            # Find matching sessions
+            # C-site (§2.2C C5): webhook PR-matching filters sessions
+            # by denormalized git_remote_normalized tag — NOT project
+            # resolution.  Sessions carry their own remote tag; this
+            # filters to find sessions for the PR's repo+branch.
             result = await db.execute(
                 select(Session)
                 .where(
@@ -335,11 +338,12 @@ async def _handle_gitlab_mr(
             if not normalized:
                 return
 
-            # Find matching sessions. When the webhook was authenticated via
-            # a per-user secret, scope to that user so a forged payload for
-            # a repo belonging to a DIFFERENT user can't use another user's
-            # credentials. Global-secret auth (auth_user_id is None) is
-            # trusted and can match across all users' sessions.
+            # C-site (§2.2C C5): same webhook PR-matching pattern as
+            # the GitHub path above — sessions filtered by denormalized
+            # tag, NOT project resolution.
+            # When the webhook was authenticated via a per-user secret,
+            # scope to that user so a forged payload for a repo belonging
+            # to a DIFFERENT user can't use another user's credentials.
             stmt = select(Session).where(
                 Session.git_remote_normalized == normalized,
                 Session.git_branch == branch,

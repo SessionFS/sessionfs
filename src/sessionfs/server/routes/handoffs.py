@@ -337,18 +337,17 @@ async def create_handoff(
     # Attachments — stored with project_id (R2 MEDIUM #3) so the
     # recipient-side validator can do unambiguous (project_id, kind,
     # ref_id) lookup at claim time without slug ambiguity.
-    project_id_for_atts: str | None = None
-    if body.attachments and session.git_remote_normalized:
-        from sessionfs.server.db.models import Project
-
-        proj = (
-            await db.execute(
-                select(Project.id).where(
-                    Project.git_remote_normalized == session.git_remote_normalized
-                )
-            )
-        ).scalar_one_or_none()
-        project_id_for_atts = proj
+    # P2 (§3.3 A9): prefer session.project_id (authoritative FK) first,
+    # then fall back to remote resolution.
+    project_id_for_atts: str | None = session.project_id
+    if project_id_for_atts is None and body.attachments and session.git_remote_normalized:
+        from sessionfs.server.services.project_resolver import (
+            resolve_project_by_remote,
+        )
+        proj = await resolve_project_by_remote(
+            db, session.git_remote_normalized,
+        )
+        project_id_for_atts = proj.id if proj else None
     for att in body.attachments:
         db.add(
             HandoffAttachment(
@@ -848,6 +847,9 @@ async def claim_handoff(
         updated_at=now,
         uploaded_at=now,
         messages_text=source_session.messages_text,
+        # C-site (§2.2C C3): denormalized snapshot on the copied
+        # session row — NOT project resolution.  The session's
+        # project_id (resolved above) is the authoritative anchor.
         git_remote_normalized=source_session.git_remote_normalized,
         git_branch=source_session.git_branch,
         git_commit=source_session.git_commit,
@@ -886,7 +888,7 @@ async def claim_handoff(
     # ticket_id is not the source of truth.
     active_payload: ActiveTicketPayload | None = None
     if handoff.ticket_id or handoff.persona_name:
-        from sessionfs.server.db.models import Project, Ticket
+        from sessionfs.server.db.models import Ticket
         from sessionfs.server.services.handoff_helpers import _accessible_project_ids
 
         proj_id: str | None = None
@@ -913,14 +915,18 @@ async def claim_handoff(
         # source session's git_remote so write_bundle has what it needs.
         # Only used when we don't already have a project_id from ticket
         # resolution above.
-        if proj_id is None and handoff.persona_name and source_session.git_remote_normalized:
-            src_proj_id = (
-                await db.execute(
-                    select(Project.id).where(
-                        Project.git_remote_normalized == source_session.git_remote_normalized
-                    )
+        # P2 (§3.3 A10): prefer session.project_id first, then
+        # resolve_project_by_remote as fallback.
+        if proj_id is None and handoff.persona_name:
+            src_proj_id: str | None = source_session.project_id
+            if src_proj_id is None and source_session.git_remote_normalized:
+                from sessionfs.server.services.project_resolver import (
+                    resolve_project_by_remote,
                 )
-            ).scalar_one_or_none()
+                proj = await resolve_project_by_remote(
+                    db, source_session.git_remote_normalized,
+                )
+                src_proj_id = proj.id if proj else None
             if src_proj_id is not None:
                 if accessible is None:
                     accessible = await _accessible_project_ids(db, user.id)

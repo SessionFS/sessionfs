@@ -819,13 +819,17 @@ async def perform_member_removal(
             )
         )
     ).scalars().all()
+    # P2 (§3.3 E2): resolve primary remote from project_repos.
+    from sessionfs.server.services.project_resolver import get_primary_remote
+
     ownership_flipped_project_ids: list[str] = []
     for project in member_projects:
+        primary = await get_primary_remote(db, project.id)
         db.add(
             ProjectTransfer(
                 id=f"xfer_{uuid.uuid4().hex[:16]}",
                 project_id=project.id,
-                project_git_remote_snapshot=project.git_remote_normalized,
+                project_git_remote_snapshot=primary or project.git_remote_normalized,
                 project_name_snapshot=project.name,
                 initiated_by=removing_admin.id,
                 target_user_id=removing_admin.id,

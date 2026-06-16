@@ -1102,7 +1102,11 @@ def _resolve_project_id() -> tuple[str, str, str]:
     api_url, api_key = _get_project_client()
     result = asyncio.run(_api_request("GET", f"/api/v1/projects/{normalized}", api_url, api_key))
     if result.get("_status") == 404:
-        err_console.print("[yellow]No project context found. Run 'sfs project init' first.[/yellow]")
+        err_console.print(
+            "[yellow]No project context found. "
+            "Run 'sfs project init' first, or if this repo is part of "
+            "a multi-repo project, link it with 'sfs project link-repo'.[/yellow]"
+        )
         raise typer.Exit(1)
     return result["id"], api_url, api_key
 
