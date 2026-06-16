@@ -1240,3 +1240,179 @@ def project_transfers(
     console.print(f"[bold]{direction.title()} transfers ({len(transfers)}):[/bold]")
     for t in transfers:
         _print_transfer(t)
+
+
+# ── P3: Multi-Repo Link / Unlink / List ──────────────────────────────────
+
+
+def _repos_api_request(
+    method: str, path: str, api_url: str, api_key: str,
+    json_data: dict | None = None,
+) -> dict:
+    """Shared API helper for repo endpoints — handles 409/422 envelopes."""
+    result = asyncio.run(_api_request(method, path, api_url, api_key, json_data))
+    if result.get("_status") == 404:
+        err_console.print("[red]Project not found.[/red]")
+        raise typer.Exit(1)
+    if result.get("_status") == 409:
+        detail = result.get("detail", {})
+        if isinstance(detail, dict):
+            msg = detail.get("message", str(detail))
+            existing = detail.get("existing_project_id")
+            if existing:
+                msg += f"\nExisting project: {existing}"
+            err_console.print(f"[red]{msg}[/red]")
+        else:
+            err_console.print(f"[red]{detail}[/red]")
+        raise typer.Exit(1)
+    if result.get("_status") == 422:
+        detail = result.get("detail", {})
+        if isinstance(detail, dict):
+            err_console.print(
+                f"[red]{detail.get('message', str(detail))}[/red]"
+            )
+        else:
+            err_console.print(f"[red]{detail}[/red]")
+        raise typer.Exit(1)
+    return result
+
+
+@project_app.command("link-repo")
+def project_link_repo(
+    remote: str = typer.Argument(..., help="Git remote URL to link (e.g. github.com/acme/backend.git)"),
+    primary: bool = typer.Option(
+        False, "--primary", help="Make this the project's primary (display) remote."
+    ),
+    project_id: str | None = typer.Option(
+        None, "--project-id",
+        help="Target project id. If omitted, resolves from the current repo.",
+    ),
+) -> None:
+    """Link a git repo to a project.
+
+    The repo becomes part of the project's multi-repo set.  The server
+    verifies repo ownership via the GitHub App when installed; otherwise
+    the link is recorded as owner-attested (unverified).
+
+    Examples:
+        sfs project link-repo github.com/acme/backend.git
+        sfs project link-repo github.com/acme/backend.git --primary
+        sfs project link-repo github.com/acme/api.git --project-id proj_abc
+    """
+    api_url, api_key = _get_project_client()
+    if project_id is None:
+        project_id, api_url, api_key = _resolve_project_id()
+
+    result = _repos_api_request(
+        "POST",
+        f"/api/v1/projects/{project_id}/repos",
+        api_url,
+        api_key,
+        json_data={"git_remote": remote, "is_primary": primary},
+    )
+    console.print(
+        f"[green]Repo linked:[/green] {result['git_remote_normalized']} "
+        f"({result['id']})"
+    )
+    if result.get("is_primary"):
+        console.print("[bold]  (primary)[/bold]")
+    console.print(
+        f"  verified={result['verified']}, "
+        f"method={result.get('verification_method', 'none')}"
+    )
+
+
+@project_app.command("unlink-repo")
+def project_unlink_repo(
+    remote: str = typer.Argument(..., help="Git remote URL or repo id to unlink."),
+    project_id: str | None = typer.Option(
+        None, "--project-id",
+        help="Target project id. If omitted, resolves from the current repo.",
+    ),
+) -> None:
+    """Unlink a repo from a project.
+
+    Refuses if this would leave an active project with zero repos.
+    If unlinking the primary, the oldest remaining repo is promoted.
+
+    Examples:
+        sfs project unlink-repo github.com/acme/backend.git
+        sfs project unlink-repo repo_a1b2c3d4 --project-id proj_abc
+    """
+    api_url, api_key = _get_project_client()
+    if project_id is None:
+        project_id, api_url, api_key = _resolve_project_id()
+
+    # If given a remote URL, look up the repo id first.
+    repo_id: str
+    from sessionfs.server.github_app import normalize_git_remote
+    normalized = normalize_git_remote(remote)
+    if "/" in normalized:
+        # Looks like a remote — find its repo id.
+        repos = _repos_api_request(
+            "GET",
+            f"/api/v1/projects/{project_id}/repos",
+            api_url,
+            api_key,
+        )
+        match = None
+        for r in repos:
+            if r["git_remote_normalized"] == normalized:
+                match = r
+                break
+        if match is None:
+            err_console.print(
+                f"[red]Repo '{normalized}' not found on this project. "
+                f"Use 'sfs project repos' to list linked repos.[/red]"
+            )
+            raise typer.Exit(1)
+        repo_id = match["id"]
+    else:
+        repo_id = remote
+
+    result = _repos_api_request(
+        "DELETE",
+        f"/api/v1/projects/{project_id}/repos/{repo_id}",
+        api_url,
+        api_key,
+    )
+    console.print(f"[green]Repo unlinked:[/green] {result['repo_id']}")
+
+
+@project_app.command("repos")
+def project_repos(
+    project_id: str | None = typer.Option(
+        None, "--project-id",
+        help="Target project id. If omitted, resolves from the current repo.",
+    ),
+) -> None:
+    """List repos linked to a project.
+
+    Examples:
+        sfs project repos
+        sfs project repos --project-id proj_abc
+    """
+    api_url, api_key = _get_project_client()
+    if project_id is None:
+        project_id, api_url, api_key = _resolve_project_id()
+
+    repos = _repos_api_request(
+        "GET",
+        f"/api/v1/projects/{project_id}/repos",
+        api_url,
+        api_key,
+    )
+    if not repos:
+        console.print("[dim]No repos linked.[/dim]")
+        return
+    console.print(f"[bold]Repos for {project_id}:[/bold]")
+    for r in repos:
+        primary = " [bold](primary)[/bold]" if r.get("is_primary") else ""
+        verified = (
+            f"verified={r['verified']}, "
+            f"method={r.get('verification_method', 'none')}"
+        )
+        console.print(
+            f"  {r['id']}  {r['git_remote_normalized']}{primary}"
+        )
+        console.print(f"    {verified}")

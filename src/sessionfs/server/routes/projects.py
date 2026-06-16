@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.db.engine import get_db
-from sessionfs.server.db.models import Project, Session, User
+from sessionfs.server.db.models import Project, ProjectRepo, Session, User
 from sessionfs.server.tier_gate import UserContext, check_feature, get_user_context
 
 router = APIRouter(prefix="/api/v1/projects", tags=["projects"])
@@ -69,6 +69,33 @@ class ProjectResponse(BaseModel):
     kb_retention_days: int = 180
     kb_max_context_words: int = 2000
     kb_section_page_limit: int = 30
+    # P3: populated on detail endpoints only (omitted on list to avoid N+1).
+    repos: list[ProjectRepoResponse] | None = None
+
+
+class LinkRepoRequest(BaseModel):
+    """Request to link a repo to a project.
+
+    provider_repo_id is deliberately NOT a field — it is server-derived
+    from the GitHub App installation response. Caller-supplied values
+    are ignored (Sentinel F2).
+    """
+
+    git_remote: str
+    is_primary: bool = False
+
+
+class ProjectRepoResponse(BaseModel):
+    id: str
+    project_id: str
+    git_remote_normalized: str
+    provider: str | None = None
+    provider_repo_id: str | None = None
+    is_primary: bool = False
+    verified: bool = False
+    verification_method: str | None = None
+    added_by_user_id: str | None = None
+    created_at: datetime | None = None
 
 
 async def _check_repo_access(db: AsyncSession, user_id: str, git_remote: str) -> bool:
@@ -392,6 +419,361 @@ async def create_project(
     )
 
 
+# ── P3: Multi-Repo Link / Unlink / List ──────────────────────────────────
+# These MUST be registered BEFORE the greedy /{git_remote_normalized:path}
+# route below, otherwise FastAPI matches /{project_id}/repos as a remote.
+
+
+def _repo_to_response(repo: ProjectRepo) -> ProjectRepoResponse:
+    """Map a ProjectRepo ORM row to the response schema."""
+    return ProjectRepoResponse(
+        id=repo.id,
+        project_id=repo.project_id,
+        git_remote_normalized=repo.git_remote_normalized,
+        provider=repo.provider,
+        provider_repo_id=repo.provider_repo_id,
+        is_primary=repo.is_primary if repo.is_primary else False,
+        verified=repo.verified if repo.verified else False,
+        verification_method=repo.verification_method,
+        added_by_user_id=repo.added_by_user_id,
+        created_at=repo.created_at,
+    )
+
+
+async def _repos_for_project(
+    db: AsyncSession, project_id: str,
+) -> list[ProjectRepoResponse]:
+    """Fetch all repo rows for a project, primary first."""
+    result = await db.execute(
+        select(ProjectRepo)
+        .where(ProjectRepo.project_id == project_id)
+        .order_by(ProjectRepo.is_primary.desc(), ProjectRepo.created_at.asc())
+    )
+    return [_repo_to_response(r) for r in result.scalars().all()]
+
+
+@router.get("/{project_id}/repos", response_model=list[ProjectRepoResponse])
+async def list_project_repos(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[ProjectRepoResponse]:
+    """List all repos linked to a project. Access-gated."""
+    from sessionfs.server.auth.project_access import (
+        load_project_for_user,
+    )
+
+    await load_project_for_user(project_id, db, user.id)
+    return await _repos_for_project(db, project_id)
+
+
+@router.post(
+    "/{project_id}/repos",
+    response_model=ProjectRepoResponse,
+    status_code=201,
+)
+async def link_repo(
+    project_id: str,
+    body: LinkRepoRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ProjectRepoResponse:
+    """Link a git repo to a project.
+
+    Claims a globally-unique git_remote_normalized. Requires project
+    admin standing (user_is_project_admin) AND repo-ownership
+    verification (Sentinel F1). Verified rows can displace unverified
+    holders atomically (§6.2). No tier gate — free for all tiers (Q3).
+    """
+    from sqlalchemy import func, update
+
+    from sessionfs.server.auth.project_access import (
+        user_can_access_project,
+        user_is_project_admin,
+    )
+    from sessionfs.server.github_app import (
+        normalize_git_remote,
+        verify_repo_ownership,
+    )
+
+    # 1. Load + authz the target project.
+    project = (await db.execute(
+        select(Project).where(Project.id == project_id)
+    )).scalar_one_or_none()
+    if project is None:
+        raise HTTPException(404, "Project not found")
+    if not await user_is_project_admin(db, user.id, project):
+        raise HTTPException(403, "Only a project admin can link repos")
+
+    # 2. Normalize the remote.
+    normalized = normalize_git_remote(body.git_remote)
+    if not normalized:
+        raise HTTPException(400, "Could not parse git remote URL")
+
+    # 3. GitHub ownership verification (N2: OUTSIDE the swap transaction).
+    #    MUST run BEFORE the locked holder check so the displacement
+    #    rules can distinguish verified-vs-verified from
+    #    verified-vs-unverified.
+    #    Extract owner/repo: for bare format github.com/owner/repo (3 parts)
+    #    the last two are owner+repo; for owner/repo (2 parts) use as-is.
+    parts = normalized.split("/")
+    verified: bool = False
+    verification_method: str | None = "owner_attested"
+    provider: str | None = None
+    provider_repo_id: str | None = None
+
+    owner: str | None = None
+    repo_name: str | None = None
+    if len(parts) == 2:
+        owner, repo_name = parts[0], parts[1]
+    elif len(parts) == 3:
+        owner, repo_name = parts[1], parts[2]
+
+    if owner and repo_name:
+        verified, verification_method, provider, provider_repo_id = (
+            await verify_repo_ownership(db, user.id, owner, repo_name)
+        )
+
+    # 4. Holder check with FOR UPDATE (N2: no live HTTP calls inside
+    #    the lock — verification was done in step 3).  Applies F3
+    #    access-gating and the displacement rules.
+    holder = (await db.execute(
+        select(ProjectRepo).where(
+            ProjectRepo.git_remote_normalized == normalized,
+        ).with_for_update()
+    )).scalar_one_or_none()
+
+    if holder is not None:
+        # F3 access-gating for 409: only disclose existing_project_id
+        # to callers who can access the holding project.
+        holding_project = (await db.execute(
+            select(Project).where(Project.id == holder.project_id)
+        )).scalar_one_or_none()
+        caller_can_see_holder = (
+            holding_project is not None
+            and await user_can_access_project(db, user.id, holding_project)
+        )
+
+        if holder.verified:
+            # verified-vs-verified → 409 genuine conflict.
+            # Apply F3 gating on the existing_project_id disclosure.
+            if caller_can_see_holder:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "repo_already_linked",
+                        "message": (
+                            "This repo is linked to a verified project. "
+                            "Both sides have proven ownership — manual "
+                            "resolution required."
+                        ),
+                        "existing_project_id": holder.project_id,
+                    },
+                )
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "repo_already_linked",
+                    "message": (
+                        "This repo is linked to a verified project. "
+                        "Both sides have proven ownership — manual "
+                        "resolution required."
+                    ),
+                },
+            )
+        elif not verified:
+            # unverified-vs-any → 409 (unverified can't displace).
+            # Apply F3 gating on the existing_project_id disclosure.
+            if caller_can_see_holder:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "repo_already_linked",
+                        "message": (
+                            "This repo is already linked to another "
+                            "project. Unlink it from that project first, "
+                            "or merge the projects."
+                        ),
+                        "existing_project_id": holder.project_id,
+                    },
+                )
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "repo_already_linked",
+                    "message": "This repo is already linked to another project.",
+                },
+            )
+        else:
+            # verified beats unverified → DISPLACE (§6.2)
+            holder_project_id = holder.project_id
+            holder_was_primary = holder.is_primary
+
+            # Cross-org boundary (LOW-4 carve-out: verified reclaim
+            # displaces cross-org unverified squatter — final state in
+            # the verified owner's org only).
+            if (
+                holding_project
+                and project.org_id is not None
+                and holding_project.org_id is not None
+                and project.org_id != holding_project.org_id
+            ):
+                # Verified reclaim across orgs — permitted.
+                # The holder loses the repo; final state is in claimant's org.
+                pass
+
+            # Atomic displacement: DELETE the unverified row.
+            await db.delete(holder)
+            await db.flush()  # free the UNIQUE slot before insert
+
+            # Handle holder project state.
+            remaining_count = (await db.execute(
+                select(func.count(ProjectRepo.id)).where(
+                    ProjectRepo.project_id == holder_project_id,
+                )
+            )).scalar() or 0
+
+            if remaining_count == 0:
+                # Holder has NO repos left → repo_reclaimed orphaned state.
+                # Data stays with the holder (NEVER auto-imported).
+                await db.execute(
+                    update(Project)
+                    .where(Project.id == holder_project_id)
+                    .values(repo_reclaimed_at=func.now())
+                )
+            elif holder_was_primary:
+                # Holder has other repos — promote oldest to primary.
+                oldest = (await db.execute(
+                    select(ProjectRepo)
+                    .where(ProjectRepo.project_id == holder_project_id)
+                    .order_by(ProjectRepo.created_at.asc())
+                    .limit(1)
+                )).scalar_one()
+                oldest.is_primary = True
+                # Refresh project.git_remote_normalized from new primary.
+                await db.execute(
+                    update(Project)
+                    .where(Project.id == holder_project_id)
+                    .values(git_remote_normalized=oldest.git_remote_normalized)
+                )
+
+    # 6. Handle is_primary: demote existing primary in same transaction.
+    if body.is_primary:
+        await db.execute(
+            update(ProjectRepo)
+            .where(
+                ProjectRepo.project_id == project_id,
+                ProjectRepo.is_primary == True,  # noqa: E712
+            )
+            .values(is_primary=False)
+        )
+        # Also update the project's git_remote_normalized.
+        project.git_remote_normalized = normalized
+
+    # 7. Insert the new repo row.
+    new_repo = ProjectRepo(
+        id=f"repo_{uuid.uuid4().hex[:16]}",
+        project_id=project_id,
+        git_remote_normalized=normalized,
+        provider=provider,
+        provider_repo_id=provider_repo_id,
+        is_primary=body.is_primary,
+        verified=verified,
+        verification_method=verification_method,
+        added_by_user_id=user.id,
+    )
+    db.add(new_repo)
+    await db.commit()
+    await db.refresh(new_repo)
+
+    return _repo_to_response(new_repo)
+
+
+@router.delete("/{project_id}/repos/{repo_id}")
+async def unlink_repo(
+    project_id: str,
+    repo_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Unlink a repo from a project.
+
+    Refuses if this would leave an active project with zero repos (422).
+    If unlinking the primary, auto-promotes the oldest remaining repo.
+    """
+    from sqlalchemy import func, update
+
+    from sessionfs.server.auth.project_access import (
+        user_is_project_admin,
+    )
+
+    # 1. Load + authz the target project.
+    project = (await db.execute(
+        select(Project).where(Project.id == project_id)
+    )).scalar_one_or_none()
+    if project is None:
+        raise HTTPException(404, "Project not found")
+    if not await user_is_project_admin(db, user.id, project):
+        raise HTTPException(403, "Only a project admin can unlink repos")
+
+    # 2. Find the repo row.
+    repo = (await db.execute(
+        select(ProjectRepo).where(
+            ProjectRepo.id == repo_id,
+            ProjectRepo.project_id == project_id,
+        )
+    )).scalar_one_or_none()
+    if repo is None:
+        raise HTTPException(404, "Repo not found on this project")
+
+    # 3. Last-repo guard (Q4): active projects must have ≥1 repo.
+    #    merged and repo_reclaimed states are exempt.
+    if (
+        project.merged_into_project_id is None
+        and project.repo_reclaimed_at is None
+    ):
+        repo_count = (await db.execute(
+            select(func.count(ProjectRepo.id)).where(
+                ProjectRepo.project_id == project_id,
+            )
+        )).scalar() or 0
+        if repo_count <= 1:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "last_repo",
+                    "message": (
+                        "Cannot unlink the last repo of an active project. "
+                        "Delete the project instead, or merge it into "
+                        "another project."
+                    ),
+                },
+            )
+
+    # 4. If unlinking the primary, auto-promote the oldest remaining.
+    was_primary = repo.is_primary
+    await db.delete(repo)
+    await db.flush()
+
+    if was_primary:
+        new_primary = (await db.execute(
+            select(ProjectRepo)
+            .where(ProjectRepo.project_id == project_id)
+            .order_by(ProjectRepo.created_at.asc())
+            .limit(1)
+        )).scalar_one_or_none()
+        if new_primary:
+            new_primary.is_primary = True
+            await db.execute(
+                update(Project)
+                .where(Project.id == project_id)
+                .values(git_remote_normalized=new_primary.git_remote_normalized)
+            )
+
+    await db.commit()
+    return {"status": "unlinked", "repo_id": repo_id}
+
+
 @router.get("/{git_remote_normalized:path}", response_model=ProjectResponse)
 async def get_project(
     git_remote_normalized: str,
@@ -473,6 +855,7 @@ async def get_project(
         kb_retention_days=getattr(project, "kb_retention_days", 180),
         kb_max_context_words=getattr(project, "kb_max_context_words", 8000),
         kb_section_page_limit=getattr(project, "kb_section_page_limit", 30),
+        repos=await _repos_for_project(db, project.id),
     )
 
 
