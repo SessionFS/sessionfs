@@ -98,6 +98,34 @@ class ProjectRepoResponse(BaseModel):
     created_at: datetime | None = None
 
 
+class MergeRequest(BaseModel):
+    """Request to merge one project into another (§5.2).
+
+    dry_run defaults to True — performs full validation and returns
+    a merge plan without writing anything. Set to False to execute.
+    persona_policy controls collision handling: 'rename' (default),
+    'skip', or 'merge_content'.
+    """
+
+    source_project_id: str
+    dry_run: bool = True
+    persona_policy: str = "rename"
+
+
+class MergeResponse(BaseModel):
+    dry_run: bool
+    stats: dict
+    persona_collisions: list[dict] | None = None
+    slug_collisions: list[str] | None = None
+    ke_duplicates: list[dict] | None = None
+    audit_id: str | None = None
+    persona_renames: list[dict] | None = None
+    slug_renames: list[dict] | None = None
+    skipped_ke_ids: list[str] | None = None
+    skipped_link_ids: list[str] | None = None
+    rules_action: str | None = None
+
+
 async def _check_repo_access(db: AsyncSession, user_id: str, git_remote: str) -> bool:
     """Check if user has sessions in this repo (grants read/write access).
 
@@ -896,6 +924,85 @@ async def update_project_context(
     await db.commit()
 
     return {"status": "updated", "size": len(body.context_document)}
+
+
+@router.post("/{project_id}/merge", response_model=MergeResponse)
+async def merge_project(
+    project_id: str,
+    body: MergeRequest,
+    request: Request = None,  # noqa: ARG001
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> MergeResponse:
+    """Merge another project into this one (§5).
+
+    Atomic, dry-run-first, audit-logged.  Dry-run (default) validates
+    and returns a merge plan with ZERO database writes.  Execute
+    (dry_run=False) runs the full merge within a single atomic
+    transaction — any failure rolls back completely and both projects
+    are untouched.
+
+    Authz (§6.4): caller must own BOTH projects or be org-admin of
+    both projects' org.  Same-org only (or both personal).  Cross-org /
+    personal-mix is denied (400).  Neither project may already be merged.
+    Pending project transfers block the merge (400).
+    """
+    from sessionfs.server.auth.project_access import user_is_project_admin
+    from sessionfs.server.db.engine import _session_factory
+    from sessionfs.server.services.merge import merge_projects
+    from sessionfs.server.services.project_resolver import (
+        ProjectResolutionLoopError,
+    )
+
+    target_id = project_id
+    source_id = body.source_project_id
+
+    if target_id == source_id:
+        raise HTTPException(400, "Cannot merge a project into itself")
+
+    # Validate persona_policy.
+    if body.persona_policy not in ("rename", "skip", "merge_content"):
+        raise HTTPException(
+            400,
+            f"Invalid persona_policy: {body.persona_policy}. "
+            "Must be 'rename', 'skip', or 'merge_content'.",
+        )
+
+    # Authz: caller must own BOTH or be org-admin of BOTH.
+    source = await db.get(Project, source_id)
+    target = await db.get(Project, target_id)
+    if not source:
+        raise HTTPException(404, "Source project not found")
+    if not target:
+        raise HTTPException(404, "Target project not found")
+
+    source_admin = await user_is_project_admin(db, user.id, source)
+    target_admin = await user_is_project_admin(db, user.id, target)
+    if not source_admin:
+        raise HTTPException(403, "Not authorized on source project")
+    if not target_admin:
+        raise HTTPException(403, "Not authorized on target project")
+
+    if _session_factory is None:
+        raise HTTPException(500, "Database not initialized")
+
+    try:
+        result = await merge_projects(
+            db=db,
+            source_id=source_id,
+            target_id=target_id,
+            user_id=user.id,
+            dry_run=body.dry_run,
+            persona_policy=body.persona_policy,
+            session_factory=_session_factory,
+        )
+    except ProjectResolutionLoopError:
+        raise HTTPException(409, {
+            "error": "resolution_loop",
+            "message": "Project resolution exceeded hop limit — possible data corruption.",
+        })
+
+    return MergeResponse(**result)
 
 
 @router.delete("/{project_id}")

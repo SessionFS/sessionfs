@@ -1416,3 +1416,230 @@ def project_repos(
             f"  {r['id']}  {r['git_remote_normalized']}{primary}"
         )
         console.print(f"    {verified}")
+
+
+def _merge_api_request(
+    method: str, path: str, api_url: str, api_key: str,
+    json_data: dict | None = None,
+) -> dict:
+    """API helper for merge endpoint — handles all merge-specific errors."""
+    result = asyncio.run(_api_request(method, path, api_url, api_key, json_data))
+    status = result.get("_status", 0)
+    detail = result.get("detail", {})
+
+    if status == 404:
+        msg = detail if isinstance(detail, str) else detail.get("message", "Not found")
+        err_console.print(f"[red]{msg}[/red]")
+        raise typer.Exit(1)
+    if status == 403:
+        msg = detail if isinstance(detail, str) else detail.get("message", "Forbidden")
+        err_console.print(f"[red]{msg}[/red]")
+        raise typer.Exit(1)
+    if status == 400:
+        msg = detail if isinstance(detail, str) else detail.get("message", str(detail))
+        err_console.print(f"[red]{msg}[/red]")
+        raise typer.Exit(1)
+    if status == 409:
+        if isinstance(detail, dict):
+            err_console.print(
+                f"[red]{detail.get('message', str(detail))}[/red]"
+            )
+        else:
+            err_console.print(f"[red]{detail}[/red]")
+        raise typer.Exit(1)
+    if status == 500:
+        err_console.print("[red]Internal server error — merge may have failed.[/red]")
+        raise typer.Exit(1)
+    return result
+
+
+@project_app.command("merge")
+def project_merge(
+    source: str = typer.Argument(
+        None,
+        help="Source project id to merge INTO the target. "
+             "If omitted, resolves from the current repo.",
+    ),
+    into: str | None = typer.Option(
+        None, "--into",
+        help="Target project id (merge source INTO this). "
+             "If omitted, the first positional argument is the source "
+             "and --into is required.",
+    ),
+    dry_run: bool = typer.Option(
+        True, "--dry-run/--confirm",
+        help="Dry-run (default): validate + show plan. --confirm to execute.",
+    ),
+    interactive: bool = typer.Option(
+        False, "--interactive",
+        help="Prompt for each persona collision before renaming.",
+    ),
+    persona_policy: str = typer.Option(
+        "rename", "--persona-policy",
+        help="Collision policy: rename (default), skip, or merge_content.",
+    ),
+) -> None:
+    """Merge one project into another.
+
+    Merges the source project INTO the target project, reassigning all
+    repos, personas, knowledge, tickets, sessions, and other data.
+    The source project becomes a read-only tombstone that redirects
+    to the target.
+
+    Dry-run is the DEFAULT — validates and shows what WOULD happen
+    without writing anything.  Use --confirm to execute.
+
+    Examples:
+        sfs project merge proj_src123 --into proj_tgt456
+        sfs project merge proj_src123 --into proj_tgt456 --dry-run
+        sfs project merge proj_src123 --into proj_tgt456 --confirm
+        sfs project merge proj_src123 --into proj_tgt456 --confirm --persona-policy skip
+    """
+    api_url, api_key = _get_project_client()
+
+    if source is None:
+        source, api_url, api_key = _resolve_project_id()
+
+    if into is None:
+        err_console.print(
+            "[red]--into <target_project_id> is required when source "
+            "is resolved from the current repo.[/red]"
+        )
+        raise typer.Exit(1)
+
+    # Interactive mode: pre-fetch dry-run and prompt for each collision.
+    if interactive and not dry_run:
+        err_console.print(
+            "[yellow]Note: --interactive overrides --confirm — "
+            "running dry-run first to preview collisions.[/yellow]"
+        )
+
+    if interactive:
+        # Fetch dry-run first.
+        plan = _merge_api_request(
+            "POST",
+            f"/api/v1/projects/{into}/merge",
+            api_url,
+            api_key,
+            json_data={
+                "source_project_id": source,
+                "dry_run": True,
+                "persona_policy": persona_policy,
+            },
+        )
+        collisions = plan.get("persona_collisions", [])
+        if collisions:
+            console.print(
+                f"[bold yellow]{len(collisions)} persona name "
+                f"collision(s) detected:[/bold yellow]"
+            )
+            for c in collisions:
+                console.print(f"  - {c['source_name']}")
+            console.print()
+            console.print(
+                "Policy: [bold]{persona_policy}[/bold] — "
+                "source personas will be renamed to "
+                "f'{{name}}-{{src8}}'."
+            )
+            from rich.prompt import Confirm
+            if not Confirm.ask("Proceed with merge?", default=False):
+                console.print("[dim]Merge cancelled.[/dim]")
+                raise typer.Exit(0)
+        else:
+            console.print("[green]No persona collisions detected.[/green]")
+
+    result = _merge_api_request(
+        "POST",
+        f"/api/v1/projects/{into}/merge",
+        api_url,
+        api_key,
+        json_data={
+            "source_project_id": source,
+            "dry_run": dry_run,
+            "persona_policy": persona_policy,
+        },
+    )
+
+    if dry_run:
+        _print_merge_plan(result)
+    else:
+        console.print(
+            f"[green]Merge complete![/green] "
+            f"Source {source} → Target {into}"
+        )
+        console.print(f"  Audit ID: {result.get('audit_id')}")
+        renames = result.get("persona_renames", [])
+        if renames:
+            console.print(f"  Persona renames: {len(renames)}")
+            for rn in renames:
+                console.print(
+                    f"    [dim]{rn['old_name']} → "
+                    f"{rn['new_name']}[/dim]"
+                )
+        skipped_ke = result.get("skipped_ke_ids", [])
+        if skipped_ke:
+            console.print(
+                f"  [dim]Skipped {len(skipped_ke)} duplicate "
+                f"knowledge entries.[/dim]"
+            )
+        rules = result.get("rules_action", "none")
+        if rules != "none":
+            console.print(f"  Rules: {rules}")
+
+
+def _print_merge_plan(plan: dict) -> None:
+    """Pretty-print a dry-run merge plan."""
+    stats = plan.get("stats", {})
+    console.print("[bold]Merge Plan (dry-run — no changes made)[/bold]")
+    console.print()
+    console.print("[bold]Rows to reassign:[/bold]")
+    for label in (
+        "repos", "personas", "tickets", "agent_runs", "sessions",
+        "handoff_attachments", "project_transfers",
+        "context_compilations", "knowledge_entries",
+        "knowledge_links", "knowledge_pages", "wiki_page_revisions",
+        "retrieval_audit_contexts", "retrieval_audit_events",
+    ):
+        count = stats.get(label, 0)
+        if count:
+            console.print(f"  {label}: {count}")
+
+    collisions = stats.get("persona_collisions", 0)
+    if collisions:
+        console.print(
+            f"\n[yellow]Persona name collisions: {collisions}[/yellow]"
+        )
+        for c in plan.get("persona_collisions", []):
+            console.print(f"  - {c['source_name']}")
+
+    slug_c = stats.get("slug_collisions", 0)
+    if slug_c:
+        console.print(
+            f"\n[yellow]Wiki page slug collisions: {slug_c}[/yellow]"
+        )
+        for s in plan.get("slug_collisions", []):
+            console.print(f"  - {s}")
+
+    ke_d = stats.get("ke_duplicates", 0)
+    if ke_d:
+        console.print(
+            f"\n[dim]Knowledge entry duplicates (will be skipped): "
+            f"{ke_d}[/dim]"
+        )
+
+    console.print()
+    if stats.get("source_has_rules") and stats.get("target_has_rules"):
+        console.print(
+            "[yellow]Both projects have rules — source rules "
+            "will be archived as a wiki page.[/yellow]"
+        )
+    elif stats.get("source_has_rules") and not stats.get("target_has_rules"):
+        console.print(
+            "[green]Source rules will be promoted to target "
+            "(target has none).[/green]"
+        )
+
+    console.print()
+    console.print(
+        "[dim]Run with --confirm to execute this merge.[/dim]"
+    )
