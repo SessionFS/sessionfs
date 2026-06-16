@@ -130,10 +130,12 @@ async def _check_repo_access(db: AsyncSession, user_id: str, git_remote: str) ->
     """Check if user has sessions in this repo (grants read/write access).
 
     P2 (§3.3 B6): resolve the project for this remote first, then
-    check by project_id (not git_remote_normalized).  After multi-repo,
-    project.git_remote_normalized is only the primary remote; a user
-    with sessions on non-primary repos should still have access.
+    check by project_id OR remote-match through project_repos.
+    After multi-repo, a user with sessions on non-primary repos or
+    legacy sessions with NULL project_id should still have access.
     """
+    from sqlalchemy import or_
+
     from sessionfs.server.services.project_resolver import (
         resolve_project_by_remote,
     )
@@ -142,7 +144,18 @@ async def _check_repo_access(db: AsyncSession, user_id: str, git_remote: str) ->
         return False
     stmt = (
         select(Session.id)
-        .where(Session.user_id == user_id, Session.project_id == project.id)
+        .where(
+            Session.user_id == user_id,
+            or_(
+                Session.project_id == project.id,
+                Session.git_remote_normalized == project.git_remote_normalized,
+                Session.git_remote_normalized.in_(
+                    select(ProjectRepo.git_remote_normalized).where(
+                        ProjectRepo.project_id == project.id,
+                    )
+                ),
+            ),
+        )
         .limit(1)
     )
     result = await db.execute(stmt)
@@ -169,7 +182,7 @@ async def list_projects(
     """
     from sqlalchemy import distinct, func, or_
 
-    from sessionfs.server.db.models import OrgMember
+    from sessionfs.server.db.models import OrgMember, ProjectRepo
 
     # Get git remotes from user's sessions
     session_remotes_stmt = select(distinct(Session.git_remote_normalized)).where(
@@ -191,7 +204,6 @@ async def list_projects(
         Project.org_id.in_(user_org_ids_stmt),
     ]
     if user_remotes:
-        from sessionfs.server.db.models import ProjectRepo
         multi_repo_match = select(ProjectRepo.project_id).where(
             ProjectRepo.git_remote_normalized.in_(user_remotes)
         )
@@ -203,11 +215,13 @@ async def list_projects(
     result = await db.execute(stmt)
     projects: list[Project] = list(result.scalars().all())
 
-    # P2 (§3.3 B5): count sessions by project_id, not git_remote_normalized.
-    # After multi-repo, a user may have sessions on any of the project's
-    # repos — all count toward the same project.
+    # P2 (§3.3 B5): count sessions by project_id, primary remote,
+    # AND through project_repos for legacy sessions with NULL
+    # project_id.  After multi-repo, a user may have sessions on
+    # any of the project's repos — all count toward the same project.
     if projects:
         project_ids = [p.id for p in projects]
+        # Explicit project_id matches.
         count_stmt = (
             select(
                 Session.project_id,
@@ -223,6 +237,39 @@ async def list_projects(
         session_counts: dict[str, int] = {
             row.project_id: row.cnt for row in count_result
         }
+        # Build remote→project_id mapping for legacy session counting.
+        # Primary remotes (from Project) + linked remotes (from ProjectRepo).
+        remote_to_pids: dict[str, set[str]] = {}
+        for p in projects:
+            remote_to_pids.setdefault(p.git_remote_normalized, set()).add(p.id)
+        repos_stmt = select(
+            ProjectRepo.project_id,
+            ProjectRepo.git_remote_normalized,
+        ).where(ProjectRepo.project_id.in_(project_ids))
+        repos_result = await db.execute(repos_stmt)
+        for row in repos_result:
+            remote_to_pids.setdefault(row.git_remote_normalized, set()).add(
+                row.project_id
+            )
+        if remote_to_pids:
+            legacy_count_stmt = (
+                select(
+                    Session.git_remote_normalized,
+                    func.count(Session.id).label("cnt"),
+                )
+                .where(
+                    Session.user_id == user.id,
+                    Session.project_id.is_(None),
+                    Session.git_remote_normalized.in_(remote_to_pids.keys()),
+                )
+                .group_by(Session.git_remote_normalized)
+            )
+            legacy_result = await db.execute(legacy_count_stmt)
+            for row in legacy_result:
+                for pid in remote_to_pids.get(row.git_remote_normalized, set()):
+                    session_counts[pid] = (
+                        session_counts.get(pid, 0) + row.cnt
+                    )
     else:
         session_counts = {}
 

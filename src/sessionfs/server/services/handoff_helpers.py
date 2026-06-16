@@ -36,6 +36,7 @@ from sessionfs.server.db.models import (
     KnowledgePage,
     OrgMember,
     Project,
+    ProjectRepo,
     Session as SessionModel,
     TeamMember,
     Ticket,
@@ -139,11 +140,27 @@ async def _accessible_project_ids(db: AsyncSession, user_id: str) -> set[str]:
             .distinct()
         )
     ).scalars().all()
+    # P2-fix: also match legacy sessions through project_repos (non-primary
+    # repos).  The legacy path above only joins on the primary remote; a
+    # session on a linked non-primary repo with NULL project_id would be
+    # missed otherwise.
+    via_repo_remote_ids = (
+        await db.execute(
+            select(ProjectRepo.project_id)
+            .join(
+                SessionModel,
+                SessionModel.git_remote_normalized == ProjectRepo.git_remote_normalized,
+            )
+            .where(SessionModel.user_id == user_id)
+            .distinct()
+        )
+    ).scalars().all()
     return (
         set(owner_ids)
         | set(org_member_ids)
         | set(via_session_project_ids)
         | set(via_legacy_remote_ids)
+        | set(via_repo_remote_ids)
     )
 
 

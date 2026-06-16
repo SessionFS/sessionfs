@@ -322,3 +322,71 @@ async def test_owner_still_has_access_without_org_membership(
         f"/api/v1/projects/{project.id}/personas", headers=owner_hdr
     )
     assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_session_on_linked_non_primary_repo_grants_access(
+    client, db_session: AsyncSession
+):
+    """P2-fix regression: a user with a session on a LINKED (non-primary)
+    repo must be granted access via Session.git_remote_normalized matching
+    a ProjectRepo row, even when the session's project_id is NULL.
+
+    Before the fix, the captured-session branch only checked
+    Session.project_id == project.id — legacy sessions on non-primary
+    remotes were wrongly 403d.
+    """
+    from sessionfs.server.db.models import ProjectRepo, Session as SessionRow
+
+    # Owner creates a personal project with primary remote.
+    owner, _ = await _make_user(db_session)
+    primary_remote = f"github.com/acme/primary-{uuid.uuid4().hex[:6]}"
+    project = await _make_project(
+        db_session, owner=owner, org=None, git_remote=primary_remote,
+    )
+
+    # A second (non-primary) remote is linked to the project.
+    secondary_remote = f"github.com/acme/secondary-{uuid.uuid4().hex[:6]}"
+    db_session.add(
+        ProjectRepo(
+            id=f"repo_{uuid.uuid4().hex[:16]}",
+            project_id=project.id,
+            git_remote_normalized=secondary_remote,
+            is_primary=False,
+            verified=False,
+            verification_method="owner_attested",
+            added_by_user_id=owner.id,
+        )
+    )
+    await db_session.commit()
+
+    # User B has a legacy session (NULL project_id) on the secondary repo.
+    other, other_hdr = await _make_user(db_session)
+    db_session.add(
+        SessionRow(
+            id=f"ses_{uuid.uuid4().hex[:16]}",
+            user_id=other.id,
+            title="secondary-repo-session",
+            tags="[]",
+            source_tool="claude-code",
+            blob_key="x",
+            blob_size_bytes=0,
+            etag="x",
+            git_remote_normalized=secondary_remote,
+            # project_id intentionally NULL — legacy session
+            created_at=_now(),
+            updated_at=_now(),
+            uploaded_at=_now(),
+        )
+    )
+    await db_session.commit()
+
+    # User B must be granted access — their session's remote matches
+    # a linked ProjectRepo row.
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/personas", headers=other_hdr
+    )
+    assert resp.status_code == 200, (
+        f"User with session on linked non-primary repo should have access, "
+        f"got {resp.status_code}: {resp.text[:200]}"
+    )

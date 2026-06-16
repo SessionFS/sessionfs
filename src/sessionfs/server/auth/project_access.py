@@ -29,10 +29,10 @@ is user-key only.
 from __future__ import annotations
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sessionfs.server.db.models import OrgMember, Project, Session
+from sessionfs.server.db.models import OrgMember, Project, ProjectRepo, Session
 
 
 async def user_can_access_project(
@@ -54,15 +54,27 @@ async def user_can_access_project(
         if member is not None:
             return True
 
-    # P2 (§3.3 B1): match sessions by project_id, not by
-    # git_remote_normalized.  A user who synced on any of the
-    # project's repos (not just the primary) should have access.
+    # P2 (§3.3 B1): captured-session access via project_id OR
+    # primary-remote match OR remote-match through project_repos.
+    # A user with a session on any of the project's linked repos
+    # — including legacy sessions with NULL project_id — should
+    # have access.  The primary remote may not have a ProjectRepo
+    # row yet, so Project.git_remote_normalized is included as a
+    # direct fallback alongside the multi-repo join table.
     captured = (
         await db.execute(
             select(Session.id)
             .where(
                 Session.user_id == user_id,
-                Session.project_id == project.id,
+                or_(
+                    Session.project_id == project.id,
+                    Session.git_remote_normalized == project.git_remote_normalized,
+                    Session.git_remote_normalized.in_(
+                        select(ProjectRepo.git_remote_normalized).where(
+                            ProjectRepo.project_id == project.id,
+                        )
+                    ),
+                ),
             )
             .limit(1)
         )
