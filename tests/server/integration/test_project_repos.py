@@ -1235,3 +1235,73 @@ async def test_link_repo_rate_limit_429(
     assert resp.status_code == 429, resp.text
     err = resp.json().get("error", {})
     assert err.get("code") == "rate_limit"
+
+
+# ── durable denial audit (Codex R2 MED fix) ────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_merge_cross_org_denial_audit_durable(
+    client: AsyncClient,
+    auth_headers: dict,
+    test_user: User,
+    db_session: AsyncSession,
+):
+    """Cross-org merge denial writes AdminAction through a FRESH session
+    that commits before the raise, so the audit row survives the failed
+    request's transaction rollback."""
+    org_a = await _make_org(db_session, owner=test_user, name="org-a")
+    org_b = await _make_org(db_session, owner=test_user, name="org-b")
+
+    source = await _make_project(
+        db_session, owner=test_user, remote="github.com/a/denial-src",
+        org_id=org_a.id,
+    )
+    target = await _make_project(
+        db_session, owner=test_user, remote="github.com/a/denial-tgt",
+        org_id=org_b.id,
+    )
+
+    resp = await client.post(
+        f"/api/v1/projects/{target.id}/merge",
+        json={
+            "source_project_id": source.id,
+            "dry_run": False,
+            "persona_policy": "rename",
+        },
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 400, resp.text
+    assert "Cross-org" in resp.json().get("detail", resp.text)
+
+    # Open a FRESH session and verify the AdminAction row EXISTS.
+    # If the audit were written via db.add+flush on the request session,
+    # it would be lost on rollback — this assertion proves durability.
+    from sessionfs.server.db.engine import _session_factory
+
+    assert _session_factory is not None, "test fixture should set session factory"
+    async with _session_factory() as fresh_db:
+        result = await fresh_db.execute(
+            select(AdminAction).where(
+                AdminAction.action == "merge_denied_cross_org",
+                AdminAction.target_id == source.id,
+            )
+        )
+        audit = result.scalar_one_or_none()
+
+    assert audit is not None, (
+        "Denial AdminAction must survive the failed request's rollback — "
+        "it was committed in a separate session"
+    )
+    assert audit.admin_id == test_user.id
+    assert audit.target_type == "project"
+
+    import json
+    details = json.loads(audit.details)
+    assert details["target_project_id"] == target.id
+    assert details["source_org_id"] == org_a.id
+    assert details["target_org_id"] == org_b.id
+    assert details["actor_user_id"] == test_user.id
+    assert details["actor_email"] == test_user.email
+    assert details["reason"] == "Cross-org merges are not supported"

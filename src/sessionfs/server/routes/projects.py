@@ -1120,6 +1120,10 @@ async def merge_project(
     # merge_projects does, so the denial is durable even though the
     # merge itself never runs.  _validate_preconditions also blocks
     # cross-org as defense-in-depth.
+    #
+    # Write through a FRESH short-lived session that COMMITS before the
+    # raise, so the denial audit survives the failed request's rollback
+    # (mirrors the merge-audit separate-session pattern in merge.py).
     if source.org_id != target.org_id:
         denial_audit = AdminAction(
             id=f"adm_{uuid.uuid4().hex[:16]}",
@@ -1137,10 +1141,10 @@ async def merge_project(
                 "actor_email": user.email,
             }),
         )
-        db.add(denial_audit)
-        # Flush so the audit row is durable even if the client doesn't
-        # read the 400 response body.
-        await db.flush()
+        if _session_factory is not None:
+            async with _session_factory() as audit_db:
+                async with audit_db.begin():
+                    audit_db.add(denial_audit)
         raise HTTPException(
             400,
             "Cross-org merges are not supported. "
