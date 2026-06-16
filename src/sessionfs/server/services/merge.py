@@ -719,6 +719,63 @@ async def merge_projects(
             "ke_duplicates": ke_duplicates,
         }
 
+    from fastapi import HTTPException
+
+    # =================================================================
+    # Phase 1b (EXECUTE only): Lock both project rows with
+    # SELECT ... FOR UPDATE to serialize concurrent same-source merge
+    # executes.  Re-check merged_into_project_id under the lock so
+    # two concurrent executes on the same source cannot both pass
+    # preconditions — exactly one wins (the loser sees the winner's
+    # merged_into and gets 400).
+    #
+    # SQLite serializes all writes at the connection level and does
+    # not honour row-level FOR UPDATE, so this is a best-effort guard
+    # on local/single-process deployments.  On PostgreSQL the lock is
+    # real and provides the serialisation guarantee.
+    # =================================================================
+    await db.execute(
+        select(Project)
+        .where(Project.id.in_([source_id, target_id]))
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    # Re-fetch to get the locked+refreshed rows.
+    source = await db.get(Project, source_id)
+    target = await db.get(Project, target_id)
+    if source is None:
+        raise HTTPException(404, "Source project not found")
+    if target is None:
+        raise HTTPException(404, "Target project not found")
+
+    # Re-check merged_into under the lock (concurrent-merge race guard).
+    if source.merged_into_project_id is not None:
+        raise HTTPException(
+            400, "Source project was already merged (concurrent merge)"
+        )
+    if target.merged_into_project_id is not None:
+        raise HTTPException(
+            400, "Target project was already merged (concurrent merge)"
+    )
+
+    # Re-check pending transfers under the lock.
+    for side, proj in [("source", source), ("target", target)]:
+        pending = (
+            await db.execute(
+                select(ProjectTransfer)
+                .where(
+                    ProjectTransfer.project_id == proj.id,
+                    ProjectTransfer.state == "pending",
+                )
+            )
+        ).scalar_one_or_none()
+        if pending:
+            raise HTTPException(
+                400,
+                f"{side.capitalize()} project has a pending transfer. "
+                "Resolve it first.",
+            )
+
     # =================================================================
     # Phase 2: Write ATTEMPT audit row (separate transaction — survives
     #          rollback of the merge transaction below).

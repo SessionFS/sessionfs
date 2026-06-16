@@ -14,8 +14,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import get_current_user
+from sessionfs.server.auth.rate_limit import SlidingWindowRateLimiter
 from sessionfs.server.db.engine import get_db
-from sessionfs.server.db.models import Project, ProjectRepo, Session, User
+from sessionfs.server.db.models import AdminAction, Project, ProjectRepo, Session, User
 from sessionfs.server.tier_gate import UserContext, check_feature, get_user_context
 
 router = APIRouter(prefix="/api/v1/projects", tags=["projects"])
@@ -290,6 +291,17 @@ async def list_projects(
         )
         for p in projects
     ]
+
+
+# ── app-layer rate limiters (F6) ─────────────────────────────────────
+# Per-user sliding-window caps on repo link/unlink/merge.
+# Durable multi-replica / edge limiting is the Forge follow-up
+# (ticket tk_d2646c1a38174eec) — these are the best-effort in-process
+# guards.  Single-process deployments (local dev, single-replica
+# Cloud Run) get full protection; multi-replica deployments need the
+# durable layer.
+_link_unlink_limiter = SlidingWindowRateLimiter(max_requests=30, window_seconds=60)
+_merge_limiter = SlidingWindowRateLimiter(max_requests=10, window_seconds=60)
 
 
 logger = logging.getLogger("sessionfs.api")
@@ -571,6 +583,16 @@ async def link_repo(
         verify_repo_ownership,
     )
 
+    # 0. Rate limit check (F6).
+    if not _link_unlink_limiter.is_allowed(f"link:{user.id}"):
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "rate_limit",
+                "message": "Too many link requests. Please wait and try again.",
+            },
+        )
+
     # 1. Load + authz the target project.
     project = (await db.execute(
         select(Project).where(Project.id == project_id)
@@ -584,6 +606,20 @@ async def link_repo(
     normalized = normalize_git_remote(body.git_remote)
     if not normalized:
         raise HTTPException(400, "Could not parse git remote URL")
+
+    # 2b. Repo-reclaimed revival: a project with zero repos (or
+    #     repo_reclaimed_at set from a prior displacement) gets its
+    #     first new link as the forced primary, clearing the orphaned
+    #     state and repopulating the project's primary remote.
+    repo_count = (await db.execute(
+        select(func.count(ProjectRepo.id)).where(
+            ProjectRepo.project_id == project_id,
+        )
+    )).scalar() or 0
+    if repo_count == 0 or project.repo_reclaimed_at is not None:
+        body.is_primary = True
+        project.repo_reclaimed_at = None
+        project.git_remote_normalized = normalized
 
     # 3. GitHub ownership verification (N2: OUTSIDE the swap transaction).
     #    MUST run BEFORE the locked holder check so the displacement
@@ -732,6 +768,36 @@ async def link_repo(
                     .values(git_remote_normalized=oldest.git_remote_normalized)
                 )
 
+            # Durable displacement audit (Shield L1 + L4).
+            # Records the ownership-reassignment event with plain-string
+            # actor snapshot (user_id + email) that survives user deletion.
+            displacement_audit = AdminAction(
+                id=f"adm_{uuid.uuid4().hex[:16]}",
+                admin_id=user.id,
+                action="repo_displaced",
+                target_type="project_repo",
+                target_id=holder_project_id,
+                details=json.dumps({
+                    "displaced_remote": normalized,
+                    "claimant_project_id": project_id,
+                    "claimant_user_id": user.id,
+                    "claimant_user_email": user.email,
+                    "old_verified": holder.verified,
+                    "old_verification_method": holder.verification_method,
+                    "old_is_primary": holder_was_primary,
+                    "cross_org": bool(
+                        holding_project
+                        and project.org_id is not None
+                        and holding_project.org_id is not None
+                        and project.org_id != holding_project.org_id
+                    ),
+                    # L4: plain-string actor snapshot survives user deletion.
+                    "actor_user_id": user.id,
+                    "actor_email": user.email,
+                }),
+            )
+            db.add(displacement_audit)
+
     # 6. Handle is_primary: demote existing primary in same transaction.
     if body.is_primary:
         await db.execute(
@@ -781,6 +847,16 @@ async def unlink_repo(
     from sessionfs.server.auth.project_access import (
         user_is_project_admin,
     )
+
+    # 0. Rate limit check (F6).
+    if not _link_unlink_limiter.is_allowed(f"unlink:{user.id}"):
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "rate_limit",
+                "message": "Too many unlink requests. Please wait and try again.",
+            },
+        )
 
     # 1. Load + authz the target project.
     project = (await db.execute(
@@ -1015,6 +1091,16 @@ async def merge_project(
             "Must be 'rename', 'skip', or 'merge_content'.",
         )
 
+    # 0. Rate limit check (F6).
+    if not _merge_limiter.is_allowed(f"merge:{user.id}"):
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "rate_limit",
+                "message": "Too many merge requests. Please wait and try again.",
+            },
+        )
+
     # Authz: caller must own BOTH or be org-admin of BOTH.
     source = await db.get(Project, source_id)
     target = await db.get(Project, target_id)
@@ -1029,6 +1115,37 @@ async def merge_project(
         raise HTTPException(403, "Not authorized on source project")
     if not target_admin:
         raise HTTPException(403, "Not authorized on target project")
+
+    # Cross-org denial audit (Shield L1): record the rejection before
+    # merge_projects does, so the denial is durable even though the
+    # merge itself never runs.  _validate_preconditions also blocks
+    # cross-org as defense-in-depth.
+    if source.org_id != target.org_id:
+        denial_audit = AdminAction(
+            id=f"adm_{uuid.uuid4().hex[:16]}",
+            admin_id=user.id,
+            action="merge_denied_cross_org",
+            target_type="project",
+            target_id=source_id,
+            details=json.dumps({
+                "target_project_id": target_id,
+                "source_org_id": source.org_id,
+                "target_org_id": target.org_id,
+                "reason": "Cross-org merges are not supported",
+                # L4: plain-string actor snapshot survives user deletion.
+                "actor_user_id": user.id,
+                "actor_email": user.email,
+            }),
+        )
+        db.add(denial_audit)
+        # Flush so the audit row is durable even if the client doesn't
+        # read the 400 response body.
+        await db.flush()
+        raise HTTPException(
+            400,
+            "Cross-org merges are not supported. "
+            "Use project transfer to move one project into the other's org first.",
+        )
 
     if _session_factory is None:
         raise HTTPException(500, "Database not initialized")

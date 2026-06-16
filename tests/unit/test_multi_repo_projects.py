@@ -2511,3 +2511,83 @@ async def test_merge_stats_accurate(db_session: AsyncSession):
     assert stats.get("personas") == 2
     assert stats.get("tickets") == 3
     assert stats.get("repos") == 1  # Only source repos (1)
+
+
+# ── concurrent merge race (Codex HIGH) ────────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_merge_concurrent_same_source_one_wins(db_session: AsyncSession):
+    """Two merges of the same source: the first succeeds, the second
+    fails with 'already merged' under the FOR UPDATE lock."""
+    from fastapi import HTTPException
+
+    from sessionfs.server.db.models import ProjectMergeAudit
+    from sessionfs.server.services.merge import merge_projects
+
+    user = User(id="user-race", email="race@t.com", tier="pro",
+                created_at=_now())
+    db_session.add(user)
+    await db_session.commit()
+
+    src = await _create_project(db_session, project_id="proj_race_src",
+                                git_remote="github.com/a/race-src",
+                                owner_id=user.id)
+    tgt = await _create_project(db_session, project_id="proj_race_tgt",
+                                git_remote="github.com/a/race-tgt",
+                                owner_id=user.id)
+
+    await _create_project_repo(db_session, project_id=src.id,
+                               git_remote_normalized="github.com/a/race-src",
+                               is_primary=True)
+    await _create_project_repo(db_session, project_id=tgt.id,
+                               git_remote_normalized="github.com/a/race-tgt",
+                               is_primary=True)
+
+    # First merge succeeds.
+    result1 = await merge_projects(
+        db=db_session,
+        source_id=src.id,
+        target_id=tgt.id,
+        user_id=user.id,
+        dry_run=False,
+        persona_policy="rename",
+        session_factory=async_sessionmaker(db_session.bind, expire_on_commit=False),
+    )
+    assert result1["dry_run"] is False
+    assert result1["audit_id"] is not None
+
+    # Source is now a tombstone.
+    await db_session.refresh(src)
+    assert src.merged_into_project_id == tgt.id
+
+    # Second merge of the SAME source fails — already merged.
+    # (SQLite serialises all writes, so this tests the re-check
+    # under the FOR UPDATE lock path even though we can't truly
+    # race two concurrent connections in SQLite.)
+    with pytest.raises(HTTPException) as exc:
+        await merge_projects(
+            db=db_session,
+            source_id=src.id,
+            target_id=tgt.id,
+            user_id=user.id,
+            dry_run=False,
+            persona_policy="rename",
+            session_factory=async_sessionmaker(db_session.bind, expire_on_commit=False),
+        )
+    assert exc.value.status_code == 400
+    assert "already merged" in str(exc.value.detail).lower()
+
+    # Only one completed audit row.
+    audit_count = (await db_session.execute(
+        sa.select(sa.func.count()).select_from(ProjectMergeAudit).where(
+            ProjectMergeAudit.status == "completed"
+        )
+    )).scalar()
+    assert audit_count == 1
+
+    # Data is on the correct target.
+    tgt_repos = (await db_session.execute(
+        sa.select(ProjectRepo).where(ProjectRepo.project_id == tgt.id)
+    )).scalars().all()
+    assert len(tgt_repos) == 2  # tgt's own + src's

@@ -28,6 +28,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.db.models import (
+    AdminAction,
     Organization,
     OrgMember,
     Project,
@@ -248,29 +249,60 @@ async def test_link_repo_hijack_denied_forged_session(
     test_user: User,
     db_session: AsyncSession,
 ):
-    """A captured-session alone does NOT grant link permission (F1)."""
-    project = await _make_project(db_session, owner=test_user)
+    """A non-admin user with a captured session on the project's remote
+    cannot link repos — the forged-session access predicate does NOT
+    grant admin standing (F1 anti-hijack)."""
+    # Create project owned by another user.
+    other = User(
+        id=str(uuid.uuid4()),
+        email="owner@example.com",
+        display_name="Owner",
+        tier="pro",
+        email_verified=True,
+        created_at=_now(),
+    )
+    db_session.add(other)
+    await db_session.commit()
+
+    project = await _make_project(
+        db_session, owner=other, remote="github.com/acme/target-repo",
+    )
     await _add_repo(
         db_session,
         project=project,
-        remote=project.git_remote_normalized,
+        remote="github.com/acme/target-repo",
         is_primary=True,
         verified=False,
         verification_method="legacy_backfill",
     )
 
-    # test_user IS the owner and IS project admin, so they CAN link.
-    # The hijack test verifies that a NON-owner, NON-admin user
-    # cannot link even with a captured session. The non-admin
-    # test above covers that directly — this test confirms
-    # the F1 story via the route's user_is_project_admin gate.
+    # Create a captured session for test_user on the project's remote
+    # (forges the session-based access predicate). This grants READ
+    # access via user_can_access_project predicate #3 but does NOT
+    # make test_user a project admin — only user_is_project_admin
+    # gates link_repo (F1).
+    from sessionfs.server.db.models import Session
+    sess = Session(
+        id=f"ses_{uuid.uuid4().hex[:16]}",
+        user_id=test_user.id,
+        title="Forged session",
+        source_tool="claude-code",
+        blob_key=f"blobs/test/{uuid.uuid4().hex}",
+        blob_size_bytes=0,
+        etag="abc",
+        git_remote_normalized="github.com/acme/target-repo",
+    )
+    db_session.add(sess)
+    await db_session.commit()
+
+    # test_user is NOT the owner and NOT an org admin, so
+    # user_is_project_admin returns False → 403.
     resp = await client.post(
         f"/api/v1/projects/{project.id}/repos",
-        json={"git_remote": "github.com/sessionfs/target"},
+        json={"git_remote": "github.com/acme/new-repo"},
         headers=auth_headers,
     )
-    # Owner CAN link — status 201 or 409 if remote already used
-    assert resp.status_code in (201, 409), resp.text
+    assert resp.status_code == 403, resp.text
 
 
 # ── 409 repo_already_linked (F3) ───────────────────────────────────────
@@ -1038,3 +1070,168 @@ async def test_unverified_cannot_displace_any(
         headers=auth_headers,
     )
     assert resp.status_code == 409, resp.text
+
+
+# ── repo_reclaimed revival (Codex MED) ────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_repo_reclaimed_revival_on_link(
+    client: AsyncClient,
+    auth_headers: dict,
+    test_user: User,
+    db_session: AsyncSession,
+):
+    """A zero-repo or repo_reclaimed project revives on first link:
+    is_primary is forced True, git_remote_normalized is set,
+    and repo_reclaimed_at is cleared."""
+    # Create a project that has had its repos displaced (simulated).
+    project = await _make_project(
+        db_session, owner=test_user, remote="github.com/acme/dead-project",
+    )
+    # No ProjectRepo rows — simulates displacement-to-zero.
+    # Set repo_reclaimed_at directly.
+    from sqlalchemy import update
+    await db_session.execute(
+        update(Project)
+        .where(Project.id == project.id)
+        .values(repo_reclaimed_at=_now())
+    )
+    await db_session.commit()
+
+    # Link a new repo — should revive the project.
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/repos",
+        json={"git_remote": "github.com/acme/new-life", "is_primary": False},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    # is_primary is forced True despite the request saying False.
+    assert body["is_primary"] is True
+    assert body["git_remote_normalized"] == "github.com/acme/new-life"
+
+    # Project state is revived.
+    await db_session.refresh(project)
+    assert project.repo_reclaimed_at is None
+    assert project.git_remote_normalized == "github.com/acme/new-life"
+
+    # Verify the repo row exists.
+    from sqlalchemy import select as sa_select
+    repos = (await db_session.execute(
+        sa_select(ProjectRepo).where(ProjectRepo.project_id == project.id)
+    )).scalars().all()
+    assert len(repos) == 1
+    assert repos[0].is_primary is True
+
+
+# ── displacement audit (Codex LOW + Shield L1) ────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_displacement_writes_admin_action(
+    client: AsyncClient,
+    auth_headers: dict,
+    test_user: User,
+    db_session: AsyncSession,
+):
+    """Verified displacement writes a durable AdminAction row
+    with actor snapshot (L4)."""
+    # Holder project (unverified).
+    other = User(
+        id=str(uuid.uuid4()),
+        email="holder@example.com",
+        display_name="Holder",
+        tier="pro",
+        email_verified=True,
+        created_at=_now(),
+    )
+    db_session.add(other)
+    await db_session.commit()
+
+    holder_project = await _make_project(
+        db_session, owner=other, remote="github.com/acme/displace-audit",
+    )
+    await _add_repo(
+        db_session, project=holder_project,
+        remote="github.com/acme/displace-audit", is_primary=True,
+        verified=False, verification_method="owner_attested",
+        user_id=other.id,
+    )
+
+    # Claimant project (will verify via github_app).
+    claimant = await _make_project(
+        db_session, owner=test_user, remote="github.com/test/displace-claimant",
+    )
+    await _add_repo(
+        db_session, project=claimant,
+        remote="github.com/test/displace-claimant", is_primary=True,
+        verified=False, verification_method="legacy_backfill",
+    )
+
+    with patch(
+        "sessionfs.server.github_app.verify_repo_ownership",
+        new=AsyncMock(return_value=(True, "github_app", "github", "11111")),
+    ):
+        resp = await client.post(
+            f"/api/v1/projects/{claimant.id}/repos",
+            json={"git_remote": "github.com/acme/displace-audit"},
+            headers=auth_headers,
+        )
+
+    assert resp.status_code == 201, resp.text
+
+    # AdminAction row exists for the displacement.
+    result = await db_session.execute(
+        select(AdminAction).where(
+            AdminAction.action == "repo_displaced",
+            AdminAction.target_id == holder_project.id,
+        )
+    )
+    audit = result.scalar_one_or_none()
+    assert audit is not None, "Displacement should write an AdminAction"
+    assert audit.admin_id == test_user.id
+
+    # Details include L4 actor snapshot.
+    import json
+    details = json.loads(audit.details)
+    assert details["actor_user_id"] == test_user.id
+    assert details["actor_email"] == test_user.email
+    assert details["displaced_remote"] == "github.com/acme/displace-audit"
+    assert details["claimant_project_id"] == claimant.id
+    assert details["old_verified"] is False
+
+
+# ── rate limit 429 (Shield MED F6) ────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_link_repo_rate_limit_429(
+    client: AsyncClient,
+    auth_headers: dict,
+    test_user: User,
+    db_session: AsyncSession,
+):
+    """Exceeding the per-user link rate limit returns 429."""
+    project = await _make_project(
+        db_session, owner=test_user, remote="github.com/acme/ratelimit",
+    )
+    await _add_repo(
+        db_session, project=project,
+        remote="github.com/acme/ratelimit", is_primary=True,
+        verified=False, verification_method="legacy_backfill",
+    )
+
+    # Patch the limiter to always deny.
+    from sessionfs.server.routes.projects import _link_unlink_limiter
+    with patch.object(
+        _link_unlink_limiter, "is_allowed", return_value=False,
+    ):
+        resp = await client.post(
+            f"/api/v1/projects/{project.id}/repos",
+            json={"git_remote": "github.com/acme/unique-remote"},
+            headers=auth_headers,
+        )
+    assert resp.status_code == 429, resp.text
+    err = resp.json().get("error", {})
+    assert err.get("code") == "rate_limit"
