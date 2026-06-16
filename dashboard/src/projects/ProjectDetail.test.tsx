@@ -44,6 +44,11 @@ const { hooks, mockAddToast } = vi.hoisted(() => ({
     useSupersedeEntry: vi.fn(),
     useRebuildProject: vi.fn(),
     useRefreshEntry: vi.fn(),
+    useUpdateProjectName: vi.fn(),
+    useProjectRepos: vi.fn(),
+    useLinkRepo: vi.fn(),
+    useUnlinkRepo: vi.fn(),
+    useMergeProject: vi.fn(),
   },
   mockAddToast: vi.fn(),
 }));
@@ -132,6 +137,11 @@ describe('ProjectDetail', () => {
     hooks.useDismissStaleEntries.mockReturnValue(makeMutation());
     hooks.usePromoteEntry.mockReturnValue(makeMutation());
     hooks.useSupersedeEntry.mockReturnValue(makeMutation());
+    hooks.useUpdateProjectName.mockReturnValue(makeMutation());
+    hooks.useProjectRepos.mockReturnValue({ data: [], isLoading: false, error: null });
+    hooks.useLinkRepo.mockReturnValue(makeMutation());
+    hooks.useUnlinkRepo.mockReturnValue(makeMutation());
+    hooks.useMergeProject.mockReturnValue(makeMutation());
     hooks.useRebuildProject.mockReturnValue(makeMutation());
     hooks.useRefreshEntry.mockReturnValue(makeMutation());
   });

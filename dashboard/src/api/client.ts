@@ -260,6 +260,23 @@ export interface WikiPageListResponse {
   pages: WikiPage[];
 }
 
+// ── Multi-Repo Projects (v0.11) ──
+
+export interface ProjectRepoResponse {
+  id: string;
+  project_id: string;
+  git_remote_normalized: string;
+  is_primary: boolean;
+  verified: boolean;
+  verification_method: 'github_app' | 'owner_attested' | 'legacy_backfill' | null;
+  provider: string | null;
+  provider_repo_id: string | null;
+  added_by_user_id: string | null;
+  created_at: string;
+}
+
+export type RepoVerificationMethod = 'github_app' | 'owner_attested' | 'legacy_backfill';
+
 export interface ProjectContext {
   id: string;
   name: string;
@@ -270,6 +287,77 @@ export interface ProjectContext {
   updated_at: string;
   session_count?: number;
   auto_narrative?: boolean;
+  /** Multi-repo: linked repos (populated on detail, omitted on list). */
+  repos?: ProjectRepoResponse[];
+  /** Multi-repo: set when all repos were reclaimed (orphaned project). */
+  repo_reclaimed_at?: string | null;
+  /** Multi-repo: set when this project was merged into another. */
+  merged_into_project_id?: string | null;
+  merged_at?: string | null;
+}
+
+export interface LinkRepoRequest {
+  git_remote: string;
+  is_primary?: boolean;
+}
+
+export interface MergeRequest {
+  source_project_id: string;
+  dry_run: boolean;
+}
+
+export interface MergeCollision {
+  /** Persona / wiki-slug collisions. */
+  old_name?: string;
+  new_name?: string;
+  display_note?: string;
+  /** Wiki slug collisions. */
+  old_slug?: string;
+  new_slug?: string;
+  /** Generic collision info. */
+  collision_type?: string;
+  /** Slug-level collisions list. */
+  collisions?: Array<{ old_slug: string; new_slug: string }>;
+}
+
+export interface MergeStats {
+  personas_total: number;
+  personas_reassigned: number;
+  persona_collisions: MergeCollision[];
+  tickets_total: number;
+  tickets_reassigned: number;
+  knowledge_entries_total: number;
+  knowledge_entries_reassigned: number;
+  knowledge_entries_skipped: number;
+  wiki_pages_total: number;
+  wiki_pages_reassigned: number;
+  slug_collisions: MergeCollision[];
+  rules_action: string | null;
+  source_project_name?: string;
+  target_project_name?: string;
+  repos_total?: number;
+  repos_reassigned?: number;
+}
+
+export interface MergeDryRunResponse {
+  dry_run: true;
+  stats: MergeStats;
+  persona_collisions: MergeCollision[];
+  slug_collisions: MergeCollision[];
+  ke_duplicates: number[];
+}
+
+export interface MergeExecuteResponse {
+  dry_run: false;
+  status: 'completed' | 'failed';
+  audit_id: string;
+  stats: MergeStats;
+  persona_renames: MergeCollision[];
+  slug_renames: MergeCollision[];
+  skipped_ke_ids: number[];
+  skipped_link_ids: number[];
+  rules_action: string;
+  error_message?: string;
 }
 
 export interface KnowledgeEntry {
@@ -1344,6 +1432,37 @@ export function createApiClient(baseUrl: string, apiKey: string) {
 
     getAgentRun: (projectId: string, runId: string) =>
       request<AgentRun>(`/api/v1/projects/${projectId}/agent-runs/${runId}`),
+
+    // ── Multi-Repo Projects (v0.11) ──
+    listProjectRepos: (projectId: string) =>
+      request<ProjectRepoResponse[]>(`/api/v1/projects/${projectId}/repos`),
+
+    linkRepo: (projectId: string, body: LinkRepoRequest) =>
+      request<ProjectRepoResponse>(`/api/v1/projects/${projectId}/repos`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+
+    unlinkRepo: (projectId: string, repoId: string) =>
+      request<{ status: string }>(`/api/v1/projects/${projectId}/repos/${repoId}`, {
+        method: 'DELETE',
+      }),
+
+    mergeProject: (projectId: string, body: MergeRequest) =>
+      request<MergeDryRunResponse | MergeExecuteResponse>(
+        `/api/v1/projects/${projectId}/merge`,
+        {
+          method: 'POST',
+          body: JSON.stringify(body),
+        },
+      ),
+
+    /** Update project name (inline rename). */
+    updateProject: (projectId: string, body: { name?: string }) =>
+      request<ProjectContext>(`/api/v1/projects/${projectId}`, {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      }),
   };
 }
 
