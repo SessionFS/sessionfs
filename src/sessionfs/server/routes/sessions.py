@@ -533,14 +533,23 @@ async def _resolve_project_id_for_session(
     if not git_remote_normalized:
         return None
     from sessionfs.server.db.models import OrgMember as _OrgMember
-    from sessionfs.server.db.models import Project as _Project
-    project_row = (
-        await db.execute(
-            select(_Project)
-            .where(_Project.git_remote_normalized == git_remote_normalized)
-            .with_for_update()
+    from sessionfs.server.services.project_resolver import (
+        ProjectResolutionLoopError,
+        resolve_project_by_remote,
+    )
+
+    try:
+        project_row = await resolve_project_by_remote(
+            db, git_remote_normalized, for_update=True,
         )
-    ).scalar_one_or_none()
+    except ProjectResolutionLoopError:
+        _logger = logging.getLogger("sessionfs.api")
+        _logger.error(
+            "Project resolution loop exceeded for remote %s — "
+            "session will not be linked to a project",
+            git_remote_normalized,
+        )
+        return None
     if project_row is None:
         return None
     if project_row.owner_id == user_id:
@@ -785,7 +794,10 @@ async def upload_session(
     meta = _extract_manifest_metadata(data)
     messages_text = _extract_messages_text(data)
 
-    # Extract git metadata for PR matching
+    # Extract git metadata for PR matching + session denormalized tag.
+    # C-site (§2.2C C1): session.git_remote_normalized is a per-session
+    # metadata column — NOT project resolution.  The project_id linkage
+    # is resolved below via _resolve_project_id_for_session (A1).
     workspace_data = _extract_workspace_from_archive(data)
     git_remote_normalized = ""
     git_branch = ""
@@ -1731,6 +1743,10 @@ async def sync_push(
                 # Both commits succeeded — safe to clean up temp blob
                 await _cleanup_temp_blob()
 
+                # C-site (§2.2C C2): git_remote_normalized used as a
+                # boolean "has remote?" gate for auto-extract — NOT
+                # project resolution.  The background task resolves via
+                # resolve_project_by_remote internally.
                 if meta["message_count"] >= 5 and git_remote_normalized:
                     background_tasks.add_task(
                         _auto_extract_knowledge, session.id, data, git_remote_normalized, user_id
@@ -1869,6 +1885,7 @@ async def sync_push(
             await _cleanup_temp_blob()
             await db2.refresh(sess)
 
+            # C-site (§2.2C C2): same boolean gate as POST path.
             if meta["message_count"] >= 5 and git_remote_normalized:
                 background_tasks.add_task(
                     _auto_extract_knowledge, sess.id, data, git_remote_normalized, user_id
@@ -1912,13 +1929,17 @@ async def _auto_extract_knowledge(
 
         summary = summarize_session(messages, manifest, workspace)
 
-        # Find project by git remote
+        # Find project by git remote (A-site — background task resolution
+        # through project_repos, same pattern as A1).
         async for db in _get_db_gen():
-            from sessionfs.server.db.models import Project
-            result = await db.execute(
-                select(Project).where(Project.git_remote_normalized == git_remote)
+            from sessionfs.server.services.project_resolver import (
+                ProjectResolutionLoopError,
+                resolve_project_by_remote,
             )
-            project = result.scalar_one_or_none()
+            try:
+                project = await resolve_project_by_remote(db, git_remote)
+            except ProjectResolutionLoopError:
+                return
             if not project:
                 return
 

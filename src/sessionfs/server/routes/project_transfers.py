@@ -313,11 +313,16 @@ async def initiate_transfer(
     # Auto-accept when initiator IS the target.
     auto_accept = target_user_id == user.id
 
+    # P2 (§3.3 E1): resolve primary remote from project_repos
+    # (source of truth), falling back to the denormalized column.
+    from sessionfs.server.services.project_resolver import get_primary_remote
+    primary_remote = await get_primary_remote(db, project.id)
+
     now = _now()
     transfer = ProjectTransfer(
         id=f"xfer_{uuid.uuid4().hex[:16]}",
         project_id=project.id,
-        project_git_remote_snapshot=project.git_remote_normalized,
+        project_git_remote_snapshot=primary_remote or project.git_remote_normalized,
         project_name_snapshot=project.name,
         initiated_by=user.id,
         target_user_id=target_user_id,

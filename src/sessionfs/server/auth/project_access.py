@@ -7,12 +7,14 @@ A user key can reach a project iff ANY of these holds:
 2. The project is org-scoped AND the user is a member of that org
    (`Project.org_id IS NOT NULL AND user_id IN
    OrgMember WHERE org_id = project.org_id`).
-3. The user has captured at least one session on the project's git
-   remote (`Session.user_id == user_id AND
-   Session.git_remote_normalized == project.git_remote_normalized`).
-   Kept as the legacy fallback so personal projects (org_id IS NULL)
-   still grant access to teammates who synced on the same repo
-   before the org-scoping work landed.
+3. The user has captured at least one session linked to this project
+   (`Session.user_id == user_id AND
+   Session.project_id == project.id`).
+   P2 (§3.3 B1): switched from remote-based matching
+   (Session.git_remote_normalized == Project.git_remote_normalized)
+   to project_id-based matching.  After multi-repo,
+   Project.git_remote_normalized is only the primary remote — users
+   with sessions on non-primary repos would falsely fail the old check.
 
 The third predicate is the one the codebase has always enforced.
 Predicates 1 and 2 are what `db/models.py:187` documented and what
@@ -27,10 +29,10 @@ is user-key only.
 from __future__ import annotations
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sessionfs.server.db.models import OrgMember, Project, Session
+from sessionfs.server.db.models import OrgMember, Project, ProjectRepo, Session
 
 
 async def user_can_access_project(
@@ -52,12 +54,27 @@ async def user_can_access_project(
         if member is not None:
             return True
 
+    # P2 (§3.3 B1): captured-session access via project_id OR
+    # primary-remote match OR remote-match through project_repos.
+    # A user with a session on any of the project's linked repos
+    # — including legacy sessions with NULL project_id — should
+    # have access.  The primary remote may not have a ProjectRepo
+    # row yet, so Project.git_remote_normalized is included as a
+    # direct fallback alongside the multi-repo join table.
     captured = (
         await db.execute(
             select(Session.id)
             .where(
                 Session.user_id == user_id,
-                Session.git_remote_normalized == project.git_remote_normalized,
+                or_(
+                    Session.project_id == project.id,
+                    Session.git_remote_normalized == project.git_remote_normalized,
+                    Session.git_remote_normalized.in_(
+                        select(ProjectRepo.git_remote_normalized).where(
+                            ProjectRepo.project_id == project.id,
+                        )
+                    ),
+                ),
             )
             .limit(1)
         )
