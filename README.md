@@ -89,6 +89,8 @@ Sessions are indexed locally for fast browsing via the CLI. Cloud sync is opt-in
 | `sfs project get-context` | Output raw project context to stdout |
 | `sfs project compile\|entries\|health\|dismiss` | Living Project Context — compile, browse, and manage knowledge |
 | `sfs project ask\|pages\|page\|regenerate\|set` | Query knowledge, manage wiki pages, configure project |
+| `sfs project link-repo\|unlink-repo\|repos` | Multi-repo projects — one project can own several git repos |
+| `sfs project merge` | Consolidate two projects into one (dry-run by default) |
 | `sfs rules init\|edit\|show\|compile` | Manage canonical project rules — compile once, drive every tool |
 | `sfs rules push\|pull` | Sync canonical rules through the SessionFS API |
 | `sfs persona list\|show\|create\|edit\|delete\|assume\|forget` | Manage agent personas; `assume`/`forget` toggle a persona-only local provenance bundle (Pro+) |
@@ -215,6 +217,8 @@ Sessions are stored as `.sfs` directories:
 All file paths are relative to workspace root. Sessions are append-only — conflict resolution appends both sides rather than merging.
 
 ## Status
+
+**v0.10.31 — Public Beta.** 2278 backend tests + 388 dashboard tests passing. 49 database migrations. 62 MCP tools. **Multi-repo projects** — a project can now own more than one git repo, so personas / knowledge / tickets / rules are shared across a product's repos instead of duplicated across split projects (migration 049 + `project_repos`). Verified-ownership repo linking (GitHub App installation proof, owner-attested fallback, verified-beats-unverified reclaim), `sfs project link-repo` / `unlink-repo` / `repos`, and `sfs project merge` to consolidate split projects (dry-run by default, atomic, audited) with a dashboard Repos tab + Merge surface. Free for all tiers. Also clears freshly-published CVEs (starlette/python-multipart/cryptography + site vite/astro). Design Codex-CLEAN + Sentinel-approved; implementation Codex code-review CLEAN + Shield-SR approved.
 
 **v0.10.30 — Public Beta.** 2179 backend tests + 369 dashboard tests passing. 48 database migrations. 62 MCP tools. Complete dashboard visual redesign — dark-first OKLCH design-token foundation, a `ui/` primitive library (incl. a custom anchored keyboard-accessible Select/Dropdown), a grouped left sidebar, Sessions/Projects list-grid toggles, and a fully rebuilt captured-session conversation surface (tool-aware rendering instead of raw JSON, a real transcript with speaker hierarchy and themed markdown). Brand tagline → "Memory Layer For AI Agents" (dashboard + site). Frontend/site only — no backend, schema, MCP-tool, or auth changes. Codex-reviewed to VERIFIED-CLEAN across consolidated rounds; Shield-SR CLEAN (0 CRITICAL/HIGH).
 

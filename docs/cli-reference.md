@@ -857,6 +857,48 @@ New org-scoped projects also inherit their org's KB creation defaults
 (`kb_retention_days` / `kb_max_context_words` / `kb_section_page_limit`) from
 the org settings panel at creation time.
 
+### `sfs project link-repo` / `unlink-repo` / `repos`
+
+*v0.10.31+.* A project can own more than one git repo, so personas, knowledge,
+tickets, and rules are shared across all of a product's repos instead of being
+split across separate projects.
+
+```
+sfs project link-repo <remote> [--primary] [--project-id ID]
+sfs project unlink-repo <remote> [--project-id ID]
+sfs project repos [--project-id ID]
+```
+
+| Command | Description |
+|---------|-------------|
+| `link-repo <remote>` | Link a git remote to a project. Requires project-admin standing. A GitHub repo is ownership-verified against your own App installation; otherwise it is owner-attested. `--primary` makes it the project's display remote. |
+| `unlink-repo <remote>` | Remove a repo from the project. Refused if it is the project's last repo. |
+| `repos` | List the project's linked repos, with the primary and verification status marked. |
+
+Each repo belongs to exactly one project. Linking a repo already owned elsewhere
+returns a conflict; a verified owner can reclaim a repo held by an unverified link.
+
+### `sfs project merge`
+
+*v0.10.31+.* Consolidate two projects that are really one product (e.g. you ended
+up with separate frontend and backend projects). Folds the source project into the
+target — repos, sessions, knowledge, tickets, personas, and rules — and leaves the
+source as a tombstone that redirects to the target.
+
+```
+sfs project merge <source-project-id> --into <target-project-id> [--confirm] [--interactive] [--persona-policy rename|skip|merge_content]
+```
+
+| Option | Description |
+|--------|-------------|
+| (default) | **Dry run** — prints the full merge plan (what reassigns, what collides, the resolved names) and writes nothing. |
+| `--confirm` | Execute the merge (single atomic transaction; audited). |
+| `--interactive` | Resolve each name collision (persona/rules/wiki) interactively. |
+| `--persona-policy` | Default collision policy for personas (`rename`, the default; `skip`; or `merge_content`). |
+
+Both projects must be in the same scope (same org, or both personal); cross-org
+merges are refused. Free on all tiers.
+
 ### `sfs project transfer`
 
 *v0.10.0+.* Initiate or act on a project transfer. Exactly one of `--to`,

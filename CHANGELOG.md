@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.31] - 2026-06-17
+
+**Multi-repo projects — a project can now own more than one git repo.** Personas, knowledge, tickets, and rules are shared across all of a product's repos instead of being duplicated across separate single-repo projects. Backend + CLI + dashboard. Migration 001–049 (049 additive). 2278 backend tests (+99) + 388 dashboard tests. Reviewed end-to-end: design Codex-CLEAN + Sentinel-approved; implementation Codex code-review CLEAN + Shield-SR approved. **Free for all tiers.**
+
+### Added
+
+- **`project_repos` model + migration 049** — a project owns N repos (each repo belongs to exactly one project, globally unique normalized remote). Existing projects are backfilled with a single primary repo, so single-repo behavior is unchanged. Repos carry an ownership-verification stamp (`github_app` / `owner_attested` / `legacy_backfill`).
+- **Repo linking** — `POST/DELETE/GET /api/v1/projects/{id}/repos` + `sfs project link-repo` / `unlink-repo` / `repos`. Linking requires project-admin standing plus a verification stamp: a GitHub repo is verified against the linker's own App installation; otherwise it's owner-attested. A *verified* claim can reclaim a repo squatted by an *unverified* one; a project whose last repo is reclaimed enters a `repo_reclaimed` state and is revived by linking a new repo. `provider_repo_id` is server-derived, never trusted from the caller.
+- **Project merge** — `POST /api/v1/projects/{id}/merge` + `sfs project merge` to consolidate already-split projects into one. Dry-run by default (zero writes); `--confirm` executes as a single atomic transaction with a full audit trail (started → completed/failed) that survives rollback. Persona/rules/wiki collisions resolve by keeping the target and safely renaming/archiving the source; the source becomes a tombstone that transparently redirects.
+- **Dashboard** — a Repos tab on each project (link/unlink, primary + verification badges) and a Merge surface (dry-run plan → explicit confirm → audit outcome). Inline project rename; repo-count badge on the projects list.
+
+### Changed
+
+- **Security dependency upgrades:** `starlette >=1.3.1` (CVE-2026-54283/54282/48817/48818), `python-multipart >=0.0.31` (CVE-2026-53538/53539/53540), `cryptography >=48.0.1` (GHSA-537c-gmf6-5ccf). Site build chain: vite/astro/js-yaml advisories cleared.
+
 ## [0.10.30] - 2026-06-14
 
 **Dashboard visual redesign — top-tier, dark-first "mission control for AI sessions."** A multi-phase craft pass over the entire web dashboard, reviewed across multiple consolidated Codex rounds to VERIFIED-CLEAN. Frontend + product-site only: no backend changes, no DB migrations (still 001–048), no MCP tool changes (still 62), no auth changes. Backend remains 2179 tests; dashboard 369 UI tests (was 198).
