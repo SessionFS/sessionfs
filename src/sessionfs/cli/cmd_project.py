@@ -1102,7 +1102,11 @@ def _resolve_project_id() -> tuple[str, str, str]:
     api_url, api_key = _get_project_client()
     result = asyncio.run(_api_request("GET", f"/api/v1/projects/{normalized}", api_url, api_key))
     if result.get("_status") == 404:
-        err_console.print("[yellow]No project context found. Run 'sfs project init' first.[/yellow]")
+        err_console.print(
+            "[yellow]No project context found. "
+            "Run 'sfs project init' first, or if this repo is part of "
+            "a multi-repo project, link it with 'sfs project link-repo'.[/yellow]"
+        )
         raise typer.Exit(1)
     return result["id"], api_url, api_key
 
@@ -1236,3 +1240,406 @@ def project_transfers(
     console.print(f"[bold]{direction.title()} transfers ({len(transfers)}):[/bold]")
     for t in transfers:
         _print_transfer(t)
+
+
+# ── P3: Multi-Repo Link / Unlink / List ──────────────────────────────────
+
+
+def _repos_api_request(
+    method: str, path: str, api_url: str, api_key: str,
+    json_data: dict | None = None,
+) -> dict:
+    """Shared API helper for repo endpoints — handles 409/422 envelopes."""
+    result = asyncio.run(_api_request(method, path, api_url, api_key, json_data))
+    if result.get("_status") == 404:
+        err_console.print("[red]Project not found.[/red]")
+        raise typer.Exit(1)
+    if result.get("_status") == 409:
+        detail = result.get("detail", {})
+        if isinstance(detail, dict):
+            msg = detail.get("message", str(detail))
+            existing = detail.get("existing_project_id")
+            if existing:
+                msg += f"\nExisting project: {existing}"
+            err_console.print(f"[red]{msg}[/red]")
+        else:
+            err_console.print(f"[red]{detail}[/red]")
+        raise typer.Exit(1)
+    if result.get("_status") == 422:
+        detail = result.get("detail", {})
+        if isinstance(detail, dict):
+            err_console.print(
+                f"[red]{detail.get('message', str(detail))}[/red]"
+            )
+        else:
+            err_console.print(f"[red]{detail}[/red]")
+        raise typer.Exit(1)
+    return result
+
+
+@project_app.command("link-repo")
+def project_link_repo(
+    remote: str = typer.Argument(..., help="Git remote URL to link (e.g. github.com/acme/backend.git)"),
+    primary: bool = typer.Option(
+        False, "--primary", help="Make this the project's primary (display) remote."
+    ),
+    project_id: str | None = typer.Option(
+        None, "--project-id",
+        help="Target project id. If omitted, resolves from the current repo.",
+    ),
+) -> None:
+    """Link a git repo to a project.
+
+    The repo becomes part of the project's multi-repo set.  The server
+    verifies repo ownership via the GitHub App when installed; otherwise
+    the link is recorded as owner-attested (unverified).
+
+    Examples:
+        sfs project link-repo github.com/acme/backend.git
+        sfs project link-repo github.com/acme/backend.git --primary
+        sfs project link-repo github.com/acme/api.git --project-id proj_abc
+    """
+    api_url, api_key = _get_project_client()
+    if project_id is None:
+        project_id, api_url, api_key = _resolve_project_id()
+
+    result = _repos_api_request(
+        "POST",
+        f"/api/v1/projects/{project_id}/repos",
+        api_url,
+        api_key,
+        json_data={"git_remote": remote, "is_primary": primary},
+    )
+    console.print(
+        f"[green]Repo linked:[/green] {result['git_remote_normalized']} "
+        f"({result['id']})"
+    )
+    if result.get("is_primary"):
+        console.print("[bold]  (primary)[/bold]")
+    console.print(
+        f"  verified={result['verified']}, "
+        f"method={result.get('verification_method', 'none')}"
+    )
+
+
+@project_app.command("unlink-repo")
+def project_unlink_repo(
+    remote: str = typer.Argument(..., help="Git remote URL or repo id to unlink."),
+    project_id: str | None = typer.Option(
+        None, "--project-id",
+        help="Target project id. If omitted, resolves from the current repo.",
+    ),
+) -> None:
+    """Unlink a repo from a project.
+
+    Refuses if this would leave an active project with zero repos.
+    If unlinking the primary, the oldest remaining repo is promoted.
+
+    Examples:
+        sfs project unlink-repo github.com/acme/backend.git
+        sfs project unlink-repo repo_a1b2c3d4 --project-id proj_abc
+    """
+    api_url, api_key = _get_project_client()
+    if project_id is None:
+        project_id, api_url, api_key = _resolve_project_id()
+
+    # If given a remote URL, look up the repo id first.
+    repo_id: str
+    from sessionfs.server.github_app import normalize_git_remote
+    normalized = normalize_git_remote(remote)
+    if "/" in normalized:
+        # Looks like a remote — find its repo id.
+        repos = _repos_api_request(
+            "GET",
+            f"/api/v1/projects/{project_id}/repos",
+            api_url,
+            api_key,
+        )
+        match = None
+        for r in repos:
+            if r["git_remote_normalized"] == normalized:
+                match = r
+                break
+        if match is None:
+            err_console.print(
+                f"[red]Repo '{normalized}' not found on this project. "
+                f"Use 'sfs project repos' to list linked repos.[/red]"
+            )
+            raise typer.Exit(1)
+        repo_id = match["id"]
+    else:
+        repo_id = remote
+
+    result = _repos_api_request(
+        "DELETE",
+        f"/api/v1/projects/{project_id}/repos/{repo_id}",
+        api_url,
+        api_key,
+    )
+    console.print(f"[green]Repo unlinked:[/green] {result['repo_id']}")
+
+
+@project_app.command("repos")
+def project_repos(
+    project_id: str | None = typer.Option(
+        None, "--project-id",
+        help="Target project id. If omitted, resolves from the current repo.",
+    ),
+) -> None:
+    """List repos linked to a project.
+
+    Examples:
+        sfs project repos
+        sfs project repos --project-id proj_abc
+    """
+    api_url, api_key = _get_project_client()
+    if project_id is None:
+        project_id, api_url, api_key = _resolve_project_id()
+
+    repos = _repos_api_request(
+        "GET",
+        f"/api/v1/projects/{project_id}/repos",
+        api_url,
+        api_key,
+    )
+    if not repos:
+        console.print("[dim]No repos linked.[/dim]")
+        return
+    console.print(f"[bold]Repos for {project_id}:[/bold]")
+    for r in repos:
+        primary = " [bold](primary)[/bold]" if r.get("is_primary") else ""
+        verified = (
+            f"verified={r['verified']}, "
+            f"method={r.get('verification_method', 'none')}"
+        )
+        console.print(
+            f"  {r['id']}  {r['git_remote_normalized']}{primary}"
+        )
+        console.print(f"    {verified}")
+
+
+def _merge_api_request(
+    method: str, path: str, api_url: str, api_key: str,
+    json_data: dict | None = None,
+) -> dict:
+    """API helper for merge endpoint — handles all merge-specific errors."""
+    result = asyncio.run(_api_request(method, path, api_url, api_key, json_data))
+    status = result.get("_status", 0)
+    detail = result.get("detail", {})
+
+    if status == 404:
+        msg = detail if isinstance(detail, str) else detail.get("message", "Not found")
+        err_console.print(f"[red]{msg}[/red]")
+        raise typer.Exit(1)
+    if status == 403:
+        msg = detail if isinstance(detail, str) else detail.get("message", "Forbidden")
+        err_console.print(f"[red]{msg}[/red]")
+        raise typer.Exit(1)
+    if status == 400:
+        msg = detail if isinstance(detail, str) else detail.get("message", str(detail))
+        err_console.print(f"[red]{msg}[/red]")
+        raise typer.Exit(1)
+    if status == 409:
+        if isinstance(detail, dict):
+            err_console.print(
+                f"[red]{detail.get('message', str(detail))}[/red]"
+            )
+        else:
+            err_console.print(f"[red]{detail}[/red]")
+        raise typer.Exit(1)
+    if status == 500:
+        err_console.print("[red]Internal server error — merge may have failed.[/red]")
+        raise typer.Exit(1)
+    return result
+
+
+@project_app.command("merge")
+def project_merge(
+    source: str = typer.Argument(
+        None,
+        help="Source project id to merge INTO the target. "
+             "If omitted, resolves from the current repo.",
+    ),
+    into: str | None = typer.Option(
+        None, "--into",
+        help="Target project id (merge source INTO this). "
+             "If omitted, the first positional argument is the source "
+             "and --into is required.",
+    ),
+    dry_run: bool = typer.Option(
+        True, "--dry-run/--confirm",
+        help="Dry-run (default): validate + show plan. --confirm to execute.",
+    ),
+    interactive: bool = typer.Option(
+        False, "--interactive",
+        help="Prompt for each persona collision before renaming.",
+    ),
+    persona_policy: str = typer.Option(
+        "rename", "--persona-policy",
+        help="Collision policy: rename (default), skip, or merge_content.",
+    ),
+) -> None:
+    """Merge one project into another.
+
+    Merges the source project INTO the target project, reassigning all
+    repos, personas, knowledge, tickets, sessions, and other data.
+    The source project becomes a read-only tombstone that redirects
+    to the target.
+
+    Dry-run is the DEFAULT — validates and shows what WOULD happen
+    without writing anything.  Use --confirm to execute.
+
+    Examples:
+        sfs project merge proj_src123 --into proj_tgt456
+        sfs project merge proj_src123 --into proj_tgt456 --dry-run
+        sfs project merge proj_src123 --into proj_tgt456 --confirm
+        sfs project merge proj_src123 --into proj_tgt456 --confirm --persona-policy skip
+    """
+    api_url, api_key = _get_project_client()
+
+    if source is None:
+        source, api_url, api_key = _resolve_project_id()
+
+    if into is None:
+        err_console.print(
+            "[red]--into <target_project_id> is required when source "
+            "is resolved from the current repo.[/red]"
+        )
+        raise typer.Exit(1)
+
+    # Interactive mode: pre-fetch dry-run and prompt for each collision.
+    if interactive and not dry_run:
+        err_console.print(
+            "[yellow]Note: --interactive overrides --confirm — "
+            "running dry-run first to preview collisions.[/yellow]"
+        )
+
+    if interactive:
+        # Fetch dry-run first.
+        plan = _merge_api_request(
+            "POST",
+            f"/api/v1/projects/{into}/merge",
+            api_url,
+            api_key,
+            json_data={
+                "source_project_id": source,
+                "dry_run": True,
+                "persona_policy": persona_policy,
+            },
+        )
+        collisions = plan.get("persona_collisions", [])
+        if collisions:
+            console.print(
+                f"[bold yellow]{len(collisions)} persona name "
+                f"collision(s) detected:[/bold yellow]"
+            )
+            for c in collisions:
+                console.print(f"  - {c['source_name']}")
+            console.print()
+            console.print(
+                "Policy: [bold]{persona_policy}[/bold] — "
+                "source personas will be renamed to "
+                "f'{{name}}-{{src8}}'."
+            )
+            from rich.prompt import Confirm
+            if not Confirm.ask("Proceed with merge?", default=False):
+                console.print("[dim]Merge cancelled.[/dim]")
+                raise typer.Exit(0)
+        else:
+            console.print("[green]No persona collisions detected.[/green]")
+
+    result = _merge_api_request(
+        "POST",
+        f"/api/v1/projects/{into}/merge",
+        api_url,
+        api_key,
+        json_data={
+            "source_project_id": source,
+            "dry_run": dry_run,
+            "persona_policy": persona_policy,
+        },
+    )
+
+    if dry_run:
+        _print_merge_plan(result)
+    else:
+        console.print(
+            f"[green]Merge complete![/green] "
+            f"Source {source} → Target {into}"
+        )
+        console.print(f"  Audit ID: {result.get('audit_id')}")
+        renames = result.get("persona_renames", [])
+        if renames:
+            console.print(f"  Persona renames: {len(renames)}")
+            for rn in renames:
+                console.print(
+                    f"    [dim]{rn['old_name']} → "
+                    f"{rn['new_name']}[/dim]"
+                )
+        skipped_ke = result.get("skipped_ke_ids", [])
+        if skipped_ke:
+            console.print(
+                f"  [dim]Skipped {len(skipped_ke)} duplicate "
+                f"knowledge entries.[/dim]"
+            )
+        rules = result.get("rules_action", "none")
+        if rules != "none":
+            console.print(f"  Rules: {rules}")
+
+
+def _print_merge_plan(plan: dict) -> None:
+    """Pretty-print a dry-run merge plan."""
+    stats = plan.get("stats", {})
+    console.print("[bold]Merge Plan (dry-run — no changes made)[/bold]")
+    console.print()
+    console.print("[bold]Rows to reassign:[/bold]")
+    for label in (
+        "repos", "personas", "tickets", "agent_runs", "sessions",
+        "handoff_attachments", "project_transfers",
+        "context_compilations", "knowledge_entries",
+        "knowledge_links", "knowledge_pages", "wiki_page_revisions",
+        "retrieval_audit_contexts", "retrieval_audit_events",
+    ):
+        count = stats.get(label, 0)
+        if count:
+            console.print(f"  {label}: {count}")
+
+    collisions = stats.get("persona_collisions", 0)
+    if collisions:
+        console.print(
+            f"\n[yellow]Persona name collisions: {collisions}[/yellow]"
+        )
+        for c in plan.get("persona_collisions", []):
+            console.print(f"  - {c['source_name']}")
+
+    slug_c = stats.get("slug_collisions", 0)
+    if slug_c:
+        console.print(
+            f"\n[yellow]Wiki page slug collisions: {slug_c}[/yellow]"
+        )
+        for s in plan.get("slug_collisions", []):
+            console.print(f"  - {s}")
+
+    ke_d = stats.get("ke_duplicates", 0)
+    if ke_d:
+        console.print(
+            f"\n[dim]Knowledge entry duplicates (will be skipped): "
+            f"{ke_d}[/dim]"
+        )
+
+    console.print()
+    if stats.get("source_has_rules") and stats.get("target_has_rules"):
+        console.print(
+            "[yellow]Both projects have rules — source rules "
+            "will be archived as a wiki page.[/yellow]"
+        )
+    elif stats.get("source_has_rules") and not stats.get("target_has_rules"):
+        console.print(
+            "[green]Source rules will be promoted to target "
+            "(target has none).[/green]"
+        )
+
+    console.print()
+    console.print(
+        "[dim]Run with --confirm to execute this merge.[/dim]"
+    )

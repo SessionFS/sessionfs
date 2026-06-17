@@ -28,7 +28,6 @@ from sessionfs.server.db.models import (
     Project,
     ProjectRules,
     RulesVersion,
-    Session,
     User,
 )
 from sessionfs.server.services.rules import (
@@ -137,26 +136,39 @@ async def _load_project_or_404(
     (``github.com/owner/repo``), matching the dual pattern used across the
     API (``projects.py`` keys by git remote; ``knowledge.py`` keys by UUID).
     The dashboard passes the git remote on every project-scoped request.
+
+    Multi-repo aware (P2 §3.3 A8): remote fallback routes through
+    project_repos via resolve_project_by_remote.  Tombstone-aware:
+    both UUID and remote paths follow merged_into_project_id chains
+    transparently.
     """
-    # Try UUID first, then fall back to git_remote_normalized.
-    result = await db.execute(select(Project).where(Project.id == project_id))
-    project = result.scalar_one_or_none()
+    from sessionfs.server.auth.project_access import user_can_access_project
+    from sessionfs.server.services.project_resolver import (
+        ProjectResolutionLoopError,
+        resolve_project_by_id,
+        resolve_project_by_remote,
+    )
+
+    # Try UUID first (resolver follows tombstones transparently).
+    try:
+        project = await resolve_project_by_id(db, project_id)
+    except ProjectResolutionLoopError:
+        raise HTTPException(409, {
+            "error": "resolution_loop",
+            "message": "Project resolution exceeded hop limit — possible data corruption.",
+        })
+    # If UUID didn't match, try git remote fallback via resolver.
     if project is None:
-        result = await db.execute(
-            select(Project).where(Project.git_remote_normalized == project_id)
-        )
-        project = result.scalar_one_or_none()
+        try:
+            project = await resolve_project_by_remote(db, project_id)
+        except ProjectResolutionLoopError:
+            raise HTTPException(409, {
+                "error": "resolution_loop",
+                "message": "Project resolution exceeded hop limit — possible data corruption.",
+            })
     if not project:
         raise HTTPException(404, "Project not found")
-    if project.owner_id == user_id:
-        return project
-    access = await db.execute(
-        select(Session.id).where(
-            Session.user_id == user_id,
-            Session.git_remote_normalized == project.git_remote_normalized,
-        ).limit(1)
-    )
-    if access.scalar_one_or_none() is None:
+    if not await user_can_access_project(db, user_id, project):
         raise HTTPException(403, "No access to this project")
     return project
 

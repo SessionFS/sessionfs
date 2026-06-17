@@ -17,14 +17,34 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.10.30 -->
+      <!-- v0.10.31 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.10.31</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">June 17, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Multi-Repo Projects &mdash; One Project, Many Repos &middot; Verified Repo Linking &middot; Project Merge</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>A project can now own more than one git repo.</strong> Products that span several repositories &mdash; a backend, a frontend, an infra repo &mdash; no longer need a separate SessionFS project per repo. Personas, knowledge, tickets, and rules are shared across every repo in the project instead of duplicated and drifting across single-repo projects. Captured sessions from any linked repo roll up to the same project context. <strong>Free for all tiers.</strong></li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Verified-ownership repo linking.</strong> Link and unlink repos from the CLI with <span class="font-mono text-accent text-sm">sfs project link-repo</span> / <span class="font-mono text-accent text-sm">unlink-repo</span> / <span class="font-mono text-accent text-sm">repos</span>, with ownership verified before a repo joins a project so you can't attach a repo you don't control. The web dashboard adds a <strong>Repos</strong> tab to view and manage every repo on a project.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong><span class="font-mono text-accent text-sm">sfs project merge</span> to consolidate split projects.</strong> If you already had separate single-repo projects for the same product, merge them into one &mdash; their repos, knowledge, and tickets fold into a single project. Merge is <strong>dry-run by default</strong> so you preview exactly what moves before anything changes, with a matching Merge surface in the dashboard.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Security &mdash; dependency hardening.</strong> Upgraded to close freshly-published CVEs in <span class="font-mono text-accent text-sm">starlette</span>, <span class="font-mono text-accent text-sm">python-multipart</span>, and <span class="font-mono text-accent text-sm">cryptography</span> on the backend, plus <span class="font-mono text-accent text-sm">vite</span> and <span class="font-mono text-accent text-sm">astro</span> on the site. Shield-SR pre-release security review CLEAN.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Backend + CLI + dashboard. Migration 049 (first past 048). 2,278 backend + 388 dashboard UI tests passing (was 2,179 + 369 at v0.10.30; +99 backend / +19 dashboard). 62 MCP tools (unchanged) &middot; 9 supported tools unchanged &middot; pricing tiers unchanged. Shield-SR pre-release security review CLEAN.</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.10.30 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
             <span class="text-brand font-semibold">v0.10.30</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">June 14, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Dashboard Redesign &mdash; Dark-First UI &middot; Real Transcript View &middot; New Brand Tagline</h2>
         <ul class="space-y-2 text-base text-muted">

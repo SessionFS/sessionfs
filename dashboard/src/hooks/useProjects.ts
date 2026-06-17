@@ -255,3 +255,70 @@ export function useUpdateProjectSettings(projectId: string | undefined) {
     },
   });
 }
+
+// ── Multi-Repo Projects (v0.11) ──
+
+export function useProjectRepos(projectId: string | undefined) {
+  const { auth } = useAuth();
+  return useQuery({
+    queryKey: ['projectRepos', projectId],
+    queryFn: () => auth!.client.listProjectRepos(projectId!),
+    enabled: !!auth && !!projectId,
+    staleTime: 30_000,
+  });
+}
+
+export function useLinkRepo(projectId: string | undefined) {
+  const { auth } = useAuth();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { git_remote: string; is_primary?: boolean }) =>
+      auth!.client.linkRepo(projectId!, body),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['projectRepos', projectId] });
+      void queryClient.invalidateQueries({ queryKey: ['projects'] });
+      void queryClient.invalidateQueries({ queryKey: ['project'] });
+    },
+  });
+}
+
+export function useUnlinkRepo(projectId: string | undefined) {
+  const { auth } = useAuth();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (repoId: string) =>
+      auth!.client.unlinkRepo(projectId!, repoId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['projectRepos', projectId] });
+      void queryClient.invalidateQueries({ queryKey: ['projects'] });
+      void queryClient.invalidateQueries({ queryKey: ['project'] });
+    },
+  });
+}
+
+export function useMergeProject(projectId: string | undefined) {
+  const { auth } = useAuth();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { source_project_id: string; dry_run: boolean }) =>
+      auth!.client.mergeProject(projectId!, body) as Promise<import('../api/client').MergeDryRunResponse | import('../api/client').MergeExecuteResponse>,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['projectRepos', projectId] });
+      void queryClient.invalidateQueries({ queryKey: ['projects'] });
+      void queryClient.invalidateQueries({ queryKey: ['project'] });
+    },
+  });
+}
+
+export function useUpdateProjectName(projectId: string | undefined) {
+  const { auth } = useAuth();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) =>
+      auth!.client.updateProject(projectId!, { name }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['projects'] });
+      void queryClient.invalidateQueries({ queryKey: ['project'] });
+    },
+  });
+}

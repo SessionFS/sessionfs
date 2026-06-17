@@ -76,6 +76,75 @@ async def get_installation_token(installation_id: int) -> str:
     return token
 
 
+async def verify_repo_ownership(
+    db,
+    user_id: str,
+    owner: str,
+    repo: str,
+) -> tuple[bool, str | None, str | None, str | None]:
+    """Verify repo ownership via the user's OWN GitHub App installations.
+
+    Sentinel N1 (confused-deputy defense): scoped to the authenticated
+    user's own installations only — never a global token or another
+    user's installation. A user who installed the App on repo-A cannot
+    use that installation's token to "verify" repo-B.
+
+    Sentinel N2 (liveness): this function makes live HTTP calls to the
+    GitHub API and is designed to be called OUTSIDE any swap transaction.
+    The caller acquires DB locks only after this returns.
+
+    Returns (verified, verification_method, provider, provider_repo_id).
+    - verified=True, method='github_app' when an installation token can
+      access the repo AND the repo metadata is returned (200).
+    - verified=False, method='owner_attested' when no installation covers
+      this repo OR the GitHub API call fails for any reason.
+    """
+    from sqlalchemy import select
+
+    from sessionfs.server.db.models import GitHubInstallation
+
+    if not GITHUB_APP_ID or not GITHUB_APP_PRIVATE_KEY:
+        return (False, "owner_attested", None, None)
+
+    # Find installations belonging to this user (N1: linker's OWN
+    # installations only — never cross-user).
+    result = await db.execute(
+        select(GitHubInstallation).where(
+            GitHubInstallation.user_id == user_id,
+        )
+    )
+    installations = result.scalars().all()
+
+    if not installations:
+        return (False, "owner_attested", None, None)
+
+    for install in installations:
+        try:
+            token = await get_installation_token(install.id)
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(
+                    f"{GITHUB_API}/repos/{owner}/{repo}",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Accept": "application/vnd.github+json",
+                    },
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return (
+                        True,
+                        "github_app",
+                        "github",
+                        str(data.get("id", "")),
+                    )
+        except Exception:
+            # Best-effort per installation — try the next one
+            continue
+
+    # No installation could verify this repo
+    return (False, "owner_attested", None, None)
+
+
 async def post_or_update_comment(
     token: str,
     repo: str,

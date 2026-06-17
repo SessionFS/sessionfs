@@ -647,6 +647,23 @@ class Project(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    # v0.11.0 — multi-repo projects tombstone + orphaned state (§3.4).
+    # merged_into_project_id: set when this project is merged into another.
+    # merged_at: when the merge occurred.
+    # repo_reclaimed_at: set when ALL repos were reclaimed by verified owners
+    #   via displacement. The project keeps its own KB/personas/tickets/rules
+    #   (NEVER auto-imported into the claimant). Distinct from merge tombstone.
+    merged_into_project_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("projects.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    merged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    repo_reclaimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class PRComment(Base):
@@ -1661,3 +1678,109 @@ class RetrievalAuditEvent(Base):
     )
     service_key_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     service_key_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+
+# v0.11.0 — Multi-repo projects (§3.1).
+#
+# A project owns N repos via the project_repos join table. Each repo belongs
+# to exactly ONE project (global UNIQUE on git_remote_normalized). This
+# breaks the pre-v0.11 1:1 repo↔project hard constraint.
+#
+# Ownership verification (Sentinel F1): verified + verification_method
+# implement an anti-hijack model. github_app installation proof is the
+# authoritative path (verified=true). owner_attested is the fallback for
+# non-GitHub/self-hosted/app-not-installed (verified=false). legacy_backfill
+# grandfathered existing rows at migration 049 (verified=false).
+# Verified claims can displace unverified holders atomically (§6.2).
+
+
+class ProjectRepo(Base):
+    __tablename__ = "project_repos"
+    __table_args__ = (
+        UniqueConstraint("git_remote_normalized", name="uq_project_repos_remote"),
+        Index("idx_project_repos_project", "project_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    git_remote_normalized: Mapped[str] = mapped_column(
+        String(255), nullable=False
+    )
+    # Provider identity for rename survival (v1). Best-effort only —
+    # frequently NULL. The load-bearing anti-hijack control is
+    # verified + verification_method (Sentinel F1/F2).
+    provider: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    provider_repo_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    is_primary: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
+    # Sentinel F1: verified=true ONLY for github_app (Sentinel S2 MED-3).
+    # owner_attested and legacy_backfill are ALWAYS verified=false.
+    verified: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )
+    verification_method: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    added_by_user_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+# v0.11.0 — Merge audit trail (§5.10).
+#
+# Durable record of every validated merge-EXECUTE attempt (dry-run writes
+# nothing). The audit row is written in a SEPARATE transaction BEFORE
+# mutation begins (status='started'), then outcome-updated to 'completed'
+# or 'failed' via a fresh session that survives rollback of the merge
+# transaction. Precondition/authz rejections (404, cross-org, already-merged)
+# are refused BEFORE any audit row exists and are covered by standard
+# request/access logging.
+#
+# House convention: Text columns with NOT NULL DEFAULT '{}'/'[]' for JSON
+# payloads, matching agent_runs.findings + ticket_edits.old_value/new_value.
+
+
+class ProjectMergeAudit(Base):
+    __tablename__ = "project_merge_audit"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_project_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    target_project_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    initiated_by_user_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    dry_run: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=text("true"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), default="completed", server_default=text("'completed'"),
+        nullable=False
+    )
+    persona_policy: Mapped[str] = mapped_column(
+        String(20), nullable=False
+    )
+    # JSON payloads as Text (cross-DB; matches agent_runs.findings pattern).
+    stats: Mapped[str] = mapped_column(
+        Text, default="{}", server_default=text("'{}'"), nullable=False
+    )
+    persona_renames: Mapped[str] = mapped_column(
+        Text, default="[]", server_default=text("'[]'"), nullable=False
+    )
+    slug_renames: Mapped[str] = mapped_column(
+        Text, default="[]", server_default=text("'[]'"), nullable=False
+    )
+    skipped_ke_ids: Mapped[str] = mapped_column(
+        Text, default="[]", server_default=text("'[]'"), nullable=False
+    )
+    skipped_link_ids: Mapped[str] = mapped_column(
+        Text, default="[]", server_default=text("'[]'"), nullable=False
+    )
+    rules_action: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

@@ -2627,7 +2627,11 @@ async def _resolve_project_id(git_remote: str = "") -> tuple[str, str, str]:
             headers={"Authorization": f"Bearer {config.sync.api_key}"},
         )
     if resp.status_code == 404:
-        raise Exception(f"No project found for {normalized}. Create one with: sfs project init")
+        raise Exception(
+            f"No project found for {normalized}. "
+            f"Create one with: sfs project init, or if this repo is part of "
+            f"a multi-repo project, link it with: sfs project link-repo"
+        )
     if resp.status_code >= 400:
         raise Exception(f"Error fetching project: {resp.status_code}")
 

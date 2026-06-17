@@ -21,6 +21,7 @@ import {
   useSupersedeEntry,
   useRebuildProject,
   useRefreshEntry,
+  useUpdateProjectName,
 } from '../hooks/useProjects';
 import { useToast } from '../hooks/useToast';
 import RelativeDate from '../components/RelativeDate';
@@ -30,6 +31,8 @@ import TransferPanel from './TransferPanel';
 import PersonasTab from './PersonasTab';
 import TicketsTab from './TicketsTab';
 import AgentRunsTab from './AgentRunsTab';
+import ReposTab from './ReposTab';
+import MergeSurface from './MergeSurface';
 import { useMyOrgs } from '../transfers/useTransfers';
 import { Tabs, Card, Button, Input, Textarea, Select, Dialog, DialogHeader, DialogFooter, Dropdown } from '../components/ui';
 
@@ -41,6 +44,8 @@ type ProjectTab =
   | 'personas'
   | 'tickets'
   | 'agent-runs'
+  | 'repos'
+  | 'merge'
   | 'history'
   | 'transfer';
 
@@ -973,11 +978,35 @@ export default function ProjectDetail() {
   );
   const [autoNarrative, setAutoNarrative] = useState(project?.auto_narrative ?? false);
   const updateSettings = useUpdateProjectSettings(project?.id);
+  const updateName = useUpdateProjectName(project?.id);
+
+  // Inline project rename
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState(project?.name || '');
 
   // Fetch pending entries count for workflow hint
   const { data: pendingData } = useKnowledgeEntries(project?.id, { pending: true, limit: 1 });
   const pendingCount = pendingData?.total ?? 0;
   const compile = useCompileProject(project?.id);
+
+  const repoCount = project?.repos?.length;
+
+  function handleRenameSave() {
+    const trimmed = nameDraft.trim();
+    if (!trimmed || trimmed === project?.name) {
+      setEditingName(false);
+      return;
+    }
+    updateName.mutate(trimmed, {
+      onSuccess: () => {
+        addToast('success', `Project renamed to "${trimmed}"`);
+        setEditingName(false);
+      },
+      onError: (err) => {
+        addToast('error', `Rename failed: ${String(err)}`);
+      },
+    });
+  }
 
   const switchTab = useCallback((tab: string) => {
     setActiveTab(tab as ProjectTab);
@@ -1069,6 +1098,8 @@ export default function ProjectDetail() {
     { key: 'personas', label: 'Personas' },
     { key: 'tickets', label: 'Tickets' },
     { key: 'agent-runs', label: 'Agent runs' },
+    { key: 'repos', label: 'Repos' },
+    { key: 'merge', label: 'Merge' },
     { key: 'transfer', label: 'Transfer' },
     { key: 'history', label: 'History', step: 4 },
   ];
@@ -1100,9 +1131,51 @@ export default function ProjectDetail() {
       <Card level="elevated" className="rounded-xl shadow-[var(--shadow-sm)]">
         <div className="px-5 pt-4 flex items-start justify-between">
           <div className="min-w-0 flex-1">
-            <h1 className="text-2xl font-semibold text-text-primary break-all">
-              {project.git_remote_normalized}
-            </h1>
+            {/* Project name (editable) */}
+            {editingName ? (
+              <div className="flex items-center gap-2 mb-1">
+                <input
+                  value={nameDraft}
+                  onChange={(e) => setNameDraft(e.target.value)}
+                  className="text-2xl font-semibold bg-bg-sunken border border-[var(--brand)] rounded-lg px-3 py-1 text-text-primary outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] min-w-0 flex-1"
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleRenameSave();
+                    if (e.key === 'Escape') setEditingName(false);
+                  }}
+                  placeholder={project.git_remote_normalized}
+                />
+                <Button size="sm" onClick={handleRenameSave} disabled={updateName.isPending} loading={updateName.isPending}>
+                  Save
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => setEditingName(false)}>
+                  Cancel
+                </Button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 mb-1">
+                <h1 className="text-2xl font-semibold text-text-primary break-all">
+                  {project.name || project.git_remote_normalized}
+                </h1>
+                <button
+                  onClick={() => { setNameDraft(project.name || ''); setEditingName(true); }}
+                  className="shrink-0 p-1 text-text-tertiary hover:text-text-secondary hover:bg-surface-hover rounded transition-colors"
+                  title="Rename project"
+                  aria-label="Rename project"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                  </svg>
+                </button>
+              </div>
+            )}
+            {/* Repo path (when name differs) */}
+            {project.name && project.name !== project.git_remote_normalized && (
+              <p className="text-xs text-text-tertiary font-mono truncate -mt-0.5 mb-1">
+                {project.git_remote_normalized}
+              </p>
+            )}
             <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-text-tertiary">
               <span>
                 Created <RelativeDate iso={project.created_at} />
@@ -1111,6 +1184,12 @@ export default function ProjectDetail() {
               <span>
                 Updated <RelativeDate iso={project.updated_at} />
               </span>
+              {repoCount !== undefined && repoCount > 0 && (
+                <>
+                  <span>&middot;</span>
+                  <span>{repoCount} {repoCount === 1 ? 'repo' : 'repos'}</span>
+                </>
+              )}
             </div>
             <label className="flex items-center gap-2 text-sm text-text-tertiary mt-1">
               <input
@@ -1188,6 +1267,20 @@ export default function ProjectDetail() {
             <Button variant="ghost" size="sm" onClick={dismissWorkflowHint} title="Dismiss">
               &times;
             </Button>
+          </div>
+        )}
+
+        {/* Repo reclaimed notice */}
+        {project.repo_reclaimed_at && (
+          <div className="mx-5 mt-3 flex items-center gap-2 px-3 py-2 rounded-lg bg-[rgba(239,68,68,0.06)] border border-[rgba(239,68,68,0.15)]">
+            <svg className="shrink-0 w-4 h-4 text-[var(--danger)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="8" x2="12" y2="12" />
+              <line x1="12" y1="16" x2="12.01" y2="16" />
+            </svg>
+            <span className="text-xs text-[var(--danger)] font-medium">
+              All repos were reclaimed. Link a new repo to revive this project.
+            </span>
           </div>
         )}
 
@@ -1327,6 +1420,18 @@ export default function ProjectDetail() {
       {activeTab === 'entries' && (
         <Card key={`entries-${tabKey}`} level="elevated" className="mt-4 tab-panel-enter rounded-xl shadow-[var(--shadow-sm)]">
           <KnowledgeEntriesTab projectId={project.id} />
+        </Card>
+      )}
+
+      {activeTab === 'repos' && (
+        <Card key={`repos-${tabKey}`} level="elevated" className="mt-4 tab-panel-enter rounded-xl shadow-[var(--shadow-sm)]">
+          <ReposTab projectId={project.id} />
+        </Card>
+      )}
+
+      {activeTab === 'merge' && (
+        <Card key={`merge-${tabKey}`} level="elevated" className="mt-4 tab-panel-enter rounded-xl shadow-[var(--shadow-sm)]">
+          <MergeSurface projectId={project.id} projectName={project.name || project.git_remote_normalized} />
         </Card>
       )}
 

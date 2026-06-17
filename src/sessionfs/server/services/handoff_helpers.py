@@ -36,6 +36,7 @@ from sessionfs.server.db.models import (
     KnowledgePage,
     OrgMember,
     Project,
+    ProjectRepo,
     Session as SessionModel,
     TeamMember,
     Ticket,
@@ -111,9 +112,24 @@ async def _accessible_project_ids(db: AsyncSession, user_id: str) -> set[str]:
             .where(OrgMember.user_id == user_id)
         )
     ).scalars().all()
-    # Project rows the user accesses via session ownership (matches
-    # _get_project_or_404 fallback semantics).
-    via_session_ids = (
+    # P2 (§3.3 B2): primary path — collect distinct project_ids from
+    # the user's sessions (session.project_id, not remote-based join).
+    # After multi-repo, project.git_remote_normalized is only the primary
+    # remote — the old join-by-remote would miss projects where the
+    # user has sessions only on non-primary repos.
+    via_session_project_ids = (
+        await db.execute(
+            select(SessionModel.project_id)
+            .where(
+                SessionModel.user_id == user_id,
+                SessionModel.project_id.isnot(None),
+            )
+            .distinct()
+        )
+    ).scalars().all()
+    # Legacy fallback: sessions with NULL project_id (pre-dating
+    # session→project linking, migration 036) matched by git_remote.
+    via_legacy_remote_ids = (
         await db.execute(
             select(Project.id)
             .join(
@@ -121,9 +137,31 @@ async def _accessible_project_ids(db: AsyncSession, user_id: str) -> set[str]:
                 SessionModel.git_remote_normalized == Project.git_remote_normalized,
             )
             .where(SessionModel.user_id == user_id)
+            .distinct()
         )
     ).scalars().all()
-    return set(owner_ids) | set(org_member_ids) | set(via_session_ids)
+    # P2-fix: also match legacy sessions through project_repos (non-primary
+    # repos).  The legacy path above only joins on the primary remote; a
+    # session on a linked non-primary repo with NULL project_id would be
+    # missed otherwise.
+    via_repo_remote_ids = (
+        await db.execute(
+            select(ProjectRepo.project_id)
+            .join(
+                SessionModel,
+                SessionModel.git_remote_normalized == ProjectRepo.git_remote_normalized,
+            )
+            .where(SessionModel.user_id == user_id)
+            .distinct()
+        )
+    ).scalars().all()
+    return (
+        set(owner_ids)
+        | set(org_member_ids)
+        | set(via_session_project_ids)
+        | set(via_legacy_remote_ids)
+        | set(via_repo_remote_ids)
+    )
 
 
 async def validate_provenance_for_sender(
@@ -145,20 +183,20 @@ async def validate_provenance_for_sender(
     snapshot_persona_name: str | None = None
     if not ticket_id and not persona_name:
         return None, None
-    if not session.git_remote_normalized:
-        # Session has no project linkage — refuse to attach provenance
-        # that has nowhere to validate against.
-        raise ValueError(
-            "Cannot attach ticket_id or persona_name to a handoff whose "
-            "session has no associated project (git_remote missing)."
+    # Prefer session.project_id (authoritative FK) before falling
+    # back to remote resolution (§3.3 A5).
+    project: Project | None = None
+    if session.project_id:
+        project = (await db.execute(
+            select(Project).where(Project.id == session.project_id)
+        )).scalar_one_or_none()
+    if project is None and session.git_remote_normalized:
+        from sessionfs.server.services.project_resolver import (
+            resolve_project_by_remote,
         )
-    project = (
-        await db.execute(
-            select(Project).where(
-                Project.git_remote_normalized == session.git_remote_normalized
-            )
+        project = await resolve_project_by_remote(
+            db, session.git_remote_normalized,
         )
-    ).scalar_one_or_none()
     if project is None:
         raise ValueError(
             "Cannot attach ticket_id or persona_name to a handoff whose "
@@ -208,17 +246,20 @@ async def validate_attachments_for_sender(
     ticket."""
     if not attachments:
         return
-    if not session.git_remote_normalized:
-        raise ValueError(
-            "Cannot attach refs to a handoff whose session has no project linkage"
+    # Prefer session.project_id (authoritative FK) before falling
+    # back to remote resolution (§3.3 A6).
+    project: Project | None = None
+    if session.project_id:
+        project = (await db.execute(
+            select(Project).where(Project.id == session.project_id)
+        )).scalar_one_or_none()
+    if project is None and session.git_remote_normalized:
+        from sessionfs.server.services.project_resolver import (
+            resolve_project_by_remote,
         )
-    project = (
-        await db.execute(
-            select(Project).where(
-                Project.git_remote_normalized == session.git_remote_normalized
-            )
+        project = await resolve_project_by_remote(
+            db, session.git_remote_normalized,
         )
-    ).scalar_one_or_none()
     if project is None:
         raise ValueError("Session's project is not registered")
     pid = project.id
@@ -509,8 +550,12 @@ async def assert_service_key_handoff_boundary(
         )
 
     # R6 HIGH — authoritative anchor first. sessions.project_id is the
-    # truth; git_remote is only the legacy fallback for rows that
-    # predate session→project linking (migration 036).
+    # truth; git_remote is the legacy fallback for rows that predate
+    # session→project linking (migration 036).
+    # P2 (§3.3 A7): legacy fallback now routes through the multi-repo
+    # resolver.  The old len(matching) > 1 ambiguity guard is now a
+    # compile-time invariant (project_repos UNIQUE on git_remote_normalized
+    # guarantees at most one project per remote); kept as defense-in-depth.
     project: Project | None = None
     if source_session.project_id:
         project = (
@@ -519,31 +564,12 @@ async def assert_service_key_handoff_boundary(
             )
         ).scalar_one_or_none()
     elif source_session.git_remote_normalized:
-        matching = (
-            await db.execute(
-                select(Project).where(
-                    Project.git_remote_normalized == source_session.git_remote_normalized
-                )
-            )
-        ).scalars().all()
-        if len(matching) > 1:
-            # R6 HIGH fix — DO NOT prefer the key's org. Multiple
-            # projects sharing a remote means the anchor is ambiguous;
-            # without project_id we cannot determine which org owns
-            # the session. Refuse rather than pick.
-            raise HTTPException(
-                status_code=403,
-                detail={
-                    "error": "service_key_project_ambiguous",
-                    "message": (
-                        "Source session's git remote matches multiple "
-                        "projects; service-key boundary cannot be "
-                        "resolved without sessions.project_id"
-                    ),
-                },
-            )
-        if matching:
-            project = matching[0]
+        from sessionfs.server.services.project_resolver import (
+            resolve_project_by_remote,
+        )
+        project = await resolve_project_by_remote(
+            db, source_session.git_remote_normalized,
+        )
 
     if project is None:
         raise HTTPException(

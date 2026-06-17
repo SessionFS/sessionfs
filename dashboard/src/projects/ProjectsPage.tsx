@@ -25,6 +25,7 @@ function ProjectCard({ project, onClick }: { project: ProjectContext; onClick: (
   const preview = firstContentLine(project.context_document);
   const displayName = project.name || project.git_remote_normalized;
   const p = project as ProjectContextWithOrg;
+  const repoLength = project.repos?.length;
 
   return (
     <Card
@@ -68,6 +69,20 @@ function ProjectCard({ project, onClick }: { project: ProjectContext; onClick: (
           </svg>
           {sessionCount} {sessionCount === 1 ? 'session' : 'sessions'}
         </span>
+
+        {/* Multi-repo badge */}
+        {repoLength !== undefined && repoLength > 1 && (
+          <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-brand/10 text-brand tabular-nums">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="opacity-70">
+              <circle cx="12" cy="18" r="3" />
+              <circle cx="6" cy="6" r="3" />
+              <circle cx="18" cy="6" r="3" />
+              <path d="M18 9v1a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V9" />
+              <path d="M12 3v4" />
+            </svg>
+            {repoLength} repos
+          </span>
+        )}
 
         {/* Auto-narrative badge */}
         {project.auto_narrative && (
