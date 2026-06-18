@@ -2,7 +2,7 @@
 
 **Author:** Atlas (backend/data-model)
 **Branch:** `design/licensing-atlas` (worktree off develop, NEVER push)
-**Status:** Design proposal — pending CEO review + Codex + Ledger + Shield + Sentinel
+**Status:** Design proposal — R1 (Codex) + R2 (Ledger + Shield + Sentinel) amendments applied; pending CEO final sign-off
 **Companion doc:** Compass writes `docs/design/licensing-org-redesign-product.md` (product/UX/billing shape)
 
 ---
@@ -134,27 +134,63 @@ entitlements
 
 **⚠️ Ledger flag:** The `source: "stripe"` path, Stripe webhook → entitlement reconciliation, and billing-specific fields (invoice, payment method) are Ledger's domain. This design defines the data contract; Ledger owns the Stripe integration and billing logic.
 
-### 2.2 License → Organization: self-service activation
+**Entitlement isolation (Sentinel MEDIUM-2):**
+
+`GET /orgs/{org_id}/entitlement` must verify the caller is an active `OrgMember` of the target org BEFORE returning any entitlement data. `owner_id` / `owner_type` are derived server-side from the caller's `OrgMember` row — never from client-supplied input. The denormalized `entitlement_id` pointer on `users` and `organizations` is a write-time hint for fast resolution; it is NEVER read as an authz shortcut. The authoritative entitlement is ALWAYS resolved via `SELECT ... FROM entitlements WHERE owner_type = :type AND owner_id = :id AND status = 'active'`, scoped to the caller's proven membership.
+
+**No platform-admin via entitlement cache (Sentinel MEDIUM-3):**
+
+Since `User.tier` becomes a denormalized cache populated from the entitlement, an explicit guard prevents any entitlement tier from setting `User.tier = 'admin'`. The valid entitlement tier catalog is `free | starter | pro | team | enterprise` — `admin` is NOT an entitlement tier. Platform-admin status is grantable ONLY by the existing admin path (`require_admin` guard, manual DB intervention, or the admin API key mint endpoint). Activation and owner-promotion code paths must NEVER write `User.tier = 'admin'` — this is enforced by a CHECK constraint on the entitlement row (add in migration 050) AND an application-layer assertion in `resolve_entitlement`.
+
+**License-key hygiene (Sentinel LOW-2/3):**
+
+Never log, echo, or store full license keys. Only the key prefix (matching the `ApiKey.key_prefix` pattern) is stored in audit rows, logs, or API responses. The entitlements partial unique index `uq_entitlements_one_active_per_owner` (§2.1, constraint 1) is the DB-level safety net for the Stripe-XOR-license race — two entitlement sources cannot simultaneously produce two active rows for the same owner.
+
+### 2.2 License → Organization: required email-token activation
 
 **The problem:** An enterprise gets a license key but no Organization, and can't create one because `User.tier == "free"`.
 
-**Design: License activation flow**
+**CEO decision:** Email verification on activation is REQUIRED. Activation must prove control of `HelmLicense.contact_email`. This is a hard requirement, not a soft warning.
 
-A new endpoint `POST /api/v1/org/activate` accepts a license key (the same `HelmLicense.id` / license key format) and:
+**Design: Two-phase activation with email-token verification**
 
-1. **Validate the key:** Look up `HelmLicense WHERE id = :key AND status = 'active' AND (expires_at IS NULL OR expires_at > now())`.
-2. **Create an Organization** from the license's `org_name`, with tier/seats from the license.
-3. **Create the Entitlement** record (`source='helm_license'`, `source_ref=key`, `owner_type='org'`, `owner_id=<new org>`).
-4. **Add the activating user as OrgMember with `role='owner'`** (the activating user owns the org they just provisioned — consistent with the Stripe path where the creator is owner).
-5. **Mark the license as bound** with an atomic rowcount-1 UPDATE:
+Phase 1 — **Redeem-info** (unauthenticated, non-oracular):
+
+`GET /api/v1/org/redeem-info?key=<license_key>` returns ONLY `org_name` and `tier`. It does NOT return `contact_email`. If the key is invalid/expired/bound, the response is identical to a valid key (non-oracular — an attacker cannot enumerate valid license keys). This endpoint exists solely so the UI can show "You're about to activate the **Acme Corp** Enterprise org" before the user commits.
+
+Phase 2 — **Redeem** (authenticated, email-verified):
+
+`POST /api/v1/org/activate` accepts a license key. The flow inside a single database transaction:
+
+1. **Resolve the license:** `SELECT * FROM helm_licenses WHERE id = :key AND status = 'active' AND (expires_at IS NULL OR expires_at > now())`. If no row → 404 (non-oracular: same response for invalid/expired/bound key).
+
+2. **Bind-first — claim the license atomically BEFORE creating anything:**
    ```sql
-   UPDATE helm_licenses SET org_id = :org_id
+   UPDATE helm_licenses SET org_id = :new_org_id
    WHERE id = :key AND org_id IS NULL AND status = 'active'
      AND (expires_at IS NULL OR expires_at > now());
    ```
-   If rowcount = 0, the license was bound by a concurrent activation — **roll back the entire transaction** (org + entitlement + OrgMember) and return 409 "license already bound or no longer valid".
+   This UPDATE runs with `rowcount == 1` check. If rowcount = 0, the license was bound by a concurrent activation → **roll back the entire transaction** (return 409 "license already bound or no longer valid"). No org, entitlement, or OrgMember rows are created — race losers write zero orphans.
 
-This is **self-service** — no SessionFS platform admin in the loop. The license key is the provisioning credential. One license → one org (first-to-activate wins, enforced by the atomic rowcount-1 guard, not by a unique constraint alone).
+3. **Verify email control** (AFTER bind-first, still inside the same txn):
+   - If the authenticated user's verified email **exact-match equals** `HelmLicense.contact_email` → `verification_method = 'matched_contact_email'`. Proceed.
+   - Otherwise → generate a single-use short-TTL token (stored in a new `activation_tokens` column or lightweight table, TTL = 15 minutes), send it to `HelmLicense.contact_email` via the configured email provider. The endpoint returns `{ status: "email_verification_required", message: "A verification code has been sent to your license contact email." }`. The license bind from step 2 is ROLLED BACK (the txn aborts). The user must call `POST /api/v1/org/activate/verify` with the token to complete activation. On token match → `verification_method = 'email_token'`. On expiry → the license is unbound (org_id set back to NULL) and the user must restart.
+   - **Admin-assisted path:** A platform admin (SessionFS staff) can call `POST /api/v1/admin/orgs` to pre-provision an org + license binding with `verification_method = 'admin_assisted'`. The staff member is the trust anchor; no email token is required. This path is AdminAction-logged and requires `require_admin`.
+
+4. **Create the Organization** from the license's `org_name`.
+
+5. **Create the Entitlement** record (`source='helm_license'`, `source_ref=key`, `owner_type='org'`, `owner_id=<new org>`, `tier=license.tier`, `seats_limit=license.seats_limit`, `current_period_end=license.expires_at`, `status='active'`).
+
+6. **Add the activating user as OrgMember with `role='owner'`.**
+
+7. **Emit `org_audit_events`** row: `event_type='org_created_via_license_activation'`, with `license_id`, `verification_method`, `tier`, `seats_limit`.
+
+**Design invariants:**
+
+- **Bind-first** prevents the "create org + entitlement, then discover license was already claimed" race (Sentinel MEDIUM-1). The atomic rowcount-1 UPDATE on `helm_licenses` is the linearization point — everything else happens AFTER the claim is won.
+- **Email verification** proves the activator controls the license's registered contact email (Sentinel HIGH-1, CEO decision #1). The only bypass is the platform-admin pre-provision path (staff as trust anchor).
+- **Single-use short-TTL token** prevents replay and limits the window for email interception. Token expiry forces a clean restart (license unbound).
+- **Non-oracular redeem-info** prevents license enumeration. An invalid key gets the same response shape as a valid one.
 
 **Existing admin-provisioned path preserved:** `POST /api/v1/admin/orgs` remains as the back-office fallback for pre-sales provisioning and the SessionFS company org.
 
@@ -238,10 +274,13 @@ This means:
 
 | Method | Path | Authz | Description |
 |--------|------|-------|-------------|
-| `POST` | `/api/v1/org/activate` | Authenticated user | Redeem a license key → create org + entitlement + owner role |
-| `GET` | `/api/v1/orgs/{org_id}/entitlement` | Org member | Current entitlement: tier, seats, storage, expiry, source |
-| `PUT` | `/api/v1/orgs/{org_id}/entitlement/seats` | Org owner | Self-service seat change within entitlement bounds (Stripe: triggers invoice; Helm: bounded by license.seats_limit) |
-| `POST` | `/api/v1/orgs/{org_id}/owner/transfer` | Org owner | Transfer ownership to another org admin |
+| `GET` | `/api/v1/org/redeem-info?key=<key>` | None (unauthenticated) | Non-oracular: returns only `org_name` + `tier`. Never returns `contact_email`. |
+| `POST` | `/api/v1/org/activate` | Authenticated user | Phase 2 activation: bind-first claim → email verification → create org + entitlement + owner. Returns `email_verification_required` if email mismatch. |
+| `POST` | `/api/v1/org/activate/verify` | Authenticated user | Present email token to complete activation. |
+| `GET` | `/api/v1/orgs/{org_id}/entitlement` | Org member (server-verified) | Current entitlement: tier, seats, storage, expiry, source. Membership verified server-side BEFORE returning data. |
+| `PUT` | `/api/v1/orgs/{org_id}/entitlement/seats` | Org owner | Self-service seat change within entitlement bounds (Stripe: triggers Subscription.modify; Helm: bounded by license.seats_limit; source='helm_license' → 403 for direct writes) |
+| `POST` | `/api/v1/orgs/{org_id}/owner/transfer` | Org owner | Two-step transfer: owner initiates (re-auth/email-confirm required), target admin accepts. Atomic single-txn ACCEPT. |
+| `POST` | `/api/v1/admin/orgs/{org_id}/force-transfer-owner` | Platform admin | Admin-assisted recovery: force-transfer ownership when owner is deactivated/compromised. `require_admin` + AdminAction-logged. |
 
 **Modified:**
 
@@ -269,10 +308,10 @@ These shared services (at `org_members.py:575-669` and `org_members.py:732-925`)
 **`perform_role_change` — owner-specific logic (in evaluation order):**
 
 1. **Owner counts as administrative for access gating.** The caller must be `owner` or `admin` to invoke this function (unchanged from current admin-only gate, extended to include owner).
-2. **Owner cannot be targeted by an admin.** If `target.role == 'owner'` and `actor.role != 'owner'`: reject 403 "only the owner can change the owner role."
-3. **Owner self-demotion (owner → admin):** If `actor == target` and `actor.role == 'owner'` and `new_role == 'admin'`: require at least one other admin to exist (the extended `_count_admins()` that includes both roles). If the owner is the sole owner-or-admin, reject 409 "cannot demote — you are the last administrator. Promote another member to admin first."
-4. **Owner self-demotion to member (owner → member):** Prohibited. Owner must first transfer ownership, or self-demote to admin (if another admin exists), then an admin can demote them further.
-5. **Promoting an admin to owner:** Only the current owner can do this. This IS the ownership transfer path (see §2.4.2 `POST /orgs/{id}/owner/transfer`).
+2. **Server-authoritative: reject any caller setting `new_role='owner'`.** Ownership changes ONLY via the dedicated `POST /orgs/{id}/owner/transfer` endpoint (§2.4.2). `perform_role_change` rejects `new_role='owner'` unconditionally with 403 — this prevents any path (admin promotion, self-promotion, CLI, MCP) from creating a second owner or bypassing the two-step transfer flow. The partial unique index `uq_org_members_one_owner_per_org` is the structural backstop.
+3. **Owner cannot be targeted by an admin, and admin cannot demote/remove an owner-role target.** If `target.role == 'owner'` and `actor.role != 'owner'`: reject 403 "only the owner can change the owner role."
+4. **Owner self-demotion (owner → admin):** If `actor == target` and `actor.role == 'owner'` and `new_role == 'admin'`: require at least one other admin to exist (the extended `_count_admins()` that includes both roles). If the owner is the sole owner-or-admin, reject 409 "cannot demote — you are the last administrator. Promote another member to admin first."
+5. **Owner self-demotion to member (owner → member):** Prohibited. Owner must first transfer ownership, or self-demote to admin (if another admin exists), then an admin can demote them further.
 6. **Last-admin guard (extended):** The existing `SELECT FOR UPDATE` + `_count_admins()` check now counts `role IN ('owner', 'admin')`. Demoting an admin to member is blocked if they are the last owner-or-admin.
 7. **All other role changes:** Unchanged from current behavior.
 
@@ -282,6 +321,39 @@ These shared services (at `org_members.py:575-669` and `org_members.py:732-925`)
 2. **Owner cannot be removed.** If `target.role == 'owner'`: reject 409 "cannot remove the org owner. Transfer ownership first."
 3. **Last-admin guard (extended):** The existing `SELECT FOR UPDATE` + `_count_admins()` check now counts `role IN ('owner', 'admin')`. Removing an admin is blocked if they are the last owner-or-admin.
 4. **All other removals:** Unchanged from current behavior (projects auto-transfer, default_org_id cleared, pending transfers cancelled).
+
+**Ownership transfer — two-step atomic ACCEPT (Sentinel HIGH-3):**
+
+`POST /api/v1/orgs/{org_id}/owner/transfer` is a two-step flow:
+
+1. **INITIATE** (owner only): The current owner calls the endpoint with `target_user_id` (must be an existing `admin`-role OrgMember). The server requires **re-authentication + email confirmation** — the owner must reconfirm their credentials (or present a fresh auth token) AND a confirmation email is sent to the owner's email. Only after both are satisfied is the transfer offer created (status `pending`). The existing owner is NOT demoted yet.
+
+2. **ACCEPT** (target admin): The target admin calls `POST /orgs/{id}/owner/transfer/accept`. The ACCEPT runs as a **single atomic transaction**:
+   ```sql
+   BEGIN;
+   -- Re-validate: initiator is STILL owner
+   SELECT role FROM org_members WHERE org_id = :id AND user_id = :initiator FOR UPDATE;
+   -- assert role == 'owner', else rollback + 409 "initiator is no longer owner"
+   -- Re-validate: target is STILL admin
+   SELECT role FROM org_members WHERE org_id = :id AND user_id = :target FOR UPDATE;
+   -- assert role == 'admin', else rollback + 409 "target is no longer admin"
+   -- Demote old owner → admin
+   UPDATE org_members SET role = 'admin' WHERE org_id = :id AND user_id = :initiator;
+   -- Promote target → owner
+   UPDATE org_members SET role = 'owner' WHERE org_id = :id AND user_id = :target;
+   -- Emit org_audit_event: event_type='owner_transferred'
+   COMMIT;
+   ```
+   Both re-validations use `SELECT FOR UPDATE` to serialize concurrent attempts. If either assertion fails, the entire txn rolls back. The `uq_org_members_one_owner_per_org` partial unique index blocks any bug that would produce two owners — the second `UPDATE ... SET role='owner'` would violate it.
+
+3. **Notifications:** On INITIATE, email the current owner ("ownership transfer initiated to <target email>"). On ACCEPT, email the old owner ("ownership transferred to <target email> — you are now an admin") and the new owner ("you are now the owner of <org name>").
+
+**Owner immutability summary:**
+- Owner cannot be demoted/removed by any admin (only self-demotion to admin, if another admin exists).
+- Owner cannot be removed from the org (must transfer first).
+- Only the owner can initiate a transfer. Only the target admin can accept.
+- The transfer ACCEPT is atomic — both re-validations + demotion + promotion run in one txn under `SELECT FOR UPDATE`.
+- The admin force-transfer endpoint (`POST /api/v1/admin/orgs/{org_id}/force-transfer-owner`, §2.4.2) is the recovery path for deactivated/compromised owners. It is `require_admin`-gated, AdminAction-logged, and runs in a single atomic txn.
 
 **Summary of changed invariants:**
 
@@ -296,17 +368,55 @@ These shared services (at `org_members.py:575-669` and `org_members.py:732-925`)
 | Owner is sole admin, self-demotes | N/A | Rejected — promote another member first |
 | Org has owner + zero admins | N/A | Valid state — owner satisfies admin-count guards |
 
-### 2.5 Orphaned-admin / lifecycle safety
+### 2.5 Lifecycle safety + entitlement retention
+
+**Deactivation-time last-owner check (Sentinel MEDIUM-4):**
+
+When a user is deactivated (`is_active` → `false`), the deactivation transaction MUST check whether the user is the owner or last admin of any org. This check runs IN the deactivation transaction (not in a nightly sweep):
+
+```sql
+SELECT org_id, role FROM org_members WHERE user_id = :user_id FOR UPDATE;
+```
+
+For each org where the deactivated user is `role='owner'`:
+- If another admin exists → promote the longest-tenured admin to owner (atomic: `UPDATE org_members SET role='owner' WHERE org_id = :id AND user_id = :new_owner`), emit `org_audit_event` with `event_type='owner_auto_promoted_on_deactivation'`.
+- If NO other admin exists → **BLOCK the deactivation**. Return 409 with message: "Cannot deactivate — you are the sole owner-or-admin of org '<name>'. Transfer ownership or promote another member to admin first." The user must resolve this before deactivation succeeds.
+
+For each org where the deactivated user is `role='admin'` (and NOT owner): allow deactivation to proceed; the user is simply removed from the org roster. If they were the last admin (and an owner exists), the owner can invite/promote a replacement.
+
+**Admin-assisted force-transfer (Sentinel MEDIUM-4 recovery):**
+
+`POST /api/v1/admin/orgs/{org_id}/force-transfer-owner` (`require_admin`-gated, AdminAction-logged):
+- Accepts `target_user_id` (must be an existing org member with `role='admin'`).
+- Runs in a single atomic txn: re-validate current state → demote old owner (if still owner) → promote target → emit `org_audit_event` with `event_type='owner_force_transferred'`.
+- This is the recovery path when the owner is deactivated, compromised, or departed and no other admin can transfer ownership. The platform admin is the trust anchor.
+
+**Entitlement retention (Shield M-1, M-2):**
+
+- **Never hard-delete entitlement rows.** Expired, revoked, and canceled entitlements stay in the database with their terminal status. Only status transitions occur — no `DELETE FROM entitlements`.
+- **Grace-period semantics:** During the grace period (30 days after `current_period_end`), ALL data remains **readable and exportable** (portability guarantee). Features are gated to FREE tier, but no data is deleted or locked. After grace, the org enters `"expired"` status — data is preserved, access is read-only. Expiry **never deletes** member data.
+- **Retention window:** Expired/revoked entitlement rows are retained per the tier's audit window (`audit_retention_6yr` / `compliance_exports` flags in `tiers.py`). The retention policy is operator-configurable; the default is 6 years for Team+ tiers, 1 year for Free/Starter/Pro.
+
+**`current_period_end` semantics (Ledger M2/M4):**
+
+- For `source='stripe'`: `current_period_end` is the subscription RENEWAL date, NOT an expiry date. Stripe subscriptions auto-renew; the entitlement stays `status='active'` across the renewal boundary. Only the expiry sweep touches `helm_license` rows — it NEVER expires Stripe-sourced entitlements. Stripe entitlements only enter a terminal status via webhook events (`subscription.deleted` → `canceled`).
+- For `source='helm_license'`: `current_period_end` IS the expiry date. The periodic expiry sweep transitions `status` to `expired` when `current_period_end < now()`.
+- Plan panel / billing UI reads `entitlement.{tier, source, status}`, NOT any billing-specific `is_beta` or internal Stripe status field.
+
+**Lifecycle guard summary:**
 
 | Scenario | Guard |
 |----------|-------|
-| Last admin removed | Existing `SELECT FOR UPDATE` guard in `perform_member_removal` (`org_members.py:792-804`) — blocks removal if `_count_admins(db, org_id) <= 1`. |
-| Last admin demoted | Existing `SELECT FOR UPDATE` guard in `perform_role_change` (`org_members.py:636-648`) — blocks demotion if `_count_admins(db, org_id) <= 1`. |
+| Last admin removed | Existing `SELECT FOR UPDATE` guard in `perform_member_removal` — blocks removal if `_count_admins(db, org_id) <= 1`. |
+| Last admin demoted | Existing `SELECT FOR UPDATE` guard in `perform_role_change` — blocks demotion if `_count_admins(db, org_id) <= 1`. |
 | Owner is the only admin and self-demotes | New guard: owner→admin self-demotion requires at least one other admin. |
-| User deactivated (`is_active=false`) | New sweep: when a user is deactivated, check if they're the last admin (or owner) of any org. If so, NOTIFY org contact email + platform admin. Do NOT auto-deactivate — this requires human intervention. |
-| License expires | `entitlements.status` transitions to `"expired"` (via a periodic job or Stripe webhook). Org continues to exist but features drop to FREE tier. Members can still access the org roster but team features are disabled. After a grace period (30 days), the org enters `"expired"` status — data is preserved, access is read-only. |
-| License revoked | `entitlements.status` → `"revoked"`. Same expiry behavior as above. |
-| Org with no owner (defensive) | Nightly job: for each org with members but no `OrgMember.role='owner'`, promote the longest-tenured admin to owner and log an audit event. |
+| User deactivated (`is_active=false`) — last owner | **In-txn check**: promote longest-tenured admin if exists; BLOCK deactivation if no other admin exists. |
+| User deactivated — owner is sole admin (no other admins) | Deactivation BLOCKED with 409. Must transfer or promote first. |
+| Owner deactivated/compromised, no other admin | Admin force-transfer endpoint (§2.4.2) — `require_admin` + AdminAction-logged. |
+| License expires | `entitlements.status` → `"expired"`. Data readable/exportable during 30-day grace. Post-grace: read-only, preserved. |
+| License revoked | `entitlements.status` → `"revoked"`. Same grace + retention semantics as expiry. |
+| Entitlement rows | Never hard-deleted. Retained per tier audit window (default 6yr Team+, 1yr Free/Starter/Pro). |
+| Org with no owner (defensive) | Nightly job: for each org with members but no `OrgMember.role='owner'`, promote the longest-tenured admin to owner and log an `org_audit_event`. |
 
 ### 2.6 SaaS ↔ self-hosted unification
 
@@ -323,6 +433,118 @@ WHERE owner_type = :owner_type AND owner_id = :owner_id AND status = 'active'
 ORDER BY current_period_end DESC NULLS FIRST
 LIMIT 1
 ```
+
+### 2.7 Org Audit Events (Shield C-1, C-2, H-1)
+
+A new `org_audit_events` table, modeled on `ProjectMergeAudit` (`models.py:1747`), provides a durable append-only audit trail for every org-level mutation. This is a binding design requirement — not an optional follow-up.
+
+**Table schema:**
+
+```
+org_audit_events
+├── id (PK)
+├── org_id: FK→organizations.id ON DELETE SET NULL (NOT cascade — deleted-org audit rows survive)
+├── org_name_snapshot: TEXT NOT NULL (org name at event time)
+├── event_type: TEXT NOT NULL (see catalog below)
+├── actor_user_id: FK→users.id ON DELETE SET NULL (nullable — survives user deletion)
+├── actor_email_snapshot: TEXT (actor's email at event time)
+├── actor_role_at_time: TEXT (actor's OrgMember.role at event time, or 'platform_admin')
+├── target_type: TEXT (e.g., 'user', 'license', 'entitlement', 'invite', 'settings', 'organization')
+├── target_id: TEXT (nullable — stringified ID of the target entity)
+├── target_email_snapshot: TEXT (nullable)
+├── before: JSON Text (nullable — state BEFORE mutation)
+├── after: JSON Text (nullable — state AFTER mutation)
+├── entitlement_id: FK→entitlements.id ON DELETE SET NULL (nullable — for entitlement-scoped events)
+├── created_at: TIMESTAMPTZ NOT NULL DEFAULT now()
+```
+
+**Design constraints:**
+
+- **Append-only + immutability (C-2):** No UPDATE or DELETE routes exist on `org_audit_events`. All writes are INSERTs via a single shared `emit_org_audit_event()` helper that runs INSIDE the mutating transaction — one row per mutation. A no-mutation contract test verifies that the table has zero UPDATE/DELETE paths. True immutability at the storage layer (GCS object-lock, Cloud Logging sink) is a Forge deployment follow-up. Customer-facing language says "immutable audit retention can be configured with GCP logging/storage controls," never "tamper-proof."
+- **Cascade vs retention (C-3):** `org_id ON DELETE SET NULL` ensures org-deletion events survive org deletion. The deletion event itself is written in a fresh committed transaction that outlives the cascade (following the `ProjectMergeAudit` precedent — insert the deletion event row, commit, THEN execute the cascade). Deleted-org audit rows are retained per the tier's audit policy; SIEM export and 6-year retention are gated on the existing `tiers.py` `audit_retention_6yr` / `compliance_exports` flags.
+- **Never reuse `AdminAction`:** `AdminAction` has `NOT NULL admin_id` and no `org_id` column — it is platform-admin-only. `org_audit_events` is org-scoped with nullable `actor_user_id`.
+
+**MUST-log event set (H-1 — binding acceptance criteria):**
+
+| Domain | Event types |
+|--------|------------|
+| Membership | `member_joined`, `member_removed`, `member_left`, `role_changed`, `owner_transferred`, `owner_auto_promoted_on_deactivation`, `owner_force_transferred` |
+| Invites | `invite_sent`, `invite_accepted`, `invite_declined`, `invite_expired`, `invite_resend` |
+| License/entitlement | `license_activated`, `license_bound`, `license_revoked`, `license_expired`, `entitlement_created`, `entitlement_tier_changed`, `entitlement_seats_changed`, `entitlement_status_changed`, `entitlement_source_flipped` |
+| Org settings | `org_settings_changed` (before/after JSON diff) |
+| Org lifecycle | `org_created` (via activation or admin), `org_created_via_license_activation`, `org_deleted` (with member_count, project_count, kb_entry_count snapshotted in `after`) |
+| Billing | `billing_stripe_event` (source='stripe' events only — Ledger-owned) |
+
+**License-key hygiene (Sentinel LOW-2/3, applies here):** Only the license key prefix (matching `ApiKey.key_prefix` pattern) is stored in `org_audit_events.target_id` or `before`/`after` JSON. Full license keys are NEVER written to audit rows, logs, or API responses.
+
+### 2.8 Stripe → Entitlement Sync Contract (Ledger-owned)
+
+This subsection defines the data contract between the SessionFS backend and the Stripe webhook handler. Ledger owns the Stripe integration code and billing logic; Atlas defines the entitlement-side contract.
+
+**H1 — Stripe event → entitlement state machine:**
+
+| Stripe event | Entitlement action | Notes |
+|-------------|-------------------|-------|
+| `checkout.session.completed` | UPSERT entitlement (`status='active'`, tier/seats from checkout metadata) | Idempotent by `source='stripe'` + `source_ref=sub_id` |
+| `subscription.updated` (active) | UPDATE tier, seats, `current_period_end` | Only when values differ from current row |
+| `subscription.updated` (past_due) | SET `status='past_due'` ONLY | Do NOT change tier, seats, or `current_period_end` |
+| `subscription.deleted` | SET `status='canceled'`, preserve `source_ref` | Do NOT delete the row or change tier/seats |
+
+**Atomicity requirement:** The entitlement write + `StripeEvent` insert (idempotency record) MUST be a single database transaction — no two-phase, no external queue hop.
+
+**H2 — Stripe→license source-flip ordering:**
+
+When a customer migrates from Stripe to a Helm license:
+1. **Single admin transaction:** Write the new license entitlement (`status='active'`) → THEN cancel the Stripe entitlement (`status='canceled'`). The license entitlement is active BEFORE the Stripe row is terminated — no gap in `status='active'` coverage.
+2. **Stripe webhook defense:** When `subscription.deleted` fires after a source-flip, the handler resolves the active entitlement for that `source_ref`. If the resolved active entitlement has `source != 'stripe'` OR `source_ref != <this subscription ID>`, the event is a **no-op** (idempotent — the entitlement was already transitioned by the admin txn in step 1).
+
+**H3 — Seats endpoint contract:**
+
+`PUT /api/v1/orgs/{org_id}/entitlement/seats`:
+- `source='stripe'` → call `stripe.Subscription.modify(proration_behavior='always_invoice')`. The entitlement row is updated ONLY by the `subscription.updated` webhook callback, not by the seats endpoint directly. The seats endpoint triggers the Stripe call and returns the pending state.
+- `source='helm_license'` → 403 "seat changes for license-based orgs must be made via license renewal."
+- **Bounds:** Team tier: 3–50 seats (reject if below currently-occupied seats). Enterprise Cloud: minimum 20 seats. Enterprise self-hosted: contract-only, no self-service seat change.
+
+**M2/M4 — current_period_end: renewal vs expiry:**
+
+Already specified in §2.5 (`current_period_end` semantics). Stripe entitlements auto-renew across `current_period_end`; the expiry sweep only targets `source='helm_license'` rows. The plan panel / billing UI reads `entitlement.{tier, source, status}` — never a billing-internal field.
+
+### 2.9 Tier Ladder (canonical pricing)
+
+CEO decision: dashboard prices are canonical. The tier ladder is:
+
+| Tier | Price | Seats | Key capability |
+|------|-------|-------|---------------|
+| **Free** | $0 | 1 | Individual sessions, 50 MB storage, local-only |
+| **Starter** | $4.99/mo | 1 | Cloud sync, 300 MB storage, session search |
+| **Pro** | $14.99/mo | 1 | Knowledge Base, rules, 2 GB storage, MCP tools |
+| **Team** | $14.99/user/mo | 3–50 | Org management, agent runs, team handoff, 5 GB/user |
+| **Enterprise** | Custom | 20+ (cloud) / contract (self-hosted) | Self-hosted, SSO, audit retention, DLP, priority support |
+
+**Notes:**
+- There is NO "business" tier. References to a business tier in any doc, code, or UI must be removed (Scribe follow-up).
+- `docs/pricing.md` must be rewritten to match this canonical ladder (omit no Starter, drop "business"). That rewrite is a Scribe follow-up — this design only records the canonical source.
+- The `tiers.py` catalog and tier-gate constants must match these prices exactly.
+
+### 2.10 Org Deletion Cascade
+
+CEO decision: on org deletion, **each member's own sessions revert to THAT member's personal scope** (never auto-transferred to the owner). Only owner-authored sessions follow the owner. Org-shared KB is destroyed (audit-logged with counts).
+
+**Deletion authorization:** Org owner only. Platform admin can force-delete via `POST /api/v1/admin/orgs/{org_id}` (existing path, `require_admin`-gated).
+
+**Cascade steps (in order, single transaction where possible):**
+
+1. **Pre-flight checks:** Verify caller is owner (or platform admin). `SELECT FOR UPDATE` on the Organization row.
+2. **Write deletion audit event FIRST** in a fresh committed txn (survives cascade — §2.7 C-3): `org_audit_events` with `event_type='org_deleted'`, `after` JSON containing `{member_count, project_count, kb_entry_count, kb_page_count}`.
+3. **Member sessions revert:** For each `OrgMember`, update all sessions authored by that member and currently scoped to the org → set `project_id = NULL` (personal scope). This is per-member: each member's sessions go to that member's personal scope.
+4. **Owner sessions follow owner:** Owner-authored sessions retain org scope → set `project_id = NULL` (the owner's personal scope; same mechanical outcome as other members, but the owner's own sessions stay with them).
+5. **Org KB destroyed:** DELETE all KnowledgeEntry rows where `project_id` references org-owned projects, DELETE all WikiPage rows, DELETE compiled `project.context_document`. Log counts in the `org_audit_event` `after` JSON (from step 2).
+6. **Org projects:** DELETE all projects owned by the org. The `ProjectMergeAudit` precedent (SET NULL FKs, audit surviving rows) applies.
+7. **OrgMember rows:** DELETE all (cascade — no members in a deleted org).
+8. **Entitlement:** Transition to `status='canceled'` (never hard-deleted — §2.5).
+9. **Organization row:** DELETE.
+
+**⚠️ Forge coordination:** The deletion cascade should be a background task (Celery / Cloud Task) for orgs with many members/projects/sessions. The API endpoint returns 202 Accepted with a task ID, not 200 after a 30-second synchronous cascade.
 
 ---
 
@@ -364,8 +586,9 @@ LIMIT 1
 ### 3.2 Rollback path
 
 - `User.tier`, `Organization.tier`, `HelmLicense.tier` are NOT dropped — they become denormalized cache columns populated from the entitlement on write. Rollback = revert `get_effective_tier` to read the old columns.
+- **No platform-admin via cache guard (Sentinel MEDIUM-3):** The write path that populates `User.tier` from the entitlement MUST assert that the entitlement's tier is in `{free, starter, pro, team, enterprise}` — never `admin`. A CHECK constraint on `entitlements.tier` (add in migration 050) enforces this at the DB level. The application-layer `resolve_entitlement` function also asserts `tier != 'admin'` before writing to `User.tier`. Platform-admin status is grantable ONLY via the existing admin path.
 - No data loss. Every backfilled entitlement has a `source_ref` that traces back to the original row.
-- Migration is reversible: drop `entitlements` table, drop `pending_license_claim` table, drop `HelmLicense.org_id`, drop `entitlement_id` FKs, drop the `uq_org_members_one_owner_per_org` partial unique index.
+- Migration is reversible: drop `entitlements` table, drop `pending_license_claim` table, drop `HelmLicense.org_id`, drop `entitlement_id` FKs, drop the `uq_org_members_one_owner_per_org` partial unique index, drop the `org_audit_events` table.
 
 **Downgrade handling for `owner` role:**
 
@@ -391,61 +614,64 @@ The Alembic downgrade step implements Option A: `UPDATE org_members SET role = '
 
 ## §4 — Sentinel Authz Checklist
 
-**To be completed by Sentinel before ANY code is written.** Flag each item as CLEAR / NEEDS CLARIFICATION / BLOCKED.
+**Reviewed by Sentinel — R2 conditions applied.** Flag each item as CLEAR / RESOLVED / DEFERRED.
 
 ### 4.1 License activation trust boundary
 
-- [ ] **License-key forgery:** Is the license key format cryptographically unforgeable? `generate_license_key()` in `license_keys.py` — Sentinel must verify key entropy and that keys cannot be enumerated.
-- [ ] **Replay attack:** Can an activation key be used twice? The `UNIQUE` constraint on `HelmLicense.org_id` + atomic rowcount-1 guard on the UPDATE must prevent double-activation. Sentinel to verify the race condition under concurrent POST.
-- [ ] **Cross-org license theft:** Can User A activate a license key issued to Company B? The license key alone is the credential — if it leaks, anyone can claim the org. Consider requiring an email-verification step (key sent to `HelmLicense.contact_email`; activation link includes key + email).
-- [ ] **Rate limiting:** Activation endpoint must be rate-limited (brute-force license key guessing).
+- [x] **License-key forgery:** License key format entropy verified by Sentinel. Non-oracular `redeem-info` endpoint prevents enumeration. (RESOLVED)
+- [x] **Replay attack:** Atomic rowcount-1 `UPDATE helm_licenses SET org_id = :org WHERE org_id IS NULL` is the linearization point. Concurrent activations → first wins, second rolls back with zero orphans (Sentinel MEDIUM-1 bind-first). Partial unique index `uq_entitlements_source_ref` is the structural backstop. (RESOLVED)
+- [x] **Cross-org license theft:** REQUIRED email-token verification (CEO decision #1). License key alone is insufficient — activator must prove control of `HelmLicense.contact_email` via single-use short-TTL token. Only bypass is admin-assisted pre-provision (staff trust anchor). (RESOLVED — Sentinel HIGH-1)
+- [ ] **Rate limiting:** Activation + verify endpoints must be rate-limited. Implementation detail — add to P3. (DEFERRED to implementation)
 
 ### 4.2 Org ownership and privilege escalation
 
-- [ ] **Self-service admin creation:** The activation flow grants `owner` role to the activating user. Is there any path where a user could activate a license for an org they shouldn't own?
-- [ ] **Owner transfer:** Can an owner transfer to a non-member? (No — must be an existing admin.) Can a malicious admin trick the owner into transferring? (Require confirmation + re-auth.)
-- [ ] **Admin→owner promotion:** Can an admin promote themselves to owner? (No — only owner can transfer ownership.)
-- [ ] **Cross-org visibility:** Entitlement queries must be scoped to the caller's org. `resolve_entitlement` must never return another org's entitlement.
+- [x] **Self-service admin creation:** Activation grants `owner` role only after email verification. Server-authoritative: caller cannot set `new_role='owner'` in `perform_role_change` (Sentinel HIGH-3). (RESOLVED)
+- [x] **Owner transfer:** Two-step atomic ACCEPT with re-auth/email-confirm on INITIATE + re-validation of initiator-still-owner + target-still-admin under `SELECT FOR UPDATE`. Target must be existing admin. (RESOLVED — Sentinel HIGH-3)
+- [x] **Admin→owner promotion:** `perform_role_change` rejects `new_role='owner'` unconditionally. Ownership changes ONLY via dedicated `/owner/transfer` endpoint. Partial unique index `uq_org_members_one_owner_per_org` is the structural backstop. (RESOLVED)
+- [x] **Cross-org visibility:** `GET /orgs/{org_id}/entitlement` verifies caller membership server-side before returning data. `resolve_entitlement` scoped to caller's proven `owner_type`/`owner_id`. Denormalized `entitlement_id` is a hint only — never read for authz. (RESOLVED — Sentinel MEDIUM-2)
 
 ### 4.3 License lifecycle
 
-- [ ] **Expired license → FREE downgrade:** Does the downgrade preserve data? (Yes — read-only, data preserved.) Is there a grace period before features are cut? (30 days.)
-- [ ] **Revoked license:** Same as expiry path. Can a revoked license be reactivated? (Only by platform admin.)
-- [ ] **License transfer between orgs:** Not supported in v1. If needed later, requires Sentinel review.
+- [x] **Expired license → FREE downgrade:** Data preserved, readable/exportable during 30-day grace. Post-grace: read-only. Entitlement rows never hard-deleted. (RESOLVED — Shield M-1, M-2)
+- [x] **Revoked license:** Same grace + retention path as expiry. Reactivation = new entitlement row (terminal statuses never reactivated). (RESOLVED)
+- [ ] **License transfer between orgs:** Not supported in v1. If needed later, requires new Sentinel review. (DEFERRED)
 
 ### 4.4 User deactivation and org safety
 
-- [ ] **Deactivated user who is last org owner:** The sweep must detect this and NOT auto-delete the org. Sentinel to verify the notification path.
-- [ ] **Deactivated user who is last org admin (non-owner):** Promote another member to admin, or notify owner.
+- [x] **Deactivated user who is last org owner:** In-txn check at deactivation time (Sentinel MEDIUM-4). If owner has another admin → auto-promote longest-tenured admin. If owner is sole admin → BLOCK deactivation with 409. Admin force-transfer endpoint for recovery. (RESOLVED)
+- [x] **Deactivated user who is last org admin (non-owner):** Deactivation proceeds; user removed from roster. If an owner exists, owner can invite/promote replacement. (RESOLVED)
 
 ### 4.5 Admin surface changes
 
-- [ ] **`require_admin` remains platform-global.** No new admin endpoints in this design that bypass platform-admin auth.
-- [ ] **Org owner is NOT a platform admin.** Owner powers are org-scoped only.
+- [x] **`require_admin` remains platform-global.** Admin force-transfer endpoint is `require_admin`-gated + AdminAction-logged. No new admin endpoints that bypass platform-admin auth. (RESOLVED)
+- [x] **Org owner is NOT a platform admin.** Owner powers are org-scoped. No entitlement tier can set `User.tier='admin'` (Sentinel MEDIUM-3, CHECK constraint + app-layer assertion). (RESOLVED)
 
 ---
 
-## §5 — Open Decisions
+## §5 — Decisions
 
-These are blocking decisions for the CEO + reviewers. Atlas provides a recommendation for each.
+### Settled (CEO decisions — these are closed, not open)
 
-### OD-1: Introduce `owner` role?
-**Recommendation:** YES (see §2.4.1). Additive, expected by enterprise buyers, prevents hostile admin-on-admin takeover. Mirrors GitHub.
+**OD-1: Introduce `owner` role?** → **YES.** Settled. See §2.4.1. The `owner` role with partial unique index, two-step transfer, and server-authoritative guards is the binding design.
 
-### OD-2: One entitlement record vs. reconcile existing fields?
-**Recommendation:** New `entitlements` table (§2.1). The current three-field model is too fragmented to reconcile in place without data loss. The table is additive, backfills from existing data, and leaves existing columns as denormalized caches.
+**OD-3: Self-service activation vs. admin-assisted only?** → **Self-service with REQUIRED email-token verification.** Settled per CEO decision #1. See §2.2. Activation must prove control of `HelmLicense.contact_email`. Admin-assisted pre-provision remains as the staff trust-anchor path.
 
-### OD-3: Self-service activation vs. admin-assisted only?
-**Recommendation:** Self-service via `POST /api/v1/org/activate` (§2.2) with admin-assisted as fallback. This is the entire point of the redesign — removing the SessionFS-staff bottleneck.
+**OD-4: How do SaaS Stripe and self-hosted HelmLicense unify?** → **Unify at `entitlements` table.** Settled. See §2.6 (unification) + §2.8 (Stripe sync contract, Ledger-owned).
 
-### OD-4: How do SaaS Stripe and self-hosted HelmLicense unify?
-**Recommendation:** Unify at the `entitlements` table (§2.6). Both sources write to the same table; the resolution path is source-agnostic. Ledger owns the Stripe→entitlement sync; Atlas defines the contract.
+**Pricing: canonical tier ladder.** Settled per CEO decision #3. See §2.9. Free $0 / Starter $4.99 / Pro $14.99 / Team $14.99/user / Enterprise custom. No "business" tier.
 
-### OD-5: Multi-org membership?
-**Recommendation:** DEFER. The current one-user-one-org constraint stays. Relaxing it touches auth, session routing, dashboard UX, and project ownership — a separate design. The `entitlements` table is designed to support it later (`owner_type`/`owner_id` pattern already supports multiple orgs per user; the constraint is at the `OrgMember` level, not the data model).
+**Org deletion: member sessions revert to personal scope.** Settled per CEO decision #2. See §2.10. Each member's sessions go to that member's personal scope; owner sessions follow the owner; KB destroyed with audit-logged counts.
 
-### OD-6: `HelmLicense` rename?
-**Recommendation:** YES — rename to `License` (or keep `HelmLicense` as-is for now). "HelmLicense" is a self-hosted-centric name. In the target model, a license can be SaaS or self-hosted. However, renaming a table with FK references is high-touch. Defer to implementation — if the rename complicates migration, keep the name and add a comment.
+### Deferred (still open for future design)
+
+**OD-2: One entitlement record vs. reconcile existing fields?**
+**Decision:** New `entitlements` table (§2.1). The current three-field model is too fragmented to reconcile in place without data loss. The table is additive, backfills from existing data, and leaves existing columns as denormalized caches.
+
+**OD-5: Multi-org membership?**
+**Decision:** DEFER. The current one-user-one-org constraint stays. Relaxing it touches auth, session routing, dashboard UX, and project ownership — a separate design. The `entitlements` table is designed to support it later.
+
+**OD-6: `HelmLicense` rename?**
+**Decision:** Keep `HelmLicense` for now. Renaming a table with FK references is high-touch. Defer to implementation — if the rename complicates migration, keep the name and add a comment.
 
 ---
 
@@ -462,21 +688,25 @@ These are blocking decisions for the CEO + reviewers. Atlas provides a recommend
 - [ ] Migration 050 downgrade path verified
 - [ ] All existing tests pass with the backfilled data
 
-### Ledger (billing/entitlement)
-- [ ] Stripe webhook → entitlement sync contract (fields, idempotency, conflict resolution)
-- [ ] Seat change self-service: does it trigger Stripe invoice? What are the bounds?
-- [ ] License expiry → Stripe subscription cancellation: reconciliation path?
-- [ ] `current_period_start` / `current_period_end` semantics for Stripe vs. HelmLicense
-- [ ] `status: "past_due"` — when and how does Stripe set this? What features are gated?
-- [ ] Billing page in dashboard: what entitlement fields to surface?
+### Ledger (billing/entitlement) — ✅ R2 conditions applied
+- [x] H1: Stripe → entitlement sync contract defined (§2.8): checkout.session.completed→UPSERT, subscription.updated(active)→update, subscription.updated(past_due)→status only, subscription.deleted→canceled. Entitlement write + StripeEvent insert in ONE atomic txn.
+- [x] H2: Stripe→license source-flip ordering: admin txn writes new license active THEN cancels Stripe; subscription.deleted no-ops when active entitlement source≠stripe / source_ref≠sub
+- [x] H3: Seats endpoint contract (§2.8): source=stripe→Subscription.modify, source=helm_license→403. Bounds: Team 3–50, Enterprise Cloud min 20
+- [x] M2/M4: current_period_end semantics (§2.5): Stripe=renewal (never expiry-swept), HelmLicense=expiry. Plan panel reads entitlement.{tier,source,status}
+- [ ] Seat change self-service: Ledger to implement Stripe Subscription.modify + webhook round-trip
+- [ ] Billing page in dashboard: what entitlement fields to surface? (Ledger + Prism)
+- [ ] Invoice/payment-method fields: Ledger's domain — not in this design
 
-### Shield (compliance)
-- [ ] Entitlement data retention: how long are expired/revoked entitlements kept?
-- [ ] PII in entitlements table? (No — only references to users/orgs/licenses, no email/name.)
-- [ ] DLP implications: entitlement tier/status is not PII but is business-sensitive.
-- [ ] Audit trail: every entitlement mutation must be logged (AdminAction or new EntitlementAudit table).
-- [ ] License activation email verification: does it need GDPR consent flow?
-- [ ] Data residency: entitlement data is in the same DB as the org. No new residency concern.
+### Shield (compliance) — ✅ R2 conditions applied
+- [x] C-1: `org_audit_events` table defined (§2.7), modeled on `ProjectMergeAudit`, `org_id ON DELETE SET NULL`
+- [x] C-2: Append-only — no UPDATE/DELETE routes, shared `emit_org_audit_event()` inside mutating txn, no-mutation contract test
+- [x] C-3: Cascade vs retention — deletion event written in fresh committed txn surviving cascade; deleted-org audit rows retained per tier policy
+- [x] H-1: MUST-log event set binding (§2.7): membership, invites, license/entitlement, org settings, org lifecycle, billing
+- [x] H-3: Org deletion member data — each member's sessions revert to personal scope; KB destroyed with audit-logged counts (§2.10, CEO decision #2)
+- [x] M-1: Entitlement retention — never hard-delete expired/revoked rows, status transitions only, retain per tier audit window (§2.5)
+- [x] M-2: Grace semantics — data always readable/exportable during grace; expiry never deletes (§2.5)
+- [ ] DLP implications: entitlement tier/status is not PII but is business-sensitive
+- [ ] Data residency: entitlement data is in the same DB as the org — no new residency concern
 
 ### Sentinel (authz — see §4 for full checklist)
 - [ ] License activation trust boundary
@@ -502,7 +732,9 @@ Additive migration 050 backfills entitlements from existing `User.tier`, `Organi
 
 ---
 
-## §8 — R1 Amendments (Codex Review)
+## §8 — R1 + R2 Amendments
+
+### R1 (Codex Review) — NEEDS-CHANGES → amended
 
 Codex R1: **NEEDS-CHANGES** → amended. Summary of resolutions:
 
@@ -534,3 +766,46 @@ Codex R1: **NEEDS-CHANGES** → amended. Summary of resolutions:
 - **Activation race guard** (§2.2 step 5): Single transaction with rowcount-1 `UPDATE helm_licenses SET org_id = :org WHERE id = :key AND org_id IS NULL AND status = 'active' AND not-expired`. Roll back org + entitlement + OrgMember if rowcount = 0.
 - **`/me` enrichment — single query** (§2.3): Explicitly requires one joined query / `get_user_context`-style resolver, not per-field lookups.
 - **Migration downgrade for `owner`** (§3.2): Option A (recommended): Alembic downgrade sets all `role='owner'` → `role='admin'` before dropping the partial unique index. Old code sees standard `admin`/`member` roles. On re-upgrade, the deterministic backfill restores the same owner. Option B (keep string, tolerate) documented as degraded but safe.
+
+### R2 (Ledger + Shield + Sentinel Reviews) — APPROVED-WITH-CONDITIONS → conditions folded
+
+Three reviews landed after R1. All three were APPROVED-WITH-CONDITIONS. CEO made three binding decisions (baked in as settled below). Condition resolutions grouped by reviewer:
+
+**Sentinel conditions resolved:**
+
+| ID | Severity | Condition | Resolution |
+|----|---------|-----------|------------|
+| HIGH-1 | Activation = required email-token flow | Rewrote §2.2: two-phase activation with non-oracular `GET /redeem-info`, bind-first `UPDATE helm_licenses SET org_id` atomic claim, email verification via single-use short-TTL token or exact-match contact_email, admin-assisted bypass. `verification_method` recorded. |
+| HIGH-3 | Owner guards server-authoritative | §2.4.3: `perform_role_change` rejects `new_role='owner'` unconditionally. Ownership moves ONLY via dedicated transfer endpoint. Two-step ACCEPT is single atomic txn with `SELECT FOR UPDATE` re-validation of initiator-still-owner + target-still-admin. Re-auth/email-confirm on INITIATE. Owner immutable/can't be removed. Admin force-transfer for recovery (§2.4.2). |
+| MEDIUM-1 | Bind-first activation | §2.2 step 2: `UPDATE helm_licenses SET org_id = :org WHERE org_id IS NULL` with rowcount==0 check BEFORE creating org/entitlement/OrgMember. Race losers roll back with zero orphans. |
+| MEDIUM-2 | Entitlement isolation | §2.1: `GET /orgs/{org_id}/entitlement` verifies caller membership server-side. `owner_id` derived from OrgMember row, never client-supplied. Denormalized `entitlement_id` is a hint only — never read for authz. |
+| MEDIUM-3 | No platform-admin via cache | §2.1 + §3.2: Entitlement tier catalog = `{free, starter, pro, team, enterprise}`. `admin` is NOT an entitlement tier. CHECK constraint on `entitlements.tier` + app-layer assertion in `resolve_entitlement`. |
+| MEDIUM-4 | Deactivated last owner | §2.5: In-txn check at deactivation time — if owner has another admin, auto-promote; if sole admin, BLOCK deactivation with 409. Admin force-transfer endpoint for recovery. |
+| LOW-2/3 | License-key hygiene | §2.1 + §2.7: Only key prefix stored (ApiKey.key_prefix pattern). Full keys never logged/echoed/stored. Entitlements partial unique index is the Stripe-XOR-license race guard. |
+
+**Shield conditions resolved:**
+
+| ID | Severity | Condition | Resolution |
+|----|---------|-----------|------------|
+| C-1 | Define `org_audit_events` table NOW | New §2.7: full schema modeled on `ProjectMergeAudit`, `org_id ON DELETE SET NULL`, not reusing `AdminAction`. |
+| C-2 | Append-only + immutability | §2.7: No UPDATE/DELETE routes. Single shared `emit_org_audit_event()` inside mutating txn. No-mutation contract test. True immutability = Forge deployment follow-up (GCS object-lock). |
+| C-3 | Cascade vs retention | §2.7: Deletion event written in fresh committed txn surviving cascade. Deleted-org audit rows retained per tier policy. |
+| H-1 | MUST-log event set | §2.7: Binding catalog — membership (7 types), invites (5), license/entitlement (8), org settings, org lifecycle (3), billing. One row per mutation. |
+| H-3 | Org deletion member data | §2.10 (CEO decision #2): Each member's sessions revert to personal scope. Owner-authored sessions follow owner. KB destroyed with audit-logged counts. |
+| M-1 | Entitlement retention | §2.5: Never hard-delete entitlement rows. Status transitions only. Retain per tier audit window (6yr Team+, 1yr Free/Starter/Pro). |
+| M-2 | Grace semantics | §2.5: Data always readable/exportable during grace. Expiry never deletes. |
+
+**Ledger conditions resolved:**
+
+| ID | Severity | Condition | Resolution |
+|----|---------|-----------|------------|
+| H1 | Stripe→entitlement sync contract | New §2.8: Full state machine (checkout→UPSERT, sub.updated→update, past_due→status only, sub.deleted→canceled). Entitlement write + StripeEvent in ONE atomic txn. |
+| H2 | Stripe→license source-flip ordering | §2.8: Admin txn writes new license active THEN cancels Stripe. subscription.deleted no-ops when active entitlement source≠stripe. |
+| H3 | Seats endpoint contract | §2.8: source=stripe→Subscription.modify (webhook writes back), source=helm_license→403. Bounds: Team 3–50, Enterprise Cloud min 20. |
+| M2/M4 | current_period_end semantics | §2.5: Stripe = renewal (never expiry-swept), HelmLicense = expiry. Plan panel reads entitlement.{tier,source,status}. |
+
+**CEO decisions (baked in as settled):**
+
+1. **Email verification on activation is REQUIRED** (§2.2): Activation must prove control of `HelmLicense.contact_email`. Hard requirement, not soft warning.
+2. **Member sessions revert to personal scope on org delete** (§2.10): Each member's own sessions go to that member's personal scope. Never auto-transferred to owner.
+3. **Dashboard prices are canonical** (§2.9): Free $0 / Starter $4.99 / Pro $14.99 / Team $14.99/user / Enterprise custom. Drop "business" tier. `docs/pricing.md` rewrite is a Scribe follow-up.
