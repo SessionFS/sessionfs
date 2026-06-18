@@ -98,9 +98,32 @@ entitlements
 ├── created_at, updated_at
 ```
 
+**Table constraints** (enforced at the DB level — these make the table a true single source of truth):
+
+1. **At most one active entitlement per owner:**
+   ```sql
+   CREATE UNIQUE INDEX uq_entitlements_one_active_per_owner
+   ON entitlements(owner_type, owner_id) WHERE status = 'active';
+   ```
+   This partial unique index guarantees that runtime resolution hits exactly one row. The `ORDER BY current_period_end DESC NULLS FIRST` tiebreak (used in the resolution query below) is for **historical rows only** — under normal operation the partial unique index ensures at most one active row, so no ordering-based disambiguation is needed. The ORDER BY is a defensive fallback if the index constraint is somehow violated (e.g., by a bug in a future migration).
+
+2. **Unique external binding:**
+   ```sql
+   CREATE UNIQUE INDEX uq_entitlements_source_ref
+   ON entitlements(source, source_ref) WHERE source_ref IS NOT NULL;
+   ```
+   Each Stripe subscription or Helm license maps to exactly one entitlement row.
+
+3. **Stripe-XOR-license invariant:** An owner's active entitlement has exactly one `source`. Replacing one entitlement with another (e.g., migrating from Stripe to Helm license) transitions the prior entitlement to a terminal status (`canceled` or `expired`) in the **same transaction** as inserting the new active row. The status transition rule:
+   - `active` → `canceled` (voluntary replacement: Stripe→Helm, Helm→Stripe, tier change via admin)
+   - `active` → `expired` (natural expiry: `current_period_end` passed)
+   - `active` → `revoked` (platform admin action)
+   - Terminal statuses (`canceled`, `expired`, `revoked`) are never reactivated — a new row is inserted instead.
+   - `past_due` is a Stripe-only transient state; it remains `active` for resolution purposes but gates premium features.
+
 **Resolution rule** (replaces `get_effective_tier`):
-1. If the user is an org member → resolve `entitlements WHERE owner_type='org' AND owner_id=org.id AND status='active'`.
-2. Else → resolve `entitlements WHERE owner_type='user' AND owner_id=user.id AND status='active'`.
+1. If the user is an org member → resolve `entitlements WHERE owner_type='org' AND owner_id=org.id AND status='active'` (guaranteed ≤1 row by the partial unique index).
+2. Else → resolve `entitlements WHERE owner_type='user' AND owner_id=user.id AND status='active'` (guaranteed ≤1 row by the partial unique index).
 3. Fallback: `tier='free', seats=1` (pessimistic safe default).
 
 **Why this over reconciling existing fields:**
@@ -122,10 +145,16 @@ A new endpoint `POST /api/v1/org/activate` accepts a license key (the same `Helm
 1. **Validate the key:** Look up `HelmLicense WHERE id = :key AND status = 'active' AND (expires_at IS NULL OR expires_at > now())`.
 2. **Create an Organization** from the license's `org_name`, with tier/seats from the license.
 3. **Create the Entitlement** record (`source='helm_license'`, `source_ref=key`, `owner_type='org'`, `owner_id=<new org>`).
-4. **Add the activating user as OrgMember with role='admin'**.
-5. **Mark the license as bound** (new column `HelmLicense.org_id` — nullable FK to `organizations.id`).
+4. **Add the activating user as OrgMember with `role='owner'`** (the activating user owns the org they just provisioned — consistent with the Stripe path where the creator is owner).
+5. **Mark the license as bound** with an atomic rowcount-1 UPDATE:
+   ```sql
+   UPDATE helm_licenses SET org_id = :org_id
+   WHERE id = :key AND org_id IS NULL AND status = 'active'
+     AND (expires_at IS NULL OR expires_at > now());
+   ```
+   If rowcount = 0, the license was bound by a concurrent activation — **roll back the entire transaction** (org + entitlement + OrgMember) and return 409 "license already bound or no longer valid".
 
-This is **self-service** — no SessionFS platform admin in the loop. The license key is the provisioning credential. One license → one org (first-to-activate wins; subsequent attempts get 409 "license already bound").
+This is **self-service** — no SessionFS platform admin in the loop. The license key is the provisioning credential. One license → one org (first-to-activate wins, enforced by the atomic rowcount-1 guard, not by a unique constraint alone).
 
 **Existing admin-provisioned path preserved:** `POST /api/v1/admin/orgs` remains as the back-office fallback for pre-sales provisioning and the SessionFS company org.
 
@@ -135,7 +164,7 @@ This is **self-service** — no SessionFS platform admin in the loop. The licens
 
 Three changes ensure an enterprise customer reliably sees the management surface:
 
-1. **`GET /api/v1/auth/me` includes effective org info.** Add `effective_tier`, `org_id`, `org_name`, `org_role` fields to the `/me` response (or add a separate lightweight `/me/org` endpoint — Atlas preference: add to `/me` so the dashboard makes one call at boot). The dashboard `useMe()` hook then populates `hasOrg` from actual OrgMember membership, not from the nullable `default_org_id`.
+1. **`GET /api/v1/auth/me` includes effective org info.** Add `effective_tier`, `org_id`, `org_name`, `org_role` fields to the `/me` response. The dashboard `useMe()` hook then populates `hasOrg` from actual OrgMember membership, not from the nullable `default_org_id`. **Implementation requirement:** The enrichment is ONE joined query (or a single `get_user_context`-style resolver) — not per-field lookups. The `/me` endpoint currently has no DB context beyond the `users` row; the resolver joins `org_members` + `organizations` + `entitlements` in one query, falling back to the user's own entitlement for solo users.
 
 2. **Dashboard sidebar filters on `org_id`, not `default_org_id`.** `Layout.tsx:175` changes from `hasOrg = !!me.data?.default_org_id` to `hasOrg = !!me.data?.org_id`. The `orgOnly` filter works correctly.
 
@@ -181,6 +210,26 @@ ROLE_LEVEL = {
 - Billing/entitlement changes require owner role (or admin + owner approval — defer to Ledger).
 - When an org is created via license activation, the activating user is `owner`. When created via `POST /api/v1/org` (Stripe), the creator is `owner`.
 
+**DB-level enforcement — partial unique index:**
+```sql
+CREATE UNIQUE INDEX uq_org_members_one_owner_per_org
+ON org_members(org_id) WHERE role = 'owner';
+```
+This guarantees at most one owner per org at the database level. Combined with the deterministic single-owner backfill (§3.1 step 4) and activation-creates-owner (§2.2), the "exactly one owner" invariant is structural, not convention-based.
+
+**Owner in the admin-count guards:**
+
+`_count_admins()` is extended to count both `owner` and `admin` roles for the purpose of the last-admin safety guards:
+```sql
+SELECT COUNT(*) FROM org_members
+WHERE org_id = :org_id AND role IN ('owner', 'admin')
+FOR UPDATE;
+```
+This means:
+- An org with an owner + zero admins is a **valid, non-orphaned state** — the owner alone satisfies the last-admin guard.
+- The last-admin guard blocks demoting/removing the owner only if they are the **sole** owner-or-admin in the org (i.e., no admins either).
+- An admin cannot be removed if they are the last admin and there is no owner (standard last-admin guard — unchanged).
+
 **⚠️ Compass coordination:** The `owner` question is also a product decision. If Compass's product doc opts against `owner`, Atlas can implement this without it — the `admin`-only model with last-admin guards still works. Atlas's recommendation is to add `owner` now because it's additive and hard to retrofit later.
 
 #### 2.4.2 Endpoints
@@ -215,11 +264,37 @@ ROLE_LEVEL = {
 
 #### 2.4.3 The `perform_role_change` and `perform_member_removal` services
 
-These shared services (at `org_members.py:575-669` and `org_members.py:732-925`) are extended, not replaced:
+These shared services (at `org_members.py:575-669` and `org_members.py:732-925`) are extended, not replaced.
 
-- `perform_role_change` adds: cannot change owner's role unless actor IS the owner (self-demotion). Owner→admin self-demotion requires at least one other admin.
-- `perform_member_removal` adds: cannot remove owner. Must transfer ownership first.
-- The existing `SELECT FOR UPDATE` last-admin guards continue to work.
+**`perform_role_change` — owner-specific logic (in evaluation order):**
+
+1. **Owner counts as administrative for access gating.** The caller must be `owner` or `admin` to invoke this function (unchanged from current admin-only gate, extended to include owner).
+2. **Owner cannot be targeted by an admin.** If `target.role == 'owner'` and `actor.role != 'owner'`: reject 403 "only the owner can change the owner role."
+3. **Owner self-demotion (owner → admin):** If `actor == target` and `actor.role == 'owner'` and `new_role == 'admin'`: require at least one other admin to exist (the extended `_count_admins()` that includes both roles). If the owner is the sole owner-or-admin, reject 409 "cannot demote — you are the last administrator. Promote another member to admin first."
+4. **Owner self-demotion to member (owner → member):** Prohibited. Owner must first transfer ownership, or self-demote to admin (if another admin exists), then an admin can demote them further.
+5. **Promoting an admin to owner:** Only the current owner can do this. This IS the ownership transfer path (see §2.4.2 `POST /orgs/{id}/owner/transfer`).
+6. **Last-admin guard (extended):** The existing `SELECT FOR UPDATE` + `_count_admins()` check now counts `role IN ('owner', 'admin')`. Demoting an admin to member is blocked if they are the last owner-or-admin.
+7. **All other role changes:** Unchanged from current behavior.
+
+**`perform_member_removal` — owner-specific logic (in evaluation order):**
+
+1. **Owner counts as administrative for access gating.** The caller must be `owner` or `admin` (extended from admin-only).
+2. **Owner cannot be removed.** If `target.role == 'owner'`: reject 409 "cannot remove the org owner. Transfer ownership first."
+3. **Last-admin guard (extended):** The existing `SELECT FOR UPDATE` + `_count_admins()` check now counts `role IN ('owner', 'admin')`. Removing an admin is blocked if they are the last owner-or-admin.
+4. **All other removals:** Unchanged from current behavior (projects auto-transfer, default_org_id cleared, pending transfers cancelled).
+
+**Summary of changed invariants:**
+
+| Scenario | Old behavior | New behavior |
+|----------|-------------|-------------|
+| Admin demotes owner | N/A (no owner role) | Rejected 403 |
+| Owner self-demotes to admin | N/A | Allowed if ≥1 other admin exists |
+| Owner self-demotes to member | N/A | Rejected — transfer first |
+| Admin removes owner | N/A (no owner role) | Rejected 409 |
+| Admin demotes last admin | Rejected (last-admin guard) | Rejected (guard extended to count owner+admin) |
+| Remove last admin | Rejected (last-admin guard) | Rejected (guard extended to count owner+admin) |
+| Owner is sole admin, self-demotes | N/A | Rejected — promote another member first |
+| Org has owner + zero admins | N/A | Valid state — owner satisfies admin-count guards |
 
 ### 2.5 Orphaned-admin / lifecycle safety
 
@@ -255,21 +330,51 @@ LIMIT 1
 
 ### 3.1 Additive migration (migration 050)
 
-1. **Create `entitlements` table** with all columns from §2.1.
-2. **Add `HelmLicense.org_id`** — nullable FK to `organizations.id`, UNIQUE constraint (one org per license).
-3. **Backfill entitlements from existing data:**
+1. **Create `entitlements` table** with all columns from §2.1, including the two partial unique indexes (`uq_entitlements_one_active_per_owner`, `uq_entitlements_source_ref`) and the `UNIQUE` constraint on `(source, source_ref)`.
+2. **Create `pending_license_claim` table** — lightweight migration-era table: `id` PK, `license_id` FK→`helm_licenses.id` UNIQUE, `org_name` TEXT NOT NULL, `contact_email` TEXT, `tier` TEXT NOT NULL, `seats_limit` INT, `expires_at` TIMESTAMPTZ, `created_at` TIMESTAMPTZ NOT NULL DEFAULT now(). This table exists solely to hold unmatched licenses from the backfill; new licenses post-migration go through the standard activation path.
+3. **Add `HelmLicense.org_id`** — nullable FK to `organizations.id`, UNIQUE constraint (one org per license).
+4. **Backfill entitlements from existing data:**
    - For each `User` with `tier != 'free'` and NO `OrgMember` row: INSERT entitlement (`owner_type='user'`, `owner_id=user.id`, `source='manual'`, `tier=user.tier`, `status='active'`).
    - For each `Organization`: INSERT entitlement (`owner_type='org'`, `owner_id=org.id`, `source='stripe'` if `stripe_subscription_id` else `'manual'`, `tier=org.tier`, `seats_limit=org.seats_limit`, `storage_limit_bytes=org.storage_limit_bytes`, `status='active'`).
-   - For each `HelmLicense` with `status='active'`: INSERT entitlement (`owner_type='org'` if `org_id` set else `NULL`, `source='helm_license'`, `source_ref=license.id`, `tier=license.tier`, `seats_limit=license.seats_limit`, `current_period_end=license.expires_at`, `status='active'`).
-4. **Backfill `OrgMember` roles:** Existing admins → set to `'owner'` if they were the org creator (join to `AdminAction` where `action='admin_create_org'` and `target_id=org_id`). This is best-effort — some orgs predate the AdminAction audit log. For those, set all existing admins to `'owner'` (safe: they ARE the owners in practice).
-5. **Add `entitlement_id` nullable FK to `users` and `organizations`** — a denormalized pointer to the active entitlement for fast resolution. Nullable during migration, populated in step 6.
-6. **Set `entitlement_id`** on each User/Organization to the backfilled entitlement row.
+   - **Self-hosted license migration — chosen path:** Do NOT auto-create orgs or unbound entitlements for active HelmLicenses. Instead:
+     1. **Auto-link high-confidence matches:** For each active `HelmLicense` where an `Organization` already exists with matching `org_name` AND `contact_email` matches an org member's email: INSERT entitlement (`owner_type='org'`, `owner_id=<matched org>.id`, `source='helm_license'`, `source_ref=license.id`, `tier=license.tier`, `seats_limit=license.seats_limit`, `current_period_end=license.expires_at`, `status='active'`), SET `HelmLicense.org_id = <matched org>.id`.
+     2. **Unmatched active licenses:** Create a **`pending_license_claim`** record (new lightweight table: `license_id` FK, `org_name`, `contact_email`, `tier`, `seats_limit`, `expires_at`, `created_at`). This is NOT an org — it's a claim token waiting for a user. No entitlement row is created (owner_id would be NULL, violating the design).
+     3. **First authenticated activation** (`POST /api/v1/org/activate` — §2.2): atomically creates the org + entitlement + OrgMember(owner) + binds the license in a single transaction. The endpoint accepts a license key; it resolves both `HelmLicense` rows (new-style, admin-issued) and `pending_license_claim` rows (migration-era, waiting for activation).
+   - **Edge case — NULL or invalid tier in source data:** Coerce `NULL` tier and unrecognized tier strings to `'free'` with a diagnostic log entry. The migration must not fail on bad data, but must not silently propagate it either. Each coercion is recorded in the migration output.
+   - **NULL `expires_at` = perpetual:** When `current_period_end` is NULL, the entitlement never expires. This is the norm for admin-provisioned and manual entitlements. The resolution query uses `ORDER BY current_period_end DESC NULLS FIRST` so perpetual entitlements sort ahead of time-limited ones (defensive — the partial unique index makes ordering irrelevant at runtime).
+   - **⚠️ Compass flag:** The email-campaign copy for pending-claim license holders must change from "your org is ready" to "activate to set up your org." Atlas does not edit the Compass product doc; this is noted here for Compass to pick up.
+5. **Backfill `OrgMember` roles — deterministic SINGLE-owner rule:**
+
+   Exactly ONE member per org is promoted to `owner`. The backfill runs this precedence chain per org:
+
+   1. **Creator from AdminAction audit log:** `SELECT user_id FROM admin_actions WHERE action = 'admin_create_org' AND target_type = 'organization' AND target_id = <org_id> ORDER BY created_at LIMIT 1`. If that user is an active `OrgMember` with `role='admin'` in this org → set to `'owner'`.
+   2. **Earliest admin by join date:** `SELECT user_id FROM org_members WHERE org_id = <org_id> AND role = 'admin' ORDER BY COALESCE(created_at, invited_at) ASC LIMIT 1` → set to `'owner'`.
+   3. **Lowest-id admin (deterministic fallback):** `SELECT user_id FROM org_members WHERE org_id = <org_id> AND role = 'admin' ORDER BY user_id ASC LIMIT 1` → set to `'owner'`.
+
+   All OTHER admins remain `role='admin'`. After the backfill, the partial unique index `uq_org_members_one_owner_per_org` is created (step 7), structurally enforcing the invariant going forward.
+6. **Add `entitlement_id` nullable FK to `users` and `organizations`** — a denormalized pointer to the active entitlement for fast resolution. Nullable during migration, populated in step 7.
+7. **Set `entitlement_id`** on each User/Organization to the backfilled entitlement row.
+8. **Create partial unique index on `org_members`:**
+   ```sql
+   CREATE UNIQUE INDEX uq_org_members_one_owner_per_org
+   ON org_members(org_id) WHERE role = 'owner';
+   ```
+   This enforces the single-owner invariant structurally after the deterministic backfill has selected exactly one owner per org.
 
 ### 3.2 Rollback path
 
 - `User.tier`, `Organization.tier`, `HelmLicense.tier` are NOT dropped — they become denormalized cache columns populated from the entitlement on write. Rollback = revert `get_effective_tier` to read the old columns.
 - No data loss. Every backfilled entitlement has a `source_ref` that traces back to the original row.
-- Migration is reversible: drop `entitlements` table, drop `HelmLicense.org_id`, drop `entitlement_id` FKs.
+- Migration is reversible: drop `entitlements` table, drop `pending_license_claim` table, drop `HelmLicense.org_id`, drop `entitlement_id` FKs, drop the `uq_org_members_one_owner_per_org` partial unique index.
+
+**Downgrade handling for `owner` role:**
+
+The `owner` role string is additive — old code that reads `OrgMember.role` sees `"owner"` as an unrecognized string. Two options, both documented here for the operator:
+
+- **Option A (recommended): Downgrade owner → admin.** An Alembic downgrade step in the migration sets all `role='owner'` rows back to `role='admin'`. The partial unique index is dropped first. All orgs retain at least one admin; no org is orphaned. On re-upgrade, the deterministic single-owner backfill runs again and selects the same owner (stable precedence: AdminAction → earliest admin → lowest-id).
+- **Option B: Keep `owner` string, let old code tolerate it.** Old code that does `role == 'admin'` checks will fail closed (owner can't perform admin actions). This is safe but degraded — owners lose management access until re-upgrade. Option A is preferred because it preserves full admin functionality during the downgrade window.
+
+The Alembic downgrade step implements Option A: `UPDATE org_members SET role = 'admin' WHERE role = 'owner'` before dropping the partial unique index.
 
 ### 3.3 Phased rollout
 
@@ -394,3 +499,38 @@ Enterprise customers hold a license but get no Organization and no org managemen
 
 ### The migration path
 Additive migration 050 backfills entitlements from existing `User.tier`, `Organization.tier`, and `HelmLicense` rows. Old columns remain as denormalized caches. Rollback preserves all data.
+
+---
+
+## §8 — R1 Amendments (Codex Review)
+
+Codex R1: **NEEDS-CHANGES** → amended. Summary of resolutions:
+
+### Finding 1 (HIGH) — Owner-role backfill breaks "exactly one owner per org"
+
+- **Deterministic single-owner backfill** (§3.1 step 5): Three-tier precedence — (1) creator from `AdminAction` where `action='admin_create_org'`, (2) earliest `OrgMember` admin by `COALESCE(created_at, invited_at)`, (3) lowest-id admin. All other admins stay `admin`. No more "set all existing admins to owner."
+- **Partial unique index** (§2.4.1, §3.1 step 8): `CREATE UNIQUE INDEX uq_org_members_one_owner_per_org ON org_members(org_id) WHERE role = 'owner'` — structurally enforces the invariant.
+- **Activation grants `owner`** (§2.2 step 4): Changed from `role='admin'` to `role='owner'`. Matches Compass product doc + the activation-creates-owner intent.
+- **Owner handling in `perform_role_change`** (§2.4.3): Full specification — owner counts as administrative for access gating; owner cannot be targeted by an admin (403); owner self-demotion requires ≥1 other admin; owner→member prohibited without transfer; promoting admin→owner is the ownership transfer path; last-admin guard extended to count `role IN ('owner', 'admin')`.
+- **Owner handling in `perform_member_removal`** (§2.4.3): Full specification — owner cannot be removed (409 "transfer ownership first"); last-admin guard extended to count both roles.
+- **Org with owner + zero admins is valid** (§2.4.1): The extended `_count_admins()` includes both roles, so owner alone satisfies the last-admin guard.
+
+### Finding 2 (HIGH) — Entitlements table lacks constraints
+
+- **Partial unique index — one active per owner** (§2.1): `CREATE UNIQUE INDEX uq_entitlements_one_active_per_owner ON entitlements(owner_type, owner_id) WHERE status = 'active'`. Runtime resolution hits exactly one row; the `ORDER BY current_period_end` tiebreak is for historical rows / defensive fallback only.
+- **Unique external binding** (§2.1): `CREATE UNIQUE INDEX uq_entitlements_source_ref ON entitlements(source, source_ref) WHERE source_ref IS NOT NULL`. Each Stripe subscription or Helm license maps to exactly one entitlement.
+- **Stripe-XOR-license invariant** (§2.1): Defined the in-transaction status transition rule (`active` → `canceled`/`expired`/`revoked`; no reactivation; `past_due` is Stripe-only transient). Replacing one entitlement transitions the prior in the SAME transaction.
+- **`ORDER BY` clarification** (§2.1): Explicitly documented as historical-row defense, not runtime disambiguation.
+
+### Finding 3 (MEDIUM) — Self-hosted license migration path
+
+- **Chosen path** (§3.1 step 4): Do NOT auto-create orgs. For unmatched active licenses, create `pending_license_claim` records (new lightweight table) — not unbound entitlements, not full orgs. Auto-link ONLY high-confidence matches (`org_name` + `contact_email`). First authenticated activation atomically creates the org (single transaction, same `POST /api/v1/org/activate` endpoint).
+- **Compass flag** (§3.1 step 4): Email-campaign copy must change from "your org is ready" to "activate to set up your org" for pending-claim cases.
+
+### Tightening (Codex-assessed)
+
+- **NULL/invalid tier coercion** (§3.1 step 4): Coerce to `'free'` with diagnostic log entry. Migration must not fail on bad data, must not silently propagate.
+- **NULL `expires_at` = perpetual** (§3.1 step 4): Documented with `NULLS FIRST` semantics. Perpetual is the norm for admin-provisioned/manual entitlements.
+- **Activation race guard** (§2.2 step 5): Single transaction with rowcount-1 `UPDATE helm_licenses SET org_id = :org WHERE id = :key AND org_id IS NULL AND status = 'active' AND not-expired`. Roll back org + entitlement + OrgMember if rowcount = 0.
+- **`/me` enrichment — single query** (§2.3): Explicitly requires one joined query / `get_user_context`-style resolver, not per-field lookups.
+- **Migration downgrade for `owner`** (§3.2): Option A (recommended): Alembic downgrade sets all `role='owner'` → `role='admin'` before dropping the partial unique index. Old code sees standard `admin`/`member` roles. On re-upgrade, the deterministic backfill restores the same owner. Option B (keep string, tolerate) documented as degraded but safe.
