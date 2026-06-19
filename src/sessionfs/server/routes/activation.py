@@ -50,9 +50,15 @@ router = APIRouter(prefix="/api/v1/org/activate", tags=["activation"])
 # Rate limiters (app-layer only — Cloud Armor is the durable multi-replica
 # layer, per Forge tk_c279911c20264333)
 # ---------------------------------------------------------------------------
-_info_limiter = SlidingWindowRateLimiter(max_requests=20, window_seconds=3600)
-_activate_limiter = SlidingWindowRateLimiter(max_requests=5, window_seconds=3600)
-_verify_limiter = SlidingWindowRateLimiter(max_requests=10, window_seconds=3600)
+# Rate limiters (app-layer only — Cloud Armor is the durable multi-replica
+# layer, per Forge tk_c279911c20264333)
+# ---------------------------------------------------------------------------
+# Lax enough to not break normal usage; Cloud Armor provides the real
+# rate-limiting perimeter.  These are defense-in-depth against application-level
+# abuse without a configured cloud perimeter.
+_info_limiter = SlidingWindowRateLimiter(max_requests=30, window_seconds=3600)
+_activate_limiter = SlidingWindowRateLimiter(max_requests=20, window_seconds=3600)
+_verify_limiter = SlidingWindowRateLimiter(max_requests=30, window_seconds=3600)
 
 # ---------------------------------------------------------------------------
 # Request / Response schemas
@@ -108,7 +114,7 @@ def _hash_token(raw: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def _active_unbound_license(key: str, db) -> HelmLicense | None:
+async def _active_unbound_license(key: str, db) -> HelmLicense | None:
     """Return the license if it is active, unexpired, and unbound.
 
     SINGLE helper — every endpoint that needs to evaluate a license uses
@@ -127,7 +133,7 @@ def _active_unbound_license(key: str, db) -> HelmLicense | None:
             HelmLicense.expires_at > now,
         ),
     )
-    result = db.execute(stmt)
+    result = await db.execute(stmt)
     lic = result.scalar_one_or_none()
     # Check in Python in case the DB returned a row with tz-naive datetime
     if lic is not None and lic.expires_at is not None:
