@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.auth.keys import generate_api_key, hash_api_key
 from sessionfs.server.db.engine import get_db
-from sessionfs.server.db.models import ApiKey, OrgMember, User
+from sessionfs.server.db.models import ApiKey, Organization, OrgMember, User
 from sessionfs.server.schemas.auth import (
     ApiKeySummary,
     CreateApiKeyRequest,
@@ -37,16 +37,46 @@ router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 
 @router.get("/me")
-async def get_me(user: User = Depends(get_current_user)):
-    """Return the authenticated user's profile."""
-    from sessionfs import __version__ as server_version
+async def get_me(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the authenticated user's profile.
 
-    return {
+    P2 (entitlement resolution + org enrichment): resolves effective_tier,
+    org_id, org_name, and org_role via a single joined query.  The
+    resolution chain is: org entitlement → org tier fallback → user
+    entitlement → user tier fallback.
+    """
+    from sessionfs import __version__ as server_version
+    from sessionfs.server.tier_gate import get_effective_tier
+
+    # P2: one joined query for org membership + org details.
+    # If the user is an org member, this returns (OrgMember, Organization);
+    # otherwise returns None.
+    membership_result = await db.execute(
+        select(OrgMember, Organization)
+        .join(Organization, OrgMember.org_id == Organization.id)
+        .where(OrgMember.user_id == user.id)
+    )
+    row = membership_result.one_or_none()
+    membership = row[0] if row is not None else None
+    org = row[1] if row is not None else None
+
+    # Resolve effective tier through the entitlement chain.
+    effective_tier = (await get_effective_tier(user, db)).value
+
+    response: dict = {
         "user_id": user.id,
         "email": user.email,
         "display_name": user.display_name,
         "email_verified": user.email_verified,
         "tier": user.tier,
+        # P2: new fields — effective tier + org membership.
+        "effective_tier": effective_tier,
+        "org_id": org.id if org else None,
+        "org_name": org.name if org else None,
+        "org_role": membership.role if membership else None,
         "created_at": user.created_at.isoformat() if user.created_at else None,
         "last_client_version": user.last_client_version,
         "last_client_platform": user.last_client_platform,
@@ -60,6 +90,7 @@ async def get_me(user: User = Depends(get_current_user)):
         # may add a default-org fallback for unmatched remotes.
         "default_org_id": user.default_org_id,
     }
+    return response
 
 
 class SetDefaultOrgRequest(BaseModel):
