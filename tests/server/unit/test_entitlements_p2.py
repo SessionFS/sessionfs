@@ -26,12 +26,11 @@ from sessionfs.server.db.models import (
     Entitlement,
 )
 from sessionfs.server.services.entitlements import (
-    ResolvedEntitlement,
     apply_entitlement,
     resolve_entitlement,
     VALID_ENTITLEMENT_TIERS,
 )
-from sessionfs.server.tier_gate import get_effective_tier, get_user_org_membership
+from sessionfs.server.tier_gate import get_effective_tier
 from sessionfs.server.tiers import Tier
 
 
@@ -371,9 +370,12 @@ class TestApplyEntitlement:
         assert user.entitlement_id is not None
 
     async def test_apply_rejects_admin_tier_for_user(self, db_session: AsyncSession):
-        """Sentinel MEDIUM-3: apply_entitlement refuses to write 'admin' to User.tier."""
+        """Sentinel MEDIUM-3: apply_entitlement refuses to write 'admin' to User.tier.
+
+        Guard is an explicit ValueError (not bare assert — Shield LOW: asserts
+        are stripped under python -O)."""
         user = await _create_user(db_session, tier="admin")
-        with pytest.raises(AssertionError, match="not a valid entitlement tier"):
+        with pytest.raises(ValueError, match="not a valid entitlement tier"):
             await apply_entitlement(
                 "user",
                 user.id,
@@ -385,7 +387,7 @@ class TestApplyEntitlement:
     async def test_apply_rejects_admin_tier_for_org(self, db_session: AsyncSession):
         """Sentinel MEDIUM-3: apply_entitlement refuses to write 'admin' tier."""
         org = await _create_org(db_session, tier="enterprise")
-        with pytest.raises(AssertionError, match="not a valid entitlement tier"):
+        with pytest.raises(ValueError, match="not a valid entitlement tier"):
             await apply_entitlement(
                 "org",
                 org.id,
@@ -393,6 +395,37 @@ class TestApplyEntitlement:
                 source="admin_provisioned",
                 db=db_session,
             )
+
+    async def test_apply_tier_only_preserves_seats_storage(self, db_session: AsyncSession):
+        """Codex R1 HIGH: a tier-only update (seats/storage omitted) must NOT
+        zero the existing Organization.seats_limit / storage_limit_bytes."""
+        org = await _create_org(
+            db_session, tier="team", seats_limit=25, storage_limit_bytes=123_456
+        )
+        # First establish an active entitlement carrying the quota.
+        await apply_entitlement(
+            "org", org.id, tier="team", seats=25, storage=123_456,
+            source="manual", db=db_session,
+        )
+        await db_session.commit()
+
+        # Tier-only change: omit seats/storage entirely (the admin tier-only path).
+        await apply_entitlement(
+            "org", org.id, tier="enterprise", source="admin_provisioned", db=db_session,
+        )
+        await db_session.commit()
+
+        await db_session.refresh(org)
+        assert org.tier == "enterprise"
+        # Quota must be PRESERVED, not zeroed.
+        assert org.seats_limit == 25
+        assert org.storage_limit_bytes == 123_456
+        # Entitlement row likewise preserves the quota.
+        resolved = await resolve_entitlement("org", org.id, db_session)
+        assert resolved is not None
+        assert resolved.tier == "enterprise"
+        assert resolved.seats_limit == 25
+        assert resolved.storage_limit_bytes == 123_456
 
     async def test_apply_status_canceled(self, db_session: AsyncSession):
         """apply_entitlement with status='canceled' transitions the row."""

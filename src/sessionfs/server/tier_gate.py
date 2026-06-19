@@ -56,7 +56,9 @@ async def _get_org(org_id: str, db: AsyncSession) -> Organization | None:
     return result.scalar_one_or_none()
 
 
-async def get_effective_tier(user: User, db: AsyncSession) -> Tier:
+async def get_effective_tier(
+    user: User, db: AsyncSession, *, membership: OrgMember | None = None
+) -> Tier:
     """Resolve the user's effective tier.
 
     P2 (entitlement resolution switch):
@@ -66,8 +68,14 @@ async def get_effective_tier(user: User, db: AsyncSession) -> Tier:
        if no active entitlement exists.
     3. Legacy admin tier: 'admin' is never an entitlement tier; always
        resolves to ENTERPRISE.
+
+    Callers that have already loaded the user's OrgMember row (e.g. the
+    /me handler's joined query) may pass it via `membership` to avoid a
+    redundant re-query (Codex R1 LOW). Omitting it preserves the original
+    behavior for every other caller.
     """
-    membership = await get_user_org_membership(user.id, db)
+    if membership is None:
+        membership = await get_user_org_membership(user.id, db)
 
     if membership:
         # Try entitlement resolution first for the org.

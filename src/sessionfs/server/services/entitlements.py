@@ -120,10 +120,14 @@ async def apply_entitlement(
     (free/starter/pro/team/enterprise).  'admin' is NOT an entitlement
     tier and is rejected at this layer.
     """
-    assert tier in VALID_ENTITLEMENT_TIERS, (
-        f"apply_entitlement: tier '{tier}' is not a valid entitlement tier. "
-        f"'admin' is a platform role, not an entitlement tier."
-    )
+    # Sentinel MEDIUM-3 guard — explicit raise (not `assert`, which is
+    # stripped under `python -O`). The DB CHECK constraint is the final
+    # backstop, but fail loudly here regardless of optimization flags.
+    if tier not in VALID_ENTITLEMENT_TIERS:
+        raise ValueError(
+            f"apply_entitlement: tier '{tier}' is not a valid entitlement tier. "
+            f"'admin' is a platform role, not an entitlement tier."
+        )
 
     now = datetime.now(timezone.utc)
 
@@ -174,24 +178,29 @@ async def apply_entitlement(
 
     # ── 2. Mirror legacy column cache ────────────────────────────
     if owner_type == "org":
+        # Only mirror the fields actually supplied. Codex R1 HIGH:
+        # a tier-only update (seats/storage omitted) must NOT zero the
+        # existing Organization.seats_limit / storage_limit_bytes — that
+        # silently corrupts the org's quota. Preserve omitted columns.
+        org_values: dict = {"tier": tier, "entitlement_id": ent.id}
+        if seats is not None:
+            org_values["seats_limit"] = seats
+        if storage is not None:
+            org_values["storage_limit_bytes"] = storage
         await db.execute(
             update(Organization)
             .where(Organization.id == owner_id)
-            .values(
-                tier=tier,
-                seats_limit=seats if seats is not None else 0,
-                storage_limit_bytes=storage if storage is not None else 0,
-                entitlement_id=ent.id,
-            )
+            .values(**org_values)
         )
     elif owner_type == "user":
         # User.tier is the denormalized cache.  Sentinel MEDIUM-3:
         # NEVER write 'admin' to User.tier from an entitlement.
-        assert tier != "admin", (
-            "apply_entitlement: refusing to write tier='admin' to User.tier "
-            "from an entitlement. Platform-admin is grantable ONLY via the "
-            "existing admin path."
-        )
+        if tier == "admin":
+            raise ValueError(
+                "apply_entitlement: refusing to write tier='admin' to User.tier "
+                "from an entitlement. Platform-admin is grantable ONLY via the "
+                "existing admin path."
+            )
         await db.execute(
             update(User)
             .where(User.id == owner_id)

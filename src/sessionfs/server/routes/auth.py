@@ -63,8 +63,10 @@ async def get_me(
     membership = row[0] if row is not None else None
     org = row[1] if row is not None else None
 
-    # Resolve effective tier through the entitlement chain.
-    effective_tier = (await get_effective_tier(user, db)).value
+    # Resolve effective tier through the entitlement chain. Pass the
+    # membership we already loaded above so get_effective_tier doesn't
+    # re-query it (Codex R1 LOW — avoid redundant constant work).
+    effective_tier = (await get_effective_tier(user, db, membership=membership)).value
 
     response: dict = {
         "user_id": user.id,

@@ -150,6 +150,13 @@ async def create_organization(
     # was the first such customer to surface it.
     await db.flush()
 
+    # Codex R1 MEDIUM: snapshot the Stripe IDs BEFORE clearing them.
+    # The bulk update(User) below synchronizes the in-memory `user`
+    # object, nulling user.stripe_subscription_id — so deriving the
+    # entitlement source/source_ref afterward would lose the provenance
+    # (writing source='manual'/None for a genuinely Stripe-funded org).
+    stripe_sub_snapshot = user.stripe_subscription_id
+
     # Transfer subscription ownership: clear user-level Stripe fields
     # so they can't be confused with a personal subscription later.
     if user.stripe_customer_id or user.stripe_subscription_id:
@@ -166,8 +173,8 @@ async def create_organization(
         tier=tier,
         seats=seats,
         storage=storage,
-        source="stripe" if user.stripe_subscription_id else "manual",
-        source_ref=user.stripe_subscription_id or None,
+        source="stripe" if stripe_sub_snapshot else "manual",
+        source_ref=stripe_sub_snapshot or None,
         db=db,
     )
 
