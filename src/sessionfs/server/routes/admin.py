@@ -23,6 +23,7 @@ from sessionfs.server.db.models import (
     Session,
     User,
 )
+from sessionfs.server.services.entitlements import apply_entitlement
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 
@@ -183,6 +184,18 @@ async def change_user_tier(
 
     old_tier = user.tier
     user.tier = new_tier
+
+    # P2: write-through — upsert the user's active entitlement so
+    # resolution stays authoritative.  'admin' tier is NOT written
+    # as an entitlement (platform role, not a customer tier).
+    if new_tier in ("free", "starter", "pro", "team", "enterprise"):
+        await apply_entitlement(
+            "user",
+            user_id,
+            tier=new_tier,
+            source="admin_provisioned",
+            db=db,
+        )
 
     await _log_action(db, admin.id, "tier_change", "user", user_id, {
         "old_tier": old_tier, "new_tier": new_tier,
@@ -517,6 +530,17 @@ async def admin_create_org(
     member = OrgMember(org_id=org_id, user_id=owner_user_id, role="admin")
     db.add(member)
 
+    # P2: write-through — create entitlement for the admin-provisioned org.
+    await apply_entitlement(
+        "org",
+        org_id,
+        tier=tier,
+        seats=seats_limit,
+        storage=storage_limit_bytes,
+        source="admin_provisioned",
+        db=db,
+    )
+
     await _log_action(
         db,
         admin.id,
@@ -580,6 +604,19 @@ async def admin_change_org_tier(
         raise HTTPException(400, "No changes provided")
 
     await db.execute(update(Organization).where(Organization.id == org_id).values(**changes))
+
+    # P2: write-through — keep the entitlement in sync with admin tier change.
+    new_tier = changes.get("tier", org.tier)
+    if new_tier in ("free", "starter", "pro", "team", "enterprise"):
+        await apply_entitlement(
+            "org",
+            org_id,
+            tier=new_tier,
+            seats=changes.get("seats_limit"),
+            storage=changes.get("storage_limit_bytes"),
+            source="admin_provisioned",
+            db=db,
+        )
 
     await _log_action(db, admin.id, "admin_update_org", "org", org_id, changes)
     await db.commit()

@@ -1,4 +1,12 @@
-"""Tier gating and RBAC middleware for API routes."""
+"""Tier gating and RBAC middleware for API routes.
+
+P2 (entitlement resolution switch): get_effective_tier and get_user_context
+now resolve through the entitlements table FIRST (via resolve_entitlement),
+falling back to the legacy org.tier / user.tier columns when no active
+entitlement exists.  This ensures behavior is IDENTICAL for backfilled data
+(the P1 backfill created entitlements matching current tiers), while new
+entitlement mutations (via apply_entitlement) become authoritative.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +21,7 @@ from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import OrgMember, Organization, User
 from sessionfs.server.roles import has_minimum_role
+from sessionfs.server.services.entitlements import resolve_entitlement
 from sessionfs.server.tiers import Tier, format_bytes, get_features_for_tier, get_minimum_tier_for_feature, get_storage_limit
 
 logger = logging.getLogger("sessionfs.api")
@@ -39,15 +48,45 @@ async def get_user_org_membership(
     return result.scalar_one_or_none()
 
 
-async def get_effective_tier(user: User, db: AsyncSession) -> Tier:
+async def _get_org(org_id: str, db: AsyncSession) -> Organization | None:
+    """Fetch an Organization by id (cached helper for get_user_context)."""
+    result = await db.execute(
+        select(Organization).where(Organization.id == org_id)
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_effective_tier(
+    user: User, db: AsyncSession, *, membership: OrgMember | None = None
+) -> Tier:
     """Resolve the user's effective tier.
 
-    Solo users: tier lives on user record.
-    Org users: tier inherited from their org.
+    P2 (entitlement resolution switch):
+    1. If the user is an org member → resolve org entitlement FIRST,
+       fall back to org.tier if no active entitlement exists.
+    2. Else → resolve user entitlement FIRST, fall back to user.tier
+       if no active entitlement exists.
+    3. Legacy admin tier: 'admin' is never an entitlement tier; always
+       resolves to ENTERPRISE.
+
+    Callers that have already loaded the user's OrgMember row (e.g. the
+    /me handler's joined query) may pass it via `membership` to avoid a
+    redundant re-query (Codex R1 LOW). Omitting it preserves the original
+    behavior for every other caller.
     """
-    membership = await get_user_org_membership(user.id, db)
+    if membership is None:
+        membership = await get_user_org_membership(user.id, db)
 
     if membership:
+        # Try entitlement resolution first for the org.
+        ent = await resolve_entitlement("org", membership.org_id, db)
+        if ent is not None:
+            try:
+                return Tier(ent.tier)
+            except ValueError:
+                pass
+
+        # Fallback: legacy org.tier column.
         result = await db.execute(
             select(Organization).where(Organization.id == membership.org_id)
         )
@@ -58,10 +97,19 @@ async def get_effective_tier(user: User, db: AsyncSession) -> Tier:
             except ValueError:
                 pass
 
+    # Try entitlement resolution for the user (no org, or org fallback missed).
+    ent = await resolve_entitlement("user", user.id, db)
+    if ent is not None:
+        try:
+            return Tier(ent.tier)
+        except ValueError:
+            pass
+
+    # Fallback: legacy user.tier column.
     try:
         return Tier(user.tier)
     except ValueError:
-        # Legacy admin tier
+        # Legacy admin tier — not an entitlement tier, always ENTERPRISE.
         if user.tier == "admin":
             return Tier.ENTERPRISE
         return Tier.FREE
@@ -100,14 +148,32 @@ async def get_user_context(
     v0.10.10 — sources the User from request.state.auth_context when a
     scoped dependency (require_scope) has already authenticated. Falls
     back to legacy get_current_user for routes that don't use scoped
-    auth. This breaks the previous coupling where get_user_context
-    inherited get_current_user's service-key rejection even on routes
-    that wanted to accept service keys via require_scope.
+    auth.
+
+    P2 (entitlement resolution switch): resolves effective tier through
+    the entitlements table FIRST, falling back to legacy org.tier /
+    user.tier when no active entitlement exists.
     """
     user = await _resolve_user_for_context(request, db)
     membership = await get_user_org_membership(user.id, db)
 
     if membership:
+        # Resolve org entitlement FIRST, fall back to legacy org.tier.
+        ent = await resolve_entitlement("org", membership.org_id, db)
+        if ent is not None:
+            try:
+                tier = Tier(ent.tier)
+            except ValueError:
+                tier = Tier.TEAM
+            return UserContext(
+                user=user,
+                effective_tier=tier,
+                org=await _get_org(membership.org_id, db),
+                role=membership.role,
+                is_org_user=True,
+            )
+
+        # Fallback: legacy org.tier column.
         result = await db.execute(
             select(Organization).where(Organization.id == membership.org_id)
         )
@@ -125,6 +191,22 @@ async def get_user_context(
                 is_org_user=True,
             )
 
+    # Resolve user entitlement FIRST, fall back to legacy user.tier.
+    ent = await resolve_entitlement("user", user.id, db)
+    if ent is not None:
+        try:
+            tier = Tier(ent.tier)
+        except ValueError:
+            tier = Tier.FREE
+        return UserContext(
+            user=user,
+            effective_tier=tier,
+            org=None,
+            role=None,
+            is_org_user=False,
+        )
+
+    # Fallback: legacy user.tier column.
     try:
         tier = Tier(user.tier)
     except ValueError:

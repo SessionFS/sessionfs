@@ -172,7 +172,7 @@ export default function Layout() {
   const inbox = useHandoffInbox();
   const me = useMe();
   const isAdmin = me.data?.tier === 'admin';
-  const hasOrg = !!me.data?.default_org_id;
+  const hasOrg = !!me.data?.org_id;
   const pendingCount = inbox.data?.handoffs.filter((h) => h.status === 'pending').length ?? 0;
   const incomingTransfers = useTransfers('incoming', 'pending');
   const transfersPendingCount = incomingTransfers.data?.transfers.length ?? 0;
@@ -248,7 +248,7 @@ export default function Layout() {
   const filteredBottom = BOTTOM_ITEMS.filter(isItemVisible);
 
   // ── Account menu items ──
-  const tierLabel = me.data?.tier || 'free';
+  const tierLabel = me.data?.effective_tier || me.data?.tier || 'free';
   const tierVariant = tierLabel === 'admin' ? 'info' : tierLabel === 'team' ? 'success' : 'default';
   const userInitial = (me.data?.email?.[0] || 'U').toUpperCase();
 
@@ -362,7 +362,7 @@ export default function Layout() {
               className="flex items-center gap-2 px-2 py-1 rounded-md hover:bg-surface-hover transition-colors text-2xs text-text-tertiary font-mono truncate"
             >
               <span className="shrink-0 w-3.5 h-3.5">{orgIcon}</span>
-              <span className="truncate">{me.data?.default_org_id}</span>
+              <span className="truncate">{me.data?.org_name || me.data?.org_id || me.data?.default_org_id}</span>
             </Link>
           </div>
         )}

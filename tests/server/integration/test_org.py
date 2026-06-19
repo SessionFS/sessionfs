@@ -154,6 +154,81 @@ async def test_create_org_enterprise_user_no_stripe(
 
 
 @pytest.mark.asyncio
+async def test_create_org_from_stripe_user_preserves_provenance(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Codex R1 MEDIUM regression — when a Stripe-paying user creates an org,
+    the route clears User.stripe_* (transfer of ownership) via a bulk
+    update(User) that synchronizes the in-memory user object. The entitlement
+    source/source_ref must be derived from a SNAPSHOT taken before the clear,
+    or the org's entitlement is written as source='manual'/source_ref=None
+    despite being genuinely Stripe-funded.
+    """
+    from sqlalchemy import text
+
+    from sessionfs.server.auth.keys import generate_api_key, hash_api_key
+    from sessionfs.server.db.models import ApiKey
+
+    sub_id = "sub_provenance_123"
+    user = User(
+        id=str(uuid.uuid4()),
+        email="stripe-payer@example.com",
+        display_name="Stripe Payer",
+        tier="team",
+        stripe_customer_id="cus_provenance_123",
+        stripe_subscription_id=sub_id,
+        email_verified=True,
+        created_at=datetime.now(timezone.utc),
+    )
+    db_session.add(user)
+    await db_session.commit()
+    raw_key = generate_api_key()
+    db_session.add(
+        ApiKey(
+            id=str(uuid.uuid4()),
+            user_id=user.id,
+            key_hash=hash_api_key(raw_key),
+            name="stripe-key",
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+    await db_session.commit()
+    headers = {"Authorization": f"Bearer {raw_key}"}
+
+    resp = await client.post(
+        "/api/v1/org",
+        headers=headers,
+        json={"name": "Stripe Org", "slug": "stripe-org"},
+    )
+    assert resp.status_code == 200, resp.text
+    org_id = resp.json()["org_id"]
+
+    # The org's active entitlement must carry the Stripe provenance.
+    ent_row = (
+        await db_session.execute(
+            text(
+                "SELECT source, source_ref FROM entitlements "
+                "WHERE owner_type='org' AND owner_id=:id AND status='active'"
+            ),
+            {"id": org_id},
+        )
+    ).one_or_none()
+    assert ent_row is not None
+    assert ent_row[0] == "stripe", f"expected source='stripe', got {ent_row[0]!r}"
+    assert ent_row[1] == sub_id, f"expected source_ref={sub_id!r}, got {ent_row[1]!r}"
+
+    # And the user-level Stripe fields were transferred (cleared).
+    user_row = (
+        await db_session.execute(
+            text("SELECT stripe_subscription_id FROM users WHERE id=:id"),
+            {"id": user.id},
+        )
+    ).one_or_none()
+    assert user_row is not None
+    assert user_row[0] is None
+
+
+@pytest.mark.asyncio
 async def test_create_org_free_user_rejected(client: AsyncClient, auth_headers: dict):
     """Free user cannot create an organization."""
     resp = await client.post(
