@@ -1050,6 +1050,83 @@ class TestSlugCollision:
         assert new_org.slug.startswith("acme-")
 
 
+class TestActivationAttemptRetention:
+    """Regression (Codex/Shield retention MEDIUM): the admin sweeper flips
+    expired-pending attempts to 'expired' (the otherwise-never-set status) and
+    deletes terminal/expired rows older than the window, removing the
+    contact_email_snapshot PII."""
+
+    @pytest.mark.asyncio
+    async def test_purge_reaps_old_terminal_and_flips_expired(
+        self, client: AsyncClient, db_session: AsyncSession,
+    ):
+        admin_user = User(
+            id=str(uuid.uuid4()),
+            email="admin-purge@sessionfs.dev",
+            display_name="Admin",
+            tier="admin",
+            email_verified=True,
+            created_at=datetime.now(timezone.utc),
+        )
+        db_session.add(admin_user)
+        lic = HelmLicense(
+            id=f"sfs_test_{secrets.token_hex(8)}",
+            org_name="Ret Co",
+            contact_email="ret@example.com",
+            tier="enterprise",
+            seats_limit=25,
+            status="active",
+        )
+        db_session.add(lic)
+        await db_session.commit()
+
+        now = datetime.now(timezone.utc)
+        old = now - timedelta(days=60)
+        recent = now - timedelta(minutes=5)
+
+        def _mk(status, expires_at, created_at):
+            return ActivationAttempt(
+                helm_license_id=lic.id,
+                token_hash=secrets.token_hex(32),
+                contact_email_snapshot=lic.contact_email,
+                requested_by_user_id=admin_user.id,
+                status=status,
+                expires_at=expires_at,
+                created_at=created_at,
+            )
+
+        consumed_old = _mk("consumed", old, old)            # → deleted
+        expired_pending_old = _mk("pending", old, old)      # → flipped + deleted
+        expired_pending_recent = _mk("pending", now - timedelta(minutes=1), recent)  # flipped, kept
+        fresh_pending = _mk("pending", now + timedelta(minutes=30), recent)          # untouched
+        for a in (consumed_old, expired_pending_old, expired_pending_recent, fresh_pending):
+            db_session.add(a)
+        await db_session.commit()
+        fresh_id, recent_exp_id = fresh_pending.id, expired_pending_recent.id
+
+        api_key = await _create_api_key(db_session, admin_user)
+        resp = await client.post(
+            "/api/v1/admin/activation-attempts/purge",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["purged"] == 2          # consumed_old + expired_pending_old
+        assert data["expired_flipped"] == 2  # both expired-pending rows flipped
+
+        # The endpoint committed via its own session; drop our identity-map
+        # cache (factory uses expire_on_commit=False) so we re-read from DB.
+        db_session.expire_all()
+        remaining = (
+            await db_session.execute(select(ActivationAttempt))
+        ).scalars().all()
+        by_id = {a.id: a for a in remaining}
+        assert set(by_id) == {fresh_id, recent_exp_id}
+        assert by_id[recent_exp_id].status == "expired"  # flipped, within window
+        assert by_id[fresh_id].status == "pending"       # untouched
+
+
 # ---------------------------------------------------------------------------
 # 4. Admin-assisted license binding
 # ---------------------------------------------------------------------------
