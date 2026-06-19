@@ -18,7 +18,9 @@ from sessionfs.server.db.models import (
     AdminAction,
     ApiKey,
     Handoff,
+    HelmLicense,
     Organization,
+    OrgAuditEvent,
     OrgMember,
     Session,
     User,
@@ -531,15 +533,78 @@ async def admin_create_org(
     db.add(member)
 
     # P2: write-through — create entitlement for the admin-provisioned org.
+    # If a license_key is provided, source from the HelmLicense (admin-assisted
+    # pre-provision — staff is the trust anchor, no email token needed).
+    license_key = (body.get("license_key") or "").strip()
+    lic = None
+    if license_key:
+        lic = (
+            await db.execute(
+                select(HelmLicense).where(
+                    HelmLicense.id == license_key,
+                    HelmLicense.status == "active",
+                    HelmLicense.org_id.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if lic is not None:
+            # Bind the license to this org
+            await db.execute(
+                update(HelmLicense)
+                .where(HelmLicense.id == license_key, HelmLicense.org_id.is_(None))
+                .values(org_id=org_id)
+            )
+            tier = lic.tier
+            seats_limit = lic.seats_limit
+            source = "helm_license"
+            source_ref = license_key
+            current_period_end = lic.expires_at
+        else:
+            raise HTTPException(
+                400,
+                f"License key '{license_key}' is invalid, expired, or already bound.",
+            )
+    else:
+        source = "admin_provisioned"
+        source_ref = None
+        current_period_end = None
+
     await apply_entitlement(
         "org",
         org_id,
         tier=tier,
         seats=seats_limit,
         storage=storage_limit_bytes,
-        source="admin_provisioned",
+        source=source,
+        source_ref=source_ref,
         db=db,
+        current_period_end=current_period_end,
     )
+
+    # Emit OrgAuditEvent for license-activated admin orgs
+    if lic is not None:
+        audit = OrgAuditEvent(
+            id=f"oae_{_secrets.token_hex(12)}",
+            org_id=org_id,
+            org_name_snapshot=name,
+            event_type="license_activated",
+            actor_user_id=admin.id,
+            actor_email_snapshot=admin.email,
+            actor_role_at_time="platform_admin",
+            target_type="license",
+            target_id=license_key[:7] + "…",
+            after=json.dumps(
+                {
+                    "org_id": org_id,
+                    "org_name": name,
+                    "license_key_prefix": license_key[:7] + "…",
+                    "tier": lic.tier,
+                    "seats_limit": lic.seats_limit,
+                    "verification_method": "admin_assisted",
+                }
+            ),
+        )
+        db.add(audit)
 
     await _log_action(
         db,
