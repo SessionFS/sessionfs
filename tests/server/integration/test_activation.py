@@ -903,6 +903,153 @@ class TestPhaseB:
         assert len(members) == 1
 
 
+class _CapturingEmail:
+    """Stub email provider that captures send(to, subject, html) calls."""
+
+    def __init__(self):
+        self.sent: list[tuple[str, str, str]] = []
+
+    async def send(self, to: str, subject: str, html: str):
+        self.sent.append((to, subject, html))
+        return True
+
+
+def _extract_code_from_email(html: str) -> str:
+    """Pull the verification code out of the activation email's styled <code>."""
+    import re
+
+    m = re.search(r"<code style='font-size: 24px[^>]*>([^<]+)</code>", html)
+    assert m is not None, f"no verification code found in email html: {html[:200]}"
+    return m.group(1)
+
+
+class TestEmailDeliveredCodeVerifies:
+    """Regression (Sentinel/Shield HIGH): the code DELIVERED in the email must
+    be exactly what /verify accepts. The original bug emailed raw_token[:16]
+    while hashing/verifying the full token, so the real email flow could never
+    succeed — and no test caught it because tests injected the full token."""
+
+    @pytest.mark.asyncio
+    async def test_emailed_code_hashes_to_stored_attempt_and_verifies(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        unbound_license: HelmLicense,
+        activation_user: User,
+    ):
+        # Wire a capturing email provider onto the live test app.
+        capture = _CapturingEmail()
+        client._transport.app.state.email_service = capture
+        try:
+            api_key = await _create_api_key(db_session, activation_user)
+            headers = {"Authorization": f"Bearer {api_key}"}
+
+            # Phase A (email-mismatch path → sends the token email).
+            resp = await client.post(
+                "/api/v1/org/activate",
+                headers=headers,
+                json={"key": unbound_license.id},
+            )
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "verification_sent"
+
+            # The email was sent to the license contact_email with a code.
+            assert len(capture.sent) == 1
+            to, _subject, html = capture.sent[0]
+            assert to == unbound_license.contact_email
+            code = _extract_code_from_email(html)
+
+            # The delivered code must hash to the stored attempt's token_hash.
+            attempt = (
+                await db_session.execute(
+                    select(ActivationAttempt).where(
+                        ActivationAttempt.helm_license_id == unbound_license.id,
+                        ActivationAttempt.status == "pending",
+                    )
+                )
+            ).scalar_one()
+            assert _hash_token(code) == attempt.token_hash
+
+            # End-to-end: the delivered code completes /verify.
+            verify = await client.post(
+                "/api/v1/org/activate/verify",
+                headers=headers,
+                json={"token": code},
+            )
+            assert verify.status_code == 200, verify.text
+            data = verify.json()
+            assert data["verification_method"] == "email_token"
+            await db_session.refresh(unbound_license)
+            assert unbound_license.org_id == data["org_id"]
+        finally:
+            client._transport.app.state.email_service = None
+
+
+class TestSlugCollision:
+    """Regression (Sentinel/Shield MEDIUM): a derived-slug collision must not
+    500 + permanently wedge activation — the slug auto-suffixes."""
+
+    @pytest.mark.asyncio
+    async def test_colliding_org_name_auto_suffixes_slug(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+    ):
+        from sessionfs.server.db.models import Organization
+
+        # An existing org already owns the slug 'acme'.
+        existing = Organization(
+            id=f"org_{secrets.token_hex(8)}",
+            name="Acme",
+            slug="acme",
+            tier="team",
+        )
+        db_session.add(existing)
+        await db_session.commit()
+
+        # A license whose org_name slugifies to the same 'acme', activated via
+        # the exact-match shortcut (verified contact email).
+        lic = HelmLicense(
+            id=f"sfs_test_{secrets.token_hex(8)}",
+            org_name="Acme",
+            contact_email="owner-acme@example.com",
+            tier="enterprise",
+            seats_limit=25,
+            status="active",
+        )
+        db_session.add(lic)
+        user = User(
+            id=str(uuid.uuid4()),
+            email="owner-acme@example.com",
+            display_name="Acme Owner",
+            tier="free",
+            email_verified=True,
+            created_at=datetime.now(timezone.utc),
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        api_key = await _create_api_key(db_session, user)
+        headers = {"Authorization": f"Bearer {api_key}"}
+
+        resp = await client.post(
+            "/api/v1/org/activate",
+            headers=headers,
+            json={"key": lic.id},
+        )
+        # Must NOT 500 — the slug auto-suffixes.
+        assert resp.status_code == 200, resp.text
+        new_org_id = resp.json()["org_id"]
+
+        new_org = (
+            await db_session.execute(
+                select(Organization).where(Organization.id == new_org_id)
+            )
+        ).scalar_one()
+        assert new_org.slug != "acme"
+        assert new_org.slug.startswith("acme-")
+
+
 # ---------------------------------------------------------------------------
 # 4. Admin-assisted license binding
 # ---------------------------------------------------------------------------

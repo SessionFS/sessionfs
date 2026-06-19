@@ -173,6 +173,22 @@ async def _phase_b_commit(
     """
     now = datetime.now(timezone.utc)
 
+    # 0. Ensure the slug is unique. A derived slug (from org_name) can collide
+    #    with an existing org — e.g. two licenses whose names slugify the same.
+    #    Without this, db.flush() below raises IntegrityError → rollback → 500,
+    #    and because the derived slug is deterministic the customer is
+    #    permanently wedged (every retry hits the same collision). Auto-suffix
+    #    on collision. The UNIQUE constraint remains the backstop for the rare
+    #    concurrent race (which self-heals on retry once the other org exists).
+    base_slug = slug
+    for _ in range(6):
+        slug_taken = await db.execute(
+            select(Organization.id).where(Organization.slug == slug)
+        )
+        if slug_taken.scalar_one_or_none() is None:
+            break
+        slug = f"{base_slug}-{secrets.token_hex(3)}"
+
     # 1. Create the Organization row FIRST (satisfies HelmLicense.org_id FK)
     org_id = f"org_{secrets.token_hex(8)}"
     org = Organization(
@@ -432,8 +448,13 @@ async def activate_phase_a(
             logger.exception("activation_shortcut_failed key=%s", _key_prefix(key))
             raise HTTPException(500, "Activation failed. Please try again.")
 
-    # 4. Standard path: create durable ActivationAttempt in OWN committed txn
-    raw_token = secrets.token_urlsafe(32)
+    # 4. Standard path: create durable ActivationAttempt in OWN committed txn.
+    # The token IS the verification code the user types — it must be exactly
+    # what we hash and what we email (no truncation, or /verify can never
+    # match). token_urlsafe(12) → a 16-char, ~96-bit code: short enough to
+    # type, strong enough that brute force is infeasible under the 30-min TTL
+    # + single-use + rate limiting.
+    raw_token = secrets.token_urlsafe(12)
     token_hash = _hash_token(raw_token)
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(minutes=30)
@@ -465,7 +486,7 @@ async def activate_phase_a(
                 "<div style='background: #1c2128; border: 1px solid #30363d; "
                 "border-radius: 6px; padding: 16px; margin: 16px 0; text-align: center;'>"
                 "<code style='font-size: 24px; letter-spacing: 4px; color: #58a6ff;'>"
-                f"{_html_escape(raw_token[:16])}</code>"
+                f"{_html_escape(raw_token)}</code>"
                 "</div>"
                 "<p style='color: #8b949e; font-size: 13px;'>"
                 "This code expires in 30 minutes. "
