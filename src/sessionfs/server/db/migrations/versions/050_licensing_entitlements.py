@@ -23,15 +23,17 @@ Additive-only migration:
   populated by backfill.
 - Deterministic single-owner backfill: (1) creator from AdminAction, else
   (2) earliest admin by join date, else (3) lowest-id admin.
-- Entitlements backfill: one per Organization, one per paid User without
-  org, one per matched HelmLicense. NULL/invalid tier coerced to 'free'
-  with diagnostic log entries.
+- Entitlements backfill: exactly ONE active entitlement per Organization
+  (source resolved by precedence: matched HelmLicense > stripe_subscription_id
+  > manual), one per paid User without org. Unmatched HelmLicenses →
+  pending_license_claim. NULL/invalid tier coerced to 'free' with diagnostic
+  log entries.
 - Partial unique index uq_org_members_one_owner_per_org created AFTER the
   single-owner backfill.
 - Old tier columns are NOT dropped — they remain as denormalized caches.
 
-Downgrade: reverse order — drop the org_members partial unique index first
-(after UPDATE owner→admin), then drop FKs/tables/columns.
+Downgrade: revert owners to admin FIRST, then drop the org_members
+partial unique index, then drop FKs/tables/columns.
 """
 
 from datetime import datetime, timezone
@@ -166,6 +168,10 @@ def upgrade() -> None:
             server_default=sa.func.now(),
             nullable=False,
         ),
+        sa.CheckConstraint(
+            "tier IN ('free', 'starter', 'pro', 'team', 'enterprise')",
+            name="ck_entitlements_tier",
+        ),
     )
 
     # Partial unique index: at most one active entitlement per owner.
@@ -186,13 +192,6 @@ def upgrade() -> None:
         unique=True,
         postgresql_where=sa.text("source_ref IS NOT NULL"),
         sqlite_where=sa.text("source_ref IS NOT NULL"),
-    )
-
-    # CHECK constraint: 'admin' is NOT a valid entitlement tier.
-    op.create_check_constraint(
-        "ck_entitlements_tier",
-        "entitlements",
-        "tier IN ('free', 'starter', 'pro', 'team', 'enterprise')",
     )
 
     # ── 2. Create org_audit_events table ──────────────────────
@@ -371,7 +370,60 @@ def upgrade() -> None:
 
     # ── 7. Entitlements backfill ──────────────────────────────
 
-    # 7a. One entitlement per Organization.
+    # 7a. Build HelmLicense→Org match map. For each active unmatched
+    # HelmLicense, try to find an Organization where the org name matches
+    # AND the license contact email matches an org member.
+    license_rows = conn.execute(
+        sa.text(
+            "SELECT hl.id, hl.org_name, hl.contact_email, hl.tier, "
+            "hl.seats_limit, hl.expires_at "
+            "FROM helm_licenses hl "
+            "WHERE hl.status = 'active' "
+            "AND (hl.expires_at IS NULL OR hl.expires_at > :now) "
+            "AND hl.org_id IS NULL"
+        ),
+        {"now": now},
+    ).fetchall()
+
+    # org_id -> (license_id, tier, seats, expires)
+    license_match: dict[str, tuple[str, str, int | None, datetime | None]] = {}
+    matched_license_ids: set[str] = set()
+
+    for lr in license_rows:
+        license_id = lr[0]
+        license_org_name = lr[1]
+        license_contact_email = lr[2]
+        raw_tier = lr[3]
+        seats = lr[4]
+        expires = lr[5]
+        tier = _coerce_tier(raw_tier, f"HelmLicense id={license_id}")
+
+        matched_org = conn.execute(
+            sa.text(
+                "SELECT o.id FROM organizations o "
+                "JOIN org_members om ON om.org_id = o.id "
+                "JOIN users u ON u.id = om.user_id "
+                "WHERE o.name = :org_name "
+                "AND LOWER(u.email) = LOWER(:contact_email) "
+                "LIMIT 1"
+            ),
+            {
+                "org_name": license_org_name,
+                "contact_email": license_contact_email,
+            },
+        ).fetchone()
+
+        if matched_org:
+            matched_org_id = matched_org[0]
+            if matched_org_id not in license_match:
+                # First license match for this org wins (deterministic).
+                license_match[matched_org_id] = (
+                    license_id, tier, seats, expires
+                )
+                matched_license_ids.add(license_id)
+
+    # 7b. One entitlement per Organization. Resolve source by precedence:
+    #     matched HelmLicense > stripe_subscription_id > manual.
     org_rows = conn.execute(
         sa.text(
             "SELECT id, tier, stripe_subscription_id, seats_limit, "
@@ -385,12 +437,36 @@ def upgrade() -> None:
         org_id = row[0]
         raw_tier = row[1]
         stripe_sub = row[2]
-        seats = row[3]
-        storage = row[4]
+        org_seats = row[3]
+        org_storage = row[4]
 
-        tier = _coerce_tier(raw_tier, f"Organization id={org_id}")
-        source = "stripe" if stripe_sub else "manual"
-        source_ref = stripe_sub if stripe_sub else None
+        if org_id in license_match:
+            license_id, lic_tier, lic_seats, lic_expires = license_match[org_id]
+            source = "helm_license"
+            source_ref = license_id
+            tier = lic_tier
+            seats = lic_seats if lic_seats is not None else org_seats
+            expiry = lic_expires
+            # Update HelmLicense.org_id to bind.
+            conn.execute(
+                sa.text(
+                    "UPDATE helm_licenses SET org_id = :org_id "
+                    "WHERE id = :license_id"
+                ),
+                {"org_id": org_id, "license_id": license_id},
+            )
+        elif stripe_sub:
+            source = "stripe"
+            source_ref = stripe_sub
+            tier = _coerce_tier(raw_tier, f"Organization id={org_id}")
+            seats = org_seats
+            expiry = None
+        else:
+            source = "manual"
+            source_ref = None
+            tier = _coerce_tier(raw_tier, f"Organization id={org_id}")
+            seats = org_seats
+            expiry = None
 
         result = conn.execute(
             sa.text(
@@ -401,7 +477,8 @@ def upgrade() -> None:
                 "VALUES "
                 "(:owner_type, :owner_id, :source, :source_ref, :tier, "
                 ":seats_limit, :storage_limit_bytes, 'active', 'current', "
-                ":now, NULL, :now, :now)"
+                ":now, :current_period_end, :now, :now) "
+                "RETURNING id"
             ),
             {
                 "owner_type": "org",
@@ -410,14 +487,15 @@ def upgrade() -> None:
                 "source_ref": source_ref,
                 "tier": tier,
                 "seats_limit": seats,
-                "storage_limit_bytes": storage,
+                "storage_limit_bytes": org_storage,
+                "current_period_end": expiry,
                 "now": now,
             },
         )
-        ent_id = result.lastrowid
+        ent_id = result.scalar()
         org_entitlement_map[org_id] = ent_id
 
-    # 7b. One entitlement per User with tier!='free' and NO OrgMember row.
+    # 7c. One entitlement per User with tier!='free' and NO OrgMember row.
     paid_user_rows = conn.execute(
         sa.text(
             "SELECT u.id, u.tier FROM users u "
@@ -443,28 +521,19 @@ def upgrade() -> None:
                 "VALUES "
                 "('user', :owner_id, 'manual', NULL, :tier, "
                 "NULL, NULL, 'active', 'current', "
-                ":now, NULL, :now, :now)"
+                ":now, NULL, :now, :now) "
+                "RETURNING id"
             ),
             {"owner_id": user_id, "tier": tier, "now": now},
         )
-        user_entitlement_map[user_id] = result.lastrowid
+        user_entitlement_map[user_id] = result.scalar()
 
-    # 7c. HelmLicense backfill: auto-link high-confidence matches;
-    # unmatched → pending_license_claim.
-    license_rows = conn.execute(
-        sa.text(
-            "SELECT hl.id, hl.org_name, hl.contact_email, hl.tier, "
-            "hl.seats_limit, hl.expires_at "
-            "FROM helm_licenses hl "
-            "WHERE hl.status = 'active' "
-            "AND (hl.expires_at IS NULL OR hl.expires_at > :now) "
-            "AND hl.org_id IS NULL"
-        ),
-        {"now": now},
-    ).fetchall()
-
+    # 7d. Unmatched HelmLicenses → pending_license_claim.
     for lr in license_rows:
         license_id = lr[0]
+        if license_id in matched_license_ids:
+            continue  # Already matched and processed in 7b.
+
         license_org_name = lr[1]
         license_contact_email = lr[2]
         raw_tier = lr[3]
@@ -472,90 +541,25 @@ def upgrade() -> None:
         expires = lr[5]
         tier = _coerce_tier(raw_tier, f"HelmLicense id={license_id}")
 
-        # Try high-confidence match: same org_name AND contact_email
-        # matches an org member.
-        matched_org = conn.execute(
+        conn.execute(
             sa.text(
-                "SELECT o.id FROM organizations o "
-                "JOIN org_members om ON om.org_id = o.id "
-                "JOIN users u ON u.id = om.user_id "
-                "WHERE o.name = :org_name "
-                "AND LOWER(u.email) = LOWER(:contact_email) "
-                "LIMIT 1"
+                "INSERT INTO pending_license_claim "
+                "(helm_license_id, org_name, contact_email, tier, "
+                "seats_limit, expires_at, created_at) "
+                "VALUES "
+                "(:license_id, :org_name, :contact_email, :tier, "
+                ":seats_limit, :expires_at, :now)"
             ),
             {
+                "license_id": license_id,
                 "org_name": license_org_name,
                 "contact_email": license_contact_email,
+                "tier": tier,
+                "seats_limit": seats,
+                "expires_at": expires,
+                "now": now,
             },
-        ).fetchone()
-
-        if matched_org:
-            matched_org_id = matched_org[0]
-            # Create entitlement for the matched org (if not already).
-            # The org may already have a 'manual' entitlement from 7a;
-            # we create a helm_license-sourced one. The org's old manual
-            # entitlement stays as a historical row.
-            result = conn.execute(
-                sa.text(
-                    "INSERT INTO entitlements "
-                    "(owner_type, owner_id, source, source_ref, tier, "
-                    "seats_limit, storage_limit_bytes, status, billing_status, "
-                    "current_period_start, current_period_end, created_at, updated_at) "
-                    "VALUES "
-                    "('org', :owner_id, 'helm_license', :source_ref, :tier, "
-                    ":seats_limit, NULL, 'active', 'current', "
-                    ":now, :current_period_end, :now, :now)"
-                ),
-                {
-                    "owner_id": matched_org_id,
-                    "source_ref": license_id,
-                    "tier": tier,
-                    "seats_limit": seats,
-                    "current_period_end": expires,
-                    "now": now,
-                },
-            )
-            ent_id = result.lastrowid
-
-            # Update HelmLicense.org_id to bind.
-            conn.execute(
-                sa.text(
-                    "UPDATE helm_licenses SET org_id = :org_id "
-                    "WHERE id = :license_id"
-                ),
-                {"org_id": matched_org_id, "license_id": license_id},
-            )
-
-            # Update org entitlement pointer to helm_license-sourced row.
-            conn.execute(
-                sa.text(
-                    "UPDATE organizations SET entitlement_id = :ent_id "
-                    "WHERE id = :org_id"
-                ),
-                {"ent_id": ent_id, "org_id": matched_org_id},
-            )
-            org_entitlement_map[matched_org_id] = ent_id
-        else:
-            # No match — create pending_license_claim.
-            conn.execute(
-                sa.text(
-                    "INSERT INTO pending_license_claim "
-                    "(helm_license_id, org_name, contact_email, tier, "
-                    "seats_limit, expires_at, created_at) "
-                    "VALUES "
-                    "(:license_id, :org_name, :contact_email, :tier, "
-                    ":seats_limit, :expires_at, :now)"
-                ),
-                {
-                    "license_id": license_id,
-                    "org_name": license_org_name,
-                    "contact_email": license_contact_email,
-                    "tier": tier,
-                    "seats_limit": seats,
-                    "expires_at": expires,
-                    "now": now,
-                },
-            )
+        )
 
     # ── 8. Set entitlement_id on Users + Organizations ────────
 
@@ -685,8 +689,15 @@ def upgrade() -> None:
 def downgrade() -> None:
     conn = op.get_bind()
 
-    # 1. Drop the org_members partial unique index FIRST,
-    #    after reverting owner → admin.
+    # 1. Revert all owners back to admin FIRST (before dropping the
+    #    partial unique index that enforces one-owner-per-org).
+    conn.execute(
+        sa.text(
+            "UPDATE org_members SET role = 'admin' WHERE role = 'owner'"
+        )
+    )
+
+    # 2. Drop the org_members partial unique index.
     op.drop_index(
         "uq_org_members_one_owner_per_org",
         table_name="org_members",
@@ -694,14 +705,7 @@ def downgrade() -> None:
         sqlite_where=sa.text("role = 'owner'"),
     )
 
-    # Revert all owners back to admin (Option A — see design §3.2).
-    conn.execute(
-        sa.text(
-            "UPDATE org_members SET role = 'admin' WHERE role = 'owner'"
-        )
-    )
-
-    # 2. Drop entitlement_id FKs from users + organizations.
+    # 3. Drop entitlement_id FKs from users + organizations.
     with op.batch_alter_table("users") as batch_op:
         batch_op.drop_constraint("fk_users_entitlement_id", type_="foreignkey")
         batch_op.drop_column("entitlement_id")
@@ -712,7 +716,7 @@ def downgrade() -> None:
         )
         batch_op.drop_column("entitlement_id")
 
-    # 3. Drop HelmLicense.org_id.
+    # 4. Drop HelmLicense.org_id.
     with op.batch_alter_table("helm_licenses") as batch_op:
         batch_op.drop_constraint(
             "uq_helm_licenses_org_id", type_="unique"
@@ -722,7 +726,7 @@ def downgrade() -> None:
         )
         batch_op.drop_column("org_id")
 
-    # 4. Drop tables in reverse dependency order.
+    # 5. Drop tables in reverse dependency order.
     op.drop_table("pending_license_claim")
     op.drop_index(
         "idx_activation_attempt_lookup", table_name="activation_attempt"
@@ -731,7 +735,6 @@ def downgrade() -> None:
     op.drop_index("idx_org_audit_events_org", table_name="org_audit_events")
     op.drop_table("org_audit_events")
 
-    op.drop_constraint("ck_entitlements_tier", "entitlements")
     op.drop_index(
         "uq_entitlements_source_ref",
         table_name="entitlements",

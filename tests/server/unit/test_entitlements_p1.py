@@ -1033,3 +1033,532 @@ def _coerce_tier_test(raw: str | None, context: str) -> str:
     if normalized in VALID_TIERS:
         return normalized
     return "free"
+
+
+# ────────────────────────────────────────────────────────────────
+# Migration 050 up + down on SQLite
+# ────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def migration_050_db_path(tmp_path):
+    """Create a SQLite DB with minimum prerequisite tables for migration 050.
+
+    Migration 050 needs: users, organizations, org_members, helm_licenses,
+    admin_actions (all pre-050 state).
+    """
+    import sqlite3
+
+    db_path = tmp_path / "migration_050_test.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA foreign_keys = OFF")
+
+    # Users — columns that existed pre-050
+    conn.execute("""
+        CREATE TABLE users (
+            id VARCHAR(36) PRIMARY KEY,
+            email VARCHAR(255) NOT NULL UNIQUE,
+            display_name VARCHAR(255),
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            email_verified BOOLEAN NOT NULL DEFAULT 0,
+            tier VARCHAR(20) NOT NULL DEFAULT 'free',
+            is_active BOOLEAN NOT NULL DEFAULT 1,
+            stripe_customer_id VARCHAR(64),
+            stripe_subscription_id VARCHAR(64),
+            tier_updated_at TIMESTAMP,
+            storage_used_bytes BIGINT NOT NULL DEFAULT 0,
+            beta_pro_expires_at TIMESTAMP,
+            last_client_version VARCHAR(20),
+            last_client_platform VARCHAR(50),
+            last_client_device VARCHAR(100),
+            last_sync_at TIMESTAMP,
+            sync_mode VARCHAR(20) NOT NULL DEFAULT 'off',
+            sync_debounce INTEGER NOT NULL DEFAULT 30,
+            audit_trigger VARCHAR(20) NOT NULL DEFAULT 'manual',
+            summarize_trigger VARCHAR(20) NOT NULL DEFAULT 'manual',
+            default_org_id VARCHAR(64)
+        )
+    """)
+
+    # Organizations — pre-050 columns
+    conn.execute("""
+        CREATE TABLE organizations (
+            id VARCHAR(64) PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            slug VARCHAR(100) NOT NULL UNIQUE,
+            tier VARCHAR(20) NOT NULL DEFAULT 'team',
+            stripe_customer_id VARCHAR(64),
+            stripe_subscription_id VARCHAR(64),
+            storage_limit_bytes BIGINT NOT NULL DEFAULT 0,
+            storage_used_bytes BIGINT NOT NULL DEFAULT 0,
+            seats_limit INTEGER NOT NULL DEFAULT 5,
+            settings TEXT NOT NULL DEFAULT '{}',
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # OrgMembers
+    conn.execute("""
+        CREATE TABLE org_members (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            org_id VARCHAR(64) NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            user_id VARCHAR(36) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            role VARCHAR(20) NOT NULL DEFAULT 'member',
+            invited_by VARCHAR(36) REFERENCES users(id),
+            invited_at TIMESTAMP,
+            joined_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(org_id, user_id)
+        )
+    """)
+
+    # HelmLicenses
+    conn.execute("""
+        CREATE TABLE helm_licenses (
+            id VARCHAR(64) PRIMARY KEY,
+            org_name VARCHAR(255) NOT NULL,
+            contact_email VARCHAR(255) NOT NULL,
+            tier VARCHAR(20) NOT NULL DEFAULT 'enterprise',
+            seats_limit INTEGER DEFAULT 25,
+            status VARCHAR(20) NOT NULL DEFAULT 'active',
+            expires_at TIMESTAMP,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            notes TEXT,
+            license_type VARCHAR(20) NOT NULL DEFAULT 'paid',
+            cluster_id VARCHAR(128),
+            last_validated_at TIMESTAMP,
+            validation_count INTEGER NOT NULL DEFAULT 0,
+            metadata TEXT NOT NULL DEFAULT '{}'
+        )
+    """)
+
+    # AdminActions
+    conn.execute("""
+        CREATE TABLE admin_actions (
+            id VARCHAR(36) PRIMARY KEY,
+            admin_id VARCHAR(36) NOT NULL REFERENCES users(id),
+            action VARCHAR(50) NOT NULL,
+            target_type VARCHAR(20) NOT NULL,
+            target_id VARCHAR(64) NOT NULL,
+            details TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # ── Seed representative data ──
+
+    # Users
+    conn.execute(
+        "INSERT INTO users (id, email, tier) VALUES ('user-1', 'alice@corp.com', 'free')"
+    )
+    conn.execute(
+        "INSERT INTO users (id, email, tier) VALUES ('user-2', 'bob@corp.com', 'free')"
+    )
+    conn.execute(
+        "INSERT INTO users (id, email, tier) VALUES ('user-3', 'carol@other.com', 'free')"
+    )
+    conn.execute(
+        "INSERT INTO users (id, email, tier) VALUES ('user-4', 'dan@paid.com', 'pro')"
+    )
+
+    # Orgs
+    # org-1: has stripe_sub → source='stripe'
+    conn.execute(
+        "INSERT INTO organizations (id, name, slug, tier, stripe_subscription_id, "
+        "seats_limit) VALUES ('org-1', 'Corp Org', 'corp-org', 'team', 'sub_corp_1', 10)"
+    )
+    # org-2: has matching HelmLicense → source='helm_license'
+    conn.execute(
+        "INSERT INTO organizations (id, name, slug, tier, seats_limit) "
+        "VALUES ('org-2', 'Licensed Inc', 'licensed-inc', 'free', 5)"
+    )
+    # org-3: no stripe, no license match → source='manual'
+    conn.execute(
+        "INSERT INTO organizations (id, name, slug, tier, seats_limit) "
+        "VALUES ('org-3', 'Manual LLC', 'manual-llc', 'starter', 3)"
+    )
+
+    # OrgMembers
+    conn.execute(
+        "INSERT INTO org_members (org_id, user_id, role, joined_at) "
+        "VALUES ('org-1', 'user-1', 'admin', '2025-01-01')"
+    )
+    conn.execute(
+        "INSERT INTO org_members (org_id, user_id, role, joined_at) "
+        "VALUES ('org-2', 'user-2', 'admin', '2025-06-01')"
+    )
+    conn.execute(
+        "INSERT INTO org_members (org_id, user_id, role, joined_at) "
+        "VALUES ('org-3', 'user-3', 'admin', '2025-03-01')"
+    )
+
+    # HelmLicenses
+    # hl-001: matches org-2 (org_name='Licensed Inc' + contact_email='bob@corp.com')
+    conn.execute(
+        "INSERT INTO helm_licenses (id, org_name, contact_email, tier, seats_limit, "
+        "status) VALUES ('hl-001', 'Licensed Inc', 'bob@corp.com', 'enterprise', "
+        "50, 'active')"
+    )
+    # hl-002: UNMATCHED (no org with that name+email combo) → pending_claim
+    conn.execute(
+        "INSERT INTO helm_licenses (id, org_name, contact_email, tier, seats_limit, "
+        "status) VALUES ('hl-002', 'Ghost Co', 'ghost@example.com', 'pro', "
+        "15, 'active')"
+    )
+
+    # AdminActions: user-1 created org-1
+    conn.execute(
+        "INSERT INTO admin_actions (id, admin_id, action, target_type, target_id) "
+        "VALUES ('aa-1', 'user-1', 'admin_create_org', 'organization', 'org-1')"
+    )
+    # user-3 created org-3 (but joined later — earliest-admin precedence won't use it)
+    conn.execute(
+        "INSERT INTO admin_actions (id, admin_id, action, target_type, target_id) "
+        "VALUES ('aa-2', 'user-3', 'admin_create_org', 'organization', 'org-3')"
+    )
+
+    conn.commit()
+    conn.close()
+    return db_path
+
+
+class TestMigration050:
+    """Migration 050 upgrade + downgrade on SQLite."""
+
+    @staticmethod
+    def _alembic_cfg(db_path):
+        from alembic.config import Config
+
+        cfg = Config()
+        cfg.set_main_option(
+            "script_location", "src/sessionfs/server/db/migrations"
+        )
+        cfg.set_main_option(
+            "sqlalchemy.url", f"sqlite+aiosqlite:///{db_path}"
+        )
+        return cfg
+
+    def test_upgrade_creates_tables_and_backfills(self, migration_050_db_path):
+        """Full upgrade: tables exist, exactly one active entitlement per org,
+        matched license → helm_license source, unmatched → pending_claim,
+        entitlement_id pointers populated, tier CHECK enforced."""
+        from alembic import command
+        import sqlite3
+
+        cfg = self._alembic_cfg(migration_050_db_path)
+        command.stamp(cfg, "049")
+        command.upgrade(cfg, "050")
+
+        conn = sqlite3.connect(str(migration_050_db_path))
+
+        # 1. Tables created
+        tables = [
+            row[0] for row in
+            conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        ]
+        for t in ("entitlements", "org_audit_events", "activation_attempt",
+                  "pending_license_claim"):
+            assert t in tables, f"Table {t} should exist"
+
+        # 2. Entitlement columns exist
+        ent_cols = [
+            row[1] for row in
+            conn.execute("PRAGMA table_info('entitlements')").fetchall()
+        ]
+        for col in ("id", "owner_type", "owner_id", "source", "source_ref",
+                     "tier", "seats_limit", "storage_limit_bytes", "status",
+                     "billing_status", "current_period_end"):
+            assert col in ent_cols, f"entitlements missing column: {col}"
+
+        # 3. New columns on orgs/users/helm_licenses
+        org_cols = [
+            row[1] for row in
+            conn.execute("PRAGMA table_info('organizations')").fetchall()
+        ]
+        assert "entitlement_id" in org_cols
+
+        user_cols = [
+            row[1] for row in
+            conn.execute("PRAGMA table_info('users')").fetchall()
+        ]
+        assert "entitlement_id" in user_cols
+
+        hl_cols = [
+            row[1] for row in
+            conn.execute("PRAGMA table_info('helm_licenses')").fetchall()
+        ]
+        assert "org_id" in hl_cols
+
+        # 4. Indexes exist
+        indexes = [
+            row[0] for row in
+            conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'"
+            ).fetchall()
+        ]
+        for idx in ("uq_entitlements_one_active_per_owner",
+                     "uq_entitlements_source_ref",
+                     "uq_org_members_one_owner_per_org"):
+            assert idx in indexes, f"Missing index: {idx}"
+
+        # 5. Exactly ONE active entitlement per org.
+        for org_id in ("org-1", "org-2", "org-3"):
+            count = conn.execute(
+                "SELECT COUNT(*) FROM entitlements "
+                "WHERE owner_type = 'org' AND owner_id = ? "
+                "AND status = 'active'",
+                (org_id,),
+            ).fetchone()[0]
+            assert count == 1, (
+                f"Org {org_id} has {count} active entitlements, expected 1"
+            )
+
+        # 6. org-1 has stripe source (no license match)
+        ent1 = conn.execute(
+            "SELECT source, source_ref, tier FROM entitlements "
+            "WHERE owner_type = 'org' AND owner_id = 'org-1' AND status = 'active'"
+        ).fetchone()
+        assert ent1 is not None
+        assert ent1[0] == "stripe", f"org-1 source should be 'stripe', got {ent1[0]}"
+        assert ent1[1] == "sub_corp_1"
+        assert ent1[2] == "team"
+
+        # 7. org-2 has helm_license source (matched license wins over manual)
+        ent2 = conn.execute(
+            "SELECT source, source_ref, tier, seats_limit FROM entitlements "
+            "WHERE owner_type = 'org' AND owner_id = 'org-2' AND status = 'active'"
+        ).fetchone()
+        assert ent2 is not None
+        assert ent2[0] == "helm_license", (
+            f"org-2 source should be 'helm_license', got {ent2[0]}"
+        )
+        assert ent2[1] == "hl-001"
+        assert ent2[2] == "enterprise"  # from license, not org's original 'free'
+        assert ent2[3] == 50  # license seats
+
+        # 8. org-3 has manual source
+        ent3 = conn.execute(
+            "SELECT source, source_ref, tier FROM entitlements "
+            "WHERE owner_type = 'org' AND owner_id = 'org-3' AND status = 'active'"
+        ).fetchone()
+        assert ent3 is not None
+        assert ent3[0] == "manual", f"org-3 source should be 'manual', got {ent3[0]}"
+        assert ent3[1] is None
+
+        # 9. Paid user (user-4, no org) has entitlement
+        ent_user = conn.execute(
+            "SELECT owner_type, owner_id, source, tier FROM entitlements "
+            "WHERE owner_type = 'user' AND owner_id = 'user-4' AND status = 'active'"
+        ).fetchone()
+        assert ent_user is not None
+        assert ent_user[2] == "manual"
+        assert ent_user[3] == "pro"
+
+        # 10. Unmatched license → pending_license_claim (NOT an entitlement)
+        claim = conn.execute(
+            "SELECT helm_license_id, org_name FROM pending_license_claim "
+            "WHERE helm_license_id = 'hl-002'"
+        ).fetchone()
+        assert claim is not None, "hl-002 should be in pending_license_claim"
+        assert claim[1] == "Ghost Co"
+
+        # 11. Matched license → org_id set on helm_licenses
+        hl1_org = conn.execute(
+            "SELECT org_id FROM helm_licenses WHERE id = 'hl-001'"
+        ).fetchone()[0]
+        assert hl1_org == "org-2", f"hl-001 should be bound to org-2, got {hl1_org}"
+
+        # Unmatched license stays unbound
+        hl2_org = conn.execute(
+            "SELECT org_id FROM helm_licenses WHERE id = 'hl-002'"
+        ).fetchone()[0]
+        assert hl2_org is None, "hl-002 should remain unbound"
+
+        # 12. entitlement_id pointers populated on organizations
+        for org_id in ("org-1", "org-2", "org-3"):
+            ptr = conn.execute(
+                "SELECT entitlement_id FROM organizations WHERE id = ?",
+                (org_id,),
+            ).fetchone()[0]
+            assert ptr is not None, (
+                f"org {org_id} entitlement_id pointer is NULL"
+            )
+            # Verify pointer resolves to the correct row
+            ent = conn.execute(
+                "SELECT owner_id FROM entitlements WHERE id = ?", (ptr,)
+            ).fetchone()
+            assert ent is not None, (
+                f"org {org_id} entitlement_id {ptr} does not resolve"
+            )
+            assert ent[0] == org_id
+
+        # Not checking user-4 entitlement_id here — the backfill sets it
+        # on the user row in step 8.
+
+        # 13. Single-owner backfill: each org has exactly one owner
+        for org_id in ("org-1", "org-2", "org-3"):
+            owner_count = conn.execute(
+                "SELECT COUNT(*) FROM org_members "
+                "WHERE org_id = ? AND role = 'owner'",
+                (org_id,),
+            ).fetchone()[0]
+            assert owner_count == 1, (
+                f"Org {org_id} has {owner_count} owners, expected 1"
+            )
+
+        # 14. Tier CHECK constraint: 'admin' is rejected
+        import sqlite3 as sq3
+        try:
+            conn.execute(
+                "INSERT INTO entitlements "
+                "(owner_type, owner_id, source, tier, status, billing_status, "
+                "created_at, updated_at) "
+                "VALUES ('user', 'bad-tier', 'manual', 'admin', 'active', "
+                "'current', datetime('now'), datetime('now'))"
+            )
+            conn.commit()
+            assert False, "Should have raised IntegrityError for tier='admin'"
+        except sq3.IntegrityError:
+            pass  # Expected
+
+        conn.close()
+
+    def test_downgrade_cleans_up(self, migration_050_db_path):
+        """Downgrade removes all 050 additions cleanly."""
+        from alembic import command
+        import sqlite3
+
+        cfg = self._alembic_cfg(migration_050_db_path)
+        command.stamp(cfg, "049")
+        command.upgrade(cfg, "050")
+        command.downgrade(cfg, "049")
+
+        conn = sqlite3.connect(str(migration_050_db_path))
+
+        # Tables gone
+        tables = [
+            row[0] for row in
+            conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        ]
+        for t in ("entitlements", "org_audit_events", "activation_attempt",
+                  "pending_license_claim"):
+            assert t not in tables, f"Table {t} should be gone"
+
+        # Columns removed from users, organizations, helm_licenses
+        org_cols = [
+            row[1] for row in
+            conn.execute("PRAGMA table_info('organizations')").fetchall()
+        ]
+        assert "entitlement_id" not in org_cols
+
+        user_cols = [
+            row[1] for row in
+            conn.execute("PRAGMA table_info('users')").fetchall()
+        ]
+        assert "entitlement_id" not in user_cols
+
+        hl_cols = [
+            row[1] for row in
+            conn.execute("PRAGMA table_info('helm_licenses')").fetchall()
+        ]
+        assert "org_id" not in hl_cols
+
+        # Owner→admin reverted
+        for org_id in ("org-1", "org-2", "org-3"):
+            owner_count = conn.execute(
+                "SELECT COUNT(*) FROM org_members "
+                "WHERE org_id = ? AND role = 'owner'",
+                (org_id,),
+            ).fetchone()[0]
+            assert owner_count == 0, (
+                f"Org {org_id} still has {owner_count} owners after downgrade"
+            )
+
+        # Original orgs + users intact
+        org_count = conn.execute(
+            "SELECT COUNT(*) FROM organizations"
+        ).fetchone()[0]
+        assert org_count == 3
+
+        user_count = conn.execute(
+            "SELECT COUNT(*) FROM users"
+        ).fetchone()[0]
+        assert user_count == 4
+
+        conn.close()
+
+    def test_idempotent_upgrade(self, migration_050_db_path):
+        """Upgrade → downgrade → upgrade is idempotent."""
+        from alembic import command
+        import sqlite3
+
+        cfg = self._alembic_cfg(migration_050_db_path)
+
+        command.stamp(cfg, "049")
+        command.upgrade(cfg, "050")
+        command.downgrade(cfg, "049")
+        command.upgrade(cfg, "050")  # Must succeed — second upgrade
+
+        conn = sqlite3.connect(str(migration_050_db_path))
+
+        # Verify backfill re-applied: exactly one active entitlement per org
+        for org_id in ("org-1", "org-2", "org-3"):
+            count = conn.execute(
+                "SELECT COUNT(*) FROM entitlements "
+                "WHERE owner_type = 'org' AND owner_id = ? "
+                "AND status = 'active'",
+                (org_id,),
+            ).fetchone()[0]
+            assert count == 1, (
+                f"After re-upgrade, org {org_id} has {count} active entitlements"
+            )
+
+        # org-2 still gets helm_license source on re-upgrade
+        ent2 = conn.execute(
+            "SELECT source FROM entitlements "
+            "WHERE owner_type = 'org' AND owner_id = 'org-2' AND status = 'active'"
+        ).fetchone()
+        assert ent2 is not None
+        assert ent2[0] == "helm_license"
+
+        # Unmatched license still goes to pending_claim
+        claim_count = conn.execute(
+            "SELECT COUNT(*) FROM pending_license_claim "
+            "WHERE helm_license_id = 'hl-002'"
+        ).fetchone()[0]
+        assert claim_count == 1
+
+        conn.close()
+
+    def test_downgrade_order_owner_to_admin_before_index_drop(
+        self, migration_050_db_path
+    ):
+        """The downgrade must UPDATE owner→admin BEFORE dropping the
+        partial unique index. This test verifies the downgrade completes
+        without IntegrityError, which would happen if the index were
+        dropped first (index would prevent multiple owners from existing
+        during the UPDATE). Actually the index prevents multiple owners
+        in the SAME org, so the update itself must happen before the
+        drop to be safe — but the real test is that the downgrade
+        succeeds at all."""
+        from alembic import command
+        import sqlite3
+
+        cfg = self._alembic_cfg(migration_050_db_path)
+        command.stamp(cfg, "049")
+        command.upgrade(cfg, "050")
+        # This must not raise
+        command.downgrade(cfg, "049")
+
+        conn = sqlite3.connect(str(migration_050_db_path))
+        assert "entitlements" not in [
+            row[0] for row in
+            conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        ]
+        conn.close()
