@@ -557,28 +557,19 @@ async def _handle_subscription_updated(event, db: AsyncSession) -> None:
         await db.commit()
 
     elif status in ("past_due", "unpaid", "paused", "incomplete_expired"):
+        # Transient / non-terminal billing-health change — do NOT downgrade and
+        # do NOT clear stripe_subscription_id. Stripe owns the dunning/retry
+        # clock (smart retries run for days on a failed invoice), so a paying
+        # customer must keep full access during the retry window. Clearing the
+        # subscription pointer here previously orphaned the org from its Stripe
+        # customer and broke the recovery path (subscription.updated->active
+        # could no longer re-establish the tier). Only the terminal
+        # customer.subscription.deleted event downgrades to free.
         logger.warning(
-            "Subscription %s moved to %s for customer %s — downgrading to free",
+            "Subscription %s moved to %s for customer %s — keeping access "
+            "(Stripe retry window); no downgrade until subscription.deleted",
             subscription.id, status, customer_id,
         )
-        from datetime import datetime, timezone
-        if org:
-            org.tier = "free"
-            org.stripe_subscription_id = None
-            org.seats_limit = 0
-            org.storage_limit_bytes = 0
-        elif user:
-            await db.execute(
-                update(User)
-                .where(User.id == user.id)
-                .values(
-                    tier="free",
-                    stripe_subscription_id=None,
-                    tier_updated_at=datetime.now(timezone.utc),
-                )
-            )
-            await _sync_billing_to_org(user.id, "free", subscription.id, db, customer_id=customer_id)
-        await db.commit()
 
 
 async def _handle_subscription_deleted(event, db: AsyncSession) -> None:

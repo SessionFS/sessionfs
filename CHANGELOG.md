@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.32] - 2026-06-18
+
+**Hotfix — Stripe `past_due` no longer locks out paying customers.** The `customer.subscription.updated` webhook handler previously treated transient billing-health statuses (`past_due` / `unpaid` / `paused` / `incomplete_expired`) the same as a cancellation: it downgraded the customer to the free tier, zeroed seats/storage, and cleared `stripe_subscription_id` immediately. Because Stripe sets `past_due` on the *first* failed invoice while smart retries run for days, a paying customer could be cut off on a transient card decline — and clearing the subscription pointer orphaned the account from its Stripe customer, so the eventual recovery (`subscription.updated → active`) could no longer be matched. Backend only; no schema change. Migration 001–049 (unchanged). 2279 backend tests.
+
+### Fixed
+
+- **Stripe `past_due` downgrade regression** — transient billing-health statuses are now non-destructive: the customer keeps their tier, seats, storage, and `stripe_subscription_id` for the duration of Stripe's retry window. Only the terminal `customer.subscription.deleted` event downgrades to free. This restores the recovery path (a successful retry re-establishes the tier) and prevents lockouts on transient declines. Three regression tests cover past-due-keeps-access (user + org) and the past-due → active recovery flow.
+
 ## [0.10.31] - 2026-06-17
 
 **Multi-repo projects — a project can now own more than one git repo.** Personas, knowledge, tickets, and rules are shared across all of a product's repos instead of being duplicated across separate single-repo projects. Backend + CLI + dashboard. Migration 001–049 (049 additive). 2278 backend tests (+99) + 388 dashboard tests. Reviewed end-to-end: design Codex-CLEAN + Sentinel-approved; implementation Codex code-review CLEAN + Shield-SR approved. **Free for all tiers.**

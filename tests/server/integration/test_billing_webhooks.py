@@ -244,7 +244,10 @@ class TestSubscriptionUpdated:
         assert refreshed_user.tier == "free"
 
     @pytest.mark.asyncio
-    async def test_past_due_downgrades_user_to_free(self, db_session: AsyncSession):
+    async def test_past_due_keeps_user_access_and_pointer(self, db_session: AsyncSession):
+        """past_due is a transient billing-health state — Stripe owns the retry
+        clock, so the paying customer must keep their tier AND subscription
+        pointer. Only customer.subscription.deleted downgrades."""
         user = await _mk_user(
             db_session, tier="pro",
             stripe_customer_id="cus_u_002",
@@ -255,12 +258,12 @@ class TestSubscriptionUpdated:
         await _handle_subscription_updated(event, db_session)
 
         refreshed = (await db_session.execute(select(User).where(User.id == user.id))).scalar_one()
-        assert refreshed.tier == "free"
-        # stripe_subscription_id should be cleared on downgrade
-        assert refreshed.stripe_subscription_id is None
+        assert refreshed.tier == "pro"
+        # pointer must be preserved so the recovery webhook can re-match
+        assert refreshed.stripe_subscription_id == "sub_u_002"
 
     @pytest.mark.asyncio
-    async def test_past_due_downgrades_org_to_free(self, db_session: AsyncSession):
+    async def test_unpaid_keeps_org_access_and_pointer(self, db_session: AsyncSession):
         user = await _mk_user(db_session, tier="free")
         org = await _mk_org(
             db_session,
@@ -275,10 +278,38 @@ class TestSubscriptionUpdated:
         await _handle_subscription_updated(event, db_session)
 
         refreshed_org = (await db_session.execute(select(Organization).where(Organization.id == org.id))).scalar_one()
-        assert refreshed_org.tier == "free"
-        assert refreshed_org.stripe_subscription_id is None
-        assert refreshed_org.seats_limit == 0
-        assert refreshed_org.storage_limit_bytes == 0
+        assert refreshed_org.tier == "team"
+        assert refreshed_org.stripe_subscription_id == "sub_org_003"
+        assert refreshed_org.seats_limit == 10
+        assert refreshed_org.storage_limit_bytes == 10 * 1024 * 1024 * 1024
+
+    @pytest.mark.asyncio
+    async def test_past_due_then_active_recovers_full_access(self, db_session: AsyncSession):
+        """The recovery path: a paying customer goes past_due (transient
+        decline) then Stripe collects and fires subscription.updated(active).
+        Because past_due never cleared the pointer, recovery restores the tier."""
+        user = await _mk_user(
+            db_session, tier="pro",
+            stripe_customer_id="cus_u_rec",
+            stripe_subscription_id="sub_u_rec",
+        )
+        # 1) transient decline
+        await _handle_subscription_updated(
+            _subscription("sub_u_rec", "cus_u_rec", status="past_due"), db_session
+        )
+        mid = (await db_session.execute(select(User).where(User.id == user.id))).scalar_one()
+        assert mid.tier == "pro" and mid.stripe_subscription_id == "sub_u_rec"
+
+        # 2) Stripe collects → active again
+        with _patch_stripe_product("pro"):
+            await _handle_subscription_updated(
+                _subscription("sub_u_rec", "cus_u_rec", status="active", tier="pro"),
+                db_session,
+            )
+
+        refreshed = (await db_session.execute(select(User).where(User.id == user.id))).scalar_one()
+        assert refreshed.tier == "pro"
+        assert refreshed.stripe_subscription_id == "sub_u_rec"
 
 
 # ---------------------------------------------------------------------------
