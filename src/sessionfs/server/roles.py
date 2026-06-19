@@ -6,16 +6,16 @@ from enum import Enum
 
 
 class OrgRole(str, Enum):
+    OWNER = "owner"
     ADMIN = "admin"
     MEMBER = "member"
-    # Future: VIEWER = "viewer"
-    # Future: LICENSE_MANAGER = "license_manager"
 
 
 # Higher number = more permissions
 ROLE_LEVEL = {
     OrgRole.MEMBER: 10,
     OrgRole.ADMIN: 50,
+    OrgRole.OWNER: 100,
 }
 
 

@@ -56,6 +56,17 @@ class User(Base):
         ForeignKey("organizations.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # v0.11.0 P1 — denormalized pointer to the active entitlement for
+    # fast resolution. Nullable during migration, populated by the
+    # entitlements backfill. The AUTHORITATIVE entitlement is ALWAYS
+    # resolved via SELECT FROM entitlements WHERE owner_type='user'
+    # AND owner_id=:id AND status='active'. This column is a hint only
+    # — never read as an authz shortcut (Sentinel MEDIUM-2).
+    entitlement_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("entitlements.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
 
 class ApiKey(Base):
@@ -702,6 +713,14 @@ class Organization(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    # v0.11.0 P1 — denormalized pointer to the active entitlement for
+    # fast resolution. Nullable during migration, populated by the
+    # entitlements backfill. Same hint-only semantics as User.entitlement_id.
+    entitlement_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("entitlements.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
 
 class OrgMember(Base):
@@ -709,6 +728,16 @@ class OrgMember(Base):
     __table_args__ = (
         Index("idx_org_members_org", "org_id"),
         Index("idx_org_members_user", "user_id"),
+        # v0.11.0 P1 — structural invariant: at most one owner per org.
+        # Created in migration 050 AFTER the deterministic single-owner
+        # backfill. Also defined here so ORM-level create_all enforces it.
+        Index(
+            "uq_org_members_one_owner_per_org",
+            "org_id",
+            unique=True,
+            postgresql_where=text("role = 'owner'"),
+            sqlite_where=text("role = 'owner'"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -884,6 +913,16 @@ class HelmLicense(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # v0.11.0 P1 — FK to the org this license is bound to.
+    # Nullable (unbound licenses exist). UNIQUE (one org per license).
+    # Set atomically in the activation Phase B transaction (org-before-FK-bind
+    # ordering, rowcount-1 guard — see design §2.2).
+    org_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("organizations.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+    )
 
 
 class LicenseValidation(Base):
@@ -1783,4 +1822,244 @@ class ProjectMergeAudit(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+# ────────────────────────────────────────────────────────────────
+# v0.11.0 P1 — Licensing Redesign: entitlements data-model foundation
+# ────────────────────────────────────────────────────────────────
+
+
+class Entitlement(Base):
+    """Single source of truth for tier, seats, storage, and expiry.
+
+    Unifies Stripe subscriptions, Helm licenses, and admin-provisioned
+    orgs into one table.  At most one active entitlement per owner
+    (enforced by partial unique index).  The old ``User.tier`` /
+    ``Organization.tier`` / ``HelmLicense.tier`` columns remain as
+    denormalized caches — the authoritative tier is resolved from
+    this table.  See docs/design/licensing-org-redesign.md §2.1.
+    """
+
+    __tablename__ = "entitlements"
+    __table_args__ = (
+        # Partial unique index — at most one active entitlement per owner.
+        # Runtime resolution hits exactly one row; the ORDER BY
+        # current_period_end DESC NULLS FIRST tiebreak is for
+        # historical rows / defensive fallback only.
+        Index(
+            "uq_entitlements_one_active_per_owner",
+            "owner_type",
+            "owner_id",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+            sqlite_where=text("status = 'active'"),
+        ),
+        # Unique external binding — each Stripe subscription or Helm
+        # license maps to exactly one entitlement row.
+        Index(
+            "uq_entitlements_source_ref",
+            "source",
+            "source_ref",
+            unique=True,
+            postgresql_where=text("source_ref IS NOT NULL"),
+            sqlite_where=text("source_ref IS NOT NULL"),
+        ),
+        # CHECK: 'admin' is NOT a valid entitlement tier (Sentinel MEDIUM-3).
+        CheckConstraint(
+            "tier IN ('free', 'starter', 'pro', 'team', 'enterprise')",
+            name="ck_entitlements_tier",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    owner_type: Mapped[str] = mapped_column(
+        String(10), nullable=False, comment="'user' | 'org'"
+    )
+    owner_id: Mapped[str] = mapped_column(
+        String(64), nullable=False, comment="users.id | organizations.id"
+    )
+    source: Mapped[str] = mapped_column(
+        String(20), nullable=False,
+        comment="'stripe' | 'helm_license' | 'manual' | 'admin_provisioned'"
+    )
+    source_ref: Mapped[str | None] = mapped_column(
+        String(64), nullable=True,
+        comment="stripe_subscription_id | helm_licenses.id | NULL (manual)"
+    )
+    tier: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="free", server_default="free"
+    )
+    seats_limit: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, comment="NULL = unlimited/default"
+    )
+    storage_limit_bytes: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True, comment="NULL = tier default"
+    )
+    # Lifecycle status: active → canceled|expired|revoked.
+    # Terminal statuses are never reactivated — a new row is inserted instead.
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="active", server_default="active",
+        comment="active | canceled | expired | revoked"
+    )
+    # Separate billing-health flag — does NOT change lifecycle status.
+    # An entitlement with status='active' + billing_status='past_due'
+    # resolves normally for tier/feature gating (R3 amendment).
+    billing_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="current", server_default="current",
+        comment="current | past_due"
+    )
+    current_period_start: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    current_period_end: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+        comment="Stripe=renewal date, HelmLicense=expiry date, NULL=perpetual"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class OrgAuditEvent(Base):
+    """Append-only audit trail for org-level mutations.
+
+    Modeled on ProjectMergeAudit (models.py).  No UPDATE or DELETE
+    routes exist — all writes are INSERTs via a shared helper.
+    org_id ON DELETE SET NULL so audit rows survive org deletion.
+    See design §2.7.
+    """
+
+    __tablename__ = "org_audit_events"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    org_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("organizations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    org_name_snapshot: Mapped[str] = mapped_column(
+        String(255), nullable=False
+    )
+    event_type: Mapped[str] = mapped_column(
+        String(50), nullable=False
+    )
+    actor_user_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    actor_email_snapshot: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    actor_role_at_time: Mapped[str | None] = mapped_column(
+        String(20), nullable=True,
+        comment="OrgMember.role at event time, or 'platform_admin'"
+    )
+    target_type: Mapped[str | None] = mapped_column(
+        String(50), nullable=True,
+        comment="'user' | 'license' | 'entitlement' | 'invite' | 'settings' | 'organization'"
+    )
+    target_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    target_email_snapshot: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    # JSON payloads as Text (cross-DB; matches ProjectMergeAudit pattern).
+    before: Mapped[str | None] = mapped_column(Text, nullable=True)
+    after: Mapped[str | None] = mapped_column(Text, nullable=True)
+    entitlement_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("entitlements.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ActivationAttempt(Base):
+    """Durable single-use token store for license activation.
+
+    Raw token is NEVER stored — only token_hash.  The activation_attempt
+    row is committed BEFORE the email leaves the server, so the token
+    survives email failure.  See design §2.2 Phase A/B.
+    """
+
+    __tablename__ = "activation_attempt"
+    __table_args__ = (
+        # Composite index for Phase B verify lookup:
+        # find pending token by hash, check expiry, consume with rowcount-1 guard.
+        Index(
+            "idx_activation_attempt_lookup",
+            "token_hash",
+            "status",
+            "expires_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    helm_license_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("helm_licenses.id", ondelete="CASCADE"), nullable=False
+    )
+    token_hash: Mapped[str] = mapped_column(
+        String(128), nullable=False, comment="Hash of single-use token — raw token NEVER stored"
+    )
+    contact_email_snapshot: Mapped[str] = mapped_column(
+        String(255), nullable=False
+    )
+    requested_by_user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending", server_default="pending",
+        comment="pending | verified | consumed | expired"
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    consumed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class PendingLicenseClaim(Base):
+    """Lightweight migration-era table for unmatched HelmLicenses.
+
+    Created during the migration 050 backfill for active HelmLicenses
+    that have no matching Organization.  New licenses post-migration
+    go through the standard activation path (ActivationAttempt).
+    See design §3.1 step 5c.
+    """
+
+    __tablename__ = "pending_license_claim"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    helm_license_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("helm_licenses.id", ondelete="CASCADE"),
+        nullable=False, unique=True,
+    )
+    org_name: Mapped[str] = mapped_column(
+        String(255), nullable=False
+    )
+    contact_email: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    tier: Mapped[str] = mapped_column(
+        String(20), nullable=False
+    )
+    seats_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
