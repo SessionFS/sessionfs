@@ -2,7 +2,7 @@
 
 **Author:** Atlas (backend/data-model)
 **Branch:** `design/licensing-atlas` (worktree off develop, NEVER push)
-**Status:** Design proposal — R1 (Codex) + R2 (Ledger + Shield + Sentinel) amendments applied; pending CEO final sign-off
+**Status:** Design proposal — R1 (Codex) + R2 (Ledger + Shield + Sentinel) + R3 (Codex R2 re-review) amendments applied; pending CEO final sign-off
 **Companion doc:** Compass writes `docs/design/licensing-org-redesign-product.md` (product/UX/billing shape)
 
 ---
@@ -92,7 +92,8 @@ entitlements
 ├── tier: "free" | "starter" | "pro" | "team" | "enterprise"
 ├── seats_limit: int (nullable — NULL = unlimited/default)
 ├── storage_limit_bytes: int (NULL = tier default)
-├── status: "active" | "past_due" | "canceled" | "expired" | "revoked"
+├── status: "active" | "canceled" | "expired" | "revoked"
+├── billing_status: "current" | "past_due" (default "current" — separate billing-health column; does NOT change lifecycle `status`)
 ├── current_period_start: datetime
 ├── current_period_end: datetime (NULL = never expires / perpetual)
 ├── created_at, updated_at
@@ -119,7 +120,7 @@ entitlements
    - `active` → `expired` (natural expiry: `current_period_end` passed)
    - `active` → `revoked` (platform admin action)
    - Terminal statuses (`canceled`, `expired`, `revoked`) are never reactivated — a new row is inserted instead.
-   - `past_due` is a Stripe-only transient state; it remains `active` for resolution purposes but gates premium features.
+   - `billing_status='past_due'` is a Stripe-only transient billing-health flag; it does NOT change `status`. An entitlement with `status='active'` + `billing_status='past_due'` resolves normally for tier/feature gating. Feature gates on past_due are a separate concern: per the past_due hotfix `tk_bd6c9ca29faa4534`, no features gate on past_due during the Stripe retry window.
 
 **Resolution rule** (replaces `get_effective_tier`):
 1. If the user is an org member → resolve `entitlements WHERE owner_type='org' AND owner_id=org.id AND status='active'` (guaranteed ≤1 row by the partial unique index).
@@ -146,50 +147,98 @@ Since `User.tier` becomes a denormalized cache populated from the entitlement, a
 
 Never log, echo, or store full license keys. Only the key prefix (matching the `ApiKey.key_prefix` pattern) is stored in audit rows, logs, or API responses. The entitlements partial unique index `uq_entitlements_one_active_per_owner` (§2.1, constraint 1) is the DB-level safety net for the Stripe-XOR-license race — two entitlement sources cannot simultaneously produce two active rows for the same owner.
 
-### 2.2 License → Organization: required email-token activation
+### 2.2 License → Organization: durable attempt/verify/commit state machine
 
 **The problem:** An enterprise gets a license key but no Organization, and can't create one because `User.tier == "free"`.
 
 **CEO decision:** Email verification on activation is REQUIRED. Activation must prove control of `HelmLicense.contact_email`. This is a hard requirement, not a soft warning.
 
-**Design: Two-phase activation with email-token verification**
+**Design: Three-phase activation with durable token storage**
 
-Phase 1 — **Redeem-info** (unauthenticated, non-oracular):
+The original single-transaction design had two structural flaws: (1) the `UPDATE helm_licenses SET org_id = :new_org_id` ran BEFORE the Organization row existed, violating the `HelmLicense.org_id → organizations.id` FK added in §3.1; (2) the email-token branch stored the token and sent email inside a transaction that then rolled back, so `/verify` had nothing to verify. The corrected design splits activation into a durable attempt/verify/commit state machine with a new `activation_attempt` table.
+
+**New table — `activation_attempt`:**
+
+```
+activation_attempt
+├── id (PK)
+├── helm_license_id: FK→helm_licenses.id NOT NULL
+├── token_hash: TEXT NOT NULL (hash of the single-use token — raw token NEVER stored)
+├── contact_email_snapshot: TEXT NOT NULL (HelmLicense.contact_email at attempt time)
+├── requested_by_user_id: FK→users.id NOT NULL
+├── status: "pending" | "verified" | "consumed" | "expired"
+├── expires_at: TIMESTAMPTZ NOT NULL (short TTL — 15 minutes from creation)
+├── consumed_at: TIMESTAMPTZ (set on successful verify)
+├── created_at: TIMESTAMPTZ NOT NULL DEFAULT now()
+```
+
+Single-use: `status='pending'` at creation; transitions to `'consumed'` on successful verify (rowcount-1 guard). `'expired'` set by a lightweight sweep or on-read when `expires_at < now()`. Token hash ensures the raw token is never recoverable from the database.
+
+**Phase 0 — Redeem-info preview** (unauthenticated, non-oracular):
 
 `GET /api/v1/org/redeem-info?key=<license_key>` returns ONLY `org_name` and `tier`. It does NOT return `contact_email`. If the key is invalid/expired/bound, the response is identical to a valid key (non-oracular — an attacker cannot enumerate valid license keys). This endpoint exists solely so the UI can show "You're about to activate the **Acme Corp** Enterprise org" before the user commits.
 
-Phase 2 — **Redeem** (authenticated, email-verified):
+**Phase A — `POST /api/v1/org/activate` (request — creates durable attempt):**
 
-`POST /api/v1/org/activate` accepts a license key. The flow inside a single database transaction:
+1. **Validate the license** in a READ (no transaction yet): `SELECT * FROM helm_licenses WHERE id = :key AND status = 'active' AND (expires_at IS NULL OR expires_at > now()) AND org_id IS NULL`. If no row → 404 (non-oracular: same response for invalid/expired/already-bound key).
 
-1. **Resolve the license:** `SELECT * FROM helm_licenses WHERE id = :key AND status = 'active' AND (expires_at IS NULL OR expires_at > now())`. If no row → 404 (non-oracular: same response for invalid/expired/bound key).
+2. **Create the `activation_attempt` row** in its OWN committed transaction:
+   - Generate a single-use short-TTL token (cryptographically random, 15-minute TTL).
+   - INSERT into `activation_attempt` with `token_hash = hash(token)`, `status='pending'`, `expires_at = now() + 15 minutes`.
+   - This transaction does NOT touch `helm_licenses.org_id`, does NOT create an Organization, and commits independently.
+   - **Durability guarantee:** The token is committed before any email leaves the server. If the email send fails, the token is still valid and the user can retry.
 
-2. **Bind-first — claim the license atomically BEFORE creating anything:**
+3. **Send the token email** (best-effort, AFTER the commit): Email the raw token to `HelmLicense.contact_email`. This is best-effort — a failed email send does not invalidate the token. The user can request a resend (new `activation_attempt` row, old one expired).
+
+4. **Exact-match email shortcut:** If the authenticated user's verified account email equals `HelmLicense.contact_email` (normalized), skip the email round-trip entirely. The endpoint returns the token directly in the response (since the user already proved email control via account verification) with `verification_method = 'matched_contact_email'`. The caller proceeds immediately to Phase B. This path avoids the email latency for the common case where the license holder and the activator are the same person.
+
+5. **Response:** `{ status: "email_verification_required", message: "A verification code has been sent to your license contact email.", attempt_id: "<id>" }` — or the token directly on exact-match shortcut.
+
+**Phase B — `POST /api/v1/org/activate/verify` (consume — single atomic txn):**
+
+Accepts `attempt_id` + raw `token`. Runs EVERYTHING in ONE database transaction:
+
+1. **Validate + consume the activation_attempt:**
+   ```sql
+   UPDATE activation_attempt SET status = 'consumed', consumed_at = now()
+   WHERE id = :attempt_id AND status = 'pending' AND expires_at > now()
+     AND token_hash = hash(:raw_token);
+   ```
+   Rowcount == 1 check. If rowcount = 0 → 410 "token invalid, expired, or already used." Transaction aborts — zero writes.
+
+2. **Create the Organization row FIRST:**
+   ```sql
+   INSERT INTO organizations (name, ...) VALUES (:org_name, ...) RETURNING id;
+   ```
+   The org row exists before the FK bind in step 3, satisfying the `HelmLicense.org_id → organizations.id` foreign key.
+
+3. **Rowcount-1 bind the license FK:**
    ```sql
    UPDATE helm_licenses SET org_id = :new_org_id
-   WHERE id = :key AND org_id IS NULL AND status = 'active'
+   WHERE id = :license_id AND org_id IS NULL AND status = 'active'
      AND (expires_at IS NULL OR expires_at > now());
    ```
-   This UPDATE runs with `rowcount == 1` check. If rowcount = 0, the license was bound by a concurrent activation → **roll back the entire transaction** (return 409 "license already bound or no longer valid"). No org, entitlement, or OrgMember rows are created — race losers write zero orphans.
+   Rowcount == 1 check. If rowcount = 0 → the license was bound by a concurrent activation between Phase A and Phase B → **roll back the entire transaction** (409 "license already bound or no longer valid"). Because the org row was created inside this same txn, a rollback removes it — zero orphans.
 
-3. **Verify email control** (AFTER bind-first, still inside the same txn):
-   - If the authenticated user's verified email **exact-match equals** `HelmLicense.contact_email` → `verification_method = 'matched_contact_email'`. Proceed.
-   - Otherwise → generate a single-use short-TTL token (stored in a new `activation_tokens` column or lightweight table, TTL = 15 minutes), send it to `HelmLicense.contact_email` via the configured email provider. The endpoint returns `{ status: "email_verification_required", message: "A verification code has been sent to your license contact email." }`. The license bind from step 2 is ROLLED BACK (the txn aborts). The user must call `POST /api/v1/org/activate/verify` with the token to complete activation. On token match → `verification_method = 'email_token'`. On expiry → the license is unbound (org_id set back to NULL) and the user must restart.
-   - **Admin-assisted path:** A platform admin (SessionFS staff) can call `POST /api/v1/admin/orgs` to pre-provision an org + license binding with `verification_method = 'admin_assisted'`. The staff member is the trust anchor; no email token is required. This path is AdminAction-logged and requires `require_admin`.
+4. **Create the Entitlement** record (`source='helm_license'`, `source_ref=license_id`, `owner_type='org'`, `owner_id=<new org>`, `tier=license.tier`, `seats_limit=license.seats_limit`, `current_period_end=license.expires_at`, `status='active'`, `billing_status='current'`).
 
-4. **Create the Organization** from the license's `org_name`.
+5. **Add the activating user as OrgMember with `role='owner'`.**
 
-5. **Create the Entitlement** record (`source='helm_license'`, `source_ref=key`, `owner_type='org'`, `owner_id=<new org>`, `tier=license.tier`, `seats_limit=license.seats_limit`, `current_period_end=license.expires_at`, `status='active'`).
+6. **Emit `org_audit_events`** row: `event_type='org_created_via_license_activation'`, with `license_id`, `verification_method` (either `'matched_contact_email'` or `'email_token'`), `tier`, `seats_limit`.
 
-6. **Add the activating user as OrgMember with `role='owner'`.**
+7. **COMMIT.** All writes land together or none do.
 
-7. **Emit `org_audit_events`** row: `event_type='org_created_via_license_activation'`, with `license_id`, `verification_method`, `tier`, `seats_limit`.
+**Why org-before-FK-bind works:** The FK constraint is evaluated at COMMIT time (or at statement end for deferred constraints). Since the INSERT into `organizations` and the UPDATE on `helm_licenses` run in the same transaction, the FK is satisfied when the transaction commits. The rowcount-1 guard on the license UPDATE is the linearization point — a concurrent activation that bound the license between Phase A and Phase B will see `org_id IS NOT NULL`, return rowcount 0, and the entire txn rolls back (org row + entitlement + OrgMember all discarded). No partial writes.
+
+**Admin-assisted pre-provision preserved:** A platform admin (SessionFS staff) can call `POST /api/v1/admin/orgs` to pre-provision an org + license binding with `verification_method = 'admin_assisted'`. The staff member is the trust anchor; no email token is required. This path is AdminAction-logged and requires `require_admin`.
 
 **Design invariants:**
 
-- **Bind-first** prevents the "create org + entitlement, then discover license was already claimed" race (Sentinel MEDIUM-1). The atomic rowcount-1 UPDATE on `helm_licenses` is the linearization point — everything else happens AFTER the claim is won.
-- **Email verification** proves the activator controls the license's registered contact email (Sentinel HIGH-1, CEO decision #1). The only bypass is the platform-admin pre-provision path (staff as trust anchor).
-- **Single-use short-TTL token** prevents replay and limits the window for email interception. Token expiry forces a clean restart (license unbound).
+- **Durable token** — the `activation_attempt` row is committed BEFORE the email leaves the server. Token survives email failure. Raw token is hashed at rest (never stored in plaintext).
+- **Org-before-FK-bind** — the Organization row is created before the `helm_licenses.org_id` FK update, satisfying the foreign key constraint. Both run in one txn; rollback removes everything.
+- **Race-loser safety** — the rowcount-1 guard on `helm_licenses` (step 3) AND the rowcount-1 guard on `activation_attempt` (step 1) serialize concurrent activations. Either guard failing → full txn rollback → zero orphans.
+- **Email verification** proves the activator controls the license's registered contact email (Sentinel HIGH-1, CEO decision #1). The only bypasses are the exact-match account-email shortcut (same person, already verified) and the platform-admin pre-provision path (staff as trust anchor).
+- **Single-use short-TTL token** prevents replay and limits the window for email interception. Token expiry (15 minutes) forces a fresh Phase A request.
 - **Non-oracular redeem-info** prevents license enumeration. An invalid key gets the same response shape as a valid one.
 
 **Existing admin-provisioned path preserved:** `POST /api/v1/admin/orgs` remains as the back-office fallback for pre-sales provisioning and the SessionFS company org.
@@ -275,8 +324,8 @@ This means:
 | Method | Path | Authz | Description |
 |--------|------|-------|-------------|
 | `GET` | `/api/v1/org/redeem-info?key=<key>` | None (unauthenticated) | Non-oracular: returns only `org_name` + `tier`. Never returns `contact_email`. |
-| `POST` | `/api/v1/org/activate` | Authenticated user | Phase 2 activation: bind-first claim → email verification → create org + entitlement + owner. Returns `email_verification_required` if email mismatch. |
-| `POST` | `/api/v1/org/activate/verify` | Authenticated user | Present email token to complete activation. |
+| `POST` | `/api/v1/org/activate` | Authenticated user | Phase A — request: validates license (read-only), creates `activation_attempt` row in committed txn, sends email token (or exact-match account-email shortcut skips email). Returns `email_verification_required` + `attempt_id`. |
+| `POST` | `/api/v1/org/activate/verify` | Authenticated user | Phase B — consume: validates+consumes single-use token, creates Organization FIRST, then rowcount-1 binds license FK, creates entitlement + OrgMember(owner) + audit event — all in one atomic txn. |
 | `GET` | `/api/v1/orgs/{org_id}/entitlement` | Org member (server-verified) | Current entitlement: tier, seats, storage, expiry, source. Membership verified server-side BEFORE returning data. |
 | `PUT` | `/api/v1/orgs/{org_id}/entitlement/seats` | Org owner | Self-service seat change within entitlement bounds (Stripe: triggers Subscription.modify; Helm: bounded by license.seats_limit; source='helm_license' → 403 for direct writes) |
 | `POST` | `/api/v1/orgs/{org_id}/owner/transfer` | Org owner | Two-step transfer: owner initiates (re-auth/email-confirm required), target admin accepts. Atomic single-txn ACCEPT. |
@@ -485,10 +534,10 @@ This subsection defines the data contract between the SessionFS backend and the 
 
 | Stripe event | Entitlement action | Notes |
 |-------------|-------------------|-------|
-| `checkout.session.completed` | UPSERT entitlement (`status='active'`, tier/seats from checkout metadata) | Idempotent by `source='stripe'` + `source_ref=sub_id` |
-| `subscription.updated` (active) | UPDATE tier, seats, `current_period_end` | Only when values differ from current row |
-| `subscription.updated` (past_due) | SET `status='past_due'` ONLY | Do NOT change tier, seats, or `current_period_end` |
-| `subscription.deleted` | SET `status='canceled'`, preserve `source_ref` | Do NOT delete the row or change tier/seats |
+| `checkout.session.completed` | UPSERT entitlement (`status='active'`, `billing_status='current'`, tier/seats from checkout metadata) | Idempotent by `source='stripe'` + `source_ref=sub_id` |
+| `subscription.updated` (active) | UPDATE tier, seats, `current_period_end`; SET `billing_status='current'` | Only when values differ from current row |
+| `subscription.updated` (past_due) | SET `billing_status='past_due'` ONLY (keep `status='active'`, keep `source_ref`) | Do NOT change tier, seats, or `current_period_end`. Feature gates: per `tk_bd6c9ca29faa4534`, no features gate on past_due during the Stripe retry window. |
+| `subscription.deleted` | SET `status='canceled'`, `billing_status='current'`, preserve `source_ref` | Do NOT delete the row or change tier/seats |
 
 **Atomicity requirement:** The entitlement write + `StripeEvent` insert (idempotency record) MUST be a single database transaction — no two-phase, no external queue hop.
 
@@ -552,10 +601,11 @@ CEO decision: on org deletion, **each member's own sessions revert to THAT membe
 
 ### 3.1 Additive migration (migration 050)
 
-1. **Create `entitlements` table** with all columns from §2.1, including the two partial unique indexes (`uq_entitlements_one_active_per_owner`, `uq_entitlements_source_ref`) and the `UNIQUE` constraint on `(source, source_ref)`.
+1. **Create `entitlements` table** with all columns from §2.1, including `billing_status` (default `'current'`), the two partial unique indexes (`uq_entitlements_one_active_per_owner`, `uq_entitlements_source_ref`), and the `UNIQUE` constraint on `(source, source_ref)`.
 2. **Create `pending_license_claim` table** — lightweight migration-era table: `id` PK, `license_id` FK→`helm_licenses.id` UNIQUE, `org_name` TEXT NOT NULL, `contact_email` TEXT, `tier` TEXT NOT NULL, `seats_limit` INT, `expires_at` TIMESTAMPTZ, `created_at` TIMESTAMPTZ NOT NULL DEFAULT now(). This table exists solely to hold unmatched licenses from the backfill; new licenses post-migration go through the standard activation path.
-3. **Add `HelmLicense.org_id`** — nullable FK to `organizations.id`, UNIQUE constraint (one org per license).
-4. **Backfill entitlements from existing data:**
+3. **Create `activation_attempt` table** — runtime activation token store per §2.2: `id` PK, `helm_license_id` FK→`helm_licenses.id` NOT NULL, `token_hash` TEXT NOT NULL (hash of single-use token — raw token never stored), `contact_email_snapshot` TEXT NOT NULL, `requested_by_user_id` FK→`users.id` NOT NULL, `status` TEXT NOT NULL DEFAULT `'pending'` (`'pending'` | `'verified'` | `'consumed'` | `'expired'`), `expires_at` TIMESTAMPTZ NOT NULL, `consumed_at` TIMESTAMPTZ, `created_at` TIMESTAMPTZ NOT NULL DEFAULT now(). Index on `(token_hash, status, expires_at)` for Phase B lookup.
+4. **Add `HelmLicense.org_id`** — nullable FK to `organizations.id`, UNIQUE constraint (one org per license).
+5. **Backfill entitlements from existing data:**
    - For each `User` with `tier != 'free'` and NO `OrgMember` row: INSERT entitlement (`owner_type='user'`, `owner_id=user.id`, `source='manual'`, `tier=user.tier`, `status='active'`).
    - For each `Organization`: INSERT entitlement (`owner_type='org'`, `owner_id=org.id`, `source='stripe'` if `stripe_subscription_id` else `'manual'`, `tier=org.tier`, `seats_limit=org.seats_limit`, `storage_limit_bytes=org.storage_limit_bytes`, `status='active'`).
    - **Self-hosted license migration — chosen path:** Do NOT auto-create orgs or unbound entitlements for active HelmLicenses. Instead:
@@ -565,7 +615,7 @@ CEO decision: on org deletion, **each member's own sessions revert to THAT membe
    - **Edge case — NULL or invalid tier in source data:** Coerce `NULL` tier and unrecognized tier strings to `'free'` with a diagnostic log entry. The migration must not fail on bad data, but must not silently propagate it either. Each coercion is recorded in the migration output.
    - **NULL `expires_at` = perpetual:** When `current_period_end` is NULL, the entitlement never expires. This is the norm for admin-provisioned and manual entitlements. The resolution query uses `ORDER BY current_period_end DESC NULLS FIRST` so perpetual entitlements sort ahead of time-limited ones (defensive — the partial unique index makes ordering irrelevant at runtime).
    - **⚠️ Compass flag:** The email-campaign copy for pending-claim license holders must change from "your org is ready" to "activate to set up your org." Atlas does not edit the Compass product doc; this is noted here for Compass to pick up.
-5. **Backfill `OrgMember` roles — deterministic SINGLE-owner rule:**
+6. **Backfill `OrgMember` roles — deterministic SINGLE-owner rule:**
 
    Exactly ONE member per org is promoted to `owner`. The backfill runs this precedence chain per org:
 
@@ -573,10 +623,10 @@ CEO decision: on org deletion, **each member's own sessions revert to THAT membe
    2. **Earliest admin by join date:** `SELECT user_id FROM org_members WHERE org_id = <org_id> AND role = 'admin' ORDER BY COALESCE(created_at, invited_at) ASC LIMIT 1` → set to `'owner'`.
    3. **Lowest-id admin (deterministic fallback):** `SELECT user_id FROM org_members WHERE org_id = <org_id> AND role = 'admin' ORDER BY user_id ASC LIMIT 1` → set to `'owner'`.
 
-   All OTHER admins remain `role='admin'`. After the backfill, the partial unique index `uq_org_members_one_owner_per_org` is created (step 7), structurally enforcing the invariant going forward.
-6. **Add `entitlement_id` nullable FK to `users` and `organizations`** — a denormalized pointer to the active entitlement for fast resolution. Nullable during migration, populated in step 7.
-7. **Set `entitlement_id`** on each User/Organization to the backfilled entitlement row.
-8. **Create partial unique index on `org_members`:**
+   All OTHER admins remain `role='admin'`. After the backfill, the partial unique index `uq_org_members_one_owner_per_org` is created (step 9), structurally enforcing the invariant going forward.
+7. **Add `entitlement_id` nullable FK to `users` and `organizations`** — a denormalized pointer to the active entitlement for fast resolution. Nullable during migration, populated in step 8.
+8. **Set `entitlement_id`** on each User/Organization to the backfilled entitlement row.
+9. **Create partial unique index on `org_members`:**
    ```sql
    CREATE UNIQUE INDEX uq_org_members_one_owner_per_org
    ON org_members(org_id) WHERE role = 'owner';
@@ -588,7 +638,7 @@ CEO decision: on org deletion, **each member's own sessions revert to THAT membe
 - `User.tier`, `Organization.tier`, `HelmLicense.tier` are NOT dropped — they become denormalized cache columns populated from the entitlement on write. Rollback = revert `get_effective_tier` to read the old columns.
 - **No platform-admin via cache guard (Sentinel MEDIUM-3):** The write path that populates `User.tier` from the entitlement MUST assert that the entitlement's tier is in `{free, starter, pro, team, enterprise}` — never `admin`. A CHECK constraint on `entitlements.tier` (add in migration 050) enforces this at the DB level. The application-layer `resolve_entitlement` function also asserts `tier != 'admin'` before writing to `User.tier`. Platform-admin status is grantable ONLY via the existing admin path.
 - No data loss. Every backfilled entitlement has a `source_ref` that traces back to the original row.
-- Migration is reversible: drop `entitlements` table, drop `pending_license_claim` table, drop `HelmLicense.org_id`, drop `entitlement_id` FKs, drop the `uq_org_members_one_owner_per_org` partial unique index, drop the `org_audit_events` table.
+- Migration is reversible: drop `entitlements` table (includes `billing_status` column), drop `pending_license_claim` table, drop `activation_attempt` table, drop `HelmLicense.org_id`, drop `entitlement_id` FKs, drop the `uq_org_members_one_owner_per_org` partial unique index, drop the `org_audit_events` table.
 
 **Downgrade handling for `owner` role:**
 
@@ -619,8 +669,8 @@ The Alembic downgrade step implements Option A: `UPDATE org_members SET role = '
 ### 4.1 License activation trust boundary
 
 - [x] **License-key forgery:** License key format entropy verified by Sentinel. Non-oracular `redeem-info` endpoint prevents enumeration. (RESOLVED)
-- [x] **Replay attack:** Atomic rowcount-1 `UPDATE helm_licenses SET org_id = :org WHERE org_id IS NULL` is the linearization point. Concurrent activations → first wins, second rolls back with zero orphans (Sentinel MEDIUM-1 bind-first). Partial unique index `uq_entitlements_source_ref` is the structural backstop. (RESOLVED)
-- [x] **Cross-org license theft:** REQUIRED email-token verification (CEO decision #1). License key alone is insufficient — activator must prove control of `HelmLicense.contact_email` via single-use short-TTL token. Only bypass is admin-assisted pre-provision (staff trust anchor). (RESOLVED — Sentinel HIGH-1)
+- [x] **Replay attack:** Two rowcount-1 guards serialize concurrent activations: (1) `UPDATE activation_attempt SET status='consumed' WHERE status='pending'` in Phase B consumes the single-use token; (2) `UPDATE helm_licenses SET org_id = :org WHERE org_id IS NULL` binds the license FK. Either guard failing → full txn rollback → zero orphans. Partial unique index `uq_entitlements_source_ref` is the structural backstop. (RESOLVED — Sentinel MEDIUM-1, updated R3 for attempt/verify/commit state machine)
+- [x] **Cross-org license theft:** REQUIRED email-token verification (CEO decision #1). License key alone is insufficient — activator must prove control of `HelmLicense.contact_email` via single-use short-TTL token (raw token hashed at rest in `activation_attempt.token_hash`, never stored in plaintext). Only bypasses: exact-match account-email shortcut (same person, already verified) and admin-assisted pre-provision (staff trust anchor). (RESOLVED — Sentinel HIGH-1, updated R3 for hashed-token storage)
 - [ ] **Rate limiting:** Activation + verify endpoints must be rate-limited. Implementation detail — add to P3. (DEFERRED to implementation)
 
 ### 4.2 Org ownership and privilege escalation
@@ -681,7 +731,7 @@ The Alembic downgrade step implements Option A: `UPDATE org_members SET role = '
 - [ ] Entitlement resolution is single-query, no N+1
 - [ ] Backfill migration handles edge cases: users with NULL tier, orgs with NULL stripe fields, HelmLicenses with NULL expires_at
 - [ ] `entitlement_id` denormalized pointer stays consistent with the `entitlements` table
-- [ ] License activation rowcount-1 guard is race-free (concurrent activation attempts)
+- [ ] License activation state machine: two rowcount-1 guards are race-free (activation_attempt consumption + license FK bind in single Phase B txn; concurrent Phase A attempts serialized by Phase B first-to-consume)
 - [ ] `/me` enrichment doesn't add N+1 queries (single join)
 - [ ] Owner role guards compose with existing `SELECT FOR UPDATE` last-admin guards
 - [ ] `perform_role_change` and `perform_member_removal` extensions don't regress existing behavior
@@ -689,7 +739,7 @@ The Alembic downgrade step implements Option A: `UPDATE org_members SET role = '
 - [ ] All existing tests pass with the backfilled data
 
 ### Ledger (billing/entitlement) — ✅ R2 conditions applied
-- [x] H1: Stripe → entitlement sync contract defined (§2.8): checkout.session.completed→UPSERT, subscription.updated(active)→update, subscription.updated(past_due)→status only, subscription.deleted→canceled. Entitlement write + StripeEvent insert in ONE atomic txn.
+- [x] H1: Stripe → entitlement sync contract defined (§2.8): checkout.session.completed→UPSERT, subscription.updated(active)→update+billing_status='current', subscription.updated(past_due)→billing_status='past_due' only (status stays 'active'), subscription.deleted→status='canceled'. Entitlement write + StripeEvent insert in ONE atomic txn. (Updated R3 for status/billing_status split.)
 - [x] H2: Stripe→license source-flip ordering: admin txn writes new license active THEN cancels Stripe; subscription.deleted no-ops when active entitlement source≠stripe / source_ref≠sub
 - [x] H3: Seats endpoint contract (§2.8): source=stripe→Subscription.modify, source=helm_license→403. Bounds: Team 3–50, Enterprise Cloud min 20
 - [x] M2/M4: current_period_end semantics (§2.5): Stripe=renewal (never expiry-swept), HelmLicense=expiry. Plan panel reads entitlement.{tier,source,status}
@@ -732,7 +782,7 @@ Additive migration 050 backfills entitlements from existing `User.tier`, `Organi
 
 ---
 
-## §8 — R1 + R2 Amendments
+## §8 — R1 + R2 + R3 Amendments
 
 ### R1 (Codex Review) — NEEDS-CHANGES → amended
 
@@ -809,3 +859,31 @@ Three reviews landed after R1. All three were APPROVED-WITH-CONDITIONS. CEO made
 1. **Email verification on activation is REQUIRED** (§2.2): Activation must prove control of `HelmLicense.contact_email`. Hard requirement, not soft warning.
 2. **Member sessions revert to personal scope on org delete** (§2.10): Each member's own sessions go to that member's personal scope. Never auto-transferred to owner.
 3. **Dashboard prices are canonical** (§2.9): Free $0 / Starter $4.99 / Pro $14.99 / Team $14.99/user / Enterprise custom. Drop "business" tier. `docs/pricing.md` rewrite is a Scribe follow-up.
+
+### R3 (Codex R2 Re-Review) — NEEDS-CHANGES → amended
+
+Codex R2 re-review: **NEEDS-CHANGES** (R1 findings all closed, OD-2 endorsed). Two findings — the activation flow had structural contradictions, and `past_due` was modeled as both an active and non-active state. Both resolved in-place.
+
+**Finding 1 (HIGH) — Activation flow cannot work as written (FK violation + email-token durability):**
+
+The R2 activation flow (`POST /api/v1/org/activate` as a single transaction) had two bugs: (1) `UPDATE helm_licenses SET org_id = :new_org_id` ran BEFORE the Organization row existed, violating the `HelmLicense.org_id → organizations.id` FK added in §3.1; (2) the email-token branch stored the token and sent email inside a transaction that then rolled back, so `/verify` had nothing to verify (or email went out for a token never durably stored).
+
+**Resolution — durable attempt/verify/commit state machine** (§2.2 rewritten):
+- **New `activation_attempt` table:** `token_hash` (raw token NEVER stored), `contact_email_snapshot`, `status` (`pending` → `consumed`), short TTL (`expires_at`), single-use rowcount-1 consumption guard.
+- **Phase A (`POST /api/v1/org/activate` — request):** Validates the license in a READ; creates the `activation_attempt` row in its OWN committed transaction (no `helm_licenses.org_id` touch, no org create); THEN sends the token email (best-effort, AFTER commit so the token is durably stored before the email leaves). Exact-match account-email shortcut: if the requester's verified email == `contact_email` (normalized), skip email and go straight to Phase B with `verification_method='matched_contact_email'`.
+- **Phase B (`POST /api/v1/org/activate/verify` — consume):** ONE transaction that: (1) validates+consumes the `activation_attempt` (single-use, not expired) with rowcount-1 guard; (2) creates the Organization row FIRST; (3) rowcount-1 binds the license FK `UPDATE helm_licenses SET org_id = :new WHERE id = :key AND org_id IS NULL` (rowcount-0 → 409, txn rolls back → zero orphans); (4) creates entitlement + OrgMember(owner) + org_audit_event; (5) commits. Org row is created BEFORE the FK update in the same txn, satisfying the FK constraint at commit time.
+- **Race-loser safety:** Both rowcount-1 guards (activation_attempt consumption + license FK bind) serialize concurrent activations. Either failing → full txn rollback → zero partial writes.
+- **Admin-assisted pre-provision preserved** (staff = trust anchor, no token).
+- Updated: §2.4.2 endpoint table, §3.1 migration (step 3: new `activation_attempt` table), §3.2 rollback path, §4.1 Sentinel replay-attack + license-theft checklist items.
+
+**Finding 2 (MEDIUM) — `past_due` modeled as both active and not-active:**
+
+The R2 entitlements table had `status` include `past_due`, and the doc said past_due "remains active for resolution," but the partial unique index and resolver both filter `status='active'` only. So a past-due org dropped out of resolution, AND a second `active` entitlement could be inserted (the partial unique index ignored `past_due` rows).
+
+**Resolution — separate lifecycle from billing health** (§2.1, §2.8, §3.1):
+- `entitlements.status` → lifecycle column: `active | canceled | expired | revoked` (REMOVED `past_due`).
+- New `entitlements.billing_status` column: `current | past_due` (default `current`). An active entitlement with degraded billing = `status='active'` + `billing_status='past_due'` — NOT a terminal lifecycle state.
+- Partial unique index `uq_entitlements_one_active_per_owner` stays `WHERE status='active'` — now unambiguous.
+- Resolver stays `WHERE status='active'` — a past_due (but still active) org resolves normally; features are governed by `billing_status` separately.
+- **Ledger webhook contract updated** (§2.8 H1): `subscription.updated(past_due)` → sets `billing_status='past_due'` (keeps `status='active'`, keeps `source_ref`); `subscription.updated(active)` → sets `billing_status='current'`; `subscription.deleted` → sets `status='canceled'`, `billing_status='current'`. Cross-references the filed past_due hotfix `tk_bd6c9ca29faa4534` — no features gate on past_due during the Stripe retry window.
+- Updated: §2.1 entitlements schema + Stripe-XOR invariant, §2.8 sync contract table, §3.1 migration step 1 (includes `billing_status`), §3.2 rollback path.
