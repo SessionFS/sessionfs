@@ -1,9 +1,12 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
+import { useMe } from '../hooks/useMe';
 import { getAvatarColor } from '../utils/avatar';
-import { Dropdown } from '../components/ui';
+import { Dropdown, Button } from '../components/ui';
 import OrgSettingsTab from './OrgSettingsTab';
+import ActivateLicensePanel from './ActivateLicensePanel';
+import OwnerTransferDialog from './OwnerTransferDialog';
 
 export default function OrgPage() {
   const { auth } = useAuth();
@@ -31,7 +34,7 @@ export default function OrgPage() {
       if (!res.ok) return { invites: [] };
       return res.json();
     },
-    enabled: data?.current_user_role === 'admin',
+    enabled: data?.current_user_role === 'admin' || data?.current_user_role === 'owner',
   });
 
   const inviteMutation = useMutation({
@@ -77,25 +80,71 @@ export default function OrgPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['org-info'] }),
   });
 
+  // ── v0.11.0: ownership transfer ──
+  const me = useMe();
+  const myUserId = me.data?.user_id;
+  const orgId = data?.org?.id;
+  const [showTransferDialog, setShowTransferDialog] = useState(false);
+
+  const { data: pendingTransfer } = useQuery({
+    queryKey: ['owner-transfer', orgId],
+    queryFn: async () => {
+      const res = await fetch(`${apiBase}/api/v1/orgs/${orgId}/owner/transfer`, { headers });
+      if (!res.ok) return null;
+      const body = await res.json();
+      // GET returns the pending transfer, or {} when none is pending.
+      return body && body.transfer_id ? body : null;
+    },
+    enabled: !!orgId,
+  });
+
+  const transferActionMutation = useMutation({
+    mutationFn: async ({ transferId, action }: { transferId: number; action: 'accept' | 'cancel' }) => {
+      const res = await fetch(
+        `${apiBase}/api/v1/orgs/${orgId}/owner/transfer/${transferId}/${action}`,
+        { method: 'POST', headers },
+      );
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.error?.message || body?.detail || `Could not ${action} the transfer.`);
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['owner-transfer', orgId] });
+      queryClient.invalidateQueries({ queryKey: ['org-info'] });
+      queryClient.invalidateQueries({ queryKey: ['me'] });
+    },
+  });
+
   if (isLoading) {
     return <div className="text-center py-12 text-text-tertiary">Loading…</div>;
   }
 
   const org = data?.org;
   const members = data?.members || [];
-  const isAdmin = data?.current_user_role === 'admin';
+  const role = data?.current_user_role;
+  const isOwner = role === 'owner';
+  // Owners can manage members too (owner sits above admin).
+  const isAdmin = role === 'admin' || role === 'owner';
   const pendingInvites = invites?.invites || [];
+  // Ownership can only be transferred to an existing admin.
+  const adminCandidates = members
+    .filter((m: any) => m.role === 'admin')
+    .map((m: any) => ({ user_id: m.user_id, email: m.email }));
 
   if (!org) {
     return (
-      <div className="max-w-2xl mx-auto px-4 py-12 text-center">
-        <h2 className="text-xl font-semibold text-text-primary mb-4">No Organization</h2>
-        <p className="text-text-tertiary mb-6">
-          You're not part of an organization. Organizations are available on Team tier and above.
-        </p>
-        <p className="text-sm text-text-tertiary">
-          Create one via CLI: <code className="bg-surface border border-border px-2 py-1 rounded-md text-text-secondary">sfs org create "My Team" my-team</code>
-        </p>
+      <div className="max-w-2xl mx-auto px-4 py-12">
+        <div className="text-center mb-8">
+          <h2 className="text-xl font-semibold text-text-primary mb-4">No Organization</h2>
+          <p className="text-text-tertiary mb-6">
+            You're not part of an organization. Organizations are available on Team tier and above.
+          </p>
+          <p className="text-sm text-text-tertiary">
+            Or create one via CLI: <code className="bg-surface border border-border px-2 py-1 rounded-md text-text-secondary">sfs org create "My Team" my-team</code>
+          </p>
+        </div>
+        <ActivateLicensePanel />
       </div>
     );
   }
@@ -109,15 +158,92 @@ export default function OrgPage() {
             {org.slug} &middot; {org.tier} tier &middot; {org.seats_used}/{org.seats_limit} seats
           </p>
         </div>
-        {isAdmin && (
-          <button
-            onClick={() => setShowInviteForm(!showInviteForm)}
-            className="bg-brand text-white rounded-lg px-5 py-2.5 text-sm font-semibold hover:bg-[var(--brand-hover)] transition-colors"
-          >
-            Invite Member
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {isOwner && (
+            <Button variant="secondary" onClick={() => setShowTransferDialog(true)}>
+              Transfer ownership
+            </Button>
+          )}
+          {isAdmin && (
+            <button
+              onClick={() => setShowInviteForm(!showInviteForm)}
+              className="bg-brand text-white rounded-lg px-5 py-2.5 text-sm font-semibold hover:bg-[var(--brand-hover)] transition-colors"
+            >
+              Invite Member
+            </button>
+          )}
+        </div>
       </div>
+
+      {/* v0.11.0 — pending ownership transfer banner */}
+      {pendingTransfer && (
+        <div className="bg-bg-elevated border border-brand/40 rounded-xl p-5 mb-6">
+          {pendingTransfer.to_user_id === myUserId ? (
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h3 className="text-base font-semibold text-text-primary">
+                  You've been offered ownership of {org.name}
+                </h3>
+                <p className="text-sm text-text-tertiary">
+                  Accept to become the organization owner, or decline to leave ownership unchanged.
+                </p>
+              </div>
+              <div className="flex gap-2 shrink-0">
+                <Button
+                  onClick={() =>
+                    transferActionMutation.mutate({ transferId: pendingTransfer.transfer_id, action: 'accept' })
+                  }
+                  disabled={transferActionMutation.isPending}
+                >
+                  Accept ownership
+                </Button>
+                <Button
+                  variant="ghost"
+                  onClick={() =>
+                    transferActionMutation.mutate({ transferId: pendingTransfer.transfer_id, action: 'cancel' })
+                  }
+                  disabled={transferActionMutation.isPending}
+                >
+                  Decline
+                </Button>
+              </div>
+            </div>
+          ) : pendingTransfer.from_user_id === myUserId ? (
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h3 className="text-base font-semibold text-text-primary">
+                  Ownership transfer pending
+                </h3>
+                <p className="text-sm text-text-tertiary">
+                  Waiting for{' '}
+                  {members.find((m: any) => m.user_id === pendingTransfer.to_user_id)?.email ||
+                    'the new owner'}{' '}
+                  to accept. You'll become an admin once they do.
+                </p>
+              </div>
+              <Button
+                variant="ghost"
+                onClick={() =>
+                  transferActionMutation.mutate({ transferId: pendingTransfer.transfer_id, action: 'cancel' })
+                }
+                disabled={transferActionMutation.isPending}
+                className="shrink-0"
+              >
+                Cancel transfer
+              </Button>
+            </div>
+          ) : (
+            <p className="text-sm text-text-tertiary">
+              An ownership transfer is pending for this organization.
+            </p>
+          )}
+          {transferActionMutation.isError && (
+            <p className="text-red-500 text-sm mt-2">
+              {(transferActionMutation.error as Error).message}
+            </p>
+          )}
+        </div>
+      )}
 
       {/* Invite form */}
       {showInviteForm && isAdmin && (
@@ -195,9 +321,11 @@ export default function OrgPage() {
               {/* Role badge */}
               <span
                 className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                  m.role === 'admin'
-                    ? 'bg-brand/15 text-brand'
-                    : 'bg-[var(--border)] text-text-tertiary'
+                  m.role === 'owner'
+                    ? 'bg-amber-500/15 text-amber-500'
+                    : m.role === 'admin'
+                      ? 'bg-brand/15 text-brand'
+                      : 'bg-[var(--border)] text-text-tertiary'
                 }`}
               >
                 {m.role}
@@ -208,8 +336,8 @@ export default function OrgPage() {
                 {m.joined_at?.slice(0, 10) || '-'}
               </span>
 
-              {/* Actions */}
-              {isAdmin && (
+              {/* Actions — the owner row is immutable (transfer ownership to change). */}
+              {isAdmin && m.role !== 'owner' && (
                 <div className="flex gap-2 ml-2 flex-shrink-0">
                   <button
                     onClick={() =>
@@ -233,6 +361,11 @@ export default function OrgPage() {
                     Remove
                   </button>
                 </div>
+              )}
+              {isAdmin && m.role === 'owner' && (
+                <span className="text-xs text-text-tertiary ml-2 flex-shrink-0 italic">
+                  Owner
+                </span>
               )}
             </div>
           ))}
@@ -274,6 +407,18 @@ export default function OrgPage() {
         <div className="bg-bg-elevated border border-border rounded-xl p-5 mt-6">
           <OrgSettingsTab orgId={org.id} canEdit={isAdmin} />
         </div>
+      )}
+
+      {isOwner && orgId && (
+        <OwnerTransferDialog
+          open={showTransferDialog}
+          onClose={() => setShowTransferDialog(false)}
+          orgId={orgId}
+          admins={adminCandidates}
+          onInitiated={() =>
+            queryClient.invalidateQueries({ queryKey: ['owner-transfer', orgId] })
+          }
+        />
       )}
     </div>
   );
