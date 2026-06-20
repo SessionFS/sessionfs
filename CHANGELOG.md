@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-06-20
+
+**Licensing + organization-management redesign — entitlements are now the single source of truth, so enterprise admins can fully manage their organizations.** Plan, seats, and storage for an org are resolved from one authoritative record instead of being scattered across user rows and license tables, which is what previously left enterprise admins unable to see or administer their own orgs. On top of that foundation: self-service license activation with required email verification, two-step organization ownership transfer, an explicit owner role, and last-owner safety guards. Backend + dashboard. Migration 001–**052** (050 additive entitlements foundation; 051 ownership-transfer table; 052 role/status integrity constraints). 2415 backend tests + 388 dashboard tests. Reviewed end-to-end across four phases (Codex + Sentinel design review, Codex code review, Shield-SR pre-release — all clean).
+
+### Added
+
+- **Entitlements model (migration 050)** — a single `entitlements` record per organization is the authoritative source for plan tier, seats, and storage, with a clean lifecycle (`active` / `canceled` / `expired` / `revoked`) tracked separately from billing health (`current` / `past_due`). Existing orgs are backfilled deterministically from their strongest existing signal (license → subscription → manual grant), so no plan changes for anyone. A partial unique index guarantees exactly one active entitlement per owner.
+- **Self-service license activation** — an organization admin can activate a license key against their org directly: `GET/POST /api/v1/org/activate` plus an email-verification step (`POST /api/v1/org/activate/verify`). **Email verification is required** — activation completes only after the admin confirms a single-use, time-limited code sent to their address. The activation lookup is non-oracular (it never confirms whether an arbitrary key exists) and the whole flow is rate-limited at the edge.
+- **Organization ownership transfer** — a two-step, owner-initiated transfer (`initiate` → target `accept`, with `cancel`) backed by a new `org_owner_transfer` record (migration 051) and an explicit `OWNER` role. Transfers re-validate both parties' standing at accept time and expire if not accepted.
+- **Last-owner safety** — an org can never be left without an owner: deactivating or transferring away the last owner is blocked (or auto-promotes the longest-tenured admin), and admins get a force-transfer path with a full audit trail.
+- **`/me` enrichment** — the authenticated profile endpoint now returns the caller's effective tier, organization id/name, and org role, so the dashboard can gate org-management surfaces correctly.
+
+### Changed
+
+- **Effective tier is resolved entitlement-first** across the whole server, with a safe fall-back to the legacy columns for any record not yet migrated. All write paths (admin grants, org changes, billing webhooks) now write through the entitlement so the authoritative record and the legacy caches stay in agreement.
+- **Database integrity constraints (migration 052)** — organization role and transfer-status values are constrained at the schema level, and the reserved internal `admin` tier can never be assigned as a customer plan.
+- **CI:** API deploys are now health-checked against the public endpoint (`https://api.sessionfs.dev`) behind the load balancer rather than the internal Cloud Run URL.
+- **Security dependency:** `pydantic-settings >= 2.14.2` (GHSA-4xgf-cpjx-pc3j, defense-in-depth — the affected feature is not used).
+
 ## [0.10.32] - 2026-06-18
 
 **Hotfix — Stripe `past_due` no longer locks out paying customers.** The `customer.subscription.updated` webhook handler previously treated transient billing-health statuses (`past_due` / `unpaid` / `paused` / `incomplete_expired`) the same as a cancellation: it downgraded the customer to the free tier, zeroed seats/storage, and cleared `stripe_subscription_id` immediately. Because Stripe sets `past_due` on the *first* failed invoice while smart retries run for days, a paying customer could be cut off on a transient card decline — and clearing the subscription pointer orphaned the account from its Stripe customer, so the eventual recovery (`subscription.updated → active`) could no longer be matched. Backend only; no schema change. Migration 001–049 (unchanged). 2279 backend tests.

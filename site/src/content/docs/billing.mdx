@@ -50,3 +50,9 @@ Self-hosted customers do not configure billing infrastructure in their cluster. 
 For self-hosted deployments, the runtime receives its allowed tier from the license system. The application should be deployed with the license material provided by SessionFS, not with any customer-operated checkout, subscription, or payment-webhook configuration.
 
 Talk to [Enterprise](/enterprise/) if you need self-hosted, single-tenant, HIPAA-oriented, or custom-retention deployment.
+
+## License activation (v0.11.0)
+
+Enterprise customers who receive a license key can apply it to their organization directly. An organization admin activates the key against the org and confirms a single-use, time-limited code sent to their email address — activation completes only after this email verification step. See [Organizations &rarr; Self-service license activation](/docs/organizations/#self-service-license-activation-v0110) for the flow.
+
+An organization's plan, seats, and storage are resolved from a single authoritative entitlement record, so an activated license is the org-wide source of truth for what the org is licensed to use.
