@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.2] - 2026-06-20
+
+**Self-service licensing is now usable in the dashboard.** v0.11.0 shipped the licensing + org-management backend; this release adds the web UI for it, plus hardening of the activation/profile paths. No schema change (migrations 001–052 unchanged).
+
+### Added
+
+- **License activation in the dashboard** — a guided flow for users not yet in an organization: enter a license key → confirm the previewed org/tier → submit → enter the single-use code emailed for verification → land as the new organization's owner. Email verification is required; invalid-key and bad/expired-code states are handled, and the exact-match-email path completes without a code round-trip.
+- **Ownership transfer in the dashboard** — an organization owner can transfer ownership to an existing admin; the target sees an Accept/Decline banner and the initiator a pending banner with Cancel, each showing the transfer's expiry. The owner role is shown in the members list and the owner row is protected from demotion/removal. (Distinct from project transfer.)
+
+### Fixed
+
+- **Profile and activation no longer 500 on a transient duplicate organization membership.** `/me` now resolves the caller's membership deterministically (earliest-joined) instead of failing when more than one row is briefly present, and the activation verify step rejects an already-member caller with a clean 409 (rolling back so no partial organization is created) even when duplicate membership rows exist.
+
+### Security
+
+- `msgpack >= 1.2.1` (dev/audit tooling only; GHSA-6v7p-g79w-8964) — defense-in-depth; not a runtime dependency.
+
 ## [0.11.1] - 2026-06-20
 
 **Patch — fixes a latent failure in the v0.11.0 entitlements backfill migration and restores a green CI.** No schema change, and no behavior change for already-migrated databases (the v0.11.0 migration had already applied cleanly to environments where the backfill recorded no diagnostics).
