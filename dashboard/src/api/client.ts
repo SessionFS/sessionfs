@@ -743,6 +743,10 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       display_name: string | null;
       email_verified: boolean;
       tier: string;
+      effective_tier: string;
+      org_id: string | null;
+      org_name: string | null;
+      org_role: string | null;
       created_at: string | null;
       last_client_version: string | null;
       last_client_platform: string | null;

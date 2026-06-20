@@ -85,6 +85,10 @@ beforeEach(() => {
     data: {
       tier: 'admin',
       email: 'admin@sessionfs.dev',
+      org_id: 'org_123',
+      org_name: 'Test Org',
+      org_role: 'admin',
+      effective_tier: 'enterprise',
       default_org_id: 'org_123',
     },
   });
@@ -248,9 +252,9 @@ describe('Layout', () => {
       expect(links.length).toBe(0);
     });
 
-    it('shows org chip when user has default_org_id', () => {
+    it('shows org chip when user has org membership', () => {
       renderLayout();
-      const chip = screen.getByText('org_123');
+      const chip = screen.getByText('Test Org');
       const chipLink = chip.closest('a');
       expect(chipLink).toBeInTheDocument();
       expect(chipLink).toHaveAttribute('href', '/settings/organization');
@@ -261,7 +265,7 @@ describe('Layout', () => {
         data: { tier: 'free', email: 'solo@sessionfs.dev' },
       });
       renderLayout();
-      expect(screen.queryByText('org_123')).not.toBeInTheDocument();
+      expect(screen.queryByText('Test Org')).not.toBeInTheDocument();
     });
 
     it('renders bottom-pinned Settings, Help, and Admin (admin user)', () => {

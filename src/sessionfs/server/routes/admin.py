@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
@@ -15,14 +15,18 @@ from sessionfs.server.auth.dependencies import require_admin
 from sessionfs.server.auth.keys import generate_api_key, hash_api_key
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import (
+    ActivationAttempt,
     AdminAction,
     ApiKey,
     Handoff,
+    HelmLicense,
     Organization,
+    OrgAuditEvent,
     OrgMember,
     Session,
     User,
 )
+from sessionfs.server.services.entitlements import apply_entitlement
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 
@@ -184,6 +188,18 @@ async def change_user_tier(
     old_tier = user.tier
     user.tier = new_tier
 
+    # P2: write-through — upsert the user's active entitlement so
+    # resolution stays authoritative.  'admin' tier is NOT written
+    # as an entitlement (platform role, not a customer tier).
+    if new_tier in ("free", "starter", "pro", "team", "enterprise"):
+        await apply_entitlement(
+            "user",
+            user_id,
+            tier=new_tier,
+            source="admin_provisioned",
+            db=db,
+        )
+
     await _log_action(db, admin.id, "tier_change", "user", user_id, {
         "old_tier": old_tier, "new_tier": new_tier,
     })
@@ -327,7 +343,13 @@ async def delete_user(
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """Soft-delete a user: deactivate account and revoke all API keys."""
+    """Soft-delete a user: deactivate account and revoke all API keys.
+
+    P4 (§2.5): before deactivation, check whether the user is the sole
+    owner of any org. If another admin exists, auto-promote the
+    longest-tenured admin to owner. If NO other admin exists, BLOCK
+    with 409 — never silently orphan an org.
+    """
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if user is None:
@@ -335,6 +357,98 @@ async def delete_user(
 
     if user.id == admin.id:
         raise HTTPException(status_code=400, detail="Cannot delete your own account")
+
+    # P4: deactivation-time last-owner check (Sentinel MEDIUM-4).
+    # Runs BEFORE is_active=False in the same transaction.
+    owner_orgs = (
+        await db.execute(
+            select(OrgMember, Organization)
+            .join(Organization, OrgMember.org_id == Organization.id)
+            .where(
+                OrgMember.user_id == user_id,
+                OrgMember.role == "owner",
+            )
+        )
+    ).all()
+
+    for member, org in owner_orgs:
+        # Find the longest-tenured admin who is NOT the deactivated user.
+        # FOR UPDATE locks the chosen successor row so a concurrent role
+        # change can't demote it between selection and promotion (Sentinel
+        # L1 — consistent with the accept/force-transfer paths; the one-owner
+        # index is the structural backstop).
+        successor = (
+            await db.execute(
+                select(OrgMember)
+                .where(
+                    OrgMember.org_id == org.id,
+                    OrgMember.role == "admin",
+                    OrgMember.user_id != user_id,
+                )
+                .order_by(OrgMember.joined_at.asc(), OrgMember.user_id.asc())
+                .limit(1)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+
+        if successor is None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "sole_owner",
+                    "org_id": org.id,
+                    "org_name": org.name,
+                    "message": (
+                        f"Cannot deactivate — you are the sole owner-or-admin "
+                        f"of org '{org.name}'. Transfer ownership or promote "
+                        f"another member to admin first, or use the admin "
+                        f"force-transfer endpoint."
+                    ),
+                },
+            )
+
+        # Auto-promote: demote old owner to admin first (so the
+        # partial unique index uq_org_members_one_owner_per_org
+        # never sees two owners), then promote the successor.
+        await db.execute(
+            update(OrgMember)
+            .where(
+                OrgMember.org_id == org.id,
+                OrgMember.user_id == user_id,
+            )
+            .values(role="admin")
+        )
+        await db.execute(
+            update(OrgMember)
+            .where(
+                OrgMember.org_id == org.id,
+                OrgMember.user_id == successor.user_id,
+            )
+            .values(role="owner")
+        )
+
+        # Emit OrgAuditEvent for the auto-promotion.
+        successor_user = (
+            await db.execute(
+                select(User).where(User.id == successor.user_id)
+            )
+        ).scalar_one()
+        db.add(
+            OrgAuditEvent(
+                id=f"oae_{uuid.uuid4().hex[:16]}",
+                org_id=org.id,
+                org_name_snapshot=org.name,
+                event_type="owner_auto_promoted_on_deactivation",
+                actor_user_id=admin.id,
+                actor_email_snapshot=admin.email,
+                actor_role_at_time="platform_admin",
+                target_type="user",
+                target_id=successor.user_id,
+                target_email_snapshot=successor_user.email,
+                before=json.dumps({"role": "admin"}),
+                after=json.dumps({"role": "owner"}),
+            )
+        )
 
     user.is_active = False
 
@@ -517,6 +631,80 @@ async def admin_create_org(
     member = OrgMember(org_id=org_id, user_id=owner_user_id, role="admin")
     db.add(member)
 
+    # P2: write-through — create entitlement for the admin-provisioned org.
+    # If a license_key is provided, source from the HelmLicense (admin-assisted
+    # pre-provision — staff is the trust anchor, no email token needed).
+    license_key = (body.get("license_key") or "").strip()
+    lic = None
+    if license_key:
+        lic = (
+            await db.execute(
+                select(HelmLicense).where(
+                    HelmLicense.id == license_key,
+                    HelmLicense.status == "active",
+                    HelmLicense.org_id.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if lic is not None:
+            # Bind the license to this org
+            await db.execute(
+                update(HelmLicense)
+                .where(HelmLicense.id == license_key, HelmLicense.org_id.is_(None))
+                .values(org_id=org_id)
+            )
+            tier = lic.tier
+            seats_limit = lic.seats_limit
+            source = "helm_license"
+            source_ref = license_key
+            current_period_end = lic.expires_at
+        else:
+            raise HTTPException(
+                400,
+                f"License key '{license_key}' is invalid, expired, or already bound.",
+            )
+    else:
+        source = "admin_provisioned"
+        source_ref = None
+        current_period_end = None
+
+    await apply_entitlement(
+        "org",
+        org_id,
+        tier=tier,
+        seats=seats_limit,
+        storage=storage_limit_bytes,
+        source=source,
+        source_ref=source_ref,
+        db=db,
+        current_period_end=current_period_end,
+    )
+
+    # Emit OrgAuditEvent for license-activated admin orgs
+    if lic is not None:
+        audit = OrgAuditEvent(
+            id=f"oae_{_secrets.token_hex(12)}",
+            org_id=org_id,
+            org_name_snapshot=name,
+            event_type="license_activated",
+            actor_user_id=admin.id,
+            actor_email_snapshot=admin.email,
+            actor_role_at_time="platform_admin",
+            target_type="license",
+            target_id=license_key[:7] + "…",
+            after=json.dumps(
+                {
+                    "org_id": org_id,
+                    "org_name": name,
+                    "license_key_prefix": license_key[:7] + "…",
+                    "tier": lic.tier,
+                    "seats_limit": lic.seats_limit,
+                    "verification_method": "admin_assisted",
+                }
+            ),
+        )
+        db.add(audit)
+
     await _log_action(
         db,
         admin.id,
@@ -581,10 +769,171 @@ async def admin_change_org_tier(
 
     await db.execute(update(Organization).where(Organization.id == org_id).values(**changes))
 
+    # P2: write-through — keep the entitlement in sync with admin tier change.
+    new_tier = changes.get("tier", org.tier)
+    if new_tier in ("free", "starter", "pro", "team", "enterprise"):
+        await apply_entitlement(
+            "org",
+            org_id,
+            tier=new_tier,
+            seats=changes.get("seats_limit"),
+            storage=changes.get("storage_limit_bytes"),
+            source="admin_provisioned",
+            db=db,
+        )
+
     await _log_action(db, admin.id, "admin_update_org", "org", org_id, changes)
     await db.commit()
 
     return {"org_id": org_id, "updated": changes}
+
+
+# P4 — Admin force-transfer: platform-admin recovery for
+# deactivated/compromised/departed owners (Sentinel MEDIUM-4).
+
+
+class ForceTransferRequest(BaseModel):
+    to_user_id: str
+
+
+@router.post("/orgs/{org_id}/force-transfer-owner")
+async def force_transfer_owner(
+    org_id: str,
+    body: ForceTransferRequest,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Force-transfer org ownership. Platform admin only.
+
+    Recovery path when the owner is deactivated, compromised, or
+    departed and no other admin can transfer ownership. The platform
+    admin is the trust anchor.
+
+    Atomic single-transaction swap: re-validate current state →
+    demote old owner → promote target. AdminAction + OrgAuditEvent
+    logged.
+    """
+    org = (
+        await db.execute(select(Organization).where(Organization.id == org_id))
+    ).scalar_one_or_none()
+    if org is None:
+        raise HTTPException(404, "Org not found")
+
+    # Target must be an existing org member.
+    target_member = (
+        await db.execute(
+            select(OrgMember).where(
+                OrgMember.org_id == org_id,
+                OrgMember.user_id == body.to_user_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if target_member is None:
+        raise HTTPException(404, "Target user is not a member of this org")
+
+    # Find the current owner.
+    current_owner = (
+        await db.execute(
+            select(OrgMember).where(
+                OrgMember.org_id == org_id,
+                OrgMember.role == "owner",
+            )
+        )
+    ).scalar_one_or_none()
+
+    if current_owner is None:
+        raise HTTPException(
+            409, "Org has no owner — contact support to repair"
+        )
+    if current_owner.user_id == body.to_user_id:
+        raise HTTPException(
+            400, "Target user is already the owner"
+        )
+
+    # Atomic swap under FOR UPDATE.
+    await db.execute(
+        select(OrgMember)
+        .where(
+            OrgMember.org_id == org_id,
+            OrgMember.role.in_(["owner", "admin"]),
+        )
+        .with_for_update()
+    )
+
+    # Re-validate after lock.
+    current_owner = (
+        await db.execute(
+            select(OrgMember).where(
+                OrgMember.org_id == org_id,
+                OrgMember.role == "owner",
+            )
+        )
+    ).scalar_one_or_none()
+    if current_owner is None:
+        raise HTTPException(409, "Org owner changed — retry")
+
+    old_owner_id = current_owner.user_id
+    new_owner_id = body.to_user_id
+    # The displaced owner is demoted to the target's pre-transfer role
+    # (capture it for a self-describing audit — Shield LOW-3).
+    displaced_owner_resulting_role = target_member.role
+
+    # Demote old owner → the target's current role (usually admin or member).
+    await db.execute(
+        update(OrgMember)
+        .where(OrgMember.org_id == org_id, OrgMember.user_id == old_owner_id)
+        .values(role=target_member.role)
+    )
+    # Promote target → owner.
+    await db.execute(
+        update(OrgMember)
+        .where(OrgMember.org_id == org_id, OrgMember.user_id == new_owner_id)
+        .values(role="owner")
+    )
+
+    # AdminAction audit.
+    await _log_action(
+        db, admin.id, "force_transfer_owner", "organization", org_id,
+        {"from_user_id": old_owner_id, "to_user_id": new_owner_id},
+    )
+
+    # OrgAuditEvent.
+    new_owner_user = (
+        await db.execute(select(User).where(User.id == new_owner_id))
+    ).scalar_one_or_none()
+    db.add(
+        OrgAuditEvent(
+            id=f"oae_{uuid.uuid4().hex[:16]}",
+            org_id=org.id,
+            org_name_snapshot=org.name,
+            event_type="owner_force_transferred",
+            actor_user_id=admin.id,
+            actor_email_snapshot=admin.email,
+            actor_role_at_time="platform_admin",
+            target_type="user",
+            target_id=new_owner_id,
+            target_email_snapshot=new_owner_user.email if new_owner_user else None,
+            before=json.dumps(
+                {"from_user_id": old_owner_id, "to_user_id": new_owner_id}
+            ),
+            after=json.dumps(
+                {
+                    "new_owner_user_id": new_owner_id,
+                    "displaced_owner_user_id": old_owner_id,
+                    "displaced_owner_resulting_role": displaced_owner_resulting_role,
+                }
+            ),
+        )
+    )
+
+    await db.commit()
+
+    return {
+        "status": "force_transferred",
+        "org_id": org_id,
+        "from_user_id": old_owner_id,
+        "to_user_id": new_owner_id,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -867,6 +1216,66 @@ async def purge_deleted(
     await db.commit()
 
     return {"purged": purged, "bytes_reclaimed": bytes_reclaimed}
+
+
+# Default retention window for terminal/expired activation attempts.
+_ACTIVATION_ATTEMPT_RETENTION_DAYS = 30
+
+
+@router.post("/activation-attempts/purge")
+async def purge_activation_attempts(
+    body: dict | None = None,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reap stale license-activation attempts (data minimization).
+
+    Two steps:
+      1. Lazily flip any expired-but-still-'pending' attempts to 'expired'
+         (the declared status is otherwise never set — the verify path only
+         filters on expires_at). Keying off expires_at makes expired rows
+         distinguishable + reapable.
+      2. Delete terminal/expired attempts older than the retention window,
+         which removes the `contact_email_snapshot` PII + token_hash with the
+         row. Default window 30 days; override with body {"retention_days": N}.
+    """
+    now = datetime.now(timezone.utc)
+    retention_days = _ACTIVATION_ATTEMPT_RETENTION_DAYS
+    if body and isinstance(body.get("retention_days"), int):
+        retention_days = max(0, body["retention_days"])
+    cutoff = now - timedelta(days=retention_days)
+
+    # 1. Mark expired pending attempts as 'expired'.
+    flipped = await db.execute(
+        update(ActivationAttempt)
+        .where(
+            ActivationAttempt.status == "pending",
+            ActivationAttempt.expires_at < now,
+        )
+        .values(status="expired")
+    )
+
+    # 2. Delete terminal (consumed|expired) attempts older than the window.
+    del_result = await db.execute(
+        delete(ActivationAttempt).where(
+            ActivationAttempt.status.in_(("consumed", "expired")),
+            ActivationAttempt.created_at < cutoff,
+        )
+    )
+    purged = del_result.rowcount or 0
+
+    await _log_action(
+        db,
+        admin.id,
+        "purge_activation_attempts",
+        "activation_attempt",
+        "bulk",
+        {"purged": purged, "expired_flipped": flipped.rowcount or 0,
+         "retention_days": retention_days},
+    )
+    await db.commit()
+
+    return {"purged": purged, "expired_flipped": flipped.rowcount or 0}
 
 
 # ---------------------------------------------------------------------------

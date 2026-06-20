@@ -17,14 +17,52 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.10.31 -->
+      <!-- v0.11.0 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.11.0</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">June 20, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Licensing &amp; Organization Management Redesign &mdash; Entitlements As The Single Source Of Truth &middot; Self-Service License Activation &middot; Ownership Transfer</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Entitlements are now the single source of truth for an organization's plan.</strong> Plan tier, seats, and storage for an org are resolved from one authoritative record instead of being scattered across user rows and license tables. This fixes the case where enterprise admins could not fully see or manage their own organizations. Existing orgs are backfilled deterministically from their strongest existing signal, so no plan changes for anyone.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Self-service license activation with required email verification.</strong> An organization admin can activate a license key against their org directly. Activation completes only after the admin confirms a single-use, time-limited code sent to their email address &mdash; verification is required, not optional. The activation lookup never reveals whether an arbitrary key exists, and the flow is rate-limited.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Organization ownership transfer.</strong> A two-step, owner-initiated transfer (initiate &rarr; the new owner accepts, with cancel) moves ownership of an org to another member, backed by an explicit <strong>owner</strong> role. Both parties' standing is re-validated at accept time, and pending transfers expire if not accepted.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Last-owner safety guards.</strong> An organization can never be left without an owner: deactivating or transferring away the last owner is blocked or safely re-homed, with a full audit trail. The authenticated profile now returns the caller's effective tier, organization, and org role so the dashboard gates org-management surfaces correctly.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Backend + dashboard. Migrations 001&ndash;052 (050 entitlements foundation; 051 ownership-transfer table; 052 role/status integrity constraints). 2,415 backend + 388 dashboard UI tests passing. 62 MCP tools (unchanged) &middot; 9 supported tools unchanged. Reviewed end-to-end: Codex + Sentinel design review, Codex code review, Shield-SR pre-release &mdash; all clean.</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.10.32 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.10.32</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">June 18, 2026</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Hotfix &mdash; A Transient Card Decline No Longer Locks Out Paying Customers</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Transient billing-health statuses are now non-destructive.</strong> A temporary payment hiccup &mdash; for example a card decline that the payment processor automatically retries over the following days &mdash; previously downgraded a paying customer to the free tier and zeroed their seats and storage immediately. Now the customer keeps their tier, seats, and storage for the duration of the retry window, and a successful retry simply restores normal service.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Recovery path restored.</strong> Only a terminal subscription cancellation downgrades an account to free, which also keeps the recovery path intact so a customer who resolves a transient decline returns to their plan automatically. Three regression tests cover the keeps-access case for both users and organizations plus the full recovery flow.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Backend only; no schema change. Migrations 001&ndash;049 (unchanged). 2,279 backend + 388 dashboard UI tests passing. 62 MCP tools (unchanged).</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.10.31 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
             <span class="text-brand font-semibold">v0.10.31</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">June 17, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Multi-Repo Projects &mdash; One Project, Many Repos &middot; Verified Repo Linking &middot; Project Merge</h2>
         <ul class="space-y-2 text-base text-muted">

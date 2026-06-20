@@ -40,7 +40,7 @@ from __future__ import annotations
 import logging
 import secrets
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, field_validator
@@ -50,9 +50,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import (
+    OrgAuditEvent,
     OrgInvite,
     OrgMember,
     Organization,
+    OrgOwnerTransfer,
     Project,
     ProjectTransfer,
     User,
@@ -125,9 +127,17 @@ async def _user_role_in_org(
 
 
 async def _count_admins(db: AsyncSession, org_id: str) -> int:
+    """Count owner+admin members (the administrative tier).
+
+    P4 extends the last-admin guard: the org invariant is exactly one
+    owner (immutable except via transfer) + zero or more admins.
+    An org with an owner + zero admins is a valid, non-orphaned state
+    — the owner alone satisfies the administrative-count guard.
+    """
     result = await db.execute(
         select(OrgMember).where(
-            OrgMember.org_id == org_id, OrgMember.role == "admin"
+            OrgMember.org_id == org_id,
+            OrgMember.role.in_(["owner", "admin"]),
         )
     )
     return len(result.scalars().all())
@@ -147,9 +157,10 @@ async def _org_or_404(db: AsyncSession, org_id: str) -> Organization:
 async def _require_admin(
     db: AsyncSession, user: User, org_id: str
 ) -> None:
+    """Require admin or owner role. Owner has all admin powers."""
     role = await _user_role_in_org(db, user.id, org_id)
-    if role != "admin":
-        raise HTTPException(403, "Admin role required")
+    if role not in ("admin", "owner"):
+        raise HTTPException(403, "Admin or owner role required")
 
 
 async def _require_member(
@@ -285,8 +296,8 @@ async def update_org_settings(
     """
     org = await _org_or_404(db, org_id)
     role = await _require_member(db, user, org_id)
-    if role != "admin":
-        raise HTTPException(403, "Only org admins can change settings")
+    if role not in ("admin", "owner"):
+        raise HTTPException(403, "Only org admins or owners can change settings")
 
     # Range guards — None means "no override" and is always accepted.
     if body.kb_retention_days is not None and not (1 <= body.kb_retention_days <= 730):
@@ -589,25 +600,33 @@ async def perform_role_change(
 
     Guards:
       - new_role must be 'admin' or 'member' (400)
+      - new_role='owner' is rejected — ownership changes ONLY via
+        the dedicated /owner/transfer endpoint (§2.4.3)
       - actor cannot change their own role (400)
       - non-member target (404)
-      - last-admin demotion (400) — restored from the legacy route
-        (it had been accidentally dropped during earlier round
-        refactoring; this extraction makes the guard load-bearing on
-        both surfaces and adds explicit test coverage)
+      - admin cannot target the owner (403) — only the owner can
+        relinquish via transfer
+      - owner self-demote to admin: allowed only if another admin
+        exists (409 — no orphan ownership)
+      - owner self-demote to member: blocked (must transfer first)
+      - last-admin demotion (400) — counts owner+admin
 
     Side effect on admin→member demotion:
       - `cancel_outgoing_pending_from_org()` revokes source-authority
         pending transfers initiated from this org by the demoted user.
 
-    Caller MUST have already verified that `actor` is an admin of
-    `org_id` (legacy via `check_role`, new via `_require_admin`).
+    Caller MUST have already verified that `actor` is an admin or owner
+    of `org_id` (legacy via `check_role`, new via `_require_admin`).
     Service trusts that and runs the rest.
     """
+    # P4: ownership changes ONLY via the dedicated transfer endpoint.
+    if new_role == "owner":
+        raise HTTPException(
+            400,
+            "Ownership is transferred via /owner/transfer, not role change",
+        )
     if new_role not in ("admin", "member"):
         raise HTTPException(400, "Role must be 'admin' or 'member'")
-    if target_user_id == actor.id:
-        raise HTTPException(400, "Cannot change your own role")
 
     member = (
         await db.execute(
@@ -620,35 +639,81 @@ async def perform_role_change(
     if member is None:
         raise HTTPException(404, "Member not found in this org")
 
+    # Resolve actor's role for owner-specific guards.
+    actor_member = (
+        await db.execute(
+            select(OrgMember).where(
+                OrgMember.org_id == org_id,
+                OrgMember.user_id == actor.id,
+            )
+        )
+    ).scalar_one_or_none()
+    actor_role = actor_member.role if actor_member else None
+
+    # P4: admin cannot target the owner — only the owner can
+    # relinquish via transfer.
+    if member.role == "owner" and actor_role != "owner":
+        raise HTTPException(
+            403,
+            "Only the owner can change the owner role. "
+            "Use /owner/transfer to transfer ownership.",
+        )
+
+    # P4: owner self-demotion guards.
+    if target_user_id == actor.id and actor_role == "owner":
+        if new_role == "member":
+            raise HTTPException(
+                400,
+                "Cannot demote yourself to member. "
+                "Transfer ownership first, or demote to admin if another admin exists.",
+            )
+        if new_role == "admin":
+            # Owner→admin self-demotion: require at least one other
+            # admin to exist so the org is not orphaned.
+            await db.execute(
+                select(OrgMember)
+                .where(
+                    OrgMember.org_id == org_id,
+                    OrgMember.role.in_(["owner", "admin"]),
+                )
+                .with_for_update()
+            )
+            if await _count_admins(db, org_id) <= 1:
+                raise HTTPException(
+                    409,
+                    "Cannot demote — you are the last administrator. "
+                    "Promote another member to admin first, or transfer ownership.",
+                )
+    elif target_user_id == actor.id:
+        raise HTTPException(400, "Cannot change your own role")
+
     # Last-admin demotion guard — Codex Phase-3a round-6 MEDIUM (KB
     # 264) noted the pre-UPDATE COUNT was concurrency-unsafe: two
     # concurrent cross-demotions could both observe `count == 2` and
     # both commit, leaving 0 admins. Fix: SELECT ... FOR UPDATE on
-    # ALL admin rows of this org BEFORE counting. PG row-locks the
-    # admin set; a concurrent demotion blocks until our transaction
-    # commits, then sees the updated count and fires its own guard.
-    # SQLite ignores FOR UPDATE but its single-writer model already
-    # serializes by default, so the race doesn't exist there.
+    # ALL owner+admin rows of this org BEFORE counting. PG row-locks
+    # the administrative set; a concurrent demotion blocks until our
+    # transaction commits, then sees the updated count and fires its
+    # own guard. SQLite ignores FOR UPDATE but its single-writer model
+    # already serializes by default, so the race doesn't exist there.
     #
-    # The lock is acquired on every role-change call (not just
-    # demotions) so the post-UPDATE recount and the legacy single-
-    # statement test paths both honor it consistently.
-    if member.role == "admin" and new_role == "member":
+    # P4: lock covers owner+admin now that _count_admins() counts both.
+    if member.role in ("admin", "owner") and new_role == "member":
         await db.execute(
             select(OrgMember)
             .where(
                 OrgMember.org_id == org_id,
-                OrgMember.role == "admin",
+                OrgMember.role.in_(["owner", "admin"]),
             )
             .with_for_update()
         )
         if await _count_admins(db, org_id) <= 1:
             raise HTTPException(
-                400, "Cannot demote the last admin of the org"
+                400, "Cannot demote the last administrator of the org"
             )
 
     # Snapshot the old role for the post-UPDATE demotion-edge check.
-    was_admin = member.role == "admin"
+    was_admin = member.role in ("admin", "owner")
 
     await db.execute(
         update(OrgMember)
@@ -658,8 +723,8 @@ async def perform_role_change(
         .values(role=new_role)
     )
 
-    # Admin→member demotion revokes source-side authority. Symmetric
-    # with `perform_member_removal` (KB entries 258, 260, 262).
+    # Admin/owner→member demotion revokes source-side authority.
+    # Symmetric with `perform_member_removal` (KB entries 258, 260, 262).
     if was_admin and new_role == "member":
         await cancel_outgoing_pending_from_org(
             db, target_user_id, org_id, _now()
@@ -745,9 +810,9 @@ async def perform_member_removal(
         invariants — Codex Phase-3a round-1 HIGH, KB entry 254).
 
     Caller MUST have already confirmed `removing_admin` is an admin
-    of `org_id` (the legacy route does this via ctx.role; the new
-    route does via `_require_admin`). This function trusts that and
-    runs the invariants.
+    or owner of `org_id` (the legacy route does this via ctx.role;
+    the new route does via `_require_admin`). This function trusts
+    that and runs the invariants.
 
     Invariants enforced (KB 230 #3):
       1. Member-owned org-scoped projects auto-transfer to admin.
@@ -762,15 +827,12 @@ async def perform_member_removal(
     Guards (raised as HTTPException for clean propagation through
     both routes):
       - self-removal blocked (400)
-      - last-admin removal blocked (400)
+      - owner cannot be removed (409 — transfer first)
+      - admin cannot remove the owner (403 — only the owner can
+        relinquish via transfer)
+      - last-admin removal blocked (400) — counts owner+admin
       - non-member target (404)
     """
-    if target_user_id == removing_admin.id:
-        raise HTTPException(
-            400,
-            "Cannot remove yourself. Promote another admin and ask them to remove you, or delete the org.",
-        )
-
     member = (
         await db.execute(
             select(OrgMember).where(
@@ -782,25 +844,59 @@ async def perform_member_removal(
     if member is None:
         raise HTTPException(404, "Member not found in this org")
 
-    if member.role == "admin":
+    # Resolve remover's role for owner-specific guards.
+    remover_member = (
+        await db.execute(
+            select(OrgMember).where(
+                OrgMember.org_id == org_id,
+                OrgMember.user_id == removing_admin.id,
+            )
+        )
+    ).scalar_one_or_none()
+    remover_role = remover_member.role if remover_member else None
+
+    # P4: owner cannot be removed — must transfer ownership first.
+    if member.role == "owner":
+        raise HTTPException(
+            409,
+            "Cannot remove the org owner. Transfer ownership first "
+            "via /owner/transfer.",
+        )
+
+    # P4: admin cannot remove the owner (defense-in-depth — already
+    # caught by the role=='owner' guard above, but kept explicit).
+    if target_user_id == removing_admin.id:
+        if remover_role == "owner":
+            raise HTTPException(
+                400,
+                "Cannot remove yourself as owner. "
+                "Transfer ownership first, or demote yourself to admin if another admin exists.",
+            )
+        raise HTTPException(
+            400,
+            "Cannot remove yourself. Promote another admin and ask them to remove you, or delete the org.",
+        )
+
+    if member.role in ("admin", "owner"):
         # Same TOCTOU concern as `perform_role_change`'s demotion
         # guard (Codex Phase-3a rounds 6/8, KB 264/266): two
         # concurrent cross-removals could each observe `count == 2`
-        # and both succeed, leaving 0 admins. Lock the admin set
-        # before counting. PG row-locks admin rows; SQLite ignores
+        # and both succeed, leaving 0 admins. Lock the owner+admin
+        # set before counting. PG row-locks the rows; SQLite ignores
         # FOR UPDATE but serializes writes globally.
+        # P4: lock covers owner+admin now that _count_admins counts both.
         await db.execute(
             select(OrgMember)
             .where(
                 OrgMember.org_id == org_id,
-                OrgMember.role == "admin",
+                OrgMember.role.in_(["owner", "admin"]),
             )
             .with_for_update()
         )
         if await _count_admins(db, org_id) <= 1:
             raise HTTPException(
                 400,
-                "Cannot remove the last admin; promote another member first",
+                "Cannot remove the last administrator; promote another member first",
             )
 
     now = _now()
@@ -943,3 +1039,520 @@ async def remove_member(
     await _org_or_404(db, org_id)
     await _require_admin(db, user, org_id)
     return await perform_member_removal(db, user, org_id, user_id)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# P4 — Two-step ownership transfer (§2.4.3)
+#
+# Owner is immutable except via dedicated transfer flow. Initiate +
+# accept pattern with single-pending invariant enforced by the DB
+# partial unique index uq_org_owner_transfer_one_pending.
+# ─────────────────────────────────────────────────────────────────────────
+
+TRANSFER_EXPIRY_DAYS = 7
+
+
+class TransferRequest(BaseModel):
+    to_user_id: str
+
+
+class TransferResponse(BaseModel):
+    transfer_id: int
+    org_id: str
+    from_user_id: str
+    to_user_id: str
+    status: str
+    created_at: datetime
+    expires_at: datetime | None
+
+
+async def _emit_owner_transfer_audit(
+    db: AsyncSession,
+    *,
+    org: Organization,
+    event_type: str,
+    actor: User,
+    actor_role: str,
+    target_user: User | None = None,
+    before_role: str | None = None,
+    after_role: str | None = None,
+) -> None:
+    """Insert an OrgAuditEvent for an ownership transfer mutation."""
+    import json as _json
+
+    before = None
+    after = None
+    if before_role or after_role:
+        before = _json.dumps({"role": before_role}) if before_role else None
+        after = _json.dumps({"role": after_role}) if after_role else None
+
+    audit = OrgAuditEvent(
+        id=f"oae_{secrets.token_hex(12)}",
+        org_id=org.id,
+        org_name_snapshot=org.name,
+        event_type=event_type,
+        actor_user_id=actor.id,
+        actor_email_snapshot=actor.email,
+        actor_role_at_time=actor_role,
+        target_type="user",
+        target_id=target_user.id if target_user else None,
+        target_email_snapshot=target_user.email if target_user else None,
+        before=before,
+        after=after,
+    )
+    db.add(audit)
+
+
+def _transfer_is_expired(transfer: "OrgOwnerTransfer", now: datetime) -> bool:
+    """True if the transfer's expiry has passed. SQLite roundtrips
+    DateTime(timezone=True) as naive — coerce to UTC before comparing."""
+    if transfer.expires_at is None:
+        return False
+    expires = transfer.expires_at
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    return expires < now
+
+
+async def _lazy_expire_transfer(
+    db: AsyncSession,
+    *,
+    transfer: "OrgOwnerTransfer",
+    org: Organization,
+    actor: User,
+    actor_role: str,
+) -> bool:
+    """Flip an expired-but-still-'pending' transfer to 'expired' and emit a
+    durable `owner_transfer_expired` audit event (Shield MEDIUM-1).
+
+    This persists the otherwise-never-set 'expired' terminal state and frees
+    the one-pending-per-org slot so a fresh transfer can be initiated.
+    Mirrors the handoff lazy-expire pattern. Rowcount-1 guarded so a concurrent
+    expirer/canceler doesn't double-emit. Returns True if it flipped."""
+    rc = await db.execute(
+        update(OrgOwnerTransfer)
+        .where(
+            OrgOwnerTransfer.id == transfer.id,
+            OrgOwnerTransfer.status == "pending",
+        )
+        .values(status="expired")
+    )
+    if rc.rowcount:
+        await _emit_owner_transfer_audit(
+            db,
+            org=org,
+            event_type="owner_transfer_expired",
+            actor=actor,
+            actor_role=actor_role,
+        )
+        return True
+    return False
+
+
+async def _notify_transfer_email(
+    request: Request,
+    to_email: str,
+    subject: str,
+    body_html: str,
+) -> None:
+    """Best-effort email notification. Never raises."""
+    email_service = getattr(request.app.state, "email_service", None)
+    if email_service is None:
+        return
+    try:
+        await email_service.send(to_email, subject, body_html)
+    except Exception:
+        logger.exception("Owner transfer email to %s failed", to_email)
+
+
+def _html_escape(s: str) -> str:
+    import html
+    return html.escape(s)
+
+
+@router.post(
+    "/{org_id}/owner/transfer",
+    response_model=TransferResponse,
+)
+async def initiate_owner_transfer(
+    org_id: str,
+    body: TransferRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> TransferResponse:
+    """Initiate a two-step ownership transfer. Owner only.
+
+    Target must be an existing admin of the org. At most one pending
+    transfer per org (enforced by DB partial unique index). A 7-day
+    expiry window starts at creation.
+    """
+    org = await _org_or_404(db, org_id)
+
+    # Caller must be the owner.
+    actor_role = await _user_role_in_org(db, user.id, org_id)
+    if actor_role != "owner":
+        raise HTTPException(403, "Only the org owner can initiate a transfer")
+
+    # Target must be an existing admin.
+    target_role = await _user_role_in_org(db, body.to_user_id, org_id)
+    if target_role is None:
+        raise HTTPException(404, "Target user is not a member of this org")
+    if target_role != "admin":
+        raise HTTPException(400, "Target user must be an admin of the org")
+
+    # Cannot transfer to self.
+    if body.to_user_id == user.id:
+        raise HTTPException(400, "Cannot transfer ownership to yourself")
+
+    now = _now()
+
+    # Check for existing pending transfer. A stale (expired) pending row is
+    # lazily expired here so it frees the one-pending slot (Shield MEDIUM-1)
+    # rather than blocking new transfers until a manual cancel.
+    existing = (
+        await db.execute(
+            select(OrgOwnerTransfer).where(
+                OrgOwnerTransfer.org_id == org_id,
+                OrgOwnerTransfer.status == "pending",
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        if _transfer_is_expired(existing, now):
+            await _lazy_expire_transfer(
+                db, transfer=existing, org=org, actor=user, actor_role=actor_role,
+            )
+        else:
+            raise HTTPException(
+                409,
+                "A pending ownership transfer already exists. "
+                "Cancel it or wait for it to expire before initiating a new one.",
+            )
+
+    expires_at = now + timedelta(days=TRANSFER_EXPIRY_DAYS)
+
+    transfer = OrgOwnerTransfer(
+        org_id=org_id,
+        from_user_id=user.id,
+        to_user_id=body.to_user_id,
+        status="pending",
+        created_at=now,
+        expires_at=expires_at,
+    )
+    db.add(transfer)
+    await db.flush()
+
+    # Resolve target user for audit + email.
+    target_user = (
+        await db.execute(select(User).where(User.id == body.to_user_id))
+    ).scalar_one_or_none()
+    target_email_snapshot = target_user.email if target_user else "unknown"
+
+    # Emit audit event.
+    await _emit_owner_transfer_audit(
+        db,
+        org=org,
+        event_type="owner_transfer_initiated",
+        actor=user,
+        actor_role="owner",
+        target_user=target_user,
+    )
+
+    await db.commit()
+    await db.refresh(transfer)
+
+    await _notify_transfer_email(
+        request,
+        user.email,
+        f"Ownership transfer initiated — {org.name}",
+        "<div style='font-family: system-ui, sans-serif; max-width: 480px; "
+        "margin: 0 auto;'>"
+        f"<h2>Ownership transfer initiated</h2>"
+        f"<p>A transfer of ownership for <strong>{_html_escape(org.name)}</strong> "
+        f"has been initiated to {_html_escape(target_email_snapshot)}.</p>"
+        "<p>If you did not request this, contact support immediately.</p>"
+        "</div>",
+    )
+
+    return TransferResponse(
+        transfer_id=transfer.id,
+        org_id=org_id,
+        from_user_id=transfer.from_user_id,
+        to_user_id=transfer.to_user_id,
+        status=transfer.status,
+        created_at=transfer.created_at,
+        expires_at=transfer.expires_at,
+    )
+
+
+@router.post("/{org_id}/owner/transfer/{transfer_id}/accept")
+async def accept_owner_transfer(
+    org_id: str,
+    transfer_id: int,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Accept a pending ownership transfer. Target admin only.
+
+    ONE atomic transaction:
+    1. Fetch transfer, validate caller=target, not expired.
+    2. Re-validate initiator is STILL owner + target is STILL admin
+       (SELECT FOR UPDATE on both org_member rows).
+    3. Rowcount-1 consume the transfer (pending → accepted).
+    4. Demote old owner → admin + promote target → owner.
+    5. Emit audit event + commit.
+
+    Re-validations run BEFORE any writes so failures don't need
+    to revert. The rowcount-1 guard on the transfer UPDATE is the
+    linearization point; the uq_org_members_one_owner_per_org
+    partial unique index is the structural backstop.
+    """
+    org = await _org_or_404(db, org_id)
+
+    caller_role = await _user_role_in_org(db, user.id, org_id)
+    if caller_role is None:
+        raise HTTPException(403, "You are not a member of this org")
+
+    now = _now()
+
+    # 1. Fetch the transfer; validate caller, expiry, and status.
+    transfer = (
+        await db.execute(
+            select(OrgOwnerTransfer).where(
+                OrgOwnerTransfer.id == transfer_id,
+                OrgOwnerTransfer.org_id == org_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if transfer is None:
+        raise HTTPException(404, "Transfer not found")
+
+    if transfer.status != "pending":
+        raise HTTPException(
+            409, f"Transfer is already {transfer.status}"
+        )
+    # Expired: lazily flip pending → 'expired' + emit audit, then reject
+    # (Shield MEDIUM-1 — persist the terminal state + record the event).
+    if _transfer_is_expired(transfer, now):
+        await _lazy_expire_transfer(
+            db, transfer=transfer, org=org, actor=user, actor_role=caller_role,
+        )
+        await db.commit()
+        raise HTTPException(409, "Transfer has expired")
+
+    if transfer.to_user_id != user.id:
+        raise HTTPException(
+            403, "Only the target admin can accept this transfer"
+        )
+
+    # 2. Re-validate BEFORE any writes: initiator is STILL owner + target
+    #    is STILL admin. SELECT FOR UPDATE on both rows to serialize
+    #    concurrent role changes.
+    initiator_member = (
+        await db.execute(
+            select(OrgMember)
+            .where(
+                OrgMember.org_id == org_id,
+                OrgMember.user_id == transfer.from_user_id,
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if initiator_member is None or initiator_member.role != "owner":
+        raise HTTPException(
+            409,
+            "Initiator is no longer the org owner. "
+            "The transfer cannot proceed.",
+        )
+
+    target_member = (
+        await db.execute(
+            select(OrgMember)
+            .where(
+                OrgMember.org_id == org_id,
+                OrgMember.user_id == transfer.to_user_id,
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if target_member is None or target_member.role != "admin":
+        raise HTTPException(
+            409,
+            "Target is no longer an admin of the org. "
+            "The transfer cannot proceed.",
+        )
+
+    # 3. Rowcount-1 consume the transfer (linearization point).
+    result = await db.execute(
+        update(OrgOwnerTransfer)
+        .where(
+            OrgOwnerTransfer.id == transfer_id,
+            OrgOwnerTransfer.status == "pending",
+        )
+        .values(status="accepted", accepted_at=now)
+    )
+    if result.rowcount == 0:
+        # Another concurrent accept consumed it between our read and now.
+        raise HTTPException(
+            409, "Transfer already accepted or no longer pending"
+        )
+
+    # 4. Atomic swap: demote old owner → admin, promote target → owner.
+    old_owner_id = transfer.from_user_id
+    new_owner_id = transfer.to_user_id
+
+    await db.execute(
+        update(OrgMember)
+        .where(
+            OrgMember.org_id == org_id,
+            OrgMember.user_id == old_owner_id,
+        )
+        .values(role="admin")
+    )
+    await db.execute(
+        update(OrgMember)
+        .where(
+            OrgMember.org_id == org_id,
+            OrgMember.user_id == new_owner_id,
+        )
+        .values(role="owner")
+    )
+
+    # 5. Emit audit event.
+    old_owner = (
+        await db.execute(select(User).where(User.id == old_owner_id))
+    ).scalar_one()
+    new_owner = (
+        await db.execute(select(User).where(User.id == new_owner_id))
+    ).scalar_one()
+    await _emit_owner_transfer_audit(
+        db,
+        org=org,
+        event_type="owner_transferred",
+        actor=user,
+        actor_role=caller_role,
+        target_user=new_owner,
+        before_role="admin",
+        after_role="owner",
+    )
+
+    await db.commit()
+
+    # Best-effort emails: notify old + new owner.
+    await _notify_transfer_email(
+        request,
+        old_owner.email,
+        f"Ownership transferred — {org.name}",
+        "<div style='font-family: system-ui, sans-serif; max-width: 480px; "
+        "margin: 0 auto;'>"
+        f"<h2>Ownership transferred</h2>"
+        f"<p>Ownership of <strong>{_html_escape(org.name)}</strong> has been "
+        f"transferred to {_html_escape(new_owner.email)}. "
+        "You are now an admin of the org.</p>"
+        "</div>",
+    )
+    await _notify_transfer_email(
+        request,
+        new_owner.email,
+        f"You are now the owner of {org.name}",
+        "<div style='font-family: system-ui, sans-serif; max-width: 480px; "
+        "margin: 0 auto;'>"
+        f"<h2>You are now the owner</h2>"
+        f"<p>You are now the owner of <strong>{_html_escape(org.name)}</strong>.</p>"
+        "</div>",
+    )
+
+    return {
+        "status": "accepted",
+        "org_id": org_id,
+        "from_user_id": old_owner_id,
+        "to_user_id": new_owner_id,
+    }
+
+
+@router.post("/{org_id}/owner/transfer/{transfer_id}/cancel")
+async def cancel_owner_transfer(
+    org_id: str,
+    transfer_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Cancel a pending ownership transfer. Owner or target may cancel."""
+    org = await _org_or_404(db, org_id)
+
+    caller_role = await _user_role_in_org(db, user.id, org_id)
+    if caller_role is None:
+        raise HTTPException(403, "You are not a member of this org")
+
+    transfer = (
+        await db.execute(
+            select(OrgOwnerTransfer).where(
+                OrgOwnerTransfer.id == transfer_id,
+                OrgOwnerTransfer.org_id == org_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if transfer is None:
+        raise HTTPException(404, "Transfer not found")
+
+    if transfer.status != "pending":
+        raise HTTPException(
+            409, f"Transfer is already {transfer.status}"
+        )
+
+    # Owner or target may cancel.
+    if user.id not in (transfer.from_user_id, transfer.to_user_id):
+        raise HTTPException(403, "Only the owner or target can cancel")
+
+    transfer.status = "cancelled"
+    await _emit_owner_transfer_audit(
+        db,
+        org=org,
+        event_type="owner_transfer_cancelled",
+        actor=user,
+        actor_role=caller_role,
+    )
+    await db.commit()
+
+    return {"status": "cancelled", "transfer_id": transfer_id}
+
+
+@router.get(
+    "/{org_id}/owner/transfer",
+    response_model=TransferResponse | dict,
+)
+async def get_pending_transfer(
+    org_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the current pending transfer for the org, if any.
+
+    Any member can view the pending transfer.
+    """
+    await _org_or_404(db, org_id)
+    await _require_member(db, user, org_id)
+
+    transfer = (
+        await db.execute(
+            select(OrgOwnerTransfer).where(
+                OrgOwnerTransfer.org_id == org_id,
+                OrgOwnerTransfer.status == "pending",
+            )
+        )
+    ).scalar_one_or_none()
+
+    if transfer is None:
+        return {"pending": False}
+
+    return TransferResponse(
+        transfer_id=transfer.id,
+        org_id=org_id,
+        from_user_id=transfer.from_user_id,
+        to_user_id=transfer.to_user_id,
+        status=transfer.status,
+        created_at=transfer.created_at,
+        expires_at=transfer.expires_at,
+    )

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import StripeEvent, User
+from sessionfs.server.services.entitlements import apply_entitlement
 from sessionfs.server.tier_gate import UserContext, get_user_context
 from sessionfs.server.tiers import get_storage_limit
 
@@ -394,6 +395,18 @@ async def _sync_billing_to_org(
             org.seats_limit = 5
             org.storage_limit_bytes = 5 * 1024 * 1024 * 1024
 
+    # P2: write-through — keep entitlement in sync with Stripe state.
+    await apply_entitlement(
+        "org",
+        org.id,
+        tier=effective_org_tier,
+        seats=org.seats_limit,
+        storage=org.storage_limit_bytes,
+        source="stripe",
+        source_ref=subscription_id if subscription_id else None,
+        db=db,
+    )
+
 
 async def _handle_checkout_completed(event, db: AsyncSession) -> None:
     """New subscription created via Checkout."""
@@ -416,7 +429,8 @@ async def _handle_checkout_completed(event, db: AsyncSession) -> None:
         org_result = await db.execute(select(Organization).where(Organization.id == org_id))
         org = org_result.scalar_one_or_none()
         if org:
-            org.tier = tier if tier in ("team", "enterprise") else "free"
+            effective_tier = tier if tier in ("team", "enterprise") else "free"
+            org.tier = effective_tier
             org.stripe_subscription_id = subscription_id
             org.stripe_customer_id = customer_id or org.stripe_customer_id
             if tier == "team" and seats:
@@ -425,6 +439,17 @@ async def _handle_checkout_completed(event, db: AsyncSession) -> None:
             elif tier == "enterprise":
                 org.seats_limit = seats or 25
                 org.storage_limit_bytes = 0
+            # P2: write-through — create Stripe entitlement for the org.
+            await apply_entitlement(
+                "org",
+                org_id,
+                tier=effective_tier,
+                seats=org.seats_limit,
+                storage=org.storage_limit_bytes,
+                source="stripe",
+                source_ref=subscription_id,
+                db=db,
+            )
     else:
         # Personal checkout — update user
         await db.execute(
@@ -435,6 +460,15 @@ async def _handle_checkout_completed(event, db: AsyncSession) -> None:
                 stripe_subscription_id=subscription_id,
                 tier_updated_at=datetime.now(timezone.utc),
             )
+        )
+        # P2: user entitlement for personal Stripe subscription.
+        await apply_entitlement(
+            "user",
+            user_id,
+            tier=tier,
+            source="stripe",
+            source_ref=subscription_id,
+            db=db,
         )
         await _sync_billing_to_org(user_id, tier, subscription_id, db, seats=seats, customer_id=customer_id)
 
@@ -542,6 +576,17 @@ async def _handle_subscription_updated(event, db: AsyncSession) -> None:
                 org.storage_limit_bytes = 0  # unlimited
                 if seats and seats > 0:
                     org.seats_limit = seats
+            # P2: write-through — keep org entitlement in sync.
+            await apply_entitlement(
+                "org",
+                org.id,
+                tier=effective_tier,
+                seats=org.seats_limit,
+                storage=org.storage_limit_bytes,
+                source="stripe",
+                source_ref=subscription.id,
+                db=db,
+            )
         elif user:
             # Personal subscription — update user directly
             await db.execute(
@@ -552,6 +597,15 @@ async def _handle_subscription_updated(event, db: AsyncSession) -> None:
                     stripe_subscription_id=subscription.id,
                     tier_updated_at=datetime.now(timezone.utc),
                 )
+            )
+            # P2: user entitlement for personal Stripe subscription.
+            await apply_entitlement(
+                "user",
+                user.id,
+                tier=new_tier,
+                source="stripe",
+                source_ref=subscription.id,
+                db=db,
             )
             await _sync_billing_to_org(user.id, new_tier, subscription.id, db, seats=seats, customer_id=customer_id)
         await db.commit()
@@ -589,6 +643,18 @@ async def _handle_subscription_deleted(event, db: AsyncSession) -> None:
         org.stripe_subscription_id = None
         org.seats_limit = 0
         org.storage_limit_bytes = 0
+        # P2: cancel entitlement on subscription deletion.
+        await apply_entitlement(
+            "org",
+            org.id,
+            tier="free",
+            seats=0,
+            storage=0,
+            source="stripe",
+            source_ref=subscription.id,
+            status="canceled",
+            db=db,
+        )
     elif user:
         # Personal subscription
         await db.execute(
@@ -599,6 +665,16 @@ async def _handle_subscription_deleted(event, db: AsyncSession) -> None:
                 stripe_subscription_id=None,
                 tier_updated_at=datetime.now(timezone.utc),
             )
+        )
+        # P2: cancel user entitlement on subscription deletion.
+        await apply_entitlement(
+            "user",
+            user.id,
+            tier="free",
+            source="stripe",
+            source_ref=subscription.id,
+            status="canceled",
+            db=db,
         )
         await _sync_billing_to_org(user.id, "free", subscription.id, db, customer_id=customer_id)
 

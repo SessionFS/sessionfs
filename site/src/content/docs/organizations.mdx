@@ -36,14 +36,15 @@ A user can only belong to one organization at a time.
 
 ## Roles
 
-Organizations have two roles:
+Organizations have these roles:
 
 | Role | Capabilities |
 |------|-------------|
-| **admin** | Invite/remove members, change roles, manage billing, view all org settings |
+| **owner** | Everything an admin can do, plus transfer ownership of the organization. Every org has exactly one owner. |
+| **admin** | Invite/remove members, change roles, manage billing, activate a license, view all org settings |
 | **member** | Use all features included in the org tier, view org info |
 
-Admins cannot change their own role. This prevents accidental last-admin lockout.
+Admins cannot change their own role. This prevents accidental last-admin lockout. An organization can never be left without an owner — the last owner cannot be removed or deactivated without first transferring ownership (see [Ownership transfer](#ownership-transfer-v0110)).
 
 ## Inviting members
 
@@ -161,3 +162,36 @@ The CLI surface mirrors the API: `sfs project transfer --to | --accept | --rejec
 ## Session-to-project routing (v0.10.0)
 
 Sessions carry an explicit `project_id` (`sessions.project_id`, nullable). On every upload (`POST /sessions` and `PUT /sessions/{id}/sync`) the server resolves the linkage from the workspace's git remote inside the write transaction. Re-sync re-evaluates: pre-v0.10.0 sessions retroactively pick up a `project_id` when the matching project is created later; stale linkages clear when access is revoked.
+
+## Entitlements (v0.11.0)
+
+As of v0.11.0, an organization's plan tier, seat count, and storage allowance are resolved from a single authoritative **entitlement** record per organization. This replaced the older arrangement where plan signals were spread across user rows and license tables, which could leave enterprise admins unable to fully see or administer their own orgs.
+
+- The entitlement has its own lifecycle (`active` / `canceled` / `expired` / `revoked`), tracked separately from billing health (`current` / `past_due`).
+- Effective tier is resolved entitlement-first across the server, with a safe fall-back to the legacy columns for any record not yet migrated.
+- Existing organizations were backfilled deterministically from their strongest existing signal (license, then subscription, then manual grant), so no plan changed for anyone during the upgrade.
+
+This is an internal model change — there is nothing to configure. It is the foundation that makes self-service license activation and ownership transfer possible.
+
+## Self-service license activation (v0.11.0)
+
+An organization admin can activate a license key against their org directly, with **required email verification**:
+
+```
+GET/POST /api/v1/org/activate          # Look up and begin activation of a license key
+POST     /api/v1/org/activate/verify   # Confirm the emailed code to complete activation
+```
+
+Activation completes only after the admin confirms a single-use, time-limited code sent to their email address. The activation lookup is non-oracular — it never confirms whether an arbitrary key exists — and the flow is rate-limited. This gives Enterprise customers a direct path to apply a license to their org without manual back-office steps.
+
+## Ownership transfer (v0.11.0)
+
+Every organization has exactly one **owner**. Ownership can be transferred to another member through a two-step, owner-initiated flow:
+
+```
+POST /api/v1/org/transfer/initiate     # Current owner initiates a transfer to a target member
+POST /api/v1/org/transfer/accept       # Target member accepts and becomes the new owner
+POST /api/v1/org/transfer/cancel       # Initiator cancels a pending transfer
+```
+
+Both parties' standing is re-validated at accept time, and a pending transfer expires if it is not accepted. **Last-owner safety** is enforced throughout: an org can never be left without an owner, so removing or deactivating the last owner is blocked until ownership is transferred, and admins have a force-transfer path with a full audit trail.
