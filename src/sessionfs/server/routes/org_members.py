@@ -125,9 +125,17 @@ async def _user_role_in_org(
 
 
 async def _count_admins(db: AsyncSession, org_id: str) -> int:
+    """Count owner+admin members (the administrative tier).
+
+    P4 extends the last-admin guard: the org invariant is exactly one
+    owner (immutable except via transfer) + zero or more admins.
+    An org with an owner + zero admins is a valid, non-orphaned state
+    — the owner alone satisfies the administrative-count guard.
+    """
     result = await db.execute(
         select(OrgMember).where(
-            OrgMember.org_id == org_id, OrgMember.role == "admin"
+            OrgMember.org_id == org_id,
+            OrgMember.role.in_(["owner", "admin"]),
         )
     )
     return len(result.scalars().all())
@@ -147,9 +155,10 @@ async def _org_or_404(db: AsyncSession, org_id: str) -> Organization:
 async def _require_admin(
     db: AsyncSession, user: User, org_id: str
 ) -> None:
+    """Require admin or owner role. Owner has all admin powers."""
     role = await _user_role_in_org(db, user.id, org_id)
-    if role != "admin":
-        raise HTTPException(403, "Admin role required")
+    if role not in ("admin", "owner"):
+        raise HTTPException(403, "Admin or owner role required")
 
 
 async def _require_member(
@@ -285,8 +294,8 @@ async def update_org_settings(
     """
     org = await _org_or_404(db, org_id)
     role = await _require_member(db, user, org_id)
-    if role != "admin":
-        raise HTTPException(403, "Only org admins can change settings")
+    if role not in ("admin", "owner"):
+        raise HTTPException(403, "Only org admins or owners can change settings")
 
     # Range guards — None means "no override" and is always accepted.
     if body.kb_retention_days is not None and not (1 <= body.kb_retention_days <= 730):
@@ -589,25 +598,33 @@ async def perform_role_change(
 
     Guards:
       - new_role must be 'admin' or 'member' (400)
+      - new_role='owner' is rejected — ownership changes ONLY via
+        the dedicated /owner/transfer endpoint (§2.4.3)
       - actor cannot change their own role (400)
       - non-member target (404)
-      - last-admin demotion (400) — restored from the legacy route
-        (it had been accidentally dropped during earlier round
-        refactoring; this extraction makes the guard load-bearing on
-        both surfaces and adds explicit test coverage)
+      - admin cannot target the owner (403) — only the owner can
+        relinquish via transfer
+      - owner self-demote to admin: allowed only if another admin
+        exists (409 — no orphan ownership)
+      - owner self-demote to member: blocked (must transfer first)
+      - last-admin demotion (400) — counts owner+admin
 
     Side effect on admin→member demotion:
       - `cancel_outgoing_pending_from_org()` revokes source-authority
         pending transfers initiated from this org by the demoted user.
 
-    Caller MUST have already verified that `actor` is an admin of
-    `org_id` (legacy via `check_role`, new via `_require_admin`).
+    Caller MUST have already verified that `actor` is an admin or owner
+    of `org_id` (legacy via `check_role`, new via `_require_admin`).
     Service trusts that and runs the rest.
     """
+    # P4: ownership changes ONLY via the dedicated transfer endpoint.
+    if new_role == "owner":
+        raise HTTPException(
+            400,
+            "Ownership is transferred via /owner/transfer, not role change",
+        )
     if new_role not in ("admin", "member"):
         raise HTTPException(400, "Role must be 'admin' or 'member'")
-    if target_user_id == actor.id:
-        raise HTTPException(400, "Cannot change your own role")
 
     member = (
         await db.execute(
@@ -620,35 +637,81 @@ async def perform_role_change(
     if member is None:
         raise HTTPException(404, "Member not found in this org")
 
+    # Resolve actor's role for owner-specific guards.
+    actor_member = (
+        await db.execute(
+            select(OrgMember).where(
+                OrgMember.org_id == org_id,
+                OrgMember.user_id == actor.id,
+            )
+        )
+    ).scalar_one_or_none()
+    actor_role = actor_member.role if actor_member else None
+
+    # P4: admin cannot target the owner — only the owner can
+    # relinquish via transfer.
+    if member.role == "owner" and actor_role != "owner":
+        raise HTTPException(
+            403,
+            "Only the owner can change the owner role. "
+            "Use /owner/transfer to transfer ownership.",
+        )
+
+    # P4: owner self-demotion guards.
+    if target_user_id == actor.id and actor_role == "owner":
+        if new_role == "member":
+            raise HTTPException(
+                400,
+                "Cannot demote yourself to member. "
+                "Transfer ownership first, or demote to admin if another admin exists.",
+            )
+        if new_role == "admin":
+            # Owner→admin self-demotion: require at least one other
+            # admin to exist so the org is not orphaned.
+            await db.execute(
+                select(OrgMember)
+                .where(
+                    OrgMember.org_id == org_id,
+                    OrgMember.role.in_(["owner", "admin"]),
+                )
+                .with_for_update()
+            )
+            if await _count_admins(db, org_id) <= 1:
+                raise HTTPException(
+                    409,
+                    "Cannot demote — you are the last administrator. "
+                    "Promote another member to admin first, or transfer ownership.",
+                )
+    elif target_user_id == actor.id:
+        raise HTTPException(400, "Cannot change your own role")
+
     # Last-admin demotion guard — Codex Phase-3a round-6 MEDIUM (KB
     # 264) noted the pre-UPDATE COUNT was concurrency-unsafe: two
     # concurrent cross-demotions could both observe `count == 2` and
     # both commit, leaving 0 admins. Fix: SELECT ... FOR UPDATE on
-    # ALL admin rows of this org BEFORE counting. PG row-locks the
-    # admin set; a concurrent demotion blocks until our transaction
-    # commits, then sees the updated count and fires its own guard.
-    # SQLite ignores FOR UPDATE but its single-writer model already
-    # serializes by default, so the race doesn't exist there.
+    # ALL owner+admin rows of this org BEFORE counting. PG row-locks
+    # the administrative set; a concurrent demotion blocks until our
+    # transaction commits, then sees the updated count and fires its
+    # own guard. SQLite ignores FOR UPDATE but its single-writer model
+    # already serializes by default, so the race doesn't exist there.
     #
-    # The lock is acquired on every role-change call (not just
-    # demotions) so the post-UPDATE recount and the legacy single-
-    # statement test paths both honor it consistently.
-    if member.role == "admin" and new_role == "member":
+    # P4: lock covers owner+admin now that _count_admins() counts both.
+    if member.role in ("admin", "owner") and new_role == "member":
         await db.execute(
             select(OrgMember)
             .where(
                 OrgMember.org_id == org_id,
-                OrgMember.role == "admin",
+                OrgMember.role.in_(["owner", "admin"]),
             )
             .with_for_update()
         )
         if await _count_admins(db, org_id) <= 1:
             raise HTTPException(
-                400, "Cannot demote the last admin of the org"
+                400, "Cannot demote the last administrator of the org"
             )
 
     # Snapshot the old role for the post-UPDATE demotion-edge check.
-    was_admin = member.role == "admin"
+    was_admin = member.role in ("admin", "owner")
 
     await db.execute(
         update(OrgMember)
@@ -658,8 +721,8 @@ async def perform_role_change(
         .values(role=new_role)
     )
 
-    # Admin→member demotion revokes source-side authority. Symmetric
-    # with `perform_member_removal` (KB entries 258, 260, 262).
+    # Admin/owner→member demotion revokes source-side authority.
+    # Symmetric with `perform_member_removal` (KB entries 258, 260, 262).
     if was_admin and new_role == "member":
         await cancel_outgoing_pending_from_org(
             db, target_user_id, org_id, _now()
@@ -745,9 +808,9 @@ async def perform_member_removal(
         invariants — Codex Phase-3a round-1 HIGH, KB entry 254).
 
     Caller MUST have already confirmed `removing_admin` is an admin
-    of `org_id` (the legacy route does this via ctx.role; the new
-    route does via `_require_admin`). This function trusts that and
-    runs the invariants.
+    or owner of `org_id` (the legacy route does this via ctx.role;
+    the new route does via `_require_admin`). This function trusts
+    that and runs the invariants.
 
     Invariants enforced (KB 230 #3):
       1. Member-owned org-scoped projects auto-transfer to admin.
@@ -762,15 +825,12 @@ async def perform_member_removal(
     Guards (raised as HTTPException for clean propagation through
     both routes):
       - self-removal blocked (400)
-      - last-admin removal blocked (400)
+      - owner cannot be removed (409 — transfer first)
+      - admin cannot remove the owner (403 — only the owner can
+        relinquish via transfer)
+      - last-admin removal blocked (400) — counts owner+admin
       - non-member target (404)
     """
-    if target_user_id == removing_admin.id:
-        raise HTTPException(
-            400,
-            "Cannot remove yourself. Promote another admin and ask them to remove you, or delete the org.",
-        )
-
     member = (
         await db.execute(
             select(OrgMember).where(
@@ -782,25 +842,59 @@ async def perform_member_removal(
     if member is None:
         raise HTTPException(404, "Member not found in this org")
 
-    if member.role == "admin":
+    # Resolve remover's role for owner-specific guards.
+    remover_member = (
+        await db.execute(
+            select(OrgMember).where(
+                OrgMember.org_id == org_id,
+                OrgMember.user_id == removing_admin.id,
+            )
+        )
+    ).scalar_one_or_none()
+    remover_role = remover_member.role if remover_member else None
+
+    # P4: owner cannot be removed — must transfer ownership first.
+    if member.role == "owner":
+        raise HTTPException(
+            409,
+            "Cannot remove the org owner. Transfer ownership first "
+            "via /owner/transfer.",
+        )
+
+    # P4: admin cannot remove the owner (defense-in-depth — already
+    # caught by the role=='owner' guard above, but kept explicit).
+    if target_user_id == removing_admin.id:
+        if remover_role == "owner":
+            raise HTTPException(
+                400,
+                "Cannot remove yourself as owner. "
+                "Transfer ownership first, or demote yourself to admin if another admin exists.",
+            )
+        raise HTTPException(
+            400,
+            "Cannot remove yourself. Promote another admin and ask them to remove you, or delete the org.",
+        )
+
+    if member.role in ("admin", "owner"):
         # Same TOCTOU concern as `perform_role_change`'s demotion
         # guard (Codex Phase-3a rounds 6/8, KB 264/266): two
         # concurrent cross-removals could each observe `count == 2`
-        # and both succeed, leaving 0 admins. Lock the admin set
-        # before counting. PG row-locks admin rows; SQLite ignores
+        # and both succeed, leaving 0 admins. Lock the owner+admin
+        # set before counting. PG row-locks the rows; SQLite ignores
         # FOR UPDATE but serializes writes globally.
+        # P4: lock covers owner+admin now that _count_admins counts both.
         await db.execute(
             select(OrgMember)
             .where(
                 OrgMember.org_id == org_id,
-                OrgMember.role == "admin",
+                OrgMember.role.in_(["owner", "admin"]),
             )
             .with_for_update()
         )
         if await _count_admins(db, org_id) <= 1:
             raise HTTPException(
                 400,
-                "Cannot remove the last admin; promote another member first",
+                "Cannot remove the last administrator; promote another member first",
             )
 
     now = _now()
