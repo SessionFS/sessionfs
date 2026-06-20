@@ -173,25 +173,24 @@ As of v0.11.0, an organization's plan tier, seat count, and storage allowance ar
 
 This is an internal model change — there is nothing to configure. It is the foundation that makes self-service license activation and ownership transfer possible.
 
-## Self-service license activation (v0.11.0)
+## Self-service license activation
 
-An organization admin can activate a license key against their org directly, with **required email verification**:
+A user who has received a license key can activate it from the dashboard, with **required email verification**. The flow is available in the dashboard for a user who is not yet in an organization:
 
-```
-GET/POST /api/v1/org/activate          # Look up and begin activation of a license key
-POST     /api/v1/org/activate/verify   # Confirm the emailed code to complete activation
-```
+1. Enter the license key and confirm the previewed organization and tier.
+2. Submit, then enter the single-use, time-limited code emailed for verification.
+3. The activated user lands as the **owner** of the newly created organization.
 
-Activation completes only after the admin confirms a single-use, time-limited code sent to their email address. The activation lookup is non-oracular — it never confirms whether an arbitrary key exists — and the flow is rate-limited. This gives Enterprise customers a direct path to apply a license to their org without manual back-office steps.
+Activation completes only after the emailed code is confirmed — verification is required, not optional. The activation lookup is non-oracular (it never confirms whether an arbitrary key exists) and the flow is rate-limited. Note that activation **creates a new organization** from the license; it does not attach a license to an existing organization. Invalid-key and bad/expired-code states are handled inline, and the exact-match-email path completes without a separate code round-trip.
 
-## Ownership transfer (v0.11.0)
+This gives Enterprise customers a direct, self-service path to stand up a licensed organization without manual back-office steps.
 
-Every organization has exactly one **owner**. Ownership can be transferred to another member through a two-step, owner-initiated flow:
+## Ownership transfer
 
-```
-POST /api/v1/org/transfer/initiate     # Current owner initiates a transfer to a target member
-POST /api/v1/org/transfer/accept       # Target member accepts and becomes the new owner
-POST /api/v1/org/transfer/cancel       # Initiator cancels a pending transfer
-```
+Every organization has exactly one **owner**. The owner can transfer ownership to an existing admin directly from the dashboard members surface, through a two-step flow:
 
-Both parties' standing is re-validated at accept time, and a pending transfer expires if it is not accepted. **Last-owner safety** is enforced throughout: an org can never be left without an owner, so removing or deactivating the last owner is blocked until ownership is transferred, and admins have a force-transfer path with a full audit trail.
+1. The current owner initiates a transfer to a target admin.
+2. The target sees an **Accept / Decline** banner; the initiator sees a pending banner with **Cancel**. Each shows the transfer's expiry.
+3. On accept, the target becomes the new owner.
+
+The owner role is shown in the members list, and the owner row is protected from demotion or removal. Both parties' standing is re-validated at accept time, and a pending transfer expires if it is not accepted. **Last-owner safety** is enforced throughout: an org can never be left without an owner, so removing or deactivating the last owner is blocked until ownership is transferred, and admins have a force-transfer path with a full audit trail. (This is organization ownership transfer, distinct from [project transfers](#project-transfers-v0100).)

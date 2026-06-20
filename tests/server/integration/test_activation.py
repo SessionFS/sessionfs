@@ -682,6 +682,110 @@ class TestPhaseB:
         assert resp.status_code in (410, 403)
 
     @pytest.mark.asyncio
+    async def test_verify_rejects_when_already_member(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        unbound_license: HelmLicense,
+        activation_user: User,
+        activation_attempt: tuple[int, str],
+    ):
+        """Phase B re-checks org membership INSIDE the atomic txn. If the user
+        joined an org between Phase A and Phase B (the race Phase A can't see),
+        /verify must reject with 409 and leave the license unbound — no second
+        OrgMember row, no orphan org. (Shield LOW tk_29b3e43f1ee94130.)
+        """
+        # Simulate the user joining an org after Phase A created the attempt.
+        existing_org = Organization(
+            id="org_preexisting",
+            name="Pre-existing Org",
+            slug="pre-existing-org",
+            tier="team",
+        )
+        db_session.add(existing_org)
+        await db_session.flush()
+        db_session.add(
+            OrgMember(
+                org_id="org_preexisting",
+                user_id=activation_user.id,
+                role="member",
+                joined_at=datetime.now(timezone.utc),
+            )
+        )
+        await db_session.commit()
+
+        api_key = await _create_api_key(db_session, activation_user)
+        headers = {"Authorization": f"Bearer {api_key}"}
+        _, raw_token = activation_attempt
+
+        resp = await client.post(
+            "/api/v1/org/activate/verify",
+            headers=headers,
+            json={"token": raw_token},
+        )
+        assert resp.status_code == 409, resp.text
+
+        # License remained unbound — the whole Phase B txn rolled back.
+        await db_session.refresh(unbound_license)
+        assert unbound_license.org_id is None
+
+        # The user still has exactly ONE membership (the pre-existing one).
+        members = (
+            await db_session.execute(
+                select(OrgMember).where(OrgMember.user_id == activation_user.id)
+            )
+        ).scalars().all()
+        assert len(members) == 1
+        assert members[0].org_id == "org_preexisting"
+
+    @pytest.mark.asyncio
+    async def test_verify_already_member_with_duplicates_is_409_not_500(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        unbound_license: HelmLicense,
+        activation_user: User,
+        activation_attempt: tuple[int, str],
+    ):
+        """The Phase B existing-member guard must itself survive the duplicate-
+        membership state it defends against: a user already holding TWO
+        OrgMember rows must get 409 (not a MultipleResultsFound 500).
+        (Codex R1 on tk_29b3e43f1ee94130.)
+        """
+        for i in (1, 2):
+            org = Organization(
+                id=f"org_dup_member_{i}",
+                name=f"Dup Org {i}",
+                slug=f"dup-org-{i}",
+                tier="team",
+            )
+            db_session.add(org)
+            await db_session.flush()
+            db_session.add(
+                OrgMember(
+                    org_id=f"org_dup_member_{i}",
+                    user_id=activation_user.id,
+                    role="member",
+                    joined_at=datetime.now(timezone.utc),
+                )
+            )
+        await db_session.commit()
+
+        api_key = await _create_api_key(db_session, activation_user)
+        headers = {"Authorization": f"Bearer {api_key}"}
+        _, raw_token = activation_attempt
+
+        resp = await client.post(
+            "/api/v1/org/activate/verify",
+            headers=headers,
+            json={"token": raw_token},
+        )
+        assert resp.status_code == 409, resp.text
+
+        await db_session.refresh(unbound_license)
+        assert unbound_license.org_id is None
+
+    @pytest.mark.asyncio
     async def test_verify_wrong_user_rejected(
         self,
         client: AsyncClient,

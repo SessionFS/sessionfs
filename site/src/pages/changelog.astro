@@ -17,14 +17,33 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.11.1 -->
+      <!-- v0.11.2 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
-            <span class="text-brand font-semibold">v0.11.1</span>
+            <span class="text-brand font-semibold">v0.11.2</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">June 20, 2026</span>
           <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Self-Service Licensing In The Dashboard &mdash; License Activation &middot; Ownership Transfer</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>License activation, now in the dashboard.</strong> v0.11.0 shipped the licensing backend; this release adds the web UI for it. A user who isn't yet in an organization can activate a license key from the dashboard with a guided flow: enter the key, confirm the previewed org and tier, submit, then enter the single-use code emailed for verification &mdash; landing as the new organization's owner. Email verification is required, and invalid-key and bad/expired-code states are handled inline. Activation creates a new organization from the license.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Ownership transfer, now in the dashboard.</strong> An organization owner can transfer ownership to an existing admin directly from the members surface. The target sees an Accept / Decline banner, the initiator sees a pending banner with Cancel, and each shows the transfer's expiry. The owner role is shown in the members list and the owner row is protected from demotion or removal. (Distinct from project transfer.)</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Hardened the profile and activation paths.</strong> A brief duplicate organization-membership race no longer fails the profile endpoint or activation: the caller's membership is resolved deterministically, and an already-member caller is rejected cleanly without creating a partial organization.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Dashboard UI for the v0.11.0 licensing backend, plus backend hardening. No schema change &mdash; migrations 001&ndash;052 (unchanged). 2,418 backend + 397 dashboard UI tests passing. 62 MCP tools (unchanged) &middot; 9 supported tools unchanged.</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.11.1 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.11.1</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">June 20, 2026</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Patch &mdash; Entitlements Migration Hardening</h2>
         <ul class="space-y-2 text-base text-muted">
@@ -38,7 +57,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
       <!-- v0.11.0 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
-          <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
             <span class="text-brand font-semibold">v0.11.0</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">June 20, 2026</span>

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sessionfs"
-version = "0.11.1"
+version = "0.11.2"
 description = "Capture, sync, and resume AI coding sessions across 9 tools — Claude Code, Codex, Gemini, Copilot, Cursor, Amp, Cline, Roo Code, and Kilo Code."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -84,6 +84,12 @@ dev = [
     "build>=1.0,<2.0",
     "bandit>=1.7,<2.0",
     "pip-audit>=2.7,<3.0",
+    # Defense-in-depth floor: msgpack arrives transitively via
+    # pip-audit→CacheControl (audit-time tooling only; not a SessionFS
+    # runtime dep and imported nowhere in src/). GHSA-6v7p-g79w-8964 is a
+    # streaming-Unpacker reuse-after-error DoS fixed in 1.2.1. SessionFS
+    # never uses msgpack, so impact is nil — pin keeps CI pip-audit green.
+    "msgpack>=1.2.1",
 ]
 
 [project.scripts]
