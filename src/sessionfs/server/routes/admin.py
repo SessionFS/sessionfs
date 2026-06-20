@@ -343,7 +343,13 @@ async def delete_user(
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """Soft-delete a user: deactivate account and revoke all API keys."""
+    """Soft-delete a user: deactivate account and revoke all API keys.
+
+    P4 (§2.5): before deactivation, check whether the user is the sole
+    owner of any org. If another admin exists, auto-promote the
+    longest-tenured admin to owner. If NO other admin exists, BLOCK
+    with 409 — never silently orphan an org.
+    """
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if user is None:
@@ -351,6 +357,83 @@ async def delete_user(
 
     if user.id == admin.id:
         raise HTTPException(status_code=400, detail="Cannot delete your own account")
+
+    # P4: deactivation-time last-owner check (Sentinel MEDIUM-4).
+    # Runs BEFORE is_active=False in the same transaction.
+    owner_orgs = (
+        await db.execute(
+            select(OrgMember, Organization)
+            .join(Organization, OrgMember.org_id == Organization.id)
+            .where(
+                OrgMember.user_id == user_id,
+                OrgMember.role == "owner",
+            )
+        )
+    ).all()
+
+    for member, org in owner_orgs:
+        # Find the longest-tenured admin who is NOT the deactivated user.
+        successor = (
+            await db.execute(
+                select(OrgMember)
+                .where(
+                    OrgMember.org_id == org.id,
+                    OrgMember.role == "admin",
+                    OrgMember.user_id != user_id,
+                )
+                .order_by(OrgMember.joined_at.asc(), OrgMember.user_id.asc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+        if successor is None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "sole_owner",
+                    "org_id": org.id,
+                    "org_name": org.name,
+                    "message": (
+                        f"Cannot deactivate — you are the sole owner-or-admin "
+                        f"of org '{org.name}'. Transfer ownership or promote "
+                        f"another member to admin first, or use the admin "
+                        f"force-transfer endpoint."
+                    ),
+                },
+            )
+
+        # Auto-promote the longest-tenured admin to owner.
+        await db.execute(
+            update(OrgMember)
+            .where(
+                OrgMember.org_id == org.id,
+                OrgMember.user_id == successor.user_id,
+            )
+            .values(role="owner")
+        )
+
+        # Emit OrgAuditEvent for the auto-promotion.
+        successor_user = (
+            await db.execute(
+                select(User).where(User.id == successor.user_id)
+            )
+        ).scalar_one()
+        db.add(
+            OrgAuditEvent(
+                id=f"oae_{uuid.uuid4().hex[:16]}",
+                org_id=org.id,
+                org_name_snapshot=org.name,
+                event_type="owner_auto_promoted_on_deactivation",
+                actor_user_id=admin.id,
+                actor_email_snapshot=admin.email,
+                actor_role_at_time="platform_admin",
+                target_type="user",
+                target_id=successor.user_id,
+                target_email_snapshot=successor_user.email,
+                before=json.dumps({"role": "admin"}),
+                after=json.dumps({"role": "owner"}),
+            )
+        )
 
     user.is_active = False
 
@@ -688,6 +771,144 @@ async def admin_change_org_tier(
     await db.commit()
 
     return {"org_id": org_id, "updated": changes}
+
+
+# P4 — Admin force-transfer: platform-admin recovery for
+# deactivated/compromised/departed owners (Sentinel MEDIUM-4).
+
+
+class ForceTransferRequest(BaseModel):
+    to_user_id: str
+
+
+@router.post("/orgs/{org_id}/force-transfer-owner")
+async def force_transfer_owner(
+    org_id: str,
+    body: ForceTransferRequest,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Force-transfer org ownership. Platform admin only.
+
+    Recovery path when the owner is deactivated, compromised, or
+    departed and no other admin can transfer ownership. The platform
+    admin is the trust anchor.
+
+    Atomic single-transaction swap: re-validate current state →
+    demote old owner → promote target. AdminAction + OrgAuditEvent
+    logged.
+    """
+    org = (
+        await db.execute(select(Organization).where(Organization.id == org_id))
+    ).scalar_one_or_none()
+    if org is None:
+        raise HTTPException(404, "Org not found")
+
+    # Target must be an existing org member.
+    target_member = (
+        await db.execute(
+            select(OrgMember).where(
+                OrgMember.org_id == org_id,
+                OrgMember.user_id == body.to_user_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if target_member is None:
+        raise HTTPException(404, "Target user is not a member of this org")
+
+    # Find the current owner.
+    current_owner = (
+        await db.execute(
+            select(OrgMember).where(
+                OrgMember.org_id == org_id,
+                OrgMember.role == "owner",
+            )
+        )
+    ).scalar_one_or_none()
+
+    if current_owner is None:
+        raise HTTPException(
+            409, "Org has no owner — contact support to repair"
+        )
+    if current_owner.user_id == body.to_user_id:
+        raise HTTPException(
+            400, "Target user is already the owner"
+        )
+
+    # Atomic swap under FOR UPDATE.
+    await db.execute(
+        select(OrgMember)
+        .where(
+            OrgMember.org_id == org_id,
+            OrgMember.role.in_(["owner", "admin"]),
+        )
+        .with_for_update()
+    )
+
+    # Re-validate after lock.
+    current_owner = (
+        await db.execute(
+            select(OrgMember).where(
+                OrgMember.org_id == org_id,
+                OrgMember.role == "owner",
+            )
+        )
+    ).scalar_one_or_none()
+    if current_owner is None:
+        raise HTTPException(409, "Org owner changed — retry")
+
+    old_owner_id = current_owner.user_id
+    new_owner_id = body.to_user_id
+
+    # Demote old owner → the target's current role (usually admin or member).
+    await db.execute(
+        update(OrgMember)
+        .where(OrgMember.org_id == org_id, OrgMember.user_id == old_owner_id)
+        .values(role=target_member.role)
+    )
+    # Promote target → owner.
+    await db.execute(
+        update(OrgMember)
+        .where(OrgMember.org_id == org_id, OrgMember.user_id == new_owner_id)
+        .values(role="owner")
+    )
+
+    # AdminAction audit.
+    await _log_action(
+        db, admin.id, "force_transfer_owner", "organization", org_id,
+        {"from_user_id": old_owner_id, "to_user_id": new_owner_id},
+    )
+
+    # OrgAuditEvent.
+    new_owner_user = (
+        await db.execute(select(User).where(User.id == new_owner_id))
+    ).scalar_one_or_none()
+    db.add(
+        OrgAuditEvent(
+            id=f"oae_{uuid.uuid4().hex[:16]}",
+            org_id=org.id,
+            org_name_snapshot=org.name,
+            event_type="owner_force_transferred",
+            actor_user_id=admin.id,
+            actor_email_snapshot=admin.email,
+            actor_role_at_time="platform_admin",
+            target_type="user",
+            target_id=new_owner_id,
+            target_email_snapshot=new_owner_user.email if new_owner_user else None,
+            before=json.dumps(
+                {"from_user_id": old_owner_id, "to_user_id": new_owner_id}
+            ),
+        )
+    )
+
+    await db.commit()
+
+    return {
+        "status": "force_transferred",
+        "org_id": org_id,
+        "from_user_id": old_owner_id,
+        "to_user_id": new_owner_id,
+    }
 
 
 # ---------------------------------------------------------------------------
