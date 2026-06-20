@@ -179,10 +179,14 @@ async def _phase_b_commit(
     # this re-check the user would get a second OrgMember row, which then makes
     # their own /me ambiguous. Mirrors Phase A + invite-accept.
     # (Shield LOW tk_29b3e43f1ee94130.)
+    # Use .first() over a LIMIT 1 — we only need existence, and the caller
+    # may ALREADY hold duplicate memberships (the very state this guard
+    # defends against). scalar_one_or_none() would raise MultipleResultsFound
+    # and turn the intended 409 into a 500. (Codex R1 on tk_29b3e43f1ee94130.)
     already_member = await db.execute(
-        select(OrgMember).where(OrgMember.user_id == user.id)
+        select(OrgMember.id).where(OrgMember.user_id == user.id).limit(1)
     )
-    if already_member.scalar_one_or_none():
+    if already_member.first() is not None:
         raise HTTPException(
             409,
             "You are already a member of an organization. "
