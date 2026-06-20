@@ -373,6 +373,10 @@ async def delete_user(
 
     for member, org in owner_orgs:
         # Find the longest-tenured admin who is NOT the deactivated user.
+        # FOR UPDATE locks the chosen successor row so a concurrent role
+        # change can't demote it between selection and promotion (Sentinel
+        # L1 — consistent with the accept/force-transfer paths; the one-owner
+        # index is the structural backstop).
         successor = (
             await db.execute(
                 select(OrgMember)
@@ -383,6 +387,7 @@ async def delete_user(
                 )
                 .order_by(OrgMember.joined_at.asc(), OrgMember.user_id.asc())
                 .limit(1)
+                .with_for_update()
             )
         ).scalar_one_or_none()
 

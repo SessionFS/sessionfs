@@ -498,6 +498,109 @@ async def test_expired_transfer_rejected(
 
 
 @pytest.mark.asyncio
+async def test_expired_transfer_lazy_expires_and_frees_slot(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Shield MEDIUM-1: an expired transfer flips to 'expired' (durable +
+    audited) on accept, and the one-pending slot is freed so a fresh transfer
+    can be initiated."""
+    owner, owner_key = await _make_user(db_session, "owner")
+    admin, admin_key = await _make_user(db_session, "admin")
+    org = await _make_org_with_owner(db_session, owner)
+    await _add_member(db_session, org, admin, role="admin")
+
+    resp = await client.post(
+        f"/api/v1/orgs/{org.id}/owner/transfer",
+        json={"to_user_id": admin.id},
+        headers=_hdrs(owner_key),
+    )
+    transfer_id = resp.json()["transfer_id"]
+
+    # Manually expire it.
+    transfer = (
+        await db_session.execute(
+            select(OrgOwnerTransfer).where(OrgOwnerTransfer.id == transfer_id)
+        )
+    ).scalar_one()
+    transfer.expires_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    await db_session.commit()
+
+    # Accept → 409, and the row is now durably 'expired' + audit emitted.
+    resp = await client.post(
+        f"/api/v1/orgs/{org.id}/owner/transfer/{transfer_id}/accept",
+        headers=_hdrs(admin_key),
+    )
+    assert resp.status_code == 409
+    # Select the column directly (avoids identity-map refresh of a stale
+    # ORM instance in the test session).
+    status = (
+        await db_session.execute(
+            select(OrgOwnerTransfer.status).where(OrgOwnerTransfer.id == transfer_id)
+        )
+    ).scalar_one()
+    assert status == "expired"
+    expired_events = (
+        await db_session.execute(
+            select(OrgAuditEvent).where(
+                OrgAuditEvent.org_id == org.id,
+                OrgAuditEvent.event_type == "owner_transfer_expired",
+            )
+        )
+    ).scalars().all()
+    assert len(expired_events) == 1
+
+    # The one-pending slot is freed: a fresh transfer can be initiated.
+    resp = await client.post(
+        f"/api/v1/orgs/{org.id}/owner/transfer",
+        json={"to_user_id": admin.id},
+        headers=_hdrs(owner_key),
+    )
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_initiate_after_expired_pending_succeeds(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """An expired pending transfer is lazily expired on the next initiate
+    (Shield MEDIUM-1) rather than blocking with 409 forever."""
+    owner, owner_key = await _make_user(db_session, "owner")
+    admin, admin_key = await _make_user(db_session, "admin")
+    org = await _make_org_with_owner(db_session, owner)
+    await _add_member(db_session, org, admin, role="admin")
+
+    resp = await client.post(
+        f"/api/v1/orgs/{org.id}/owner/transfer",
+        json={"to_user_id": admin.id},
+        headers=_hdrs(owner_key),
+    )
+    old_id = resp.json()["transfer_id"]
+    transfer = (
+        await db_session.execute(
+            select(OrgOwnerTransfer).where(OrgOwnerTransfer.id == old_id)
+        )
+    ).scalar_one()
+    transfer.expires_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    await db_session.commit()
+
+    # New initiate should succeed (old one auto-expired, not a 409).
+    resp = await client.post(
+        f"/api/v1/orgs/{org.id}/owner/transfer",
+        json={"to_user_id": admin.id},
+        headers=_hdrs(owner_key),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["transfer_id"] != old_id
+
+    old_status = (
+        await db_session.execute(
+            select(OrgOwnerTransfer.status).where(OrgOwnerTransfer.id == old_id)
+        )
+    ).scalar_one()
+    assert old_status == "expired"
+
+
+@pytest.mark.asyncio
 async def test_accept_revalidates_initiator_still_owner(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
@@ -607,6 +710,17 @@ async def test_owner_can_cancel_transfer(
         )
     ).scalar_one()
     assert transfer.status == "cancelled"
+
+    # Cancel emits a durable audit event (Shield LOW-2).
+    cancel_events = (
+        await db_session.execute(
+            select(OrgAuditEvent).where(
+                OrgAuditEvent.org_id == org.id,
+                OrgAuditEvent.event_type == "owner_transfer_cancelled",
+            )
+        )
+    ).scalars().all()
+    assert len(cancel_events) == 1
 
 
 @pytest.mark.asyncio

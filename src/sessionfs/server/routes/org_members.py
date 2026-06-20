@@ -1103,6 +1103,52 @@ async def _emit_owner_transfer_audit(
     db.add(audit)
 
 
+def _transfer_is_expired(transfer: "OrgOwnerTransfer", now: datetime) -> bool:
+    """True if the transfer's expiry has passed. SQLite roundtrips
+    DateTime(timezone=True) as naive — coerce to UTC before comparing."""
+    if transfer.expires_at is None:
+        return False
+    expires = transfer.expires_at
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    return expires < now
+
+
+async def _lazy_expire_transfer(
+    db: AsyncSession,
+    *,
+    transfer: "OrgOwnerTransfer",
+    org: Organization,
+    actor: User,
+    actor_role: str,
+) -> bool:
+    """Flip an expired-but-still-'pending' transfer to 'expired' and emit a
+    durable `owner_transfer_expired` audit event (Shield MEDIUM-1).
+
+    This persists the otherwise-never-set 'expired' terminal state and frees
+    the one-pending-per-org slot so a fresh transfer can be initiated.
+    Mirrors the handoff lazy-expire pattern. Rowcount-1 guarded so a concurrent
+    expirer/canceler doesn't double-emit. Returns True if it flipped."""
+    rc = await db.execute(
+        update(OrgOwnerTransfer)
+        .where(
+            OrgOwnerTransfer.id == transfer.id,
+            OrgOwnerTransfer.status == "pending",
+        )
+        .values(status="expired")
+    )
+    if rc.rowcount:
+        await _emit_owner_transfer_audit(
+            db,
+            org=org,
+            event_type="owner_transfer_expired",
+            actor=actor,
+            actor_role=actor_role,
+        )
+        return True
+    return False
+
+
 async def _notify_transfer_email(
     request: Request,
     to_email: str,
@@ -1159,7 +1205,11 @@ async def initiate_owner_transfer(
     if body.to_user_id == user.id:
         raise HTTPException(400, "Cannot transfer ownership to yourself")
 
-    # Check for existing pending transfer.
+    now = _now()
+
+    # Check for existing pending transfer. A stale (expired) pending row is
+    # lazily expired here so it frees the one-pending slot (Shield MEDIUM-1)
+    # rather than blocking new transfers until a manual cancel.
     existing = (
         await db.execute(
             select(OrgOwnerTransfer).where(
@@ -1169,13 +1219,17 @@ async def initiate_owner_transfer(
         )
     ).scalar_one_or_none()
     if existing is not None:
-        raise HTTPException(
-            409,
-            "A pending ownership transfer already exists. "
-            "Cancel it or wait for it to expire before initiating a new one.",
-        )
+        if _transfer_is_expired(existing, now):
+            await _lazy_expire_transfer(
+                db, transfer=existing, org=org, actor=user, actor_role=actor_role,
+            )
+        else:
+            raise HTTPException(
+                409,
+                "A pending ownership transfer already exists. "
+                "Cancel it or wait for it to expire before initiating a new one.",
+            )
 
-    now = _now()
     expires_at = now + timedelta(days=TRANSFER_EXPIRY_DAYS)
 
     transfer = OrgOwnerTransfer(
@@ -1279,14 +1333,14 @@ async def accept_owner_transfer(
         raise HTTPException(
             409, f"Transfer is already {transfer.status}"
         )
-    # SQLite roundtrips DateTime(timezone=True) as naive; coerce before
-    # comparing to tz-aware now to avoid TypeError.
-    if transfer.expires_at is not None:
-        expires = transfer.expires_at
-        if expires.tzinfo is None:
-            expires = expires.replace(tzinfo=timezone.utc)
-        if expires < now:
-            raise HTTPException(409, "Transfer has expired")
+    # Expired: lazily flip pending → 'expired' + emit audit, then reject
+    # (Shield MEDIUM-1 — persist the terminal state + record the event).
+    if _transfer_is_expired(transfer, now):
+        await _lazy_expire_transfer(
+            db, transfer=transfer, org=org, actor=user, actor_role=caller_role,
+        )
+        await db.commit()
+        raise HTTPException(409, "Transfer has expired")
 
     if transfer.to_user_id != user.id:
         raise HTTPException(
