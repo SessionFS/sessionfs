@@ -757,6 +757,51 @@ class OrgMember(Base):
     )
 
 
+class OrgOwnerTransfer(Base):
+    """Two-step ownership transfer with single-pending invariant.
+
+    P4 of the licensing + org-management redesign (§2.4.3).
+    At most one pending transfer per org — enforced by the partial
+    unique index uq_org_owner_transfer_one_pending (migration 051).
+    """
+
+    __tablename__ = "org_owner_transfer"
+    __table_args__ = (
+        Index("idx_org_owner_transfer_org", "org_id"),
+        Index(
+            "uq_org_owner_transfer_one_pending",
+            "org_id",
+            unique=True,
+            postgresql_where=text("status = 'pending'"),
+            sqlite_where=text("status = 'pending'"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    from_user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    to_user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="pending",
+        comment="pending | accepted | cancelled | expired"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    accepted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 class OrgInvite(Base):
     __tablename__ = "org_invites"
 
