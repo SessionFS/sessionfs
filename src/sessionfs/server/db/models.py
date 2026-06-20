@@ -738,6 +738,12 @@ class OrgMember(Base):
             postgresql_where=text("role = 'owner'"),
             sqlite_where=text("role = 'owner'"),
         ),
+        # P4 follow-up — structural vocabulary guard (added on PG via
+        # migration 052; present here so create_all/SQLite enforces it too).
+        CheckConstraint(
+            "role IN ('owner', 'admin', 'member')",
+            name="ck_org_members_role",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -774,6 +780,12 @@ class OrgOwnerTransfer(Base):
             unique=True,
             postgresql_where=text("status = 'pending'"),
             sqlite_where=text("status = 'pending'"),
+        ),
+        # P4 follow-up — vocabulary guard (PG via migration 052; here for
+        # create_all/SQLite).
+        CheckConstraint(
+            "status IN ('pending', 'accepted', 'cancelled', 'expired')",
+            name="ck_org_owner_transfer_status",
         ),
     )
 

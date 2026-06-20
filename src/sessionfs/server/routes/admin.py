@@ -874,6 +874,9 @@ async def force_transfer_owner(
 
     old_owner_id = current_owner.user_id
     new_owner_id = body.to_user_id
+    # The displaced owner is demoted to the target's pre-transfer role
+    # (capture it for a self-describing audit — Shield LOW-3).
+    displaced_owner_resulting_role = target_member.role
 
     # Demote old owner → the target's current role (usually admin or member).
     await db.execute(
@@ -912,6 +915,13 @@ async def force_transfer_owner(
             target_email_snapshot=new_owner_user.email if new_owner_user else None,
             before=json.dumps(
                 {"from_user_id": old_owner_id, "to_user_id": new_owner_id}
+            ),
+            after=json.dumps(
+                {
+                    "new_owner_user_id": new_owner_id,
+                    "displaced_owner_user_id": old_owner_id,
+                    "displaced_owner_resulting_role": displaced_owner_resulting_role,
+                }
             ),
         )
     )

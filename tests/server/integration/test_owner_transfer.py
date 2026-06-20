@@ -1005,7 +1005,8 @@ async def test_admin_force_transfer_succeeds(
     # Roles swapped.
     assert await _get_member_role(db_session, org.id, admin.id) == "owner"
 
-    # Audit events emitted.
+    # Audit events emitted, and self-describing (Shield LOW-3): the
+    # displaced owner's resulting role is recorded in `after`.
     events = (
         await db_session.execute(
             select(OrgAuditEvent).where(
@@ -1015,6 +1016,29 @@ async def test_admin_force_transfer_succeeds(
         )
     ).scalars().all()
     assert len(events) == 1
+    import json as _json
+    after = _json.loads(events[0].after)
+    assert after["new_owner_user_id"] == admin.id
+    assert after["displaced_owner_user_id"] == owner.id
+    # Target was an admin → displaced owner is demoted to admin.
+    assert after["displaced_owner_resulting_role"] == "admin"
+
+
+@pytest.mark.asyncio
+async def test_org_member_role_check_rejects_bad_vocab(
+    db_session: AsyncSession,
+) -> None:
+    """Sentinel L2: the OrgMember.role CHECK (enforced on SQLite via the ORM
+    model constraint) rejects an out-of-vocabulary role at the DB layer."""
+    import sqlalchemy.exc
+
+    owner, _ = await _make_user(db_session, "owner")
+    org = await _make_org_with_owner(db_session, owner)
+    bad, _ = await _make_user(db_session, "bad")
+    db_session.add(OrgMember(org_id=org.id, user_id=bad.id, role="superuser"))
+    with pytest.raises(sqlalchemy.exc.IntegrityError):
+        await db_session.flush()
+    await db_session.rollback()
 
 
 @pytest.mark.asyncio
