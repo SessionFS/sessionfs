@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
@@ -15,10 +15,13 @@ from sessionfs.server.auth.dependencies import require_admin
 from sessionfs.server.auth.keys import generate_api_key, hash_api_key
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import (
+    ActivationAttempt,
     AdminAction,
     ApiKey,
     Handoff,
+    HelmLicense,
     Organization,
+    OrgAuditEvent,
     OrgMember,
     Session,
     User,
@@ -531,15 +534,78 @@ async def admin_create_org(
     db.add(member)
 
     # P2: write-through — create entitlement for the admin-provisioned org.
+    # If a license_key is provided, source from the HelmLicense (admin-assisted
+    # pre-provision — staff is the trust anchor, no email token needed).
+    license_key = (body.get("license_key") or "").strip()
+    lic = None
+    if license_key:
+        lic = (
+            await db.execute(
+                select(HelmLicense).where(
+                    HelmLicense.id == license_key,
+                    HelmLicense.status == "active",
+                    HelmLicense.org_id.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if lic is not None:
+            # Bind the license to this org
+            await db.execute(
+                update(HelmLicense)
+                .where(HelmLicense.id == license_key, HelmLicense.org_id.is_(None))
+                .values(org_id=org_id)
+            )
+            tier = lic.tier
+            seats_limit = lic.seats_limit
+            source = "helm_license"
+            source_ref = license_key
+            current_period_end = lic.expires_at
+        else:
+            raise HTTPException(
+                400,
+                f"License key '{license_key}' is invalid, expired, or already bound.",
+            )
+    else:
+        source = "admin_provisioned"
+        source_ref = None
+        current_period_end = None
+
     await apply_entitlement(
         "org",
         org_id,
         tier=tier,
         seats=seats_limit,
         storage=storage_limit_bytes,
-        source="admin_provisioned",
+        source=source,
+        source_ref=source_ref,
         db=db,
+        current_period_end=current_period_end,
     )
+
+    # Emit OrgAuditEvent for license-activated admin orgs
+    if lic is not None:
+        audit = OrgAuditEvent(
+            id=f"oae_{_secrets.token_hex(12)}",
+            org_id=org_id,
+            org_name_snapshot=name,
+            event_type="license_activated",
+            actor_user_id=admin.id,
+            actor_email_snapshot=admin.email,
+            actor_role_at_time="platform_admin",
+            target_type="license",
+            target_id=license_key[:7] + "…",
+            after=json.dumps(
+                {
+                    "org_id": org_id,
+                    "org_name": name,
+                    "license_key_prefix": license_key[:7] + "…",
+                    "tier": lic.tier,
+                    "seats_limit": lic.seats_limit,
+                    "verification_method": "admin_assisted",
+                }
+            ),
+        )
+        db.add(audit)
 
     await _log_action(
         db,
@@ -904,6 +970,66 @@ async def purge_deleted(
     await db.commit()
 
     return {"purged": purged, "bytes_reclaimed": bytes_reclaimed}
+
+
+# Default retention window for terminal/expired activation attempts.
+_ACTIVATION_ATTEMPT_RETENTION_DAYS = 30
+
+
+@router.post("/activation-attempts/purge")
+async def purge_activation_attempts(
+    body: dict | None = None,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reap stale license-activation attempts (data minimization).
+
+    Two steps:
+      1. Lazily flip any expired-but-still-'pending' attempts to 'expired'
+         (the declared status is otherwise never set — the verify path only
+         filters on expires_at). Keying off expires_at makes expired rows
+         distinguishable + reapable.
+      2. Delete terminal/expired attempts older than the retention window,
+         which removes the `contact_email_snapshot` PII + token_hash with the
+         row. Default window 30 days; override with body {"retention_days": N}.
+    """
+    now = datetime.now(timezone.utc)
+    retention_days = _ACTIVATION_ATTEMPT_RETENTION_DAYS
+    if body and isinstance(body.get("retention_days"), int):
+        retention_days = max(0, body["retention_days"])
+    cutoff = now - timedelta(days=retention_days)
+
+    # 1. Mark expired pending attempts as 'expired'.
+    flipped = await db.execute(
+        update(ActivationAttempt)
+        .where(
+            ActivationAttempt.status == "pending",
+            ActivationAttempt.expires_at < now,
+        )
+        .values(status="expired")
+    )
+
+    # 2. Delete terminal (consumed|expired) attempts older than the window.
+    del_result = await db.execute(
+        delete(ActivationAttempt).where(
+            ActivationAttempt.status.in_(("consumed", "expired")),
+            ActivationAttempt.created_at < cutoff,
+        )
+    )
+    purged = del_result.rowcount or 0
+
+    await _log_action(
+        db,
+        admin.id,
+        "purge_activation_attempts",
+        "activation_attempt",
+        "bulk",
+        {"purged": purged, "expired_flipped": flipped.rowcount or 0,
+         "retention_days": retention_days},
+    )
+    await db.commit()
+
+    return {"purged": purged, "expired_flipped": flipped.rowcount or 0}
 
 
 # ---------------------------------------------------------------------------
