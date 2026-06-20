@@ -402,7 +402,17 @@ async def delete_user(
                 },
             )
 
-        # Auto-promote the longest-tenured admin to owner.
+        # Auto-promote: demote old owner to admin first (so the
+        # partial unique index uq_org_members_one_owner_per_org
+        # never sees two owners), then promote the successor.
+        await db.execute(
+            update(OrgMember)
+            .where(
+                OrgMember.org_id == org.id,
+                OrgMember.user_id == user_id,
+            )
+            .values(role="admin")
+        )
         await db.execute(
             update(OrgMember)
             .where(

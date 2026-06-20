@@ -1279,8 +1279,14 @@ async def accept_owner_transfer(
         raise HTTPException(
             409, f"Transfer is already {transfer.status}"
         )
-    if transfer.expires_at is not None and transfer.expires_at < now:
-        raise HTTPException(409, "Transfer has expired")
+    # SQLite roundtrips DateTime(timezone=True) as naive; coerce before
+    # comparing to tz-aware now to avoid TypeError.
+    if transfer.expires_at is not None:
+        expires = transfer.expires_at
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        if expires < now:
+            raise HTTPException(409, "Transfer has expired")
 
     if transfer.to_user_id != user.id:
         raise HTTPException(
