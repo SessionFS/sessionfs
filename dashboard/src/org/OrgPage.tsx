@@ -187,6 +187,11 @@ export default function OrgPage() {
                 <p className="text-sm text-text-tertiary">
                   Accept to become the organization owner, or decline to leave ownership unchanged.
                 </p>
+                {pendingTransfer.expires_at && (
+                  <p className="text-xs text-text-tertiary mt-1">
+                    Expires {pendingTransfer.expires_at.slice(0, 10)}
+                  </p>
+                )}
               </div>
               <div className="flex gap-2 shrink-0">
                 <Button
@@ -220,6 +225,11 @@ export default function OrgPage() {
                     'the new owner'}{' '}
                   to accept. You'll become an admin once they do.
                 </p>
+                {pendingTransfer.expires_at && (
+                  <p className="text-xs text-text-tertiary mt-1">
+                    Expires {pendingTransfer.expires_at.slice(0, 10)}
+                  </p>
+                )}
               </div>
               <Button
                 variant="ghost"

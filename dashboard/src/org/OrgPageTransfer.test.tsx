@@ -130,6 +130,22 @@ describe('OrgPage — ownership transfer', () => {
     await waitFor(() => expect(acceptCalled).toContain('/owner/transfer/7/accept'));
   });
 
+  it('shows the transfer expiry deadline when present', async () => {
+    mockMe.mockReturnValue({ data: { user_id: 'u_admin' } });
+    stubFetch((url, init) => {
+      if (url.endsWith('/api/v1/org')) return jsonOk(orgInfo('admin'));
+      if (url.endsWith('/api/v1/org/invites')) return jsonOk({ invites: [] });
+      if (url.endsWith('/owner/transfer') && (!init || init.method === undefined)) {
+        return jsonOk({ transfer_id: 9, org_id: 'org_x', from_user_id: 'u_owner', to_user_id: 'u_admin', status: 'pending', created_at: '2026-06-20T00:00:00Z', expires_at: '2026-07-01T00:00:00Z' });
+      }
+      throw new Error(`unexpected url: ${url}`);
+    });
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText(/you've been offered ownership/i)).toBeInTheDocument());
+    expect(screen.getByText(/expires 2026-07-01/i)).toBeInTheDocument();
+  });
+
   it('initiator sees a pending banner with Cancel that hits the cancel endpoint', async () => {
     mockMe.mockReturnValue({ data: { user_id: 'u_owner' } });
     let cancelCalled = '';
