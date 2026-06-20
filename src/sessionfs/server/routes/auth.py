@@ -54,12 +54,20 @@ async def get_me(
     # P2: one joined query for org membership + org details.
     # If the user is an org member, this returns (OrgMember, Organization);
     # otherwise returns None.
+    #
+    # Use .first() over a deterministic ORDER BY rather than .one_or_none():
+    # multi-org membership is blocked at every normal write path, but a user
+    # racing their own self-activation against an org-join could momentarily
+    # hold two OrgMember rows. We must never let that 500 the caller's own /me
+    # (.one_or_none() raises MultipleResultsFound) — pick the earliest-joined
+    # membership deterministically. (Shield LOW tk_29b3e43f1ee94130.)
     membership_result = await db.execute(
         select(OrgMember, Organization)
         .join(Organization, OrgMember.org_id == Organization.id)
         .where(OrgMember.user_id == user.id)
+        .order_by(OrgMember.joined_at.asc(), OrgMember.org_id.asc())
     )
-    row = membership_result.one_or_none()
+    row = membership_result.first()
     membership = row[0] if row is not None else None
     org = row[1] if row is not None else None
 

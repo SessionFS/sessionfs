@@ -173,6 +173,22 @@ async def _phase_b_commit(
     """
     now = datetime.now(timezone.utc)
 
+    # Re-check the caller is not already in an org — INSIDE the atomic txn.
+    # Phase A enforced this, but Phase B (via /verify) runs later and the user
+    # could have joined an org in between (e.g. accepting an invite). Without
+    # this re-check the user would get a second OrgMember row, which then makes
+    # their own /me ambiguous. Mirrors Phase A + invite-accept.
+    # (Shield LOW tk_29b3e43f1ee94130.)
+    already_member = await db.execute(
+        select(OrgMember).where(OrgMember.user_id == user.id)
+    )
+    if already_member.scalar_one_or_none():
+        raise HTTPException(
+            409,
+            "You are already a member of an organization. "
+            "Leave your current org before activating a new license.",
+        )
+
     # 0. Ensure the slug is unique. A derived slug (from org_name) can collide
     #    with an existing org — e.g. two licenses whose names slugify the same.
     #    Without this, db.flush() below raises IntegrityError → rollback → 500,
