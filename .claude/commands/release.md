@@ -18,9 +18,12 @@ Record the test count. Stop if tests fail.
 ### 3. Run lint
 ```bash
 ruff check src/
+mypy src/sessionfs/ --ignore-missing-imports
 helm lint charts/sessionfs
 ```
 Stop if lint fails. Auto-fix with `ruff check src/ --fix` if needed.
+
+**Run mypy — CI does, and the test suite does NOT catch type errors.** The CI `lint` job runs `mypy src/sessionfs/ --ignore-missing-imports`; if it fails, the whole CI run goes red on main even though Release/Deploy may still proceed. v0.11.0 shipped with a green test suite but a red CI because a migration had `op.execute(text, params_dict)` (alembic's `execute` takes only `execution_options`, not a positional params dict) — mypy flagged `Too many positional arguments for "execute"`, tests passed only because the diagnostic branch was empty in fixtures. Always run mypy locally before committing a release. (`annotation-unchecked` notes are informational, not failures — only `error:` lines block.)
 
 ### 3b. MANDATORY: Run Shield Security Review
 

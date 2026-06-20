@@ -17,6 +17,24 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
+      <!-- v0.11.1 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.11.1</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">June 20, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Patch &mdash; Entitlements Migration Hardening</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Hardened the v0.11.0 entitlements backfill migration.</strong> Fixed a diagnostic statement that could fail the upgrade on databases where the backfill recorded notes (such as a plan-tier coercion or an unmatched license). No schema change, and no behavior change for databases already upgraded to v0.11.0.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Patch release. Migrations 001&ndash;052 (unchanged). 2,415 backend + 388 dashboard UI tests passing. 62 MCP tools (unchanged) &middot; 9 supported tools unchanged.</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
       <!-- v0.11.0 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
@@ -24,7 +42,6 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <span class="text-brand font-semibold">v0.11.0</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">June 20, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Licensing &amp; Organization Management Redesign &mdash; Entitlements As The Single Source Of Truth &middot; Self-Service License Activation &middot; Ownership Transfer</h2>
         <ul class="space-y-2 text-base text-muted">

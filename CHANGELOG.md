@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.1] - 2026-06-20
+
+**Patch — fixes a latent failure in the v0.11.0 entitlements backfill migration and restores a green CI.** No schema change, and no behavior change for already-migrated databases (the v0.11.0 migration had already applied cleanly to environments where the backfill recorded no diagnostics).
+
+### Fixed
+
+- **Migration 050 diagnostic statement** — the entitlements backfill emitted a diagnostic via `op.execute(text, params_dict)`, but alembic's `op.execute` accepts only `execution_options` (not a positional bind-parameter dict), so on any upgrade where the backfill recorded diagnostics (e.g. a tier coercion or an unmatched license) the migration would raise an unbound-parameter error. The discarded `SELECT` produced no durable record anyway; diagnostics are now written to the migration log (captured by the alembic migrate job). This also clears the mypy error that turned the v0.11.0 CI run red. The release process now runs `mypy` locally before every release so type errors are caught before tagging.
+
 ## [0.11.0] - 2026-06-20
 
 **Licensing + organization-management redesign — entitlements are now the single source of truth, so enterprise admins can fully manage their organizations.** Plan, seats, and storage for an org are resolved from one authoritative record instead of being scattered across user rows and license tables, which is what previously left enterprise admins unable to see or administer their own orgs. On top of that foundation: self-service license activation with required email verification, two-step organization ownership transfer, an explicit owner role, and last-owner safety guards. Backend + dashboard. Migration 001–**052** (050 additive entitlements foundation; 051 ownership-transfer table; 052 role/status integrity constraints). 2415 backend tests + 388 dashboard tests. Reviewed end-to-end across four phases (Codex + Sentinel design review, Codex code review, Shield-SR pre-release — all clean).

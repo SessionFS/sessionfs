@@ -665,12 +665,16 @@ def upgrade() -> None:
     )
 
     # ── Diagnostic summary ────────────────────────────────────
+    # Diagnostics are surfaced via stdout below (captured in the alembic
+    # migrate-job logs). An earlier discarded `SELECT … :msg` diagnostic
+    # statement was removed: it produced no durable trace and passed its
+    # bind dict positionally to op.execute() (which accepts only
+    # execution_options), so it would raise on any run where backfill
+    # populated DIAGNOSTIC_ENTRIES.
     if DIAGNOSTIC_ENTRIES:
-        op.execute(
-            sa.text(
-                "SELECT 'migration_050_diagnostics: ' || :msg"
-            ),
-            {"msg": "; ".join(DIAGNOSTIC_ENTRIES[:20])},
+        print(
+            "[migration 050] diagnostics: "
+            + "; ".join(DIAGNOSTIC_ENTRIES[:20])
         )
     print(
         f"\n[migration 050] entitlements backfilled: "
