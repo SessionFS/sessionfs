@@ -1904,6 +1904,122 @@ _TOOLS = [
             "required": ["handoff_id", "content"],
         },
     ),
+    Tool(
+        name="create_work_queue",
+        description=(
+            "Create an agent work queue — a durable, project-scoped plan "
+            "for an agent to repeatedly service a set of tickets without a "
+            "human dispatcher.\n\n"
+            "`mode` is one of 'review_until_clean', 'implement_until_done', "
+            "or 'triage'. `selector` is a JSON filter dict "
+            "(status/kind/assigned_to/priority) AND/OR an explicit "
+            "{\"ticket_ids\": [...]} list — ticket_ids are seeded as queue "
+            "items immediately; filter-only selectors materialize lazily at "
+            "run-step time (a later phase).\n\n"
+            "Budget caps (rejected if violated): cadence_seconds floor 120 "
+            "(default 300); max_tickets_per_run default 1, hard cap 5; "
+            "max_attempts_per_item default 3.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs queue create` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Human label (1-100 chars; unique per project)"},
+                "mode": {
+                    "type": "string",
+                    "enum": ["review_until_clean", "implement_until_done", "triage"],
+                    "description": "What 'service' means for this queue",
+                },
+                "selector": {
+                    "type": "object",
+                    "description": "JSON filter dict and/or {ticket_ids:[...]}",
+                },
+                "assigned_persona": {"type": "string", "description": "Persona name that acts (optional)"},
+                "auto_adopt": {"type": "boolean", "description": "Re-run selector each wake to adopt new tickets (default false)"},
+                "max_adopt_per_wake": {"type": "integer", "description": "Cap on adopted tickets per wake (default 5)"},
+                "stop_condition": {
+                    "type": "string",
+                    "enum": ["queue_empty", "all_clean", "max_tickets", "manual"],
+                    "description": "When to stop (default queue_empty)",
+                },
+                "cadence_seconds": {"type": "integer", "description": "Advisory wake interval (>=120, default 300)"},
+                "max_tickets_per_run": {"type": "integer", "description": "Budget per wake (1-5, default 1)"},
+                "max_attempts_per_item": {"type": "integer", "description": "Emitted-directive attempts before failing an item (default 3)"},
+                "created_by_session_id": {"type": "string", "description": "Provenance — session id (optional)"},
+                "created_by_persona": {"type": "string", "description": "Provenance — persona name (optional)"},
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+            "required": ["name", "mode"],
+        },
+    ),
+    Tool(
+        name="get_work_queue",
+        description=(
+            "Inspect one work queue: its config, a progress rollup "
+            "{pending, active, waiting, done, failed}, and (by default) its "
+            "per-item cursor summary. Safe to poll — does no work.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs queue show` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "work_queue_id": {"type": "string", "description": "Work queue id (wq_...)"},
+                "include_items": {"type": "boolean", "description": "Include per-item summary (default true)"},
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+            "required": ["work_queue_id"],
+        },
+    ),
+    Tool(
+        name="list_work_queues",
+        description=(
+            "List work queues for this project, each with a progress "
+            "rollup. Filter by `status` (active/paused/completed/"
+            "cancelled).\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs queue list` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "description": "Filter by queue status"},
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+        },
+    ),
+    Tool(
+        name="set_work_queue_status",
+        description=(
+            "Change a work queue's lifecycle status. The server enforces "
+            "the allowed-transition table:\n"
+            "  active    -> paused | completed | cancelled\n"
+            "  paused    -> active | completed | cancelled\n"
+            "  completed -> active (reopen) | cancelled\n"
+            "  cancelled -> (terminal)\n\n"
+            "An illegal transition returns 409 invalid_status_transition. "
+            "Optionally pass `lease_epoch` (from a prior get/list) to fence "
+            "concurrent edits — a stale epoch returns 409 stale_lease_epoch. "
+            "The epoch bumps on success.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs queue set-status` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "work_queue_id": {"type": "string", "description": "Work queue id (wq_...)"},
+                "status": {
+                    "type": "string",
+                    "enum": ["active", "paused", "completed", "cancelled"],
+                    "description": "Target status",
+                },
+                "lease_epoch": {"type": "integer", "description": "Optional fence — current queue lease_epoch"},
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+            "required": ["work_queue_id", "status"],
+        },
+    ),
 ]
 
 
@@ -2048,6 +2164,14 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_decline_handoff(arguments)
         elif name == "add_handoff_comment":
             result = await _handle_add_handoff_comment(arguments)
+        elif name == "create_work_queue":
+            result = await _handle_create_work_queue(arguments)
+        elif name == "get_work_queue":
+            result = await _handle_get_work_queue(arguments)
+        elif name == "list_work_queues":
+            result = await _handle_list_work_queues(arguments)
+        elif name == "set_work_queue_status":
+            result = await _handle_set_work_queue_status(arguments)
         else:
             result = {"error": f"Unknown tool: {name}"}
     except Exception as exc:
@@ -3833,6 +3957,158 @@ async def _handle_create_ticket(args: dict) -> dict:
             headers={"Authorization": f"Bearer {api_key}"},
             json=body,
         )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_create_work_queue(args: dict) -> dict:
+    """Wrap POST /api/v1/projects/{project_id}/work-queues.
+
+    WQ-P2 (tk_3481237f3b0847d6). Validates required args + budget caps
+    locally before the network call so bad input surfaces here, not as an
+    opaque 422.
+    """
+    name = args.get("name", "")
+    if isinstance(name, str):
+        name = name.strip()
+    if not name:
+        return {"error": "name is required"}
+
+    mode = args.get("mode", "")
+    valid_modes = ("review_until_clean", "implement_until_done", "triage")
+    if mode not in valid_modes:
+        return {"error": f"mode must be one of: {list(valid_modes)}"}
+
+    selector = args.get("selector")
+    if selector is not None and not isinstance(selector, dict):
+        return {"error": "selector must be a JSON object"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    body: dict[str, Any] = {"name": name, "mode": mode}
+    if isinstance(selector, dict):
+        body["selector"] = selector
+    for key in (
+        "assigned_persona", "stop_condition",
+        "created_by_session_id", "created_by_persona",
+    ):
+        val = args.get(key)
+        if isinstance(val, str) and val.strip():
+            body[key] = val.strip()
+    if isinstance(args.get("auto_adopt"), bool):
+        body["auto_adopt"] = args["auto_adopt"]
+    for key in (
+        "max_adopt_per_wake", "cadence_seconds",
+        "max_tickets_per_run", "max_attempts_per_item",
+    ):
+        val = args.get(key)
+        if isinstance(val, int) and not isinstance(val, bool):
+            body[key] = val
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            f"{api_url}/api/v1/projects/{project_id}/work-queues",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=body,
+        )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_get_work_queue(args: dict) -> dict:
+    """Wrap GET /api/v1/projects/{project_id}/work-queues/{queue_id}."""
+    queue_id = args.get("work_queue_id", "")
+    if not queue_id:
+        return {"error": "work_queue_id is required"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    params: dict[str, str] = {}
+    if isinstance(args.get("include_items"), bool):
+        params["include_items"] = str(args["include_items"]).lower()
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/projects/{project_id}/work-queues/{queue_id}",
+            headers={"Authorization": f"Bearer {api_key}"},
+            params=params,
+        )
+    if resp.status_code == 404:
+        return {"error": f"Work queue '{queue_id}' not found"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_list_work_queues(args: dict) -> dict:
+    """Wrap GET /api/v1/projects/{project_id}/work-queues."""
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    params: dict[str, str] = {}
+    status = args.get("status")
+    if isinstance(status, str) and status.strip():
+        params["status"] = status.strip()
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/projects/{project_id}/work-queues",
+            headers={"Authorization": f"Bearer {api_key}"},
+            params=params,
+        )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return {"work_queues": resp.json()}
+
+
+async def _handle_set_work_queue_status(args: dict) -> dict:
+    """Wrap POST /api/v1/projects/{project_id}/work-queues/{queue_id}/status."""
+    queue_id = args.get("work_queue_id", "")
+    if not queue_id:
+        return {"error": "work_queue_id is required"}
+    status = args.get("status", "")
+    valid_statuses = ("active", "paused", "completed", "cancelled")
+    if status not in valid_statuses:
+        return {"error": f"status must be one of: {list(valid_statuses)}"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    body: dict[str, Any] = {"status": status}
+    if args.get("lease_epoch") is not None:
+        try:
+            body["lease_epoch"] = int(args["lease_epoch"])
+        except (TypeError, ValueError):
+            return {"error": "lease_epoch must be an integer"}
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            f"{api_url}/api/v1/projects/{project_id}/work-queues/{queue_id}/status",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=body,
+        )
+    if resp.status_code == 404:
+        return {"error": f"Work queue '{queue_id}' not found"}
     if resp.status_code >= 400:
         return {"error": f"API error {resp.status_code}: {resp.text}"}
     return resp.json()
