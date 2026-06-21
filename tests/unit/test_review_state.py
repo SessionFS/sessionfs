@@ -21,12 +21,23 @@ def _comment(
     author: str | None,
     content: str,
     at: datetime,
+    *,
+    verdict_trusted: bool | None = None,
 ) -> dict:
+    # tk_d42170b4670f4448 — verdict authority is now the server-stamped
+    # `verdict_trusted` flag, NOT author_persona. For these unit tests
+    # (which model the server's OUTPUT), default a "codex-reviewer"
+    # author to trusted=True so the long-standing parser tests keep their
+    # intent. Pass `verdict_trusted=...` explicitly to model a forged /
+    # untrusted comment.
+    if verdict_trusted is None:
+        verdict_trusted = author == "codex-reviewer"
     return {
         "id": cid,
         "author_persona": author,
         "content": content,
         "created_at": at,
+        "verdict_trusted": verdict_trusted,
     }
 
 
@@ -66,6 +77,68 @@ def test_compute_review_state_returns_none_when_no_codex_comments():
 
 def test_compute_review_state_returns_none_for_empty_input():
     assert compute_review_state([]) is None
+
+
+# ── tk_d42170b4670f4448 — verdict_trusted is the authority signal ──
+
+
+def test_forged_codex_persona_clean_comment_is_not_a_verdict():
+    """A forged author_persona='codex-reviewer' + VERIFIED-CLEAN with
+    verdict_trusted=false contributes NOTHING — no trusted rounds, so the
+    state is None (not a clean verdict). This is the headline spoof test."""
+    t0 = datetime(2026, 5, 19, 2, 1, tzinfo=timezone.utc)
+    state = compute_review_state([
+        _comment(
+            "c_forged",
+            "codex-reviewer",
+            CODEX_R2_CLEAN,
+            t0,
+            verdict_trusted=False,
+        ),
+    ])
+    assert state is None
+
+
+def test_trusted_verdict_closes_findings_regardless_of_persona_label():
+    """Authority comes from verdict_trusted, not the persona string. A
+    trusted VERIFIED-CLEAN round closes the prior trusted round's findings
+    even if the displayed author_persona is something other than the
+    hardcoded default."""
+    t = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    state = compute_review_state([
+        _comment("c1", "reviewer-bot", CODEX_R1_REAL, t, verdict_trusted=True),
+        _comment(
+            "c2",
+            "reviewer-bot",
+            CODEX_R2_CLEAN,
+            t + timedelta(hours=1),
+            verdict_trusted=True,
+        ),
+    ])
+    assert state is not None
+    assert state.last_verdict == VERDICT_CLEAN
+    assert state.open_findings == []
+
+
+def test_untrusted_codex_comment_excluded_but_trusted_round_still_counts():
+    """A forged untrusted 'codex-reviewer' VERIFIED-CLEAN is ignored for
+    verdict derivation; only the genuine trusted CHANGES-REQUESTED round
+    drives state — so findings stay OPEN despite the forged 'clean' post."""
+    t = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    state = compute_review_state([
+        _comment("c_real", "codex-reviewer", CODEX_R1_REAL, t, verdict_trusted=True),
+        _comment(
+            "c_forged",
+            "codex-reviewer",
+            CODEX_R2_CLEAN,
+            t + timedelta(hours=1),
+            verdict_trusted=False,
+        ),
+    ])
+    assert state is not None
+    # The forged clean round must NOT close the real R1 finding.
+    assert state.last_verdict == VERDICT_CHANGES
+    assert len(state.open_findings) == 1
 
 
 def test_single_codex_round_with_open_finding():
@@ -262,6 +335,7 @@ def test_iso_string_timestamps_accepted():
             "author_persona": "codex-reviewer",
             "content": CODEX_R1_REAL,
             "created_at": "2026-05-19T02:01:09.280667+00:00",
+            "verdict_trusted": True,
         }
     ])
     assert state is not None
@@ -276,6 +350,7 @@ def test_iso_with_trailing_z_accepted():
             "author_persona": "codex-reviewer",
             "content": CODEX_R1_REAL,
             "created_at": "2026-05-19T02:01:09Z",
+            "verdict_trusted": True,
         }
     ])
     assert state is not None

@@ -1547,6 +1547,77 @@ class TicketComment(Base):
     )
     service_key_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     service_key_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # tk_d42170b4670f4448 — server-stamped trust decision at write time
+    # (docs/security/review-verdict-provenance.md). Recorded from
+    # AuthContext against the trusted_reviewers registry — NEVER from the
+    # request body. compute_review_state counts a comment as an
+    # authoritative review verdict only when this is true; author_persona
+    # is display-only and no longer carries authority. server_default
+    # 'false' makes every existing/forged row non-authoritative
+    # (fail-closed). Migration 053 backfills the known operator's
+    # historical codex-reviewer comments.
+    verdict_trusted: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+
+
+class TrustedReviewer(Base):
+    """Registry of identities authorized to post counted review verdicts.
+
+    tk_d42170b4670f4448 (docs/security/review-verdict-provenance.md). Binds
+    an authenticated identity (user_id and/or service_key_id) to the reviewer
+    persona it may speak as, scoped to a project OR org-wide:
+      - project-scoped: project_id set, org_id NULL → one project.
+      - org-wide:       org_id set, project_id NULL → every project in the org.
+
+    `create_ticket_comment` consults this registry from AuthContext to stamp
+    `TicketComment.verdict_trusted`. Registration is admin-gated; revocation
+    (is_active=false / revoked_at set) stops FUTURE verdicts but never
+    rewrites settled verdict_trusted rows. App-assigned PK ('tr_<hex>').
+    The inline CheckConstraints mirror migration 053 so create_all / SQLite
+    enforce identity-present + scope-present.
+    """
+
+    __tablename__ = "trusted_reviewers"
+    __table_args__ = (
+        Index("idx_trusted_reviewer_project", "project_id"),
+        Index("idx_trusted_reviewer_org", "org_id"),
+        CheckConstraint(
+            "(user_id IS NOT NULL) OR (service_key_id IS NOT NULL)",
+            name="ck_trusted_reviewer_identity_present",
+        ),
+        CheckConstraint(
+            "(project_id IS NOT NULL) OR (org_id IS NOT NULL)",
+            name="ck_trusted_reviewer_scope_present",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    org_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    project_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    service_key_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    reviewer_persona: Mapped[str] = mapped_column(
+        String(50), nullable=False, server_default="codex-reviewer"
+    )
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    created_by_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class TicketEdit(Base):

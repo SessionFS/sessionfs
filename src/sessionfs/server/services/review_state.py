@@ -227,10 +227,31 @@ def compute_review_state(
       - author_persona: str | None
       - content: str
       - created_at: datetime  (or ISO-8601 string)
+      - verdict_trusted: bool  (server-stamped at write — the authority
+        signal; see tk_d42170b4670f4448 /
+        docs/security/review-verdict-provenance.md)
 
-    Returns `None` if no codex-reviewer comments are present — review
-    state only applies to review tickets, and the absence of any Codex
-    round means there's nothing structured to report.
+    Returns `None` if no TRUSTED review-verdict comments are present —
+    review state only applies to review tickets, and the absence of any
+    trusted round means there's nothing authoritative to report.
+
+    Verdict authority is keyed off `verdict_trusted` (server-stamped from
+    the trusted_reviewers registry), NOT off `author_persona`. A forged
+    `author_persona="codex-reviewer"` comment from an arbitrary
+    tickets:write caller carries `verdict_trusted=false`, still renders in
+    the thread, but contributes NOTHING to verdict/closure derivation.
+
+    `codex_persona` is retained for back-compat / renderer labelling only;
+    it no longer gates rounds or findings.
+
+    Future work (agent-work-queue stop oracle, docs/design/
+    agent-work-queues.md §5.0/§6): autonomous closure must additionally
+    require the STRICT literal `VERIFIED-CLEAN` verdict — aliases
+    (`APPROVED`, `NO CHANGES NEEDED`) folded by `_normalize_verdict` are
+    acceptable for human-facing display here but are NOT sufficient for
+    unattended auto-close. That strict gate lives in the consuming oracle,
+    which is not built yet; `_normalize_verdict`'s display aliasing is
+    intentionally left unchanged.
     """
     sorted_comments = sorted(
         list(comments),
@@ -247,14 +268,18 @@ def compute_review_state(
         cid = c.get("id")
         if not isinstance(cid, str):
             continue
-        author = c.get("author_persona")
         content = c.get("content") or ""
         created_at = _coerce_dt(c.get("created_at"))
         if created_at is None:
             continue
         latest_ts = created_at if latest_ts is None or created_at > latest_ts else latest_ts
 
-        if author == codex_persona:
+        # tk_d42170b4670f4448 — verdict authority comes from the
+        # server-stamped trust flag, NOT from author_persona. Untrusted
+        # comments (including a forged "codex-reviewer" post from an
+        # arbitrary tickets:write caller) still render in the thread but
+        # never become a round / close findings / set last_verdict.
+        if bool(c.get("verdict_trusted")):
             last_review_id = cid
             round_meta, findings = _parse_codex_comment(content, cid, created_at)
             if round_meta is not None:
