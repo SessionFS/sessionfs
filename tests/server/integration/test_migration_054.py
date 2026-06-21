@@ -298,3 +298,59 @@ class TestAtomicClaim:
             assert won is False
         finally:
             await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_open_directive_lease_not_fresh_claimed(self, upgraded_054_db_path):
+        """An item with an OPEN directive lease is never fresh-claimed, even
+        when its backoff has expired — that belongs to the step engine's
+        re-emit path, and a fresh claim would clobber open_directive_run_id.
+        (Codex R1 on tk_529a64620db846f5.)
+        """
+        migration_054_db_path = upgraded_054_db_path
+        url = f"sqlite+aiosqlite:///{migration_054_db_path}"
+        engine = create_async_engine(url)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        past = datetime.now(timezone.utc) - timedelta(minutes=5)
+        try:
+            async with maker() as seed:
+                seed.add(
+                    WorkQueue(
+                        id="wq-3",
+                        project_id="proj-1",
+                        name="q3",
+                        mode="review_until_clean",
+                        status="active",
+                        created_by_user_id="u1",
+                    )
+                )
+                seed.add(
+                    WorkQueueItem(
+                        id="wqi-3",
+                        work_queue_id="wq-3",
+                        ticket_id="tk-3",
+                        item_status="waiting",
+                        open_directive_id="dir_1",
+                        open_directive_run_id="wqr_old",
+                        next_eligible_at=past,
+                    )
+                )
+                await seed.commit()
+
+            async with maker() as sess:
+                won = await claim_work_queue_item(
+                    sess, item_id="wqi-3", run_id="wqr_new"
+                )
+                await sess.commit()
+            assert won is False
+
+            # Lease untouched — the existing directive run still owns it.
+            check = sqlite3.connect(str(migration_054_db_path))
+            status, run_id = check.execute(
+                "SELECT item_status, open_directive_run_id "
+                "FROM work_queue_items WHERE id='wqi-3'"
+            ).fetchone()
+            check.close()
+            assert status == "waiting"
+            assert run_id == "wqr_old"
+        finally:
+            await engine.dispose()
