@@ -2020,6 +2020,82 @@ _TOOLS = [
             "required": ["work_queue_id", "status"],
         },
     ),
+    Tool(
+        name="run_work_queue_step",
+        description=(
+            "Drive ONE wake of a work queue — the heartbeat. Claims up to "
+            "max_tickets_per_run eligible items, emits a BOUNDED directive "
+            "for each (intent + ticket_id + ticket_lease_epoch + a small "
+            "comment_delta + expand_hints + directive_id + "
+            "work_queue_run_id), and returns it. Do the directive's one "
+            "intent, write back per writeback_contract (fence ticket writes "
+            "with ticket_lease_epoch — the queue posts comments; you NEVER "
+            "send author_persona, the server stamps it), then call "
+            "complete_work_queue_step.\n\n"
+            "Responses: {status:'ok', directives:[...]} (work to do); "
+            "{status:'idle', reason:'cadence'} (woke too soon — respect "
+            "cadence_seconds); {status:'stopped', reason:'queue_empty'|"
+            "'paused'} (done / paused). review_until_clean queues return "
+            "an error (the trusted-verdict stop oracle ships in a later "
+            "phase) — use implement_until_done or triage for now.\n\n"
+            "Crash-safe: if you crash before complete, the SAME directive "
+            "re-emits next wake (same directive_id) — no review lost, none "
+            "double-counted.\n\n"
+            "Requires the work_queues:write AND tickets:write scopes (plus "
+            "agent_runs:write if a directive opens an execution audit).\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs queue step` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "work_queue_id": {"type": "string", "description": "Work queue id (wq_...)"},
+                "wake_source": {"type": "string", "description": "loop|cron|ci|manual|event (default manual)"},
+                "wake_ref": {"type": "string", "description": "CI run URL / cron id / loop tag (optional)"},
+                "max_tickets": {"type": "integer", "description": "Cap items this wake (1-5; <= queue's max_tickets_per_run)"},
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+            "required": ["work_queue_id"],
+        },
+    ),
+    Tool(
+        name="complete_work_queue_step",
+        description=(
+            "Settle a directive after acting on it — the SINGLE commit point "
+            "of the loop, the ONLY place the durable (ACKED) cursor "
+            "advances. Pass the directive_id + item_id + ticket_id from the "
+            "directive, the comment_id you posted, and the outcome.\n\n"
+            "On success the server VALIDATES your comment landed before "
+            "advancing the cursor, settles the directive lease, and sets the "
+            "item to 'waiting' (more rounds expected) or 'done' (outcome "
+            "completed_ticket/resolved). Set failed=true if you made no "
+            "progress — the item backs off (2m→5m→15m→60m) and parks as "
+            "'failed' after max_attempts_per_item (human reset needed).\n\n"
+            "Idempotent: settling the same directive_id twice returns the "
+            "prior outcome without re-applying.\n\n"
+            "Requires the work_queues:write AND tickets:write scopes (plus "
+            "agent_runs:write when linking an agent_run_id).\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs queue ...` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "work_queue_id": {"type": "string", "description": "Work queue id (wq_...)"},
+                "item_id": {"type": "string", "description": "Item id from the directive (wqi_...)"},
+                "directive_id": {"type": "string", "description": "Directive id being settled (dir_...)"},
+                "ticket_id": {"type": "string", "description": "Ticket id from the directive (tk_...)"},
+                "outcome": {"type": "string", "description": "posted_review|posted_progress|completed_ticket|resolved|waited"},
+                "comment_id": {"type": "string", "description": "The comment you just posted (validated server-side)"},
+                "agent_run_id": {"type": "string", "description": "AgentRun you opened, if any (optional)"},
+                "ticket_lease_epoch": {"type": "integer", "description": "Ticket lease epoch from the directive (fencing)"},
+                "failed": {"type": "boolean", "description": "true if no progress was made (triggers backoff)"},
+                "summary": {"type": "string", "description": "Short human summary of the outcome (optional)"},
+                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+            },
+            "required": ["work_queue_id", "item_id", "directive_id", "ticket_id", "outcome"],
+        },
+    ),
 ]
 
 
@@ -2172,6 +2248,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_list_work_queues(arguments)
         elif name == "set_work_queue_status":
             result = await _handle_set_work_queue_status(arguments)
+        elif name == "run_work_queue_step":
+            result = await _handle_run_work_queue_step(arguments)
+        elif name == "complete_work_queue_step":
+            result = await _handle_complete_work_queue_step(arguments)
         else:
             result = {"error": f"Unknown tool: {name}"}
     except Exception as exc:
@@ -4104,6 +4184,100 @@ async def _handle_set_work_queue_status(args: dict) -> dict:
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(
             f"{api_url}/api/v1/projects/{project_id}/work-queues/{queue_id}/status",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=body,
+        )
+    if resp.status_code == 404:
+        return {"error": f"Work queue '{queue_id}' not found"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_run_work_queue_step(args: dict) -> dict:
+    """Wrap POST /api/v1/projects/{project_id}/work-queues/{queue_id}/step.
+
+    WQ-P3 (tk_3de50bf7bb73418b). The heartbeat — claims work, emits a bounded
+    directive, advances the SEEN cursor. Validates args locally before the
+    network call so bad input surfaces here, not as an opaque 422.
+    """
+    queue_id = args.get("work_queue_id", "")
+    if not queue_id:
+        return {"error": "work_queue_id is required"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    body: dict[str, Any] = {}
+    wake_source = args.get("wake_source")
+    if isinstance(wake_source, str) and wake_source.strip():
+        body["wake_source"] = wake_source.strip()
+    wake_ref = args.get("wake_ref")
+    if isinstance(wake_ref, str) and wake_ref.strip():
+        body["wake_ref"] = wake_ref.strip()
+    max_tickets = args.get("max_tickets")
+    if isinstance(max_tickets, int) and not isinstance(max_tickets, bool):
+        body["max_tickets"] = max_tickets
+
+    import httpx
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{api_url}/api/v1/projects/{project_id}/work-queues/{queue_id}/step",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=body,
+        )
+    if resp.status_code == 404:
+        return {"error": f"Work queue '{queue_id}' not found"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_complete_work_queue_step(args: dict) -> dict:
+    """Wrap POST /api/v1/projects/{pid}/work-queues/{queue_id}/step/complete.
+
+    WQ-P3 (tk_3de50bf7bb73418b). The single commit point — idempotent settle,
+    validate-writeback-landed, advance the ACKED cursor / apply backoff.
+    """
+    queue_id = args.get("work_queue_id", "")
+    if not queue_id:
+        return {"error": "work_queue_id is required"}
+    for req in ("item_id", "directive_id", "ticket_id", "outcome"):
+        val = args.get(req)
+        if not isinstance(val, str) or not val.strip():
+            return {"error": f"{req} is required"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    body: dict[str, Any] = {
+        "item_id": args["item_id"].strip(),
+        "directive_id": args["directive_id"].strip(),
+        "ticket_id": args["ticket_id"].strip(),
+        "outcome": args["outcome"].strip(),
+    }
+    for key in ("comment_id", "agent_run_id", "summary"):
+        val = args.get(key)
+        if isinstance(val, str) and val.strip():
+            body[key] = val.strip()
+    if isinstance(args.get("failed"), bool):
+        body["failed"] = args["failed"]
+    if args.get("ticket_lease_epoch") is not None:
+        try:
+            body["ticket_lease_epoch"] = int(args["ticket_lease_epoch"])
+        except (TypeError, ValueError):
+            return {"error": "ticket_lease_epoch must be an integer"}
+
+    import httpx
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{api_url}/api/v1/projects/{project_id}/work-queues/{queue_id}/step/complete",
             headers={"Authorization": f"Bearer {api_key}"},
             json=body,
         )

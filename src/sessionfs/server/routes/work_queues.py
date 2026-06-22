@@ -59,11 +59,64 @@ from sessionfs.server.auth.dependencies import (
     assert_service_key_can_access_project,
     require_scope,
 )
+from sessionfs.server.auth.rate_limit import SlidingWindowRateLimiter
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import Ticket, WorkQueue, WorkQueueItem
 from sessionfs.server.routes.knowledge import _get_project_for_auth
+from sessionfs.server.services import work_queues as wq_engine
 
 router = APIRouter(prefix="/api/v1/projects", tags=["work-queues"])
+
+# ── Dedicated rate-limit class for run_work_queue_step (design §11 R6) ──
+#
+# run_work_queue_step is NOT a passive read — it claims work, emits directives,
+# and drives ticket writes + token spend. It therefore gets its OWN app-level
+# quota, separate from the global per-key request limiter, keyed by
+# org/project/service_key/queue so one runaway queue can't burn the project's
+# budget. The complementary Cloud Armor edge deny-429 rule (same pattern as the
+# live activate/helm-validate gate, CLAUDE.md v0.11.0) is a SEPARATE infra
+# follow-up owned by Forge — do NOT touch infra here.
+_STEP_RATE_LIMITER = SlidingWindowRateLimiter(
+    max_requests=30, window_seconds=60.0
+)
+
+
+def _step_rate_limit_key(
+    auth: AuthContext, project_id: str, queue_id: str
+) -> str:
+    """Compose the per-(org|user, project, service_key, queue) quota key."""
+    principal = auth.service_key_id or f"user:{auth.user.id}"
+    org = auth.org_id or "noorg"
+    return f"wqstep:{org}:{project_id}:{principal}:{queue_id}"
+
+
+def _require_downstream_scopes(auth: AuthContext, *needed: str) -> None:
+    """Act-path scope check (design §4 / §11 R5).
+
+    run/complete require work_queues:write (enforced by require_scope on the
+    route) AND the downstream write scopes the directive exercises
+    (tickets:write, and agent_runs:write where a wake opens an execution
+    audit). A user/admin wildcard key passes. A service key missing a
+    downstream scope is rejected 403 so a queue cannot post comments / open
+    runs beyond what its key is authorized for.
+    """
+    if "*" in auth.scopes:
+        return
+    have = set(auth.scopes)
+    missing = [s for s in needed if s not in have]
+    if missing:
+        raise HTTPException(
+            403,
+            {
+                "error": "insufficient_scope",
+                "required": sorted(set(needed)),
+                "current": auth.scopes,
+                "message": (
+                    "run/complete work-queue step requires the downstream "
+                    f"write scopes the directive exercises: missing {missing}."
+                ),
+            },
+        )
 
 
 # ── Enums (validated client-side; server is the source of truth) ──
@@ -206,6 +259,24 @@ class WorkQueueStatusUpdate(BaseModel):
         if v not in _VALID_STATUSES:
             raise ValueError(f"status must be one of: {list(_VALID_STATUSES)}")
         return v
+
+
+class WorkQueueStepRequest(BaseModel):
+    wake_source: str = Field("manual", max_length=30)
+    wake_ref: str | None = Field(None, max_length=200)
+    max_tickets: int | None = Field(None, ge=1, le=_MAX_TICKETS_PER_RUN_HARD_CAP)
+
+
+class WorkQueueStepCompleteRequest(BaseModel):
+    item_id: str = Field(..., max_length=64)
+    directive_id: str = Field(..., max_length=64)
+    ticket_id: str = Field(..., max_length=64)
+    outcome: str = Field(..., max_length=30)
+    comment_id: str | None = Field(None, max_length=64)
+    agent_run_id: str | None = Field(None, max_length=64)
+    ticket_lease_epoch: int | None = None
+    failed: bool = False
+    summary: str | None = Field(None, max_length=2000)
 
 
 class WorkQueueItemSummary(BaseModel):
@@ -671,3 +742,142 @@ async def set_work_queue_status(
     queue = await _get_queue_or_404(project_id, queue_id, db)
     progress = await _progress_for_queue(queue_id, db)
     return _row_to_response(queue, progress)
+
+
+# ── WQ-P3 (tk_3de50bf7bb73418b) — the step engine ──
+
+
+@router.post("/{project_id}/work-queues/{queue_id}/step")
+async def run_work_queue_step(
+    project_id: str,
+    queue_id: str,
+    body: WorkQueueStepRequest | None = None,
+    auth: AuthContext = Depends(require_scope("work_queues:write")),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """The heartbeat. Claims work, emits a BOUNDED directive, advances the
+    SEEN cursor (never ACKED). Stateless from the caller's side; all loop
+    state is server-side (design §4.4, §5, §6, §9.1).
+
+    Acting requires work_queues:write AND tickets:write (the directive drives
+    ticket comments). A dedicated rate-limit class (design §11 R6) guards this
+    route per (org, project, service_key, queue) — Cloud Armor edge deny-429 is
+    a separate Forge infra follow-up.
+
+    review_until_clean queues return HTTP 422 not_available (the trusted-
+    verdict stop oracle ships in WQ-P4).
+    """
+    _require_downstream_scopes(auth, "tickets:write")
+    wake_source = body.wake_source if body is not None else "manual"
+    wake_ref = body.wake_ref if body is not None else None
+    max_tickets = body.max_tickets if body is not None else None
+
+    project = await _get_project_for_auth(project_id, db, auth)
+    await assert_service_key_can_access_project(db, auth, project)
+    queue = await _get_queue_or_404(project_id, queue_id, db)
+
+    if not _STEP_RATE_LIMITER.is_allowed(
+        _step_rate_limit_key(auth, project_id, queue_id)
+    ):
+        raise HTTPException(
+            429,
+            {
+                "error": "rate_limited",
+                "message": (
+                    "run_work_queue_step rate limit exceeded for this queue. "
+                    "Respect the queue's cadence_seconds between wakes."
+                ),
+            },
+        )
+
+    try:
+        result = await wq_engine.run_work_queue_step(
+            db,
+            queue=queue,
+            wake_source=wake_source,
+            wake_ref=wake_ref,
+            max_tickets=max_tickets,
+            actor_type=auth.actor_type,
+            service_key_id=auth.service_key_id,
+            service_key_name=auth.service_key_name,
+        )
+    except wq_engine.StepEngineError as exc:
+        await db.rollback()
+        raise HTTPException(
+            exc.http_status,
+            {"error": exc.code, "message": exc.message},
+        )
+    await db.commit()
+    return result.to_dict()
+
+
+@router.post("/{project_id}/work-queues/{queue_id}/step/complete")
+async def complete_work_queue_step(
+    project_id: str,
+    queue_id: str,
+    body: WorkQueueStepCompleteRequest,
+    auth: AuthContext = Depends(require_scope("work_queues:write")),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Settle a directive — the SINGLE commit point of the loop (design §4.5).
+
+    Idempotent on directive_id (a duplicate settle returns the prior outcome).
+    Validates the claimed writeback landed before advancing the ACKED cursor
+    (THE ONLY place it advances). On reported failure, applies the 2m→60m
+    backoff and parks the item as 'failed' after max_attempts_per_item.
+
+    Requires work_queues:write AND tickets:write; agent_runs:write is required
+    only when an agent_run_id is being linked.
+    """
+    needed = ["tickets:write"]
+    if body.agent_run_id:
+        needed.append("agent_runs:write")
+    _require_downstream_scopes(auth, *needed)
+
+    project = await _get_project_for_auth(project_id, db, auth)
+    await assert_service_key_can_access_project(db, auth, project)
+    queue = await _get_queue_or_404(project_id, queue_id, db)
+
+    # The settled ticket must belong to THIS project (design §11 R10).
+    ticket_in_project = (
+        await db.execute(
+            select(Ticket.id).where(
+                Ticket.id == body.ticket_id,
+                Ticket.project_id == project_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if ticket_in_project is None:
+        raise HTTPException(
+            422,
+            {
+                "error": "cross_project_ticket",
+                "message": (
+                    "ticket_id does not belong to this project "
+                    "(cross-project settle rejected)."
+                ),
+            },
+        )
+
+    try:
+        result = await wq_engine.complete_work_queue_step(
+            db,
+            queue=queue,
+            item_id=body.item_id,
+            directive_id=body.directive_id,
+            ticket_id=body.ticket_id,
+            outcome=body.outcome,
+            comment_id=body.comment_id,
+            agent_run_id=body.agent_run_id,
+            failed=body.failed,
+            ticket_lease_epoch=body.ticket_lease_epoch,
+            agent_summary=body.summary,
+        )
+    except wq_engine.StepEngineError as exc:
+        await db.rollback()
+        raise HTTPException(
+            exc.http_status,
+            {"error": exc.code, "message": exc.message},
+        )
+    await db.commit()
+    return result.to_dict()
