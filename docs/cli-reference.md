@@ -1742,11 +1742,59 @@ sfs admin service-keys revoke KEY_ID --org ORG_ID --reason "..."
 
 ### `sfs admin service-keys scopes`
 
-Print the live 14-scope vocabulary (sourced from the server's `VALID_SCOPES` set so it always reflects the running version).
+Print the live scope vocabulary (sourced from the server's `VALID_SCOPES` set so it always reflects the running version).
 
 ```
 sfs admin service-keys scopes
 ```
+
+## `sfs admin trusted-reviewers`
+
+Manage the trusted-reviewer registry — the org-scoped allowlist of identities whose review verdicts the work-queue `review_until_clean` stop oracle will trust. Org-admin (or owner) only. Registering a trusted reviewer is what lets a dedicated automated reviewer key (e.g. a GPT-5.5/Codex service key) post a `VERIFIED-CLEAN` that can auto-finish a queued item.
+
+### `sfs admin trusted-reviewers list`
+
+```
+sfs admin trusted-reviewers list --org ORG_ID [--include-revoked]
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--org`, `-o` | string | required | Organization id |
+| `--include-revoked` | flag | false | Also show revoked (soft-deleted) rows |
+
+### `sfs admin trusted-reviewers add`
+
+Bind an identity (a service key OR a user) to the reviewer persona it is authorized to post verdicts as. Provide exactly one identity; scope is org-wide unless `--project` is given.
+
+```
+sfs admin trusted-reviewers add --org ORG_ID [--service-key-id SK_ID | --user-id USER_ID] [--project PID] [--persona codex-reviewer]
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--org`, `-o` | string | required | Organization id |
+| `--service-key-id` | string | — | Service key to trust (must belong to this org). |
+| `--user-id` | string | — | User to trust (must be a member of this org). |
+| `--project`, `-p` | string | none | Limit trust to one project; omit for org-wide. |
+| `--persona` | string | `codex-reviewer` | Reviewer persona the identity may post verdicts as. |
+
+### `sfs admin trusted-reviewers revoke`
+
+Soft-delete (deactivate) a trusted-reviewer row; the audit history is preserved.
+
+```
+sfs admin trusted-reviewers revoke REVIEWER_ID --org ORG_ID [--reason "..."]
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `REVIEWER_ID` | yes | Trusted-reviewer row id |
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--org`, `-o` | string | required | Organization id |
+| `--reason`, `-r` | string | none | Optional audit reason |
 
 ---
 

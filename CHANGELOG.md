@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.1] - 2026-06-23
+
+**Multi-repo project fixes (from a heavy user's report) + the autonomous work-queue reviewer path completed.** Additive only — no schema change (migrations 001–054 unchanged).
+
+### Fixed
+
+- **`sfs project repos` no longer crashes.** The command errored on every project because the CLI mishandled the endpoint's JSON-array response; it now lists a project's linked repos correctly.
+- **Projects can be renamed.** New `PATCH /api/v1/projects/{id}` (project-admin only) plus `sfs project set --name <new>` — the project name was previously immutable after creation, so a consolidated/umbrella project could be stuck showing a stale name.
+- **`link-repo --primary` keeps the previous primary linked.** Promoting a new primary repo demotes the old one to a regular linked repo (it stays resolvable) instead of dropping it — now enforced by a one-primary constraint at the model level and a regression test.
+- **`project merge` repo linking is now surfaced and proven.** Merging projects already moved the source repos into the target; the dry-run plan now reports how many repos will be linked, and it's covered end-to-end.
+
+### Added
+
+- **Work-queue reviewer verdicts via the settle path.** A `review_until_clean` reviewer now delivers its verdict through `complete_work_queue_step` (the server stamps the reviewer identity and trust from the authenticated caller — never from client-supplied input), closing a contract gap found while dogfooding the queues.
+- **Trusted-reviewer administration.** Org admins can register / list / revoke trusted reviewers (`/api/v1/orgs/{org_id}/trusted-reviewers` + `sfs admin trusted-reviewers`), so a dedicated automated reviewer key can be authorized to post verdicts the work-queue stop oracle will trust. Tightly gated and fully audited.
+
 ## [0.12.0] - 2026-06-22
 
 **Agent work queues — autonomous, supervised ticket-closing loops — plus a hardening of review-verdict trust.** An agent (Claude / Codex / Gemini) can be pointed at a queue of tickets and repeatedly woken (via `/loop`, cron, or CI) to service, review, and close them using SessionFS as the source of truth — no human dispatcher. The server holds all the loop state, so it resumes with zero chat memory. Backend + MCP (6 new tools, 62 → 68). DB migrations 053–054. Reviewed end-to-end: design (Compass) + Atlas/Sentinel design review, then four implementation phases each Codex-reviewed clean, and a full Shield-SR pre-release pass.

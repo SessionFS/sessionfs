@@ -854,7 +854,7 @@ async def test_project_detail_includes_repos(
     )
 
     resp = await client.get(
-        f"/api/v1/projects/github.com/acme/detail-test",
+        "/api/v1/projects/github.com/acme/detail-test",
         headers=auth_headers,
     )
     assert resp.status_code == 200, resp.text
