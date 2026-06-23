@@ -17,14 +17,34 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.11.2 -->
+      <!-- v0.12.0 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.12.0</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">June 22, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Agent Work Queues &mdash; Autonomous, Supervised Ticket-Closing Loops</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Point an agent at a queue of tickets and let it run.</strong> An agent (Claude, Codex, or Gemini) can be aimed at a work queue and woken repeatedly &mdash; via <span class="font-mono text-accent text-sm">/loop</span>, cron, or CI &mdash; to service, review, and close tickets using SessionFS as the source of truth, with no human dispatcher. The server holds all of the loop state, so the agent resumes correctly with zero chat memory. Each wake returns one bounded directive at a time; a crash between steps re-emits the same directive rather than losing or repeating work.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Three modes.</strong> <span class="font-mono text-accent text-sm">review_until_clean</span> auto-finishes an item only when the server itself re-derives a trusted, literal <span class="font-mono text-accent text-sm">VERIFIED-CLEAN</span> with no open findings &mdash; it never trusts an agent's self-reported outcome. <span class="font-mono text-accent text-sm">implement_until_done</span> and <span class="font-mono text-accent text-sm">triage</span> cover the build-it and sort-it cases. Available on all tiers.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Built-in safety envelope.</strong> A per-item attempt cap with exponential backoff (2m &rarr; 5m &rarr; 15m &rarr; 60m) parks a stuck item for human reset, plus a per-wake ticket cap, a cadence floor, and a dedicated rate-limit class on the step endpoint &mdash; load-bearing, since queues are available on every tier.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>More trustworthy automated review.</strong> Review verdicts now require server-verified provenance: a <span class="font-mono text-accent text-sm">VERIFIED-CLEAN</span> is recognized only when the server itself stamps it from the authenticated identity, never from a value supplied in the request. Human-facing review display is unchanged; the strict gate backs the autonomous stop oracle.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Backend + MCP (MCP / API only &mdash; no dashboard UI or CLI yet). 6 new MCP tools (62 &rarr; 68): <span class="font-mono">create_work_queue</span>, <span class="font-mono">get_work_queue</span>, <span class="font-mono">list_work_queues</span>, <span class="font-mono">set_work_queue_status</span>, <span class="font-mono">run_work_queue_step</span>, <span class="font-mono">complete_work_queue_step</span>; 2 new scopes (<span class="font-mono">work_queues:read</span> / <span class="font-mono">work_queues:write</span>). Migrations 001&ndash;054. 2,487 backend + 397 dashboard UI tests passing &middot; 9 supported tools unchanged. Reviewed end-to-end: Compass design + Atlas/Sentinel design review, four Codex-clean implementation phases, and a Shield-SR pre-release pass.</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.11.2 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
             <span class="text-brand font-semibold">v0.11.2</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">June 20, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Self-Service Licensing In The Dashboard &mdash; License Activation &middot; Ownership Transfer</h2>
         <ul class="space-y-2 text-base text-muted">

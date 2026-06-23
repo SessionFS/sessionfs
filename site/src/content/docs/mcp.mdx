@@ -32,7 +32,7 @@ sfs mcp install --for claude-code --skip-instructions
 
 ## Tools
 
-The MCP server exposes 62 tools in eight categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), and Handoffs (Pro+ for direct, Team+ for team handoffs).
+The MCP server exposes 68 tools in nine categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), and Work Queues.
 
 ### Session Tools
 
@@ -547,6 +547,34 @@ Paginated read of the existing `GET /api/v1/projects/{id}/tickets/{id}/comments`
 | `ticket_id` | string | yes | Ticket ID |
 | `limit` | number | no | Page size (default: 50) |
 | `cursor` | string | no | Opaque pagination cursor |
+
+### Work Queues
+
+Point an agent at a queue of tickets and wake it repeatedly — via `/loop`, cron, or CI — to service, review, and close them with SessionFS as the source of truth. The server holds all loop state, so the agent resumes correctly with no chat memory: each wake returns one bounded directive, and a crash between steps re-emits the same directive rather than losing or repeating work. Modes: `review_until_clean` (auto-finishes an item only on a server-verified, trusted, literal `VERIFIED-CLEAN`), `implement_until_done`, and `triage`. A built-in safety envelope (per-item attempt cap with `2m → 5m → 15m → 60m` backoff that parks a stuck item for human reset, a per-wake ticket cap, a cadence floor, and a step rate limit) keeps an unattended loop bounded. These tools require the `work_queues:read` / `work_queues:write` scopes; acting on items also requires the relevant `tickets` / `agent_runs` write scopes. Available on all tiers. MCP / API only — there is no dashboard UI or CLI for work queues yet.
+
+#### `create_work_queue`
+
+Create a queue over a ticket filter or explicit ticket list, with a mode, a cadence, and per-run / per-item budgets.
+
+#### `get_work_queue`
+
+Return a queue's configuration and progress.
+
+#### `list_work_queues`
+
+List the work queues for a project.
+
+#### `set_work_queue_status`
+
+Pause, resume, or archive a queue.
+
+#### `run_work_queue_step`
+
+Heartbeat: return one bounded directive (a single intent plus a small comment delta) for the agent to act on. Call this on each wake.
+
+#### `complete_work_queue_step`
+
+Report the result of the directive returned by `run_work_queue_step`. This is the only call that durably advances the queue.
 
 ## Agent Knowledge Contribution
 
