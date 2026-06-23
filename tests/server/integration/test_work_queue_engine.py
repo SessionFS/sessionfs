@@ -235,7 +235,12 @@ async def test_fresh_claim_returns_bounded_directive(
     assert d["ticket_lease_epoch"] == ticket.lease_epoch
     assert "comment_delta" in d
     assert "expand_hints" in d
-    assert d["writeback_contract"]["author_persona_is_server_derived"] is True
+    # implement_until_done: the implementer posts generic progress comments as
+    # its OWN identity via add_ticket_comment — NOT a server-derived reviewer
+    # persona. Only review_until_clean (post_review) is server-derived
+    # (tk_3539f7761e554ed5).
+    assert d["writeback_contract"]["author_persona_is_server_derived"] is False
+    assert d["writeback_contract"]["post_via"] == "add_ticket_comment"
 
     # the item now holds an open directive lease + a run row exists
     refreshed = (

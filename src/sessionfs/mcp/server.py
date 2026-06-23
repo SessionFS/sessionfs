@@ -2065,14 +2065,27 @@ _TOOLS = [
             "of the loop, the ONLY place the durable (ACKED) cursor "
             "advances. Pass the directive_id + item_id + ticket_id from the "
             "directive, the comment_id you posted, and the outcome.\n\n"
-            "On success the server VALIDATES your comment landed before "
+            "review_until_clean (post_review) directives: deliver the "
+            "reviewer's VERDICT HERE via verdict_content (e.g. 'Codex R3 "
+            "review on tk_X: VERIFIED-CLEAN'). Do NOT post the verdict via "
+            "add_ticket_comment — a bare comment lands verdict_trusted=false "
+            "and can NEVER stop the loop. The server creates the verdict "
+            "comment itself with server-derived provenance (author_persona "
+            "from the queue's reviewer persona; verdict_trusted from your "
+            "authenticated identity against the trusted_reviewers registry), "
+            "then re-derives review state over TRUSTED comments only and "
+            "stops ONLY on a strict literal VERIFIED-CLEAN with no open "
+            "findings.\n\n"
+            "On success the server VALIDATES the writeback landed before "
             "advancing the cursor, settles the directive lease, and sets the "
             "item to 'waiting' (more rounds expected) or 'done' (outcome "
-            "completed_ticket/resolved). Set failed=true if you made no "
+            "completed_ticket/resolved, or a trusted strict VERIFIED-CLEAN "
+            "in review mode). Set failed=true if you made no "
             "progress — the item backs off (2m→5m→15m→60m) and parks as "
             "'failed' after max_attempts_per_item (human reset needed).\n\n"
             "Idempotent: settling the same directive_id twice returns the "
-            "prior outcome without re-applying.\n\n"
+            "prior outcome without re-applying — the verdict is never "
+            "double-posted.\n\n"
             "Requires the work_queues:write AND tickets:write scopes (plus "
             "agent_runs:write when linking an agent_run_id).\n\n"
             "IMPORTANT: Always use this MCP tool instead of running "
@@ -2086,7 +2099,9 @@ _TOOLS = [
                 "directive_id": {"type": "string", "description": "Directive id being settled (dir_...)"},
                 "ticket_id": {"type": "string", "description": "Ticket id from the directive (tk_...)"},
                 "outcome": {"type": "string", "description": "posted_review|posted_progress|completed_ticket|resolved|waited"},
-                "comment_id": {"type": "string", "description": "The comment you just posted (validated server-side)"},
+                "comment_id": {"type": "string", "description": "The comment you just posted, for implementer/progress notes (validated server-side). For review verdicts use verdict_content instead — the server creates that comment."},
+                "verdict_content": {"type": "string", "description": "review_until_clean ONLY: the reviewer verdict text (e.g. 'Codex R3 review on tk_X: VERIFIED-CLEAN'). The server creates this comment with server-derived trusted provenance — do NOT post it via add_ticket_comment."},
+                "verdict": {"type": "string", "description": "Optional raw verdict phrase for bookkeeping (clean|changes); the server re-derives closure from verdict_content regardless."},
                 "agent_run_id": {"type": "string", "description": "AgentRun you opened, if any (optional)"},
                 "ticket_lease_epoch": {"type": "integer", "description": "Ticket lease epoch from the directive (fencing)"},
                 "failed": {"type": "boolean", "description": "true if no progress was made (triggers backoff)"},
@@ -4262,10 +4277,15 @@ async def _handle_complete_work_queue_step(args: dict) -> dict:
         "ticket_id": args["ticket_id"].strip(),
         "outcome": args["outcome"].strip(),
     }
-    for key in ("comment_id", "agent_run_id", "summary"):
+    for key in ("comment_id", "agent_run_id", "summary", "verdict"):
         val = args.get(key)
         if isinstance(val, str) and val.strip():
             body[key] = val.strip()
+    # verdict_content carries meaningful internal whitespace (multi-line
+    # findings) — forward it verbatim when non-blank, don't .strip() the body.
+    vc = args.get("verdict_content")
+    if isinstance(vc, str) and vc.strip():
+        body["verdict_content"] = vc
     if isinstance(args.get("failed"), bool):
         body["failed"] = args["failed"]
     if args.get("ticket_lease_epoch") is not None:

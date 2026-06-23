@@ -17,14 +17,35 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.12.0 -->
+      <!-- v0.12.1 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.12.1</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">June 23, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Multi-Repo Project Fixes &middot; Project Rename &middot; Configurable Work-Queue Reviewers</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong><span class="font-mono text-accent text-sm">sfs project repos</span> no longer crashes.</strong> Listing a project's linked repos errored on every project because the CLI mishandled the endpoint's JSON-array response; it now lists them correctly.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Projects can now be renamed.</strong> The project name was previously fixed at creation, so a consolidated or umbrella project could be stuck showing a stale name. A new <span class="font-mono text-accent text-sm">PATCH /api/v1/projects/&#123;id&#125;</span> (project-admin only) and <span class="font-mono text-accent text-sm">sfs project set --name</span> let an admin rename it.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Promoting a new primary repo keeps the old one linked.</strong> Setting a new primary now demotes the previous primary to a regular linked repo &mdash; it stays resolvable &mdash; instead of dropping it. Enforced by a one-primary constraint at the model level.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Project merge surfaces repo linking.</strong> Merging projects already moved the source repos into the target; the dry-run plan now reports how many repos will be linked, and the path is covered end-to-end.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>The autonomous review loop's reviewer authorization is now configurable.</strong> A work-queue reviewer's verdict now flows through the settle path with the server stamping the reviewer identity and trust from the authenticated caller, and org admins can register, list, and revoke trusted reviewers (<span class="font-mono text-accent text-sm">/api/v1/orgs/&#123;org_id&#125;/trusted-reviewers</span> + <span class="font-mono text-accent text-sm">sfs admin trusted-reviewers</span>). This lets a dedicated automated reviewer key be authorized to post the verdicts the work queue trusts. Tightly gated and fully audited.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Additive only &mdash; no schema change. Migrations 001&ndash;054 (unchanged). 2,525 backend + 397 dashboard UI tests passing. 68 MCP tools (unchanged) &middot; 9 supported tools unchanged.</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.12.0 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
             <span class="text-brand font-semibold">v0.12.0</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">June 22, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Agent Work Queues &mdash; Autonomous, Supervised Ticket-Closing Loops</h2>
         <ul class="space-y-2 text-base text-muted">

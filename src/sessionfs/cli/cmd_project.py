@@ -95,6 +95,8 @@ async def _api_request(method: str, path: str, api_url: str, api_key: str, json_
             resp = await client.post(url, headers=headers, json=json_data)
         elif method == "PUT":
             resp = await client.put(url, headers=headers, json=json_data)
+        elif method == "PATCH":
+            resp = await client.patch(url, headers=headers, json=json_data)
         elif method == "DELETE":
             resp = await client.delete(url, headers=headers)
         else:
@@ -988,8 +990,16 @@ def project_set(
         None, "--auto-narrative/--no-auto-narrative",
         help="Enable or disable auto-narrative on sync",
     ),
+    name: str | None = typer.Option(
+        None, "--name",
+        help="Rename the project (display name). 1-255 chars.",
+    ),
 ) -> None:
-    """Update project settings."""
+    """Update project settings.
+
+    --name renames the project (PATCH /projects/{id}); --auto-narrative
+    toggles auto-narrative. Either or both may be supplied.
+    """
     git_remote = _get_git_remote()
     if not git_remote:
         err_console.print("[red]Not a git repository.[/red]")
@@ -1005,22 +1015,34 @@ def project_set(
 
     project_id = result["id"]
 
+    if name is None and auto_narrative is None:
+        err_console.print(
+            "[yellow]No settings specified. Use --name and/or "
+            "--auto-narrative/--no-auto-narrative.[/yellow]"
+        )
+        raise typer.Exit(1)
+
+    # Rename via PATCH /projects/{id} (distinct from /settings).
+    if name is not None:
+        updated = asyncio.run(_api_request(
+            "PATCH", f"/api/v1/projects/{project_id}",
+            api_url, api_key,
+            json_data={"name": name},
+        ))
+        console.print(f"[bold]name[/bold] = {updated.get('name', name)}")
+
+    # Settings (auto_narrative) via PUT /projects/{id}/settings.
     settings: dict = {}
     if auto_narrative is not None:
         settings["auto_narrative"] = auto_narrative
-
-    if not settings:
-        err_console.print("[yellow]No settings specified. Use --auto-narrative or --no-auto-narrative.[/yellow]")
-        raise typer.Exit(1)
-
-    asyncio.run(_api_request(
-        "PUT", f"/api/v1/projects/{project_id}/settings",
-        api_url, api_key,
-        json_data=settings,
-    ))
-
-    for key, value in settings.items():
-        console.print(f"[bold]{key}[/bold] = {value}")
+    if settings:
+        asyncio.run(_api_request(
+            "PUT", f"/api/v1/projects/{project_id}/settings",
+            api_url, api_key,
+            json_data=settings,
+        ))
+        for key, value in settings.items():
+            console.print(f"[bold]{key}[/bold] = {value}")
 
 
 @project_app.command("rebuild")
@@ -1248,9 +1270,22 @@ def project_transfers(
 def _repos_api_request(
     method: str, path: str, api_url: str, api_key: str,
     json_data: dict | None = None,
-) -> dict:
-    """Shared API helper for repo endpoints — handles 409/422 envelopes."""
+) -> dict | list:
+    """Shared API helper for repo endpoints — handles 409/422 envelopes.
+
+    GET /api/v1/projects/{id}/repos returns a bare JSON ARRAY
+    (response_model=list[ProjectRepoResponse]). _api_request returns that
+    list verbatim on a 200, so callers must tolerate a list result here —
+    a bare list has no `.get()`, which previously crashed `sfs project
+    repos` (tk_e1bd970236bc42fa). Error envelopes (404/409/422) always
+    come back as dicts, so they are handled below; a list result means
+    success and is returned unchanged.
+    """
     result = asyncio.run(_api_request(method, path, api_url, api_key, json_data))
+    # 200 success bodies may be a list (repo listing) — return as-is.
+    # Only dict results carry the `_status` error envelope.
+    if not isinstance(result, dict):
+        return result
     if result.get("_status") == 404:
         err_console.print("[red]Project not found.[/red]")
         raise typer.Exit(1)
@@ -1310,6 +1345,7 @@ def project_link_repo(
         api_key,
         json_data={"git_remote": remote, "is_primary": primary},
     )
+    assert isinstance(result, dict)  # POST returns a single repo object
     console.print(
         f"[green]Repo linked:[/green] {result['git_remote_normalized']} "
         f"({result['id']})"
@@ -1355,6 +1391,7 @@ def project_unlink_repo(
             api_url,
             api_key,
         )
+        assert isinstance(repos, list)  # GET /repos returns an array
         match = None
         for r in repos:
             if r["git_remote_normalized"] == normalized:
@@ -1376,6 +1413,7 @@ def project_unlink_repo(
         api_url,
         api_key,
     )
+    assert isinstance(result, dict)  # DELETE returns {"status", "repo_id"}
     console.print(f"[green]Repo unlinked:[/green] {result['repo_id']}")
 
 
@@ -1402,6 +1440,7 @@ def project_repos(
         api_url,
         api_key,
     )
+    assert isinstance(repos, list)  # GET /repos returns an array
     if not repos:
         console.print("[dim]No repos linked.[/dim]")
         return
@@ -1628,6 +1667,14 @@ def _print_merge_plan(plan: dict) -> None:
         )
 
     console.print()
+    repo_count = stats.get("repos", 0)
+    if repo_count:
+        console.print(
+            f"[green]{repo_count} repo(s) will be linked to the target "
+            f"(the source's primary becomes a non-primary linked repo)."
+            f"[/green]"
+        )
+
     if stats.get("source_has_rules") and stats.get("target_has_rules"):
         console.print(
             "[yellow]Both projects have rules — source rules "

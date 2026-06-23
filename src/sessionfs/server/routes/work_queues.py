@@ -277,6 +277,16 @@ class WorkQueueStepCompleteRequest(BaseModel):
     ticket_lease_epoch: int | None = None
     failed: bool = False
     summary: str | None = Field(None, max_length=2000)
+    # tk_3539f7761e554ed5 — the reviewer's verdict for a review_until_clean
+    # (post_review) directive. When present, the SERVER creates the verdict
+    # comment with server-derived provenance (author_persona from the queue's
+    # reviewer persona; verdict_trusted from the authenticated actor against the
+    # trusted_reviewers registry). The reviewer NEVER posts the verdict via bare
+    # add_ticket_comment (that lands verdict_trusted=false). `verdict` is an
+    # optional raw verdict phrase carried for bookkeeping; the server re-derives
+    # closure from verdict_content regardless.
+    verdict_content: str | None = Field(None, max_length=20000)
+    verdict: str | None = Field(None, max_length=50)
 
 
 class WorkQueueItemSummary(BaseModel):
@@ -873,6 +883,16 @@ async def complete_work_queue_step(
             failed=body.failed,
             ticket_lease_epoch=body.ticket_lease_epoch,
             agent_summary=body.summary,
+            # tk_3539f7761e554ed5 — server-creates the reviewer verdict comment
+            # with server-derived provenance. Identity is sourced from the
+            # AUTHENTICATED actor (AuthContext + the project's org), NEVER from
+            # the body, so verdict_trusted can never be spoofed.
+            verdict_content=body.verdict_content,
+            actor_user_id=auth.user.id,
+            actor_org_id=project.org_id,
+            actor_service_key_id=auth.service_key_id,
+            actor_type=auth.actor_type,
+            service_key_name=auth.service_key_name,
         )
     except wq_engine.StepEngineError as exc:
         await db.rollback()

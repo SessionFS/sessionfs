@@ -39,6 +39,13 @@ auth_keys_app = typer.Typer(
     name="keys",
     help="Manage your personal API keys.",
 )
+trusted_reviewers_app = typer.Typer(
+    name="trusted-reviewers",
+    help=(
+        "Manage which identities post counted review verdicts (org-admin). "
+        "Grants verdict-trust authority — gate tightly."
+    ),
+)
 
 
 def _valid_scopes() -> frozenset[str]:
@@ -507,3 +514,181 @@ def auth_keys_revoke(
         err_console.print(f"[red]Error[/red]: {_parse_error(status, body)}")
         raise typer.Exit(1)
     console.print(f"[green]Revoked[/green] personal key {key_id}.")
+
+
+# ── sfs admin trusted-reviewers ──────────────────────────────────────
+#
+# Wraps /api/v1/orgs/{org_id}/trusted-reviewers. This registry decides
+# whose review verdicts the work-queue stop oracle trusts, so every
+# command requires org-admin (or owner) + Team+ tier server-side.
+
+
+@trusted_reviewers_app.command("list")
+def trusted_reviewers_list(
+    org_id: str = typer.Option(..., "--org", "-o", help="Organization id"),
+    include_revoked: bool = typer.Option(
+        False,
+        "--include-revoked",
+        help="Also show revoked (inactive) reviewers.",
+    ),
+) -> None:
+    """List trusted reviewers in an org. Org admin + Team+ tier required."""
+    api_url, api_key = _get_api_config()
+    suffix = "?include_revoked=true" if include_revoked else ""
+    status, body, _ = asyncio.run(
+        _api_request(
+            "GET",
+            f"/api/v1/orgs/{org_id}/trusted-reviewers{suffix}",
+            api_url,
+            api_key,
+        )
+    )
+    if status >= 400:
+        err_console.print(f"[red]Error[/red]: {_parse_error(status, body)}")
+        raise typer.Exit(1)
+
+    if not isinstance(body, list):
+        err_console.print(f"[red]Unexpected response shape[/red]: {body!r}")
+        raise typer.Exit(1)
+    if not body:
+        console.print("[dim]No trusted reviewers in this org.[/dim]")
+        return
+
+    table = Table(title=f"Trusted reviewers — org {org_id}")
+    table.add_column("ID")
+    table.add_column("Scope")
+    table.add_column("Identity")
+    table.add_column("Persona")
+    table.add_column("Active")
+    for row in body:
+        if not isinstance(row, dict):
+            continue
+        if row.get("project_id"):
+            scope = f"project:{row['project_id']}"
+        else:
+            scope = "org-wide"
+        if row.get("service_key_id"):
+            identity = f"key:{row['service_key_id']}"
+        elif row.get("user_id"):
+            identity = f"user:{row['user_id']}"
+        else:
+            identity = "[dim]none[/dim]"
+        active = (
+            "[green]yes[/green]" if row.get("is_active") else "[red]revoked[/red]"
+        )
+        table.add_row(
+            row["id"],
+            scope,
+            identity,
+            row.get("reviewer_persona") or "",
+            active,
+        )
+    console.print(table)
+
+
+@trusted_reviewers_app.command("add")
+def trusted_reviewers_add(
+    org_id: str = typer.Option(..., "--org", "-o", help="Organization id"),
+    service_key_id: Optional[str] = typer.Option(
+        None,
+        "--service-key-id",
+        help="Service key id to trust (identity — and/or --user-id).",
+    ),
+    user_id: Optional[str] = typer.Option(
+        None,
+        "--user-id",
+        help="Org-member user id to trust (identity — and/or --service-key-id).",
+    ),
+    project_id: Optional[str] = typer.Option(
+        None,
+        "--project",
+        "-p",
+        help="Scope to one project in the org. Omit for org-wide.",
+    ),
+    persona: str = typer.Option(
+        "codex-reviewer",
+        "--persona",
+        help="Reviewer persona this identity may speak as.",
+    ),
+) -> None:
+    """Register an identity as a trusted reviewer.
+
+    Provide at least one identity (--service-key-id and/or --user-id). Scope
+    is org-wide unless --project is given.
+    """
+    if not service_key_id and not user_id:
+        err_console.print(
+            "[red]Error[/red]: provide an identity — at least one of "
+            "--service-key-id or --user-id."
+        )
+        raise typer.Exit(2)
+
+    api_url, api_key = _get_api_config()
+    payload: dict = {"reviewer_persona": persona}
+    if service_key_id:
+        payload["service_key_id"] = service_key_id
+    if user_id:
+        payload["user_id"] = user_id
+    if project_id:
+        payload["project_id"] = project_id
+
+    status, body, _ = asyncio.run(
+        _api_request(
+            "POST",
+            f"/api/v1/orgs/{org_id}/trusted-reviewers",
+            api_url,
+            api_key,
+            json_data=payload,
+        )
+    )
+    if status >= 400 or not isinstance(body, dict):
+        err_console.print(f"[red]Error[/red]: {_parse_error(status, body)}")
+        raise typer.Exit(1)
+
+    scope = (
+        f"project:{body.get('project_id')}"
+        if body.get("project_id")
+        else "org-wide"
+    )
+    console.print(
+        f"[green]Trusted reviewer registered[/green]: id={body.get('id')} "
+        f"scope={scope} persona={body.get('reviewer_persona')}"
+    )
+
+
+@trusted_reviewers_app.command("revoke")
+def trusted_reviewers_revoke(
+    reviewer_id: str = typer.Argument(..., help="Trusted reviewer id"),
+    org_id: str = typer.Option(..., "--org", "-o", help="Organization id"),
+    reason: Optional[str] = typer.Option(
+        None,
+        "--reason",
+        "-r",
+        help="Why this reviewer is being revoked (audit trail; optional).",
+    ),
+) -> None:
+    """Revoke (deactivate) a trusted reviewer. Soft delete — settled
+    verdicts are preserved; only future verdicts stop being counted."""
+    api_url, api_key = _get_api_config()
+    payload: dict = {}
+    if reason and reason.strip():
+        payload["reason"] = reason.strip()
+    status, body, _ = asyncio.run(
+        _api_request(
+            "DELETE",
+            f"/api/v1/orgs/{org_id}/trusted-reviewers/{reviewer_id}",
+            api_url,
+            api_key,
+            json_data=payload or None,
+        )
+    )
+    if status == 404:
+        err_console.print(
+            f"[red]Error[/red]: trusted reviewer {reviewer_id} not found "
+            f"in org {org_id}."
+        )
+        raise typer.Exit(1)
+    if status >= 400:
+        err_console.print(f"[red]Error[/red]: {_parse_error(status, body)}")
+        raise typer.Exit(1)
+    console.print(f"[green]Revoked[/green] trusted reviewer {reviewer_id}.")

@@ -1028,6 +1028,7 @@ sfs project set [OPTIONS]
 
 | Option | Type | Description |
 |--------|------|-------------|
+| `--name` | string | Rename the project (project-admin only). Available starting v0.12.1. |
 | `--auto-narrative` / `--no-auto-narrative` | flag | Enable or disable auto-narrative generation on sync |
 
 **Example:**
@@ -1036,6 +1037,12 @@ sfs project set [OPTIONS]
 $ sfs project set --auto-narrative
 
 auto_narrative = True
+```
+
+```bash
+$ sfs project set --name "Acme Platform"
+
+name = Acme Platform
 ```
 
 ### `sfs project dismiss`
@@ -1679,6 +1686,14 @@ Re-extract metadata for all cloud sessions (admin only).
 
 ```
 sfs admin reindex
+```
+
+## `sfs admin trusted-reviewers`
+
+Register, list, or revoke an organization's trusted reviewers (org-admin only). A trusted reviewer is authorized to post review verdicts that the autonomous work queue's stop oracle will trust — typically a dedicated automated reviewer key. Tightly gated and fully audited. Available starting v0.12.1.
+
+```
+sfs admin trusted-reviewers (list | register | revoke) [OPTIONS]
 ```
 
 ---

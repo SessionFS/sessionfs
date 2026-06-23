@@ -2085,6 +2085,30 @@ class ProjectRepo(Base):
     __table_args__ = (
         UniqueConstraint("git_remote_normalized", name="uq_project_repos_remote"),
         Index("idx_project_repos_project", "project_id"),
+        # Partial unique: at most one primary repo per project. Declared
+        # here so Base.metadata.create_all (used by the test engines)
+        # matches migration 049's DB-level index — without it the demote-
+        # before-promote ordering in link_repo / merge._step_repos was
+        # only exercised against an unconstrained table and a production
+        # flush-order regression could slip through (tk_b3fc4a81446544ff).
+        Index(
+            "uq_project_repos_primary",
+            "project_id",
+            unique=True,
+            postgresql_where=text("is_primary IS TRUE"),
+            sqlite_where=text("is_primary IS TRUE"),
+        ),
+        # Partial unique: one project per provider+repo_id (rename
+        # survival). Mirrors migration 049. Only fires when
+        # provider_repo_id IS NOT NULL.
+        Index(
+            "uq_project_repos_provider_repo",
+            "provider",
+            "provider_repo_id",
+            unique=True,
+            postgresql_where=text("provider_repo_id IS NOT NULL"),
+            sqlite_where=text("provider_repo_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)

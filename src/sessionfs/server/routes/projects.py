@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import datetime, timezone
 
 import logging
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -55,6 +56,31 @@ class CreateProjectRequest(BaseModel):
 
 class UpdateContextRequest(BaseModel):
     context_document: str
+
+
+class UpdateProjectRequest(BaseModel):
+    """Rename a project (tk_9b5fd8c3e2604254).
+
+    Only `name` is settable — the Project model has no display_name or
+    slug column (git_remote_normalized is the stable identifier). The
+    validator mirrors session rename (sessions.SessionMetadataUpdate):
+    reject null bytes, strip HTML tags, trim, reject empty/whitespace,
+    cap at 255 chars (the column width).
+    """
+
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        if "\x00" in v:
+            raise ValueError("Null bytes not allowed in name")
+        if len(v) > 255:
+            raise ValueError("Name must be 255 characters or fewer")
+        v = re.sub(r"<[^>]*>", "", v).strip()
+        if not v:
+            raise ValueError("Name cannot be empty")
+        return v
 
 
 class ProjectResponse(BaseModel):
@@ -798,7 +824,16 @@ async def link_repo(
             )
             db.add(displacement_audit)
 
-    # 6. Handle is_primary: demote existing primary in same transaction.
+    # 6. Handle is_primary: DEMOTE the existing primary (keep the row),
+    #    do NOT unlink it (tk_b3fc4a81446544ff). The previous primary
+    #    stays linked and remains resolvable by its own remote — only
+    #    its is_primary flag flips to false. The demote is a Core UPDATE
+    #    (executes immediately against the connection) and the new row is
+    #    inserted via the unit-of-work at commit, so the demote always
+    #    lands first; the explicit flush() is a defensive barrier that
+    #    keeps the partial-unique index uq_project_repos_primary (one
+    #    primary per project) from ever observing two primaries even if
+    #    the demote is later refactored into an ORM mutation.
     if body.is_primary:
         await db.execute(
             update(ProjectRepo)
@@ -808,6 +843,7 @@ async def link_repo(
             )
             .values(is_primary=False)
         )
+        await db.flush()  # land the demote before the new-primary insert
         # Also update the project's git_remote_normalized.
         project.git_remote_normalized = normalized
 
@@ -1171,6 +1207,56 @@ async def merge_project(
         })
 
     return MergeResponse(**result)
+
+
+@router.patch("/{project_id}", response_model=ProjectResponse)
+async def update_project(
+    project_id: str,
+    body: UpdateProjectRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ProjectResponse:
+    """Rename a project (tk_9b5fd8c3e2604254).
+
+    Project-admin gated (owner or org-admin of the project's org via
+    user_is_project_admin). Only `name` is settable — the model has no
+    display_name/slug. Validation mirrors session rename: empty/
+    whitespace → 422, null bytes rejected, HTML stripped, 255-char cap.
+
+    Returns the updated ProjectResponse (with repos) so callers —
+    `sfs project show`, the dashboard — reflect the new name without a
+    second fetch. Distinct from session rename (PATCH /sessions/{id}).
+    """
+    from sessionfs.server.auth.project_access import user_is_project_admin
+
+    project = (
+        await db.execute(select(Project).where(Project.id == project_id))
+    ).scalar_one_or_none()
+    if project is None:
+        raise HTTPException(404, "Project not found")
+
+    if not await user_is_project_admin(db, user.id, project):
+        raise HTTPException(403, "Only a project admin can rename this project")
+
+    project.name = body.name
+    project.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(project)
+
+    return ProjectResponse(
+        id=project.id,
+        name=project.name,
+        git_remote_normalized=project.git_remote_normalized,
+        context_document=project.context_document,
+        owner_id=project.owner_id,
+        created_at=project.created_at,
+        updated_at=project.updated_at,
+        auto_narrative=getattr(project, "auto_narrative", False),
+        kb_retention_days=getattr(project, "kb_retention_days", 180),
+        kb_max_context_words=getattr(project, "kb_max_context_words", 8000),
+        kb_section_page_limit=getattr(project, "kb_section_page_limit", 30),
+        repos=await _repos_for_project(db, project.id),
+    )
 
 
 @router.delete("/{project_id}")

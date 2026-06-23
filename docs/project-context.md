@@ -64,6 +64,20 @@ sfs project show
 # ...
 ```
 
+### `sfs project set`
+
+Rename the project (and/or toggle auto-narrative). Renaming requires
+project-admin standing (project owner or org admin).
+
+```bash
+sfs project set --name "Acme Platform"
+# name = Acme Platform
+```
+
+The new name appears in `sfs project show` and the dashboard. This
+renames the **project**, not a session (see `sfs session rename` for
+that).
+
 ### `sfs project set-context`
 
 Set the context from a file (useful for CI or scripting).
@@ -134,6 +148,7 @@ Write whatever is useful for your team. Some ideas:
 |--------|------|-------------|
 | POST | `/api/v1/projects/` | Create a project context |
 | GET | `/api/v1/projects/{remote}` | Get project context by git remote |
+| PATCH | `/api/v1/projects/{id}` | Rename the project (`{"name": "…"}`, project-admin only) |
 | PUT | `/api/v1/projects/{remote}/context` | Update the context document |
 
 ## Related: Project Rules
