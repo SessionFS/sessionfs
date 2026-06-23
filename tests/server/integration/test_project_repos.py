@@ -942,6 +942,118 @@ async def test_link_repo_is_primary_race_two_winners(
     assert repos[0].git_remote_normalized == "github.com/acme/candidate-b"
 
 
+# ── FIX 3 (tk_b3fc4a81446544ff): --primary DEMOTES, never unlinks ──────
+
+
+@pytest.mark.asyncio
+async def test_link_primary_demotes_old_primary_keeps_row_resolvable(
+    client: AsyncClient,
+    auth_headers: dict,
+    test_user: User,
+    db_session: AsyncSession,
+):
+    """Acceptance: link A primary → link B primary → BOTH rows linked,
+    B primary, A demoted (is_primary=False) and STILL resolvable by its
+    own remote. The old primary must NOT be unlinked/dropped.
+    """
+    from sessionfs.server.services.project_resolver import (
+        resolve_project_by_remote,
+    )
+
+    project = await _make_project(
+        db_session, owner=test_user, remote="github.com/acme/seed",
+    )
+    await _add_repo(
+        db_session, project=project,
+        remote="github.com/acme/seed", is_primary=True,
+    )
+
+    # Link A as primary (demotes the seed).
+    resp_a = await client.post(
+        f"/api/v1/projects/{project.id}/repos",
+        json={"git_remote": "github.com/acme/repo-a", "is_primary": True},
+        headers=auth_headers,
+    )
+    assert resp_a.status_code == 201, resp_a.text
+    assert resp_a.json()["is_primary"] is True
+
+    # Link B as primary (demotes A — but KEEPS A's row).
+    resp_b = await client.post(
+        f"/api/v1/projects/{project.id}/repos",
+        json={"git_remote": "github.com/acme/repo-b", "is_primary": True},
+        headers=auth_headers,
+    )
+    assert resp_b.status_code == 201, resp_b.text
+    assert resp_b.json()["is_primary"] is True
+
+    # All three rows still linked to the project.
+    repos = (
+        await db_session.execute(
+            select(ProjectRepo).where(ProjectRepo.project_id == project.id)
+        )
+    ).scalars().all()
+    remotes = {r.git_remote_normalized: r for r in repos}
+    assert set(remotes) == {
+        "github.com/acme/seed",
+        "github.com/acme/repo-a",
+        "github.com/acme/repo-b",
+    }
+
+    # Exactly one primary, and it is B.
+    primaries = [r for r in repos if r.is_primary]
+    assert len(primaries) == 1
+    assert primaries[0].git_remote_normalized == "github.com/acme/repo-b"
+
+    # A was DEMOTED (not unlinked) — its row survives, is_primary=False.
+    assert remotes["github.com/acme/repo-a"].is_primary is False
+
+    # A is STILL resolvable by its own remote (row kept, not dropped).
+    resolved = await resolve_project_by_remote(
+        db_session, "github.com/acme/repo-a",
+    )
+    assert resolved is not None
+    assert resolved.id == project.id
+
+    # Project's display remote tracks the new primary B.
+    await db_session.refresh(project)
+    assert project.git_remote_normalized == "github.com/acme/repo-b"
+
+
+# ── list shape: bare JSON array (tk_e1bd970236bc42fa server side) ──────
+
+
+@pytest.mark.asyncio
+async def test_list_repos_returns_bare_json_array(
+    client: AsyncClient,
+    auth_headers: dict,
+    test_user: User,
+    db_session: AsyncSession,
+):
+    """GET /repos returns a BARE JSON array (not a wrapped object).
+
+    The CLI helper relies on this shape — confirms the response_model
+    contract (list[ProjectRepoResponse]) the CLI fix tolerates.
+    """
+    project = await _make_project(
+        db_session, owner=test_user, remote="github.com/acme/array-shape",
+    )
+    await _add_repo(
+        db_session, project=project,
+        remote="github.com/acme/array-shape", is_primary=True,
+    )
+
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/repos",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # Top-level JSON value is an array, not a dict.
+    assert isinstance(body, list)
+    assert all(isinstance(item, dict) for item in body)
+    assert body[0]["git_remote_normalized"] == "github.com/acme/array-shape"
+
+
 # ── 400 bad remote ─────────────────────────────────────────────────────
 
 

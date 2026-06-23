@@ -956,6 +956,25 @@ Display the current project context with metadata.
 sfs project show
 ```
 
+### `sfs project set`
+
+Update project settings. Rename the project with `--name`, toggle
+auto-narrative-on-sync with `--auto-narrative` / `--no-auto-narrative`.
+Either or both may be supplied in one call.
+
+```
+sfs project set --name "Acme Platform"
+sfs project set --auto-narrative
+sfs project set --name "Acme Platform" --no-auto-narrative
+```
+
+Renaming requires project-admin standing (you must be the project owner
+or an admin of the project's org). The new name is 1–255 characters;
+leading/trailing whitespace is trimmed and HTML tags are stripped.
+`sfs project show` reflects the new name immediately. This renames the
+**project** — it is distinct from `sfs session rename`, which renames a
+captured session.
+
 ### `sfs project edit`
 
 Open the context document in `$EDITOR`. Changes upload on save.
