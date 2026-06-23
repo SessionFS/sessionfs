@@ -503,18 +503,64 @@ async def _build_directive(
         "comment_delta": [_comment_to_delta(c) for c in delta_rows],
         "persona_ref": queue.assigned_persona,
         "expand_hints": list(_EXPAND_HINTS),
-        "writeback_contract": {
+        "writeback_contract": _writeback_contract_for(
+            queue, ticket, directive_id
+        ),
+    }
+
+
+def _writeback_contract_for(
+    queue: WorkQueue, ticket: Ticket, directive_id: str
+) -> dict:
+    """The writeback contract carried in a directive (design §4.4 / §5.0).
+
+    For review_until_clean (post_review) the reviewer's VERDICT is delivered
+    THROUGH complete_work_queue_step (NOT bare add_ticket_comment) —
+    tk_3539f7761e554ed5. add_ticket_comment is a generic comment tool with no
+    queue/directive context, so a verdict posted through it lands
+    author_persona=null → verdict_trusted=false and can never stop the loop. The
+    settle call carries directive_id, so the server knows the queue, its reviewer
+    persona, and the authenticated actor — it CREATES the verdict comment itself
+    with fully server-derived provenance (author_persona from queue config;
+    verdict_trusted from the authenticated actor against trusted_reviewers).
+
+    For implement_until_done / triage, implementer progress/closure notes are
+    still posted via add_ticket_comment (no trust change) and then settled.
+    """
+    if queue.mode == "review_until_clean":
+        return {
             "directive_id": directive_id,
-            "post_via": "add_ticket_comment",
+            # The verdict is delivered through the settle call, server-created.
+            "post_via": "complete_work_queue_step",
             "required_lease_epoch": ticket.lease_epoch,
             # The queue never supplies author_persona; trusted provenance is
             # server-derived (design §5.0 / tk_d42170b4670f4448 verdict_trusted).
             "author_persona_is_server_derived": True,
             "settle_via": (
                 "complete_work_queue_step("
-                f"directive_id={directive_id})"
+                f"directive_id={directive_id}, "
+                "verdict_content='Codex R<N> review on "
+                f"{ticket.id}: <VERDICT>')"
             ),
-        },
+            "note": (
+                "Do NOT post the verdict via add_ticket_comment — that lands "
+                "verdict_trusted=false and can never stop the loop. Pass the "
+                "verdict text as verdict_content on complete_work_queue_step; "
+                "the server creates the trusted verdict comment itself. Only a "
+                "STRICT literal 'VERIFIED-CLEAN' with no open findings stops "
+                "the loop."
+            ),
+        }
+    return {
+        "directive_id": directive_id,
+        # Implementer progress/closure notes — generic comments, no trust.
+        "post_via": "add_ticket_comment",
+        "required_lease_epoch": ticket.lease_epoch,
+        "author_persona_is_server_derived": False,
+        "settle_via": (
+            "complete_work_queue_step("
+            f"directive_id={directive_id})"
+        ),
     }
 
 
@@ -965,6 +1011,12 @@ async def complete_work_queue_step(
     failed: bool,
     ticket_lease_epoch: int | None = None,
     agent_summary: str | None = None,
+    verdict_content: str | None = None,
+    actor_user_id: str | None = None,
+    actor_org_id: str | None = None,
+    actor_service_key_id: str | None = None,
+    actor_type: str | None = None,
+    service_key_name: str | None = None,
 ) -> CompleteResult:
     """Settle one directive — the SINGLE commit point of the loop (design §4.5).
 
@@ -986,6 +1038,22 @@ async def complete_work_queue_step(
          Then advance the ACKED cursor (THE ONLY place it advances), settle the
          lease, set item_status (waiting | done), link agent_run_id, stamp the
          work_queue_runs.outcome.
+
+    REVIEWER-VERDICT PROVENANCE (tk_3539f7761e554ed5 / design §5.0):
+    `add_ticket_comment` is a generic tool with no directive/queue context, so a
+    reviewer posting a verdict through it lands `author_persona=null →
+    verdict_trusted=false` and can never stop a review_until_clean loop. The
+    SECURE settle path closes the gap: when this is a review_until_clean directive
+    (intent=post_review) and the caller supplies `verdict_content`, the SERVER
+    creates the verdict comment ITSELF with fully server-derived provenance —
+    `author_persona` is taken from the queue's reviewer persona
+    (`queue.assigned_persona`, default 'codex-reviewer') and `verdict_trusted` is
+    computed from the AUTHENTICATED actor against the trusted_reviewers registry
+    (`is_registered_trusted_reviewer`). NEVER from a caller-supplied persona
+    string or an assume_persona bundle. The server-created comment then feeds the
+    existing server-side re-derive below (compute_review_state over
+    verdict_trusted comments). Idempotency on directive_id (step 1) ensures a
+    re-sent complete never double-posts the verdict.
 
     Caller commits the transaction.
     """
@@ -1079,7 +1147,64 @@ async def complete_work_queue_step(
             next_eligible_at=next_eligible,
         )
 
-    # ── (4) SUCCESS branch — validate the writeback landed ──
+    # ── (4) SUCCESS branch ──
+
+    # (4a) SERVER-CREATED REVIEWER VERDICT (tk_3539f7761e554ed5 / design §5.0).
+    # When a review_until_clean directive (intent=post_review) settles with a
+    # caller-supplied verdict_content, the SERVER creates the verdict comment
+    # ITSELF so its provenance is fully server-derived: author_persona comes from
+    # the queue's reviewer persona (NOT caller input), and verdict_trusted is
+    # computed from the AUTHENTICATED actor against the trusted_reviewers
+    # registry (NEVER from any caller-supplied persona / assume_persona bundle).
+    # This is the ONLY path that can mint a trusted verdict for the loop. The
+    # created comment then feeds the existing re-derive below. Idempotency on
+    # directive_id (step 1) means a re-sent complete never double-posts it.
+    if (
+        queue.mode == "review_until_clean"
+        and verdict_content is not None
+        and verdict_content.strip()
+    ):
+        # The verdict's author identity is server-derived from queue config.
+        reviewer_persona = queue.assigned_persona or "codex-reviewer"
+        # Trust is derived from the AUTHENTICATED actor — never the body.
+        from sessionfs.server.routes.tickets import (
+            is_registered_trusted_reviewer,
+        )
+
+        verdict_trusted = False
+        if actor_user_id is not None:
+            verdict_trusted = await is_registered_trusted_reviewer(
+                db,
+                project_id=queue.project_id,
+                org_id=actor_org_id,
+                user_id=actor_user_id,
+                service_key_id=actor_service_key_id,
+                claimed_persona=reviewer_persona,
+            )
+        created_comment = TicketComment(
+            id=f"tc_{uuid.uuid4().hex[:16]}",
+            ticket_id=ticket_id,
+            author_user_id=actor_user_id or "",
+            author_persona=reviewer_persona,
+            content=verdict_content,
+            session_id=None,
+            created_at=now,
+            actor_type=actor_type or "user",
+            service_key_id=actor_service_key_id,
+            service_key_name=service_key_name,
+            verdict_trusted=verdict_trusted,
+        )
+        db.add(created_comment)
+        # Flush so the new row is visible to the re-derive query below and so
+        # its id can become the acked-cursor target. The caller still owns the
+        # final commit.
+        await db.flush()
+        # The server-created verdict IS the writeback for this settle — make it
+        # the acked target so the validation below is satisfied without the
+        # caller round-tripping a comment_id.
+        comment_id = created_comment.id
+
+    # ── (4b) Validate the writeback landed ──
     acked_comment: TicketComment | None = None
     if comment_id:
         cstmt = select(TicketComment).where(
