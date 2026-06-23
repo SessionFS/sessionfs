@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-06-22
+
+**Agent work queues — autonomous, supervised ticket-closing loops — plus a hardening of review-verdict trust.** An agent (Claude / Codex / Gemini) can be pointed at a queue of tickets and repeatedly woken (via `/loop`, cron, or CI) to service, review, and close them using SessionFS as the source of truth — no human dispatcher. The server holds all the loop state, so it resumes with zero chat memory. Backend + MCP (6 new tools, 62 → 68). DB migrations 053–054. Reviewed end-to-end: design (Compass) + Atlas/Sentinel design review, then four implementation phases each Codex-reviewed clean, and a full Shield-SR pre-release pass.
+
+### Added
+
+- **Agent work queues (`work_queues` / `work_queue_items` / `work_queue_runs`, migration 054).** Create a queue over a filter or explicit ticket list with a mode — `review_until_clean`, `implement_until_done`, or `triage` — a cadence, and per-run/per-item budgets. The heartbeat tool `run_work_queue_step` returns one bounded directive at a time (a single intent + a small comment delta, not the whole thread); the agent acts and calls `complete_work_queue_step`, which is the only point that durably advances the queue. A crash between the two re-emits the same directive rather than losing or repeating work. Six MCP tools: `create_work_queue`, `get_work_queue`, `list_work_queues`, `set_work_queue_status`, `run_work_queue_step`, `complete_work_queue_step`. Two new capability scopes (`work_queues:read` / `work_queues:write`); acting also requires the downstream `tickets` / `agent_runs` write scopes.
+- **`review_until_clean` stop oracle.** A review queue auto-finishes an item only when the server itself re-derives a **trusted, literal `VERIFIED-CLEAN` with no open findings** — it never trusts an agent's self-reported outcome. Available to all tiers.
+- **Built-in safety envelope** (load-bearing, since queues are available on every tier): a per-item attempt cap with exponential backoff (2m → 5m → 15m → 60m) that parks an item as `failed` for human reset, a per-wake ticket cap, a cadence floor, and a dedicated rate-limit class on the step endpoint.
+
+### Changed / Security
+
+- **Review verdicts now require server-verified provenance (migration 053).** Previously a review verdict was recognized by the comment's `author_persona` string — which a caller could set freely, allowing a forged `VERIFIED-CLEAN`. Verdict authority is now a server-stamped `verdict_trusted` flag, set from the authenticated identity against a trusted-reviewer registry, never from the request body. Human-facing review display is unchanged; the strict gate applies to the autonomous stop oracle. This closes the spoofing weakness and is the trust foundation the work-queue oracle stands on.
+
 ## [0.11.2] - 2026-06-20
 
 **Self-service licensing is now usable in the dashboard.** v0.11.0 shipped the licensing + org-management backend; this release adds the web UI for it, plus hardening of the activation/profile paths. No schema change (migrations 001–052 unchanged).

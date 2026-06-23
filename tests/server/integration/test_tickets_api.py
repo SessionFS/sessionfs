@@ -27,6 +27,7 @@ from sessionfs.server.db.models import (
     Project,
     Ticket,
     TicketComment,
+    TrustedReviewer,
     User,
 )
 
@@ -1392,6 +1393,21 @@ async def test_review_state_summarizes_full_review_cycle(
     project = await _make_project(db_session, user)
     await _make_persona(db_session, project, user, "atlas")
     await _make_persona(db_session, project, user, "codex-reviewer")
+    # tk_d42170b4670f4448 — verdict authority now comes from the
+    # trusted_reviewers registry, not author_persona. Register this user
+    # as the project's codex-reviewer so their VERIFIED-CLEAN counts.
+    db_session.add(
+        TrustedReviewer(
+            id=f"tr_{uuid.uuid4().hex[:16]}",
+            project_id=project.id,
+            user_id=user.id,
+            reviewer_persona="codex-reviewer",
+            is_active=True,
+            created_by_user_id=user.id,
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+    await db_session.commit()
     tk = (
         await client.post(
             f"/api/v1/projects/{project.id}/tickets",
@@ -1575,6 +1591,8 @@ async def test_review_state_cap_preserves_earliest_rounds(
         author_persona="codex-reviewer",
         content=codex_content,
         created_at=base_t,
+        # tk_d42170b4670f4448 — model a server-stamped trusted verdict.
+        verdict_trusted=True,
     ))
     # 500 atlas filler comments AFTER the codex comment (so they'd be
     # truncated under a cap that ordered DESC; under our ascending

@@ -31,6 +31,12 @@ VALID_SCOPES = frozenset(
         "rules:write",
         "agent_runs:read",
         "agent_runs:write",
+        # WQ-P2 (tk_3481237f3b0847d6) — agent work-queue management surface.
+        # work_queues:read inspects (list/get); work_queues:write acts
+        # (create/set-status). Same shape as tickets:read/write. User
+        # wildcard '*' keys satisfy both (existing behavior).
+        "work_queues:read",
+        "work_queues:write",
         "retrieval_audit:read",
         "admin:*",
     }

@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Iterable, Optional
 
 
@@ -111,15 +111,35 @@ class ReviewFinding:
 @dataclass(frozen=True)
 class ReviewRound:
     round: int
-    verdict: str  # VERIFIED-CLEAN / CHANGES_REQUESTED / ...
+    verdict: str  # VERIFIED-CLEAN / CHANGES_REQUESTED / ... (alias-folded)
     comment_id: str
     timestamp: datetime
     findings_raised: int
+    # WQ-P4 (Sentinel R2 LOW) — the STRICT seam. `verdict` above is the
+    # alias-FOLDED canonical pair (APPROVED / NO CHANGES NEEDED → VERIFIED-
+    # CLEAN) used for human display. `raw_verdict` preserves the literal
+    # phrase Codex actually wrote (e.g. "APPROVED", "VERIFIED-CLEAN") so the
+    # autonomous stop oracle can demand the EXACT canonical phrase before
+    # auto-closing a ticket unattended. See `is_strict_verified_clean`.
+    raw_verdict: str = ""
+
+    @property
+    def is_strict_verified_clean(self) -> bool:
+        """True ONLY for the literal canonical `VERIFIED-CLEAN` phrase.
+
+        Alias-folded rounds (`APPROVED`, `NO CHANGES NEEDED`) report
+        `verdict == VERDICT_CLEAN` for display but are NOT strict — they
+        return False here. The work-queue stop oracle uses this; the
+        human-facing renderer uses `verdict`.
+        """
+        return _is_strict_verified_clean(self.raw_verdict)
 
     def to_dict(self) -> dict:
         return {
             "round": self.round,
             "verdict": self.verdict,
+            "raw_verdict": self.raw_verdict,
+            "is_strict_verified_clean": self.is_strict_verified_clean,
             "comment_id": self.comment_id,
             "timestamp": self.timestamp.isoformat(),
             "findings_raised": self.findings_raised,
@@ -137,6 +157,16 @@ class ReviewState:
     open_findings: list[ReviewFinding] = field(default_factory=list)
     closed_findings: list[ReviewFinding] = field(default_factory=list)
     last_verdict: Optional[str] = None
+    # WQ-P4 (Sentinel R2 LOW) — STRICT seam, additive. `last_verdict` above
+    # stays ALIAS-FOLDED for human display (the renderer at
+    # routes/tickets.py:get_ticket_review_state shows it unchanged).
+    # `last_raw_verdict` is the literal phrase of the latest trusted round,
+    # and `last_verdict_is_strict_verified_clean` is True ONLY when that
+    # latest round wrote the exact canonical `VERIFIED-CLEAN` (NOT an alias).
+    # The autonomous work-queue stop oracle reads the strict signal; nothing
+    # in the human-display path consults it.
+    last_raw_verdict: Optional[str] = None
+    last_verdict_is_strict_verified_clean: bool = False
     severity_counts: dict[str, int] = field(default_factory=dict)
     last_review_comment_id: Optional[str] = None
     last_implementer_comment_id: Optional[str] = None
@@ -148,6 +178,10 @@ class ReviewState:
             "open_findings": [f.to_dict() for f in self.open_findings],
             "closed_findings": [f.to_dict() for f in self.closed_findings],
             "last_verdict": self.last_verdict,
+            "last_raw_verdict": self.last_raw_verdict,
+            "last_verdict_is_strict_verified_clean": (
+                self.last_verdict_is_strict_verified_clean
+            ),
             "severity_counts": dict(self.severity_counts),
             "last_review_comment_id": self.last_review_comment_id,
             "last_implementer_comment_id": self.last_implementer_comment_id,
@@ -157,11 +191,31 @@ class ReviewState:
 
 
 def _normalize_verdict(raw: str) -> str:
-    """Map verdict variants to a canonical pair."""
+    """Map verdict variants to a canonical pair (alias-folding).
+
+    This is the HUMAN-DISPLAY normalization — `APPROVED` and
+    `NO CHANGES NEEDED` fold into `VERIFIED-CLEAN`. It is intentionally
+    loose. For the autonomous auto-close gate use `_is_strict_verified_clean`
+    on the RAW phrase instead (WQ-P4 / §5.0 strict-only stop oracle).
+    """
     cleaned = re.sub(r"[\s_-]+", "_", raw.strip().upper())
     if cleaned in {"VERIFIED_CLEAN", "NO_CHANGES_NEEDED", "APPROVED"}:
         return VERDICT_CLEAN
     return VERDICT_CHANGES
+
+
+def _is_strict_verified_clean(raw: str) -> bool:
+    """True ONLY for the literal canonical `VERIFIED-CLEAN` phrase.
+
+    WQ-P4 / design §5.0 (Sentinel #5): an UNATTENDED auto-stop demands the
+    exact verdict the team uses for "done". The display aliases
+    (`APPROVED`, `NO CHANGES NEEDED`) fold to VERIFIED-CLEAN for rendering
+    but are NOT sufficient to end a loop without a human in the seat. This
+    accepts only `VERIFIED-CLEAN` / `VERIFIED_CLEAN` (case-insensitive,
+    hyphen-or-underscore) — nothing else.
+    """
+    cleaned = re.sub(r"[\s_-]+", "_", raw.strip().upper())
+    return cleaned == "VERIFIED_CLEAN"
 
 
 def _parse_codex_comment(
@@ -177,7 +231,8 @@ def _parse_codex_comment(
         return None, []
 
     round_num = int(header_match.group("round"))
-    verdict = _normalize_verdict(header_match.group("verdict"))
+    raw_verdict = header_match.group("verdict").strip()
+    verdict = _normalize_verdict(raw_verdict)
 
     # Locate the Findings section. Bound the slice from end of header
     # through whichever section header comes next.
@@ -209,6 +264,7 @@ def _parse_codex_comment(
     round_meta = ReviewRound(
         round=round_num,
         verdict=verdict,
+        raw_verdict=raw_verdict,
         comment_id=comment_id,
         timestamp=created_at,
         findings_raised=len(findings),
@@ -227,14 +283,40 @@ def compute_review_state(
       - author_persona: str | None
       - content: str
       - created_at: datetime  (or ISO-8601 string)
+      - verdict_trusted: bool  (server-stamped at write — the authority
+        signal; see tk_d42170b4670f4448 /
+        docs/security/review-verdict-provenance.md)
 
-    Returns `None` if no codex-reviewer comments are present — review
-    state only applies to review tickets, and the absence of any Codex
-    round means there's nothing structured to report.
+    Returns `None` if no TRUSTED review-verdict comments are present —
+    review state only applies to review tickets, and the absence of any
+    trusted round means there's nothing authoritative to report.
+
+    Verdict authority is keyed off `verdict_trusted` (server-stamped from
+    the trusted_reviewers registry), NOT off `author_persona`. A forged
+    `author_persona="codex-reviewer"` comment from an arbitrary
+    tickets:write caller carries `verdict_trusted=false`, still renders in
+    the thread, but contributes NOTHING to verdict/closure derivation.
+
+    `codex_persona` is retained for back-compat / renderer labelling only;
+    it no longer gates rounds or findings.
+
+    Strict seam (WQ-P4, agent-work-queue stop oracle, docs/design/
+    agent-work-queues.md §5.0/§6): autonomous closure must additionally
+    require the STRICT literal `VERIFIED-CLEAN` verdict — aliases
+    (`APPROVED`, `NO CHANGES NEEDED`) folded by `_normalize_verdict` are
+    acceptable for human-facing display (`last_verdict`) but are NOT
+    sufficient for unattended auto-close. This module exposes the strict
+    signal ADDITIVELY: `ReviewState.last_verdict_is_strict_verified_clean`
+    (and `ReviewState.last_raw_verdict` / `ReviewRound.raw_verdict` /
+    `ReviewRound.is_strict_verified_clean`). `_normalize_verdict`'s display
+    aliasing is intentionally left unchanged so `last_verdict` and the
+    `get_ticket_review_state` renderer keep folding aliases; the consuming
+    oracle (`services/work_queues.py`) reads the strict signal instead.
     """
     sorted_comments = sorted(
         list(comments),
-        key=lambda c: _coerce_dt(c.get("created_at")) or datetime.min,
+        key=lambda c: _coerce_dt(c.get("created_at"))
+        or datetime.min.replace(tzinfo=timezone.utc),
     )
 
     rounds: list[ReviewRound] = []
@@ -247,14 +329,18 @@ def compute_review_state(
         cid = c.get("id")
         if not isinstance(cid, str):
             continue
-        author = c.get("author_persona")
         content = c.get("content") or ""
         created_at = _coerce_dt(c.get("created_at"))
         if created_at is None:
             continue
         latest_ts = created_at if latest_ts is None or created_at > latest_ts else latest_ts
 
-        if author == codex_persona:
+        # tk_d42170b4670f4448 — verdict authority comes from the
+        # server-stamped trust flag, NOT from author_persona. Untrusted
+        # comments (including a forged "codex-reviewer" post from an
+        # arbitrary tickets:write caller) still render in the thread but
+        # never become a round / close findings / set last_verdict.
+        if bool(c.get("verdict_trusted")):
             last_review_id = cid
             round_meta, findings = _parse_codex_comment(content, cid, created_at)
             if round_meta is not None:
@@ -299,12 +385,18 @@ def compute_review_state(
     }
 
     # Last verdict is the verdict of the latest (highest-round) Codex comment.
-    last_verdict = rounds_sorted[-1].verdict
+    last_round = rounds_sorted[-1]
+    last_verdict = last_round.verdict
 
     return ReviewState(
         open_findings=open_findings,
         closed_findings=closed_findings,
         last_verdict=last_verdict,
+        # WQ-P4 strict seam — the literal phrase + strict flag of the latest
+        # trusted round. The autonomous stop oracle (services/work_queues.py)
+        # reads these; the human renderer reads last_verdict (alias-folded).
+        last_raw_verdict=last_round.raw_verdict,
+        last_verdict_is_strict_verified_clean=last_round.is_strict_verified_clean,
         severity_counts=severity_counts,
         last_review_comment_id=last_review_id,
         last_implementer_comment_id=last_implementer_id,
@@ -314,18 +406,29 @@ def compute_review_state(
 
 
 def _coerce_dt(v) -> Optional[datetime]:
-    """Accept datetime or ISO-8601 string; tolerate trailing Z."""
+    """Accept datetime or ISO-8601 string; tolerate trailing Z.
+
+    Always returns a tz-AWARE datetime (naive inputs are assumed UTC). The
+    server stores UTC; SQLite round-trips can yield naive datetimes while
+    other rows carry tzinfo, so normalizing here keeps the sort/compare paths
+    from raising "can't compare offset-naive and offset-aware datetimes"
+    (WQ-P4 — the stop oracle re-derives over DB-sourced comments).
+    """
     if v is None:
         return None
+    dt: datetime | None = None
     if isinstance(v, datetime):
-        return v
-    if isinstance(v, str):
+        dt = v
+    elif isinstance(v, str):
         s = v.rstrip("Z")
         # datetime.fromisoformat handles "2026-05-19T03:14:12.285338+00:00"
         # but not bare "Z" until 3.11. Strip Z and assume UTC.
         try:
             dt = datetime.fromisoformat(s)
-            return dt
         except ValueError:
             return None
-    return None
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt

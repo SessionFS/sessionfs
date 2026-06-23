@@ -44,6 +44,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, field_validator
 from sqlalchemy import and_, func, insert, literal, or_, select, update
+from sqlalchemy import false as sa_false
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import AuthContext, get_current_user, require_scope
@@ -58,6 +59,7 @@ from sessionfs.server.db.models import (
     TicketComment,
     TicketDependency,
     TicketEdit,
+    TrustedReviewer,
     User,
 )
 from sessionfs.server.routes.knowledge import _get_project_for_auth
@@ -973,6 +975,9 @@ async def get_ticket_review_state(
             "author_persona": r.author_persona,
             "content": r.content,
             "created_at": r.created_at,
+            # tk_d42170b4670f4448 — server-stamped trust marker; the
+            # authority signal for verdict derivation (NOT author_persona).
+            "verdict_trusted": r.verdict_trusted,
         }
         for r in rows
     ]
@@ -2051,6 +2056,65 @@ async def list_ticket_comments(
     ]
 
 
+async def is_registered_trusted_reviewer(
+    db: AsyncSession,
+    *,
+    project_id: str,
+    org_id: str | None,
+    user_id: str,
+    service_key_id: str | None,
+    claimed_persona: str | None,
+) -> bool:
+    """tk_d42170b4670f4448 — decide, from server-derived identity, whether
+    this comment is an authoritative review verdict.
+
+    True iff an ACTIVE trusted_reviewers row exists that (a) is scoped to
+    this comment's project (project_id match) OR org-wide for the project's
+    org, (b) matches the credential actually in use, and (c) is registered
+    for the EXACT claimed_persona.
+
+    Trust is decided from AuthContext (user_id / service_key_id), never from
+    the request body. Identity isolation is strict:
+      - a SERVICE-KEY request matches ONLY a service_key_id row (a service
+        key "running as" a user must not inherit a human's reviewer trust);
+      - a USER-KEY request matches ONLY a user_id row whose service_key_id
+        IS NULL.
+    """
+    if not claimed_persona:
+        return False
+
+    scope_clause = or_(
+        TrustedReviewer.project_id == project_id,
+        and_(
+            TrustedReviewer.project_id.is_(None),
+            TrustedReviewer.org_id == org_id,
+        )
+        if org_id is not None
+        else sa_false(),
+    )
+
+    if service_key_id is not None:
+        identity_clause = TrustedReviewer.service_key_id == service_key_id
+    else:
+        identity_clause = and_(
+            TrustedReviewer.user_id == user_id,
+            TrustedReviewer.service_key_id.is_(None),
+        )
+
+    stmt = (
+        select(TrustedReviewer.id)
+        .where(
+            TrustedReviewer.is_active.is_(True),
+            TrustedReviewer.revoked_at.is_(None),
+            TrustedReviewer.reviewer_persona == claimed_persona,
+            scope_clause,
+            identity_clause,
+        )
+        .limit(1)
+    )
+    return (await db.execute(stmt)).scalar_one_or_none() is not None
+
+
 @router.post(
     "/{project_id}/tickets/{ticket_id}/comments",
     response_model=CommentResponse,
@@ -2072,6 +2136,20 @@ async def create_ticket_comment(
     )
     await assert_service_key_can_access_project(db, auth, project)
     await _assert_lease_required_mode(project_id, db, body.lease_epoch, auth=auth)
+
+    # tk_d42170b4670f4448 — server-stamp the verdict trust decision from
+    # the authenticated identity against the trusted_reviewers registry.
+    # NEVER read trust from the request body. author_persona is still
+    # stored (display/back-compat) but no longer carries verdict authority.
+    verdict_trusted = await is_registered_trusted_reviewer(
+        db,
+        project_id=project.id,
+        org_id=project.org_id,
+        user_id=user.id,
+        service_key_id=auth.service_key_id,
+        claimed_persona=body.author_persona,
+    )
+
     comment_id = f"tc_{uuid.uuid4().hex[:16]}"
     now = datetime.now(timezone.utc)
     source = select(
@@ -2085,6 +2163,7 @@ async def create_ticket_comment(
         literal(auth.actor_type),
         literal(auth.service_key_id),
         literal(auth.service_key_name),
+        literal(verdict_trusted),
     ).where(
         Ticket.id == ticket_id,
         Ticket.project_id == project_id,
@@ -2108,6 +2187,7 @@ async def create_ticket_comment(
                 "actor_type",
                 "service_key_id",
                 "service_key_name",
+                "verdict_trusted",
             ],
             source,
         )

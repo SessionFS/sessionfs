@@ -276,11 +276,13 @@ class TestToolRegistryV0996:
     (create/claim/get/list_inbox/list_sent/revoke/decline/comment = 8).
     Total: 53."""
 
-    def test_tool_count_is_62(self):
+    def test_tool_count_is_68(self):
         from sessionfs.mcp.server import _TOOLS
-        assert len(_TOOLS) == 62, (
-            f"Expected 62 MCP tools after tk_835a876529de4551 added "
-            f"update_ticket, got {len(_TOOLS)}"
+        assert len(_TOOLS) == 68, (
+            f"Expected 68 MCP tools after WQ-P3 (tk_3de50bf7bb73418b) added "
+            f"run_work_queue_step / complete_work_queue_step on top of WQ-P2's "
+            f"create_work_queue / get_work_queue / list_work_queues / "
+            f"set_work_queue_status, got {len(_TOOLS)}"
         )
 
     def test_new_tools_registered(self):
@@ -327,6 +329,14 @@ class TestToolRegistryV0996:
             # v0.10.24 persona MCP parity (tk_32abb6d0d4744c5d / GH #50)
             "update_persona",
             "delete_persona",
+            # WQ-P2 work-queue management (tk_3481237f3b0847d6)
+            "create_work_queue",
+            "get_work_queue",
+            "list_work_queues",
+            "set_work_queue_status",
+            # WQ-P3 step engine (tk_3de50bf7bb73418b)
+            "run_work_queue_step",
+            "complete_work_queue_step",
         ):
             assert new_tool in names, f"Missing MCP tool: {new_tool}"
 

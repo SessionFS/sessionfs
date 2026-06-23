@@ -38,7 +38,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
             <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs mcp install --for claude-code</span></div>
             <div class="mt-2 text-muted">MCP server configured for Claude Code.</div>
             <div class="text-muted">Restart Claude Code to activate.</div>
-            <div class="mt-4 text-muted-dim">62 tools available to your AI agent:</div>
+            <div class="mt-4 text-muted-dim">68 tools available to your AI agent:</div>
             <div class="mt-1 text-muted-dim">Session tools (7):</div>
             <div class="text-txt">&bull; <span class="text-brand">search_sessions</span> <span class="text-muted-dim">— Search past sessions</span></div>
             <div class="text-txt">&bull; <span class="text-brand">get_session_context</span> <span class="text-muted-dim">— Full conversation from a session</span></div>
@@ -82,6 +82,13 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
             <div class="text-txt">&bull; <span class="text-accent">assign_persona</span> <span class="text-muted-dim">— Set the persona on a ticket</span></div>
             <div class="text-txt">&bull; <span class="text-accent">escalate_ticket</span> <span class="text-muted-dim">— Audit comment + raise priority</span></div>
             <div class="text-txt">&bull; <span class="text-accent">add_ticket_comment</span> <span class="text-muted-dim">— Slack-like thread</span></div>
+            <div class="mt-2 text-muted-dim">Work queues (6):</div>
+            <div class="text-txt">&bull; <span class="text-accent">create_work_queue</span> <span class="text-muted-dim">— Aim an agent at a queue of tickets</span></div>
+            <div class="text-txt">&bull; <span class="text-brand">get_work_queue</span> <span class="text-muted-dim">— Queue config + progress</span></div>
+            <div class="text-txt">&bull; <span class="text-brand">list_work_queues</span> <span class="text-muted-dim">— Browse a project's queues</span></div>
+            <div class="text-txt">&bull; <span class="text-accent">set_work_queue_status</span> <span class="text-muted-dim">— Pause / resume / archive</span></div>
+            <div class="text-txt">&bull; <span class="text-accent">run_work_queue_step</span> <span class="text-muted-dim">— Heartbeat: one bounded directive per wake</span></div>
+            <div class="text-txt">&bull; <span class="text-accent">complete_work_queue_step</span> <span class="text-muted-dim">— Durably advance the queue</span></div>
           </div>
         </div>
       </div>

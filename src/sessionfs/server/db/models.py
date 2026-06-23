@@ -1547,6 +1547,77 @@ class TicketComment(Base):
     )
     service_key_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     service_key_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # tk_d42170b4670f4448 — server-stamped trust decision at write time
+    # (docs/security/review-verdict-provenance.md). Recorded from
+    # AuthContext against the trusted_reviewers registry — NEVER from the
+    # request body. compute_review_state counts a comment as an
+    # authoritative review verdict only when this is true; author_persona
+    # is display-only and no longer carries authority. server_default
+    # 'false' makes every existing/forged row non-authoritative
+    # (fail-closed). Migration 053 backfills the known operator's
+    # historical codex-reviewer comments.
+    verdict_trusted: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+
+
+class TrustedReviewer(Base):
+    """Registry of identities authorized to post counted review verdicts.
+
+    tk_d42170b4670f4448 (docs/security/review-verdict-provenance.md). Binds
+    an authenticated identity (user_id and/or service_key_id) to the reviewer
+    persona it may speak as, scoped to a project OR org-wide:
+      - project-scoped: project_id set, org_id NULL → one project.
+      - org-wide:       org_id set, project_id NULL → every project in the org.
+
+    `create_ticket_comment` consults this registry from AuthContext to stamp
+    `TicketComment.verdict_trusted`. Registration is admin-gated; revocation
+    (is_active=false / revoked_at set) stops FUTURE verdicts but never
+    rewrites settled verdict_trusted rows. App-assigned PK ('tr_<hex>').
+    The inline CheckConstraints mirror migration 053 so create_all / SQLite
+    enforce identity-present + scope-present.
+    """
+
+    __tablename__ = "trusted_reviewers"
+    __table_args__ = (
+        Index("idx_trusted_reviewer_project", "project_id"),
+        Index("idx_trusted_reviewer_org", "org_id"),
+        CheckConstraint(
+            "(user_id IS NOT NULL) OR (service_key_id IS NOT NULL)",
+            name="ck_trusted_reviewer_identity_present",
+        ),
+        CheckConstraint(
+            "(project_id IS NOT NULL) OR (org_id IS NOT NULL)",
+            name="ck_trusted_reviewer_scope_present",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    org_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    project_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    service_key_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    reviewer_persona: Mapped[str] = mapped_column(
+        String(50), nullable=False, server_default="codex-reviewer"
+    )
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    created_by_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class TicketEdit(Base):
@@ -1702,6 +1773,225 @@ class AgentRun(Base):
     )
     service_key_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     service_key_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+
+class WorkQueue(Base):
+    """A durable, project-scoped plan for an agent to service tickets.
+
+    tk_529a64620db846f5 (WQ-P1) — the durable definition of an autonomous
+    ticket-closing loop (design tk_c2ed6093acde4d55,
+    docs/design/agent-work-queues.md §3.1). It owns selection (a filter or
+    explicit ticket-id list, in `selector`), a `mode`, a stop condition +
+    budget, an advisory cadence, and a queue-level `lease_epoch` fencing
+    concurrent queue mutation (same pattern as Ticket.lease_epoch).
+
+    A WorkQueue is distinct from Ticket (a single unit of work), AgentPersona
+    (who acts), and AgentRun (one execution): it is the standing loop that
+    emits many AgentRuns over time and answers "where is the cursor, what's
+    the stop condition, when is the next wake?". App-assigned PK ('wq_<hex>').
+    Inline CheckConstraints mirror migration 054 so create_all / SQLite
+    enforce the mode + status enums.
+    """
+
+    __tablename__ = "work_queues"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "name", name="uq_work_queue_project_name"
+        ),
+        Index("idx_work_queue_project_status", "project_id", "status"),
+        CheckConstraint(
+            "mode IN ('review_until_clean', 'implement_until_done', 'triage')",
+            name="ck_work_queue_mode",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'paused', 'completed', 'cancelled')",
+            name="ck_work_queue_status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # wq_<hex>
+    project_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    mode: Mapped[str] = mapped_column(String(30), nullable=False)
+    assigned_persona: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # JSON-as-Text (not native JSONB) for cross-DB SQLite/PG compatibility.
+    selector: Mapped[str] = mapped_column(
+        Text, nullable=False, default="{}", server_default="{}"
+    )
+    auto_adopt: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    max_adopt_per_wake: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=5, server_default="5"
+    )
+    stop_condition: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="queue_empty",
+        server_default="queue_empty",
+    )
+    cadence_seconds: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=300, server_default="300"
+    )
+    max_tickets_per_run: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    max_attempts_per_item: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=3, server_default="3"
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="active", server_default="active"
+    )
+    lease_epoch: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    # Provenance triple.
+    created_by_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by_session_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    created_by_persona: Mapped[str | None] = mapped_column(
+        String(50), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class WorkQueueItem(Base):
+    """The per-(queue, ticket) cursor — the durable resumable loop state.
+
+    tk_529a64620db846f5 (WQ-P1, design §3.2). No chat memory is required to
+    resume a loop: everything the wake mechanism needs lives here.
+
+    Cursor split (the headline crash-safety design): `last_seen_comment_*` is
+    advanced when a directive is EMITTED (the `since` floor for the next
+    delta); `last_acked_comment_*` is advanced ONLY by complete_work_queue_step
+    after the writeback is validated/committed. The stop oracle and the
+    reviewer-turn check read the ACKED cursor. A crash between directive and
+    writeback leaves SEEN ahead of ACKED with an open directive lease
+    (`open_directive_id` / `open_directive_run_id`) → the same directive
+    re-emits (no review lost, none replayed).
+
+    `item_status` is the queue's view of the loop and is DISTINCT from
+    Ticket.status. `ticket_id` is a plain string (the ticket may be hard
+    deleted; the cursor row survives). App-assigned PK ('wqi_<hex>').
+    """
+
+    __tablename__ = "work_queue_items"
+    __table_args__ = (
+        UniqueConstraint(
+            "work_queue_id", "ticket_id", name="uq_work_queue_item"
+        ),
+        # Covers the atomic-claim predicate (services/work_queues.py).
+        Index(
+            "idx_wqi_claim",
+            "work_queue_id",
+            "item_status",
+            "next_eligible_at",
+        ),
+        Index("idx_wqi_ticket", "ticket_id"),
+        CheckConstraint(
+            "item_status IN "
+            "('pending', 'active', 'waiting', 'done', 'failed')",
+            name="ck_work_queue_item_status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # wqi_<hex>
+    work_queue_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("work_queues.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    ticket_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    item_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending", server_default="pending"
+    )
+    # SEEN cursor (server-shown floor).
+    last_seen_comment_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_seen_comment_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    # ACKED cursor (durably reviewed) — advanced only by complete_work_queue_step.
+    last_acked_comment_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_acked_comment_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    # Directive lease.
+    open_directive_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    open_directive_run_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    last_agent_run_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    last_verdict: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Count of EMITTED directives / action attempts (runaway guard); passive
+    # waits do NOT increment it.
+    attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    next_eligible_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class WorkQueueRun(Base):
+    """Append-only per-wake audit for a work queue.
+
+    tk_529a64620db846f5 (WQ-P1, design §3.3). One row per wake (per call to
+    the run-step tool), INCLUDING poll-only / no-op wakes that service no
+    item. Kept a SEPARATE table from AgentRun (Atlas R2): a wake may produce
+    no AgentRun at all; when it does, the row links it via the nullable
+    `agent_run_id`. `work_queue_item_id` is nullable (no-op wake). App-assigned
+    PK ('wqr_<hex>'). This id IS the work_queue_run_id returned to the caller
+    (the directive-lease handle in later phases).
+    """
+
+    __tablename__ = "work_queue_runs"
+    __table_args__ = (
+        Index("idx_wqr_queue_created", "work_queue_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # wqr_<hex>
+    work_queue_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("work_queues.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    work_queue_item_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("work_queue_items.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    agent_run_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("agent_runs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    directive_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    outcome: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class RetrievalAuditContext(Base):
