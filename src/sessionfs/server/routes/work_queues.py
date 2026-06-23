@@ -764,8 +764,9 @@ async def run_work_queue_step(
     route per (org, project, service_key, queue) — Cloud Armor edge deny-429 is
     a separate Forge infra follow-up.
 
-    review_until_clean queues return HTTP 422 not_available (the trusted-
-    verdict stop oracle ships in WQ-P4).
+    review_until_clean queues run the WQ-P4 STOP ORACLE: the server
+    re-derives review state over TRUSTED comments only and auto-closes an
+    item ONLY on a strict literal VERIFIED-CLEAN with no open findings.
     """
     _require_downstream_scopes(auth, "tickets:write")
     wake_source = body.wake_source if body is not None else "manual"

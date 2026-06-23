@@ -15,8 +15,10 @@ Covers run_work_queue_step / complete_work_queue_step (services + routes):
 - cadence: a wake before cadence_seconds elapsed is a no-op.
 - max_tickets_per_run respected; auto_adopt materializes capped by
   max_adopt_per_wake.
-- scope/permission: missing work_queues:write → 403; review_until_clean step →
-  not-available (422).
+- scope/permission: missing work_queues:write → 403.
+- review_until_clean is AVAILABLE (WQ-P4): a no-comment ticket parks as
+  waiting (the full stop-oracle matrix lives in
+  test_work_queue_review_oracle.py).
 """
 
 from __future__ import annotations
@@ -25,7 +27,6 @@ import json
 import uuid
 from datetime import datetime, timedelta, timezone
 
-import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -673,26 +674,39 @@ async def test_auto_adopt_off_means_no_adoption(db_session: AsyncSession):
     assert result.reason == "queue_empty"
 
 
-# ── review_until_clean not available (WQ-P4) ──
+# ── review_until_clean is AVAILABLE as of WQ-P4 (stop oracle) ──
 
 
-async def test_review_until_clean_not_available(db_session: AsyncSession):
+async def test_review_until_clean_no_comments_waits(db_session: AsyncSession):
+    """WQ-P4 — review_until_clean no longer raises not_available. With a
+    ticket that has no comments at all, there is nothing for the reviewer
+    to act on yet → passive WAIT (no directive, attempts not incremented)."""
     user, _ = await _make_user_with_key(db_session)
     project = await _make_project(db_session, user)
     ticket = await _make_ticket(db_session, project, status="review")
     queue = await _make_queue(
         db_session, project, user, mode="review_until_clean"
     )
-    await _make_item(db_session, queue, ticket)
+    item = await _make_item(db_session, queue, ticket)
     await db_session.commit()
 
-    with pytest.raises(wq_engine.StepEngineError) as exc:
-        await wq_engine.run_work_queue_step(
-            db_session, queue=queue, wake_source="manual", wake_ref=None,
-            max_tickets=None,
+    result = await wq_engine.run_work_queue_step(
+        db_session, queue=queue, wake_source="manual", wake_ref=None,
+        max_tickets=None,
+    )
+    await db_session.commit()
+    assert result.status == "idle"
+    assert result.reason == "waiting_implementation"
+    assert result.directives == []
+    refreshed = (
+        await db_session.execute(
+            select(WorkQueueItem).where(WorkQueueItem.id == item.id)
         )
-    assert exc.value.code == "review_until_clean_not_available"
-    assert exc.value.http_status == 422
+    ).scalar_one()
+    assert refreshed.item_status == "waiting"
+    assert refreshed.attempts == 0  # a wait is NOT an emitted directive
+    assert refreshed.open_directive_id is None
+    assert refreshed.open_directive_run_id is None
 
 
 # ── route-level: scope enforcement + not-available ──
@@ -763,9 +777,12 @@ async def test_route_missing_downstream_tickets_write_403(
     assert _err_code(resp.json()) == "insufficient_scope"
 
 
-async def test_route_review_until_clean_422(
+async def test_route_review_until_clean_runs(
     client: AsyncClient, db_session: AsyncSession,
 ):
+    """WQ-P4 — the route no longer 422s for review_until_clean. With a
+    ticket that has no comments yet, the stop oracle parks the item as
+    waiting (HTTP 200, status idle/waiting_implementation)."""
     user, raw = await _make_user_with_key(db_session)
     project = await _make_project(db_session, user)
     queue = await _make_queue(
@@ -780,8 +797,11 @@ async def test_route_review_until_clean_422(
         headers=_hdrs(raw),
         json={},
     )
-    assert resp.status_code == 422
-    assert _err_code(resp.json()) == "review_until_clean_not_available"
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "idle"
+    assert body["reason"] == "waiting_implementation"
+    assert body["directives"] == []
 
 
 async def test_route_step_then_complete_roundtrip(

@@ -11,10 +11,18 @@ safety envelope live here too, so routes stay thin: `run_work_queue_step`
 → bounded directive) and `complete_work_queue_step` (the single commit
 point — idempotent settle, validate-writeback-landed, advance the ACKED
 cursor, backoff/attempts/failed). `implement_until_done` + `triage` modes
-ship; `review_until_clean` returns a clear not-available response (WQ-P4
-needs the verdict_trusted stop oracle — already landed as
-tk_d42170b4670f4448's verdict_trusted column, but the stop-oracle wiring +
-trusted-provenance directive emission is WQ-P4's scope).
+ship.
+
+tk_323e8de1a00c4b9e (WQ-P4) — the `review_until_clean` STOP ORACLE: the
+security-sensitive autonomous auto-CLOSE path (design §5.0 + §5). The
+oracle RE-DERIVES review state SERVER-SIDE over TRUSTED comments only
+(`verdict_trusted=true` — built on tk_d42170b4670f4448 +
+services/review_state.py) and STOPS only on a STRICT literal
+`VERIFIED-CLEAN` with no open findings. A forged `author_persona` with
+`verdict_trusted=false` can NEVER trigger an auto-stop. The three turn
+states are STOP (done), REVIEWER'S TURN (emit a post_review directive over
+the bounded comment delta), and WAITING (passive wait — attempts NOT
+incremented). See `_review_until_clean_step`.
 """
 
 from __future__ import annotations
@@ -34,6 +42,10 @@ from sessionfs.server.db.models import (
     WorkQueueItem,
     WorkQueueRun,
 )
+from sessionfs.server.services.review_state import (
+    ReviewState,
+    compute_review_state,
+)
 
 # ── Step-engine constants (design §9.1 safety envelope) ──
 
@@ -50,6 +62,14 @@ _BACKOFF_SECONDS: tuple[int, ...] = (120, 300, 900, 3600)
 # design §9 — small delta, NOT the whole thread). expand_hints point the agent
 # at list_ticket_comments for the full thread when the delta is insufficient.
 _COMMENT_DELTA_LIMIT = 20
+
+# Cap on how many comments the stop oracle scans when RE-DERIVING review state
+# (WQ-P4). Matches routes/tickets.py:get_ticket_review_state (also 500). Review
+# threads cap at ~20-50 comments in practice; 500 is a defensive ceiling. The
+# whole thread is needed (not a delta) because the verdict/closure derivation
+# spans every round — oldest comments win on overflow so the earliest rounds
+# (which establish the open-findings picture) always survive.
+_REVIEW_ORACLE_COMMENT_LIMIT = 500
 
 # Item statuses that the engine treats as a settled-and-parked wait.
 _WAITING_STATUS = "waiting"
@@ -275,6 +295,86 @@ async def _comment_delta(
     return list((await db.execute(query)).scalars().all())
 
 
+async def _review_comments_for_oracle(
+    db: AsyncSession, *, ticket_id: str
+) -> list[dict]:
+    """Load the full comment thread (capped) shaped for compute_review_state.
+
+    WQ-P4 stop oracle (design §5.0). Returns ALL comments — trusted AND
+    untrusted — as dicts carrying the SERVER-STAMPED `verdict_trusted` flag.
+    compute_review_state then counts ONLY `verdict_trusted=true` comments as
+    verdicts/findings (a forged `author_persona='codex-reviewer'` with
+    `verdict_trusted=false` renders but contributes NOTHING). We never derive
+    trust from the caller-supplied `author_persona` string here. Ordered
+    oldest-first so an overflow drops the newest, never the foundational
+    rounds.
+    """
+    rows = (
+        await db.execute(
+            select(TicketComment)
+            .where(TicketComment.ticket_id == ticket_id)
+            .order_by(TicketComment.created_at, TicketComment.id)
+            .limit(_REVIEW_ORACLE_COMMENT_LIMIT)
+        )
+    ).scalars().all()
+    return [
+        {
+            "id": r.id,
+            "author_persona": r.author_persona,
+            "content": r.content,
+            "created_at": r.created_at,
+            # The ONLY authority signal — server-stamped at comment write
+            # (tk_d42170b4670f4448). NOT author_persona.
+            "verdict_trusted": bool(r.verdict_trusted),
+        }
+        for r in rows
+    ]
+
+
+async def _implementer_comment_since(
+    db: AsyncSession,
+    *,
+    ticket_id: str,
+    since: datetime | None,
+    since_id: str | None,
+) -> TicketComment | None:
+    """The newest comment past the ACKED cursor that is NOT a trusted verdict.
+
+    WQ-P4 reviewer-turn check (design §5 step 2): it is the reviewer's turn
+    iff a new IMPLEMENTER comment landed since what was last durably reviewed.
+    An "implementer comment" is any comment that is not itself a trusted
+    reviewer verdict — i.e. `verdict_trusted=false`. (A forged
+    'codex-reviewer' post is `verdict_trusted=false` so it correctly counts as
+    "the implementer's turn produced new content for review", never as a
+    verdict that ends the loop.) Compared against the ACKED cursor, never SEEN.
+    """
+    query = (
+        select(TicketComment)
+        .where(
+            TicketComment.ticket_id == ticket_id,
+            TicketComment.verdict_trusted.is_(False),
+        )
+        .order_by(TicketComment.created_at.desc(), TicketComment.id.desc())
+        .limit(1)
+    )
+    if since is not None:
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=timezone.utc)
+        if since_id:
+            query = query.where(
+                or_(
+                    TicketComment.created_at > since,
+                    and_(
+                        TicketComment.created_at == since,
+                        TicketComment.id > since_id,
+                    ),
+                )
+            )
+        else:
+            query = query.where(TicketComment.created_at > since)
+    return (await db.execute(query)).scalars().first()
+
+
 async def _materialize_auto_adopt(
     db: AsyncSession,
     queue: WorkQueue,
@@ -377,7 +477,13 @@ async def _build_directive(
         intent = "implement"
     elif queue.mode == "triage":
         intent = "triage"
-    else:  # pragma: no cover - guarded earlier in run_work_queue_step
+    elif queue.mode == "review_until_clean":
+        # WQ-P4 — the reviewer's turn: inspect the implementer's fix and post
+        # `Codex R{N+1} review on tk_X: <verdict>`. The server stamps the
+        # author identity from queue config (§5.0) — the agent NEVER sends
+        # author_persona — and only a STRICT VERIFIED-CLEAN ends the loop.
+        intent = "post_review"
+    else:  # pragma: no cover - defensive
         intent = "review"
     return {
         "directive_id": directive_id,
@@ -410,6 +516,113 @@ async def _build_directive(
             ),
         },
     }
+
+
+async def _review_turn(
+    db: AsyncSession,
+    queue: WorkQueue,
+    item: WorkQueueItem,
+    ticket: Ticket,
+    *,
+    now: datetime,
+) -> str:
+    """The WQ-P4 review_until_clean STOP ORACLE for one freshly-claimed item.
+
+    Re-derives review state SERVER-SIDE over TRUSTED comments only (design
+    §5.0) and decides the turn. Returns one of:
+
+      - "done"           — STOP: last TRUSTED verdict is a STRICT literal
+                           VERIFIED-CLEAN with NO open findings. The loop is
+                           finished for this item; item_status='done', lease
+                           released, NO directive emitted, NO attempts bump.
+                           A noop run row records the stop outcome.
+      - "reviewer_turn"  — a new TRUSTED-FALSE (implementer / non-verdict)
+                           comment landed past the ACKED cursor → the caller
+                           emits a post_review directive. NOTHING is mutated
+                           here (the generic emission path owns the SEEN
+                           cursor advance + attempts bump + lease open).
+      - "waiting"        — otherwise (waiting on the implementer / nothing
+                           new): passive wait. item_status='waiting',
+                           next_eligible_at set by cadence, lease released,
+                           attempts NOT incremented (§9.1). A waited run row
+                           records it.
+
+    SECURITY: the verdict that can STOP the loop counts ONLY when its
+    provenance is server-trusted (`verdict_trusted=true`). compute_review_state
+    drops untrusted comments from verdict/closure derivation, so a forged
+    `author_persona='codex-reviewer'` + `verdict_trusted=false` +
+    'VERIFIED-CLEAN' is never a verdict and can NEVER trigger an auto-stop —
+    instead it reads as fresh implementer content (reviewer's turn). The
+    STRICT seam (last_verdict_is_strict_verified_clean) additionally rejects
+    alias-folded APPROVED / NO CHANGES NEEDED verdicts for unattended close.
+    """
+    comments = await _review_comments_for_oracle(db, ticket_id=item.ticket_id)
+    rs: ReviewState | None = compute_review_state(comments)
+
+    # 1. STOP CHECK — strict literal VERIFIED-CLEAN + no open findings, over
+    #    TRUSTED comments only. Aliases (APPROVED / NO CHANGES NEEDED) do NOT
+    #    qualify for an autonomous close (§5.0 strict-only, Sentinel #5).
+    if (
+        rs is not None
+        and rs.last_verdict_is_strict_verified_clean
+        and not rs.open_findings
+    ):
+        run_id_for_stop = item.open_directive_run_id
+        item.item_status = _DONE_STATUS
+        item.open_directive_id = None
+        item.open_directive_run_id = None  # release the claim's run-id
+        item.next_eligible_at = None
+        item.updated_at = now
+        db.add(
+            WorkQueueRun(
+                id=run_id_for_stop or _new_run_id(),
+                work_queue_id=queue.id,
+                work_queue_item_id=item.id,
+                directive_id=None,
+                outcome="stopped",
+                created_at=now,
+            )
+        )
+        return _DONE_STATUS
+
+    # 2. REVIEWER'S TURN — is there a new IMPLEMENTER (non-trusted-verdict)
+    #    comment past the ACKED cursor? Compared against ACKED, never SEEN.
+    implementer = await _implementer_comment_since(
+        db,
+        ticket_id=item.ticket_id,
+        since=item.last_acked_comment_at,
+        since_id=item.last_acked_comment_id,
+    )
+    if implementer is not None:
+        # Fall through to the generic emission path (post_review directive).
+        # We mutate NOTHING here — the caller advances SEEN, bumps attempts,
+        # opens the lease, and emits, exactly like implement_until_done.
+        return "reviewer_turn"
+
+    # 3. WAITING — nothing new for the reviewer. Passive wait: release the
+    #    claim, park as 'waiting', set next_eligible_at by cadence. attempts
+    #    NOT incremented (a wait is not an EMITTED directive, §9.1).
+    cadence = max(
+        int(queue.cadence_seconds or _CADENCE_DEFAULT_SECONDS),
+        _CADENCE_FLOOR_SECONDS,
+    )
+    item.item_status = _WAITING_STATUS
+    item.open_directive_id = None
+    run_id_for_wait = item.open_directive_run_id
+    item.open_directive_run_id = None  # release the claim's run-id
+    item.next_eligible_at = now + timedelta(seconds=cadence)
+    item.updated_at = now
+    db.add(
+        WorkQueueRun(
+            id=run_id_for_wait or _new_run_id(),
+            work_queue_id=queue.id,
+            work_queue_item_id=item.id,
+            directive_id=None,
+            outcome="waited",
+            created_at=now,
+        )
+    )
+    return _WAITING_STATUS
 
 
 async def run_work_queue_step(
@@ -451,21 +664,6 @@ async def run_work_queue_step(
         return StepResult(status="stopped", reason="paused")
     if queue.status in ("completed", "cancelled"):
         return StepResult(status="stopped", reason=queue.status)
-
-    # (c) review_until_clean is NOT buildable until WQ-P4 wires the trusted-
-    # provenance stop oracle (the verdict_trusted column exists, but the
-    # directive-emission + server re-derive at settle is WQ-P4 scope). Return a
-    # clear not-available response rather than silently doing nothing.
-    # TODO(WQ-P4 tk_*): wire the §5.0 trust filter + strict-VERIFIED-CLEAN stop
-    # oracle and remove this guard.
-    if queue.mode == "review_until_clean":
-        raise StepEngineError(
-            "review_until_clean_not_available",
-            "review_until_clean mode is not yet available — the trusted-"
-            "verdict stop oracle ships in WQ-P4. Use implement_until_done or "
-            "triage queues for now.",
-            http_status=422,
-        )
 
     work_queue_run_id = _new_run_id()
 
@@ -587,6 +785,9 @@ async def run_work_queue_step(
 
     directives = []
     claimed = 0
+    # WQ-P4 — track review STOP/WAITING settles so the no-op tail below does
+    # not double-record a noop run row (the verb already wrote stopped/waited).
+    review_settled: list[str] = []
     for item in candidates:
         if claimed >= budget:
             break
@@ -616,6 +817,23 @@ async def run_work_queue_step(
                 )
             )
             continue
+
+        # ── WQ-P4 review_until_clean STOP ORACLE (design §5.0 + §5) ──
+        # The claim above flipped this item to 'active' and set
+        # open_directive_run_id but NOT open_directive_id (no lease is open
+        # yet). For STOP / WAITING we settle the item WITHOUT emitting a
+        # directive (release the run-id, no attempts bump). For REVIEWER'S
+        # TURN we fall through to the generic emission below (post_review).
+        if queue.mode == "review_until_clean":
+            verb = await _review_turn(db, queue, item, ticket, now=now)
+            if verb != "reviewer_turn":
+                # STOP (done) or WAITING — recorded inside _review_turn. No
+                # directive emitted this wake for this item.
+                review_settled.append(verb)
+                continue
+            # else: reviewer's turn — emit a post_review directive (the
+            # generic path below stamps open_directive_id + builds the
+            # directive with intent='post_review').
 
         directive_id = _new_directive_id()
         # SEEN cursor advances to the newest comment we are about to SHOW —
@@ -665,6 +883,34 @@ async def run_work_queue_step(
         claimed += 1
 
     if not directives:
+        # WQ-P4 — if review mode already settled item(s) this wake (STOP /
+        # WAITING), those verbs each recorded their own run row, so do NOT
+        # add a redundant noop. Report the outcome from the work done.
+        if review_settled:
+            # Recompute the open set AFTER the in-memory mutations flush.
+            await db.flush()
+            total_open = (
+                await db.execute(
+                    select(func.count(WorkQueueItem.id)).where(
+                        WorkQueueItem.work_queue_id == queue.id,
+                        WorkQueueItem.item_status.in_(
+                            ("pending", "active", _WAITING_STATUS)
+                        ),
+                    )
+                )
+            ).scalar_one()
+            if int(total_open) == 0:
+                # Every item reached strict VERIFIED-CLEAN → loop done.
+                return StepResult(
+                    status="stopped",
+                    reason="queue_empty",
+                )
+            # At least one item is parked waiting on the implementer.
+            return StepResult(
+                status="idle",
+                reason="waiting_implementation",
+            )
+
         # Nothing eligible. Record a no-op wake so cadence advances + the loop
         # is observable; report stop when the queue is genuinely empty.
         db.add(
@@ -882,7 +1128,25 @@ async def complete_work_queue_step(
         item.last_acked_comment_id = item.last_seen_comment_id
 
     # Settle the lease + set the queue-view status.
-    terminal = outcome in ("completed_ticket", "done", "resolved")
+    #
+    # WQ-P4 (design §4.5 / §5.0): for review_until_clean the AGENT'S outcome is
+    # only a HINT — never the authority for closure. The server RE-DERIVES
+    # review state over TRUSTED comments only and marks the item `done` ONLY on
+    # a STRICT literal VERIFIED-CLEAN with no open findings. The agent cannot
+    # declare the item done by asserting outcome='done'; a forged trusted-false
+    # verdict can never close it.
+    if queue.mode == "review_until_clean":
+        review_comments = await _review_comments_for_oracle(
+            db, ticket_id=ticket_id
+        )
+        rs_settle = compute_review_state(review_comments)
+        terminal = (
+            rs_settle is not None
+            and rs_settle.last_verdict_is_strict_verified_clean
+            and not rs_settle.open_findings
+        )
+    else:
+        terminal = outcome in ("completed_ticket", "done", "resolved")
     new_status = _DONE_STATUS if terminal else _WAITING_STATUS
     item.item_status = new_status
     item.open_directive_id = None
