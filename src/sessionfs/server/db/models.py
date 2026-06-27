@@ -745,6 +745,11 @@ class OrgMember(Base):
             postgresql_where=text("role = 'owner'"),
             sqlite_where=text("role = 'owner'"),
         ),
+        # v0.12.2 SSO-P1-fix — one membership per (org, user).
+        UniqueConstraint(
+            "org_id", "user_id",
+            name="uq_org_members_org_user",
+        ),
         # P4 follow-up — structural vocabulary guard (added on PG via
         # migration 052; present here so create_all/SQLite enforces it too).
         CheckConstraint(
@@ -2589,7 +2594,9 @@ class OrgDomainVerification(Base):
 class ExternalIdentity(Base):
     """Links an IdP subject to a SessionFS User.
 
-    The identity key is (provider_issuer, subject) — NOT email. Email is
+    The identity key is (org_idp_id, subject) — NOT email, and NOT the
+    global (provider_issuer, subject) which breaks shared-issuer IdPs
+    like Google Workspace (one issuer serving many orgs). Email is
     mutable at the IdP and must never be the join key for an existing
     link. A single User may hold multiple ExternalIdentity rows (e.g. a
     consultant in two customer orgs' IdPs).
@@ -2600,8 +2607,8 @@ class ExternalIdentity(Base):
         Index("idx_external_identity_user", "user_id"),
         Index("idx_external_identity_org_idp", "org_idp_id"),
         UniqueConstraint(
-            "provider_issuer", "subject",
-            name="uq_external_identity_issuer_sub",
+            "org_idp_id", "subject",
+            name="uq_external_identity_idp_sub",
         ),
         CheckConstraint(
             "link_method IN "
@@ -2646,6 +2653,60 @@ class ExternalIdentity(Base):
         DateTime(timezone=True), nullable=True
     )
     deactivated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class SsoBreakGlassGrant(Base):
+    """Durable, server-consulted admin break-glass grant for SSO enforcement.
+
+    Under SSO enforcement, admins are normally gated like all other humans.
+    The owner can issue a time-boxed break-glass grant to a specific admin
+    so they can authenticate with an API key while the IdP is misconfigured.
+    The grant is consulted at auth time (§4.2 enforcement check) with
+    server-side expiry; a stale grant never admits.
+
+    Single active grant per admin enforced by partial-unique index
+    uq_sbg_one_active_per_admin (mirrors the org_owner_transfer one-pending
+    pattern). The owner is always exempt by construction and never needs a
+    grant.
+    """
+
+    __tablename__ = "sso_break_glass_grants"
+    __table_args__ = (
+        Index("idx_sbg_org", "org_id"),
+        Index(
+            "uq_sbg_one_active_per_admin",
+            "org_id", "admin_user_id",
+            unique=True,
+            postgresql_where=text("revoked_at IS NULL"),
+            sqlite_where=text("revoked_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # sbg_<hex>
+    org_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    admin_user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    issued_by_user_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
