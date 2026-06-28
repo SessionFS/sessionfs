@@ -67,6 +67,9 @@ server = [
     "google-cloud-storage>=2.14,<4.0",
     "cryptography>=48.0.1",
     "stripe>=8.0,<16.0",
+    # OIDC SSO domain verification resolves DNS TXT records (no stdlib TXT
+    # resolver exists). dnspython is the established async-capable resolver.
+    "dnspython>=2.6,<3.0",
 ]
 dev = [
     "sessionfs[server]",

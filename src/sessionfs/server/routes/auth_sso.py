@@ -80,13 +80,6 @@ _SELF_CALLBACK_URL: str = os.environ.get(
     "SFS_SSO_CALLBACK_URL", "https://api.sessionfs.dev/api/v1/auth/sso/callback"
 )
 
-# Email-provider denylist — domains an org CANNOT verify (§2.2)
-_FREE_EMAIL_DENYLIST: frozenset[str] = frozenset({
-    "gmail.com", "googlemail.com", "outlook.com", "hotmail.com",
-    "yahoo.com", "ymail.com", "icloud.com", "me.com", "mac.com",
-    "protonmail.com", "proton.me", "mail.com", "aol.com",
-    "live.com", "msn.com", "zoho.com", "fastmail.com",
-})
 
 
 # ---------------------------------------------------------------------------
