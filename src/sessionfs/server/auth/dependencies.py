@@ -65,6 +65,7 @@ class AuthContext:
     user: User
     api_key_id: str
     key_kind: str  # 'user' | 'service'
+    sso_minted: bool = False  # server-set only — SSO-P4 enforcement
     scopes: list[str] = field(default_factory=list)
     org_id: str | None = None
     service_key_id: str | None = None  # populated when key_kind='service'
@@ -222,6 +223,7 @@ async def _authenticate_and_build_context(
         user=user,
         api_key_id=api_key.id,
         key_kind=api_key.key_kind or "user",
+        sso_minted=bool(api_key.sso_minted),
         scopes=_parse_scope_list(api_key.scopes),
         org_id=api_key.org_id,
         service_key_id=api_key.id if api_key.key_kind == "service" else None,
@@ -232,6 +234,135 @@ async def _authenticate_and_build_context(
     # re-injecting the dependency.
     request.state.auth_context = ctx
     return ctx
+
+
+async def _sso_enforcement_check(ctx: AuthContext, db: AsyncSession) -> None:
+    """SSO-P4 enforcement check — runs ONLY for user keys.
+
+    HARD INVARIANTS (do not violate):
+      1. Service keys are CATEGORICALLY EXEMPT — this function is never
+         called for key_kind=='service'.
+      2. The org OWNER is always exempt (never locked out).
+      3. A valid active SsoBreakGlassGrant exempts one admin until expiry.
+      4. Enforcement only REJECTS a non-sso_minted user key for a
+         verified-domain user whose org has an enabled + enforced OIDC IdP.
+      5. FAIL-OPEN on unexpected errors: log a warning and ALLOW.
+    """
+    # Step 0 — only for user keys (caller guarantees this).
+    if ctx.key_kind != "user":
+        return
+
+    # Step 1 — sso_minted keys are always allowed.
+    if ctx.sso_minted:
+        return
+
+    # Step 2 — derive the user's email domain.
+    email = (ctx.user.email or "").strip().lower()
+    if "@" not in email:
+        return  # no domain to enforce against
+    domain = email.rsplit("@", 1)[1]
+
+    try:
+        # Step 3 — single query: find an org with enabled+enforced OIDC
+        # IdP + verified domain matching the user's domain, where the
+        # user is a member.
+        from sqlalchemy import and_
+
+        from sessionfs.server.db.models import (
+            OrgDomainVerification,
+            OrgIdentityProvider,
+            OrgMember,
+            SsoBreakGlassGrant,
+        )
+
+        result = await db.execute(
+            select(OrgIdentityProvider)
+            .join(
+                OrgDomainVerification,
+                and_(
+                    OrgDomainVerification.org_id == OrgIdentityProvider.org_id,
+                    OrgDomainVerification.domain == domain,
+                    OrgDomainVerification.status == "verified",
+                ),
+            )
+            .where(
+                OrgIdentityProvider.enabled.is_(True),
+                OrgIdentityProvider.enforced.is_(True),
+                OrgIdentityProvider.protocol == "oidc",
+            )
+            .limit(1)
+        )
+        enforcing_idp = result.scalar_one_or_none()
+        if enforcing_idp is None:
+            return  # not under enforcement for this domain
+
+        org_id = enforcing_idp.org_id
+
+        # Step 4 — check membership.
+        member_result = await db.execute(
+            select(OrgMember).where(
+                OrgMember.org_id == org_id,
+                OrgMember.user_id == ctx.user.id,
+            )
+        )
+        membership = member_result.scalar_one_or_none()
+        if membership is None:
+            return  # not a member of the enforcing org
+
+        # Step 5 — exempt OWNER (never locked out).
+        if membership.role == "owner":
+            return
+
+        # Step 6 — exempt active break-glass grant.
+        now_dt = datetime.now(timezone.utc)
+        grant_result = await db.execute(
+            select(SsoBreakGlassGrant).where(
+                SsoBreakGlassGrant.org_id == org_id,
+                SsoBreakGlassGrant.admin_user_id == ctx.user.id,
+                SsoBreakGlassGrant.revoked_at.is_(None),
+                SsoBreakGlassGrant.expires_at > now_dt,
+            ).limit(1)
+        )
+        if grant_result.scalar_one_or_none() is not None:
+            return
+
+        # Step 7 — enforcement required. Reject with structured detail.
+        # Resolve org slug for the SSO start URL.
+        from sessionfs.server.db.models import Organization
+
+        org_result = await db.execute(
+            select(Organization.slug).where(Organization.id == org_id)
+        )
+        org_slug = org_result.scalar_one_or_none() or org_id
+
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "sso_enforcement_required",
+                "message": (
+                    "This account requires SSO authentication. "
+                    "Re-authenticate via your organization's SSO provider."
+                ),
+                "org_slug": org_slug,
+                # P2's start endpoint is POST /api/v1/auth/sso/start with
+                # {"org_slug": ...} in the body (not a path param).
+                "sso_start_url": "/api/v1/auth/sso/start",
+            },
+        )
+
+    except HTTPException:
+        raise  # re-raise our own enforcement rejection
+    except Exception:
+        # FAIL-OPEN: an enforcement-eval bug must never take down auth
+        # for an org. Log a warning and allow the request.
+        logger.warning(
+            "sso_enforcement_check_error user=%s key=%s — FAIL-OPEN: "
+            "allowing request despite enforcement eval error",
+            ctx.user.id,
+            ctx.api_key_id,
+            exc_info=True,
+        )
+        return
 
 
 async def get_current_user(
@@ -264,6 +395,9 @@ async def get_current_user(
                 "service_key_name": ctx.service_key_name,
             },
         )
+    # SSO-P4: enforcement check for user keys only (service keys
+    # already rejected above).
+    await _sso_enforcement_check(ctx, db)
     return ctx.user
 
 
@@ -295,6 +429,8 @@ def require_scope(*scopes: str):
         # Wildcard satisfies anything (user/admin keys only — service keys
         # reject '*' at create time, so a service key here can never have it).
         if WILDCARD_SCOPE in ctx.scopes:
+            # SSO-P4: enforcement check for user keys on scoped routes.
+            await _sso_enforcement_check(ctx, db)
             return ctx
         if not required.intersection(ctx.scopes):
             raise HTTPException(
@@ -309,6 +445,8 @@ def require_scope(*scopes: str):
                     ),
                 },
             )
+        # SSO-P4: enforcement check for user keys on scoped routes.
+        await _sso_enforcement_check(ctx, db)
         return ctx
 
     return _dep

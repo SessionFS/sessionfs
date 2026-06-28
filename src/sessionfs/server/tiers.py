@@ -36,6 +36,7 @@ TIER_FEATURES: dict[Tier, dict] = {
             "aliases_cloud",
             "judge_manual",
             "summary_deterministic",
+            "oidc_sso",
         },
         "storage_bytes": 500 * 1024 * 1024,  # 500 MB
         "description": "Cloud sync + dashboard + manual judge",
@@ -61,6 +62,7 @@ TIER_FEATURES: dict[Tier, dict] = {
             "dlp_secrets",
             "custom_base_url",
             "agent_personas",
+            "oidc_sso",
         },
         "storage_bytes": 500 * 1024 * 1024,  # 500 MB
         "description": "Everything including DLP and auto-audit",
@@ -92,6 +94,7 @@ TIER_FEATURES: dict[Tier, dict] = {
             "agent_tickets",
             "agent_runs",
             "team_handoff",
+            "oidc_sso",
         },
         "storage_bytes": 1024 * 1024 * 1024,  # 1 GB per user
         "description": "Pro + team management",
@@ -127,6 +130,7 @@ TIER_FEATURES: dict[Tier, dict] = {
             "security_dashboard",
             "policy_engine",
             "saml_sso",
+            "oidc_sso",
             "compliance_exports",
             "audit_retention_6yr",
             "breach_notifications",

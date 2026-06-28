@@ -4,6 +4,8 @@ SSO-P3 (tk_0de967a55afe4896): Org-admin surface to configure an OIDC
 provider and verify email domains — the data plane that P2's login flow
 reads. Owner-or-admin gated, cross-org isolation returns 404.
 
+SSO-P4 (tk_5812fd9209154977): tier gate + enforcement toggle + break-glass.
+
 Secret handling: client_secret_ref is a reference (GCP Secret Manager /
 K8s secret / env var), NEVER the plaintext secret. The server never
 accepts, stores, or returns a plaintext client secret — only the ref.
@@ -14,7 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
@@ -22,6 +24,8 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import get_current_user
+from sessionfs.server.tier_gate import get_effective_tier
+from sessionfs.server.tiers import get_features_for_tier
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import (
     OrgAuditEvent,
@@ -29,6 +33,7 @@ from sessionfs.server.db.models import (
     OrgIdentityProvider,
     OrgMember,
     Organization,
+    SsoBreakGlassGrant,
     User,
 )
 from sessionfs.server.services.oidc_fetch import SsrfError, oidc_fetch_json
@@ -304,6 +309,38 @@ async def _require_owner_or_admin(
     return role
 
 
+async def _require_oidc_sso(db: AsyncSession, org_id: str, user: User) -> None:
+    """Tier-gate `oidc_sso` against the PATH org's entitlement.
+
+    NOT the caller's ambient membership (Sentinel F1): a multi-org admin
+    must be gated on the org they are configuring. Fetching the
+    (org_id, user) membership returns at most one row (uq_org_members_org_user)
+    so there is no MultipleResultsFound 500, and get_effective_tier resolves
+    that specific org's entitlement.
+    """
+    membership = (
+        await db.execute(
+            select(OrgMember).where(
+                OrgMember.org_id == org_id,
+                OrgMember.user_id == user.id,
+            )
+        )
+    ).scalar_one_or_none()
+    tier = await get_effective_tier(user, db, membership=membership)
+    if "oidc_sso" not in get_features_for_tier(tier):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "upgrade_required",
+                "feature": "oidc_sso",
+                "current_tier": tier.value,
+                "required_tier": "starter",
+                "upgrade_url": "https://sessionfs.dev/pricing",
+                "message": "OIDC SSO requires a paid plan.",
+            },
+        )
+
+
 async def _emit_audit(
     db: AsyncSession,
     *,
@@ -404,6 +441,7 @@ async def create_provider(
     is created with ``enabled=false`` — the admin must explicitly enable it.
     ``client_secret_ref`` is stored as-is; the raw secret is never accepted.
     """
+    await _require_oidc_sso(db, org_id, user)
     org = await _org_or_404(db, org_id)
     role = await _require_owner_or_admin(db, user, org_id)
 
@@ -480,6 +518,7 @@ async def get_provider(
     ``client_secret_ref`` is returned — it is a reference, NEVER a plaintext
     secret.  No plaintext secret field exists on this model.
     """
+    await _require_oidc_sso(db, org_id, user)
     await _org_or_404(db, org_id)
     await _require_owner_or_admin(db, user, org_id)
 
@@ -508,6 +547,7 @@ async def update_provider(
     Re-validates the OIDC discovery doc if the issuer changes.  Enabling
     a second IdP while one is already enabled returns 409.
     """
+    await _require_oidc_sso(db, org_id, user)
     org = await _org_or_404(db, org_id)
     role = await _require_owner_or_admin(db, user, org_id)
 
@@ -638,6 +678,7 @@ async def delete_provider(
     Disabling auto-clears ``enforced`` (§4.4 rule 4).  The row itself is
     deleted.  ExternalIdentity rows cascade (ON DELETE CASCADE).
     """
+    await _require_oidc_sso(db, org_id, user)
     org = await _org_or_404(db, org_id)
     role = await _require_owner_or_admin(db, user, org_id)
 
@@ -699,6 +740,7 @@ async def request_domain_verification(
     ``status='pending'`` row.  Returns the TXT record the admin must
     publish at their domain.
     """
+    await _require_oidc_sso(db, org_id, user)
     org = await _org_or_404(db, org_id)
     role = await _require_owner_or_admin(db, user, org_id)
 
@@ -814,6 +856,7 @@ async def verify_domain(
     ``verified``.  The ``uq_org_domain_global_verified`` partial-unique
     index is the backstop against a race with another org.
     """
+    await _require_oidc_sso(db, org_id, user)
     org = await _org_or_404(db, org_id)
     role = await _require_owner_or_admin(db, user, org_id)
 
@@ -910,6 +953,7 @@ async def list_domains(
     db: AsyncSession = Depends(get_db),
 ) -> list[DomainResponse]:
     """List the org's domain verification requests. Owner or admin only."""
+    await _require_oidc_sso(db, org_id, user)
     await _org_or_404(db, org_id)
     await _require_owner_or_admin(db, user, org_id)
 
@@ -944,6 +988,7 @@ async def delete_domain(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Delete a domain verification request. Owner or admin only."""
+    await _require_oidc_sso(db, org_id, user)
     org = await _org_or_404(db, org_id)
     role = await _require_owner_or_admin(db, user, org_id)
 
@@ -980,3 +1025,286 @@ async def delete_domain(
 
     await db.commit()
     return {"deleted": True, "id": dv_id, "domain": domain_name}
+
+
+# ---------------------------------------------------------------------------
+# B2. Enforcement arming (SSO-P4)
+# ---------------------------------------------------------------------------
+
+
+class EnforcementToggleRequest(BaseModel):
+    """PATCH /{org_id}/sso/provider/enforcement — arm/disarm enforcement."""
+
+    enforced: bool
+
+
+@router.patch("/{org_id}/sso/provider/enforcement")
+async def toggle_enforcement(
+    org_id: str,
+    body: EnforcementToggleRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Toggle SSO enforcement on/off for the org. Owner or admin.
+
+    To ENABLE enforcement, the org must have an enabled provider AND at
+    least one verified domain.  Enforcement can be DISABLED at any time
+    by owner/admin (the owner is never locked out — §4.4).
+    """
+    await _require_oidc_sso(db, org_id, user)
+    org = await _org_or_404(db, org_id)
+    role = await _require_owner_or_admin(db, user, org_id)
+
+    result = await db.execute(
+        select(OrgIdentityProvider).where(
+            OrgIdentityProvider.org_id == org_id,
+            OrgIdentityProvider.protocol == "oidc",
+        )
+    )
+    idp = result.scalars().first()
+    if idp is None:
+        raise HTTPException(404, "No OIDC provider configured for this org")
+
+    if body.enforced:
+        # Preconditions for enabling enforcement
+        if not idp.enabled:
+            raise HTTPException(
+                400,
+                "Cannot enable enforcement: the OIDC provider is not enabled. "
+                "Enable the provider first.",
+            )
+        # Check at least one verified domain exists
+        verified = await db.execute(
+            select(OrgDomainVerification).where(
+                OrgDomainVerification.org_id == org_id,
+                OrgDomainVerification.status == "verified",
+            ).limit(1)
+        )
+        if verified.scalar_one_or_none() is None:
+            raise HTTPException(
+                400,
+                "Cannot enable enforcement: no verified domains. "
+                "Verify at least one domain first.",
+            )
+
+    if body.enforced == idp.enforced:
+        return {"enforced": idp.enforced, "org_id": org_id, "unchanged": True}
+
+    idp.enforced = body.enforced
+    idp.updated_at = _now()
+
+    event_type = "sso_enforcement_enabled" if body.enforced else "sso_enforcement_disabled"
+    after_snapshot = json.dumps({"enforced": body.enforced})
+
+    await _emit_audit(
+        db,
+        org_id=org_id,
+        org_name_snapshot=org.name,
+        event_type=event_type,
+        actor_user_id=user.id,
+        actor_email_snapshot=user.email,
+        actor_role_at_time=role,
+        target_type="idp",
+        target_id=idp.id,
+        after=after_snapshot,
+    )
+
+    await db.commit()
+    return {"enforced": idp.enforced, "org_id": org_id}
+
+
+# ---------------------------------------------------------------------------
+# C. Break-glass (SSO-P4)
+# ---------------------------------------------------------------------------
+
+
+class BreakGlassGrantResponse(BaseModel):
+    """Serialized SsoBreakGlassGrant."""
+
+    id: str
+    org_id: str
+    admin_user_id: str
+    issued_by_user_id: str | None
+    expires_at: datetime
+    revoked_at: datetime | None
+    created_at: datetime
+
+
+def _grant_to_response(grant: SsoBreakGlassGrant) -> BreakGlassGrantResponse:
+    return BreakGlassGrantResponse(
+        id=grant.id,
+        org_id=grant.org_id,
+        admin_user_id=grant.admin_user_id,
+        issued_by_user_id=grant.issued_by_user_id,
+        expires_at=grant.expires_at,
+        revoked_at=grant.revoked_at,
+        created_at=grant.created_at,
+    )
+
+
+class CreateBreakGlassRequest(BaseModel):
+    """POST /{org_id}/sso/break-glass — owner issues a grant."""
+
+    admin_user_id: str
+
+
+@router.post("/{org_id}/sso/break-glass", response_model=BreakGlassGrantResponse)
+async def create_break_glass(
+    org_id: str,
+    body: CreateBreakGlassRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> BreakGlassGrantResponse:
+    """Issue a break-glass grant to an admin. OWNER ONLY.
+
+    The grant is a time-boxed (1 hour) exemption from SSO enforcement for
+    a specific admin.  Single active grant per admin — the partial-unique
+    index uq_sbg_one_active_per_admin is the backstop.
+    """
+    await _require_oidc_sso(db, org_id, user)
+    org = await _org_or_404(db, org_id)
+    role = await _require_owner_or_admin(db, user, org_id)
+    if role != "owner":
+        raise HTTPException(403, "Only the org owner may issue break-glass grants")
+
+    # Target must be an admin member of the org
+    target_member = (
+        await db.execute(
+            select(OrgMember).where(
+                OrgMember.org_id == org_id,
+                OrgMember.user_id == body.admin_user_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if target_member is None:
+        raise HTTPException(404, "User is not a member of this org")
+    if target_member.role not in ("admin", "owner"):
+        raise HTTPException(400, "Break-glass target must be an admin or owner")
+
+    now = _now()
+    grant_id = f"sbg_{secrets.token_hex(12)}"
+
+    grant = SsoBreakGlassGrant(
+        id=grant_id,
+        org_id=org_id,
+        admin_user_id=body.admin_user_id,
+        issued_by_user_id=user.id,
+        expires_at=now + timedelta(hours=1),
+        created_at=now,
+    )
+    db.add(grant)
+
+    # The partial-unique index uq_sbg_one_active_per_admin catches a
+    # duplicate active grant.
+    try:
+        await db.flush()
+    except Exception:
+        from sqlalchemy.exc import IntegrityError
+        import sys as _sys
+
+        _exc_info = _sys.exc_info()
+        if _exc_info[0] is not IntegrityError:
+            raise
+        raise HTTPException(
+            409,
+            "An active break-glass grant already exists for this admin. "
+            "Revoke the existing grant first.",
+        )
+
+    await _emit_audit(
+        db,
+        org_id=org_id,
+        org_name_snapshot=org.name,
+        event_type="sso_break_glass_issued",
+        actor_user_id=user.id,
+        actor_email_snapshot=user.email,
+        actor_role_at_time=role,
+        target_type="break_glass",
+        target_id=grant_id,
+        after=json.dumps({
+            "admin_user_id": body.admin_user_id,
+            "expires_at": grant.expires_at.isoformat(),
+        }),
+    )
+
+    await db.commit()
+    await db.refresh(grant)
+    return _grant_to_response(grant)
+
+
+@router.get("/{org_id}/sso/break-glass", response_model=list[BreakGlassGrantResponse])
+async def list_break_glass_grants(
+    org_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[BreakGlassGrantResponse]:
+    """List active (non-revoked, non-expired) break-glass grants. Owner/admin."""
+    await _require_oidc_sso(db, org_id, user)
+    await _org_or_404(db, org_id)
+    await _require_owner_or_admin(db, user, org_id)
+
+    now = _now()
+    result = await db.execute(
+        select(SsoBreakGlassGrant)
+        .where(
+            SsoBreakGlassGrant.org_id == org_id,
+            SsoBreakGlassGrant.revoked_at.is_(None),
+            SsoBreakGlassGrant.expires_at > now,
+        )
+        .order_by(SsoBreakGlassGrant.created_at.desc())
+    )
+    grants = result.scalars().all()
+    return [_grant_to_response(g) for g in grants]
+
+
+@router.delete("/{org_id}/sso/break-glass/{grant_id}")
+async def revoke_break_glass(
+    org_id: str,
+    grant_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Revoke a break-glass grant. Owner only.
+
+    Expired grants are not revocable (no-op — they already expired).
+    """
+    await _require_oidc_sso(db, org_id, user)
+    org = await _org_or_404(db, org_id)
+    role = await _require_owner_or_admin(db, user, org_id)
+    if role != "owner":
+        raise HTTPException(403, "Only the org owner may revoke break-glass grants")
+
+    grant = (
+        await db.execute(
+            select(SsoBreakGlassGrant).where(
+                SsoBreakGlassGrant.id == grant_id,
+                SsoBreakGlassGrant.org_id == org_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if grant is None:
+        raise HTTPException(404, "Break-glass grant not found")
+    if grant.revoked_at is not None:
+        raise HTTPException(409, "Grant is already revoked")
+
+    now = _now()
+    grant.revoked_at = now
+
+    await _emit_audit(
+        db,
+        org_id=org_id,
+        org_name_snapshot=org.name,
+        event_type="sso_break_glass_revoked",
+        actor_user_id=user.id,
+        actor_email_snapshot=user.email,
+        actor_role_at_time=role,
+        target_type="break_glass",
+        target_id=grant_id,
+        before=json.dumps({
+            "admin_user_id": grant.admin_user_id,
+            "expires_at": grant.expires_at.isoformat(),
+        }),
+    )
+
+    await db.commit()
+    return {"revoked": True, "id": grant_id}

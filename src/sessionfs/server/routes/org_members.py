@@ -37,6 +37,7 @@ admin is blocked (extends the existing single-org route's guard).
 
 from __future__ import annotations
 
+import json
 import logging
 import secrets
 import uuid
@@ -50,7 +51,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import (
+    ApiKey,
+    ExternalIdentity,
     OrgAuditEvent,
+    OrgIdentityProvider,
     OrgInvite,
     OrgMember,
     Organization,
@@ -902,6 +906,67 @@ async def perform_member_removal(
     now = _now()
     projects_transferred = 0
     pending_cancelled = 0
+
+    # SSO-P4: deprovision the user's SSO identities and revoke their
+    # sso_minted keys IN THIS TRANSACTION so offboarding genuinely
+    # cuts access immediately (§5.4).
+    sso_keys_revoked = 0
+
+    # Find the org's IdP(s) — typically one.
+    idp_ids_result = await db.execute(
+        select(OrgIdentityProvider.id).where(
+            OrgIdentityProvider.org_id == org_id,
+        )
+    )
+    org_idp_ids = [row[0] for row in idp_ids_result.fetchall()]
+
+    if org_idp_ids:
+        # 1. Deactivate ExternalIdentity rows for this org's IdP(s).
+        ext_result = await db.execute(
+            select(ExternalIdentity).where(
+                ExternalIdentity.user_id == target_user_id,
+                ExternalIdentity.org_idp_id.in_(org_idp_ids),
+                ExternalIdentity.deactivated_at.is_(None),
+            )
+        )
+        ext_rows = ext_result.scalars().all()
+        for ext in ext_rows:
+            ext.deactivated_at = now
+
+        # 2. Revoke this user's sso_minted user ApiKeys.
+        key_result = await db.execute(
+            select(ApiKey).where(
+                ApiKey.user_id == target_user_id,
+                ApiKey.sso_minted.is_(True),
+                ApiKey.key_kind == "user",
+                ApiKey.revoked_at.is_(None),
+            )
+        )
+        keys = key_result.scalars().all()
+        for k in keys:
+            k.revoked_at = now
+            k.revoke_reason = "deprovisioned"
+            sso_keys_revoked += 1
+
+        if ext_rows or keys:
+            db.add(
+                OrgAuditEvent(
+                    id=f"oae_{secrets.token_hex(12)}",
+                    org_id=org_id,
+                    org_name_snapshot="",
+                    event_type="sso_keys_revoked_on_deprovision",
+                    actor_user_id=removing_admin.id,
+                    actor_email_snapshot=removing_admin.email,
+                    actor_role_at_time=remover_role,
+                    target_type="external_identity",
+                    target_id=target_user_id,
+                    after=json.dumps({
+                        "identities_deactivated": len(ext_rows),
+                        "keys_revoked": sso_keys_revoked,
+                        "reason": "member_removed",
+                    }),
+                )
+            )
 
     # 1. Auto-transfer member-owned org-scoped projects. Track the
     #    project_ids whose ownership we change so step 3 can also
