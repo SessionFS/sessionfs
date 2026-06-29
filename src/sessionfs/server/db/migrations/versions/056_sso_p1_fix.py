@@ -29,10 +29,27 @@ def upgrade() -> None:
     # The old key (provider_issuer, subject) is wrong for shared-issuer
     # IdPs (Google Workspace). Swap it to (org_idp_id, subject).
     # org_idp_id column + FK already exist from 055; this is index-only.
-    op.drop_index(
-        "uq_external_identity_issuer_sub",
-        table_name="external_identities",
-    )
+    #
+    # 055 declared uq_external_identity_issuer_sub as an inline
+    # UniqueConstraint inside create_table. On PostgreSQL that is a real
+    # CONSTRAINT (backed by an index) — `DROP INDEX` fails with
+    # DependentObjectsStillExistError; the constraint must be dropped.
+    # On SQLite Alembic renders it as a plain UNIQUE INDEX, so DROP INDEX
+    # is correct. Branch on the dialect.
+    bind = op.get_bind()
+    if bind.dialect.name == "postgresql":
+        op.drop_constraint(
+            "uq_external_identity_issuer_sub",
+            "external_identities",
+            type_="unique",
+        )
+    else:
+        op.drop_index(
+            "uq_external_identity_issuer_sub",
+            table_name="external_identities",
+        )
+    # Recreate as a plain UNIQUE INDEX (not a constraint) so a future
+    # migration can drop it uniformly across dialects.
     op.create_index(
         "uq_external_identity_idp_sub",
         "external_identities",
@@ -161,9 +178,20 @@ def downgrade() -> None:
         "uq_external_identity_idp_sub",
         table_name="external_identities",
     )
-    op.create_index(
-        "uq_external_identity_issuer_sub",
-        "external_identities",
-        ["provider_issuer", "subject"],
-        unique=True,
-    )
+    # Recreate the original key as a CONSTRAINT on PostgreSQL (matching how
+    # 055 declared it) / a UNIQUE INDEX on SQLite, so a re-upgrade's
+    # dialect-aware drop in upgrade() finds the right object type.
+    bind = op.get_bind()
+    if bind.dialect.name == "postgresql":
+        op.create_unique_constraint(
+            "uq_external_identity_issuer_sub",
+            "external_identities",
+            ["provider_issuer", "subject"],
+        )
+    else:
+        op.create_index(
+            "uq_external_identity_issuer_sub",
+            "external_identities",
+            ["provider_issuer", "subject"],
+            unique=True,
+        )
