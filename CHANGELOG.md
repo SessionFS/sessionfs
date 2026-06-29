@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2026-06-29
+
+**Organization SSO (OIDC) — enterprise single sign-on with anti-takeover account linking, JIT provisioning, and org-wide enforcement.** New runtime dependency `dnspython` (for DNS-TXT domain verification). DB migrations 055 + 056.
+
+### Added
+
+- **OIDC SSO login (authorization-code + PKCE).** `POST /api/v1/auth/sso/start` + `GET /api/v1/auth/sso/callback`. Login attempts are durable and single-use (atomic rowcount-1 consume — replay/CSRF safe), with state/nonce/PKCE bound to an HttpOnly+Secure+SameSite=Lax cookie. A successful login mints a normal user API key so the CLI and dashboard work unchanged.
+- **Anti-takeover account linking.** An SSO identity auto-links to an existing account ONLY when the IdP email is verified, exactly matches an already-verified SessionFS account, and that account is already a member of the IdP's org — every other case is denied. Identity is keyed on `(org_idp_id, subject)`, never the mutable email.
+- **JIT provisioning.** First SSO login from a verified org domain creates the user (member role only) and reconciles any pending invite, respecting the org's seat cap.
+- **Provider config + domain verification.** Owner/admin endpoints to configure an OIDC provider (the client secret is stored only as a reference — never plaintext) and verify org domains via DNS-TXT, with a consumer-email denylist and one-org-per-domain enforcement.
+- **Org SSO enforcement + break-glass.** Owners/admins can require SSO for their org; service keys (CI / automation) are categorically exempt, the owner is never locked out, and an owner can issue a time-boxed (1-hour) break-glass grant for one admin during an IdP outage.
+- **Hardened `id_token` validation** (asymmetric-alg allowlist, `alg:none`/`HS*` rejected, issuer matched against the login attempt, `azp` on multi-aud, strict `email_verified`) and an **SSRF-guarded fetch layer** for all issuer-derived requests (HTTPS-only, private/loopback/link-local/metadata IPs rejected per-host).
+- **Deprovisioning** now revokes a removed member's SSO-minted keys and deactivates their external identities in the same transaction, and an admin retention sweeper reaps stale SSO login attempts.
+
+### Changed
+
+- `oidc_sso` is available on all paid tiers (free excluded).
+
 ## [0.12.1] - 2026-06-23
 
 **Multi-repo project fixes (from a heavy user's report) + the autonomous work-queue reviewer path completed.** Additive only — no schema change (migrations 001–054 unchanged).
