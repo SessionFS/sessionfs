@@ -7,7 +7,10 @@ tk_cb774646864f414b — Sentinel HIGH corrective:
   1. DROP uq_external_identity_issuer_sub (global (provider_issuer, subject));
      CREATE uq_external_identity_idp_sub UNIQUE (org_idp_id, subject).
      org_idp_id already exists from 055 — this only swaps the unique key.
-  2. ADD UNIQUE uq_org_members_org_user (org_id, user_id) on org_members.
+     Dialect-aware: 055 declared the old key as a UniqueConstraint, which is
+     a CONSTRAINT on PostgreSQL (DROP CONSTRAINT) and an INDEX on SQLite.
+  2. (no-op) uq_org_members_org_user already exists from migration 016 —
+     056 must NOT recreate it (DuplicateTableError on PostgreSQL).
   3. CREATE TABLE sso_break_glass_grants — durable admin break-glass.
   4. One-time users.email → lower(email) normalization.
 """
@@ -57,47 +60,17 @@ def upgrade() -> None:
         unique=True,
     )
 
-    # ── 2. OrgMember uniqueness — one membership per (org, user) ────
-    # Duplicate (org_id, user_id) rows are a KNOWN real production state
-    # (v0.11.2 added the /me `.first()`-over-`.one_or_none()` hardening
-    # precisely because transient duplicate memberships occur). Creating
-    # the unique index against dirty data would abort the migrate-job.
-    # Dedupe FIRST, keeping exactly one survivor per group: highest role
-    # privilege (owner > admin > member), then earliest joined_at, then
-    # lowest id. A row is deleted iff some sibling in its group ranks
-    # strictly better — portable across PG + SQLite (no row-value tuples,
-    # no LIMIT-in-subquery).
-    # SQLite forbids aliasing the DELETE target table, so the outer
-    # (target) rows are referenced by the bare name `org_members` in the
-    # correlated subquery; only the sibling scan is aliased (`o`).
-    _role_priority = (
-        "CASE {alias}.role WHEN 'owner' THEN 0 "
-        "WHEN 'admin' THEN 1 ELSE 2 END"
-    )
-    _rp_other = _role_priority.format(alias="o")
-    _rp_self = _role_priority.format(alias="org_members")
-    op.execute(
-        "DELETE FROM org_members "  # noqa: S608 — no user input; static SQL
-        "WHERE EXISTS ("
-        "  SELECT 1 FROM org_members AS o "
-        "  WHERE o.org_id = org_members.org_id "
-        "    AND o.user_id = org_members.user_id "
-        "    AND o.id <> org_members.id "
-        f"    AND ( {_rp_other} < {_rp_self} "
-        f"      OR ({_rp_other} = {_rp_self} "
-        "          AND o.joined_at < org_members.joined_at) "
-        f"      OR ({_rp_other} = {_rp_self} "
-        "          AND o.joined_at = org_members.joined_at "
-        "          AND o.id < org_members.id) "
-        "    )"
-        ")"
-    )
-    op.create_index(
-        "uq_org_members_org_user",
-        "org_members",
-        ["org_id", "user_id"],
-        unique=True,
-    )
+    # ── 2. OrgMember uniqueness — ALREADY EXISTS (migration 016) ────
+    # uq_org_members_org_user is created by migration 016
+    # (016_tier_gating_orgs_billing.py) as an inline UniqueConstraint on
+    # org_members, so it has been present + enforced since long before SSO.
+    # 056 must NOT recreate it — doing so raised DuplicateTableError on
+    # PostgreSQL (prod already had 001–054). Because that constraint has
+    # always enforced one-membership-per-(org,user), no duplicate rows can
+    # exist, so the dedupe this step previously performed is also
+    # unnecessary. The JIT `ON CONFLICT (org_id, user_id) DO NOTHING` in
+    # routes/auth_sso.py targets the 016 constraint. (Sentinel's §2.6
+    # premise that the constraint was missing was incorrect.)
 
     # ── 3. sso_break_glass_grants — durable admin break-glass ───────
     op.create_table(
@@ -168,10 +141,8 @@ def downgrade() -> None:
     op.drop_index("idx_sbg_org", table_name="sso_break_glass_grants")
     op.drop_table("sso_break_glass_grants")
 
-    # ── 2 reverse: drop org_members unique constraint ───────────────
-    op.drop_index(
-        "uq_org_members_org_user", table_name="org_members"
-    )
+    # ── 2 reverse: nothing — uq_org_members_org_user is owned by
+    #    migration 016, not 056, so 056's downgrade must not drop it.
 
     # ── 1 reverse: swap back to (provider_issuer, subject) key ──────
     op.drop_index(

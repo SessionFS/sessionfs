@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.2] - 2026-06-29
+
+**Patch: migration 056 no longer recreates an index that already exists.** Second fast-follow on the SSO migration — the v0.13.1 prod migrate-job got past the (now-fixed) PostgreSQL constraint drop but then failed on `CREATE ... uq_org_members_org_user` with `DuplicateTableError`. The deploy was again correctly gated (prod stayed on 0.12.1, DB cleanly at 054).
+
+### Fixed
+
+- Migration 056 created `uq_org_members_org_user` on `org_members`, but that constraint has existed since **migration 016** — on any real database at migration 054 it is already present, so the `CREATE` raised `DuplicateTableError` on PostgreSQL. (The design's premise that the constraint was missing was incorrect.) 056 no longer creates, dedupes against, or drops `uq_org_members_org_user` — migration 016 owns it, and because it has always enforced one-membership-per-`(org_id, user_id)`, no duplicate rows can exist. The JIT `ON CONFLICT (org_id, user_id) DO NOTHING` continues to target the 016 constraint. Verified end-to-end on PostgreSQL 14 against a prod-accurate schema (org_members carrying the 016 constraint): upgrade 054→055→056 and the downgrade both succeed and leave the 016 constraint intact.
+
 ## [0.13.1] - 2026-06-29
 
 **Patch: fix the SSO migration (056) so `alembic upgrade head` succeeds on PostgreSQL.** Same-day fast-follow — v0.13.0's prod migrate-job failed and the deploy was correctly gated (prod stayed on 0.12.1, DB cleanly at migration 054, no partial state).
