@@ -37,10 +37,11 @@ def upgrade() -> None:
 
     sessions = sa.table(
         "sessions",
+        sa.column("id", sa.String),
         sa.column("is_deleted", sa.Boolean),
         sa.column("delete_scope", sa.String),
-        sa.column("purge_after", sa.DateTime),
-        sa.column("deleted_at", sa.DateTime),
+        sa.column("purge_after", sa.DateTime(timezone=True)),
+        sa.column("deleted_at", sa.DateTime(timezone=True)),
     )
 
     # Set scope='cloud' for all legacy soft-deletes
