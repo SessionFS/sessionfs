@@ -136,6 +136,13 @@ class ApiKey(Base):
     # against deployed keys during incident response and rotation.
     # Existing rows back-fill to NULL since we don't have the raw key.
     key_prefix: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # SSO-P1: marks keys minted via the OIDC SSO callback (§3.5).
+    # Under enforcement, a human's legacy (non-SSO-minted) keys are gated
+    # at auth time until they re-login via SSO.  Service keys are
+    # categorically exempt from SSO enforcement (§4.2).
+    sso_minted: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
 
 
 class Session(Base):
@@ -737,6 +744,11 @@ class OrgMember(Base):
             unique=True,
             postgresql_where=text("role = 'owner'"),
             sqlite_where=text("role = 'owner'"),
+        ),
+        # v0.12.2 SSO-P1-fix — one membership per (org, user).
+        UniqueConstraint(
+            "org_id", "user_id",
+            name="uq_org_members_org_user",
         ),
         # P4 follow-up — structural vocabulary guard (added on PG via
         # migration 052; present here so create_all/SQLite enforces it too).
@@ -2433,4 +2445,337 @@ class PendingLicenseClaim(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+# ── SSO-P1 models (tk_c2cdbe7114804403, docs/design/sso-oidc.md §2) ──
+
+
+class OrgIdentityProvider(Base):
+    """Per-org OIDC/SAML identity provider configuration.
+
+    Protocol-tagged so SAML rows (v2) can coexist without a schema change.
+    At most one enabled IdP per org — enforced by the partial-unique index
+    uq_org_idp_one_enabled_per_org (same shape as
+    uq_entitlements_one_active_per_owner). `client_secret_ref` is a GCP
+    Secret Manager resource name (or K8s secret URI on self-hosted); the
+    raw secret is NEVER persisted to the DB.
+    """
+
+    __tablename__ = "org_identity_providers"
+    __table_args__ = (
+        Index("idx_org_idp_org", "org_id"),
+        Index(
+            "uq_org_idp_one_enabled_per_org",
+            "org_id",
+            unique=True,
+            postgresql_where=text("enabled = true"),
+            sqlite_where=text("enabled = true"),
+        ),
+        CheckConstraint(
+            "protocol IN ('oidc', 'saml')",
+            name="ck_org_idp_protocol",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    org_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    protocol: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="oidc", server_default="oidc"
+    )
+    display_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    issuer: Mapped[str] = mapped_column(String(500), nullable=False)
+    client_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    client_secret_ref: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+        comment="GCP Secret Manager / K8s secret ref — NEVER the plaintext secret",
+    )
+    allowed_scopes: Mapped[str] = mapped_column(
+        Text, nullable=False, default='["openid","email","profile"]',
+        server_default='["openid","email","profile"]',
+    )
+    discovery_cache: Mapped[str | None] = mapped_column(Text, nullable=True)
+    discovery_fetched_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    jwks_cache: Mapped[str | None] = mapped_column(Text, nullable=True)
+    jwks_fetched_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    enforced: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class OrgDomainVerification(Base):
+    """Proof that an org owns an email domain.
+
+    JIT provisioning and enforcement key off verified domains only. A
+    verified domain is claimable by AT MOST ONE org — the partial-unique
+    index uq_org_domain_global_verified enforces this (anti-cross-tenant-
+    hijack control). v1 proof mechanism is DNS TXT.
+    """
+
+    __tablename__ = "org_domain_verifications"
+    __table_args__ = (
+        Index("idx_org_domain_verification_org", "org_id"),
+        Index(
+            "uq_org_domain_global_verified",
+            "domain",
+            unique=True,
+            postgresql_where=text("status = 'verified'"),
+            sqlite_where=text("status = 'verified'"),
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'verified', 'failed')",
+            name="ck_org_domain_verification_status",
+        ),
+        CheckConstraint(
+            "method IN ('dns_txt', 'meta_tag')",
+            name="ck_org_domain_verification_method",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    org_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    domain: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+        comment="Normalized lowercase, e.g. acme.com",
+    )
+    method: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="dns_txt", server_default="dns_txt"
+    )
+    verification_token: Mapped[str] = mapped_column(
+        String(128), nullable=False
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending", server_default="pending"
+    )
+    verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    verified_by_user_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    last_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ExternalIdentity(Base):
+    """Links an IdP subject to a SessionFS User.
+
+    The identity key is (org_idp_id, subject) — NOT email, and NOT the
+    global (provider_issuer, subject) which breaks shared-issuer IdPs
+    like Google Workspace (one issuer serving many orgs). Email is
+    mutable at the IdP and must never be the join key for an existing
+    link. A single User may hold multiple ExternalIdentity rows (e.g. a
+    consultant in two customer orgs' IdPs).
+    """
+
+    __tablename__ = "external_identities"
+    __table_args__ = (
+        Index("idx_external_identity_user", "user_id"),
+        Index("idx_external_identity_org_idp", "org_idp_id"),
+        UniqueConstraint(
+            "org_idp_id", "subject",
+            name="uq_external_identity_idp_sub",
+        ),
+        CheckConstraint(
+            "link_method IN "
+            "('verified_email_match', 'jit_provision', 'explicit_confirm')",
+            name="ck_external_identity_link_method",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    org_idp_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("org_identity_providers.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    provider_issuer: Mapped[str] = mapped_column(
+        String(500),
+        nullable=False,
+        comment="Snapshotted issuer — survives IdP config edits",
+    )
+    subject: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+        comment="OIDC sub claim — stable, opaque, IdP-assigned",
+    )
+    email_at_link: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+        comment="Email asserted by IdP at link time (audit)",
+    )
+    linked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    link_method: Mapped[str] = mapped_column(
+        String(30), nullable=False
+    )
+    last_login_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    deactivated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class SsoBreakGlassGrant(Base):
+    """Durable, server-consulted admin break-glass grant for SSO enforcement.
+
+    Under SSO enforcement, admins are normally gated like all other humans.
+    The owner can issue a time-boxed break-glass grant to a specific admin
+    so they can authenticate with an API key while the IdP is misconfigured.
+    The grant is consulted at auth time (§4.2 enforcement check) with
+    server-side expiry; a stale grant never admits.
+
+    Single active grant per admin enforced by partial-unique index
+    uq_sbg_one_active_per_admin (mirrors the org_owner_transfer one-pending
+    pattern). The owner is always exempt by construction and never needs a
+    grant.
+    """
+
+    __tablename__ = "sso_break_glass_grants"
+    __table_args__ = (
+        Index("idx_sbg_org", "org_id"),
+        Index(
+            "uq_sbg_one_active_per_admin",
+            "org_id", "admin_user_id",
+            unique=True,
+            postgresql_where=text("revoked_at IS NULL"),
+            sqlite_where=text("revoked_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # sbg_<hex>
+    org_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    admin_user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    issued_by_user_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class OidcLoginAttempt(Base):
+    """Durable single-use state token for OIDC authorization-code + PKCE.
+
+    Mirrors the ActivationAttempt proven shape: row committed BEFORE the
+    external redirect, token hash stored (raw verifier NEVER persisted),
+    consumed with an atomic UPDATE WHERE status='pending' rowcount-1 guard
+    for CSRF/replay defense. Short TTL (10 min).
+    """
+
+    __tablename__ = "oidc_login_attempts"
+    __table_args__ = (
+        Index(
+            "idx_oidc_login_attempt_state",
+            "state", "status", "expires_at",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'consumed', 'expired')",
+            name="ck_oidc_login_attempt_status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    org_idp_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("org_identity_providers.id", ondelete="CASCADE"),
+        nullable=True,
+        comment="Nullable — resolved at start time; CASCADE so deleting an "
+                "IdP invalidates in-flight attempts",
+    )
+    state: Mapped[str] = mapped_column(
+        String(128), nullable=False, unique=True,
+        comment="Random; returned in callback, matched exactly",
+    )
+    nonce: Mapped[str] = mapped_column(
+        String(128), nullable=False,
+        comment="Echoed in id_token nonce claim, matched (replay defense)",
+    )
+    pkce_verifier_hash: Mapped[str] = mapped_column(
+        String(128), nullable=False,
+        comment="Hash of the PKCE code verifier; raw verifier NEVER stored",
+    )
+    org_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("organizations.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    provider_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    redirect_after: Mapped[str | None] = mapped_column(
+        String(500), nullable=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending", server_default="pending"
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        comment="Short TTL (10 min) — mirror of ActivationAttempt.expires_at",
+    )
+    consumed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )

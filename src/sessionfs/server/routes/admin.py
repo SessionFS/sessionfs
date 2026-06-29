@@ -20,6 +20,7 @@ from sessionfs.server.db.models import (
     ApiKey,
     Handoff,
     HelmLicense,
+    OidcLoginAttempt,
     Organization,
     OrgAuditEvent,
     OrgMember,
@@ -1269,6 +1270,66 @@ async def purge_activation_attempts(
         admin.id,
         "purge_activation_attempts",
         "activation_attempt",
+        "bulk",
+        {"purged": purged, "expired_flipped": flipped.rowcount or 0,
+         "retention_days": retention_days},
+    )
+    await db.commit()
+
+    return {"purged": purged, "expired_flipped": flipped.rowcount or 0}
+
+
+# Default retention window for terminal/expired OIDC SSO login attempts.
+_OIDC_LOGIN_ATTEMPT_RETENTION_DAYS = 30
+
+
+@router.post("/oidc-login-attempts/purge")
+async def purge_oidc_login_attempts(
+    body: dict | None = None,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reap stale OIDC SSO login attempts (data minimization).
+
+    Mirrors the activation-attempt sweep. Two steps:
+      1. Lazily flip any expired-but-still-'pending' attempts to 'expired'
+         (the callback path only filters on expires_at via the atomic
+         consume, so the declared status is otherwise never set for
+         abandoned attempts — keying off expires_at makes them reapable).
+      2. Delete terminal (consumed|expired) attempts older than the
+         retention window, removing the state/nonce/pkce_verifier_hash with
+         the row. Default window 30 days; override with body {"retention_days": N}.
+    """
+    now = datetime.now(timezone.utc)
+    retention_days = _OIDC_LOGIN_ATTEMPT_RETENTION_DAYS
+    if body and isinstance(body.get("retention_days"), int):
+        retention_days = max(0, body["retention_days"])
+    cutoff = now - timedelta(days=retention_days)
+
+    # 1. Mark expired pending attempts as 'expired'.
+    flipped = await db.execute(
+        update(OidcLoginAttempt)
+        .where(
+            OidcLoginAttempt.status == "pending",
+            OidcLoginAttempt.expires_at < now,
+        )
+        .values(status="expired")
+    )
+
+    # 2. Delete terminal (consumed|expired) attempts older than the window.
+    del_result = await db.execute(
+        delete(OidcLoginAttempt).where(
+            OidcLoginAttempt.status.in_(("consumed", "expired")),
+            OidcLoginAttempt.created_at < cutoff,
+        )
+    )
+    purged = del_result.rowcount or 0
+
+    await _log_action(
+        db,
+        admin.id,
+        "purge_oidc_login_attempts",
+        "oidc_login_attempt",
         "bulk",
         {"purged": purged, "expired_flipped": flipped.rowcount or 0,
          "retention_days": retention_days},

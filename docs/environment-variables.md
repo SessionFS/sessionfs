@@ -36,6 +36,8 @@ All SessionFS server environment variables use the `SFS_` prefix.
 |----------|-------------|---------|
 | `SFS_VERIFICATION_SECRET` | Secret for email verification JWTs AND Fernet encryption of stored API keys/tokens. **Rotating this invalidates all stored judge keys and GitLab tokens.** | `dev-verification-secret` |
 | `SFS_REQUIRE_EMAIL_VERIFICATION` | Require email verification on signup | `true` |
+| `SFS_SSO_CALLBACK_URL` | The OIDC redirect/callback URL registered with each org's IdP — where the provider returns the authorization code | `https://api.sessionfs.dev/api/v1/auth/sso/callback` |
+| `SFS_SSO_REDIRECT_ORIGINS` | Comma-separated allowlist of absolute origins permitted as the post-login `redirect_after` destination (relative paths are always allowed; everything else is rejected) | — |
 
 ## Blob Storage
 
