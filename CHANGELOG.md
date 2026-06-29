@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.1] - 2026-06-29
+
+**Patch: fix the SSO migration (056) so `alembic upgrade head` succeeds on PostgreSQL.** Same-day fast-follow — v0.13.0's prod migrate-job failed and the deploy was correctly gated (prod stayed on 0.12.1, DB cleanly at migration 054, no partial state).
+
+### Fixed
+
+- Migration 056 dropped `uq_external_identity_issuer_sub` with `op.drop_index`. Migration 055 declares that key as an inline `UniqueConstraint`, which PostgreSQL materializes as a real CONSTRAINT (backed by an index) — `DROP INDEX` raises `DependentObjectsStillExistError`; the constraint must be dropped instead. On SQLite (where the test suite runs) Alembic renders it as a plain unique index, so `DROP INDEX` worked and the failure was invisible to the SQLite-only migration test. The drop (and the downgrade's recreate) are now dialect-aware: `DROP CONSTRAINT` / `CREATE UNIQUE CONSTRAINT` on PostgreSQL, `DROP INDEX` / `CREATE UNIQUE INDEX` on SQLite. Verified end-to-end on PostgreSQL 14 (upgrade → downgrade → re-upgrade) and the SQLite migration test remains green. No schema-shape change versus what 0.13.0 intended.
+
 ## [0.13.0] - 2026-06-29
 
 **Organization SSO (OIDC) — enterprise single sign-on with anti-takeover account linking, JIT provisioning, and org-wide enforcement.** New runtime dependency `dnspython` (for DNS-TXT domain verification). DB migrations 055 + 056.
