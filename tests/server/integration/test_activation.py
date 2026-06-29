@@ -24,6 +24,7 @@ from sessionfs.server.db.models import (
     ActivationAttempt,
     Entitlement,
     HelmLicense,
+    OidcLoginAttempt,
     OrgAuditEvent,
     OrgMember,
     Organization,
@@ -1224,6 +1225,71 @@ class TestActivationAttemptRetention:
         db_session.expire_all()
         remaining = (
             await db_session.execute(select(ActivationAttempt))
+        ).scalars().all()
+        by_id = {a.id: a for a in remaining}
+        assert set(by_id) == {fresh_id, recent_exp_id}
+        assert by_id[recent_exp_id].status == "expired"  # flipped, within window
+        assert by_id[fresh_id].status == "pending"       # untouched
+
+
+class TestOidcLoginAttemptRetention:
+    """The admin OIDC-SSO login-attempt sweeper flips expired-pending rows
+    and deletes terminal rows older than the retention window (mirrors the
+    activation-attempt sweep; data minimization for state/nonce/PKCE hash)."""
+
+    @pytest.mark.asyncio
+    async def test_purge_reaps_old_terminal_and_flips_expired(
+        self, client: AsyncClient, db_session: AsyncSession,
+    ):
+        admin_user = User(
+            id=str(uuid.uuid4()),
+            email="admin-oidc-purge@sessionfs.dev",
+            display_name="Admin",
+            tier="admin",
+            email_verified=True,
+            created_at=datetime.now(timezone.utc),
+        )
+        db_session.add(admin_user)
+        await db_session.commit()
+
+        now = datetime.now(timezone.utc)
+        old = now - timedelta(days=60)
+        recent = now - timedelta(minutes=5)
+
+        def _mk(status, expires_at, created_at):
+            return OidcLoginAttempt(
+                id=f"ola_{secrets.token_hex(12)}",
+                state=secrets.token_urlsafe(24),
+                nonce=secrets.token_urlsafe(24),
+                pkce_verifier_hash=secrets.token_hex(32),
+                status=status,
+                expires_at=expires_at,
+                created_at=created_at,
+            )
+
+        consumed_old = _mk("consumed", old, old)                                  # → deleted
+        expired_pending_old = _mk("pending", old, old)                            # → flipped + deleted
+        expired_pending_recent = _mk("pending", now - timedelta(minutes=1), recent)  # flipped, kept
+        fresh_pending = _mk("pending", now + timedelta(minutes=30), recent)       # untouched
+        for a in (consumed_old, expired_pending_old, expired_pending_recent, fresh_pending):
+            db_session.add(a)
+        await db_session.commit()
+        fresh_id, recent_exp_id = fresh_pending.id, expired_pending_recent.id
+
+        api_key = await _create_api_key(db_session, admin_user)
+        resp = await client.post(
+            "/api/v1/admin/oidc-login-attempts/purge",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["purged"] == 2          # consumed_old + expired_pending_old
+        assert data["expired_flipped"] == 2  # both expired-pending rows flipped
+
+        db_session.expire_all()
+        remaining = (
+            await db_session.execute(select(OidcLoginAttempt))
         ).scalars().all()
         by_id = {a.id: a for a in remaining}
         assert set(by_id) == {fresh_id, recent_exp_id}
