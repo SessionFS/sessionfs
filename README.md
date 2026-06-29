@@ -218,7 +218,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
-**v0.13.1 — Public Beta.** Patch: fixes the SSO migration (056) so `alembic upgrade head` succeeds on PostgreSQL (055 declares the external-identity key as a `UniqueConstraint`, which PG backs with a constraint — `DROP INDEX` had to become a dialect-aware `DROP CONSTRAINT`; SQLite tests couldn't see it). Same test/migration/tool counts as v0.13.0.
+**v0.13.2 — Public Beta.** Patch: migration 056 no longer recreates `uq_org_members_org_user` (it has existed since migration 016) — the redundant `CREATE` raised `DuplicateTableError` on PostgreSQL. Combined with the v0.13.1 dialect-aware constraint-drop fix, `alembic upgrade head` now applies the SSO migrations cleanly on PostgreSQL (verified against a prod-accurate schema). Same test/migration/tool counts as v0.13.0.
 
 **v0.13.0 — Public Beta.** 2669 backend tests + 397 dashboard tests passing. 56 database migrations. 68 MCP tools. **Organization SSO (OIDC).** Enterprise single sign-on: authorization-code + PKCE login (`/api/v1/auth/sso/start` + `/callback`), with anti-takeover account linking (auto-links only on a verified-email match to an already-verified account that is already a member of the IdP's org — identity keyed on `(org_idp_id, subject)`, never the mutable email), JIT provisioning (member-only, seat-capped), owner/admin provider config + DNS-TXT domain verification (client secret stored only as a reference), and org-wide enforcement with an owner break-glass — while service keys (CI / automation) stay categorically exempt. Hardened `id_token` validation + an SSRF-guarded fetch layer for all issuer-derived requests. New dependency `dnspython`; migrations 055 + 056. Available on all paid tiers.
 

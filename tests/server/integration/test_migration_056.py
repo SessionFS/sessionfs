@@ -87,7 +87,11 @@ def _build_pre_056_db(db_path: Path) -> None:
         "ON external_identities (provider_issuer, subject)"
     )
 
-    # org_members — add the table so we can create the unique constraint.
+    # org_members — with the uq_org_members_org_user UNIQUE already present.
+    # On a real database at migration 054 this constraint exists since
+    # migration 016 (016_tier_gating_orgs_billing) created it; 056 must NOT
+    # recreate it. Mirror that prod state here (016 declared it as an inline
+    # UniqueConstraint → a UNIQUE INDEX on SQLite).
     conn.execute(
         "CREATE TABLE org_members ("
         "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -96,6 +100,10 @@ def _build_pre_056_db(db_path: Path) -> None:
         "  role VARCHAR(20) NOT NULL DEFAULT 'member',"
         "  joined_at TEXT NOT NULL DEFAULT (datetime('now'))"
         ")"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX uq_org_members_org_user "
+        "ON org_members (org_id, user_id)"
     )
     conn.execute(
         "INSERT INTO org_members (org_id, user_id, role) "
@@ -330,70 +338,6 @@ class TestMigration056:
 
         conn.close()
 
-    def test_upgrade_dedupes_org_members_before_unique_index(self, tmp_path):
-        """Pre-existing duplicate (org_id, user_id) rows are deduped in the
-        same migration so the unique-index creation can't abort the
-        migrate-job. Survivor = highest role priority, then earliest
-        joined_at, then lowest id."""
-        db_path = tmp_path / "migration_056_dupe.db"
-        _build_pre_056_db(db_path)
-
-        # Inject duplicates BEFORE stamping/upgrading.
-        # Group A (org-1, user-1): member already seeded by _build_pre_056_db
-        # (id=1). Add an owner (later joined_at) + an admin → owner must win
-        # despite being newest, because role priority dominates joined_at.
-        conn = sqlite3.connect(str(db_path))
-        conn.execute(
-            "INSERT INTO org_members (org_id, user_id, role, joined_at) "
-            "VALUES ('org-1', 'user-1', 'admin', '2024-01-02 00:00:00')"
-        )
-        conn.execute(
-            "INSERT INTO org_members (org_id, user_id, role, joined_at) "
-            "VALUES ('org-1', 'user-1', 'owner', '2024-06-01 00:00:00')"
-        )
-        # Group B (org-1, user-2): two members, different joined_at →
-        # earliest joined_at survives.
-        conn.execute(
-            "INSERT INTO org_members (org_id, user_id, role, joined_at) "
-            "VALUES ('org-1', 'user-2', 'member', '2024-03-01 00:00:00')"
-        )
-        conn.execute(
-            "INSERT INTO org_members (org_id, user_id, role, joined_at) "
-            "VALUES ('org-1', 'user-2', 'member', '2024-01-01 00:00:00')"
-        )
-        conn.commit()
-        conn.close()
-
-        command.stamp(_cfg(db_path), "055")
-        command.upgrade(_cfg(db_path), "056")
-
-        conn = sqlite3.connect(str(db_path))
-        # Group A: exactly one survivor, and it's the owner.
-        rows_a = conn.execute(
-            "SELECT role FROM org_members "
-            "WHERE org_id='org-1' AND user_id='user-1'"
-        ).fetchall()
-        assert len(rows_a) == 1
-        assert rows_a[0][0] == "owner"
-
-        # Group B: exactly one survivor, the earliest joined_at.
-        rows_b = conn.execute(
-            "SELECT joined_at FROM org_members "
-            "WHERE org_id='org-1' AND user_id='user-2'"
-        ).fetchall()
-        assert len(rows_b) == 1
-        assert rows_b[0][0] == "2024-01-01 00:00:00"
-
-        # The unique index exists (creation did not abort).
-        indexes = {
-            r[0]
-            for r in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='index'"
-            ).fetchall()
-        }
-        assert "uq_org_members_org_user" in indexes
-        conn.close()
-
     # ── downgrade ───────────────────────────────────────────────────
 
     def test_downgrade_reverses_all_changes(self, migration_056_db_path):
@@ -417,11 +361,13 @@ class TestMigration056:
                 "SELECT name FROM sqlite_master WHERE type='index'"
             ).fetchall()
         }
-        # New indexes are gone.
+        # Indexes 056 created are gone.
         assert "uq_external_identity_idp_sub" not in indexes
-        assert "uq_org_members_org_user" not in indexes
         assert "idx_sbg_org" not in indexes
         assert "uq_sbg_one_active_per_admin" not in indexes
+        # uq_org_members_org_user is owned by migration 016, NOT 056, so the
+        # 056 downgrade must leave it in place.
+        assert "uq_org_members_org_user" in indexes
 
         # Old unique index is BACK.
         assert "uq_external_identity_issuer_sub" in indexes
