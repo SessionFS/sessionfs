@@ -61,7 +61,7 @@ from sessionfs.server.auth.dependencies import (
 )
 from sessionfs.server.auth.rate_limit import SlidingWindowRateLimiter
 from sessionfs.server.db.engine import get_db
-from sessionfs.server.db.models import Ticket, WorkQueue, WorkQueueItem
+from sessionfs.server.db.models import Resident, Ticket, WorkQueue, WorkQueueItem
 from sessionfs.server.routes.knowledge import _get_project_for_auth
 from sessionfs.server.services import work_queues as wq_engine
 
@@ -88,6 +88,31 @@ def _step_rate_limit_key(
     principal = auth.service_key_id or f"user:{auth.user.id}"
     org = auth.org_id or "noorg"
     return f"wqstep:{org}:{project_id}:{principal}:{queue_id}"
+
+
+async def _enforce_resident_active(auth: AuthContext, db: AsyncSession) -> None:
+    """Kill-switch enforcement: if the acting service key is bound to a
+    resident, that resident MUST be active. Pausing/retiring a resident
+    otherwise only updates the resident row while its key keeps authenticating
+    by scope — a misbehaving resident process could keep claiming/settling work
+    after the operator flipped the switch. This makes the lifecycle control
+    server-enforced on the act path (design §9 lifecycle)."""
+    if auth.service_key_id is None:
+        return
+    resident = await db.scalar(
+        select(Resident).where(Resident.service_key_id == auth.service_key_id)
+    )
+    if resident is not None and resident.status != "active":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "resident_not_active",
+                "message": (
+                    f"Resident is {resident.status}; it may not act on work "
+                    "queues until reactivated."
+                ),
+            },
+        )
 
 
 def _require_downstream_scopes(auth: AuthContext, *needed: str) -> None:
@@ -779,6 +804,7 @@ async def run_work_queue_step(
     item ONLY on a strict literal VERIFIED-CLEAN with no open findings.
     """
     _require_downstream_scopes(auth, "tickets:write")
+    await _enforce_resident_active(auth, db)
     wake_source = body.wake_source if body is not None else "manual"
     wake_ref = body.wake_ref if body is not None else None
     max_tickets = body.max_tickets if body is not None else None
@@ -844,6 +870,7 @@ async def complete_work_queue_step(
     if body.agent_run_id:
         needed.append("agent_runs:write")
     _require_downstream_scopes(auth, *needed)
+    await _enforce_resident_active(auth, db)
 
     project = await _get_project_for_auth(project_id, db, auth)
     await assert_service_key_can_access_project(db, auth, project)

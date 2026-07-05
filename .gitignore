@@ -57,3 +57,9 @@ sessionfs-infra
 v*-implementation-brief
 v*-resume-*-brief
 v*-*-brief
+.resident-*-brief.md
+
+# Private session/origin material — never public (may contain PII/transcripts)
+sessionfs-origin-primer.md
+claude-share-*.md
+.playwright-mcp/

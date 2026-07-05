@@ -37,6 +37,11 @@ VALID_SCOPES = frozenset(
         # wildcard '*' keys satisfy both (existing behavior).
         "work_queues:read",
         "work_queues:write",
+        # Resident R0 (migration 057) — durable mind for reviewer/implementer
+        # residents. resident_memory:read hydrates; resident_memory:write
+        # writes + compacts + quarantines.
+        "resident_memory:read",
+        "resident_memory:write",
         "retrieval_audit:read",
         "admin:*",
     }

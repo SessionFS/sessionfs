@@ -38,6 +38,7 @@ from sessionfs.server.db.models import (
     OrgMember,
     Organization,
     Project,
+    Resident,
     TrustedReviewer,
     User,
 )
@@ -172,6 +173,37 @@ async def register_trusted_reviewer(
                     "message": (
                         "service_key_id must be a service key belonging to "
                         "this organization."
+                    ),
+                },
+            )
+
+        # F4 SoD mutual-exclusion (R0): a service_key_id bound to an
+        # implementer resident cannot also be a trusted reviewer where their
+        # scopes OVERLAP. This mirrors the resident-side check
+        # (_check_f4_mutual_exclusion) so the rule is order-independent: a
+        # project-scoped reviewer conflicts ONLY with an implementer resident
+        # for that same project; an org-wide reviewer (project_id is None)
+        # conflicts with any implementer resident in the org.
+        _sod_q = select(Resident.id).where(
+            Resident.service_key_id == body.service_key_id,
+            Resident.org_id == org_id,
+            Resident.kind == "implementer",
+            Resident.status.in_(("active", "paused")),
+        )
+        if body.project_id is not None:
+            _sod_q = _sod_q.where(Resident.project_id == body.project_id)
+        impl_resident = (
+            await db.execute(_sod_q)
+        ).scalar_one_or_none()
+        if impl_resident is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "sod_mutual_exclusion",
+                    "message": (
+                        "This service key is already bound to an implementer "
+                        "resident in this org. A key cannot hold both "
+                        "implementer and reviewer roles."
                     ),
                 },
             )

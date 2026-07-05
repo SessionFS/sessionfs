@@ -36,6 +36,7 @@ from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.db.models import (
+    Resident,
     Ticket,
     TicketComment,
     WorkQueue,
@@ -293,6 +294,26 @@ async def _comment_delta(
         else:
             query = query.where(TicketComment.created_at > since)
     return list((await db.execute(query)).scalars().all())
+
+
+async def _queue_has_implementer_resident(
+    db: AsyncSession, work_queue_id: str
+) -> bool:
+    """True if a registered implementer resident drives this queue.
+
+    Resident R0 F1: the strict re-derive/self-review/fail-closed close only
+    applies to queues bound to a registered implementer resident — non-resident
+    implement_until_done queues keep the pre-existing outcome-based close.
+    """
+    found = await db.scalar(
+        select(Resident.id)
+        .where(
+            Resident.work_queue_id == work_queue_id,
+            Resident.kind == "implementer",
+        )
+        .limit(1)
+    )
+    return found is not None
 
 
 async def _review_comments_for_oracle(
@@ -1260,6 +1281,14 @@ async def complete_work_queue_step(
     # a STRICT literal VERIFIED-CLEAN with no open findings. The agent cannot
     # declare the item done by asserting outcome='done'; a forged trusted-false
     # verdict can never close it.
+    #
+    # Resident R0 F1 (design §3.7.2): implement_until_done also re-derives
+    # review_state server-side. The implementer's own "done" is NEVER a close.
+    # The server records implementer identity at settle, then checks whether
+    # a trusted VERIFIED-CLEAN exists from a DIFFERENT identity. Self-review
+    # is rejected (identity match); unknown implementer → fail-closed.
+    # auto_close_review_kind stamps the CEO condition-(a) marker.
+    auto_close_kind: str | None = None
     if queue.mode == "review_until_clean":
         review_comments = await _review_comments_for_oracle(
             db, ticket_id=ticket_id
@@ -1270,6 +1299,126 @@ async def complete_work_queue_step(
             and rs_settle.last_verdict_is_strict_verified_clean
             and not rs_settle.open_findings
         )
+    elif queue.mode == "implement_until_done" and await _queue_has_implementer_resident(
+        db, queue.id
+    ):
+        # Resident R0 F1 (design §3.7.2): a queue driven by a REGISTERED
+        # implementer resident never self-closes on the agent's claimed
+        # outcome. (Non-resident implement_until_done queues keep the existing
+        # outcome-based close via the `else` branch below — F1 targets the
+        # autonomous resident, not pre-existing human/agent flows.)
+        # F1: record implementer identity at first settle.
+        if item.implementer_service_key_id is None:
+            item.implementer_service_key_id = actor_service_key_id
+            if actor_user_id:
+                item.implementer_user_id = actor_user_id
+
+        # Re-derive review_state over trusted comments (same as review mode).
+        review_comments = await _review_comments_for_oracle(
+            db, ticket_id=ticket_id
+        )
+        rs_settle = compute_review_state(review_comments)
+        review_clean = (
+            rs_settle is not None
+            and rs_settle.last_verdict_is_strict_verified_clean
+            and not rs_settle.open_findings
+        )
+
+        if review_clean:
+            # Look up the closing verdict's identity from the comment that
+            # produced the STRICT clean verdict — NOT last_review_comment_id.
+            # last_review_comment_id is the most-recent review comment, which
+            # can be a later trusted NON-verdict note; using it lets an
+            # implementer post its own VERIFIED-CLEAN and then have any other
+            # trusted key post a note, defeating the self-review check
+            # (self-review bypass). Bind identity to the actual clean round.
+            closing_svc_key: str | None = None
+            closing_usr: str | None = None
+            clean_comment_id: str | None = None
+            if rs_settle is not None:
+                for _rnd in reversed(rs_settle.rounds):
+                    if _rnd.is_strict_verified_clean:
+                        clean_comment_id = _rnd.comment_id
+                        break
+            if clean_comment_id is not None:
+                closing_comment = (
+                    await db.execute(
+                        select(TicketComment).where(
+                            TicketComment.id == clean_comment_id,
+                            TicketComment.ticket_id == ticket_id,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if closing_comment is not None:
+                    closing_svc_key = closing_comment.service_key_id or None
+                    closing_usr = (
+                        closing_comment.author_user_id or None
+                        if closing_comment.author_user_id
+                        else None
+                    )
+
+            # F1(c): reject auto-close on identity match (self-review).
+            impl_svc = item.implementer_service_key_id
+            impl_usr = item.implementer_user_id
+            # Identity comparison: when EITHER side is a service-key identity
+            # (residents are service keys), compare SERVICE KEY ids only — two
+            # service keys minted by the same org admin share author_user_id,
+            # so a user-id match would falsely flag an independent reviewer key
+            # as self-review (Sentinel same-operator-collusion boundary). Only
+            # fall back to user-id comparison when BOTH identities are human.
+            if closing_svc_key or impl_svc:
+                self_close = bool(
+                    closing_svc_key and impl_svc and closing_svc_key == impl_svc
+                )
+            else:
+                self_close = bool(
+                    closing_usr and impl_usr and closing_usr == impl_usr
+                )
+
+            # F1(d): fail-closed — no auto-close when implementer unknown.
+            impl_unknown = not impl_svc and not impl_usr
+
+            # P1: the closing clean verdict must POSTDATE the implementer's work
+            # on this ticket — a stale VERIFIED-CLEAN from a PRIOR review cycle
+            # must not auto-close the resident's NEW work on first settle. Use
+            # the implementer's latest comment (its writeback) as the work
+            # marker; fail closed if the implementer has written nothing yet, or
+            # the clean verdict predates that writeback.
+            stale_verdict = True
+            if closing_comment is not None and not impl_unknown:
+                if impl_svc:
+                    impl_latest_at = await db.scalar(
+                        select(func.max(TicketComment.created_at)).where(
+                            TicketComment.ticket_id == ticket_id,
+                            TicketComment.service_key_id == impl_svc,
+                        )
+                    )
+                else:
+                    impl_latest_at = await db.scalar(
+                        select(func.max(TicketComment.created_at)).where(
+                            TicketComment.ticket_id == ticket_id,
+                            TicketComment.author_user_id == impl_usr,
+                        )
+                    )
+                stale_verdict = (
+                    impl_latest_at is None
+                    or closing_comment.created_at <= impl_latest_at
+                )
+
+            if self_close or impl_unknown or stale_verdict:
+                terminal = False
+            else:
+                terminal = True
+                # Record closing identity.
+                item.closed_by_service_key_id = closing_svc_key
+                item.closed_by_user_id = closing_usr
+                # CEO condition-(a) marker.
+                if closing_svc_key:
+                    auto_close_kind = "resident_trusted"
+                else:
+                    auto_close_kind = "human"
+        else:
+            terminal = False
     else:
         terminal = outcome in ("completed_ticket", "done", "resolved")
     new_status = _DONE_STATUS if terminal else _WAITING_STATUS
@@ -1277,6 +1426,8 @@ async def complete_work_queue_step(
     item.open_directive_id = None
     item.open_directive_run_id = None
     item.last_agent_run_id = agent_run_id or item.last_agent_run_id
+    if auto_close_kind is not None:
+        item.auto_close_review_kind = auto_close_kind
     # A productive settle resets the no-progress backoff. The item becomes
     # eligible again immediately (waiting) or terminal (done).
     item.next_eligible_at = None

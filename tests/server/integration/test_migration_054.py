@@ -60,14 +60,35 @@ def migration_054_db_path(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def upgraded_054_db_path(migration_054_db_path: Path) -> Path:
-    """A DB already upgraded through 054.
+    """A DB upgraded through 054 for the ORM-based atomic-claim tests.
+
+    These tests insert `WorkQueueItem` via the ORM, whose columns track HEAD.
+    Migration 057 added F1 columns to work_queue_items, so a pure-054 schema
+    would reject the ORM insert. We can't upgrade this minimal fixture all the
+    way to HEAD (migrations 055-057 reference tables the pre-054 fixture never
+    creates), so we add the 057 F1 columns directly — nullable, matching what
+    migration 057 does to work_queue_items. The migration-shape assertions that
+    must stay at exactly 054 live in TestMigration054 (which upgrade to "054").
 
     The async claim tests must NOT call command.upgrade themselves — alembic's
     env.py drives the aiosqlite upgrade via asyncio.run(), which raises inside
     the pytest event loop (asyncio_mode='auto'). Running the upgrade here, in a
     synchronous fixture, keeps the migration off the running loop.
     """
+    import sqlite3
+
     command.upgrade(_cfg(migration_054_db_path), "054")
+    conn = sqlite3.connect(str(migration_054_db_path))
+    for col in (
+        "implementer_service_key_id",
+        "implementer_user_id",
+        "closed_by_service_key_id",
+        "closed_by_user_id",
+        "auto_close_review_kind",
+    ):
+        conn.execute(f"ALTER TABLE work_queue_items ADD COLUMN {col} VARCHAR")
+    conn.commit()
+    conn.close()
     return migration_054_db_path
 
 

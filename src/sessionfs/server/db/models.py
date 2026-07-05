@@ -1632,6 +1632,123 @@ class TrustedReviewer(Base):
     )
 
 
+class Resident(Base):
+    """Durable resident identity — reviewer or implementer (R0, migration 057).
+
+    A resident is a persistent agent runtime bound to a single org, project,
+    and service key. It drives a work queue (nullable — assigned after
+    registration) and owns a private durable mind in resident_memory_entries.
+    One service key may drive at most one resident (uq_resident_service_key).
+    App-assigned PK ('res_<hex>').
+
+    F4 SoD mutual-exclusion: a service_key_id bound to a TrustedReviewer row
+    (for the same project/org) cannot also be an implementer resident, and
+    vice-versa. Enforced at registration in routes/residents.py.
+    """
+
+    __tablename__ = "residents"
+    __table_args__ = (
+        Index("uq_resident_service_key", "service_key_id", unique=True),
+        Index("idx_resident_org_project", "org_id", "project_id"),
+        CheckConstraint(
+            "kind IN ('reviewer', 'implementer')",
+            name="ck_resident_kind",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'paused', 'retired')",
+            name="ck_resident_status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # res_<hex>
+    org_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    project_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    persona_name: Mapped[str] = mapped_column(String(50), nullable=False)
+    service_key_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    work_queue_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("work_queues.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="active", server_default="active"
+    )
+    mind_token_budget: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=8000, server_default="8000"
+    )
+    max_uncompacted_entries: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=500, server_default="500"
+    )
+    created_by_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    actor_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    service_key_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ResidentMemoryEntry(Base):
+    """Append-only durable mind entry for a resident (R0, migration 057).
+
+    Each entry is owned by one resident and carries a denormalized org_id for
+    server-enforced C5 isolation (belt-and-suspenders over the resident FK).
+    Entries are monotonic per resident (seq) and can be superseded by a
+    compacting digest. App-assigned PK ('rme_<hex>').
+    """
+
+    __tablename__ = "resident_memory_entries"
+    __table_args__ = (
+        Index("idx_rme_resident_kind_seq", "resident_id", "kind", "seq"),
+        Index("idx_rme_resident_created", "resident_id", "created_at"),
+        Index("idx_rme_org", "org_id"),
+        Index("uq_resident_memory_seq", "resident_id", "seq", unique=True),
+        CheckConstraint(
+            "kind IN ('reasoning', 'digest', 'observation')",
+            name="ck_rme_kind",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # rme_<hex>
+    resident_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("residents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    org_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    token_estimate: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    superseded_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    compacted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    quarantined: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class TicketEdit(Base):
     """Per-field audit row for ticket field mutations via update_ticket.
 
@@ -1913,6 +2030,11 @@ class WorkQueueItem(Base):
             "('pending', 'active', 'waiting', 'done', 'failed')",
             name="ck_work_queue_item_status",
         ),
+        CheckConstraint(
+            "auto_close_review_kind IS NULL OR "
+            "auto_close_review_kind IN ('resident_trusted', 'human')",
+            name="ck_wqi_auto_close_review_kind",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)  # wqi_<hex>
@@ -1950,6 +2072,25 @@ class WorkQueueItem(Base):
         String(64), nullable=True
     )
     last_verdict: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # F1 implementer-identity + auto-close provenance (R0, migration 057).
+    # Recorded at implement-side claim/settle; compared at close to enforce
+    # the self-review prohibition. auto_close_review_kind stamps the CEO
+    # condition-(a) marker ("resident-reviewed, NOT human-reviewed").
+    implementer_service_key_id: Mapped[str | None] = mapped_column(
+        String(36), nullable=True
+    )
+    implementer_user_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    closed_by_service_key_id: Mapped[str | None] = mapped_column(
+        String(36), nullable=True
+    )
+    closed_by_user_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    auto_close_review_kind: Mapped[str | None] = mapped_column(
+        String(20), nullable=True
+    )
     # Count of EMITTED directives / action attempts (runaway guard); passive
     # waits do NOT increment it.
     attempts: Mapped[int] = mapped_column(
