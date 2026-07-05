@@ -1,0 +1,49 @@
+# Hardened reference image for an IMPLEMENTER resident (design §3.7.1, F8).
+#
+# The implementer resident writes code, so it runs in a contained, least-
+# privilege sandbox on a resident-owned git worktree/branch. It can PROPOSE
+# (commit to its branch + open a change for review) but must NOT be able to
+# push to a protected branch, merge, or release. SessionFS the SERVER never
+# brokers git (C7), so those restrictions live entirely in THIS profile + the
+# operator's host/git/CI permissions — not a server guarantee (F8).
+#
+# Build:   docker build -f Dockerfile.implementer -t sfs-resident-implementer .
+# Run:     see docs/operations/resident-sandbox.md (never bake secrets in).
+
+FROM python:3.12-slim AS base
+
+# ── Least-privilege user (never root) ────────────────────────────────────────
+RUN groupadd --gid 10001 resident \
+ && useradd --uid 10001 --gid 10001 --create-home --home-dir /home/resident resident
+
+# git is required for the worktree; nothing else network-facing is baked in.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates tini \
+ && rm -rf /var/lib/apt/lists/*
+
+# Install the SessionFS client (the resident runner ships in the sfs package).
+# Pin the version at build time in real deployments.
+RUN pip install --no-cache-dir sessionfs
+
+# ── Git hardening baked into the image (defense-in-depth) ────────────────────
+# The operator STILL must not mount protected-branch credentials (see runbook),
+# but these make an accidental push/merge harder from inside the sandbox.
+COPY gitconfig.hardened /etc/gitconfig
+COPY git-hooks/pre-push /etc/resident-git-hooks/pre-push
+RUN chmod 0444 /etc/gitconfig \
+ && chmod 0555 /etc/resident-git-hooks/pre-push
+
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod 0555 /usr/local/bin/entrypoint.sh
+
+USER resident:resident
+WORKDIR /home/resident
+
+# The worktree is mounted read-write at /workspace/worktree by the operator;
+# everything else should be run read-only (see the runbook's `docker run` flags:
+# --read-only, --cap-drop=ALL, --security-opt=no-new-privileges, seccomp).
+ENV RESIDENT_WORKTREE=/workspace/worktree \
+    HOME=/home/resident \
+    GIT_TERMINAL_PROMPT=0
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]

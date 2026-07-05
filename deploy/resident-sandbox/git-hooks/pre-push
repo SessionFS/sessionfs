@@ -1,0 +1,29 @@
+#!/bin/sh
+# Pre-push guard for the implementer sandbox (design §3.7.1 / F8, defense-in-depth).
+#
+# Refuses any push whose DESTINATION ref is a protected branch. This is a
+# backstop, not the primary control: the operator must not give the sandbox a
+# credential that can reach protected branches in the first place. The server
+# never brokers git, so this cannot be a product guarantee.
+#
+# git passes "<local ref> <local sha> <remote ref> <remote sha>" lines on stdin.
+
+PROTECTED_RE='refs/heads/(main|master|develop|release/.*|prod|production)$'
+
+status=0
+# git passes all 4 positional fields per line; we only act on the remote ref.
+# shellcheck disable=SC2034
+while read -r local_ref local_sha remote_ref remote_sha; do
+	case "$remote_ref" in
+		refs/heads/*)
+			if printf '%s\n' "$remote_ref" | grep -Eq "$PROTECTED_RE"; then
+				echo "resident-sandbox: refusing push to protected branch '$remote_ref'." >&2
+				echo "  An implementer resident may only PROPOSE — commit to its own" >&2
+				echo "  resident/<queue>/<ticket> branch and open a change for review." >&2
+				status=1
+			fi
+			;;
+	esac
+done
+
+exit "$status"
