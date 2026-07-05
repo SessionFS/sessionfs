@@ -1,0 +1,163 @@
+"""Resident configuration — loaded from a local TOML file + env overrides.
+
+The operator LLM key lives ONLY in local config/env — it is NEVER sent to
+the SessionFS server, never logged, never embedded in the service key.
+The SessionFS service key (from the org-profile via profiles.py) is used
+ONLY for SessionFS API auth. Two single-purpose credentials that never cross.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib
+
+
+@dataclass
+class LLMConfig:
+    """Operator's own LLM endpoint settings. The api_key is resolved from
+    an env-var NAME or a raw inline value — the raw key is NEVER logged."""
+
+    base_url: str = "https://api.openai.com/v1"
+    model: str = "gpt-5.1"
+    api_key: str = field(default="", repr=False)  # raw key or env-var name (resolved at load time)
+    api_key_is_env: bool = False  # True → api_key is an env-var name to resolve
+    request_timeout_seconds: int = 120
+    max_tokens: int = 4096
+
+    def resolve_api_key(self) -> str:
+        """Return the actual API key, resolving env-var references."""
+        if self.api_key_is_env:
+            return os.environ.get(self.api_key, "")
+        return self.api_key
+
+
+def _sessionfs_dir() -> Path:
+    return Path.home() / ".sessionfs"
+
+
+def _residents_dir() -> Path:
+    return _sessionfs_dir() / "residents"
+
+
+@dataclass
+class ResidentConfig:
+    """Configuration for one resident process.
+
+    Loaded from ``~/.sessionfs/residents/<name>.toml``, with env-var overrides
+    for secrets (LLM key, service profile).
+    """
+
+    # Identity
+    name: str = ""  # the config file stem
+    queue_id: str = ""
+    project: str = ""  # project_id (proj_...); service-key residents cannot use git remotes
+
+    # SessionFS auth — which named profile provides the service key
+    org_profile: str = ""
+
+    # Polling
+    poll_interval_seconds: int = 30  # clamped [10, 300]
+
+    # LLM
+    llm: LLMConfig = field(default_factory=LLMConfig)
+
+    # Derived — resolved at load time
+    _resolved_llm_key: str = field(default="", repr=False)
+
+    @classmethod
+    def from_toml(cls, name: str) -> ResidentConfig:
+        """Load a resident config from ``~/.sessionfs/residents/<name>.toml``.
+
+        Env overrides:
+        - ``RESIDENT_LLM_API_KEY`` — inline LLM key (takes precedence over TOML)
+        - ``RESIDENT_LLM_API_KEY_ENV`` — name of env var holding the LLM key
+        """
+        path = _residents_dir() / f"{name}.toml"
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Resident config not found: {path}\n"
+                f"Create it with a [resident] section + [llm] section."
+            )
+
+        try:
+            with open(path, "rb") as f:
+                raw = tomllib.load(f)
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            raise ValueError(f"Could not parse resident config {path}: {exc}") from exc
+
+        resident_raw = raw.get("resident", {}) if isinstance(raw, dict) else {}
+
+        # LLM section
+        llm_raw = raw.get("llm", {}) if isinstance(raw, dict) else {}
+        llm = LLMConfig(
+            base_url=str(llm_raw.get("base_url", "https://api.openai.com/v1")),
+            model=str(llm_raw.get("model", "gpt-5.1")),
+            api_key=str(llm_raw.get("api_key", "")),
+            api_key_is_env=bool(llm_raw.get("api_key_is_env", False)),
+            request_timeout_seconds=int(llm_raw.get("request_timeout_seconds", 120)),
+            max_tokens=int(llm_raw.get("max_tokens", 4096)),
+        )
+
+        poll = int(resident_raw.get("poll_interval_seconds", 30))
+        poll = max(10, min(300, poll))
+
+        cfg = cls(
+            name=name,
+            queue_id=str(resident_raw.get("queue_id", "")),
+            project=str(resident_raw.get("project", "")),
+            org_profile=str(resident_raw.get("org_profile", "")),
+            poll_interval_seconds=poll,
+            llm=llm,
+        )
+        cfg.resolve_llm_key()
+        return cfg
+
+    def resolve_llm_key(self) -> None:
+        """Apply the RESIDENT_LLM_API_KEY / RESIDENT_LLM_API_KEY_ENV env
+        overrides to self.llm and set self._resolved_llm_key. Shared by
+        from_toml AND the ad-hoc CLI path so env-var config works in BOTH modes
+        (previously the no-config path skipped this and always failed on the
+        missing-key check even with the env var set)."""
+        env_key = os.environ.get("RESIDENT_LLM_API_KEY")
+        if env_key:
+            self.llm.api_key = env_key
+            self.llm.api_key_is_env = False
+        else:
+            env_key_name = os.environ.get("RESIDENT_LLM_API_KEY_ENV")
+            if env_key_name:
+                self.llm.api_key = env_key_name
+                self.llm.api_key_is_env = True
+        self._resolved_llm_key = self.llm.resolve_api_key()
+
+    def validate(self) -> list[str]:
+        """Validate required fields. Returns a list of error messages (empty = valid)."""
+        errors: list[str] = []
+        if not self.queue_id:
+            errors.append("resident.queue_id is required")
+        if not self.project:
+            errors.append("resident.project is required (a project_id, proj_...)")
+        elif not self.project.startswith("proj_"):
+            errors.append(
+                f"resident.project must be a project_id (proj_...), not "
+                f"'{self.project}' — service-key residents cannot resolve git "
+                f"remotes. Find the id with `sfs project list`."
+            )
+        if not self.org_profile:
+            errors.append("resident.org_profile is required (named profile for service key)")
+        if not self._resolved_llm_key:
+            errors.append(
+                "LLM API key is not set. Set it via the [llm] section's api_key field, "
+                "or the RESIDENT_LLM_API_KEY env var, or RESIDENT_LLM_API_KEY_ENV env var."
+            )
+        return errors
+
+    @property
+    def resolved_llm_key(self) -> str:
+        return self._resolved_llm_key

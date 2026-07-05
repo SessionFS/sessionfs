@@ -516,6 +516,8 @@ async def _build_directive(
         since=item.last_acked_comment_at,
         since_id=item.last_acked_comment_id,
     )
+    review_round: int | None = None
+    review_state: dict | None = None
     if queue.mode == "implement_until_done":
         # Pick/continue a ticket toward done: implement a fresh ticket, or fix
         # open review findings if any have come back.
@@ -524,10 +526,37 @@ async def _build_directive(
         intent = "triage"
     elif queue.mode == "review_until_clean":
         # WQ-P4 — the reviewer's turn: inspect the implementer's fix and post
-        # `Codex R{N+1} review on tk_X: <verdict>`. The server stamps the
+        # `Codex R{N} review on tk_X: <verdict>`. The server stamps the
         # author identity from queue config (§5.0) — the agent NEVER sends
         # author_persona — and only a STRICT VERIFIED-CLEAN ends the loop.
         intent = "post_review"
+        # The client's comment_delta is bounded (since the ACKED cursor) and
+        # usually does NOT contain prior review rounds, so the client cannot
+        # derive the round itself. The oracle only closes a finding when a
+        # LATER clean round has a strictly greater round number, so we compute
+        # the next round here over the FULL thread and hand it to the client.
+        _full = await _review_comments_for_oracle(db, ticket_id=item.ticket_id)
+        _rs = compute_review_state(_full)
+        _max_round = max((r.round for r in _rs.rounds), default=0) if _rs else 0
+        review_round = _max_round + 1
+        # Hand the reviewer the current review STATE (open findings + last
+        # verdict) so it can VERIFY what prior rounds flagged. The bounded
+        # comment_delta usually omits earlier rounds, so without this a reviewer
+        # could emit VERIFIED-CLEAN after a CHANGES round without ever seeing
+        # the open findings — the trusted verdict would then wrongly close the
+        # loop. Bounded (findings capped + text truncated) for token control.
+        review_state = {
+            "open_findings": [
+                {
+                    "severity": f.severity,
+                    "text": (f.text or "")[:500],
+                    "round": f.round,
+                }
+                for f in (_rs.open_findings[:100] if _rs else [])
+            ],
+            "last_verdict": _rs.last_verdict if _rs else None,
+            "severity_counts": dict(_rs.severity_counts) if _rs else {},
+        }
     else:  # pragma: no cover - defensive
         intent = "review"
     return {
@@ -537,6 +566,13 @@ async def _build_directive(
         "intent": intent,
         "ticket_id": item.ticket_id,
         "ticket_lease_epoch": ticket.lease_epoch,
+        # Next review round (review_until_clean only) — the client stamps this
+        # into the `Codex R{N} review on tk_X:` verdict header so its verdict
+        # sorts as the latest round in the server oracle.
+        "review_round": review_round,
+        # Current review state (review_until_clean only) — the reviewer sees the
+        # open findings it must verify, not just the bounded comment_delta.
+        "review_state": review_state,
         "ticket": {
             "id": ticket.id,
             "title": ticket.title,
