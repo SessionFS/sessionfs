@@ -498,6 +498,7 @@ async def create_work_queue(
     / hard cap 5; max_attempts_per_item default 3. Provenance triple
     stamped from AuthContext (+ optional session/persona).
     """
+    await _enforce_resident_active(auth, db)
     project = await _get_project_for_auth(project_id, db, auth)
     # Cross-org / allowlist boundary BEFORE any side effect.
     await assert_service_key_can_access_project(db, auth, project)
@@ -696,6 +697,7 @@ async def set_work_queue_status(
     id=:id AND lease_epoch=:n (rowcount-1, 409 on stale) and bumps on
     success.
     """
+    await _enforce_resident_active(auth, db)
     project = await _get_project_for_auth(project_id, db, auth)
     await assert_service_key_can_access_project(db, auth, project)
 

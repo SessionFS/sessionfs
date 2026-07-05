@@ -110,8 +110,13 @@ class MemoryWriteRequest(BaseModel):
     @field_validator("kind")
     @classmethod
     def _validate_kind(cls, v: str) -> str:
-        if v not in ("reasoning", "digest", "observation"):
-            raise ValueError("kind must be 'reasoning', 'digest', or 'observation'")
+        # L3: write only creates reasoning/observation. A `digest` may be
+        # created ONLY via the compact path (which carries the supersession
+        # lineage) — hydrate serves the latest digest, so an out-of-band
+        # digest write would let a resident set its warm-start digest without
+        # provenance.
+        if v not in ("reasoning", "observation"):
+            raise ValueError("kind must be 'reasoning' or 'observation'")
         return v
 
 
@@ -275,6 +280,36 @@ async def _enforce_resident_isolation(
                 "This resident is bound to a different service key. "
                 "A resident may only access its own mind; org owners/admins "
                 "may inspect it read-only."
+            ),
+        },
+    )
+
+
+async def _require_resident_org_admin(
+    db: AsyncSession, resident: Resident, auth: AuthContext
+) -> None:
+    """Quarantine authorization (Sentinel M1). Quarantine is a RECOVERY signal
+    — only an org owner/admin of the resident's org may flag a mind as
+    poisoned. The resident's OWN key must NOT quarantine: self-quarantine would
+    free F6 cap slots on demand and let a hostile resident storage-DoS its org
+    (quarantined entries stop counting toward the live cap)."""
+    if auth.key_kind == "user" and auth.user is not None:
+        member = await db.scalar(
+            select(OrgMember).where(
+                OrgMember.org_id == resident.org_id,
+                OrgMember.user_id == auth.user.id,
+            )
+        )
+        if member is not None and member.role in ("owner", "admin"):
+            return
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "error": "resident_quarantine_denied",
+            "message": (
+                "Only an org owner/admin may quarantine a resident's mind — "
+                "quarantine is an operator recovery signal, not a self-service "
+                "action."
             ),
         },
     )
@@ -532,6 +567,19 @@ async def set_resident_status(
     resident = await _fetch_resident(db, resident_id, org_id)
     resident.status = body.status
     resident.updated_at = datetime.now(timezone.utc)
+
+    # M2: retire is a HARD stop — revoke the bound service key in-txn so it can
+    # no longer authenticate for ANY scope (not just the work-queue act path
+    # that pause covers). Pause stays reversible (key kept; denied at the act
+    # path by _enforce_resident_active).
+    if body.status == "retired":
+        key = await db.scalar(
+            select(ApiKey).where(ApiKey.id == resident.service_key_id)
+        )
+        if key is not None and key.revoked_at is None:
+            key.revoked_at = datetime.now(timezone.utc)
+            key.is_active = False
+
     await db.commit()
     await db.refresh(resident)
     logger.info(
@@ -977,8 +1025,10 @@ async def quarantine_memory_entry(
     can quarantine entries on implementer residents (owner-visibility, F5).
     """
     resident = await _fetch_resident(db, resident_id, org_id)
-    # C5 + F5: the resident's own key OR an org owner/admin (recovery path).
-    await _enforce_resident_isolation(db, resident, auth, allow_org_admin=True)
+    # M1 + F5: quarantine is an operator recovery signal — org owner/admin
+    # ONLY, never the resident's own key (self-quarantine would defeat the F6
+    # storage cap).
+    await _require_resident_org_admin(db, resident, auth)
 
     entry = (
         await db.execute(

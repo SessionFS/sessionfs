@@ -1348,6 +1348,65 @@ class TestF1SelfReviewProhibition:
             "auto-close the new work."
         )
 
+    async def test_f1_resident_cannot_self_close_via_sibling_queue(
+        self, db_session: AsyncSession
+    ):
+        """H1 (Sentinel): an implementer resident cannot route around F1 by
+        settling a SIBLING implement queue that has no bound resident — the
+        strict path fires on the acting implementer-resident identity, not just
+        the queue binding."""
+        org = await _make_org(db_session)
+        user = await _make_user(db_session, org)
+        project = await _make_project(db_session, user, org)
+        impl_sk = await _make_service_key(db_session, org, user)
+
+        # The resident is registered to drive queue Q1.
+        q1 = await _make_queue(db_session, project, user, mode="implement_until_done")
+        await _make_resident(
+            db_session, org, project, impl_sk, kind="implementer", work_queue=q1
+        )
+
+        # A DIFFERENT implement queue Q2 with NO bound resident (the bypass
+        # target). The resident settles it with its own key claiming 'done'.
+        q2 = await _make_queue(db_session, project, user, mode="implement_until_done")
+        ticket = await _make_ticket(db_session, project)
+        item = await _make_item(db_session, q2, ticket)
+        item.item_status = "active"
+        item.open_directive_id = f"dir_{uuid.uuid4().hex[:12]}"
+        await db_session.flush()
+
+        wqr = wq_engine.WorkQueueRun(
+            id=f"wqr_{uuid.uuid4().hex[:16]}",
+            work_queue_id=q2.id,
+            work_queue_item_id=item.id,
+            directive_id=item.open_directive_id,
+            outcome=None,
+            created_at=datetime.now(timezone.utc),
+        )
+        db_session.add(wqr)
+        await db_session.flush()
+
+        result = await wq_engine.complete_work_queue_step(
+            db_session,
+            queue=q2,
+            item_id=item.id,
+            directive_id=item.open_directive_id,
+            ticket_id=ticket.id,
+            outcome="done",
+            comment_id=None,
+            agent_run_id=None,
+            failed=False,
+            actor_user_id=user.id,
+            actor_org_id=org.id,
+            actor_service_key_id=impl_sk.id,
+            actor_type="service_key",
+            service_key_name="impl-key",
+        )
+        assert result.item_terminal is False, (
+            "An implementer resident must not self-close via an unbound sibling "
+            "implement queue."
+        )
+
     async def test_f1_human_verdict_marker(self, db_session: AsyncSession):
         """A human (user-key, no service_key_id on the verdict) marks 'human'."""
         org = await _make_org(db_session)
@@ -1785,3 +1844,87 @@ class TestResidentRouteHardening:
         # In-flight item re-pointed; completed item's provenance preserved.
         assert item.implementer_service_key_id == new_sk.id
         assert done_item.implementer_service_key_id == old_sk.id
+
+    async def test_quarantine_requires_org_admin(self, db_session: AsyncSession):
+        """M1 (Sentinel): quarantine is an owner/admin recovery signal — the
+        resident's OWN key cannot quarantine (which would defeat the F6 cap)."""
+        from fastapi import HTTPException
+
+        from sessionfs.server.auth.dependencies import AuthContext
+        from sessionfs.server.routes.residents import quarantine_memory_entry
+
+        org = await _make_org(db_session)
+        admin = await _make_user(db_session, org)
+        project = await _make_project(db_session, admin, org)
+        sk = await _make_service_key(db_session, org, admin)
+        resident = await _make_resident(
+            db_session, org, project, sk, kind="implementer"
+        )
+        entry = ResidentMemoryEntry(
+            id=f"rme_{uuid.uuid4().hex[:12]}",
+            resident_id=resident.id,
+            org_id=org.id,
+            kind="reasoning",
+            seq=1,
+            content="data",
+            created_at=datetime.now(timezone.utc),
+        )
+        db_session.add(entry)
+        await db_session.commit()
+
+        # The resident's OWN service key is denied.
+        own_auth = AuthContext(
+            user=admin, api_key_id=sk.id, key_kind="service",
+            org_id=org.id, service_key_id=sk.id,
+        )
+        with pytest.raises(HTTPException) as ei:
+            await quarantine_memory_entry(
+                org.id, resident.id, entry.id, auth=own_auth, db=db_session
+            )
+        assert ei.value.status_code == 403
+        assert ei.value.detail["error"] == "resident_quarantine_denied"
+
+        # An org admin USER key succeeds.
+        admin_auth = AuthContext(
+            user=admin, api_key_id="ak_admin", key_kind="user",
+            org_id=org.id, service_key_id=None,
+        )
+        resp = await quarantine_memory_entry(
+            org.id, resident.id, entry.id, auth=admin_auth, db=db_session
+        )
+        assert resp.quarantined is True
+
+    async def test_retire_revokes_bound_key(self, db_session: AsyncSession):
+        """M2 (Sentinel): retiring a resident revokes its bound service key
+        (a hard stop across all scopes, not just the work-queue act path)."""
+        from sessionfs.server.routes.residents import (
+            ResidentStatusRequest,
+            set_resident_status,
+        )
+
+        org = await _make_org(db_session)
+        user = await _make_user(db_session, org)
+        project = await _make_project(db_session, user, org)
+        sk = await _make_service_key(db_session, org, user)
+        resident = await _make_resident(
+            db_session, org, project, sk, kind="implementer"
+        )
+        await db_session.commit()
+
+        await set_resident_status(
+            org.id, resident.id,
+            ResidentStatusRequest(status="retired"),
+            self._admin_ctx(user, org),
+            db_session,
+        )
+        await db_session.refresh(sk)
+        assert sk.revoked_at is not None
+        assert sk.is_active is False
+
+    async def test_write_memory_rejects_digest_kind(self, db_session: AsyncSession):
+        """L3 (Sentinel): write only creates reasoning/observation — a digest
+        may be created only via the compact path."""
+        from sessionfs.server.routes.residents import MemoryWriteRequest
+
+        with pytest.raises(ValueError):
+            MemoryWriteRequest(kind="digest", content="x", token_estimate=1)

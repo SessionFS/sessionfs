@@ -316,6 +316,30 @@ async def _queue_has_implementer_resident(
     return found is not None
 
 
+async def _is_implementer_resident_key(
+    db: AsyncSession, service_key_id: str | None
+) -> bool:
+    """True if the service key is bound to a registered implementer resident.
+
+    Resident R0 F1 (Sentinel H1): the strict close must key on the ACTING /
+    recorded implementer IDENTITY, not only on which queue a resident is bound
+    to. Otherwise an implementer resident can create a fresh (unbound)
+    implement queue with its own key and self-close there, routing around the
+    queue-binding gate.
+    """
+    if service_key_id is None:
+        return False
+    found = await db.scalar(
+        select(Resident.id)
+        .where(
+            Resident.service_key_id == service_key_id,
+            Resident.kind == "implementer",
+        )
+        .limit(1)
+    )
+    return found is not None
+
+
 async def _review_comments_for_oracle(
     db: AsyncSession, *, ticket_id: str
 ) -> list[dict]:
@@ -1299,14 +1323,19 @@ async def complete_work_queue_step(
             and rs_settle.last_verdict_is_strict_verified_clean
             and not rs_settle.open_findings
         )
-    elif queue.mode == "implement_until_done" and await _queue_has_implementer_resident(
-        db, queue.id
+    elif queue.mode == "implement_until_done" and (
+        await _queue_has_implementer_resident(db, queue.id)
+        or await _is_implementer_resident_key(db, actor_service_key_id)
+        or await _is_implementer_resident_key(db, item.implementer_service_key_id)
     ):
-        # Resident R0 F1 (design §3.7.2): a queue driven by a REGISTERED
-        # implementer resident never self-closes on the agent's claimed
-        # outcome. (Non-resident implement_until_done queues keep the existing
-        # outcome-based close via the `else` branch below — F1 targets the
-        # autonomous resident, not pre-existing human/agent flows.)
+        # Resident R0 F1 (design §3.7.2 + Sentinel H1): the strict
+        # re-derive/self-review/fail-closed close fires when a REGISTERED
+        # implementer resident is involved — whether by the queue it drives,
+        # the acting key, OR the item's recorded implementer. Keying on
+        # identity (not just queue-binding) closes the bypass where a resident
+        # spins up a fresh unbound implement queue with its own key and
+        # self-closes there. Non-resident implement queues keep the existing
+        # outcome-based close via the `else` branch below.
         # F1: record implementer identity at first settle.
         if item.implementer_service_key_id is None:
             item.implementer_service_key_id = actor_service_key_id
