@@ -1307,7 +1307,7 @@ async def list_compilations(
 async def get_context_section(
     project_id: str,
     slug: str,
-    user: User = Depends(get_current_user),
+    auth: AuthContext = Depends(require_scope("knowledge:read")),
     db: AsyncSession = Depends(get_db),
 ) -> ContextSectionResponse:
     """Return one section of the project context document by slug.
@@ -1315,8 +1315,15 @@ async def get_context_section(
     Slugs match what `split_context_sections()` produces: lowercase heading
     text with non-alphanumerics collapsed to `_`. On miss returns 404 with
     `available_slugs` in the error detail so the caller can recover.
+
+    On the ``knowledge:read`` scope so resident service keys can hydrate the
+    compiled project context (read-only; project access is enforced below).
     """
-    project = await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_for_auth(project_id, db, auth)
+    from sessionfs.server.auth.dependencies import (
+        assert_service_key_can_access_project,
+    )
+    await assert_service_key_can_access_project(db, auth, project)
 
     sections = _split_context_sections(project.context_document or "")
     if slug not in sections:

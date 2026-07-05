@@ -2,6 +2,8 @@
 
 R1: reviewer-only skeleton. Drives the work-queue heartbeat, calls the
 operator's own LLM, and settles verdicts via the settle-path.
+R2: living context — hydrates durable + private context before each review,
+writes durable memory back after, and compacts periodically.
 
 Properties:
 - Credential boundary: operator LLM key = LOCAL ONLY, never to SessionFS;
@@ -10,6 +12,8 @@ Properties:
 - Lease-fenced: passes directive_id + lease_epoch back exactly as received.
 - Client NEVER sets author_persona or verdict_trusted — server derives both.
 - Graceful shutdown on SIGINT/SIGTERM.
+- No-op writeback discipline: a wake that learns nothing durable writes nothing
+  to KB/wiki.
 """
 
 from __future__ import annotations
@@ -26,11 +30,21 @@ from sessionfs.resident.client import (
     complete_work_queue_step,
 )
 from sessionfs.resident.config import ResidentConfig
+from sessionfs.resident.context import (
+    LivingContext,
+    hydrate_living_context,
+)
 from sessionfs.resident.llm_adapter import (
     ReviewLLM,
     ReviewContext,
     ReviewResult,
     OpenAICompatibleAdapter,
+)
+from sessionfs.resident.memory import (
+    write_reasoning,
+    writeback_durable_knowledge,
+    compact_memory,
+    summarize_for_digest,
 )
 
 logger = logging.getLogger("sessionfs.resident.runner")
@@ -83,6 +97,12 @@ class ResidentRunner:
         self._api_key: str = ""
         self._project_id: str = ""
 
+        # R2 — living mind state.
+        self._living_context: LivingContext | None = None
+        self._wake_count: int = 0
+        # Buffer of recent reasoning entries (as dicts) for compaction.
+        self._reasoning_buffer: list[dict] = []
+
     # ── Public API ──────────────────────────────────────────────────────
 
     async def run(self) -> None:
@@ -91,6 +111,9 @@ class ResidentRunner:
         self._resolve_auth()
         await self._resolve_project()
         self._init_adapter()
+
+        # R2 — hydrate the living context on boot.
+        await self._hydrate()
 
         logger.info(
             "Resident %r starting — queue=%s project=%s poll=%ds",
@@ -116,6 +139,9 @@ class ResidentRunner:
         await self._resolve_project()
         self._init_adapter()
 
+        # R2 — hydrate before the wake.
+        await self._hydrate()
+
         logger.info(
             "Resident %r running once — queue=%s project=%s",
             self._config.name,
@@ -134,6 +160,187 @@ class ResidentRunner:
             except NotImplementedError:
                 # Windows — signal handlers not supported for SIGTERM
                 pass
+
+    # ── R2 — living mind: hydrate / writeback / compact ───────────────────
+
+    async def _hydrate(self) -> None:
+        """Hydrate the living context from durable SessionFS sources.
+        Gracefully degrades if the memory endpoints are unreachable."""
+        try:
+            self._living_context = await hydrate_living_context(
+                self._api_url, self._api_key, self._config
+            )
+        except Exception as exc:
+            logger.warning(
+                "Hydration failed — continuing with cold context: %s", exc
+            )
+            self._living_context = LivingContext()
+
+    def _enrich_with_living_context(self, context: ReviewContext) -> ReviewContext:
+        """Enrich a ReviewContext with the living mind fields.
+
+        The LLM adapter formats these into the prompt so the reviewer
+        reasons WITH its accumulated knowledge, not cold.
+        """
+        if self._living_context is None:
+            return context
+
+        lc = self._living_context
+        if lc.memory_digest:
+            context.ticket_description = (
+                f"[Resident memory digest]\n{lc.memory_digest}\n\n"
+                f"{context.ticket_description}"
+            )
+        if lc.recent_reasoning:
+            context.ticket_description = (
+                "[Recent reasoning]\n" + "\n".join(
+                    f"- {r}" for r in lc.recent_reasoning[:5]
+                ) + f"\n\n{context.ticket_description}"
+            )
+        if lc.prior_findings:
+            context.ticket_description = (
+                "[Prior findings by this reviewer]\n" + "\n".join(
+                    f"- {f}" for f in lc.prior_findings[:5]
+                ) + f"\n\n{context.ticket_description}"
+            )
+        if lc.review_playbook:
+            context.ticket_description = (
+                f"[Review playbook]\n{lc.review_playbook[:1000]}\n\n"
+                f"{context.ticket_description}"
+            )
+        if lc.project_context_summary:
+            context.ticket_description = (
+                f"[Project context]\n{lc.project_context_summary}\n\n"
+                f"{context.ticket_description}"
+            )
+        if lc.sections:
+            # The compiled-context sections (architecture / conventions /
+            # security …) are the resident's service-key-accessible project
+            # context — include them or the reviewer prompt loses that context.
+            rendered = "\n\n".join(
+                f"## {slug}\n{body}" for slug, body in lc.sections.items() if body
+            )
+            if rendered:
+                context.ticket_description = (
+                    f"[Project context sections]\n{rendered}\n\n"
+                    f"{context.ticket_description}"
+                )
+        return context
+
+    async def _writeback_after_review(
+        self,
+        ticket_id: str,
+        verdict_text: str,
+        result: ReviewResult,
+    ) -> None:
+        """Write rolling reasoning + durable KB findings after a successful review.
+
+        No-op discipline: if the review surfaced nothing durable, KB/wiki
+        writes are skipped entirely. The verdict comment itself is NOT a
+        writeback — it stays on the settle-path.
+        """
+        # 1. Rolling reasoning — always write a short conclusion.
+        conclusion = _extract_conclusion(result, ticket_id)
+        entry_id = await write_reasoning(
+            self._api_url, self._api_key, self._config,
+            ticket_id=ticket_id,
+            conclusion=conclusion,
+        )
+        if entry_id:
+            self._reasoning_buffer.append({
+                "content": conclusion,
+                "ticket_id": ticket_id,
+                "id": entry_id,  # server id — superseded at compaction
+            })
+        else:
+            # 429 from memory write — trigger compaction.
+            logger.info("Reasoning write hit cap — triggering compaction.")
+            await self._maybe_compact(force=True)
+
+        # 2. Durable KB writeback — only if the review found something durable.
+        durable = _extract_durable_findings(result)
+        if durable:
+            written = await writeback_durable_knowledge(
+                self._api_url, self._api_key, self._config,
+                findings=durable,
+            )
+            if written > 0:
+                logger.info(
+                    "Wrote %d durable finding(s) for ticket=%s.",
+                    written, ticket_id,
+                )
+
+    async def _maybe_compact(self, force: bool = False) -> None:
+        """Compact the resident's private memory if the wake count threshold
+        has been reached, or if forced (e.g. after a 429 cap signal)."""
+        lc = self._living_context
+        hydrated_ids = list(lc.recent_reasoning_ids) if lc is not None else []
+
+        # Nothing to compact only if the local buffer is empty AND (on a forced
+        # compact) there are no hydrated live entries to supersede either. A
+        # forced compact after a RESTART cap-hit has an empty buffer but live
+        # server entries — it must still be able to free them.
+        if not self._reasoning_buffer and not (force and hydrated_ids):
+            logger.debug("No reasoning entries to compact.")
+            return
+
+        if not force and self._wake_count % self._config.compact_every_wakes != 0:
+            return
+
+        prior_digest = lc.memory_digest if lc is not None else ""
+        # Digest content: prefer the buffered reasoning; on a forced compact
+        # with an empty buffer (restart cap-hit) summarize the hydrated recent
+        # reasoning so a digest is still produced.
+        reasoning_for_digest = self._reasoning_buffer or [
+            {"content": c} for c in (lc.recent_reasoning if lc is not None else [])
+        ]
+        digest = summarize_for_digest(reasoning_for_digest, prior_digest)
+
+        # Supersede the reasoning entries this process wrote (ids captured at
+        # write time) OR, when the buffer is empty (restart), the hydrated live
+        # entries — otherwise the server's F6 cap (which counts non-superseded
+        # entries) never frees. The server caps superseded_entry_ids at 200, so
+        # reserve a slot for the prior digest and only supersede/CLEAR what fits;
+        # any overflow stays in the buffer for the NEXT compaction rather than
+        # leaking live on the server with its id lost.
+        _SUPERSEDE_CAP = 200
+        digest_id = (
+            lc.memory_digest_id if (lc is not None and lc.memory_digest_id) else None
+        )
+        room = _SUPERSEDE_CAP - (1 if digest_id else 0)
+
+        buffer_ids = [e["id"] for e in self._reasoning_buffer if e.get("id")]
+        # On a FORCED compact (cap-hit), supersede the hydrated live entries too
+        # — a near-cap restart plus one local write must free the cap in a
+        # SINGLE compaction, not leave the server exactly at the cap. Dedupe
+        # while preserving order. Periodic (non-forced) compaction only needs
+        # this process's own buffered entries.
+        if force:
+            candidate_ids = list(dict.fromkeys(buffer_ids + hydrated_ids))
+        else:
+            candidate_ids = buffer_ids
+        sent_reasoning_ids = candidate_ids[:room]
+
+        superseded_ids: list[str] = list(sent_reasoning_ids)
+        # ALSO supersede the prior digest — the new digest folds it in.
+        if digest_id:
+            superseded_ids.append(digest_id)
+
+        ok = await compact_memory(
+            self._api_url, self._api_key, self._config,
+            digest_content=digest,
+            superseded_entry_ids=superseded_ids,
+        )
+        if ok:
+            # Clear ONLY the buffer entries whose ids were actually sent; keep
+            # any overflow for the next compaction.
+            if self._reasoning_buffer:
+                _sent = set(sent_reasoning_ids)
+                self._reasoning_buffer = [
+                    e for e in self._reasoning_buffer if e.get("id") not in _sent
+                ]
+            # Re-hydrate to pick up the new digest.
+            await self._hydrate()
 
     def _handle_shutdown(self) -> None:
         logger.info("Shutting down (signal received)...")
@@ -234,6 +441,7 @@ class ResidentRunner:
     async def _wake(self) -> list[dict]:
         """One heartbeat: step → for each directive → review → settle."""
         results: list[dict] = []
+        self._wake_count += 1
 
         # 1. Call the heartbeat.
         step = await run_work_queue_step(
@@ -279,6 +487,13 @@ class ResidentRunner:
         if not isinstance(directives, list):
             logger.warning("Unexpected directives shape: %s", type(directives))
             return results
+
+        # Refresh the living context before reviewing so each wake sees the
+        # latest KB/wiki/playbook/memory — another process may have updated the
+        # playbook or KB, or this resident wrote durable findings on a prior
+        # wake. (Skipped on idle wakes with no directives to avoid wasted calls.)
+        if directives:
+            await self._hydrate()
 
         for directive in directives:
             if not isinstance(directive, dict):
@@ -342,6 +557,11 @@ class ResidentRunner:
 
         # Build bounded review context from the directive payload.
         context = _build_review_context(directive)
+
+        # R2 — enrich with the living context (prior findings, memory digest,
+        # review playbook, project context).
+        if self._living_context is not None:
+            context = self._enrich_with_living_context(context)
 
         # Fail-closed: never review — and never settle a clean verdict over —
         # an empty payload. If the directive carried no new comments, there is
@@ -441,6 +661,17 @@ class ResidentRunner:
                     settle_resp.body if isinstance(settle_resp.body, dict) else None
                 ),
             )
+        else:
+            # R2 — writeback: rolling reasoning + durable KB findings.
+            await self._writeback_after_review(
+                ticket_id=ticket_id,
+                verdict_text=verdict_content,
+                result=result,
+            )
+
+        # R2 — periodic compaction.
+        if self._wake_count > 0 and self._wake_count % self._config.compact_every_wakes == 0:
+            await self._maybe_compact()
 
         return {
             "ticket_id": ticket_id,
@@ -449,6 +680,59 @@ class ResidentRunner:
             "verdict": result.verdict_phrase.split("\n")[0],
             "settle_status": settle_resp.status_code,
         }
+
+
+def _extract_conclusion(result: ReviewResult, ticket_id: str) -> str:
+    """Extract a short conclusion from a review result for the rolling
+    reasoning entry. Bounded to _MAX_REASONING_LENGTH."""
+    verdict = result.verdict_phrase.split("\n")[0].strip()
+    reasoning = result.reasoning.strip()
+
+    if reasoning:
+        # Take the first paragraph of reasoning as the conclusion.
+        first_para = reasoning.split("\n\n")[0].strip()
+        if len(first_para) > 500:
+            first_para = first_para[:497] + "..."
+        return f"[{verdict}] {ticket_id}: {first_para}"
+    else:
+        return f"[{verdict}] {ticket_id}: review completed."
+
+
+def _extract_durable_findings(result: ReviewResult) -> list[str]:
+    """Extract durable findings from a review result that should be written
+    to the shared KB. Only CHANGES_REQUESTED reviews with substantial
+    findings produce durable entries.
+
+    A finding is 'durable' when it describes a recurring pattern,
+    convention, or fix pattern — not a one-off nit. We use simple
+    heuristics: findings that mention 'pattern', 'convention',
+    'should always', 'must always', 'anti-pattern', etc.
+
+    Returns an empty list when nothing durable was found (no-op discipline).
+    """
+    verdict_first = result.verdict_phrase.split("\n")[0].strip()
+    # Only extract durable findings from non-clean reviews.
+    if re.sub(r"[\s_-]+", "_", verdict_first.upper()) == "VERIFIED_CLEAN":
+        return []
+
+    text = result.verdict_phrase + "\n" + result.reasoning
+    durable_markers = [
+        "pattern", "convention", "should always", "must always",
+        "anti-pattern", "anti pattern", "best practice",
+        "every handler", "all endpoints", "consistently",
+    ]
+
+    lines = text.split("\n")
+    findings: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or len(stripped) < 20:
+            continue
+        lower = stripped.lower()
+        if any(marker in lower for marker in durable_markers):
+            findings.append(stripped)
+
+    return findings[:5]  # cap at 5 durable findings per wake
 
 
 def _build_review_context(directive: dict) -> ReviewContext:

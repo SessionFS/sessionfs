@@ -62,8 +62,20 @@ class ResidentConfig:
     # SessionFS auth — which named profile provides the service key
     org_profile: str = ""
 
+    # R2 — resident-memory identity (required for the memory endpoints)
+    resident_id: str = ""  # res_<hex> — the server-registered resident identity
+    org_id: str = ""  # org_<hex> — the org this resident belongs to
+    # The resident's REGISTERED persona — used for KB writeback + persona-filtered
+    # hydration/de-dup. Must match the persona the resident was registered under
+    # (server validates persona_name against project personas).
+    persona: str = "codex-reviewer"
+
     # Polling
     poll_interval_seconds: int = 30  # clamped [10, 300]
+
+    # R2 — mind bounding
+    mind_token_budget: int = 8000  # client-side cap for the warm digest
+    compact_every_wakes: int = 10  # compact every N wakes
 
     # LLM
     llm: LLMConfig = field(default_factory=LLMConfig)
@@ -113,7 +125,12 @@ class ResidentConfig:
             queue_id=str(resident_raw.get("queue_id", "")),
             project=str(resident_raw.get("project", "")),
             org_profile=str(resident_raw.get("org_profile", "")),
+            resident_id=str(resident_raw.get("resident_id", "")),
+            org_id=str(resident_raw.get("org_id", "")),
+            persona=str(resident_raw.get("persona", "codex-reviewer")),
             poll_interval_seconds=poll,
+            mind_token_budget=int(resident_raw.get("mind_token_budget", 8000)),
+            compact_every_wakes=int(resident_raw.get("compact_every_wakes", 10)),
             llm=llm,
         )
         cfg.resolve_llm_key()
@@ -156,6 +173,28 @@ class ResidentConfig:
                 "LLM API key is not set. Set it via the [llm] section's api_key field, "
                 "or the RESIDENT_LLM_API_KEY env var, or RESIDENT_LLM_API_KEY_ENV env var."
             )
+        # R2: resident_id + org_id enable the private-memory endpoints, but they
+        # are OPTIONAL — without them R2 memory is simply disabled (hydrate uses
+        # cold context, reasoning writes skip) and the R1 reviewer loop still
+        # works. Validate FORMAT when present; require BOTH together (memory
+        # needs both) — but never hard-require them.
+        if self.resident_id and not self.resident_id.startswith("res_"):
+            errors.append(
+                f"resident.resident_id must start with 'res_', got '{self.resident_id}'"
+            )
+        if self.org_id and not self.org_id.startswith("org_"):
+            errors.append(
+                f"resident.org_id must start with 'org_', got '{self.org_id}'"
+            )
+        if bool(self.resident_id) != bool(self.org_id):
+            errors.append(
+                "resident.resident_id and resident.org_id must be set together "
+                "(both are required to enable R2 private memory)"
+            )
+        if self.compact_every_wakes < 1:
+            errors.append("resident.compact_every_wakes must be >= 1")
+        if self.mind_token_budget < 500:
+            errors.append("resident.mind_token_budget must be >= 500")
         return errors
 
     @property

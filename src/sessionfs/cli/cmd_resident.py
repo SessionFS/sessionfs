@@ -53,6 +53,8 @@ def _resolve_config(
     org_profile: str | None,
     project: str | None,
     poll_interval: int | None,
+    resident_id: str | None = None,
+    org_id: str | None = None,
 ) -> ResidentConfig:
     """Load config from file + apply CLI overrides.
 
@@ -72,6 +74,10 @@ def _resolve_config(
         cfg.org_profile = org_profile
     if project:
         cfg.project = project
+    if resident_id:
+        cfg.resident_id = resident_id
+    if org_id:
+        cfg.org_id = org_id
     if poll_interval is not None:
         cfg.poll_interval_seconds = max(10, min(300, poll_interval))
 
@@ -105,6 +111,14 @@ def run_resident(
         "", "--project", "-P",
         help="Project ID (proj_...). Service-key residents cannot use git remotes.",
     ),
+    resident_id: str | None = typer.Option(
+        None, "--resident-id", "-r",
+        help="Registered resident id (res_...) for the memory endpoints (or set in --config).",
+    ),
+    org_id: str | None = typer.Option(
+        None, "--org-id",
+        help="Org id (org_...) the resident belongs to (or set in --config).",
+    ),
     config: str | None = typer.Option(
         None, "--config", "-c", help="Named resident config TOML (~/.sessionfs/residents/<name>.toml)."
     ),
@@ -136,6 +150,8 @@ def run_resident(
         org_profile=org_profile,
         project=project,
         poll_interval=poll_interval,
+        resident_id=resident_id,
+        org_id=org_id,
     )
 
     runner = ResidentRunner(cfg)

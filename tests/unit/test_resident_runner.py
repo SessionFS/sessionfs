@@ -619,6 +619,8 @@ def test_config_from_toml_valid():
 queue_id = "wq_test123"
 project = "proj_abc123"
 org_profile = "my-org-profile"
+resident_id = "res_test1234abcd"
+org_id = "org_test5678efgh"
 poll_interval_seconds = 60
 
 [llm]
@@ -682,16 +684,27 @@ def test_config_poll_interval_clamping():
     from sessionfs.cli.cmd_resident import _resolve_config
 
     os.environ["RESIDENT_LLM_API_KEY"] = "k"
-    low = _resolve_config(
-        config_name=None, queue_id="wq_1", org_profile="p",
-        project="proj_x", poll_interval=5,
-    )
-    assert low.poll_interval_seconds == 10
-    high = _resolve_config(
-        config_name=None, queue_id="wq_1", org_profile="p",
-        project="proj_x", poll_interval=500,
-    )
-    assert high.poll_interval_seconds == 300
+
+    # We must patch _resolve_config to inject resident_id/org_id since
+    # the ad-hoc CLI path does not set them and validate() now requires them.
+    orig = ResidentConfig.__init__
+
+    def _patched_init(self, *args: object, **kwargs: object) -> None:
+        kwargs.setdefault("resident_id", "res_test")
+        kwargs.setdefault("org_id", "org_test")
+        orig(self, *args, **kwargs)
+
+    with patch.object(ResidentConfig, "__init__", _patched_init):
+        low = _resolve_config(
+            config_name=None, queue_id="wq_1", org_profile="p",
+            project="proj_x", poll_interval=5,
+        )
+        assert low.poll_interval_seconds == 10
+        high = _resolve_config(
+            config_name=None, queue_id="wq_1", org_profile="p",
+            project="proj_x", poll_interval=500,
+        )
+        assert high.poll_interval_seconds == 300
 
 
 # ── Test: _parse_verdict edge cases ──────────────────────────────────────────
@@ -1139,3 +1152,109 @@ def test_clean_verdict_reasoning_bullet_not_parsed_as_finding():
     assert rs is not None
     assert rs.last_verdict_is_strict_verified_clean is True
     assert rs.open_findings == []
+
+
+async def test_compact_supersedes_prior_digest_and_reasoning(
+    minimal_config: ResidentConfig,
+):
+    """Compaction supersedes BOTH the buffered reasoning entries AND the prior
+    digest — else each compact leaks a live digest toward the F6 cap."""
+    from sessionfs.resident.context import LivingContext
+
+    minimal_config.resident_id = "res_abc"
+    minimal_config.org_id = "org_abc"
+    runner = ResidentRunner(minimal_config, llm_adapter=StubReviewLLM())
+    runner._api_url = "https://api.test"
+    runner._api_key = "svc"
+    runner._project_id = "proj_test"
+    runner._reasoning_buffer = [
+        {"content": "c1", "ticket_id": "t1", "id": "rme_r1"},
+        {"content": "c2", "ticket_id": "t2", "id": "rme_r2"},
+    ]
+    runner._living_context = LivingContext(
+        memory_digest="old digest", memory_digest_id="rme_dig_old"
+    )
+
+    captured: dict = {}
+
+    async def fake_compact(*args: object, **kwargs: object) -> bool:
+        captured["superseded"] = kwargs.get("superseded_entry_ids")
+        return True
+
+    with patch(
+        "sessionfs.resident.runner.compact_memory", side_effect=fake_compact
+    ), patch.object(runner, "_hydrate", AsyncMock()):
+        await runner._maybe_compact(force=True)
+
+    superseded = captured["superseded"]
+    assert "rme_r1" in superseded and "rme_r2" in superseded  # reasoning
+    assert "rme_dig_old" in superseded  # prior digest folded in
+
+
+async def test_forced_compact_after_restart_supersedes_hydrated_entries(
+    minimal_config: ResidentConfig,
+):
+    """After a restart the local buffer is empty, but a cap-hit forced compact
+    must still supersede the HYDRATED live entries to free the F6 cap."""
+    from sessionfs.resident.context import LivingContext
+
+    minimal_config.resident_id = "res_abc"
+    minimal_config.org_id = "org_abc"
+    runner = ResidentRunner(minimal_config, llm_adapter=StubReviewLLM())
+    runner._api_url = "https://api.test"
+    runner._api_key = "svc"
+    runner._project_id = "proj_test"
+    runner._reasoning_buffer = []  # empty — as on a fresh restart
+    runner._living_context = LivingContext(
+        memory_digest="d", memory_digest_id="rme_dig",
+        recent_reasoning=["prior reasoning"],
+        recent_reasoning_ids=["rme_live1", "rme_live2"],
+    )
+
+    captured: dict = {}
+
+    async def fake_compact(*args: object, **kwargs: object) -> bool:
+        captured["superseded"] = kwargs.get("superseded_entry_ids")
+        return True
+
+    with patch(
+        "sessionfs.resident.runner.compact_memory", side_effect=fake_compact
+    ), patch.object(runner, "_hydrate", AsyncMock()):
+        await runner._maybe_compact(force=True)
+
+    superseded = captured["superseded"]
+    assert "rme_live1" in superseded and "rme_live2" in superseded  # hydrated live
+    assert "rme_dig" in superseded  # prior digest
+
+
+async def test_compact_keeps_overflow_over_server_cap(
+    minimal_config: ResidentConfig,
+):
+    """A buffer larger than the 200-id server cap only supersedes what fits;
+    the overflow stays in the buffer for the next compaction (no id loss)."""
+    from sessionfs.resident.context import LivingContext
+
+    minimal_config.resident_id = "res_abc"
+    minimal_config.org_id = "org_abc"
+    runner = ResidentRunner(minimal_config, llm_adapter=StubReviewLLM())
+    runner._api_url = "https://api.test"
+    runner._api_key = "svc"
+    runner._project_id = "proj_test"
+    runner._reasoning_buffer = [
+        {"content": f"c{i}", "ticket_id": "t", "id": f"rme_{i}"} for i in range(250)
+    ]
+    runner._living_context = LivingContext()  # no prior digest
+
+    captured: dict = {}
+
+    async def fake_compact(*args: object, **kwargs: object) -> bool:
+        captured["superseded"] = kwargs.get("superseded_entry_ids")
+        return True
+
+    with patch(
+        "sessionfs.resident.runner.compact_memory", side_effect=fake_compact
+    ), patch.object(runner, "_hydrate", AsyncMock()):
+        await runner._maybe_compact(force=True)
+
+    assert len(captured["superseded"]) == 200  # cap respected
+    assert len(runner._reasoning_buffer) == 50  # overflow kept for next compact
