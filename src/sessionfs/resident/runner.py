@@ -1,9 +1,11 @@
-"""The resident reviewer runner — a long-running client process.
+"""The resident runner — a long-running client process.
 
 R1: reviewer-only skeleton. Drives the work-queue heartbeat, calls the
 operator's own LLM, and settles verdicts via the settle-path.
 R2: living context — hydrates durable + private context before each review,
 writes durable memory back after, and compacts periodically.
+R3: implementer mode — processes implement/fix_findings directives, writes
+code to a worktree, posts diff-refs, settles waiting_review.
 
 Properties:
 - Credential boundary: operator LLM key = LOCAL ONLY, never to SessionFS;
@@ -34,11 +36,13 @@ from sessionfs.resident.context import (
     LivingContext,
     hydrate_living_context,
 )
+from sessionfs.resident.implementer import run_implement_directive
 from sessionfs.resident.llm_adapter import (
     ReviewLLM,
     ReviewContext,
     ReviewResult,
     OpenAICompatibleAdapter,
+    ImplementLLM,
 )
 from sessionfs.resident.memory import (
     write_reasoning,
@@ -73,10 +77,15 @@ def _sanitize_for_log(data: dict | None) -> dict:
 
 
 class ResidentRunner:
-    """Long-running resident that drives a review_until_clean work queue.
+    """Long-running resident that drives a work queue.
+
+    Supports two modes (config.mode):
+    - 'review': drives a review_until_clean queue; calls ReviewLLM.review().
+    - 'implement': drives an implement_until_done queue; calls
+      ImplementLLM.implement().
 
     Usage:
-        config = ResidentConfig.from_toml("my-reviewer")
+        config = ResidentConfig.from_toml("my-resident")
         runner = ResidentRunner(config)
         await runner.run()       # loop forever
         # or:
@@ -87,10 +96,12 @@ class ResidentRunner:
         self,
         config: ResidentConfig,
         llm_adapter: ReviewLLM | None = None,
+        implement_adapter: ImplementLLM | None = None,
     ) -> None:
         self._config = config
         self._running = False
         self._adapter = llm_adapter
+        self._implement_adapter = implement_adapter
 
         # Auth state — resolved once on start.
         self._api_url: str = ""
@@ -428,15 +439,26 @@ class ResidentRunner:
         )
 
     def _init_adapter(self) -> None:
-        if self._adapter is not None:
+        # Short-circuit if the mode's adapter was already INJECTED (offline
+        # tests / a custom adapter with no provider key configured) — don't
+        # require an LLM key or build the default adapter in that case.
+        if self._config.mode == "implement":
+            if self._implement_adapter is not None:
+                return
+        elif self._adapter is not None:
             return
+
         llm_key = self._config.resolved_llm_key
         if not llm_key:
             raise RuntimeError(
                 "LLM API key is not configured. Set RESIDENT_LLM_API_KEY "
                 "or configure [llm].api_key in the resident config TOML."
             )
-        self._adapter = OpenAICompatibleAdapter(self._config.llm)
+        shared = OpenAICompatibleAdapter(self._config.llm)
+        if self._config.mode == "implement":
+            self._implement_adapter = shared
+        else:
+            self._adapter = shared
 
     async def _wake(self) -> list[dict]:
         """One heartbeat: step → for each directive → review → settle."""
@@ -500,6 +522,38 @@ class ResidentRunner:
                 continue
 
             intent = directive.get("intent", "")
+
+            # R3: implement mode — route implement/fix_findings to the
+            # implementer. The reviewer's fix_findings intent is the same
+            # as implement (the implementer addresses findings from a
+            # CHANGES_REQUESTED review). Both go to the implementer.
+            if self._config.mode == "implement":
+                if intent in ("implement", "fix_findings"):
+                    assert self._implement_adapter is not None
+                    result = await run_implement_directive(
+                        directive,
+                        api_url=self._api_url,
+                        api_key=self._api_key,
+                        config=self._config,
+                        adapter=self._implement_adapter,
+                    )
+                    results.append(result)
+                    continue
+                else:
+                    # Implementer received a non-implement directive — release.
+                    logger.warning(
+                        "Non-implement directive '%s' on an implementer runner "
+                        "— releasing the lease.",
+                        intent,
+                    )
+                    results.append(
+                        await self._release_directive(
+                            directive, reason=f"unsupported_intent:{intent}"
+                        )
+                    )
+                    continue
+
+            # Review mode: only post_review directives.
             if intent != "post_review":
                 # The item is already claimed (open_directive_id set). A bare
                 # `continue` would leave the lease open and the queue would

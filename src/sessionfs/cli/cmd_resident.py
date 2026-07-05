@@ -55,6 +55,8 @@ def _resolve_config(
     poll_interval: int | None,
     resident_id: str | None = None,
     org_id: str | None = None,
+    mode: str | None = None,
+    worktree_path: str | None = None,
 ) -> ResidentConfig:
     """Load config from file + apply CLI overrides.
 
@@ -80,6 +82,14 @@ def _resolve_config(
         cfg.org_id = org_id
     if poll_interval is not None:
         cfg.poll_interval_seconds = max(10, min(300, poll_interval))
+    if mode:
+        cfg.mode = mode
+        # R3 identity separation: when switching to implement mode, default
+        # the persona to 'atlas' if it was the reviewer default.
+        if mode == "implement" and cfg.persona == "codex-reviewer":
+            cfg.persona = "atlas"
+    if worktree_path:
+        cfg.worktree_path = worktree_path
 
     # Apply the RESIDENT_LLM_API_KEY / RESIDENT_LLM_API_KEY_ENV env resolution
     # for the ad-hoc (no --config) path — from_toml already did it for the
@@ -125,6 +135,16 @@ def run_resident(
     poll_interval: int | None = typer.Option(
         None, "--poll-interval", help="Seconds between heartbeats (10-300, default 30)."
     ),
+    mode: str | None = typer.Option(
+        None, "--mode", "-m",
+        help="Resident mode: 'review' (review_until_clean) or 'implement' "
+             "(implement_until_done). Default 'review'.",
+    ),
+    worktree: str | None = typer.Option(
+        None, "--worktree", "-w",
+        help="Path to the git worktree for implement mode "
+             "(required when --mode=implement).",
+    ),
     once: bool = typer.Option(
         False, "--once", help="Run a single heartbeat then exit (for testing)."
     ),
@@ -132,11 +152,13 @@ def run_resident(
         False, "--debug", help="Enable debug logging."
     ),
 ) -> None:
-    """Start the resident reviewer loop.
+    """Start the resident loop.
 
-    Drives a review_until_clean work queue: wakes on cadence, calls the
-    operator's OWN LLM for each pending review, and posts verdicts via
-    the server's trusted settle-path.
+    Drives a work queue: wakes on cadence, calls the operator's OWN LLM,
+    and posts results via the server's settle-path.
+
+    In review mode: reviews tickets and posts trusted verdicts.
+    In implement mode: writes code in a worktree and posts diff-refs.
 
     The SessionFS service key comes from the named org profile (--org-profile).
     The LLM key comes from RESIDENT_LLM_API_KEY env var or resident config TOML.
@@ -152,6 +174,8 @@ def run_resident(
         poll_interval=poll_interval,
         resident_id=resident_id,
         org_id=org_id,
+        mode=mode,
+        worktree_path=worktree,
     )
 
     runner = ResidentRunner(cfg)
@@ -163,9 +187,12 @@ def run_resident(
         console.print(
             Panel(
                 f"[bold]Resident: {cfg.name or 'cli'}[/bold]\n"
+                f"Mode:    {cfg.mode}\n"
                 f"Queue:   {cfg.queue_id}\n"
                 f"Project: {cfg.project}\n"
+                f"Persona: {cfg.persona}\n"
                 f"Profile: {cfg.org_profile}\n"
+                f"Worktree:{cfg.worktree_path or ' (n/a)'}\n"
                 f"Poll:    {cfg.poll_interval_seconds}s\n"
                 f"LLM:     {cfg.llm.model} @ {cfg.llm.base_url}\n"
                 "\n[dim]Press Ctrl+C to stop.[/dim]",

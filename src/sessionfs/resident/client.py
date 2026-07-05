@@ -112,6 +112,7 @@ async def complete_work_queue_step(
     ticket_lease_epoch: int | None = None,
     verdict_content: str | None = None,
     verdict: str | None = None,
+    comment_id: str | None = None,
     failed: bool = False,
     summary: str | None = None,
 ) -> ApiResponse:
@@ -133,6 +134,8 @@ async def complete_work_queue_step(
         body["verdict_content"] = verdict_content
     if verdict is not None:
         body["verdict"] = verdict
+    if comment_id is not None:
+        body["comment_id"] = comment_id
     if failed:
         body["failed"] = True
     if summary is not None:
@@ -145,5 +148,38 @@ async def complete_work_queue_step(
             "directive will re-emit next wake.",
             directive_id,
             ticket_id,
+        )
+    return resp
+
+
+async def add_ticket_comment(
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    ticket_id: str,
+    content: str,
+    author_persona: str | None = None,
+    lease_epoch: int | None = None,
+) -> ApiResponse:
+    """Post a generic comment on a ticket via POST .../tickets/{id}/comments.
+
+    Used by the implementer resident to post diff-ref comments (branch/SHA/
+    changed-paths — metadata only, NEVER code contents per C7).
+
+    Returns the created comment's id in the response body on success.
+    """
+    path = f"/api/v1/projects/{project_id}/tickets/{ticket_id}/comments"
+    body: dict = {"content": content[:10000]}  # server cap
+    if author_persona:
+        body["author_persona"] = author_persona
+    if lease_epoch is not None:
+        body["lease_epoch"] = lease_epoch
+
+    resp = await _api_request("POST", api_url, api_key, path, json_data=body)
+    if resp.status_code in (200, 201):
+        logger.info(
+            "Comment posted on ticket=%s: id=%s",
+            ticket_id,
+            resp.body.get("id") if isinstance(resp.body, dict) else "?",
         )
     return resp

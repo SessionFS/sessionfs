@@ -115,6 +115,24 @@ and the runner resolves it from `~/.sessionfs/profiles/<name>.toml`. Because
 the resident exits before its first heartbeat. Mount the profile whose name
 matches the config's `org_profile`.
 
+### Required service-key scopes
+
+Provision the implementer's service key with the full implementer scope set —
+NOT just the write path. In particular the implementer **reads the full ticket**
+(description + acceptance criteria) before writing code, so it needs
+`tickets:read`; without it every directive fails closed on a 403 before the LLM
+is ever called. The scopes (design §4.1):
+
+- `work_queues:read`, `work_queues:write` — drive the heartbeat + settle
+- `tickets:read`, `tickets:write` — hydrate the full ticket + post the diff-ref
+- `knowledge:read`, `knowledge:write` — hydrate + write back durable learnings
+- `sessions:read` — session lineage / its own checkpoints
+- `agent_runs:write` — optional per-wake execution audit
+
+The implementer's key must **not** be registered as a `trusted_reviewer` — the
+server rejects binding one `service_key_id` to both roles (F4), which is what
+guarantees the self-review prohibition.
+
 Notes:
 - `--read-only` + the two `--tmpfs` mounts keep everything writable except the
   worktree ephemeral to the container.

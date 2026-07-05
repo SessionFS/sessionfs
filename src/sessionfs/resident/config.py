@@ -70,6 +70,20 @@ class ResidentConfig:
     # (server validates persona_name against project personas).
     persona: str = "codex-reviewer"
 
+    # R3 — implementer settings.
+    # The resident mode: 'review' (review_until_clean) or 'implement'
+    # (implement_until_done). Default 'review' for back-compat. The runner
+    # refuses to process directives that don't match its mode.
+    mode: str = "review"  # 'review' | 'implement'
+    # Path to the git worktree where the implementer writes code.
+    # Required when mode='implement'. Must exist + be a git checkout.
+    worktree_path: str = ""
+    # Prefix for resident branches (default 'resident').
+    resident_branch_prefix: str = "resident"
+    # The CLEAN base a new resident branch is cut from (so a ticket's proposal
+    # never inherits a prior resident branch's commits). Default 'main'.
+    base_branch: str = "main"
+
     # Polling
     poll_interval_seconds: int = 30  # clamped [10, 300]
 
@@ -82,6 +96,11 @@ class ResidentConfig:
 
     # Derived — resolved at load time
     _resolved_llm_key: str = field(default="", repr=False)
+
+    def __post_init__(self) -> None:
+        """Auto-switch persona default based on mode (R3 identity separation)."""
+        if self.mode == "implement" and self.persona == "codex-reviewer":
+            self.persona = "atlas"
 
     @classmethod
     def from_toml(cls, name: str) -> ResidentConfig:
@@ -120,6 +139,9 @@ class ResidentConfig:
         poll = int(resident_raw.get("poll_interval_seconds", 30))
         poll = max(10, min(300, poll))
 
+        # R3: only set persona if explicitly in the TOML; otherwise let the
+        # dataclass default + __post_init__ handle mode-based default.
+        toml_persona = str(resident_raw.get("persona", ""))
         cfg = cls(
             name=name,
             queue_id=str(resident_raw.get("queue_id", "")),
@@ -127,11 +149,17 @@ class ResidentConfig:
             org_profile=str(resident_raw.get("org_profile", "")),
             resident_id=str(resident_raw.get("resident_id", "")),
             org_id=str(resident_raw.get("org_id", "")),
-            persona=str(resident_raw.get("persona", "codex-reviewer")),
+            persona=toml_persona if toml_persona else "codex-reviewer",
             poll_interval_seconds=poll,
             mind_token_budget=int(resident_raw.get("mind_token_budget", 8000)),
             compact_every_wakes=int(resident_raw.get("compact_every_wakes", 10)),
             llm=llm,
+            mode=str(resident_raw.get("mode", "review")),
+            worktree_path=str(resident_raw.get("worktree_path", "")),
+            base_branch=str(resident_raw.get("base_branch", "main")),
+            resident_branch_prefix=str(
+                resident_raw.get("resident_branch_prefix", "resident")
+            ),
         )
         cfg.resolve_llm_key()
         return cfg
@@ -195,6 +223,45 @@ class ResidentConfig:
             errors.append("resident.compact_every_wakes must be >= 1")
         if self.mind_token_budget < 500:
             errors.append("resident.mind_token_budget must be >= 500")
+        # R3: implementer validation.
+        if self.mode not in ("review", "implement"):
+            errors.append(
+                f"resident.mode must be 'review' or 'implement', got '{self.mode}'"
+            )
+        if self.mode == "implement":
+            if not self.worktree_path:
+                errors.append(
+                    "resident.worktree_path is required when mode='implement'"
+                )
+            else:
+                worktree = Path(self.worktree_path).expanduser()
+                if not worktree.is_dir():
+                    errors.append(
+                        f"resident.worktree_path does not exist: {worktree}"
+                    )
+                elif not (worktree / ".git").exists():
+                    # Accept BOTH a normal repo (.git is a directory) AND a
+                    # linked worktree from `git worktree add` (.git is a FILE
+                    # pointing at the common git dir) — operators commonly
+                    # provide the latter.
+                    errors.append(
+                        f"resident.worktree_path is not a git checkout: "
+                        f"{worktree}"
+                    )
+            if self.persona == "codex-reviewer":
+                # The implementer must not use the reviewer persona (identity
+                # separation, invariant 4). Default to 'atlas' unless the
+                # operator explicitly configured a different non-reviewer persona.
+                errors.append(
+                    "resident.persona should not be 'codex-reviewer' in "
+                    "implement mode — use a non-reviewer persona like 'atlas' "
+                    "(identity separation, invariant 4)."
+                )
+        if self.resident_branch_prefix and "/" in self.resident_branch_prefix.strip("/"):
+            errors.append(
+                "resident.resident_branch_prefix must be a single path segment "
+                "(no intermediate '/' — the full branch is prefix/queue/ticket)."
+            )
         return errors
 
     @property
