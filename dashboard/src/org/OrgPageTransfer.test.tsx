@@ -23,6 +23,9 @@ vi.mock('../hooks/useMe', () => ({ useMe: () => mockMe() }));
 vi.mock('./OrgSettingsTab', () => ({
   default: ({ orgId }: { orgId: string }) => <div data-testid={`org-settings-stub-${orgId}`} />,
 }));
+vi.mock('./SsoTab', () => ({
+  default: ({ orgId }: { orgId: string }) => <div data-testid={`sso-stub-${orgId}`} />,
+}));
 vi.mock('./ActivateLicensePanel', () => ({ default: () => <div data-testid="activate-panel" /> }));
 
 function makeQueryClient() {

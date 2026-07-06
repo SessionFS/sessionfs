@@ -5,6 +5,7 @@ import { useMe } from '../hooks/useMe';
 import { getAvatarColor } from '../utils/avatar';
 import { Dropdown, Button } from '../components/ui';
 import OrgSettingsTab from './OrgSettingsTab';
+import SsoTab from './SsoTab';
 import ActivateLicensePanel from './ActivateLicensePanel';
 import OwnerTransferDialog from './OwnerTransferDialog';
 
@@ -416,6 +417,13 @@ export default function OrgPage() {
       {org?.id && (
         <div className="bg-bg-elevated border border-border rounded-xl p-5 mt-6">
           <OrgSettingsTab orgId={org.id} canEdit={isAdmin} />
+        </div>
+      )}
+
+      {/* v0.13.x — SSO (OIDC) admin configuration. */}
+      {org?.id && isAdmin && (
+        <div className="bg-bg-elevated border border-border rounded-xl p-5 mt-6">
+          <SsoTab orgId={org.id} canEdit={isAdmin} isOwner={isOwner} />
         </div>
       )}
 
