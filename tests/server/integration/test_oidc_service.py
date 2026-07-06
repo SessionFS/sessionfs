@@ -69,6 +69,17 @@ def upgraded_055_db_path(tmp_path: Path) -> Path:
     _build_pre_055_db(db_path)
     command.stamp(_cfg(db_path), "054")
     command.upgrade(_cfg(db_path), "055")
+    # Migration 058 adds oidc_login_attempts.client_flow; this focused fixture
+    # stops at 055, but the ORM model emits the column on INSERT. Add it here
+    # (matching 058's server_default) rather than pulling in the 056/057
+    # prerequisites just to reach 058.
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "ALTER TABLE oidc_login_attempts "
+        "ADD COLUMN client_flow VARCHAR(20) NOT NULL DEFAULT 'cli'"
+    )
+    conn.commit()
+    conn.close()
     return db_path
 
 

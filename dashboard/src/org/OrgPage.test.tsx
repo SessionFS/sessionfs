@@ -36,6 +36,14 @@ vi.mock('./OrgSettingsTab', () => ({
   ),
 }));
 
+// v0.13.x: SsoTab is mounted on OrgPage for admins/owners. Stub it out
+// so this suite stays focused on the existing OrgPage surface.
+vi.mock('./SsoTab', () => ({
+  default: ({ orgId }: { orgId: string }) => (
+    <div data-testid={`sso-stub-${orgId}`}>sso config</div>
+  ),
+}));
+
 function makeQueryClient() {
   return new QueryClient({
     defaultOptions: {

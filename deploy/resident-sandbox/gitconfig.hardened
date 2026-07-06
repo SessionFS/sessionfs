@@ -1,0 +1,20 @@
+# Baked-in git hardening for the implementer sandbox (design §3.7.1 / F8).
+# Defense-in-depth ONLY — the load-bearing control is the operator NOT mounting
+# protected-branch credentials into the container (see the runbook). The server
+# never brokers git, so nothing here is a product guarantee.
+[push]
+	# Never push anything the resident didn't explicitly and narrowly name.
+	default = nothing
+[credential]
+	# No credential caching/helpers — the resident presents only the narrow,
+	# non-protected-branch credential the operator injects at runtime (if any).
+	helper =
+[core]
+	# A global pre-push guard that refuses protected branches even if a remote
+	# with push access is somehow present.
+	hooksPath = /etc/resident-git-hooks
+[safe]
+	# Allow git to operate on the operator-mounted worktree.
+	directory = /workspace/worktree
+[advice]
+	detachedHead = false

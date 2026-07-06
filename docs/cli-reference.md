@@ -2371,6 +2371,17 @@ Default sort: `created_at` descending. See `docs/integrations/github-actions-age
 
 ---
 
+## `sfs resident` (v0.14.0)
+
+Run a **resident** — an operator-hosted, always-on agent that drives a work queue by calling your own LLM. Configured via a TOML file at `~/.sessionfs/residents/<name>.toml` (see `docs/operations/resident-operator-guide.md`). The reviewer posts trusted verdicts; the implementer proposes code in an isolated worktree and never merges or self-closes.
+
+| Command | Description |
+|---------|-------------|
+| `sfs resident run --config <name>` | Start the resident loop (polls the queue, calls your LLM, acts). `--once` runs a single wake; `--cold` rebuilds the mind from durable sources; `--daily-token-budget` / `--per-wake-token-budget` bound LLM spend (fail-closed). |
+| `sfs resident health --config <name>` | Read-only summary of the resident's config + today's LLM budget spend (does not contact the server or start the loop). |
+
+The implementer resident runs inside a hardened sandbox (`deploy/resident-sandbox/`). Merging a resident-authored, resident-auto-closed change in a high-risk class follows the mandatory checklist in `docs/operations/high-risk-merge-checklist.md`.
+
 ## Billing and Tier Enforcement
 
 When any cloud command receives a `403` response with an `upgrade_required` error, the CLI displays a friendly message indicating the required tier and a URL to upgrade:

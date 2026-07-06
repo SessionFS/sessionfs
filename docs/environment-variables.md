@@ -38,6 +38,7 @@ All SessionFS server environment variables use the `SFS_` prefix.
 | `SFS_REQUIRE_EMAIL_VERIFICATION` | Require email verification on signup | `true` |
 | `SFS_SSO_CALLBACK_URL` | The OIDC redirect/callback URL registered with each org's IdP — where the provider returns the authorization code | `https://api.sessionfs.dev/api/v1/auth/sso/callback` |
 | `SFS_SSO_REDIRECT_ORIGINS` | Comma-separated allowlist of absolute origins permitted as the post-login `redirect_after` destination (relative paths are always allowed; everything else is rejected) | — |
+| `SFS_DASHBOARD_URL` | Dashboard origin the **browser** SSO login redirects back to (the one-time-code handoff lands at `<SFS_DASHBOARD_URL>/sso/callback`). Server-config only — never derived from request input. If unset, browser SSO login returns 500 (the CLI SSO flow is unaffected). | — |
 
 ## Blob Storage
 

@@ -30,8 +30,9 @@ from typing import cast
 from urllib.parse import urlencode, urlparse
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Response
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, field_validator
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.keys import generate_api_key, hash_api_key
@@ -46,6 +47,7 @@ from sessionfs.server.db.models import (
     OrgInvite,
     OrgMember,
     Organization,
+    SsoExchangeCode,
     User,
 )
 from sessionfs.server.services.oidc import consume_login_attempt
@@ -67,8 +69,22 @@ router = APIRouter(prefix="/api/v1/auth/sso", tags=["sso"])
 # Cookie name for the browser-bound state bundle
 SSO_STATE_COOKIE = "sso_state"
 
+# Cookie name for the browser-login exchange binding (login-CSRF defense, F1).
+# Set on the /callback redirect; verified at /exchange so a one-time code can
+# only be redeemed by the SAME browser that authenticated.
+SSO_EXCHANGE_COOKIE = "sso_exchange"
+
 # Login attempt TTL (10 minutes — design §3.2)
 LOGIN_ATTEMPT_TTL_MINUTES = 10
+
+# Browser-login one-time exchange-code TTL (seconds). Deliberately short — the
+# dashboard redeems it immediately on the /sso/callback page load.
+EXCHANGE_CODE_TTL_SECONDS = 120
+
+# Dashboard origin the browser-login callback redirects back to. Server config
+# ONLY — never derived from the org/attempt/cookie/redirect_after (open-redirect
+# defense, Sentinel C1). Unset ⇒ browser login is refused with a 500.
+_DASHBOARD_URL: str = os.environ.get("SFS_DASHBOARD_URL", "").rstrip("/")
 
 # Allowlisted redirect_after destinations (exact match only)
 _ALLOWED_REDIRECT_ORIGINS: frozenset[str] = frozenset(
@@ -93,6 +109,16 @@ class SsoStartRequest(BaseModel):
     org_slug: str | None = None
     org_idp_id: str | None = None
     redirect_after: str | None = None  # post-login destination
+    # 'cli' (default — JSON key response) or 'browser' (dashboard: /callback
+    # redirects with a one-time code). Server-authoritative once stored.
+    client_flow: str = "cli"
+
+    @field_validator("client_flow")
+    @classmethod
+    def _validate_client_flow(cls, v: str) -> str:
+        if v not in ("cli", "browser"):
+            raise ValueError("client_flow must be 'cli' or 'browser'")
+        return v
 
     @field_validator("redirect_after")
     @classmethod
@@ -457,6 +483,9 @@ async def sso_start(
         status="pending",
         expires_at=now + timedelta(minutes=LOGIN_ATTEMPT_TTL_MINUTES),
         created_at=now,
+        # Server-authoritative flow marker — /callback branches on THIS (C11),
+        # never on a callback query param or a cookie field.
+        client_flow=body.client_flow,
     )
     db.add(attempt)
     await db.commit()
@@ -672,10 +701,6 @@ async def sso_callback(
         if user is None or not user.is_active:
             raise HTTPException(403, "User account is inactive")
 
-        # Mint SSO key
-        raw_key, api_key = _mint_user_key(user.id)
-        db.add(api_key)
-
         await _emit_audit(
             db,
             org_name_snapshot=org_name,
@@ -687,10 +712,10 @@ async def sso_callback(
             target_id=existing_identity.id,
             after=json.dumps({"link_method": "existing_link"}),
         )
-        await db.commit()
-
-        return _build_callback_response(
-            user, raw_key, "existing_link", org_id, attempt.redirect_after
+        # Issue credentials + commit (CLI JSON, or browser one-time-code redirect).
+        return await _finalize_login(
+            db, user=user, link_method="existing_link",
+            org_id=org_id, attempt=attempt,
         )
 
     # --- 6b. HARD PRECONDITION: email_verified is already strict-true
@@ -769,9 +794,6 @@ async def sso_callback(
             )
             db.add(identity)
 
-            raw_key, api_key = _mint_user_key(existing_user.id)
-            db.add(api_key)
-
             await _emit_audit(                db,
                 org_name_snapshot=org_name,
                 org_id=org_id,
@@ -789,11 +811,9 @@ async def sso_callback(
                 actor_user_id=existing_user.id,
                 actor_email_snapshot=existing_user.email,
             )
-            await db.commit()
-
-            return _build_callback_response(
-                existing_user, raw_key, "verified_email_match", org_id,
-                attempt.redirect_after,
+            return await _finalize_login(
+                db, user=existing_user, link_method="verified_email_match",
+                org_id=org_id, attempt=attempt,
             )
 
         else:
@@ -818,7 +838,8 @@ async def sso_callback(
             # follow-up (tk pending) — until it ships, this path refuses
             # and routes the user to their org admin. We do NOT claim an
             # email was sent (none is).
-            return _build_pending_response(
+            return _finalize_pending(
+                attempt,
                 existing_user,
                 "This SessionFS account can't be auto-linked to SSO "
                 "(its email isn't verified on SessionFS, or you're not yet "
@@ -945,10 +966,6 @@ async def sso_callback(
                 after=json.dumps({"honored_role": role}),
             )
 
-    # Mint SSO key
-    raw_key, api_key = _mint_user_key(new_user_id)
-    db.add(api_key)
-
     await _emit_audit(        db,
         org_name_snapshot=org_name,
         org_id=org_id,
@@ -966,10 +983,9 @@ async def sso_callback(
         actor_user_id=new_user_id,
         actor_email_snapshot=idp_email_normalized,
     )
-    await db.commit()
-
-    return _build_callback_response(
-        new_user, raw_key, "jit_provision", org_id, attempt.redirect_after,
+    return await _finalize_login(
+        db, user=new_user, link_method="jit_provision",
+        org_id=org_id, attempt=attempt,
     )
 
 
@@ -1010,3 +1026,193 @@ def _build_pending_response(user: User, message: str) -> dict:
         "link_method": "explicit_confirm_required",
         "org_id": None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Browser-login handoff (one-time-code exchange) — Sentinel-reviewed design
+# ---------------------------------------------------------------------------
+
+
+def _sha256(raw: str) -> str:
+    """sha256 hexdigest — used for the exchange code + binding-nonce hashes."""
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+async def _finalize_login(
+    db: AsyncSession,
+    *,
+    user: User,
+    link_method: str,
+    org_id: str | None,
+    attempt: OidcLoginAttempt,
+) -> object:
+    """Issue credentials for an already-validated, already-linked SSO login and
+    COMMIT the transaction (the single commit — C6).
+
+    ALL identity/linking/JIT/seat logic + audit emits happen in the CALLER,
+    before this is called, in the SAME transaction. This only branches on the
+    server-authoritative ``attempt.client_flow`` (C11) between:
+
+    - **cli** (default): mint the key inline + return the JSON contract (verbatim
+      prior behavior).
+    - **browser**: mint NOTHING here. Issue a single-use, browser-bound, 120s
+      one-time code and 302 the browser back to the dashboard with the code in
+      the URL fragment. The key is re-minted only at ``/exchange`` — so no raw
+      api_key is ever stored or placed in a URL (C4/F1).
+    """
+    if attempt.client_flow != "browser":
+        raw_key, api_key = _mint_user_key(user.id)
+        db.add(api_key)
+        await db.commit()
+        return _build_callback_response(
+            user, raw_key, link_method, org_id, attempt.redirect_after
+        )
+
+    if not _DASHBOARD_URL:
+        raise HTTPException(
+            500, "Browser SSO login is not configured (SFS_DASHBOARD_URL unset)"
+        )
+    raw_code = secrets.token_urlsafe(32)
+    binding_nonce = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+    db.add(
+        SsoExchangeCode(
+            id=f"sec_{secrets.token_hex(16)}",
+            code_hash=_sha256(raw_code),
+            binding_hash=_sha256(binding_nonce),
+            user_id=user.id,
+            org_id=org_id,
+            link_method=link_method,
+            status="pending",
+            expires_at=now + timedelta(seconds=EXCHANGE_CODE_TTL_SECONDS),
+            created_at=now,
+        )
+    )
+    await db.commit()
+    # Fixed origin + fixed path from server config ONLY (C1 — no open redirect).
+    redirect = RedirectResponse(
+        f"{_DASHBOARD_URL}/sso/callback#code={raw_code}", status_code=302
+    )
+    # Browser-binding cookie (F1): only the browser that authenticated holds the
+    # matching nonce, so a lured victim's browser can't redeem the code.
+    redirect.set_cookie(
+        key=SSO_EXCHANGE_COOKIE,
+        value=binding_nonce,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=EXCHANGE_CODE_TTL_SECONDS,
+        path="/api/v1/auth/sso",
+    )
+    return redirect
+
+
+def _finalize_pending(attempt: OidcLoginAttempt, user: User, message: str) -> object:
+    """Handle the anti-takeover DENY path. No credential is issued (C9). Browser
+    flow redirects to a dashboard notice; CLI keeps the JSON pending response."""
+    if attempt.client_flow == "browser":
+        if not _DASHBOARD_URL:
+            raise HTTPException(
+                500, "Browser SSO login is not configured (SFS_DASHBOARD_URL unset)"
+            )
+        return RedirectResponse(
+            f"{_DASHBOARD_URL}/sso/callback#error=pending_confirmation",
+            status_code=302,
+        )
+    return _build_pending_response(user, message)
+
+
+class SsoExchangeRequest(BaseModel):
+    """Body for POST /api/v1/auth/sso/exchange — the browser-login completion."""
+
+    code: str
+
+
+@router.post("/exchange")
+async def sso_exchange(
+    body: SsoExchangeRequest,
+    sso_exchange: str | None = Cookie(default=None, alias=SSO_EXCHANGE_COOKIE),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """Phase C (browser flow only) — trade a one-time code for the api_key.
+
+    The code is the bearer proof; the ``sso_exchange`` cookie is the browser
+    binding (F1). Both must be present and match a single unconsumed, unexpired
+    row. Single-use via an atomic rowcount-1 consume (mirrors
+    consume_login_attempt). ALL failure modes return the SAME 400 (C4 — no
+    enumeration/timing side-channel). The key is minted HERE (re-mint, not stored
+    at /callback), so no raw key ever lived at rest or in a URL.
+    """
+    # Constant failure for missing/expired/consumed/binding-mismatch (C4).
+    invalid = HTTPException(400, "Login session expired or already used. Please start again.")
+    if not body.code or not sso_exchange:
+        raise invalid
+
+    now = datetime.now(timezone.utc)
+    code_hash = _sha256(body.code)
+    # Atomic single-use consume, gated on the browser binding (F1). rowcount!=1
+    # ⇒ wrong/expired/consumed code OR wrong browser ⇒ same 400.
+    result = await db.execute(
+        update(SsoExchangeCode)
+        .where(
+            SsoExchangeCode.code_hash == code_hash,
+            SsoExchangeCode.status == "pending",
+            SsoExchangeCode.expires_at > now,
+            SsoExchangeCode.binding_hash == _sha256(sso_exchange),
+        )
+        .values(status="consumed", consumed_at=now)
+    )
+    if result.rowcount != 1:
+        await db.rollback()
+        raise invalid
+
+    row = (
+        await db.execute(
+            select(SsoExchangeCode).where(SsoExchangeCode.code_hash == code_hash)
+        )
+    ).scalar_one()
+
+    user = (
+        await db.execute(select(User).where(User.id == row.user_id))
+    ).scalar_one_or_none()
+    if user is None or not user.is_active:
+        # Keep the code consumed (single-use holds); deny the mint.
+        await db.commit()
+        raise HTTPException(403, "User account is inactive")
+
+    raw_key, api_key = _mint_user_key(user.id)
+    db.add(api_key)
+
+    # C10 — distinct credential-issuance audit (the key is minted HERE, not at
+    # /callback, for the browser flow).
+    org_name = ""
+    if row.org_id:
+        org_name = (
+            await db.execute(
+                select(Organization.name).where(Organization.id == row.org_id)
+            )
+        ).scalar_one_or_none() or ""
+    await _emit_audit(
+        db,
+        org_id=row.org_id or "",
+        org_name_snapshot=org_name,
+        event_type="sso_browser_key_minted",
+        actor_user_id=user.id,
+        actor_email_snapshot=user.email,
+        after=json.dumps({"link_method": row.link_method}),
+    )
+    await db.commit()
+
+    response = JSONResponse(
+        {
+            "api_key": raw_key,
+            "user_id": user.id,
+            "email": user.email,
+            "org_id": row.org_id,
+            "link_method": row.link_method,
+            "pending_confirmation": False,
+        }
+    )
+    # Clear the one-shot binding cookie (F2 hygiene).
+    response.delete_cookie(SSO_EXCHANGE_COOKIE, path="/api/v1/auth/sso")
+    return response

@@ -36,6 +36,7 @@ from sessionfs.server.db.models import (
     OrgInvite,
     OrgMember,
     Organization,
+    SsoExchangeCode,
     User,
 )
 from sessionfs.server.services.oidc_fetch import (
@@ -1926,3 +1927,259 @@ class TestSsoStart:
                 )).scalars().all()
                 assert len(rows) == 1
                 assert rows[0].id == inactive.id
+
+
+class TestBrowserLoginFlow:
+    """Browser SSO login handoff — client_flow + one-time-code /exchange.
+
+    Covers the Sentinel-reviewed design: /start stores the durable flow marker;
+    /callback (browser) redirects with a single-use code + binding cookie and
+    mints NO key inline; /exchange trades the code for a freshly-minted key,
+    gated on the browser-binding cookie (F1) with constant errors + single use.
+    """
+
+    def _seed_code(self, raw_code: str, binding_nonce: str, *, user_id: str,
+                   org_id: str | None = "org-1", status: str = "pending",
+                   ttl_seconds: int = 120) -> SsoExchangeCode:
+        now = datetime.now(timezone.utc)
+        return SsoExchangeCode(
+            id=f"sec_{secrets.token_hex(8)}",
+            code_hash=hashlib.sha256(raw_code.encode()).hexdigest(),
+            binding_hash=hashlib.sha256(binding_nonce.encode()).hexdigest(),
+            user_id=user_id,
+            org_id=org_id,
+            link_method="jit_provision",
+            status=status,
+            expires_at=now + timedelta(seconds=ttl_seconds),
+            created_at=now,
+        )
+
+    async def test_start_stores_client_flow_browser(
+        self, client, db_session, org, idp, verified_domain,
+    ):
+        _set_test_transport(MockOidcTransport({
+            "https://example.okta.com/.well-known/openid-configuration": {
+                "issuer": "https://example.okta.com",
+                "authorization_endpoint": "https://example.okta.com/auth",
+                "token_endpoint": "https://example.okta.com/token",
+                "jwks_uri": "https://example.okta.com/keys",
+            },
+        }))
+        with mock.patch(
+            "sessionfs.server.services.oidc_fetch.socket.getaddrinfo",
+            return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 0))],
+        ):
+            resp = await client.post(
+                "/api/v1/auth/sso/start",
+                json={"org_slug": org.slug, "client_flow": "browser"},
+            )
+        assert resp.status_code == 200
+        attempt = (await db_session.execute(
+            select(OidcLoginAttempt).where(OidcLoginAttempt.org_idp_id == idp.id)
+        )).scalars().first()
+        assert attempt is not None
+        assert attempt.client_flow == "browser"
+
+    async def test_start_rejects_bad_client_flow(self, client, org, idp):
+        resp = await client.post(
+            "/api/v1/auth/sso/start",
+            json={"org_slug": org.slug, "client_flow": "evil"},
+        )
+        assert resp.status_code == 422
+
+    async def test_browser_callback_redirects_with_code_no_key(
+        self, client, db_session, org, idp, verified_domain, rsa_key,
+    ):
+        """Browser /callback: 302 to the dashboard with #code, sets the binding
+        cookie, creates ONE exchange code, and mints NO api_key inline."""
+        state = secrets.token_urlsafe(32)
+        nonce = secrets.token_urlsafe(32)
+        code_verifier = secrets.token_urlsafe(32)
+        now = datetime.now(timezone.utc)
+        db_session.add(OidcLoginAttempt(
+            id=f"ola_{secrets.token_hex(12)}",
+            org_idp_id=idp.id, org_id=org.id, provider_id=idp.id,
+            state=state, nonce=nonce,
+            pkce_verifier_hash=hashlib.sha256(code_verifier.encode()).hexdigest(),
+            status="pending", expires_at=now + timedelta(minutes=10),
+            created_at=now, client_flow="browser",
+        ))
+        await db_session.commit()
+
+        id_token_str = jwt.encode(
+            {
+                "iss": "https://example.okta.com", "aud": "test-client-id",
+                "sub": "browser-sub", "email": "browser@example.com",
+                "email_verified": True, "nonce": nonce,
+                "iat": int(now.timestamp()),
+                "exp": int((now + timedelta(hours=1)).timestamp()),
+            },
+            rsa_key, algorithm="RS256", headers={"kid": "test-key-1"},
+        )
+        transport_routes = {
+            "https://example.okta.com/.well-known/openid-configuration": {
+                "issuer": "https://example.okta.com",
+                "authorization_endpoint": "https://example.okta.com/auth",
+                "token_endpoint": "https://example.okta.com/token",
+                "jwks_uri": "https://example.okta.com/keys",
+            },
+            "https://example.okta.com/keys": _make_jwks_response(rsa_key),
+            "https://example.okta.com/token": {
+                "access_token": "x", "id_token": id_token_str, "token_type": "Bearer",
+            },
+        }
+        _set_test_transport(MockOidcTransport(transport_routes))
+        with mock.patch(
+            "sessionfs.server.services.oidc_fetch.socket.getaddrinfo",
+            return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 0))],
+        ), mock.patch.dict("os.environ", {"TEST_OIDC_CLIENT_SECRET": "test-secret"}), \
+                mock.patch(
+                    "sessionfs.server.routes.auth_sso._DASHBOARD_URL",
+                    "https://app.example.test",
+                ):
+            cookie_value = json.dumps({
+                "state": state, "nonce": nonce,
+                "code_verifier": code_verifier, "org_idp_id": idp.id,
+            })
+            resp = await client.get(
+                "/api/v1/auth/sso/callback",
+                params={"code": "auth-code", "state": state},
+                cookies={"sso_state": cookie_value},
+                follow_redirects=False,
+            )
+        assert resp.status_code == 302
+        loc = resp.headers["location"]
+        assert loc.startswith("https://app.example.test/sso/callback#code=")
+        assert "sso_exchange=" in resp.headers.get("set-cookie", "")
+        # Exactly one code row was created; NO sso key minted inline.
+        codes = (await db_session.execute(select(SsoExchangeCode))).scalars().all()
+        assert len(codes) == 1 and codes[0].status == "pending"
+        minted = (await db_session.execute(
+            select(ApiKey).where(ApiKey.sso_minted.is_(True))
+        )).scalars().all()
+        assert minted == []
+
+    async def test_exchange_happy_path_mints_key(
+        self, client, db_session, existing_user, org_member,
+    ):
+        raw_code = secrets.token_urlsafe(32)
+        binding = secrets.token_urlsafe(32)
+        db_session.add(self._seed_code(raw_code, binding, user_id=existing_user.id))
+        await db_session.commit()
+
+        resp = await client.post(
+            "/api/v1/auth/sso/exchange",
+            json={"code": raw_code},
+            cookies={"sso_exchange": binding},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["api_key"] and body["user_id"] == existing_user.id
+        # Code consumed (single-use) + a real sso_minted key exists.
+        row = (await db_session.execute(select(SsoExchangeCode))).scalars().one()
+        assert row.status == "consumed"
+        minted = (await db_session.execute(
+            select(ApiKey).where(ApiKey.user_id == existing_user.id,
+                                 ApiKey.sso_minted.is_(True))
+        )).scalars().all()
+        assert len(minted) == 1
+
+    async def test_exchange_binding_mismatch_rejected(
+        self, client, db_session, existing_user,
+    ):
+        """F1: a valid code with the WRONG browser-binding cookie is refused and
+        the code is NOT consumed (a lured victim can't redeem the attacker's code)."""
+        raw_code = secrets.token_urlsafe(32)
+        db_session.add(self._seed_code(raw_code, "the-real-nonce", user_id=existing_user.id))
+        await db_session.commit()
+        resp = await client.post(
+            "/api/v1/auth/sso/exchange",
+            json={"code": raw_code},
+            cookies={"sso_exchange": "a-different-nonce"},
+        )
+        assert resp.status_code == 400
+        row = (await db_session.execute(select(SsoExchangeCode))).scalars().one()
+        assert row.status == "pending"  # NOT consumed
+
+    async def test_exchange_missing_cookie_rejected(
+        self, client, db_session, existing_user,
+    ):
+        raw_code = secrets.token_urlsafe(32)
+        db_session.add(self._seed_code(raw_code, "n", user_id=existing_user.id))
+        await db_session.commit()
+        resp = await client.post(
+            "/api/v1/auth/sso/exchange", json={"code": raw_code},
+        )
+        assert resp.status_code == 400
+
+    async def test_exchange_single_use(
+        self, client, db_session, existing_user, org_member,
+    ):
+        raw_code = secrets.token_urlsafe(32)
+        binding = secrets.token_urlsafe(32)
+        db_session.add(self._seed_code(raw_code, binding, user_id=existing_user.id))
+        await db_session.commit()
+        first = await client.post(
+            "/api/v1/auth/sso/exchange", json={"code": raw_code},
+            cookies={"sso_exchange": binding},
+        )
+        assert first.status_code == 200
+        second = await client.post(
+            "/api/v1/auth/sso/exchange", json={"code": raw_code},
+            cookies={"sso_exchange": binding},
+        )
+        assert second.status_code == 400
+
+    async def test_exchange_expired_rejected(
+        self, client, db_session, existing_user,
+    ):
+        raw_code = secrets.token_urlsafe(32)
+        binding = secrets.token_urlsafe(32)
+        db_session.add(self._seed_code(
+            raw_code, binding, user_id=existing_user.id, ttl_seconds=-10))
+        await db_session.commit()
+        resp = await client.post(
+            "/api/v1/auth/sso/exchange", json={"code": raw_code},
+            cookies={"sso_exchange": binding},
+        )
+        assert resp.status_code == 400
+
+    async def test_exchange_constant_error_text(
+        self, client, db_session, existing_user,
+    ):
+        """All invalid modes (bad code / expired / wrong binding) return the SAME
+        400 message — no enumeration side-channel (C4)."""
+        raw_code = secrets.token_urlsafe(32)
+        db_session.add(self._seed_code(raw_code, "n", user_id=existing_user.id))
+        await db_session.commit()
+        bad_code = await client.post(
+            "/api/v1/auth/sso/exchange", json={"code": "nonexistent"},
+            cookies={"sso_exchange": "n"},
+        )
+        wrong_bind = await client.post(
+            "/api/v1/auth/sso/exchange", json={"code": raw_code},
+            cookies={"sso_exchange": "wrong"},
+        )
+        assert bad_code.status_code == wrong_bind.status_code == 400
+        # Identical body — no branch distinguishes bad-code from wrong-binding.
+        assert bad_code.json() == wrong_bind.json()
+
+    async def test_exchange_inactive_user_403(
+        self, client, db_session, org,
+    ):
+        inactive = User(
+            id=str(uuid.uuid4()), email="inactive-sso@example.com",
+            display_name="Inactive", tier="free", email_verified=True,
+            is_active=False, created_at=datetime.now(timezone.utc),
+        )
+        db_session.add(inactive)
+        await db_session.commit()
+        raw_code = secrets.token_urlsafe(32)
+        binding = secrets.token_urlsafe(32)
+        db_session.add(self._seed_code(raw_code, binding, user_id=inactive.id))
+        await db_session.commit()
+        resp = await client.post(
+            "/api/v1/auth/sso/exchange", json={"code": raw_code},
+            cookies={"sso_exchange": binding},
+        )
+        assert resp.status_code == 403
