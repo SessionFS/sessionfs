@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] - 2026-07-06
+
+**Resident agents + the SSO dashboard.** Two large feature bodies: a resident reviewer/implementer runner (autonomous, propose-only agents with a durable "mind"), and the dashboard surface for Organization SSO (which shipped backend-only in v0.13.x). Database migrations advance to **058** (057 resident foundation; 058 SSO browser-login). Both proven on PostgreSQL 16.
+
+### Added
+
+- **Resident runner (R0–R5).** An operator-hosted, always-on process that drives a work queue by calling *your own* LLM (no server-side LLM key). Two kinds: a **reviewer** that posts trusted verdicts, and an **implementer** that writes code in an isolated worktree and can only *propose* — it never merges, never self-closes (the server's self-review prohibition closes items only on an independent trusted `VERIFIED-CLEAN`), and never sends code to the server (only branch/SHA/changed-path diff-refs). Includes a first-class server-side resident memory primitive (migration 057: `residents` + `resident_memory_entries`, `resident_memory:read`/`resident_memory:write` scopes), living-context hydrate/writeback/compaction, fail-closed LLM cost bounding (per-wake + daily token ceilings) with a `--cold` mind rebuild, a `sfs resident run`/`sfs resident health` CLI, a hardened sandbox profile (`deploy/resident-sandbox/`), an operator guide, and a mandatory non-rubber-stamp high-risk-merge checklist (the human merge is the load-bearing backstop). Free for the local runner.
+- **SSO admin dashboard.** A new SSO section on the org admin page: OIDC provider configuration (client secret handled strictly as a *reference*, never a pasteable secret), DNS-TXT domain verification, an enforcement toggle (owner is never locked out), and break-glass grants (owner-only). Server authz remains authoritative.
+- **SSO browser login.** "Sign in with SSO" on the login page (organization slug → identity provider) plus a secure one-time-code exchange so the browser lands back in the dashboard logged in. The OIDC callback (previously CLI-only, returning the key as JSON) now, for a browser flow, mints no key inline — it issues a single-use, 120-second, hashed-at-rest one-time code, redirects to the dashboard, and a new `POST /api/v1/auth/sso/exchange` re-mints the key. The raw key is never stored or placed in a URL. The code is bound to the authenticating browser (an HttpOnly cookie nonce verified at exchange) to defeat login-CSRF / session-fixation. New server setting `SFS_DASHBOARD_URL` (browser-login redirect origin).
+- CI gate that runs `alembic upgrade head` against real PostgreSQL 16 (catches the dialect-divergence + object-already-exists migration classes that required the v0.13.1/.2 fast-follows).
+
+### Changed
+
+- The SSO `/callback` success paths were refactored behind a single credential-issuance seam (mint-or-code + one commit); all identity-linking, JIT, seat-cap, and audit logic is unchanged.
+- The admin OIDC retention sweeper also reaps expired browser-login exchange codes.
+
 ## [0.13.2] - 2026-06-29
 
 **Patch: migration 056 no longer recreates an index that already exists.** Second fast-follow on the SSO migration — the v0.13.1 prod migrate-job got past the (now-fixed) PostgreSQL constraint drop but then failed on `CREATE ... uq_org_members_org_user` with `DuplicateTableError`. The deploy was again correctly gated (prod stayed on 0.12.1, DB cleanly at 054).
