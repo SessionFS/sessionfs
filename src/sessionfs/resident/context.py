@@ -95,6 +95,7 @@ async def hydrate_living_context(
     api_url: str,
     api_key: str,
     config: ResidentConfig,
+    skip_digest: bool = False,
 ) -> LivingContext:
     """Assemble the bounded warm context from all durable sources.
 
@@ -107,6 +108,11 @@ async def hydrate_living_context(
 
     The returned LivingContext is token-capped at config.mind_token_budget.
     Sources that fail (403/404/network error) are gracefully skipped.
+
+    R4 --cold: `skip_digest=True` OMITS the compacted digest entirely (not just
+    empties it after) so the full mind_token_budget goes to the RAW durable
+    sources — recent reasoning, KB findings, playbook, sections — which is what
+    a cold rebuild needs to recover from a poisoned/stale digest.
     """
     ctx = LivingContext()
     budget = config.mind_token_budget
@@ -117,12 +123,14 @@ async def hydrate_living_context(
         if memory:
             digest = memory.get("digest") or {}
             if isinstance(digest, dict) and digest.get("content"):
-                content = str(digest["content"])
-                ctx.memory_digest = _fit_to_budget(content, budget)
-                budget -= _estimate_tokens(ctx.memory_digest)
-                # Capture the digest's server id so the runner can supersede it
-                # at the NEXT compaction (else each compact leaks a live digest
-                # toward the F6 cap).
+                if not skip_digest:
+                    content = str(digest["content"])
+                    ctx.memory_digest = _fit_to_budget(content, budget)
+                    budget -= _estimate_tokens(ctx.memory_digest)
+                # Capture the digest's server id REGARDLESS of skip_digest so the
+                # runner supersedes it at the NEXT compaction (else each compact
+                # leaks a live digest toward the F6 cap). A --cold rebuild omits
+                # the digest's CONTENT but must not orphan the old digest.
                 if digest.get("id"):
                     ctx.memory_digest_id = str(digest["id"])
 

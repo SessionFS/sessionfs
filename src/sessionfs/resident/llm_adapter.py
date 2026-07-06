@@ -53,6 +53,7 @@ class ReviewResult:
     verdict_phrase: str = ""
     reasoning: str = ""
     error: str = ""  # non-empty → adapter failed; caller must fail-closed
+    tokens_used: int = 0  # total tokens the call consumed (for cost bounding)
 
 
 # ── Implement data classes (R3) ─────────────────────────────────────────────
@@ -163,6 +164,7 @@ class ImplementResult:
     changes: list[FileChange] = field(default_factory=list)
     summary: str = ""  # human-readable summary for the diff-ref comment
     error: str = ""  # non-empty → adapter failed; caller must fail-closed
+    tokens_used: int = 0  # total tokens the call consumed (for cost bounding)
 
 
 # ── Interfaces ──────────────────────────────────────────────────────────────
@@ -333,20 +335,29 @@ class OpenAICompatibleAdapter(ReviewLLM, ImplementLLM):
             logger.error("LLM adapter unparseable response: %s", exc)
             return ReviewResult(error=f"LLM unparseable response: {exc}")
 
+        # The provider CHARGES for a 200 even when we reject the content — so
+        # capture usage now and attach it to EVERY post-parse result (success or
+        # error), else a charged failure records 0 tokens and never parks.
+        charged = _extract_tokens(body)
+
         # Extract the assistant's text from the OpenAI response shape.
         try:
             text = body["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
             logger.error("LLM adapter unexpected response shape: %s", body)
             return ReviewResult(
-                error=f"LLM unexpected response shape: {exc}"
+                error=f"LLM unexpected response shape: {exc}", tokens_used=charged
             )
 
         if not isinstance(text, str) or not text.strip():
             logger.error("LLM adapter empty response")
-            return ReviewResult(error="LLM returned empty response")
+            return ReviewResult(
+                error="LLM returned empty response", tokens_used=charged
+            )
 
-        return _parse_verdict(text)
+        result = _parse_verdict(text)
+        result.tokens_used = charged
+        return result
 
     async def implement(self, context: ImplementContext) -> ImplementResult:
         """Call the LLM and parse the proposed changes. On ANY error,
@@ -393,6 +404,9 @@ class OpenAICompatibleAdapter(ReviewLLM, ImplementLLM):
             logger.error("LLM adapter unparseable response (implement): %s", exc)
             return ImplementResult(error=f"LLM unparseable response: {exc}")
 
+        # Charged even on a rejected 200 — capture usage for all result paths.
+        charged = _extract_tokens(body)
+
         try:
             text = body["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
@@ -400,14 +414,41 @@ class OpenAICompatibleAdapter(ReviewLLM, ImplementLLM):
                 "LLM adapter unexpected response shape (implement): %s", body
             )
             return ImplementResult(
-                error=f"LLM unexpected response shape: {exc}"
+                error=f"LLM unexpected response shape: {exc}", tokens_used=charged
             )
 
         if not isinstance(text, str) or not text.strip():
             logger.error("LLM adapter empty response (implement)")
-            return ImplementResult(error="LLM returned empty response")
+            return ImplementResult(
+                error="LLM returned empty response", tokens_used=charged
+            )
 
-        return _parse_implement_result(text)
+        result = _parse_implement_result(text)
+        result.tokens_used = charged
+        return result
+
+
+def _extract_tokens(body: object) -> int:
+    """Total tokens the call consumed, from the OpenAI-compatible `usage`
+    block. Best-effort — returns 0 if absent/malformed (cost bounding then
+    can't see this call, but the call already happened)."""
+    if not isinstance(body, dict):
+        return 0
+    usage = body.get("usage")
+    if not isinstance(usage, dict):
+        return 0
+    total = usage.get("total_tokens")
+    if isinstance(total, int):
+        return max(0, total)
+    # Some providers omit total_tokens — sum prompt + completion.
+    prompt = usage.get("prompt_tokens")
+    completion = usage.get("completion_tokens")
+    got = 0
+    if isinstance(prompt, int):
+        got += max(0, prompt)
+    if isinstance(completion, int):
+        got += max(0, completion)
+    return got
 
 
 def _build_review_payload(context: ReviewContext) -> str:

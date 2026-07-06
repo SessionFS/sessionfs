@@ -36,6 +36,7 @@ from sessionfs.resident.context import (
     LivingContext,
     hydrate_living_context,
 )
+from sessionfs.resident.budget import BudgetTracker
 from sessionfs.resident.implementer import run_implement_directive
 from sessionfs.resident.llm_adapter import (
     ReviewLLM,
@@ -97,11 +98,17 @@ class ResidentRunner:
         config: ResidentConfig,
         llm_adapter: ReviewLLM | None = None,
         implement_adapter: ImplementLLM | None = None,
+        cold_start: bool = False,
     ) -> None:
         self._config = config
         self._running = False
         self._adapter = llm_adapter
         self._implement_adapter = implement_adapter
+        # R4 — --cold: rebuild the mind from durable sources (omit the digest)
+        # until a supported LLM directive has run against it.
+        self._cold_start = cold_start
+        self._cold_hydrate_ok = False
+        self._llm_ran_this_wake = False
 
         # Auth state — resolved once on start.
         self._api_url: str = ""
@@ -113,6 +120,18 @@ class ResidentRunner:
         self._wake_count: int = 0
         # Buffer of recent reasoning entries (as dicts) for compaction.
         self._reasoning_buffer: list[dict] = []
+
+        # R4 — LLM cost bounding (fail-closed parking).
+        # A budget key UNIQUE to this resident so config-less/ad-hoc residents
+        # (whose name defaults to "cli") don't share one budget file and collide
+        # their spend. Prefer the registered resident id; else name+queue.
+        budget_key = config.resident_id or f"{config.name}-{config.queue_id}"
+        self._budget = BudgetTracker(
+            budget_key,
+            daily_token_budget=config.daily_token_budget,
+            per_wake_token_budget=config.per_wake_token_budget,
+            per_call_estimate=config.estimated_call_tokens(),
+        )
 
     # ── Public API ──────────────────────────────────────────────────────
 
@@ -176,16 +195,44 @@ class ResidentRunner:
 
     async def _hydrate(self) -> None:
         """Hydrate the living context from durable SessionFS sources.
-        Gracefully degrades if the memory endpoints are unreachable."""
+        Gracefully degrades if the memory endpoints are unreachable.
+
+        R4 --cold: while the cold flag is set, the digest is OMITTED during
+        hydration so the full mind budget goes to the raw durable sources — a
+        real rebuild. The flag is consumed only on the first WORK hydrate (one
+        that precedes actual directive processing), NOT a boot/idle/post-compact
+        hydrate, so the cold rebuild is guaranteed to apply to real review work.
+        """
+        cold = self._cold_start
+        hydrated_ok = False
         try:
             self._living_context = await hydrate_living_context(
-                self._api_url, self._api_key, self._config
+                self._api_url, self._api_key, self._config, skip_digest=cold
             )
+            hydrated_ok = True
         except Exception as exc:
             logger.warning(
                 "Hydration failed — continuing with cold context: %s", exc
             )
             self._living_context = LivingContext()
+
+        # Record whether a cold hydrate actually loaded durable sources. The cold
+        # flag is NOT consumed here — it is consumed by _consume_cold_start()
+        # only after a SUPPORTED LLM directive runs, so an idle wake or a wake
+        # with only unsupported/parked directives doesn't waste the rebuild.
+        if cold:
+            self._cold_hydrate_ok = hydrated_ok
+
+    def _consume_cold_start(self) -> None:
+        """Consume a pending --cold rebuild — call AFTER a supported LLM
+        directive has run against the cold-rebuilt context, and only if that
+        hydrate succeeded (else keep cold pending to retry)."""
+        if self._cold_start and self._cold_hydrate_ok:
+            logger.info(
+                "Cold start — rebuilt the mind from durable sources (digest "
+                "omitted); consumed after the first real LLM directive."
+            )
+            self._cold_start = False
 
     def _enrich_with_living_context(self, context: ReviewContext) -> ReviewContext:
         """Enrich a ReviewContext with the living mind fields.
@@ -464,6 +511,13 @@ class ResidentRunner:
         """One heartbeat: step → for each directive → review → settle."""
         results: list[dict] = []
         self._wake_count += 1
+        # R4 — reset the per-heartbeat spend counter so per_wake_token_budget
+        # caps this whole wake (across all directives).
+        self._budget.begin_wake()
+        # R4 --cold: explicit "an LLM actually ran this wake" flag (independent
+        # of the budget — a budget-less resident or a 0-usage call must still
+        # count as work done for cold-rebuild-consumption purposes).
+        self._llm_ran_this_wake = False
 
         # 1. Call the heartbeat.
         step = await run_work_queue_step(
@@ -510,11 +564,11 @@ class ResidentRunner:
             logger.warning("Unexpected directives shape: %s", type(directives))
             return results
 
-        # Refresh the living context before reviewing so each wake sees the
-        # latest KB/wiki/playbook/memory — another process may have updated the
-        # playbook or KB, or this resident wrote durable findings on a prior
-        # wake. (Skipped on idle wakes with no directives to avoid wasted calls.)
-        if directives:
+        # R4 — hydrate ONLY when there is LLM headroom: hydration feeds the LLM
+        # prompt, and when parked no LLM directive runs (the unsupported-intent
+        # releases below need no context). This is the WORK hydrate — it
+        # consumes any pending --cold rebuild.
+        if directives and self._budget.can_wake()[0]:
             await self._hydrate()
 
         for directive in directives:
@@ -522,6 +576,25 @@ class ResidentRunner:
                 continue
 
             intent = directive.get("intent", "")
+
+            # R4 — FAIL-CLOSED budget park, but ONLY for directives that need the
+            # LLM. A parked LLM directive is left UNSETTLED (its open lease
+            # re-emits once the budget resets) — NOT failed, which would back off
+            # + eventually mark it failed-after-max just for being over budget.
+            # A NON-LLM directive (an unsupported intent) still falls through to
+            # the release path below regardless of budget — releasing it spends
+            # no tokens and un-wedges a misrouted queue.
+            needs_llm = (
+                intent in ("implement", "fix_findings")
+                if self._config.mode == "implement"
+                else intent == "post_review"
+            )
+            if needs_llm and not self._budget.can_wake()[0]:
+                logger.warning(
+                    "Budget park — deferring LLM directive '%s' (it re-emits).",
+                    intent,
+                )
+                continue
 
             # R3: implement mode — route implement/fix_findings to the
             # implementer. The reviewer's fix_findings intent is the same
@@ -536,7 +609,10 @@ class ResidentRunner:
                         api_key=self._api_key,
                         config=self._config,
                         adapter=self._implement_adapter,
+                        budget=self._budget,
                     )
+                    if result.get("llm_invoked"):
+                        self._llm_ran_this_wake = True
                     results.append(result)
                     continue
                 else:
@@ -572,6 +648,12 @@ class ResidentRunner:
 
             result = await self._process_review_directive(directive)
             results.append(result)
+
+        # R4 --cold: consume the pending rebuild only if an LLM actually ran this
+        # wake. A skipped/empty/parked wake leaves cold pending so the rebuild is
+        # guaranteed to reach a real LLM directive.
+        if self._llm_ran_this_wake:
+            self._consume_cold_start()
 
         return results
 
@@ -637,6 +719,7 @@ class ResidentRunner:
 
         # Call the operator's OWN LLM (client-side, operator key).
         assert self._adapter is not None
+        self._llm_ran_this_wake = True  # an LLM call is being made this wake
         try:
             result = await self._adapter.review(context)
         except Exception as exc:
@@ -648,6 +731,9 @@ class ResidentRunner:
                 exc,
             )
             result = ReviewResult(error=f"LLM adapter exception: {exc}")
+
+        # R4 — record LLM spend for cost bounding (park happens before the wake).
+        self._budget.record(result.tokens_used)
 
         if result.error:
             # Fail-closed: do NOT settle a clean verdict.

@@ -22,7 +22,11 @@ import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import quote
+
+if TYPE_CHECKING:
+    from sessionfs.resident.budget import BudgetTracker
 
 from sessionfs.resident.client import (
     _api_request,
@@ -111,6 +115,7 @@ async def run_implement_directive(
     api_key: str,
     config: ResidentConfig,
     adapter: ImplementLLM,
+    budget: "BudgetTracker | None" = None,
 ) -> dict:
     """Process one implement or fix_findings directive.
 
@@ -189,6 +194,11 @@ async def run_implement_directive(
         logger.error("LLM adapter raised for ticket=%s: %s", ticket_id, exc)
         result = ImplementResult(error=f"LLM adapter exception: {exc}")
 
+    # R4 — record LLM spend for cost bounding (fail-closed park happens in the
+    # runner BEFORE the wake). Recorded regardless of the outcome below.
+    if budget is not None:
+        budget.record(result.tokens_used)
+
     if result.error:
         logger.error(
             "LLM implement failed for ticket=%s: %s", ticket_id, result.error
@@ -198,6 +208,7 @@ async def run_implement_directive(
             item_id=item_id, directive_id=directive_id,
             ticket_id=ticket_id, lease_epoch=lease_epoch,
             reason=f"LLM error: {result.error[:500]}",
+            llm_invoked=True,
         )
 
     # Refuse a full-file rewrite of a file that was TOO LARGE to fully include
@@ -219,6 +230,7 @@ async def run_implement_directive(
             item_id=item_id, directive_id=directive_id,
             ticket_id=ticket_id, lease_epoch=lease_epoch,
             reason=f"Refused full-file rewrite of oversized file(s): {_clobbered}",
+            llm_invoked=True,
         )
 
     # Refuse a BLIND rewrite: a change to an existing file that was NEVER
@@ -258,6 +270,7 @@ async def run_implement_directive(
             item_id=item_id, directive_id=directive_id,
             ticket_id=ticket_id, lease_epoch=lease_epoch,
             reason=f"Refused blind rewrite of un-hydrated existing file(s): {_blind}",
+            llm_invoked=True,
         )
 
     if not result.changes:
@@ -275,6 +288,7 @@ async def run_implement_directive(
                 item_id=item_id, directive_id=directive_id,
                 ticket_id=ticket_id, lease_epoch=lease_epoch,
                 reason="LLM returned no changes",
+                llm_invoked=True,
             )
         # Branch ahead → a prior wake committed. Surface the existing commit;
         # whether we re-post the diff-ref or fail depends on whether it's
@@ -304,6 +318,7 @@ async def run_implement_directive(
                 item_id=item_id, directive_id=directive_id,
                 ticket_id=ticket_id, lease_epoch=lease_epoch,
                 reason=f"Apply/commit error: {exc}",
+                llm_invoked=True,
             )
 
     # Retry-resume post gate. When we're surfacing an EXISTING commit whose
@@ -337,6 +352,7 @@ async def run_implement_directive(
                 item_id=item_id, directive_id=directive_id,
                 ticket_id=ticket_id, lease_epoch=lease_epoch,
                 reason="No progress: reviewer requested changes on an already-surfaced commit",
+                llm_invoked=True,
             )
         # verdict == "clean" (item closing) OR None (still AWAITING review):
         # settle WITHOUT a new comment — don't stale a clean verdict, and don't
@@ -355,6 +371,7 @@ async def run_implement_directive(
             "ticket_id": ticket_id,
             "directive_id": directive_id,
             "settled": settle_resp.status_code in (200, 201),
+            "llm_invoked": True,
             "intent": intent,
             "branch": git_state.branch,
             "commit": git_state.commit_sha,
@@ -394,6 +411,7 @@ async def run_implement_directive(
             "ticket_id": ticket_id,
             "directive_id": directive_id,
             "settled": False,
+            "llm_invoked": True,
             "intent": intent,
             "retryable": True,
             "error": f"diff-ref comment post failed (HTTP {comment_resp.status_code})",
@@ -431,6 +449,7 @@ async def run_implement_directive(
         "ticket_id": ticket_id,
         "directive_id": directive_id,
         "settled": settle_resp.status_code in (200, 201),
+        "llm_invoked": True,
         "intent": intent,
         "branch": git_state.branch,
         "commit": git_state.commit_sha,
@@ -1077,9 +1096,11 @@ async def _settle_failed(
     ticket_id: str,
     lease_epoch: int | None,
     reason: str,
+    llm_invoked: bool = False,
 ) -> dict:
     """Settle a directive as failed (backoff). Invariant 6: never present
-    a non-change as a proposal."""
+    a non-change as a proposal. `llm_invoked` records whether the LLM had
+    already been called before this failure (for the runner's --cold signal)."""
     # C7: `reason` can carry LLM output / exception text / file paths — log it
     # LOCALLY for the operator, but send only a FIXED, server-safe string. A
     # free-text failure reason would be another cross-server channel a
@@ -1108,4 +1129,5 @@ async def _settle_failed(
         "settled": False,
         "error": reason,
         "settle_status": settle_resp.status_code,
+        "llm_invoked": llm_invoked,
     }

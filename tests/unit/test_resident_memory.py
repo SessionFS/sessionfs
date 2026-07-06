@@ -799,3 +799,56 @@ async def test_writeback_uses_configured_persona(r2_config: ResidentConfig):
     dedup = [c for c in api_calls if c["method"] == "GET" and "/entries" in c["path"]]
     assert dedup and "persona_name=atlas" in dedup[0]["path"]
     assert "claim_class=claim" not in dedup[0]["path"]
+
+
+@pytest.mark.asyncio
+async def test_cold_hydration_skips_digest_keeps_durable_sources(
+    r2_config: ResidentConfig,
+):
+    """R4 --cold: skip_digest=True OMITS the digest so the budget goes to the raw
+    durable sources (recent reasoning, KB, playbook) — a real rebuild."""
+    async def fake_request(method: str, api_url: str, api_key: str,
+                           path: str, json_data: dict | None = None,
+                           timeout: int = 30) -> MagicMock:
+        if "/memory/hydrate" in path:
+            return _mock_api_response(200, {
+                "digest": {
+                    "id": "rme_digest1", "kind": "digest", "seq": 5,
+                    "content": "STALE POISONED DIGEST CONTENT",
+                    "quarantined": False,
+                    "created_at": "2026-07-05T00:00:00Z",
+                },
+                "recent_reasoning": [
+                    {"id": "rme_r1", "kind": "reasoning", "seq": 4,
+                     "content": "Recent durable reasoning entry.",
+                     "quarantined": False,
+                     "created_at": "2026-07-05T00:00:00Z"},
+                ],
+            })
+        elif "/entries" in path and "persona_name" in path:
+            return _mock_api_response(200, [
+                {"id": 1, "content": "Durable KB finding.",
+                 "persona_name": "codex-reviewer", "claim_class": "claim"},
+            ])
+        elif "/pages/review-playbook" in path:
+            return _mock_api_response(200, {
+                "id": "p1", "slug": "review-playbook", "title": "Playbook",
+                "content": "Durable playbook rule.",
+            })
+        return _mock_api_response(404, {})
+
+    with patch("sessionfs.resident.context._api_request", side_effect=fake_request):
+        ctx = await hydrate_living_context(
+            "https://api.test", "svc-key", r2_config, skip_digest=True,
+        )
+
+    # The (stale/poisoned) digest CONTENT is omitted...
+    assert ctx.memory_digest == ""
+    assert "POISONED" not in str(ctx.memory_digest)
+    # ...but its id is PRESERVED so the next compaction supersedes the old
+    # digest (it must not be orphaned toward the F6 cap).
+    assert ctx.memory_digest_id == "rme_digest1"
+    # But the raw durable sources are STILL hydrated (the rebuild material).
+    assert len(ctx.recent_reasoning) > 0
+    assert len(ctx.prior_findings) > 0
+    assert ctx.review_playbook != ""

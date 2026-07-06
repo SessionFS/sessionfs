@@ -1258,3 +1258,189 @@ async def test_compact_keeps_overflow_over_server_cap(
 
     assert len(captured["superseded"]) == 200  # cap respected
     assert len(runner._reasoning_buffer) == 50  # overflow kept for next compact
+
+
+@pytest.mark.asyncio
+async def test_budget_park_skips_llm_and_releases_directive(
+    minimal_config: ResidentConfig,
+    mock_step_response_ok: dict,
+):
+    """R4: when the daily LLM budget is exhausted the runner PARKS — it does NOT
+    call the LLM and releases the claimed directive so it re-emits later."""
+    minimal_config.daily_token_budget = 1000
+
+    review_calls = {"n": 0}
+
+    class CountingLLM(StubReviewLLM):
+        async def review(self, context: object) -> object:  # type: ignore[override]
+            review_calls["n"] += 1
+            return await super().review(context)  # type: ignore[arg-type]
+
+    adapter = CountingLLM(verdict_phrase="VERIFIED-CLEAN", reasoning="ok")
+    runner = ResidentRunner(minimal_config, llm_adapter=adapter)
+    runner._api_url = "https://api.test"
+    runner._api_key = "svc-key-123"
+    runner._project_id = "proj_test"
+    runner._budget.record(1000)  # exhaust the daily budget
+
+    settle_calls: list[dict] = []
+
+    async def fake_complete(*args: object, **kwargs: object) -> MagicMock:
+        settle_calls.append(kwargs)
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.body = {"ok": True}
+        return resp
+
+    with patch(
+        "sessionfs.resident.runner.complete_work_queue_step", side_effect=fake_complete,
+    ), patch(
+        "sessionfs.resident.runner.run_work_queue_step",
+        AsyncMock(return_value=MagicMock(status_code=200, body=mock_step_response_ok)),
+    ):
+        await runner.run_once()
+
+    assert review_calls["n"] == 0  # the LLM was NEVER called (parked)
+    # The directive is left UNSETTLED so the open lease re-emits once the budget
+    # resets — it must NOT be failed (which would back off / fail-after-max just
+    # for being over budget).
+    assert settle_calls == []
+
+
+@pytest.mark.asyncio
+async def test_cold_start_drops_digest_on_first_hydrate_only(
+    minimal_config: ResidentConfig,
+):
+    """R4 --cold: the durable digest is dropped on the FIRST hydrate (rebuild
+    from raw sources) and preserved on subsequent wakes (one-shot)."""
+    from sessionfs.resident.context import LivingContext
+
+    runner = ResidentRunner(minimal_config, cold_start=True)
+    runner._api_url = "https://api.test"
+    runner._api_key = "svc"
+
+    async def fake_hydrate(
+        api_url: object, api_key: object, config: object, skip_digest: bool = False,
+    ) -> LivingContext:
+        # Honor skip_digest as the real hydrator does: omit the digest so its
+        # budget goes to durable sources.
+        if skip_digest:
+            return LivingContext(memory_digest="", memory_digest_id="")
+        return LivingContext(memory_digest="stale digest", memory_digest_id="d1")
+
+    with patch(
+        "sessionfs.resident.runner.hydrate_living_context", side_effect=fake_hydrate,
+    ):
+        # Hydration applies the cold state (digest omitted) but does NOT consume
+        # the flag — that only happens after a real LLM directive runs.
+        await runner._hydrate()
+        assert runner._living_context is not None
+        assert runner._living_context.memory_digest == ""  # cold applied
+        assert runner._cold_hydrate_ok is True  # the rebuild loaded sources
+        assert runner._cold_start is True  # still pending (no LLM directive yet)
+
+        # After a supported LLM directive runs, the cold flag is consumed.
+        runner._consume_cold_start()
+        assert runner._cold_start is False
+
+        await runner._hydrate()  # now warm → digest present
+        assert runner._living_context.memory_digest == "stale digest"
+
+
+@pytest.mark.asyncio
+async def test_cold_start_survives_hydration_failure(
+    minimal_config: ResidentConfig,
+):
+    """R4: if the cold work-hydrate FAILS, cold stays pending (the rebuild never
+    happened) so the next work wake retries it."""
+    runner = ResidentRunner(minimal_config, cold_start=True)
+    runner._api_url = "https://api.test"
+    runner._api_key = "svc"
+
+    async def failing_hydrate(*a: object, **k: object) -> object:
+        raise RuntimeError("network down")
+
+    with patch(
+        "sessionfs.resident.runner.hydrate_living_context", side_effect=failing_hydrate,
+    ):
+        await runner._hydrate()  # the cold hydrate FAILS
+    runner._consume_cold_start()  # even after an LLM directive would run...
+
+    assert runner._cold_start is True  # ...still pending — the rebuild didn't happen
+
+
+@pytest.mark.asyncio
+async def test_adapter_records_tokens_on_charged_failure(
+    minimal_config: ResidentConfig,
+):
+    """R4: a 200 with a usage block but a rejected shape still CHARGED — the
+    tokens must be recorded so the budget can park (else the resident retries a
+    charged failure forever without ever parking)."""
+    from sessionfs.resident.llm_adapter import OpenAICompatibleAdapter, ReviewContext
+
+    adapter = OpenAICompatibleAdapter(minimal_config.llm)
+
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = {"usage": {"total_tokens": 777}}  # no 'choices' → bad shape
+
+    client = AsyncMock()
+    client.post = AsyncMock(return_value=resp)
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch(
+        "sessionfs.resident.llm_adapter.httpx.AsyncClient", return_value=client,
+    ):
+        result = await adapter.review(
+            ReviewContext(ticket_id="tk", ticket_title="x")
+        )
+
+    assert result.error != ""          # the response was rejected...
+    assert result.tokens_used == 777   # ...but the charge WAS recorded
+
+
+@pytest.mark.asyncio
+async def test_parked_budget_still_releases_unsupported_directive(
+    minimal_config: ResidentConfig,
+):
+    """R4: even when the budget is parked, a NON-LLM (unsupported-intent)
+    directive is still RELEASED — releasing it spends no tokens and un-wedges a
+    misrouted queue (it must not stay leased until the budget resets)."""
+    minimal_config.daily_token_budget = 100000
+    minimal_config.per_wake_token_budget = 10000  # covers the review-mode floor
+
+    # An unsupported intent on a REVIEW-mode runner → release path (no LLM).
+    bad = {
+        "intent": "implement",  # not post_review
+        "item_id": "wqi_x", "directive_id": "dir_x", "ticket_id": "tk_x",
+        "ticket_lease_epoch": 1, "ticket": {"id": "tk_x", "title": "t"},
+        "comment_delta": [],
+    }
+    step_body = {"status": "ok", "directives": [bad]}
+
+    runner = ResidentRunner(minimal_config, llm_adapter=StubReviewLLM())
+    runner._api_url = "https://api.test"
+    runner._api_key = "svc"
+    runner._project_id = "proj_test"
+    runner._budget.record(100000)  # exhaust the daily budget → parked
+
+    settle_calls: list[dict] = []
+
+    async def fake_complete(*a: object, **k: object) -> MagicMock:
+        settle_calls.append(k)
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.body = {"ok": True}
+        return resp
+
+    with patch(
+        "sessionfs.resident.runner.complete_work_queue_step", side_effect=fake_complete,
+    ), patch(
+        "sessionfs.resident.runner.run_work_queue_step",
+        AsyncMock(return_value=MagicMock(status_code=200, body=step_body)),
+    ):
+        await runner.run_once()
+
+    # The unsupported directive was RELEASED (settled failed) despite the park.
+    assert settle_calls and settle_calls[0].get("failed") is True

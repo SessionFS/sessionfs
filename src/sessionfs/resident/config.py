@@ -91,6 +91,10 @@ class ResidentConfig:
     mind_token_budget: int = 8000  # client-side cap for the warm digest
     compact_every_wakes: int = 10  # compact every N wakes
 
+    # R4 — LLM cost bounding (0 = unlimited). Fail-closed parking when exhausted.
+    daily_token_budget: int = 0  # daily LLM-token ceiling across restarts
+    per_wake_token_budget: int = 0  # per-wake reserve (don't start a wake we can't afford)
+
     # LLM
     llm: LLMConfig = field(default_factory=LLMConfig)
 
@@ -152,6 +156,8 @@ class ResidentConfig:
             persona=toml_persona if toml_persona else "codex-reviewer",
             poll_interval_seconds=poll,
             mind_token_budget=int(resident_raw.get("mind_token_budget", 8000)),
+            daily_token_budget=int(resident_raw.get("daily_token_budget", 0)),
+            per_wake_token_budget=int(resident_raw.get("per_wake_token_budget", 0)),
             compact_every_wakes=int(resident_raw.get("compact_every_wakes", 10)),
             llm=llm,
             mode=str(resident_raw.get("mode", "review")),
@@ -180,6 +186,28 @@ class ResidentConfig:
                 self.llm.api_key = env_key_name
                 self.llm.api_key_is_env = True
         self._resolved_llm_key = self.llm.resolve_api_key()
+
+    def estimated_call_tokens(self) -> int:
+        """A conservative CONFIG-TIME estimate of one full LLM call's charged
+        tokens (completion cap + prompt). Used to validate the per-wake reserve
+        and to reserve headroom before each call.
+
+        This is deliberately a fixed heuristic, not a per-directive measurement:
+        the actual directive payload (ticket text, comment delta, findings) is
+        only known at runtime, and completion tokens can't be known before the
+        call. The budget is the SAFETY NET, not a precise meter — it fails
+        CLOSED (parks) whenever the reserve can't be guaranteed, and record()
+        charges the estimate when a provider omits usage, so real overspend is
+        bounded to roughly one call's worth. Operators size the budget with
+        headroom accordingly. In implement mode the prompt also carries up to
+        ~20 hydrated file bodies (~8000 chars ≈ 2000 tokens each)."""
+        prompt_est = self.mind_token_budget
+        # A fixed allowance for the DIRECTIVE payload beyond the mind digest —
+        # ticket text, comment delta, and review verdict/findings.
+        prompt_est += 4000
+        if self.mode == "implement":
+            prompt_est += 20 * 2000
+        return self.llm.max_tokens + prompt_est
 
     def validate(self) -> list[str]:
         """Validate required fields. Returns a list of error messages (empty = valid)."""
@@ -223,6 +251,40 @@ class ResidentConfig:
             errors.append("resident.compact_every_wakes must be >= 1")
         if self.mind_token_budget < 500:
             errors.append("resident.mind_token_budget must be >= 500")
+        if self.daily_token_budget < 0:
+            errors.append("resident.daily_token_budget must be >= 0 (0 = unlimited)")
+        if self.per_wake_token_budget < 0:
+            errors.append("resident.per_wake_token_budget must be >= 0 (0 = unlimited)")
+        if (
+            self.daily_token_budget
+            and self.per_wake_token_budget
+            and self.per_wake_token_budget > self.daily_token_budget
+        ):
+            errors.append(
+                "resident.per_wake_token_budget must not exceed daily_token_budget"
+            )
+        if self.daily_token_budget and not self.per_wake_token_budget:
+            # Without a per-wake cap, a daily ceiling can be overshot by one full
+            # unrestricted LLM call before the next wake parks — so the per-wake
+            # bound is REQUIRED whenever a daily budget is set.
+            errors.append(
+                "resident.per_wake_token_budget is required when "
+                "daily_token_budget is set (it bounds a single wake's spend so "
+                "the daily ceiling can't be overshot by one unrestricted call)."
+            )
+        if self.per_wake_token_budget:
+            # The per-wake reserve must cover a whole CHARGED call (completion +
+            # full prompt), else one call overshoots the ceiling before record()
+            # notices. Same estimate the runner reserves before each call.
+            _min_call = self.estimated_call_tokens()
+            if self.per_wake_token_budget < _min_call:
+                errors.append(
+                    f"resident.per_wake_token_budget "
+                    f"({self.per_wake_token_budget}) must be at least an "
+                    f"estimated full-call cost (llm.max_tokens + prompt ≈ "
+                    f"{_min_call}) in {self.mode} mode, so the per-wake reserve "
+                    f"covers a whole charged LLM call."
+                )
         # R3: implementer validation.
         if self.mode not in ("review", "implement"):
             errors.append(

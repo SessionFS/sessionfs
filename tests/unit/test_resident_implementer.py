@@ -2265,3 +2265,41 @@ async def test_diff_ref_pagination_finds_ref_on_later_page(
         )
     assert found is True
     assert calls["n"] == 2  # advanced to the second page
+
+
+@pytest.mark.asyncio
+async def test_implement_records_llm_tokens_to_budget(
+    implement_config: ResidentConfig,
+    tmp_git_worktree: Path,
+    mock_implement_directive: dict,
+):
+    """R4: the implementer records the LLM call's token usage to the budget."""
+    from sessionfs.resident.budget import BudgetTracker
+    implement_config.worktree_path = str(tmp_git_worktree)
+    budget = BudgetTracker("t", daily_token_budget=100000, state_dir=tmp_git_worktree)
+
+    class TokenLLM(StubImplementLLM):
+        async def implement(self, context: ImplementContext) -> ImplementResult:
+            r = await super().implement(context)
+            r.tokens_used = 1234
+            return r
+
+    adapter = TokenLLM(changes=[FileChange(path="src/x.py", new_content="x = 1\n")])
+
+    async def ok(*a: object, **k: object) -> ApiResponse:
+        return ApiResponse(status_code=201, body={"id": "tc"}, headers={})
+
+    async def ok_complete(*a: object, **k: object) -> ApiResponse:
+        return ApiResponse(status_code=200, body={"ok": True}, headers={})
+
+    with patch(
+        "sessionfs.resident.implementer.add_ticket_comment", side_effect=ok,
+    ), patch(
+        "sessionfs.resident.implementer.complete_work_queue_step", side_effect=ok_complete,
+    ):
+        await run_implement_directive(
+            mock_implement_directive, api_url="https://api.test", api_key="svc",
+            config=implement_config, adapter=adapter, budget=budget,
+        )
+
+    assert budget.spent_today == 1234

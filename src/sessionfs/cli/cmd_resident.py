@@ -57,6 +57,8 @@ def _resolve_config(
     org_id: str | None = None,
     mode: str | None = None,
     worktree_path: str | None = None,
+    daily_token_budget: int | None = None,
+    per_wake_token_budget: int | None = None,
 ) -> ResidentConfig:
     """Load config from file + apply CLI overrides.
 
@@ -90,6 +92,12 @@ def _resolve_config(
             cfg.persona = "atlas"
     if worktree_path:
         cfg.worktree_path = worktree_path
+    # Pass budgets through UNCLAMPED so a NEGATIVE value is rejected by
+    # validate() (not silently turned into 0 = unlimited, the opposite intent).
+    if daily_token_budget is not None:
+        cfg.daily_token_budget = daily_token_budget
+    if per_wake_token_budget is not None:
+        cfg.per_wake_token_budget = per_wake_token_budget
 
     # Apply the RESIDENT_LLM_API_KEY / RESIDENT_LLM_API_KEY_ENV env resolution
     # for the ad-hoc (no --config) path — from_toml already did it for the
@@ -145,6 +153,24 @@ def run_resident(
         help="Path to the git worktree for implement mode "
              "(required when --mode=implement).",
     ),
+    daily_token_budget: int | None = typer.Option(
+        None, "--daily-token-budget",
+        help="Daily LLM-token ceiling (0 = unlimited). Fail-closed: the resident "
+             "PARKS (no LLM work) when exhausted, resuming at UTC midnight. "
+             "REQUIRES --per-wake-token-budget (the bound that keeps one call "
+             "from overshooting the daily ceiling).",
+    ),
+    per_wake_token_budget: int | None = typer.Option(
+        None, "--per-wake-token-budget",
+        help="Per-wake token reserve — the resident won't start a wake it can't "
+             "afford within the daily budget (0 = unlimited).",
+    ),
+    cold: bool = typer.Option(
+        False, "--cold",
+        help="Cold start: rebuild the mind from durable sources, ignoring the "
+             "existing memory digest on the first wake (recovers from a poisoned "
+             "or stale warm digest).",
+    ),
     once: bool = typer.Option(
         False, "--once", help="Run a single heartbeat then exit (for testing)."
     ),
@@ -176,9 +202,11 @@ def run_resident(
         org_id=org_id,
         mode=mode,
         worktree_path=worktree,
+        daily_token_budget=daily_token_budget,
+        per_wake_token_budget=per_wake_token_budget,
     )
 
-    runner = ResidentRunner(cfg)
+    runner = ResidentRunner(cfg, cold_start=cold)
 
     if once:
         results = asyncio.run(runner.run_once())
