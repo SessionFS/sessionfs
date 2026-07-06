@@ -25,6 +25,7 @@ from sessionfs.server.db.models import (
     OrgAuditEvent,
     OrgMember,
     Session,
+    SsoExchangeCode,
     User,
 )
 from sessionfs.server.services.entitlements import apply_entitlement
@@ -1325,6 +1326,14 @@ async def purge_oidc_login_attempts(
     )
     purged = del_result.rowcount or 0
 
+    # 3. Delete EXPIRED browser-login one-time codes regardless of status
+    #    (C14) — a consumed-but-expired code is dead either way; the 120s TTL
+    #    makes expiry the reap key. Removes the code_hash/binding_hash rows.
+    codes_result = await db.execute(
+        delete(SsoExchangeCode).where(SsoExchangeCode.expires_at < now)
+    )
+    codes_purged = codes_result.rowcount or 0
+
     await _log_action(
         db,
         admin.id,
@@ -1332,11 +1341,16 @@ async def purge_oidc_login_attempts(
         "oidc_login_attempt",
         "bulk",
         {"purged": purged, "expired_flipped": flipped.rowcount or 0,
+         "exchange_codes_purged": codes_purged,
          "retention_days": retention_days},
     )
     await db.commit()
 
-    return {"purged": purged, "expired_flipped": flipped.rowcount or 0}
+    return {
+        "purged": purged,
+        "expired_flipped": flipped.rowcount or 0,
+        "exchange_codes_purged": codes_purged,
+    }
 
 
 # ---------------------------------------------------------------------------

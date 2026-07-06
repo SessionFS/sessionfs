@@ -95,4 +95,41 @@ describe('LoginPage', () => {
     expect(screen.getByPlaceholderText('you@example.com')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /create account/i })).toBeInTheDocument();
   });
+
+  it('starts SSO for an org slug and redirects to the IdP authorize URL', async () => {
+    const user = userEvent.setup();
+    const assignSpy = vi.fn();
+    const realLocation = window.location;
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...realLocation, hostname: 'localhost', assign: assignSpy },
+    });
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ authorize_url: 'https://okta.example.com/auth?x=1' }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<MemoryRouter><LoginPage /></MemoryRouter>);
+    await user.type(screen.getByLabelText(/organization slug for sso/i), 'acme');
+    await user.click(screen.getByRole('button', { name: 'SSO' }));
+
+    await waitFor(() => expect(assignSpy).toHaveBeenCalledWith('https://okta.example.com/auth?x=1'));
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toMatch(/\/api\/v1\/auth\/sso\/start$/);
+    expect(JSON.parse(opts.body)).toEqual({ org_slug: 'acme', client_flow: 'browser' });
+    Object.defineProperty(window, 'location', { configurable: true, value: realLocation });
+    vi.restoreAllMocks();
+  });
+
+  it('shows a friendly message when SSO is not configured for the org (404)', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 404, json: async () => ({}) }));
+    render(<MemoryRouter><LoginPage /></MemoryRouter>);
+    await user.type(screen.getByLabelText(/organization slug for sso/i), 'nope');
+    await user.click(screen.getByRole('button', { name: 'SSO' }));
+    await waitFor(() => expect(screen.getByText(/not configured for that organization/i)).toBeInTheDocument());
+    vi.restoreAllMocks();
+  });
 });

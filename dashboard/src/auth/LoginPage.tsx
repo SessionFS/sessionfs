@@ -33,6 +33,8 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [signupKey, setSignupKey] = useState('');
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
+  const [orgSlug, setOrgSlug] = useState('');
+  const [ssoLoading, setSsoLoading] = useState(false);
 
   function clearFieldError(field: string) {
     setFieldErrors((prev) => ({ ...prev, [field]: undefined }));
@@ -107,6 +109,48 @@ export default function LoginPage() {
       }
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleSso(e: FormEvent) {
+    e.preventDefault();
+    setError('');
+    const slug = orgSlug.trim();
+    if (!slug) return;
+    setSsoLoading(true);
+    try {
+      const resp = await fetch(`${baseUrl}/api/v1/auth/sso/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include', // receive the HttpOnly state cookie
+        body: JSON.stringify({ org_slug: slug, client_flow: 'browser' }),
+      });
+      if (resp.status === 404) {
+        setError('SSO is not configured for that organization.');
+        return;
+      }
+      if (!resp.ok) {
+        setError('Could not start SSO sign-in. Check the organization and try again.');
+        return;
+      }
+      const data = (await resp.json()) as { authorize_url?: string };
+      if (!data.authorize_url) {
+        setError('Could not start SSO sign-in. Please try again.');
+        return;
+      }
+      // Remember the API base this flow started against (the user may have set
+      // a custom Server URL) so the /sso/callback exchange targets the same host.
+      try {
+        sessionStorage.setItem('sfs_sso_api_base', baseUrl);
+      } catch {
+        /* sessionStorage unavailable — callback falls back to the default base */
+      }
+      // Hand off to the identity provider.
+      window.location.assign(data.authorize_url);
+    } catch {
+      setError('Could not reach the server to start SSO sign-in.');
+    } finally {
+      setSsoLoading(false);
     }
   }
 
@@ -188,6 +232,33 @@ export default function LoginPage() {
                 Sign up
               </button>
             </p>
+
+            <div className="mt-6 pt-6 border-t border-border">
+              <p className="text-text-tertiary text-xs mb-2 text-center">
+                Or sign in with your organization's SSO
+              </p>
+              <div className="flex gap-2">
+                <Input
+                  type="text"
+                  value={orgSlug}
+                  onChange={(e) => setOrgSlug(e.target.value)}
+                  placeholder="organization slug"
+                  title="Organization"
+                  aria-label="Organization slug for SSO"
+                  className="flex-1"
+                />
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="md"
+                  loading={ssoLoading}
+                  disabled={!orgSlug.trim()}
+                  onClick={handleSso}
+                >
+                  SSO
+                </Button>
+              </div>
+            </div>
           </form>
         ) : (
           <form onSubmit={handleSignup}>

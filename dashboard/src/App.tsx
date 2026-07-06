@@ -9,6 +9,7 @@ import { ToastProvider } from './components/Toast';
 
 // Lazy-loaded page components for code splitting
 const LoginPage = React.lazy(() => import('./auth/LoginPage'));
+const SsoCallback = React.lazy(() => import('./auth/SsoCallback'));
 const SessionList = React.lazy(() => import('./sessions/SessionList'));
 const SessionDetail = React.lazy(() => import('./sessions/SessionDetail'));
 const SearchResults = React.lazy(() => import('./sessions/SearchResults'));
@@ -60,6 +61,7 @@ export default function App() {
           <Suspense fallback={<div className="flex items-center justify-center h-screen text-text-muted">Loading…</div>}>
           <Routes>
             <Route path="/login" element={<LoginPage />} />
+            <Route path="/sso/callback" element={<SsoCallback />} />
             <Route
               element={
                 <ProtectedRoute>

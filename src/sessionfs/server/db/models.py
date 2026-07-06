@@ -2920,3 +2920,57 @@ class OidcLoginAttempt(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    # 'cli' (default — the existing JSON-response contract) or 'browser' (the
+    # dashboard flow: /callback redirects with a one-time code instead of
+    # returning the key). Server-authoritative; set at /start, bound to `state`.
+    client_flow: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="cli", server_default="cli"
+    )
+
+
+class SsoExchangeCode(Base):
+    """One-time authorization code for the BROWSER SSO login handoff.
+
+    Issued by /callback for a browser flow (client_flow='browser') INSTEAD of
+    minting a key inline; traded at POST /auth/sso/exchange for a freshly-minted
+    api_key. Carries ONLY identity (never a secret / never a raw key). Single-use
+    via an atomic rowcount-1 consume, 120s TTL, sha256-at-rest. Bound to the
+    authenticating browser via `binding_hash` (a cookie-nonce hash) to defeat
+    login-CSRF / session-fixation (Sentinel F1).
+    """
+
+    __tablename__ = "sso_exchange_codes"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'consumed')",
+            name="ck_sso_exchange_code_status",
+        ),
+        Index("ix_sso_exchange_codes_expires_at", "expires_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    code_hash: Mapped[str] = mapped_column(
+        String(128), nullable=False, unique=True,
+        comment="sha256 of the raw one-time code; raw code NEVER stored",
+    )
+    binding_hash: Mapped[str] = mapped_column(
+        String(128), nullable=False,
+        comment="sha256 of the browser-binding cookie nonce (login-CSRF defense)",
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False,
+    )
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    link_method: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending", server_default="pending",
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+    )
+    consumed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )

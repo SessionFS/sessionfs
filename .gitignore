@@ -63,3 +63,4 @@ v*-*-brief
 sessionfs-origin-primer.md
 claude-share-*.md
 .playwright-mcp/
+.sso-*-brief.md
