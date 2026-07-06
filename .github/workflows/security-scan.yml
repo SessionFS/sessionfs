@@ -117,7 +117,7 @@ jobs:
       # Render the Helm chart so the misconfig scan sees the actual rendered
       # Kubernetes manifests instead of raw `{{- with .Values }}` templates
       # (which Trivy cannot evaluate and which produce 40+ false positives).
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
         with:
           version: v3.16.1
 
