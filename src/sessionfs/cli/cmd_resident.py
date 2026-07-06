@@ -234,6 +234,90 @@ def run_resident(
             console.print("\n[dim]Stopped.[/dim]")
 
 
+@resident_app.command("health")
+@handle_errors
+def resident_health(
+    config: str = typer.Option(
+        ..., "--config", "-c",
+        help="Named resident config TOML (~/.sessionfs/residents/<name>.toml).",
+    ),
+) -> None:
+    """Show a resident's local health: config summary + today's LLM budget spend.
+
+    Read-only — reads the resident config and its local budget state file. It
+    does not contact the server or start the loop.
+    """
+    import json
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    from rich.table import Table
+
+    cfg = ResidentConfig.from_toml(config)
+    today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    # Locate the budget state file the runner writes (same key + sanitization).
+    budget_key = cfg.resident_id or f"{cfg.name}-{cfg.queue_id}"
+    safe = "".join(c for c in budget_key if c.isalnum() or c in ("-", "_")) or "resident"
+    state_path = Path.home() / ".sessionfs" / "residents" / f"{safe}-budget.json"
+
+    spent_today: int | None = None
+    budget_date: str | None = None
+    if state_path.exists():
+        try:
+            data = json.loads(state_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("budget state is not an object")
+            # REQUIRE both keys (like the runner's _load) — a state file missing
+            # them is unreadable, not silently 0.
+            budget_date = str(data["date"])
+            spent_today = int(data["spent"])
+            # A state file from a PREVIOUS UTC day is stale — the runner resets
+            # spend at the date rollover, so report 0 for today.
+            if budget_date != today_utc:
+                spent_today = 0
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+            spent_today = None  # unreadable / malformed → the runner fails closed
+            budget_date = None
+
+    table = Table(title=f"Resident health: {cfg.name}", show_header=False, expand=False)
+    table.add_row("Mode", cfg.mode)
+    table.add_row("Persona", cfg.persona)
+    table.add_row("Queue", cfg.queue_id or "(unset)")
+    table.add_row("Project", cfg.project or "(unset)")
+    table.add_row("Resident id", cfg.resident_id or "(unregistered)")
+    table.add_row("Poll interval", f"{cfg.poll_interval_seconds}s")
+    if cfg.mode == "implement":
+        table.add_row("Worktree", cfg.worktree_path or "(unset)")
+        table.add_row("Base branch", cfg.base_branch)
+
+    daily = cfg.daily_token_budget
+    per_wake = cfg.per_wake_token_budget
+    table.add_row("Daily token budget", str(daily) if daily else "unlimited")
+    table.add_row("Per-wake token budget", str(per_wake) if per_wake else "unlimited")
+    if daily:
+        if spent_today is None and state_path.exists():
+            spend_str = "[red]state unreadable (runner fails closed)[/red]"
+        elif spent_today is None:
+            spend_str = "0 (no state yet)"
+        else:
+            remaining = max(0, daily - spent_today)
+            spend_str = f"{spent_today} / {daily}  ({remaining} remaining today)"
+        table.add_row("Spent today (UTC)", spend_str)
+        # Only show the state date when it's for today; a previous-day file is
+        # stale (spend already reported as 0 above).
+        if budget_date == today_utc:
+            table.add_row("Budget date", budget_date)
+    table.add_row("LLM", f"{cfg.llm.model} @ {cfg.llm.base_url}")
+
+    console.print(table)
+    console.print(
+        "[dim]auto_close_review_kind on an item marks whether a HUMAN or only a "
+        "resident reviewed it — never merge a 'resident_trusted' high-risk item "
+        "without the merge checklist.[/dim]"
+    )
+
+
 def _print_results(results: list[dict]) -> None:
     """Print a summary of --once results."""
     if not results:
