@@ -83,7 +83,7 @@ dev = [
     # post-release CI failure in v0.10.11 — local mypy 1.19 didn't
     # surface union-attr issues that 1.20.2 caught on main. Bump
     # both bounds together when bumping; never widen unilaterally.
-    "mypy>=1.20,<2.0",
+    "mypy>=1.20,<3.0",
     "build>=1.0,<2.0",
     "bandit>=1.7,<2.0",
     "pip-audit>=2.7,<3.0",
