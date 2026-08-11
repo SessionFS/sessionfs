@@ -754,6 +754,13 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       last_sync_at: string | null;
       latest_version: string;
       default_org_id: string | null;
+      capture_health: {
+        name: string;
+        health: string;
+        degraded_since: string | null;
+        last_error: string | null;
+        sessions_tracked: number;
+      }[] | null;
     }>('/api/v1/auth/me'),
 
     listSessions: (params: {
@@ -1097,6 +1104,18 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         method: 'PUT',
         body: JSON.stringify({ mode, debounce_seconds: debounceSeconds }),
       }),
+
+    // Capture health — per-watcher health reported by the daemon.
+    getCaptureHealth: () =>
+      request<{
+        watchers: {
+          name: string;
+          health: string;
+          degraded_since: string | null;
+          last_error: string | null;
+          sessions_tracked: number;
+        }[];
+      }>('/api/v1/sync/health'),
 
     getSyncStatus: () =>
       request<{

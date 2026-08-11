@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -99,6 +100,11 @@ async def get_me(
         # today (uses git remote → Project lookup); a v0.10.x follow-up
         # may add a default-org fallback for unmatched remotes.
         "default_org_id": user.default_org_id,
+        # v0.15 P1 — per-watcher capture health reported by the daemon.
+        # JSON-encoded list; null when the daemon has never uploaded.
+        "capture_health": json.loads(user.capture_health)
+        if user.capture_health
+        else None,
     }
     return response
 

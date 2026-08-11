@@ -139,6 +139,9 @@ function AccountTab({ profile, logout }: { profile: any; logout: () => void }) {
         </Card>
       )}
 
+      {/* Capture Health card — only visible when at least one watcher is degraded */}
+      <CaptureHealthCard captureHealth={profile?.capture_health} />
+
       {/* Last Sync card */}
       {profile?.last_client_version && (
         <Card level="elevated" className="p-5">
@@ -195,6 +198,82 @@ function AccountTab({ profile, logout }: { profile: any; logout: () => void }) {
         Logout
       </Button>
     </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Capture Health Card — only visible when a watcher is degraded     */
+/* ------------------------------------------------------------------ */
+
+interface WatcherHealth {
+  name: string;
+  health: string;
+  degraded_since: string | null;
+  last_error: string | null;
+  sessions_tracked: number;
+}
+
+function CaptureHealthCard({ captureHealth }: { captureHealth: WatcherHealth[] | null }) {
+  if (!captureHealth || captureHealth.length === 0) return null;
+
+  const degraded = captureHealth.filter((w) => w.health === 'degraded');
+  if (degraded.length === 0) return null; // healthy = quiet
+
+  const TOOL_LABELS: Record<string, string> = {
+    'claude-code': 'Claude Code',
+    'codex': 'Codex',
+    'gemini-cli': 'Gemini CLI',
+    'cursor': 'Cursor',
+    'cline': 'Cline',
+    'copilot-cli': 'Copilot CLI',
+    'kilo-code': 'Kilo Code',
+    'amp': 'Amp',
+    'roo-code': 'Roo Code',
+  };
+
+  return (
+    <Card level="elevated" className="p-5 border-amber-500/30">
+      <div className="flex items-center gap-2 mb-3">
+        <span className="inline-block w-2.5 h-2.5 rounded-full bg-amber-500" />
+        <h2 className="text-lg font-semibold text-text-primary">
+          Capture Degraded
+        </h2>
+        <span className="px-2 py-0.5 bg-amber-500/10 text-amber-500 rounded-full text-xs font-medium">
+          {degraded.length} tool{degraded.length > 1 ? 's' : ''}
+        </span>
+      </div>
+
+      <div className="space-y-3">
+        {degraded.map((w) => (
+          <div
+            key={w.name}
+            className="p-3 bg-surface border border-border rounded-lg"
+          >
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-sm font-medium text-text-primary">
+                {TOOL_LABELS[w.name] || w.name}
+              </span>
+              <span className="text-xs text-text-tertiary font-mono">
+                ({w.sessions_tracked} sessions)
+              </span>
+            </div>
+            {w.degraded_since && (
+              <div className="text-xs text-text-tertiary mb-1">
+                Failing since{' '}
+                {new Date(w.degraded_since).toLocaleString()}
+              </div>
+            )}
+            {w.last_error && (
+              <div className="text-xs text-red-400 font-mono bg-red-500/5 border border-red-500/10 rounded px-2 py-1 mt-1 max-h-10 overflow-hidden">
+                {w.last_error.length > 200
+                  ? w.last_error.slice(0, 200) + '…'
+                  : w.last_error}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </Card>
   );
 }
 

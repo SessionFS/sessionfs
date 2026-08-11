@@ -374,6 +374,40 @@ class DaemonSyncer:
                     self.config.sync.auto = new_mode
                 self.config.sync.debounce = data.get("debounce_seconds", 30)
 
+            # v0.15 P1 — upload per-watcher capture health so the
+            # dashboard can surface degraded watchers.  Read daemon.json
+            # (written by the main loop's _update_status) and PUT to the
+            # server.  Fire-and-forget: failures are silent — the next
+            # poll (60 s) will retry.
+            try:
+                from sessionfs.daemon.status import read_status
+
+                status_path = self.config.store_dir / "daemon.json"
+                daemon_status = read_status(status_path)
+                if daemon_status and daemon_status.watchers:
+                    payload = {
+                        "watchers": [
+                            {
+                                "name": w.name,
+                                "health": w.health,
+                                "degraded_since": w.degraded_since,
+                                "last_error": w.last_error,
+                                "sessions_tracked": w.sessions_tracked,
+                            }
+                            for w in daemon_status.watchers
+                        ]
+                    }
+                    await http.put(
+                        f"{client.api_url}/api/v1/sync/health",
+                        headers={
+                            "Authorization": f"Bearer {client.api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json=payload,
+                    )
+            except Exception:
+                pass  # fire-and-forget — offline or daemon.json missing
+
             # Fetch remote watchlist for selective autosync — replace local
             # set entirely so unwatches on other clients propagate.
             if self.auto_mode == "selective":

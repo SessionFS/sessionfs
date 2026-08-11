@@ -67,6 +67,15 @@ class User(Base):
         ForeignKey("entitlements.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # v0.15 P1 — daemon uploads per-watcher capture health on each
+    # sync-settings poll (~60s).  JSON-encoded list of watcher status
+    # objects: [{name, health, degraded_since, last_error, ...}].
+    # Nullable — users who haven't run the daemon since this field was
+    # added stay NULL.  The dashboard renders a degraded badge only when
+    # at least one watcher reports health='degraded'.
+    capture_health: Mapped[str | None] = mapped_column(
+        Text, nullable=True,
+    )
 
 
 class ApiKey(Base):

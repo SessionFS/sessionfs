@@ -65,3 +65,4 @@ claude-share-*.md
 .playwright-mcp/
 .sso-*-brief.md
 .p0-*-brief.md
+.p1-brief.md
