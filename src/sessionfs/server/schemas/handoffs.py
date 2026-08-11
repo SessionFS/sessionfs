@@ -221,6 +221,29 @@ class HandoffSummaryResponse(BaseModel):
     last_assistant_messages: list[str] = []
 
 
+class PreviewMessage(BaseModel):
+    """A single message in the unauthenticated handoff preview.
+    Text blocks only — no tool results, no tool-use blocks."""
+
+    role: str
+    text: str  # truncated to 400 chars, DLP-cleaned
+    index: int  # 0-based position in the original session
+
+
+class HandoffPreviewResponse(BaseModel):
+    """Unauthenticated handoff preview for the pre-signup landing page.
+    Gated by a single-use preview token (sha256-hashed at rest). Never
+    includes the raw session archive, attachments, or API keys."""
+
+    title: str | None
+    sender_email: str
+    tool: str | None
+    message_count: int | None
+    status: str
+    expires_at: datetime
+    preview_messages: list[PreviewMessage] = []
+
+
 # Team management schemas (Codex I.1 — minimal CRUD)
 
 

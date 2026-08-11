@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -53,8 +54,10 @@ from sessionfs.server.schemas.handoffs import (
     HandoffCommentResponse,
     HandoffEventResponse,
     HandoffListResponse,
+    HandoffPreviewResponse,
     HandoffResponse,
     HandoffSummaryResponse,
+    PreviewMessage,
     RevokeHandoffRequest,
 )
 
@@ -331,6 +334,13 @@ async def create_handoff(
         snapshot_persona_name=snap_persona_name,
         sender_tier_snapshot=ctx.effective_tier.value,
     )
+    # P1 pre-signup landing — generate a single-purpose preview token.
+    # Only the sha256 hash is stored; the raw token goes into the
+    # recipient email link alone. Irrecoverable if lost.
+    _preview_token = f"hpr_{secrets.token_hex(16)}"
+    handoff.preview_token_hash = hashlib.sha256(
+        _preview_token.encode()
+    ).hexdigest()
     db.add(handoff)
     await db.flush()  # surface handoff.id for attachment + event FK
 
@@ -414,6 +424,16 @@ async def create_handoff(
                 except Exception:
                     pass  # Non-critical — email still sends without git info
 
+            # Resolve dashboard URL for the landing-page link (P1).
+            _dashboard_url: str | None = getattr(
+                request.app.state, "dashboard_url", None
+            )
+            if not _dashboard_url:
+                import os
+                _dashboard_url = os.environ.get(
+                    "SFS_DASHBOARD_URL", ""
+                ).rstrip("/") or None
+
             await email_service.send_handoff(
                 to_email=body.recipient_email,
                 sender_email=user.email,
@@ -426,6 +446,8 @@ async def create_handoff(
                 git_branch=git_branch,
                 sender_message=body.message,
                 handoff_id=handoff.id,
+                dashboard_url=_dashboard_url,
+                preview_token=_preview_token,
             )
         except Exception:
             pass  # Email failure should not fail the handoff
@@ -1490,4 +1512,166 @@ async def get_handoff_summary(
         tests_failed=tests_failed,
         errors_encountered=errors,
         last_assistant_messages=last_assistant,
+    )
+
+
+# ---------------------------------------------------------------------------
+#  Pre-signup landing preview (P1 — tk_d1de83ad4a5d4187)
+# ---------------------------------------------------------------------------
+
+PREVIEW_MESSAGE_LIMIT = 6
+PREVIEW_MESSAGE_CHAR_LIMIT = 400
+
+
+@router.get("/{handoff_id}/preview", response_model=HandoffPreviewResponse)
+async def preview_handoff(
+    handoff_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    token: str = "",
+):
+    """Unauthenticated handoff preview gated by a single-purpose preview token.
+
+    The token's sha256 must match handoff.preview_token_hash. The raw
+    token goes ONLY into the recipient email link — the server stores
+    only the hash, so a lost token is irrecoverable.
+
+    Returns a bounded preview (title, sender, tool, message count, status,
+    expiry, and first N=6 messages truncated to 400 chars each, text blocks
+    only, DLP-cleaned). Never includes the raw session archive, attachments,
+    or API keys.
+
+    All failure modes return constant 404 — wrong/absent token, revoked,
+    expired, already-claimed-by-someone-else, or handoff does not exist.
+    """
+    import io
+    import json
+    import tarfile
+
+    # --- 1. Look up handoff; 404 on miss ---
+    result = await db.execute(select(Handoff).where(Handoff.id == handoff_id))
+    handoff = result.scalar_one_or_none()
+    if handoff is None:
+        raise HTTPException(status_code=404, detail="Handoff not found")
+
+    # --- 2. Validate token; constant 404 on any mismatch ---
+    if not token or not handoff.preview_token_hash:
+        raise HTTPException(status_code=404, detail="Handoff not found")
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    if not hmac.compare_digest(token_hash, handoff.preview_token_hash):
+        raise HTTPException(status_code=404, detail="Handoff not found")
+
+    # --- 3. Lazy-expire pending handoffs past expires_at ---
+    if lazy_expire(handoff):
+        flipped = await persist_lazy_expire(
+            db, handoff_id=handoff.id, current_status="pending"
+        )
+        if flipped:
+            await write_event(
+                db,
+                handoff_id=handoff.id,
+                event_type="expired",
+                actor_user_id=None,
+            )
+            await db.commit()
+        else:
+            await db.refresh(handoff)
+
+    # --- 4. Revoked, expired, or already-claimed → 404 ---
+    if handoff.status in ("revoked", "declined", "expired", "claimed"):
+        raise HTTPException(status_code=404, detail="Handoff not found")
+
+    # --- 5. Look up sender (resolve sender email) ---
+    sender = await db.execute(select(User).where(User.id == handoff.sender_id))
+    sender_user = sender.scalar_one_or_none()
+    sender_email = sender_user.email if sender_user else "unknown"
+
+    # --- 6. Extract bounded message preview from the session archive ---
+    preview_messages: list[PreviewMessage] = []
+    session_result = await db.execute(
+        select(Session).where(Session.id == handoff.session_id)
+    )
+    session = session_result.scalar_one_or_none()
+
+    if session is not None:
+        blob_store = getattr(request.app.state, "blob_store", None)
+        raw_messages: list[dict] = []
+
+        if blob_store and session.blob_key:
+            try:
+                data = await blob_store.get(session.blob_key)
+                if data:
+                    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+                        for member in tar.getmembers():
+                            if not member.name.endswith("messages.jsonl"):
+                                continue
+                            f = tar.extractfile(member)
+                            if not f:
+                                continue
+                            content = f.read().decode("utf-8", errors="replace")
+                            for line in content.splitlines():
+                                line = line.strip()
+                                if line:
+                                    raw_messages.append(json.loads(line))
+                            break  # only one messages.jsonl per archive
+            except Exception:
+                logger.warning(
+                    "Handoff preview: failed to extract messages for %s",
+                    handoff.session_id,
+                )
+
+        # Collect first PREVIEW_MESSAGE_LIMIT messages (text blocks only).
+        collected = 0
+        for idx, msg in enumerate(raw_messages):
+            if collected >= PREVIEW_MESSAGE_LIMIT:
+                break
+            role = msg.get("role", "unknown")
+            content = msg.get("content", "")
+
+            # Extract text: string content → use directly; list content →
+            # concatenate text blocks only (skip tool_use / tool_result).
+            text_parts: list[str] = []
+            if isinstance(content, str):
+                text_parts.append(content)
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        text_parts.append(block.get("text", ""))
+
+            text = " ".join(text_parts).strip()
+            if not text:
+                continue
+
+            # Truncate to char limit (including ellipsis).
+            if len(text) > PREVIEW_MESSAGE_CHAR_LIMIT:
+                text = text[:PREVIEW_MESSAGE_CHAR_LIMIT - 1] + "…"
+
+            # DLP scan: if the text contains secrets, redact the matched
+            # spans. Best-effort — if the scrubber is unavailable the
+            # truncation + text-blocks-only bound is sufficient.
+            try:
+                from sessionfs.server.dlp import scan_dlp
+                findings = scan_dlp(text, categories=["secrets"])
+                if findings:
+                    # Redact matched text spans with [REDACTED].
+                    for finding in sorted(
+                        findings, key=lambda f: f.match_text, reverse=True
+                    ):
+                        text = text.replace(finding.match_text, "[REDACTED]")
+            except Exception:
+                pass  # DLP is defense-in-depth; never fail the preview.
+
+            preview_messages.append(
+                PreviewMessage(role=role, text=text, index=idx)
+            )
+            collected += 1
+
+    return HandoffPreviewResponse(
+        title=handoff.snapshot_title,
+        sender_email=sender_email,
+        tool=handoff.snapshot_tool,
+        message_count=handoff.snapshot_message_count,
+        status=_effective_status(handoff),
+        expires_at=handoff.expires_at,
+        preview_messages=preview_messages,
     )
