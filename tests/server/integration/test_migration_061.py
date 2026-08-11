@@ -71,7 +71,7 @@ def _cfg(db_path: Path) -> Config:
 def migration_060_db_path(tmp_path: Path) -> Path:
     db_path = tmp_path / "m060.db"
     _build_pre_060_db(db_path)
-    command.stamp(_cfg(db_path), "061")
+    command.stamp(_cfg(db_path), "060")
     return db_path
 
 
@@ -117,7 +117,7 @@ class TestMigration060Downgrade:
     def test_downgrade_removes_preview_token_hash(self, migration_060_db_path):
         cfg = _cfg(migration_060_db_path)
         command.upgrade(cfg, "061")
-        command.downgrade(cfg, "059")
+        command.downgrade(cfg, "060")
         conn = sqlite3.connect(str(migration_060_db_path))
         cols = {r[1] for r in conn.execute("PRAGMA table_info('handoffs')")}
         assert "preview_token_hash" not in cols, (
