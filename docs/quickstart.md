@@ -6,35 +6,46 @@
 ## 1. Install
 
 ```bash
-pip install sessionfs
+pipx install sessionfs
 ```
 
-This installs two commands: `sfs` (CLI) and `sfsd` (daemon).
+This installs two commands: `sfs` (CLI) and `sfsd` (daemon). See [Installation](install.md) for alternative methods (brew, curl, pip).
 
-## 2. Start the Daemon
+## 2. Run the Setup Wizard
 
 ```bash
-sfs daemon start
+sfs init
 ```
 
-The daemon watches your AI tools in the background using filesystem events (not polling). Negligible CPU overhead.
+The wizard auto-detects which AI coding tools you have installed and asks which ones to track. It then starts the daemon, installs the MCP server for your tools, and — if you have existing sessions — captures your most recent one on the spot:
 
-It automatically detects and captures sessions from all eight supported tools:
+```
+✓ Captured your most recent session: "Debug auth middleware" (claude-code, 47 messages)
+```
 
-- Claude Code
-- Codex CLI
-- Gemini CLI
-- Copilot CLI
-- Cursor IDE
-- Amp
-- Cline
-- Roo Code
+Then it prints the payoff:
 
-## 3. Use Your Tools Normally
+```
+Now ask your agent: "what did we do last session?"
+```
+
+Because MCP was installed in the same wizard step, you can ask that question immediately — your agent reads the captured session and picks up right where you left off.
+
+If you have no existing sessions yet, the wizard prints a graceful fallback and your first session will be captured automatically when you use your AI tool next.
+
+## 3. Ask Your Agent
+
+Open Claude Code (or whichever tool you use) and ask:
+
+> "what did we do last session?"
+
+Your agent reads the captured session via MCP and catches up without you re-explaining anything.
+
+## 4. Use Your Tools Normally
 
 No behavior change required. Just use your AI coding tools the way you always do. SessionFS captures sessions silently in the background.
 
-## 4. Browse Your Sessions
+## 5. Browse Your Sessions
 
 ```bash
 sfs list
@@ -59,7 +70,7 @@ sfs list --since 24h
 sfs list --tool claude-code --sort tokens
 ```
 
-## 5. Resume a Session
+## 6. Resume a Session
 
 Resume in the same tool or a different one:
 

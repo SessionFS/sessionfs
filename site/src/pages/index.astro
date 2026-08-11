@@ -1,7 +1,7 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
 ---
-<BaseLayout title="SessionFS — Memory Layer For AI Agents" description="Memory Layer For AI Agents. Capture, resume, and hand off AI coding sessions across Claude Code, Codex, Cursor, Gemini, and more.">
+<BaseLayout title="SessionFS — Your AI Coding Agent Never Starts From Zero Again" description="SessionFS captures every AI coding session so your agent always knows what happened last session. Resume in any tool, switch machines, come back tomorrow — no re-explaining.">
 
 
   <!-- ========== 1. HERO ========== -->
@@ -17,15 +17,17 @@ import BaseLayout from '../layouts/BaseLayout.astro';
           </svg>
         </div>
         <h1 class="fade-up font-heading text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight leading-[1.1] mb-6">
-          Memory Layer For<br>AI Agents.
+          Your AI Coding Agent<br>Never Starts From Zero Again.
         </h1>
         <p class="fade-up text-lg sm:text-xl text-muted leading-relaxed max-w-xl mx-auto lg:mx-0 mb-8">
-          Capture every AI coding session, resume it in another tool, hand it to a teammate or agent, and turn the work into shared memory, rules, tickets, and audit.
+          SessionFS captures every AI coding session and makes it portable across tools.
+          Resume in Codex what you started in Claude Code. Switch machines or come back
+          tomorrow — your agent already knows what happened last session.
         </p>
         <div class="fade-up inline-flex items-center gap-3 bg-surface border border-border rounded-lg px-5 py-3 mb-8 font-mono text-sm">
           <span class="text-muted-dim select-none">$</span>
-          <span class="text-accent">pip install sessionfs</span>
-          <button onclick="copyText('pip install sessionfs', this)" class="text-muted-dim hover:text-brand text-[13px] border border-border rounded px-2.5 py-0.5 ml-1 transition-colors">Copy</button>
+          <span class="text-accent">pipx install sessionfs</span>
+          <button onclick="copyText('pipx install sessionfs', this)" class="text-muted-dim hover:text-brand text-[13px] border border-border rounded px-2.5 py-0.5 ml-1 transition-colors">Copy</button>
         </div>
         <div class="fade-up flex flex-col sm:flex-row gap-3 justify-center lg:justify-start">
           <a href="https://app.sessionfs.dev/login?mode=signup" class="inline-flex items-center justify-center gap-2 bg-brand text-white font-semibold rounded-lg px-7 py-3 hover:brightness-110 transition">
@@ -48,18 +50,21 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <span class="ml-3 text-muted-dim text-[13px] font-mono">~/ terminal</span>
           </div>
           <div class="p-4 sm:p-5 font-mono text-sm leading-relaxed overflow-x-auto">
-            <div class="text-muted-dim">$ <span class="text-accent">sfs list --today</span></div>
-            <div class="mt-3 text-muted"><span class="text-brand">ses_a1b2</span> Claude Code&nbsp; "Debug auth middleware"&nbsp; 47 msgs</div>
-            <div class="text-muted"><span class="text-brand">ses_c3d4</span> Codex&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; "Refactor schema"&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 31 msgs</div>
+            <div class="text-muted-dim">$ <span class="text-accent">sfs init</span></div>
+            <div class="mt-3 text-muted text-xs space-y-0.5">
+              <div>&#10003; Claude Code detected</div>
+              <div>&#10003; Codex detected</div>
+              <div>&#10003; Gemini CLI detected</div>
+            </div>
+            <div class="mt-2 text-muted"><span class="text-accent">&#10003;</span> Daemon started! Watching 3 tools.</div>
+            <div class="mt-2 text-muted"><span class="text-accent">&#10003;</span> MCP installed for claude-code</div>
             <div class="border-t border-border mt-3 pt-3 space-y-1">
-              <div class="text-muted-dim">$ <span class="text-accent">sfs resume ses_a1b2 --in codex</span></div>
-              <div class="text-muted"><span class="text-accent">&#10003;</span> Transcript converted for Codex</div>
-              <div class="text-muted"><span class="text-accent">&#10003;</span> Workspace + git snapshot attached</div>
-              <div class="text-muted"><span class="text-accent">&#10003;</span> Rules synced to codex.md</div>
+              <div class="text-muted"><span class="text-accent">&#10003;</span> Captured your most recent session:</div>
+              <div class="text-muted"><span class="text-brand font-semibold">"Debug auth middleware"</span> <span class="text-muted-dim">— Claude Code, 47 msgs</span></div>
             </div>
             <div class="border-t border-border mt-3 pt-3">
-              <div class="text-muted-dim">$ <span class="text-accent">sfs handoff ses_a1b2 --to sarah@company.dev</span></div>
-              <div class="text-accent mt-1">Secure handoff created.</div>
+              <div class="text-muted-dim">Now ask your agent:</div>
+              <div class="text-accent">"what did we do last session?"</div>
             </div>
           </div>
         </div>
@@ -105,9 +110,9 @@ import BaseLayout from '../layouts/BaseLayout.astro';
         <a href="/features/knowledge-base/" class="glass fade-up p-6 block group" style="border-top: 3px solid #4f9cf7;">
           <div class="mb-4">
             <div class="text-sm font-mono text-brand uppercase tracking-wider mb-3">Memory</div>
-            <h3 class="font-heading font-semibold text-xl mb-3 group-hover:text-brand transition-colors">Agents remember what the team learned.</h3>
+            <h3 class="font-heading font-semibold text-xl mb-3 group-hover:text-brand transition-colors">Every session builds permanent memory.</h3>
           </div>
-          <p class="text-muted text-base leading-relaxed mb-4">Every captured session becomes durable knowledge: decisions, patterns, project context, wiki pages, rules provenance, and agent write-back built from inspectable evidence.</p>
+          <p class="text-muted text-base leading-relaxed mb-4">Each captured session becomes durable knowledge: decisions, patterns, project context, and wiki pages. Your codebase documents itself over time — agents write back discoveries via MCP.</p>
           <div class="font-mono text-sm text-brand">Learn more &rarr;</div>
         </a>
 
@@ -134,33 +139,6 @@ import BaseLayout from '../layouts/BaseLayout.astro';
       </div>
     </div>
   </section>
-
-  <!-- Governance Layer -->
-  <section class="relative py-14 px-5">
-    <div class="max-w-5xl mx-auto">
-      <div class="fade-up text-sm font-mono text-muted-dim uppercase tracking-wider text-center mb-6">Enterprise governance, built in</div>
-      <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-6 text-center">
-        <a href="/features/judge/" class="fade-up block hover:opacity-80 transition">
-          <div class="text-xl font-bold text-txt mb-1">LLM Judge</div>
-          <p class="text-muted text-sm leading-relaxed">Cross-references every AI claim against tool output. Contradictions surface before they reach production.</p>
-        </a>
-        <a href="/enterprise/" class="fade-up block hover:opacity-80 transition">
-          <div class="text-xl font-bold text-txt mb-1">DLP &amp; Secrets</div>
-          <p class="text-muted text-sm leading-relaxed">14 PHI patterns + 19 secret patterns scrub session archives at the server. BLOCK / REDACT / WARN modes.</p>
-        </a>
-        <a href="/features/handoff/" class="fade-up block hover:opacity-80 transition">
-          <div class="text-xl font-bold text-txt mb-1">Audit Trail</div>
-          <p class="text-muted text-sm leading-relaxed">Every captured session carries instruction provenance, persona, ticket, and the AgentRun that signed off.</p>
-        </a>
-        <a href="/self-hosted/" class="fade-up block hover:opacity-80 transition">
-          <div class="text-xl font-bold text-txt mb-1">Self-hosted Helm</div>
-          <p class="text-muted text-sm leading-relaxed">Hardened chart (UID 10001, read-only rootfs, RuntimeDefault seccomp). Your data stays in your cluster.</p>
-        </a>
-      </div>
-    </div>
-  </section>
-
-  <div class="grad-divider"></div>
 
   <!-- ========== 4. KNOWLEDGE BASE SPOTLIGHT (flagship) ========== -->
   <section class="relative py-20 sm:py-28 px-5 bg-surface/50 noise">
@@ -199,58 +177,34 @@ import BaseLayout from '../layouts/BaseLayout.astro';
 
   <div class="grad-divider"></div>
 
-  <!-- ========== 5. LLM JUDGE SPOTLIGHT ========== -->
+  <!-- ========== 5. BUILT FOR TEAMS & ENTERPRISE ========== -->
   <section class="relative py-20 sm:py-28 px-5 noise">
-    <div class="max-w-5xl mx-auto flex flex-col lg:flex-row items-center gap-12">
-      <div class="lg:w-1/2 fade-up">
-        <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-5">Reviewable AI at scale.</h2>
-        <p class="text-muted text-lg mb-4 leading-relaxed">Every AI coding agent makes claims: "the test passes," "I created the file," "the migration is safe." Most go unverified. LLM Judge cross-references every claim against actual evidence — exit codes, file writes, test output.</p>
-        <p class="text-muted text-lg mb-4 leading-relaxed">Confidence-scored findings surface on PRs and in the dashboard. Your team reviews AI work the same way they review human work.</p>
-        <p class="text-muted text-base mb-6 leading-relaxed">Verified claims feed the knowledge base — building a trust record your team can reference.</p>
-        <p class="text-base text-muted-dim border-l-2 border-brand/30 pl-4 mb-6 leading-relaxed">BYOK — your key, never stored. Works with any OpenAI-compatible endpoint: OpenRouter, LiteLLM, vLLM, Ollama.</p>
-        <a href="/features/judge/" class="text-brand hover:underline text-sm font-medium">Read the docs &rarr;</a>
-      </div>
-      <div class="lg:w-1/2 w-full fade-up">
-        <div class="term">
-          <div class="term-bar"><div class="term-dot bg-[#ff5f57]"></div><div class="term-dot bg-[#febc2e]"></div><div class="term-dot bg-[#28c840]"></div><span class="ml-3 text-muted-dim text-[13px] font-mono">audit report</span></div>
-          <div class="p-5 font-mono text-sm space-y-4">
-            <div>
-              <div class="text-muted-dim uppercase tracking-wider text-sm mb-2">Trust Score</div>
-              <div class="flex items-center gap-3 mb-2">
-                <span class="text-xl font-bold text-warning">74%</span>
-                <div class="flex-1 h-2 bg-border rounded-full overflow-hidden"><div class="h-full bg-warning rounded-full w-[74%]"></div></div>
-              </div>
-              <div class="text-sm"><span class="text-danger">3 contradictions</span> <span class="text-muted-dim">&middot;</span> <span class="text-warning">9 unverified</span> <span class="text-muted-dim">&middot;</span> <span class="text-accent">42 verified</span></div>
-            </div>
-            <div class="border-t border-border pt-4 space-y-3">
-              <div class="bg-danger/5 rounded-lg p-3 border border-danger/20">
-                <div class="flex items-center gap-2 mb-2">
-                  <span class="bg-danger/15 text-danger text-[11px] font-bold px-1.5 py-0.5 rounded">CRITICAL</span>
-                  <span class="bg-bg/50 text-muted-dim text-[11px] px-1.5 py-0.5 rounded">test_result</span>
-                </div>
-                <div class="text-muted text-sm mb-1">AI: "The test passes successfully"</div>
-                <div class="bg-bg/60 rounded px-2 py-1.5 text-[12px] text-danger/80 mt-1">FAILED tests/test_auth.py<br>assert status_code == 200, got 401<br>exit code: 1</div>
-              </div>
-              <div class="bg-warning/5 rounded-lg p-3 border border-warning/20">
-                <div class="flex items-center gap-2 mb-2">
-                  <span class="bg-warning/15 text-warning text-[11px] font-bold px-1.5 py-0.5 rounded">HIGH</span>
-                  <span class="bg-bg/50 text-muted-dim text-[11px] px-1.5 py-0.5 rounded">file_existence</span>
-                </div>
-                <div class="text-muted text-sm">AI: "I've created validator.py"</div>
-                <div class="text-muted-dim text-[12px] mt-1">Reality: No Write call to that path</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <div class="grad-divider"></div>
-
-  <!-- ========== 6. HOW IT WORKS ========== -->
-  <section class="relative py-20 sm:py-28 px-5 bg-surface/50 noise">
     <div class="max-w-5xl mx-auto">
+      <h2 class="fade-up font-heading text-3xl sm:text-4xl font-bold text-center mb-4">Built for teams & enterprise.</h2>
+      <p class="fade-up text-muted text-center mb-14 max-w-xl mx-auto leading-relaxed">As your team grows, SessionFS adds coordination, governance, and security — shared knowledge, agent tickets, SSO, DLP, and self-hosted deployment.</p>
+
+      <!-- Governance Layer -->
+      <div class="fade-up text-sm font-mono text-muted-dim uppercase tracking-wider text-center mb-6">Enterprise governance, built in</div>
+      <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-6 text-center mb-16">
+        <a href="/features/judge/" class="fade-up block hover:opacity-80 transition">
+          <div class="text-xl font-bold text-txt mb-1">LLM Judge</div>
+          <p class="text-muted text-sm leading-relaxed">Cross-references every AI claim against tool output. Contradictions surface before they reach production.</p>
+        </a>
+        <a href="/enterprise/" class="fade-up block hover:opacity-80 transition">
+          <div class="text-xl font-bold text-txt mb-1">DLP &amp; Secrets</div>
+          <p class="text-muted text-sm leading-relaxed">14 PHI patterns + 19 secret patterns scrub session archives at the server. BLOCK / REDACT / WARN modes.</p>
+        </a>
+        <a href="/features/handoff/" class="fade-up block hover:opacity-80 transition">
+          <div class="text-xl font-bold text-txt mb-1">Audit Trail</div>
+          <p class="text-muted text-sm leading-relaxed">Every captured session carries instruction provenance, persona, ticket, and the AgentRun that signed off.</p>
+        </a>
+        <a href="/self-hosted/" class="fade-up block hover:opacity-80 transition">
+          <div class="text-xl font-bold text-txt mb-1">Self-hosted Helm</div>
+          <p class="text-muted text-sm leading-relaxed">Hardened chart (UID 10001, read-only rootfs, RuntimeDefault seccomp). Your data stays in your cluster.</p>
+        </a>
+      </div>
+
+      <!-- How It Works (re-ranked under teams) -->
       <h2 class="fade-up font-heading text-3xl sm:text-4xl font-bold text-center mb-4">From session to governed workflow</h2>
       <p class="fade-up text-muted text-center mb-14 max-w-xl mx-auto leading-relaxed">SessionFS starts with capture, then turns that work into reusable context, assigned tasks, and auditable agent runs.</p>
       <div class="grid md:grid-cols-3 gap-8">
@@ -303,6 +257,55 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             </div>
           </div>
           <p class="text-muted text-base mt-4 leading-relaxed">AgentRuns record severity, findings, policy result, and exit code so CI and humans can trust the result.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="grad-divider"></div>
+
+  <!-- ========== 6. LLM JUDGE SPOTLIGHT ========== -->
+  <section class="relative py-20 sm:py-28 px-5 noise">
+    <div class="max-w-5xl mx-auto flex flex-col lg:flex-row items-center gap-12">
+      <div class="lg:w-1/2 fade-up">
+        <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-5">Reviewable AI at scale.</h2>
+        <p class="text-muted text-lg mb-4 leading-relaxed">Every AI coding agent makes claims: "the test passes," "I created the file," "the migration is safe." Most go unverified. LLM Judge cross-references every claim against actual evidence — exit codes, file writes, test output.</p>
+        <p class="text-muted text-lg mb-4 leading-relaxed">Confidence-scored findings surface on PRs and in the dashboard. Your team reviews AI work the same way they review human work.</p>
+        <p class="text-muted text-base mb-6 leading-relaxed">Verified claims feed the knowledge base — building a trust record your team can reference.</p>
+        <p class="text-base text-muted-dim border-l-2 border-brand/30 pl-4 mb-6 leading-relaxed">BYOK — your key, never stored. Works with any OpenAI-compatible endpoint: OpenRouter, LiteLLM, vLLM, Ollama.</p>
+        <a href="/features/judge/" class="text-brand hover:underline text-sm font-medium">Read the docs &rarr;</a>
+      </div>
+      <div class="lg:w-1/2 w-full fade-up">
+        <div class="term">
+          <div class="term-bar"><div class="term-dot bg-[#ff5f57]"></div><div class="term-dot bg-[#febc2e]"></div><div class="term-dot bg-[#28c840]"></div><span class="ml-3 text-muted-dim text-[13px] font-mono">audit report</span></div>
+          <div class="p-5 font-mono text-sm space-y-4">
+            <div>
+              <div class="text-muted-dim uppercase tracking-wider text-sm mb-2">Trust Score</div>
+              <div class="flex items-center gap-3 mb-2">
+                <span class="text-xl font-bold text-warning">74%</span>
+                <div class="flex-1 h-2 bg-border rounded-full overflow-hidden"><div class="h-full bg-warning rounded-full w-[74%]"></div></div>
+              </div>
+              <div class="text-sm"><span class="text-danger">3 contradictions</span> <span class="text-muted-dim">&middot;</span> <span class="text-warning">9 unverified</span> <span class="text-muted-dim">&middot;</span> <span class="text-accent">42 verified</span></div>
+            </div>
+            <div class="border-t border-border pt-4 space-y-3">
+              <div class="bg-danger/5 rounded-lg p-3 border border-danger/20">
+                <div class="flex items-center gap-2 mb-2">
+                  <span class="bg-danger/15 text-danger text-[11px] font-bold px-1.5 py-0.5 rounded">CRITICAL</span>
+                  <span class="bg-bg/50 text-muted-dim text-[11px] px-1.5 py-0.5 rounded">test_result</span>
+                </div>
+                <div class="text-muted text-sm mb-1">AI: "The test passes successfully"</div>
+                <div class="bg-bg/60 rounded px-2 py-1.5 text-[12px] text-danger/80 mt-1">FAILED tests/test_auth.py<br>assert status_code == 200, got 401<br>exit code: 1</div>
+              </div>
+              <div class="bg-warning/5 rounded-lg p-3 border border-warning/20">
+                <div class="flex items-center gap-2 mb-2">
+                  <span class="bg-warning/15 text-warning text-[11px] font-bold px-1.5 py-0.5 rounded">HIGH</span>
+                  <span class="bg-bg/50 text-muted-dim text-[11px] px-1.5 py-0.5 rounded">file_existence</span>
+                </div>
+                <div class="text-muted text-sm">AI: "I've created validator.py"</div>
+                <div class="text-muted-dim text-[12px] mt-1">Reality: No Write call to that path</div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>

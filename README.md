@@ -4,11 +4,36 @@
 
 # SessionFS
 
-**Stop re-prompting. Start resuming.**
+**Your AI coding agent never starts from zero again.**
 
-SessionFS captures your AI coding sessions and makes them portable across tools and teammates.
+SessionFS captures your AI coding sessions and makes them portable across tools — so every agent you work with already knows what happened last session.
 
-Start a session in Claude Code, resume it in Codex. Push a session to the cloud, your teammate pulls it with full context — conversation history, workspace state, tool configs, and token usage. No copy-pasting. No re-explaining.
+Start in Claude Code, resume in Codex. Switch machines, switch tools, or come back tomorrow without re-explaining anything. No copy-pasting, no "let me catch you up."
+
+## Quick Start
+
+```bash
+# 1. Install
+pipx install sessionfs
+
+# 2. Run the setup wizard — it auto-detects your tools, starts the daemon,
+#    captures your most recent session, and tells you what to ask next
+sfs init
+
+# 3. Ask your agent (MCP was installed by init):
+#    "what did we do last session?"
+
+# 4. Use your AI tools normally — sessions are captured in the background
+
+# 5. Browse captured sessions
+sfs list
+
+# 6. Resume a session (same tool or different)
+sfs resume ses_abc123 --in codex
+```
+
+See the full [Quickstart Guide](docs/quickstart.md) for a detailed walkthrough.
+See [Installation](docs/install.md) for alternative install methods (brew, curl, pip).
 
 ## Supported Tools
 
@@ -23,27 +48,6 @@ Start a session in Claude Code, resume it in Codex. Push a session to the cloud,
 | Cline | Yes | Capture-only |
 | Roo Code | Yes | Capture-only |
 | Kilo Code | Yes | Capture-only |
-
-## Quick Start
-
-```bash
-# 1. Install
-pipx install sessionfs
-
-# 2. Start the daemon — it watches all 9 tools automatically
-sfs daemon start
-
-# 3. Use your AI tools normally — sessions are captured in the background
-
-# 4. Browse captured sessions
-sfs list
-
-# 5. Resume a session (same tool or different)
-sfs resume ses_abc123 --in codex
-```
-
-See the full [Quickstart Guide](docs/quickstart.md) for detailed steps.
-See [Installation](docs/install.md) for alternative install methods (brew, curl, pip).
 
 ## How It Works
 
@@ -60,6 +64,21 @@ Each tool has its own watcher:
 - **Roo Code** — watches VS Code globalStorage task directories (capture-only)
 
 Sessions are indexed locally for fast browsing via the CLI. Cloud sync is opt-in; the daemon defaults to local-only.
+
+## Cross-Tool Resume
+
+```bash
+# Start in Claude Code, resume in Codex
+sfs resume ses_abc123 --in codex
+
+# Start in Gemini, resume in Claude Code
+sfs resume ses_def456 --in claude-code
+
+# Cursor sessions can be resumed in any bidirectional tool
+sfs resume ses_ghi789 --in gemini
+```
+
+SessionFS converts between native formats automatically — message roles, tool calls, thinking blocks, and workspace state are mapped across tools. See [Compatibility](docs/compatibility.md) for details on which tools support resume and why some are capture-only.
 
 ## Commands
 
@@ -116,22 +135,30 @@ Sessions are indexed locally for fast browsing via the CLI. Cloud sync is opt-in
 
 See the full [CLI Reference](docs/cli-reference.md) for options and examples.
 
-## Cross-Tool Resume
+## Session Search
 
 ```bash
-# Start in Claude Code, resume in Codex
-sfs resume ses_abc123 --in codex
+# Search across all local sessions
+sfs search "rate limiting middleware"
 
-# Start in Gemini, resume in Claude Code
-sfs resume ses_def456 --in claude-code
-
-# Cursor sessions can be resumed in any bidirectional tool
-sfs resume ses_ghi789 --in gemini
+# MCP server lets AI tools search your past sessions
+sfs mcp install --for claude-code
 ```
 
-SessionFS converts between native formats automatically — message roles, tool calls, thinking blocks, and workspace state are mapped across tools. See [Compatibility](docs/compatibility.md) for details on which tools support resume and why some are capture-only.
+## For Teams & Enterprise
 
-## Cloud Sync (Optional)
+### Team Handoff
+
+```bash
+# Hand off a session to a teammate
+sfs handoff ses_abc123 --to sarah@company.com
+
+# Teammate pulls and resumes
+sfs pull ses_abc123
+sfs resume ses_abc123 --in codex
+```
+
+### Cloud Sync (Optional)
 
 ```bash
 # Create an account
@@ -147,28 +174,7 @@ sfs resume <session_id>
 
 Free tier includes 14-day cloud retention with 1 device. See the [Sync Guide](docs/sync-guide.md) for setup, conflict handling, and self-hosted options.
 
-## Session Search
-
-```bash
-# Search across all local sessions
-sfs search "rate limiting middleware"
-
-# MCP server lets AI tools search your past sessions
-sfs mcp install --for claude-code
-```
-
-## Team Handoff
-
-```bash
-# Hand off a session to a teammate
-sfs handoff ses_abc123 --to sarah@company.com
-
-# Teammate pulls and resumes
-sfs pull ses_abc123
-sfs resume ses_abc123 --in codex
-```
-
-## Shared Project Context
+### Shared Project Context
 
 Share architecture decisions, conventions, and team knowledge with every AI agent working on your codebase.
 
@@ -183,7 +189,7 @@ sfs project show
 
 AI agents connected via the MCP server can call `get_project_context` to read the document automatically. See [Project Context](docs/project-context.md) for details.
 
-## Rules Portability
+### Rules Portability
 
 Maintain your project's AI instructions in one place. SessionFS compiles canonical rules into the tool-specific files each AI agent reads — `CLAUDE.md`, `codex.md`, `.cursorrules`, `.github/copilot-instructions.md`, `GEMINI.md` — so instructions stay consistent across every tool.
 
@@ -195,11 +201,11 @@ sfs rules compile       # write tool-specific files (commit them)
 
 Compiled files are committed by default so fresh clones and teammates without SessionFS still get the same agent contract. Cross-tool resume preflights the target tool's rules file from current canonical rules (Case A/B/D write, Case C skip with warning). Each captured session records `rules_version`, `rules_hash`, and a full list of instruction artifacts so you always know what guided the agent. See [Rules Portability](docs/rules.md).
 
-## Web Dashboard
+### Web Dashboard
 
 A browser-based interface for browsing and managing synced sessions. Accessible at `http://localhost:8000` when running the self-hosted server, or at `app.sessionfs.dev` for cloud accounts.
 
-## Self-Hosted Server
+### Self-Hosted Server
 
 ```bash
 docker compose up -d
