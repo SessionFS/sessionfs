@@ -15,6 +15,7 @@ import AuditTab from './AuditTab';
 import AuditModal from './AuditModal';
 import SummaryTab from './SummaryTab';
 import HandoffModal from '../handoffs/HandoffModal';
+import ShareDialog from './ShareDialog';
 import DeleteScopeDialog from './DeleteScopeDialog';
 import type { DeleteScope } from './DeleteScopeDialog';
 import { useDeleteSession } from '../hooks/useSessions';
@@ -43,6 +44,7 @@ export default function SessionDetail() {
   const { data: lastMessagesData } = useMessages(id!, 1, 50, 'newest');
   const { auth } = useAuth();
   const [showHandoff, setShowHandoff] = useState(false);
+  const [showShare, setShowShare] = useState(false);
   const [showAuditModal, setShowAuditModal] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>('messages');
@@ -226,6 +228,9 @@ export default function SessionDetail() {
             )}
           </div>
           <div className="flex items-center gap-2">
+            <Button onClick={() => setShowShare(true)} size="sm" variant="secondary">
+              Share
+            </Button>
             <Button onClick={() => setShowHandoff(true)} size="sm">
               Hand Off
             </Button>
@@ -449,6 +454,9 @@ export default function SessionDetail() {
         )}
       </div>
 
+      {showShare && (
+        <ShareDialog sessionId={session.id} open={showShare} onClose={() => setShowShare(false)} />
+      )}
       {showHandoff && (
         <HandoffModal sessionId={session.id} onClose={() => setShowHandoff(false)} />
       )}

@@ -120,6 +120,8 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     app.include_router(auth.router)
     app.include_router(auth_sso.router)
     app.include_router(sessions.router)
+    # v0.14.0 — public share view at /api/v1/share/{token}/view
+    app.include_router(sessions.share_view_router, prefix="/api/v1")
     app.include_router(handoffs.router)
     app.include_router(teams.router)
     # v0.10.10 — scoped service keys (org-scoped admin) + personal user keys
