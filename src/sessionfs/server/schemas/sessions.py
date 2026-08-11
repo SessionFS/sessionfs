@@ -145,6 +145,7 @@ class CreateShareLinkRequest(BaseModel):
 class ShareLinkResponse(BaseModel):
     link_id: str
     url: str
+    public_url: str
     expires_at: datetime
     has_password: bool
 

@@ -553,6 +553,10 @@ class ShareLink(Base):
         DateTime(timezone=True), server_default=func.now()
     )
     is_revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+    # v0.14.0: DLP gate for public share pages (migration 060).
+    # NULL = not yet checked; True = scanned, clean; False = scanned, blocked.
+    dlp_checked: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    dlp_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class GitHubInstallation(Base):

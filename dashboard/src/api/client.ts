@@ -1486,6 +1486,18 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         method: 'PUT',
         body: JSON.stringify(body),
       }),
+
+    // ── Share Links (v0.14.0) ──
+    createShareLink: (sessionId: string, body: { expires_in_hours?: number; password?: string }) =>
+      request<{ link_id: string; url: string; public_url: string; expires_at: string; has_password: boolean }>(
+        `/api/v1/sessions/${sessionId}/share`,
+        { method: 'POST', body: JSON.stringify(body) },
+      ),
+
+    revokeShareLink: (sessionId: string, linkId: string) =>
+      request<void>(`/api/v1/sessions/${sessionId}/share/${linkId}`, {
+        method: 'DELETE',
+      }),
   };
 }
 

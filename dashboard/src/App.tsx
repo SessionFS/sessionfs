@@ -27,6 +27,7 @@ const InvitesPage = React.lazy(() => import('./invites/InvitesPage'));
 const HelpPage = React.lazy(() => import('./help/HelpPage'));
 const GettingStartedPage = React.lazy(() => import('./onboarding/GettingStartedPage'));
 const OnboardingGate = React.lazy(() => import('./onboarding/OnboardingGate'));
+const ShareView = React.lazy(() => import('./share/ShareView'));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -64,6 +65,7 @@ export default function App() {
             <Route path="/login" element={<LoginPage />} />
             <Route path="/sso/callback" element={<SsoCallback />} />
             <Route path="/handoffs/claim/:id" element={<HandoffClaimLanding />} />
+            <Route path="/s/:token" element={<ShareView />} />
             <Route
               element={
                 <ProtectedRoute>
