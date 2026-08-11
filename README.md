@@ -28,7 +28,7 @@ Start a session in Claude Code, resume it in Codex. Push a session to the cloud,
 
 ```bash
 # 1. Install
-pip install sessionfs
+pipx install sessionfs
 
 # 2. Start the daemon — it watches all 9 tools automatically
 sfs daemon start
@@ -43,6 +43,7 @@ sfs resume ses_abc123 --in codex
 ```
 
 See the full [Quickstart Guide](docs/quickstart.md) for detailed steps.
+See [Installation](docs/install.md) for alternative install methods (brew, curl, pip).
 
 ## How It Works
 

@@ -1,6 +1,4 @@
----
-title: "Installation"
----
+# Install SessionFS
 
 Choose the path that fits your setup.
 
@@ -102,5 +100,9 @@ sfs init
 ```
 
 The wizard auto-detects your installed AI tools, starts the daemon, and walks
-you through setup in under a minute. See the [Quickstart Guide](/quickstart/)
-for the full walkthrough.
+you through setup in under a minute.
+
+---
+
+See the [Quickstart Guide](/quickstart/) for the full walkthrough.
+See [Troubleshooting](/troubleshooting/) if you run into issues.

@@ -38,6 +38,18 @@ jobs:
         run: ruff check src/
       - name: Type check
         run: mypy src/sessionfs/ --ignore-missing-imports
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+      - name: ShellCheck install.sh
+        run: shellcheck -S warning install/install.sh
+      - name: Verify install.sh site sync
+        run: |
+          if ! cmp -s install/install.sh site/public/install.sh; then
+            echo "install/install.sh and site/public/install.sh differ."
+            echo "Run: cp install/install.sh site/public/install.sh"
+            exit 1
+          fi
+          echo "install.sh files are in sync."
 
   security:
     name: Dependency Audit
