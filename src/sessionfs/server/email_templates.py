@@ -177,6 +177,7 @@ def handoff_email(
     handoff_id: str,
     pull_command: str,
     dashboard_url: str | None = None,
+    landing_url: str | None = None,
     trust_score: float | None = None,
 ) -> str:
     """Generate HTML email for a session handoff notification."""
@@ -211,8 +212,27 @@ def handoff_email(
             "</div>"
         )
 
+    # P1 pre-signup landing: a public page the recipient can view BEFORE
+    # creating an account. The token lives in the URL fragment — browser-
+    # side only, never logged by servers. Signup becomes the CLAIM action.
+    landing_html = ""
+    if landing_url:
+        safe_landing = _html.escape(landing_url, quote=True)
+        landing_html = (
+            "<div style='background: #161b22; padding: 16px; border-radius: 6px; "
+            "margin: 16px 0; text-align: center;'>"
+            "<p style='color: #e6edf3; margin: 0 0 4px 0; font-weight: 500;'>"
+            "You've received a session handoff</p>"
+            "<p style='color: #8b949e; margin: 0 0 12px 0; font-size: 13px;'>"
+            "View the session preview — no account needed.</p>"
+            f"<a href='{safe_landing}' style='display: inline-block; "
+            "background: #4f9cf7; color: white; padding: 10px 24px; "
+            "border-radius: 6px; text-decoration: none; font-weight: 500;'>"
+            "View handoff →</a></div>"
+        )
+
     dashboard_html = ""
-    if dashboard_url:
+    if dashboard_url and not landing_url:
         dashboard_html = (
             f"<p style='margin-top: 12px;'><a href='{dashboard_url}' "
             "style='color: #4f9cf7; text-decoration: none;'>View in dashboard</a></p>"
@@ -240,6 +260,8 @@ def handoff_email(
         "</div>"
         # Message from sender
         f"{message_html}"
+        # P1 landing-page CTA — view the session preview without signing up
+        f"{landing_html}"
         # Session details table
         "<table style='width: 100%; border-collapse: collapse; margin: 16px 0; "
         "background: #161b22; border-radius: 6px; overflow: hidden;'>"

@@ -328,6 +328,11 @@ class Handoff(Base):
     # current tier (per Codex I.4); only recipient access matters at
     # claim. Audit can compare snapshot vs current for forensic purposes.
     sender_tier_snapshot: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # v0.15.0 — sha256-at-rest token for the P1 pre-signup landing page.
+    # Raw token goes ONLY into the recipient email link (generated at
+    # handoff creation); the hash gates the unauthenticated /preview
+    # endpoint. Nullable — existing rows constant-404.
+    preview_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class Team(Base):

@@ -67,10 +67,19 @@ class EmailProvider(ABC):
         sender_message: str | None,
         handoff_id: str,
         dashboard_url: str | None = None,
+        preview_token: str | None = None,
     ) -> dict[str, Any]:
         from sessionfs.server.email_templates import handoff_email
 
         pull_command = f"sfs pull-handoff {handoff_id}"
+        # Build the pre-signup landing page URL (P1 — tk_d1de83ad4a5d4187).
+        # The token travels in the fragment so the browser can read it
+        # without it hitting server access logs or Referer headers.
+        landing_url: str | None = None
+        if dashboard_url and preview_token:
+            landing_url = (
+                f"{dashboard_url}/handoffs/claim/{handoff_id}#t={preview_token}"
+            )
         html = handoff_email(
             sender_email=sender_email,
             session_title=session_title,
@@ -84,6 +93,7 @@ class EmailProvider(ABC):
             handoff_id=handoff_id,
             pull_command=pull_command,
             dashboard_url=dashboard_url,
+            landing_url=landing_url,
         )
         title = session_title or "a session"
         subject = f"SessionFS: {sender_email} handed off {title}"
