@@ -1126,6 +1126,9 @@ class TelemetryEvent(Base):
     features_used: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
     errors_24h: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     tier: Mapped[str] = mapped_column(String(20), nullable=False, server_default="free")
+    event: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    event_ts: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    tool: Mapped[str | None] = mapped_column(String(50), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

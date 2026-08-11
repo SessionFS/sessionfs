@@ -274,6 +274,23 @@ def init_cmd() -> None:
 
     console.print()
 
+    # Telemetry disclosure — MUST print before the daemon starts (the daemon can
+    # emit funnel events immediately) and before this wizard's own emits, so the
+    # user learns the opt-outs before anything is ever sent.
+    console.print(
+        "[dim]SessionFS collects anonymous usage telemetry (random install id, "
+        "version, OS, event name — never paths, session content, or personal "
+        "data). Disable anytime: export SFS_NO_TELEMETRY=1, or "
+        "`sfs config set telemetry.enabled false`. Details: docs/telemetry.md[/dim]"
+    )
+    console.print()
+    try:
+        from sessionfs.telemetry import mark_disclosure_shown
+
+        mark_disclosure_shown()
+    except Exception:
+        pass
+
     # --- Step 3: Start daemon ---
     start_daemon = typer.confirm("Start the SessionFS daemon now?", default=True)
 
@@ -345,3 +362,10 @@ def init_cmd() -> None:
     console.print("  [cyan]sfs resume[/cyan] <id>       \u2014 Resume in any tool")
     console.print("  [cyan]sfs search[/cyan] \"query\"    \u2014 Search past sessions")
     console.print()
+
+    # v0.15 telemetry: wizard completed successfully
+    try:
+        from sessionfs.telemetry import emit
+        emit("init_completed")
+    except Exception:
+        pass

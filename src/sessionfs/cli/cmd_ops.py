@@ -115,6 +115,15 @@ def resume(
                 force=force_rules,
             )
 
+        # v0.15 telemetry: first memory read via resume — ANY target. Emit
+        # BEFORE the launch (interactive tools block for the whole session or
+        # replace this process; a post-launch emit fires hours late or never).
+        # Reaching the dispatch = the session resolved and resume is happening.
+        try:
+            from sessionfs.telemetry import emit_once
+            emit_once("first_magic", "first_magic")
+        except Exception:
+            pass
         if tool == "codex":
             _resume_in_codex(session_dir, manifest, target_path, full_id, model=model)
         elif tool == "copilot":

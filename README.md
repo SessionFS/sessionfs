@@ -320,6 +320,13 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 - VS Code extension
 - Cost analytics dashboard
 
+## Telemetry
+
+SessionFS collects anonymous usage telemetry (install ID, version, OS, and
+funnel event name) to help us understand adoption. No paths, session content,
+or personal data is ever sent. Disable with `export SFS_NO_TELEMETRY=1` or
+`[telemetry] enabled = false` in config.toml. Full disclosure: [docs/telemetry.md](docs/telemetry.md).
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, testing, and PR guidelines.
