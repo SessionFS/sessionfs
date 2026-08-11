@@ -27,7 +27,11 @@ from watchdog.observers import Observer
 from sessionfs.daemon.config import ClaudeCodeWatcherConfig
 from sessionfs.daemon.status import WatcherStatus
 from sessionfs.store.local import LocalStore
-from sessionfs.watchers.base import NativeSessionRef, WatchEvent, WatcherHealth
+from sessionfs.watchers.base import (
+    CaptureHealthTracker,
+    NativeSessionRef,
+    WatchEvent,
+)
 
 logger = logging.getLogger("sfsd.watcher.claude_code")
 
@@ -446,17 +450,17 @@ class ClaudeCodeWatcher:
         self._event_queue: list[WatchEvent] = []
         self._event_lock = threading.Lock()
         self._last_event_time: float = 0.0
-        self._health = WatcherHealth.HEALTHY
+        self._capture_health = CaptureHealthTracker(tool_name="claude-code")
         self._tracked: dict[str, NativeSessionRef] = {}
-        self._last_error: str | None = None
         self._last_scan_at: str | None = None
 
     def full_scan(self) -> None:
         """Discover all existing CC sessions, capture new/changed ones."""
         if not self._projects_dir.is_dir():
             logger.warning("Claude Code projects dir not found: %s", self._projects_dir)
-            self._health = WatcherHealth.DEGRADED
-            self._last_error = f"Projects dir not found: {self._projects_dir}"
+            self._capture_health.set_degraded(
+                f"Projects dir not found: {self._projects_dir}"
+            )
             return
 
         try:
@@ -493,7 +497,7 @@ class ClaudeCodeWatcher:
                 )
                 captured += 1
 
-            self._health = WatcherHealth.HEALTHY
+            self._capture_health.set_healthy()
             self._last_scan_at = datetime.now(timezone.utc).isoformat()
             logger.info(
                 "Full scan complete: %d sessions found, %d captured",
@@ -502,8 +506,7 @@ class ClaudeCodeWatcher:
             )
         except Exception as e:
             logger.error("Full scan failed: %s", e, exc_info=True)
-            self._health = WatcherHealth.DEGRADED
-            self._last_error = str(e)
+            self._capture_health.set_degraded(str(e))
 
     def _capture_session(
         self,
@@ -527,6 +530,9 @@ class ClaudeCodeWatcher:
 
             # Guard against compression data loss
             if not should_recapture(self._store, sfs_id, cc_session.message_count, "claude-code"):
+                # Guard-skip after a SUCCESSFUL parse — the capture pipeline
+                # works; reset the failure streak (recovers degraded).
+                self._capture_health.record_success()
                 ref = NativeSessionRef(
                     tool="claude-code",
                     native_session_id=native_id,
@@ -578,10 +584,14 @@ class ClaudeCodeWatcher:
             self._tracked[native_id] = ref
             self._store.upsert_tracked_session(ref)
             logger.info("Captured session %s -> %s", native_id, session_dir)
+            self._capture_health.record_success()
 
         except Exception as e:
             logger.error("Failed to capture session %s: %s", native_id, e, exc_info=True)
-            self._last_error = f"Capture failed for {native_id}: {e}"
+            self._capture_health.record_failure(
+                f"Capture failed for {native_id}: {e}",
+                session_key=native_id,
+            )
 
     def start_watching(self) -> None:
         """Start the watchdog filesystem observer."""
@@ -660,9 +670,10 @@ class ClaudeCodeWatcher:
         return WatcherStatus(
             name="claude-code",
             enabled=self._config.enabled,
-            health=self._health.value,
+            health=self._capture_health.health.value,
             sessions_tracked=len(self._tracked),
             last_scan_at=self._last_scan_at,
-            last_error=self._last_error,
+            last_error=self._capture_health.last_error,
+            degraded_since=self._capture_health.degraded_since,
             watch_paths=[str(self._projects_dir)],
         )
