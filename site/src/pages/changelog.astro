@@ -17,14 +17,115 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.12.1 -->
+      <!-- v0.15.0 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.15.0</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">August 12, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">The Adoption Release &mdash; Instant First Win &middot; Easier Installs &middot; Share Pages &middot; Handoff Previews</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Feel it in the first minute.</strong> <span class="font-mono text-accent text-sm">sfs init</span> now ends by capturing your most recent AI session on the spot and telling you exactly what to do next &mdash; ask your agent <em>&ldquo;what did we do last session?&rdquo;</em> Because MCP is installed in the same wizard step, the question works immediately. Safe by construction: init waits read-only when the daemon owns the store, and respects deletions.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Friction-free installs.</strong> <span class="font-mono text-accent text-sm">pipx install sessionfs</span> is now the documented default, joined by a Homebrew formula (<span class="font-mono text-accent text-sm">brew tap sessionfs/tap</span>) and a checksummed one-line curl installer (<span class="font-mono text-accent text-sm">curl -fsSL https://get.sessionfs.dev | sh</span>). Platforms: macOS and Linux; Windows support is planned for v0.16.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Public share pages.</strong> A shared session now renders as a clean read-only page at <span class="font-mono text-accent text-sm">/s/&#123;token&#125;</span> &mdash; owner-revocable, optionally password-protected, never cached or indexed, and hard-gated by a DLP scan of exactly the content served (tool inputs included), re-run whenever the session changes.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Handoff recipients see what they were handed before signing up.</strong> A pre-signup landing page shows the sender, title, and a bounded, redacted preview; creating an account becomes the claim action. Token-gated with hashed-at-rest tokens and constant 404s for every failure mode.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Capture-health self-monitoring.</strong> The daemon now detects when an AI tool's format change silently breaks capture (it never flags a tool that is merely idle), and surfaces it in <span class="font-mono text-accent text-sm">sfs doctor</span> (check #9) and a dashboard Settings card.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Anonymous activation telemetry, prominently disclosed.</strong> Six funnel events carrying only a random install id, version, OS, and event name &mdash; never paths, session content, or personal data. Default-on with two independent opt-outs (<span class="font-mono text-accent text-sm">SFS_NO_TELEMETRY=1</span> or <span class="font-mono text-accent text-sm">[telemetry] enabled=false</span>). Self-hosted deployments send telemetry to their own server, not to SessionFS. Full disclosure: <a href="/telemetry/" class="text-brand hover:underline">Telemetry</a>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>SSO ships in the Helm chart</strong> (<span class="font-mono text-accent text-sm">api.sso</span> values block) with a real-IdP smoke-test runbook for self-hosted deployments.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Security fix: SessionFS's own API keys are no longer exempt from DLP scanning.</strong> Keys with the <span class="font-mono text-accent text-sm">sk_sfs_</span> prefix were excluded from every DLP gate by an allowlist entry, so a user's real SessionFS key could pass session-push scans, handoff previews, and share pages unredacted. The exclusion is removed and a dedicated detection pattern added.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>One story above the fold.</strong> The README, site, and quickstart now lead with the core promise: your AI coding agent never starts from zero again. Platform breadth (handoff, governance, SSO, work queues) moves below the fold.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Migrations 001&ndash;062, all proven on PostgreSQL 16. 3,050 backend + 459 dashboard UI tests passing. 68 MCP tools (unchanged) &middot; 9 supported tools unchanged.</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.14.0 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.14.0</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">July 6, 2026</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Resident Agents &middot; SSO Dashboard &middot; SSO Browser Login</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Resident runner.</strong> An operator-hosted, always-on agent process (<span class="font-mono text-accent text-sm">sfs resident run</span> / <span class="font-mono text-accent text-sm">sfs resident health</span>) that drives a work queue by calling <em>your own</em> LLM &mdash; SessionFS never holds a server-side LLM key. Two kinds: a <strong>reviewer</strong> that posts trusted verdicts, and an <strong>implementer</strong> that writes code in an isolated worktree and can only <em>propose</em> &mdash; it never merges, never self-approves (items close only on an independent trusted <span class="font-mono text-accent text-sm">VERIFIED-CLEAN</span>), and never sends code to the server (only branch/SHA/changed-path references). Includes durable server-side resident memory, living-context hydration with fail-closed cost ceilings, a hardened sandbox profile, and an operator guide. Free for the local runner.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>SSO admin dashboard.</strong> The v0.13.x SSO backend gets its UI: OIDC provider configuration (the client secret is handled strictly as a reference, never a pasteable secret), DNS-TXT domain verification, an org-wide enforcement toggle (the owner is never locked out), and owner-only break-glass grants.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>&ldquo;Sign in with SSO&rdquo; in the browser.</strong> Organization slug &rarr; identity provider &rarr; back into the dashboard, logged in. The browser flow never places a raw API key in a URL or stores one at rest: the callback issues a single-use 120-second hashed one-time code, bound to the authenticating browser to defeat login-CSRF, and a dedicated exchange endpoint mints the key.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Migrations are now CI-proven on real PostgreSQL 16</strong> &mdash; the gate that catches the two failure classes behind the v0.13.1/v0.13.2 fast-follows before they can reach production.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Migrations 001&ndash;058 (057 resident foundation; 058 SSO browser login), proven on PostgreSQL 16. 2,882 backend + 442 dashboard UI tests passing. 68 MCP tools (unchanged) &middot; 9 supported tools unchanged.</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.13.2 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.13.2</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">June 29, 2026</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Patch &mdash; SSO Migration No Longer Recreates An Existing Index</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Second same-day fast-follow on the SSO migration.</strong> Migration 056 tried to create a uniqueness constraint on org memberships that has existed since migration 016, failing on PostgreSQL with a duplicate-object error. The migration no longer touches it. Verified end-to-end against a production-accurate PostgreSQL schema (upgrade and downgrade both clean). The deploy gate worked as designed: production stayed cleanly on v0.12.1 with no partial state until this fix shipped.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Pure migration mechanics &mdash; no application or security surface change from v0.13.0.</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.13.1 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.13.1</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">June 29, 2026</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Patch &mdash; SSO Migration Fixed For PostgreSQL</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Same-day fast-follow.</strong> Migration 056 dropped a uniqueness key with <span class="font-mono text-accent text-sm">DROP INDEX</span>, but PostgreSQL materializes it as a real constraint &mdash; the drop (and the downgrade's recreate) are now dialect-aware. Verified end-to-end on PostgreSQL (upgrade &rarr; downgrade &rarr; re-upgrade). No schema-shape change versus what v0.13.0 intended.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Pure migration mechanics &mdash; no application or security surface change from v0.13.0.</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.13.0 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.13.0</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">June 29, 2026</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Organization SSO (OIDC) &mdash; Enterprise Single Sign-On</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>OIDC single sign-on</strong> (authorization-code + PKCE) against your identity provider &mdash; Okta, Entra ID, Google Workspace, and any spec-compliant OIDC IdP. Login attempts are durable and single-use (replay/CSRF safe), and a successful login mints a normal user API key so the CLI and dashboard work unchanged.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Anti-takeover account linking.</strong> An SSO identity auto-links to an existing account only when the IdP email is verified, exactly matches an already-verified SessionFS account, and that account is already a member of the IdP's org &mdash; every other case is safely denied. Identity is keyed on the provider subject, never the mutable email.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>JIT provisioning.</strong> First SSO login from a verified org domain creates the user (member role only), reconciles any pending invite, and respects the org's seat cap.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Provider config + domain verification.</strong> Owner/admin endpoints to configure an OIDC provider (the client secret is stored only as a reference, never plaintext) and verify org domains via DNS-TXT, with a consumer-email denylist and one-org-per-domain enforcement.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Org-wide enforcement + break-glass.</strong> Owners/admins can require SSO for their org; service keys (CI / automation) are categorically exempt, the owner is never locked out, and an owner can issue a time-boxed 1-hour break-glass grant for one admin during an IdP outage. Deprovisioning a member revokes their SSO-minted keys in the same transaction.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Hardened by design.</strong> Strict <span class="font-mono text-accent text-sm">id_token</span> validation (asymmetric algorithms only, <span class="font-mono text-accent text-sm">alg:none</span>/HMAC rejected) and an SSRF-guarded fetch layer for all issuer-derived requests, backed by edge rate-limiting on the SSO endpoints.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Available on all paid tiers. Migrations 055 + 056. New dependency <span class="font-mono">dnspython</span> (DNS-TXT domain verification). 2,669 backend + 397 dashboard UI tests passing. 68 MCP tools (unchanged) &middot; 9 supported tools unchanged.</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.12.1 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
             <span class="text-brand font-semibold">v0.12.1</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">June 23, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Multi-Repo Project Fixes &middot; Project Rename &middot; Configurable Work-Queue Reviewers</h2>
         <ul class="space-y-2 text-base text-muted">

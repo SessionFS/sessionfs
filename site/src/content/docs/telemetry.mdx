@@ -1,0 +1,93 @@
+---
+title: "Telemetry"
+---
+
+SessionFS collects anonymous usage telemetry to help us understand adoption
+and improve the product. This page is the full disclosure.
+
+## What is sent
+
+Six funnel events, each carrying **four fields** and nothing else:
+
+| Event | When | Fields |
+|---|---|---|
+| `install` | First time SessionFS runs on a machine | install_id, version, os, event_ts |
+| `init_completed` | `sfs init` wizard finishes successfully | install_id, version, os, event_ts |
+| `first_capture` | First session ever captured (daemon or `sfs recapture`) | install_id, version, os, event_ts |
+| `first_magic` | First memory read (resume, MCP search/recall/ask) | install_id, version, os, event_ts |
+| `heartbeat` | Daemon is alive (at most once per 24h) | install_id, version, os, event_ts |
+| `capture_degraded` | Reserved — not yet emitted | install_id, version, os, event_ts, tool |
+
+### Fields
+
+| Field | Description |
+|---|---|
+| `install_id` | Random UUID4 hex, generated once at `~/.sessionfs/install_id`. Not derived from any identifying data. |
+| `version` | SessionFS version string (e.g. `0.15.0`) |
+| `os` | `darwin`, `linux`, or `windows` |
+| `event` | One of the six event names above |
+| `event_ts` | ISO-8601 UTC timestamp of the event |
+| `tool` | Only sent with `capture_degraded` — the AI tool name (≤50 chars) |
+
+The payload is posted to `https://api.sessionfs.dev/api/v1/telemetry` with no
+authentication. The server records the event and returns `{"status": "ok"}`.
+
+## What is NEVER sent
+
+- File paths, workspace paths, or project names
+- Session content, messages, or tool calls
+- Email addresses, user names, or hostnames
+- API keys, tokens, or credentials
+- Git remotes, branch names, or commit SHAs
+- Environment variable values
+
+A server-side `_contains_pii()` guard rejects any payload that
+contains an email-like or IP-address-like string. The emitter never includes
+any of the above fields in the first place.
+
+## Where telemetry goes
+
+Payloads are POSTed to the configured API server. For the hosted product that is
+`api.sessionfs.dev`; if you set `SESSIONFS_API_URL` (self-hosted), telemetry
+goes to **your own server**, not to SessionFS.
+
+A long-running daemon picks up a config-file opt-out on its next config reload
+or within 24 hours (the daily heartbeat re-reads the config); `sfs daemon
+restart` applies it immediately. The env-var opt-out applies to any process
+started after it is set.
+
+## Opting out
+
+Two independent opt-outs, either of which disables all telemetry:
+
+### 1. Environment variable
+
+```bash
+export SFS_NO_TELEMETRY=1
+```
+
+Any non-empty value disables telemetry. This takes precedence over the config
+file and is checked before any thread spawn or network attempt.
+
+### 2. Config file
+
+In `~/.sessionfs/config.toml`:
+
+```toml
+[telemetry]
+enabled = false
+```
+
+Set `enabled = true` (or remove the block) to re-enable. Missing key defaults
+to enabled.
+
+## Data retention
+
+Telemetry events are stored server-side in the `telemetry_events` table. We
+retain them indefinitely for aggregate trend analysis. No personal data is
+linked to install IDs.
+
+## Questions
+
+Open an issue at [github.com/sessionfs/sessionfs](https://github.com/SessionFS/sessionfs)
+or email support@sessionfs.dev.

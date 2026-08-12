@@ -374,6 +374,40 @@ class DaemonSyncer:
                     self.config.sync.auto = new_mode
                 self.config.sync.debounce = data.get("debounce_seconds", 30)
 
+            # v0.15 P1 — upload per-watcher capture health so the
+            # dashboard can surface degraded watchers.  Read daemon.json
+            # (written by the main loop's _update_status) and PUT to the
+            # server.  Fire-and-forget: failures are silent — the next
+            # poll (60 s) will retry.
+            try:
+                from sessionfs.daemon.status import read_status
+
+                status_path = self.config.store_dir / "daemon.json"
+                daemon_status = read_status(status_path)
+                if daemon_status and daemon_status.watchers:
+                    payload = {
+                        "watchers": [
+                            {
+                                "name": w.name,
+                                "health": w.health,
+                                "degraded_since": w.degraded_since,
+                                "last_error": w.last_error,
+                                "sessions_tracked": w.sessions_tracked,
+                            }
+                            for w in daemon_status.watchers
+                        ]
+                    }
+                    await http.put(
+                        f"{client.api_url}/api/v1/sync/health",
+                        headers={
+                            "Authorization": f"Bearer {client.api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json=payload,
+                    )
+            except Exception:
+                pass  # fire-and-forget — offline or daemon.json missing
+
             # Fetch remote watchlist for selective autosync — replace local
             # set entirely so unwatches on other clients propagate.
             if self.auto_mode == "selective":
@@ -528,6 +562,14 @@ class Daemon:
         log a clear "restart to switch profile" message and keep running as
         the pinned profile.
         """
+        # A config reload may change [telemetry] enabled — forget the cached
+        # decision so the opt-out takes effect without a daemon restart.
+        try:
+            from sessionfs.telemetry import reset_telemetry_cache
+
+            reset_telemetry_cache()
+        except Exception:
+            pass
         try:
             from sessionfs.profiles import (
                 profile_config_path,
@@ -782,11 +824,33 @@ class Daemon:
 
         self._running = True
         self._update_status()
+        # Telemetry disclosure for DIRECT starts (`sfsd` / python -m) that never
+        # pass through `sfs init` or `sfs daemon start` — the log is this
+        # process's only channel. First run only (install_id not yet created).
+        try:
+            from sessionfs.telemetry import disclosure_shown
+
+            if not disclosure_shown():
+                logger.info(
+                    "Telemetry: anonymous usage events (random install id, "
+                    "version, OS, event name — never paths or session content). "
+                    "Disable: SFS_NO_TELEMETRY=1 or [telemetry] enabled=false. "
+                    "See docs/telemetry.md"
+                )
+        except Exception:
+            pass
         logger.info("sfsd running (PID %d)", os.getpid())
 
         try:
             while self._running:
                 try:
+                    # v0.15 daily heartbeat (at most once per 24h, marker-gated)
+                    try:
+                        from sessionfs.telemetry import emit_heartbeat
+                        emit_heartbeat()
+                    except Exception:
+                        pass
+
                     # Handle config reload
                     if self._reload_requested:
                         self._reload_requested = False
@@ -798,6 +862,17 @@ class Daemon:
                     if not self._capture_paused:
                         for watcher in self.watchers:
                             watcher.process_events()
+                        # v0.15 telemetry: first LOCAL capture (the daemon
+                        # defaults to local-only — sync must not be the gate).
+                        try:
+                            from sessionfs.telemetry import emit_once
+                            if any(
+                                w.get_status().sessions_tracked > 0
+                                for w in self.watchers
+                            ):
+                                emit_once("first_capture", "first_capture")
+                        except BaseException:
+                            pass
                     else:
                         # Still update status even when paused
                         pass
@@ -838,6 +913,15 @@ def cli_main() -> None:
 
     ensure_config(args.config)
     config = load_config(args.config)
+    # Pin telemetry's opt-out source to the SAME config file this daemon runs
+    # under (custom --config paths included).
+    try:
+        from sessionfs.telemetry import set_config_path_override
+
+        if args.config != DEFAULT_CONFIG_PATH:
+            set_config_path_override(args.config)
+    except Exception:
+        pass
     if args.log_level:
         config.log_level = args.log_level
 

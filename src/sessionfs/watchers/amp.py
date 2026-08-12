@@ -22,7 +22,10 @@ from sessionfs.daemon.config import AmpWatcherConfig
 from sessionfs.daemon.status import WatcherStatus
 from sessionfs.session_id import session_id_from_native
 from sessionfs.store.local import LocalStore
-from sessionfs.watchers.base import NativeSessionRef, WatcherHealth
+from sessionfs.watchers.base import (
+    CaptureHealthTracker,
+    NativeSessionRef,
+)
 
 logger = logging.getLogger("sfsd.watcher.amp")
 
@@ -59,9 +62,8 @@ class AmpWatcher:
         self._threads_dir = config.data_dir / "threads"
 
         self._tracked: dict[str, NativeSessionRef] = {}
-        self._health = WatcherHealth.HEALTHY
+        self._capture_health = CaptureHealthTracker(tool_name="amp")
         self._last_scan_at: str | None = None
-        self._last_error: str | None = None
         self._last_event_time = 0.0
 
         self._observer: Observer | None = None
@@ -70,8 +72,9 @@ class AmpWatcher:
 
     def full_scan(self) -> None:
         if not self._data_dir.is_dir():
-            self._health = WatcherHealth.DEGRADED
-            self._last_error = f"Amp data dir not found: {self._data_dir}"
+            self._capture_health.set_degraded(
+                f"Amp data dir not found: {self._data_dir}"
+            )
             return
 
         try:
@@ -102,14 +105,13 @@ class AmpWatcher:
                 )
                 captured += 1
 
-            self._health = WatcherHealth.HEALTHY
+            self._capture_health.set_healthy()
             self._last_scan_at = datetime.now(timezone.utc).isoformat()
             logger.info("Amp scan: %d found, %d captured", len(sessions), captured)
 
         except Exception as e:
             logger.error("Amp full scan failed: %s", e, exc_info=True)
-            self._health = WatcherHealth.DEGRADED
-            self._last_error = str(e)
+            self._capture_health.set_degraded(str(e))
 
     def _capture_session(
         self,
@@ -132,6 +134,9 @@ class AmpWatcher:
             # Guard against compression data loss
             from sessionfs.watchers.capture_guard import should_recapture
             if not should_recapture(self._store, sfs_id, amp_session.message_count, "amp"):
+                # Guard-skip after a SUCCESSFUL parse — the capture pipeline
+                # works; reset the failure streak (recovers degraded).
+                self._capture_health.record_success()
                 ref = NativeSessionRef(
                     tool="amp",
                     native_session_id=native_id,
@@ -169,10 +174,13 @@ class AmpWatcher:
             )
             self._tracked[native_id] = ref
             self._store.upsert_tracked_session(ref)
+            self._capture_health.record_success()
 
         except Exception as e:
             logger.error("Failed to capture Amp session %s: %s", native_id[:8], e, exc_info=True)
-            self._last_error = f"Capture failed: {e}"
+            self._capture_health.record_failure(
+                f"Capture failed: {e}", session_key=native_id
+            )
 
     def start_watching(self) -> None:
         if not self._threads_dir.is_dir():
@@ -215,9 +223,10 @@ class AmpWatcher:
         return WatcherStatus(
             name="amp",
             enabled=True,
-            health=self._health.value,
+            health=self._capture_health.health.value,
             sessions_tracked=len(self._tracked),
             last_scan_at=self._last_scan_at,
-            last_error=self._last_error,
+            last_error=self._capture_health.last_error,
+            degraded_since=self._capture_health.degraded_since,
             watch_paths=[str(self._threads_dir)],
         )

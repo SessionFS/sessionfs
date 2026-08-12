@@ -16,6 +16,7 @@ const SearchResults = React.lazy(() => import('./sessions/SearchResults'));
 const SettingsPage = React.lazy(() => import('./sessions/SettingsPage'));
 const HandoffList = React.lazy(() => import('./handoffs/HandoffList'));
 const HandoffDetail = React.lazy(() => import('./handoffs/HandoffDetail'));
+const HandoffClaimLanding = React.lazy(() => import('./handoffs/HandoffClaimLanding'));
 const AdminDashboard = React.lazy(() => import('./admin/AdminDashboard'));
 const BillingPage = React.lazy(() => import('./billing/BillingPage'));
 const OrgPage = React.lazy(() => import('./org/OrgPage'));
@@ -26,6 +27,7 @@ const InvitesPage = React.lazy(() => import('./invites/InvitesPage'));
 const HelpPage = React.lazy(() => import('./help/HelpPage'));
 const GettingStartedPage = React.lazy(() => import('./onboarding/GettingStartedPage'));
 const OnboardingGate = React.lazy(() => import('./onboarding/OnboardingGate'));
+const ShareView = React.lazy(() => import('./share/ShareView'));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -62,6 +64,8 @@ export default function App() {
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route path="/sso/callback" element={<SsoCallback />} />
+            <Route path="/handoffs/claim/:id" element={<HandoffClaimLanding />} />
+            <Route path="/s/:token" element={<ShareView />} />
             <Route
               element={
                 <ProtectedRoute>

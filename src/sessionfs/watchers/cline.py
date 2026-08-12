@@ -27,7 +27,10 @@ from sessionfs.daemon.config import ClineWatcherConfig
 from sessionfs.daemon.status import WatcherStatus
 from sessionfs.session_id import session_id_from_native
 from sessionfs.store.local import LocalStore
-from sessionfs.watchers.base import NativeSessionRef, WatcherHealth
+from sessionfs.watchers.base import (
+    CaptureHealthTracker,
+    NativeSessionRef,
+)
 
 logger = logging.getLogger("sfsd.watcher.cline")
 
@@ -69,9 +72,8 @@ class ClineWatcher:
         self._tasks_dir = config.storage_dir / "tasks"
 
         self._tracked: dict[str, NativeSessionRef] = {}
-        self._health = WatcherHealth.HEALTHY
+        self._capture_health = CaptureHealthTracker(tool_name=tool)
         self._last_scan_at: str | None = None
-        self._last_error: str | None = None
         self._last_event_time = 0.0
 
         self._observer: Observer | None = None
@@ -80,8 +82,9 @@ class ClineWatcher:
 
     def full_scan(self) -> None:
         if not self._storage_dir.is_dir():
-            self._health = WatcherHealth.DEGRADED
-            self._last_error = f"{self._tool} storage not found: {self._storage_dir}"
+            self._capture_health.set_degraded(
+                f"{self._tool} storage not found: {self._storage_dir}"
+            )
             return
 
         try:
@@ -115,7 +118,7 @@ class ClineWatcher:
                 )
                 captured += 1
 
-            self._health = WatcherHealth.HEALTHY
+            self._capture_health.set_healthy()
             self._last_scan_at = datetime.now(timezone.utc).isoformat()
             logger.info(
                 "%s scan: %d found, %d captured",
@@ -124,8 +127,7 @@ class ClineWatcher:
 
         except Exception as e:
             logger.error("%s full scan failed: %s", self._tool, e, exc_info=True)
-            self._health = WatcherHealth.DEGRADED
-            self._last_error = str(e)
+            self._capture_health.set_degraded(str(e))
 
     def _capture_session(
         self,
@@ -154,6 +156,9 @@ class ClineWatcher:
             # Guard against compression data loss
             from sessionfs.watchers.capture_guard import should_recapture
             if not should_recapture(self._store, sfs_id, cline_session.message_count, self._tool):
+                # Guard-skip after a SUCCESSFUL parse — the capture pipeline
+                # works; reset the failure streak (recovers degraded).
+                self._capture_health.record_success()
                 ref = NativeSessionRef(
                     tool=self._tool,
                     native_session_id=native_id,
@@ -192,13 +197,16 @@ class ClineWatcher:
             )
             self._tracked[native_id] = ref
             self._store.upsert_tracked_session(ref)
+            self._capture_health.record_success()
 
         except Exception as e:
             logger.error(
                 "Failed to capture %s session %s: %s",
                 self._tool, native_id[:12], e, exc_info=True,
             )
-            self._last_error = f"Capture failed: {e}"
+            self._capture_health.record_failure(
+                f"Capture failed: {e}", session_key=native_id
+            )
 
     def start_watching(self) -> None:
         if not self._tasks_dir.is_dir():
@@ -257,9 +265,10 @@ class ClineWatcher:
         return WatcherStatus(
             name=self._tool,
             enabled=True,
-            health=self._health.value,
+            health=self._capture_health.health.value,
             sessions_tracked=len(self._tracked),
             last_scan_at=self._last_scan_at,
-            last_error=self._last_error,
+            last_error=self._capture_health.last_error,
+            degraded_since=self._capture_health.degraded_since,
             watch_paths=[str(self._tasks_dir)],
         )

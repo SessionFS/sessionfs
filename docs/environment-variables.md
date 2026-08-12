@@ -39,6 +39,7 @@ All SessionFS server environment variables use the `SFS_` prefix.
 | `SFS_SSO_CALLBACK_URL` | The OIDC redirect/callback URL registered with each org's IdP — where the provider returns the authorization code | `https://api.sessionfs.dev/api/v1/auth/sso/callback` |
 | `SFS_SSO_REDIRECT_ORIGINS` | Comma-separated allowlist of absolute origins permitted as the post-login `redirect_after` destination (relative paths are always allowed; everything else is rejected) | — |
 | `SFS_DASHBOARD_URL` | Dashboard origin the **browser** SSO login redirects back to (the one-time-code handoff lands at `<SFS_DASHBOARD_URL>/sso/callback`). Server-config only — never derived from request input. If unset, browser SSO login returns 500 (the CLI SSO flow is unaffected). | — |
+| `SFS_NO_TELEMETRY` | **Client-side.** Set to any non-empty value to disable anonymous usage telemetry entirely (the other opt-out is `[telemetry] enabled = false` in config.toml). See docs/telemetry.md for the full disclosure. | — |
 
 ## Blob Storage
 

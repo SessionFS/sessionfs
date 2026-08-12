@@ -290,3 +290,69 @@ async def get_sync_status(
         storage_used_bytes=storage_used,
         storage_limit_bytes=limit,
     )
+
+
+# ---- Capture Health ----
+
+from pydantic import BaseModel as _PydanticBaseModel
+
+
+class _WatcherHealth(_PydanticBaseModel):
+    name: str
+    health: str = "unknown"
+    degraded_since: str | None = None
+    last_error: str | None = None
+    sessions_tracked: int = 0
+
+
+class CaptureHealthBody(_PydanticBaseModel):
+    watchers: list[_WatcherHealth]
+
+
+@router.put("/health")
+async def upload_capture_health(
+    body: CaptureHealthBody,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Upload per-watcher capture health from the daemon.
+
+    Called by the daemon on each sync-settings poll (~60 s).  The body is
+    JSON-encoded and stored as-is on the user row so the dashboard can
+    surface degraded watchers.
+    """
+    import json as _json
+
+    # Keep only the fields the dashboard needs.  Full WatcherStatus has
+    # extra fields (watch_paths, enabled, last_scan_at) — trim to what
+    # the card renders.
+    trimmed = [
+        {
+            "name": w.name,
+            "health": w.health,
+            "degraded_since": w.degraded_since,
+            "last_error": w.last_error,
+            "sessions_tracked": w.sessions_tracked,
+        }
+        for w in body.watchers
+    ]
+    user.capture_health = _json.dumps(trimmed, ensure_ascii=False)
+    await db.commit()
+    return {"status": "ok", "watchers": len(trimmed)}
+
+
+@router.get("/health")
+async def get_capture_health(
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Return the last-reported per-watcher capture health.
+
+    Returns an empty list when the daemon has never reported health (NULL
+    column).  The dashboard calls this to show a degraded badge when at
+    least one watcher is unhealthy.
+    """
+    import json as _json
+
+    raw = user.capture_health
+    watchers = _json.loads(raw) if raw else []
+    return {"watchers": watchers}

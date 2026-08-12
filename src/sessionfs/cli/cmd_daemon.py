@@ -60,6 +60,25 @@ def start(
         console.print(f"[yellow]Daemon already running (PID {pid}).[/yellow]")
         return
 
+    # Telemetry disclosure — the daemon emits funnel events, and users who
+    # start it directly (README quickstart) never pass through `sfs init`, so
+    # the notice must print HERE, before the process spawns. First run only
+    # (suppressed once an install_id exists — the user has already been told).
+    try:
+        from sessionfs.telemetry import disclosure_shown, mark_disclosure_shown
+
+        if not disclosure_shown():
+            console.print(
+                "[dim]SessionFS collects anonymous usage telemetry (random "
+                "install id, version, OS, event name — never paths, session "
+                "content, or personal data). Disable: export SFS_NO_TELEMETRY=1 "
+                "or `sfs config set telemetry.enabled false`. "
+                "Details: docs/telemetry.md[/dim]"
+            )
+            mark_disclosure_shown()
+    except Exception:
+        pass
+
     # Build sfsd command
     cmd = [sys.executable, "-m", "sessionfs.daemon.main", "--log-level", log_level]
     if config:

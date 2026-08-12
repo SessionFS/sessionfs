@@ -23,6 +23,10 @@ Exactly one of `--to`, `--to-user-id`, or `--to-team-id` is required. Optional f
 
 The recipient gets an email with session details and the pull command.
 
+## Recipients without an account: preview before signup
+
+A recipient who doesn't have a SessionFS account yet isn't sent to a bare signup form. The handoff email links to a landing page that shows who sent the handoff, its title, and a bounded, redacted preview of the session — so they can see what they were handed before creating an account. Signing up becomes the claim action. The preview is precomputed at handoff time and token-gated (tokens are hashed at rest; every failure mode returns a constant 404).
+
 ## Claim a handoff
 
 ```bash

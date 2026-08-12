@@ -23,7 +23,10 @@ from sessionfs.daemon.config import CopilotWatcherConfig
 from sessionfs.daemon.status import WatcherStatus
 from sessionfs.session_id import session_id_from_native
 from sessionfs.store.local import LocalStore
-from sessionfs.watchers.base import NativeSessionRef, WatcherHealth
+from sessionfs.watchers.base import (
+    CaptureHealthTracker,
+    NativeSessionRef,
+)
 
 logger = logging.getLogger("sfsd.watcher.copilot")
 
@@ -65,9 +68,8 @@ class CopilotWatcher:
         self._session_state_dir = config.home_dir / "session-state"
 
         self._tracked: dict[str, NativeSessionRef] = {}
-        self._health = WatcherHealth.HEALTHY
+        self._capture_health = CaptureHealthTracker(tool_name="copilot")
         self._last_scan_at: str | None = None
-        self._last_error: str | None = None
         self._last_event_time = 0.0
 
         self._observer: Observer | None = None
@@ -76,8 +78,9 @@ class CopilotWatcher:
 
     def full_scan(self) -> None:
         if not self._home_dir.is_dir():
-            self._health = WatcherHealth.DEGRADED
-            self._last_error = f"Copilot home not found: {self._home_dir}"
+            self._capture_health.set_degraded(
+                f"Copilot home not found: {self._home_dir}"
+            )
             return
 
         try:
@@ -106,14 +109,13 @@ class CopilotWatcher:
                 self._capture_session(native_id, native_path, current_mtime, current_size)
                 captured += 1
 
-            self._health = WatcherHealth.HEALTHY
+            self._capture_health.set_healthy()
             self._last_scan_at = datetime.now(timezone.utc).isoformat()
             logger.info("Copilot scan: %d found, %d captured", len(sessions), captured)
 
         except Exception as e:
             logger.error("Copilot full scan failed: %s", e, exc_info=True)
-            self._health = WatcherHealth.DEGRADED
-            self._last_error = str(e)
+            self._capture_health.set_degraded(str(e))
 
     def _capture_session(
         self, native_id: str, native_path: Path, mtime: float, size: int,
@@ -132,6 +134,9 @@ class CopilotWatcher:
             # Guard against compression data loss
             from sessionfs.watchers.capture_guard import should_recapture
             if not should_recapture(self._store, sfs_id, copilot_session.message_count, "copilot"):
+                # Guard-skip after a SUCCESSFUL parse — the capture pipeline
+                # works; reset the failure streak (recovers degraded).
+                self._capture_health.record_success()
                 ref = NativeSessionRef(
                     tool="copilot-cli",
                     native_session_id=native_id,
@@ -180,10 +185,13 @@ class CopilotWatcher:
             )
             self._tracked[native_id] = ref
             self._store.upsert_tracked_session(ref)
+            self._capture_health.record_success()
 
         except Exception as e:
             logger.error("Failed to capture Copilot session %s: %s", native_id[:12], e, exc_info=True)
-            self._last_error = f"Capture failed: {e}"
+            self._capture_health.record_failure(
+                f"Capture failed: {e}", session_key=native_id
+            )
 
     def start_watching(self) -> None:
         if not self._session_state_dir.is_dir():
@@ -228,9 +236,10 @@ class CopilotWatcher:
         return WatcherStatus(
             name="copilot",
             enabled=True,
-            health=self._health.value,
+            health=self._capture_health.health.value,
             sessions_tracked=len(self._tracked),
             last_scan_at=self._last_scan_at,
-            last_error=self._last_error,
+            last_error=self._capture_health.last_error,
+            degraded_since=self._capture_health.degraded_since,
             watch_paths=[str(self._session_state_dir)],
         )

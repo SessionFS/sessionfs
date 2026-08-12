@@ -20,6 +20,12 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 SECRET_PATTERNS: dict[str, re.Pattern[str]] = {
+    # -- SessionFS's OWN keys (found via the v0.15 handoff-preview DLP tests:
+    # the scrubber matched AWS keys but not our own sk_sfs_ format — a user's
+    # own API key sailed through every DLP gate) --
+    "sessionfs_api_key": re.compile(
+        r"(?P<secret>sk_sfs_[0-9a-f]{32})"
+    ),
     # -- Cloud Provider Keys --
     "aws_access_key_id": re.compile(
         r"(?:^|[^A-Z0-9])(?P<secret>AKIA[0-9A-Z]{16})(?:[^A-Z0-9]|$)"
@@ -96,7 +102,10 @@ SECRET_PATTERNS: dict[str, re.Pattern[str]] = {
 
 # Allowlist: patterns that should NOT be flagged as secrets
 ALLOWLIST: list[re.Pattern[str]] = [
-    re.compile(r"sk_sfs_"),                              # Our own API keys
+    # NOTE deliberately REMOVED (v0.15): sk_sfs_ was blanket-allowlisted as
+    # "our own API keys", which meant a user's REAL SessionFS key passed every
+    # DLP gate (session push scans, handoff previews, public share pages).
+    # Docs placeholders are still covered by the dummy-value filters below.
     re.compile(r"password.*changeme", re.IGNORECASE),
     re.compile(r"password.*example", re.IGNORECASE),
     re.compile(r"password.*placeholder", re.IGNORECASE),

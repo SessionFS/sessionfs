@@ -22,7 +22,10 @@ from sessionfs.daemon.config import CursorWatcherConfig
 from sessionfs.daemon.status import WatcherStatus
 from sessionfs.session_id import session_id_from_native
 from sessionfs.store.local import LocalStore
-from sessionfs.watchers.base import NativeSessionRef, WatcherHealth
+from sessionfs.watchers.base import (
+    CaptureHealthTracker,
+    NativeSessionRef,
+)
 
 logger = logging.getLogger("sfsd.watcher.cursor")
 
@@ -57,9 +60,8 @@ class CursorWatcher:
         self._workspace_storage = config.workspace_storage_path
 
         self._tracked: dict[str, NativeSessionRef] = {}
-        self._health = WatcherHealth.HEALTHY
+        self._capture_health = CaptureHealthTracker(tool_name="cursor")
         self._last_scan_at: str | None = None
-        self._last_error: str | None = None
         self._last_event_time = 0.0
         self._last_db_mtime = 0.0
 
@@ -69,8 +71,9 @@ class CursorWatcher:
 
     def full_scan(self) -> None:
         if not self._global_db.exists():
-            self._health = WatcherHealth.DEGRADED
-            self._last_error = f"Cursor global DB not found: {self._global_db}"
+            self._capture_health.set_degraded(
+                f"Cursor global DB not found: {self._global_db}"
+            )
             return
 
         try:
@@ -122,6 +125,9 @@ class CursorWatcher:
                     # Guard against compression data loss
                     from sessionfs.watchers.capture_guard import should_recapture
                     if not should_recapture(self._store, sfs_id, session.message_count, "cursor"):
+                        # Guard-skip after a SUCCESSFUL parse — the capture pipeline
+                        # works; reset the failure streak (recovers degraded).
+                        self._capture_health.record_success()
                         ref = NativeSessionRef(
                             tool="cursor",
                             native_session_id=native_id,
@@ -168,19 +174,23 @@ class CursorWatcher:
                     self._tracked[native_id] = ref
                     self._store.upsert_tracked_session(ref)
                     captured += 1
+                    self._capture_health.record_success()
 
                 except Exception as e:
                     logger.error("Failed to capture Cursor composer %s: %s", native_id[:12], e)
+                    self._capture_health.record_failure(
+                        f"Capture failed for {native_id}: {e}",
+                        session_key=native_id,
+                    )
 
-            self._health = WatcherHealth.HEALTHY
+            self._capture_health.set_healthy()
             self._last_scan_at = datetime.now(timezone.utc).isoformat()
             self._last_db_mtime = self._global_db.stat().st_mtime
             logger.info("Cursor scan: %d composers, %d captured", len(composers), captured)
 
         except Exception as e:
             logger.error("Cursor full scan failed: %s", e, exc_info=True)
-            self._health = WatcherHealth.DEGRADED
-            self._last_error = str(e)
+            self._capture_health.set_degraded(str(e))
 
     def start_watching(self) -> None:
         watch_dir = self._global_db.parent
@@ -221,9 +231,10 @@ class CursorWatcher:
         return WatcherStatus(
             name="cursor",
             enabled=True,
-            health=self._health.value,
+            health=self._capture_health.health.value,
             sessions_tracked=len(self._tracked),
             last_scan_at=self._last_scan_at,
-            last_error=self._last_error,
+            last_error=self._capture_health.last_error,
+            degraded_since=self._capture_health.degraded_since,
             watch_paths=[str(self._global_db.parent)],
         )

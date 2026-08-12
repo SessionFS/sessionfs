@@ -67,6 +67,15 @@ class User(Base):
         ForeignKey("entitlements.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # v0.15 P1 — daemon uploads per-watcher capture health on each
+    # sync-settings poll (~60s).  JSON-encoded list of watcher status
+    # objects: [{name, health, degraded_since, last_error, ...}].
+    # Nullable — users who haven't run the daemon since this field was
+    # added stay NULL.  The dashboard renders a degraded badge only when
+    # at least one watcher reports health='degraded'.
+    capture_health: Mapped[str | None] = mapped_column(
+        Text, nullable=True,
+    )
 
 
 class ApiKey(Base):
@@ -319,6 +328,16 @@ class Handoff(Base):
     # current tier (per Codex I.4); only recipient access matters at
     # claim. Audit can compare snapshot vs current for forensic purposes.
     sender_tier_snapshot: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # v0.15.0 — sha256-at-rest token for the P1 pre-signup landing page.
+    # Raw token goes ONLY into the recipient email link (generated at
+    # handoff creation); the hash gates the unauthenticated /preview
+    # endpoint. Nullable — existing rows constant-404.
+    preview_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    preview_snapshot: Mapped[str | None] = mapped_column(
+        Text, nullable=True,
+        comment="Precomputed bounded preview JSON (M2 — the unauthenticated "
+                "preview endpoint never touches the blob store)",
+    )
 
 
 class Team(Base):
@@ -539,6 +558,15 @@ class ShareLink(Base):
         DateTime(timezone=True), server_default=func.now()
     )
     is_revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+    # v0.14.0: DLP gate for public share pages (migration 060).
+    # NULL = not yet checked; True = scanned, clean; False = scanned, blocked.
+    dlp_checked: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    dlp_checked_etag: Mapped[str | None] = mapped_column(
+        String(64), nullable=True,
+        comment="session.etag the DLP verdict was computed against (H2 — "
+                "blob re-push invalidates the cached verdict)",
+    )
+    dlp_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class GitHubInstallation(Base):
@@ -1126,6 +1154,9 @@ class TelemetryEvent(Base):
     features_used: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
     errors_24h: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     tier: Mapped[str] = mapped_column(String(20), nullable=False, server_default="free")
+    event: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    event_ts: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    tool: Mapped[str | None] = mapped_column(String(50), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

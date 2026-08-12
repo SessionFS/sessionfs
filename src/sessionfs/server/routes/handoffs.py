@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Header, Depends, HTTPException, Request
 from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -53,8 +54,10 @@ from sessionfs.server.schemas.handoffs import (
     HandoffCommentResponse,
     HandoffEventResponse,
     HandoffListResponse,
+    HandoffPreviewResponse,
     HandoffResponse,
     HandoffSummaryResponse,
+    PreviewMessage,
     RevokeHandoffRequest,
 )
 
@@ -331,6 +334,13 @@ async def create_handoff(
         snapshot_persona_name=snap_persona_name,
         sender_tier_snapshot=ctx.effective_tier.value,
     )
+    # P1 pre-signup landing — generate a single-purpose preview token.
+    # Only the sha256 hash is stored; the raw token goes into the
+    # recipient email link alone. Irrecoverable if lost.
+    _preview_token = f"hpr_{secrets.token_hex(32)}"
+    handoff.preview_token_hash = hashlib.sha256(
+        _preview_token.encode()
+    ).hexdigest()
     db.add(handoff)
     await db.flush()  # surface handoff.id for attachment + event FK
 
@@ -379,6 +389,36 @@ async def create_handoff(
         service_key_name=auth.service_key_name,
     )
 
+    # M2: precompute the bounded preview ONCE here (authenticated, rate-limited
+    # path) and store it on the row — the unauthenticated preview endpoint
+    # serves ONLY this snapshot and never touches the blob store.
+    try:
+        _pv_blob_store = getattr(request.app.state, "blob_store", None)
+        if _pv_blob_store and session.blob_key:
+            import io as _io
+            import json as _json
+            import tarfile as _tarfile
+
+            _pv_data = await _pv_blob_store.get(session.blob_key)
+            if _pv_data:
+                _pv_raw: list[dict] = []
+                with _tarfile.open(fileobj=_io.BytesIO(_pv_data), mode="r:gz") as _tar:
+                    for _m in _tar.getmembers():
+                        if not _m.name.endswith("messages.jsonl"):
+                            continue
+                        _f = _tar.extractfile(_m)
+                        if _f:
+                            for _line in _f.read().decode("utf-8", errors="replace").splitlines():
+                                _line = _line.strip()
+                                if _line:
+                                    _pv_raw.append(_json.loads(_line))
+                        break
+                handoff.preview_snapshot = _json.dumps(
+                    _build_preview_snapshot(_pv_raw)
+                )
+    except Exception:
+        logger.warning("Handoff preview snapshot build failed for %s", handoff.id)
+
     await db.commit()
     await db.refresh(handoff)
 
@@ -414,6 +454,16 @@ async def create_handoff(
                 except Exception:
                     pass  # Non-critical — email still sends without git info
 
+            # Resolve dashboard URL for the landing-page link (P1).
+            _dashboard_url: str | None = getattr(
+                request.app.state, "dashboard_url", None
+            )
+            if not _dashboard_url:
+                import os
+                _dashboard_url = os.environ.get(
+                    "SFS_DASHBOARD_URL", ""
+                ).rstrip("/") or None
+
             await email_service.send_handoff(
                 to_email=body.recipient_email,
                 sender_email=user.email,
@@ -426,6 +476,8 @@ async def create_handoff(
                 git_branch=git_branch,
                 sender_message=body.message,
                 handoff_id=handoff.id,
+                dashboard_url=_dashboard_url,
+                preview_token=_preview_token,
             )
         except Exception:
             pass  # Email failure should not fail the handoff
@@ -1490,4 +1542,140 @@ async def get_handoff_summary(
         tests_failed=tests_failed,
         errors_encountered=errors,
         last_assistant_messages=last_assistant,
+    )
+
+
+# ---------------------------------------------------------------------------
+#  Pre-signup landing preview (P1 — tk_d1de83ad4a5d4187)
+# ---------------------------------------------------------------------------
+
+def _build_preview_snapshot(raw_messages: list[dict]) -> list[dict]:
+    """Bounded, redacted preview built ONCE at handoff creation (M2).
+
+    Order matters (L3): DLP-redact the FULL text first, then truncate — a
+    secret straddling the truncation boundary must not leak its prefix.
+    Redaction is secrets-pattern based and best-effort; truncation +
+    text-blocks-only is the primary bound.
+    """
+    out: list[dict] = []
+    for idx, msg in enumerate(raw_messages):
+        if len(out) >= PREVIEW_MESSAGE_LIMIT:
+            break
+        role = msg.get("role", "unknown")
+        content = msg.get("content", "")
+        text_parts: list[str] = []
+        if isinstance(content, str):
+            text_parts.append(content)
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text_parts.append(block.get("text", ""))
+        text = " ".join(text_parts).strip()
+        if not text:
+            continue
+        # DLP FIRST (full text), then truncate (L3).
+        try:
+            from sessionfs.server.dlp import redact_text, scan_dlp
+
+            findings = scan_dlp(text, categories=["secrets"])
+            if findings:
+                text = redact_text(text, findings)
+        except Exception:
+            pass  # best-effort; the bounds below still apply
+        if len(text) > PREVIEW_MESSAGE_CHAR_LIMIT:
+            text = text[: PREVIEW_MESSAGE_CHAR_LIMIT - 1] + "…"
+        out.append({"role": role, "text": text, "index": idx})
+    return out
+
+
+PREVIEW_MESSAGE_LIMIT = 6
+PREVIEW_MESSAGE_CHAR_LIMIT = 400
+
+
+@router.get("/{handoff_id}/preview", response_model=HandoffPreviewResponse)
+async def preview_handoff(
+    handoff_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    token: str = Header(default="", alias="X-Preview-Token"),
+):
+    """Unauthenticated handoff preview gated by a single-purpose preview token.
+
+    The token's sha256 must match handoff.preview_token_hash. The raw
+    token goes ONLY into the recipient email link — the server stores
+    only the hash, so a lost token is irrecoverable.
+
+    Returns a bounded preview (title, sender, tool, message count, status,
+    expiry, and first N=6 messages truncated to 400 chars each, text blocks
+    only, DLP-cleaned). Never includes the raw session archive, attachments,
+    or API keys.
+
+    All failure modes return constant 404 — wrong/absent token, revoked,
+    expired, already-claimed-by-someone-else, or handoff does not exist.
+    """
+    import json
+
+    # --- 1. Look up handoff; 404 on miss ---
+    result = await db.execute(select(Handoff).where(Handoff.id == handoff_id))
+    handoff = result.scalar_one_or_none()
+    if handoff is None:
+        raise HTTPException(status_code=404, detail="Handoff not found")
+
+    # --- 2. Validate token; constant 404 on any mismatch ---
+    if not token or not handoff.preview_token_hash:
+        raise HTTPException(status_code=404, detail="Handoff not found")
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    if not hmac.compare_digest(token_hash, handoff.preview_token_hash):
+        raise HTTPException(status_code=404, detail="Handoff not found")
+
+    # --- 3. Lazy-expire pending handoffs past expires_at ---
+    if lazy_expire(handoff):
+        flipped = await persist_lazy_expire(
+            db, handoff_id=handoff.id, current_status="pending"
+        )
+        if flipped:
+            await write_event(
+                db,
+                handoff_id=handoff.id,
+                event_type="expired",
+                actor_user_id=None,
+            )
+            await db.commit()
+        else:
+            await db.refresh(handoff)
+
+    # --- 4. Revoked, expired, or already-claimed → 404 ---
+    if handoff.status in ("revoked", "declined", "expired", "claimed"):
+        raise HTTPException(status_code=404, detail="Handoff not found")
+
+    # --- 5. Look up sender (resolve sender email) ---
+    sender = await db.execute(select(User).where(User.id == handoff.sender_id))
+    sender_user = sender.scalar_one_or_none()
+    sender_email = sender_user.email if sender_user else "unknown"
+
+    # --- 6. Serve the PRECOMPUTED preview snapshot (M2: this endpoint is
+    # unauthenticated — it must never fetch or parse the session blob). A
+    # missing snapshot (creation-time build failed) yields an empty preview.
+    preview_messages: list[PreviewMessage] = []
+    if handoff.preview_snapshot:
+        try:
+            for entry in json.loads(handoff.preview_snapshot):
+                preview_messages.append(
+                    PreviewMessage(
+                        role=str(entry.get("role", "unknown")),
+                        text=str(entry.get("text", "")),
+                        index=int(entry.get("index", 0)),
+                    )
+                )
+        except Exception:
+            preview_messages = []
+
+    return HandoffPreviewResponse(
+        title=handoff.snapshot_title,
+        sender_email=sender_email,
+        tool=handoff.snapshot_tool,
+        message_count=handoff.snapshot_message_count,
+        status=_effective_status(handoff),
+        expires_at=handoff.expires_at,
+        preview_messages=preview_messages,
     )

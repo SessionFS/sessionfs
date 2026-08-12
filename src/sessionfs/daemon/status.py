@@ -25,6 +25,7 @@ class WatcherStatus(BaseModel):
     sessions_tracked: int = 0
     last_scan_at: str | None = None
     last_error: str | None = None
+    degraded_since: str | None = None
     watch_paths: list[str] = Field(default_factory=list)
 
 

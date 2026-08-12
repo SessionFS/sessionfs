@@ -69,6 +69,13 @@ def recapture(
 
     console.print(f"[green]Re-captured {sfs_id} from {ref.tool} source.[/green]")
 
+    # v0.15 telemetry: first successful capture
+    try:
+        from sessionfs.telemetry import emit_once
+        emit_once("first_capture", "first_capture")
+    except Exception:
+        pass
+
 
 def _recapture_claude_code(
     store: object, sfs_id: str, ref: NativeSessionRef, native_path: Path,

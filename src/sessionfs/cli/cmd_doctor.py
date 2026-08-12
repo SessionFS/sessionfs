@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import stat
+from pathlib import Path
 
 from rich.table import Table
 
@@ -109,7 +110,10 @@ def doctor() -> None:
             daemon_detail = "stale PID file (not running)"
     table.add_row("Daemon", _check_mark(daemon_ok), daemon_detail)
 
-    # 6. API reachable (GET /health with timeout)
+    # 6. Capture health — any watcher reporting degraded?
+    _check_capture_health(table, store_dir)
+
+    # 7. API reachable (GET /health with timeout)
     api_ok = False
     api_detail = "not configured"
     try:
@@ -138,7 +142,7 @@ def doctor() -> None:
         pass
     table.add_row("API server", _check_mark(api_ok), api_detail)
 
-    # 7. Auth valid (GET /api/v1/auth/me)
+    # 8. Auth valid (GET /api/v1/auth/me)
     auth_ok = False
     auth_detail = "not authenticated"
     try:
@@ -166,7 +170,7 @@ def doctor() -> None:
         pass
     table.add_row("Authentication", _check_mark(auth_ok), auth_detail)
 
-    # 8. Config permissions
+    # 9. Config permissions
     config_path = store_dir / "config.toml"
     config_ok = False
     config_detail = "not found"
@@ -182,7 +186,7 @@ def doctor() -> None:
             config_detail = f"too permissive ({oct(mode & 0o777)}) — should be 0o600"
     table.add_row("Config permissions", _check_mark(config_ok), config_detail)
 
-    # 9. Stale-install detection — pip upgraded but PATH still resolves to
+    # 10. Stale-install detection — pip upgraded but PATH still resolves to
     # an older `sfs`. Real bug: users pip-install to user-site, see the
     # "scripts installed in X which is not on PATH" warning fly past, then
     # their `sfs` keeps running an older binary and commands added in a
@@ -197,6 +201,65 @@ def doctor() -> None:
 
     if repaired:
         console.print("[green]Auto-repair completed successfully.[/green]")
+
+
+def _check_capture_health(table: Table, store_dir: Path) -> None:
+    """Check daemon.json for watchers reporting degraded health.
+
+    Healthy → quiet single line.
+    Degraded → one row per degraded watcher with failure mode + since-when.
+    """
+    daemon_path = store_dir / "daemon.json"
+    if not daemon_path.exists():
+        table.add_row(
+            "Capture health",
+            _check_mark(True),
+            "daemon not running (no daemon.json)",
+        )
+        return
+
+    try:
+        import json
+        raw = json.loads(daemon_path.read_text())
+        watchers = raw.get("watchers", []) if isinstance(raw, dict) else None
+        if not isinstance(watchers, list) or not all(
+            isinstance(w, dict) for w in watchers
+        ):
+            raise ValueError("malformed daemon status shape")
+    except (json.JSONDecodeError, OSError, ValueError, AttributeError):
+        # Unreadable status is UNKNOWN health — never render it green (a
+        # truncated daemon.json would otherwise hide a degraded watcher).
+        table.add_row(
+            "Capture health",
+            _check_mark(False),
+            "could not read daemon.json — health unknown (restart the daemon?)",
+        )
+        return
+
+    degraded = [w for w in watchers if w.get("health") == "degraded"]
+    if not degraded:
+        healthy_count = sum(
+            1 for w in watchers
+            if w.get("health") in ("healthy", "unknown")
+        )
+        table.add_row(
+            "Capture health",
+            _check_mark(True),
+            f"{healthy_count} watcher(s) healthy",
+        )
+        return
+
+    # One row per degraded watcher, plus a header row.
+    for i, w in enumerate(degraded):
+        name = w.get("name", "unknown")
+        error = w.get("last_error", "no error detail")
+        since = w.get("degraded_since", "unknown")
+        label = f"Capture health [{name}]" if i == 0 else f"  {name}"
+        table.add_row(
+            label,
+            _check_mark(False),
+            f"degraded since {since}: {error}",
+        )
 
 
 def _vtuple(v: str) -> tuple:

@@ -2,52 +2,115 @@
 title: "Installation"
 ---
 
-## Prerequisites
+> **Platforms:** macOS and Linux. Windows support is planned.
 
-- Python 3.10 or later
-- pip (included with Python)
+Choose the path that fits your setup.
 
-## Install from PyPI
+## Recommended: pipx
+
+[pipx](https://pipx.pypa.io) installs SessionFS in an isolated environment so it
+never conflicts with other Python packages on your system.
+
+```bash
+pipx install sessionfs
+```
+
+**Upgrade:**
+
+```bash
+pipx upgrade sessionfs
+```
+
+**Uninstall:**
+
+```bash
+pipx uninstall sessionfs
+```
+
+## Homebrew (macOS)
+
+```bash
+brew tap sessionfs/tap
+brew install sessionfs
+```
+
+**Upgrade:**
+
+```bash
+brew upgrade sessionfs
+```
+
+**Uninstall:**
+
+```bash
+brew uninstall sessionfs
+brew untap sessionfs/tap
+```
+
+## Curl installer (all platforms)
+
+A single command that detects the best available install method on your machine
+(pipx → uv → python3 venv + symlink).
+
+```bash
+curl -fsSL https://get.sessionfs.dev | sh
+```
+
+**Upgrade:** re-run the same command — it upgrades in place.
+
+**Uninstall:**
+
+```bash
+# If installed via venv path:
+rm -rf ~/.sessionfs/venv ~/.local/bin/sfs ~/.local/bin/sfsd
+
+# If installed via pipx:
+pipx uninstall sessionfs
+
+# If installed via uv:
+uv tool uninstall sessionfs
+```
+
+## pip (fallback)
+
+If you already have a Python environment you manage yourself:
 
 ```bash
 pip install sessionfs
 ```
 
-## Verify installation
+**Upgrade:**
+
+```bash
+pip install --upgrade sessionfs
+```
+
+**Uninstall:**
+
+```bash
+pip uninstall sessionfs
+```
+
+## Verify
 
 ```bash
 sfs --version
 ```
 
-## Start the daemon
+## Next step
 
 ```bash
-sfs daemon start
+sfs init
 ```
 
-The daemon watches all 9 supported tools automatically. No configuration needed.
+The wizard auto-detects your installed AI tools, starts the daemon, and walks
+you through setup in under a minute. See the [Quickstart Guide](/quickstart/)
+for the full walkthrough.
 
-## Supported tools
+## Telemetry
 
-| Tool | Capture | Resume |
-|------|---------|--------|
-| Claude Code | Yes | Yes |
-| Codex CLI | Yes | Yes |
-| Gemini CLI | Yes | Yes |
-| Copilot CLI | Yes | Yes |
-| Cursor IDE | Yes | Capture-only |
-| Amp | Yes | Capture-only |
-| Cline | Yes | Capture-only |
-| Roo Code | Yes | Capture-only |
-| Kilo Code | Yes | Capture-only |
-
-## Configuration
-
-The default configuration works out of the box. To customize:
-
-```bash
-sfs config show    # View current config
-sfs config set log_level DEBUG    # Change a setting
-```
-
-Config file location: `~/.sessionfs/config.toml`
+SessionFS sends anonymous activation telemetry (a random install id, version,
+OS, and event name — never paths, session content, or personal data). It is
+easy to disable with `SFS_NO_TELEMETRY=1` or `[telemetry] enabled = false` in
+`~/.sessionfs/config.toml`. See the full [Telemetry disclosure](/telemetry/)
+for exactly what is sent and how to opt out.

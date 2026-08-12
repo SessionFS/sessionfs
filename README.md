@@ -4,11 +4,36 @@
 
 # SessionFS
 
-**Stop re-prompting. Start resuming.**
+**Your AI coding agent never starts from zero again.**
 
-SessionFS captures your AI coding sessions and makes them portable across tools and teammates.
+SessionFS captures your AI coding sessions and makes them portable across tools — so every agent you work with already knows what happened last session.
 
-Start a session in Claude Code, resume it in Codex. Push a session to the cloud, your teammate pulls it with full context — conversation history, workspace state, tool configs, and token usage. No copy-pasting. No re-explaining.
+Start in Claude Code, resume in Codex. Switch machines, switch tools, or come back tomorrow without re-explaining anything. No copy-pasting, no "let me catch you up."
+
+## Quick Start
+
+```bash
+# 1. Install
+pipx install sessionfs
+
+# 2. Run the setup wizard — it auto-detects your tools, starts the daemon,
+#    captures your most recent session, and tells you what to ask next
+sfs init
+
+# 3. Ask your agent (MCP was installed by init):
+#    "what did we do last session?"
+
+# 4. Use your AI tools normally — sessions are captured in the background
+
+# 5. Browse captured sessions
+sfs list
+
+# 6. Resume a session (same tool or different)
+sfs resume ses_abc123 --in codex
+```
+
+See the full [Quickstart Guide](docs/quickstart.md) for a detailed walkthrough.
+See [Installation](docs/install.md) for alternative install methods (brew, curl, pip).
 
 ## Supported Tools
 
@@ -23,26 +48,6 @@ Start a session in Claude Code, resume it in Codex. Push a session to the cloud,
 | Cline | Yes | Capture-only |
 | Roo Code | Yes | Capture-only |
 | Kilo Code | Yes | Capture-only |
-
-## Quick Start
-
-```bash
-# 1. Install
-pip install sessionfs
-
-# 2. Start the daemon — it watches all 9 tools automatically
-sfs daemon start
-
-# 3. Use your AI tools normally — sessions are captured in the background
-
-# 4. Browse captured sessions
-sfs list
-
-# 5. Resume a session (same tool or different)
-sfs resume ses_abc123 --in codex
-```
-
-See the full [Quickstart Guide](docs/quickstart.md) for detailed steps.
 
 ## How It Works
 
@@ -59,6 +64,21 @@ Each tool has its own watcher:
 - **Roo Code** — watches VS Code globalStorage task directories (capture-only)
 
 Sessions are indexed locally for fast browsing via the CLI. Cloud sync is opt-in; the daemon defaults to local-only.
+
+## Cross-Tool Resume
+
+```bash
+# Start in Claude Code, resume in Codex
+sfs resume ses_abc123 --in codex
+
+# Start in Gemini, resume in Claude Code
+sfs resume ses_def456 --in claude-code
+
+# Cursor sessions can be resumed in any bidirectional tool
+sfs resume ses_ghi789 --in gemini
+```
+
+SessionFS converts between native formats automatically — message roles, tool calls, thinking blocks, and workspace state are mapped across tools. See [Compatibility](docs/compatibility.md) for details on which tools support resume and why some are capture-only.
 
 ## Commands
 
@@ -115,22 +135,30 @@ Sessions are indexed locally for fast browsing via the CLI. Cloud sync is opt-in
 
 See the full [CLI Reference](docs/cli-reference.md) for options and examples.
 
-## Cross-Tool Resume
+## Session Search
 
 ```bash
-# Start in Claude Code, resume in Codex
-sfs resume ses_abc123 --in codex
+# Search across all local sessions
+sfs search "rate limiting middleware"
 
-# Start in Gemini, resume in Claude Code
-sfs resume ses_def456 --in claude-code
-
-# Cursor sessions can be resumed in any bidirectional tool
-sfs resume ses_ghi789 --in gemini
+# MCP server lets AI tools search your past sessions
+sfs mcp install --for claude-code
 ```
 
-SessionFS converts between native formats automatically — message roles, tool calls, thinking blocks, and workspace state are mapped across tools. See [Compatibility](docs/compatibility.md) for details on which tools support resume and why some are capture-only.
+## For Teams & Enterprise
 
-## Cloud Sync (Optional)
+### Team Handoff
+
+```bash
+# Hand off a session to a teammate
+sfs handoff ses_abc123 --to sarah@company.com
+
+# Teammate pulls and resumes
+sfs pull ses_abc123
+sfs resume ses_abc123 --in codex
+```
+
+### Cloud Sync (Optional)
 
 ```bash
 # Create an account
@@ -146,28 +174,7 @@ sfs resume <session_id>
 
 Free tier includes 14-day cloud retention with 1 device. See the [Sync Guide](docs/sync-guide.md) for setup, conflict handling, and self-hosted options.
 
-## Session Search
-
-```bash
-# Search across all local sessions
-sfs search "rate limiting middleware"
-
-# MCP server lets AI tools search your past sessions
-sfs mcp install --for claude-code
-```
-
-## Team Handoff
-
-```bash
-# Hand off a session to a teammate
-sfs handoff ses_abc123 --to sarah@company.com
-
-# Teammate pulls and resumes
-sfs pull ses_abc123
-sfs resume ses_abc123 --in codex
-```
-
-## Shared Project Context
+### Shared Project Context
 
 Share architecture decisions, conventions, and team knowledge with every AI agent working on your codebase.
 
@@ -182,7 +189,7 @@ sfs project show
 
 AI agents connected via the MCP server can call `get_project_context` to read the document automatically. See [Project Context](docs/project-context.md) for details.
 
-## Rules Portability
+### Rules Portability
 
 Maintain your project's AI instructions in one place. SessionFS compiles canonical rules into the tool-specific files each AI agent reads — `CLAUDE.md`, `codex.md`, `.cursorrules`, `.github/copilot-instructions.md`, `GEMINI.md` — so instructions stay consistent across every tool.
 
@@ -194,11 +201,11 @@ sfs rules compile       # write tool-specific files (commit them)
 
 Compiled files are committed by default so fresh clones and teammates without SessionFS still get the same agent contract. Cross-tool resume preflights the target tool's rules file from current canonical rules (Case A/B/D write, Case C skip with warning). Each captured session records `rules_version`, `rules_hash`, and a full list of instruction artifacts so you always know what guided the agent. See [Rules Portability](docs/rules.md).
 
-## Web Dashboard
+### Web Dashboard
 
 A browser-based interface for browsing and managing synced sessions. Accessible at `http://localhost:8000` when running the self-hosted server, or at `app.sessionfs.dev` for cloud accounts.
 
-## Self-Hosted Server
+### Self-Hosted Server
 
 ```bash
 docker compose up -d
@@ -217,6 +224,9 @@ Sessions are stored as `.sfs` directories:
 All file paths are relative to workspace root. Sessions are append-only — conflict resolution appends both sides rather than merging.
 
 ## Status
+
+**v0.15.0 — Public Beta.** 3050 backend tests + 459 dashboard tests passing. 62 database migrations. 68 MCP tools. **The adoption release** — no new platform features by design. `sfs init` now ends with a demonstrated magic moment (your most recent session captured + *ask your agent: "what did we do last session?"*); pipx/brew/curl install paths; anonymous activation telemetry (default-on, prominently disclosed, dual opt-out — see docs/telemetry.md); capture-health self-monitoring (the daemon detects and reports format-break degradation instead of silently losing sessions); handoff recipients preview a bounded, redacted transcript before signing up; shared sessions render as public read-only pages at `/s/{token}` behind a hard DLP gate that scans exactly what it serves and re-scans when content changes. Fixed: SessionFS's own `sk_sfs_` keys were excluded from every DLP gate by an allowlist entry — removed, with a dedicated detection pattern added. Migrations 059–062, all proven on PostgreSQL 16. Windows support is planned for v0.16.
+
 
 **v0.14.0 — Public Beta.** 2882 backend tests + 442 dashboard tests passing. 58 database migrations. 68 MCP tools. **Resident agents + the SSO dashboard.** A **resident runner** — an operator-hosted, always-on agent that drives a work queue by calling your own LLM (no server-side key): a reviewer that posts trusted verdicts and an implementer that writes code in an isolated worktree and can only *propose* (never merges, never self-closes, never sends code to the server). Includes a server-side resident-memory primitive, living-context hydrate/compaction, fail-closed LLM cost bounding, a `sfs resident` CLI, a hardened sandbox, and a mandatory high-risk-merge checklist. Plus the **dashboard for Organization SSO** (backend-only until now): an org-admin surface to configure the OIDC provider, verify domains, arm enforcement, and issue break-glass grants — and a **"Sign in with SSO"** browser login using a secure single-use one-time-code exchange (the key is re-minted at exchange, never stored or placed in a URL; the code is bound to the authenticating browser). Migrations 057–058, both proven on PostgreSQL 16. Reviewed end-to-end — Sentinel design + code review and Shield-SR pre-release, all clean.
 
@@ -319,6 +329,13 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 - Session similarity (related-sessions ranking)
 - VS Code extension
 - Cost analytics dashboard
+
+## Telemetry
+
+SessionFS collects anonymous usage telemetry (install ID, version, OS, and
+funnel event name) to help us understand adoption. No paths, session content,
+or personal data is ever sent. Disable with `export SFS_NO_TELEMETRY=1` or
+`[telemetry] enabled = false` in config.toml. Full disclosure: [docs/telemetry.md](docs/telemetry.md).
 
 ## Contributing
 

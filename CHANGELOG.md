@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] - 2026-08-12
+
+**The adoption release.** No new platform features by design — this release removes the friction between installing SessionFS and feeling what it does, measures that journey, and protects it. Migrations advance to **062**, all proven on PostgreSQL 16.
+
+### Added
+
+- **A demonstrated magic moment.** `sfs init` now ends by capturing your most recent AI session and telling you what to ask next — *ask your agent: "what did we do last session?"*. Race-free with the daemon by construction (init waits read-only when a daemon owns the store), bounded at every step, and respectful of deletions and the compaction guard.
+- **Friction-free installs.** pipx is the documented default; a Homebrew formula and a checksummed curl installer (`install/install.sh`, mirrored at the site) join it. A static-binary feasibility assessment recommends GO for v0.16.
+- **Anonymous activation telemetry** (default-on, prominently disclosed, dual opt-out: `SFS_NO_TELEMETRY=1` or `[telemetry] enabled=false`). Six funnel events; the payload is a random install id, version, OS, and the event name — never paths, session content, or personal data. Self-hosted deployments send telemetry to their own server. Full disclosure in `docs/telemetry.md`.
+- **Capture-health self-monitoring.** The daemon detects when a tool's format change breaks capture (distinct-session thresholds, never flags an idle tool), persists it, surfaces it in `sfs doctor` (check #9) and a dashboard Settings card.
+- **Handoff pre-signup landing.** Recipients see what they were handed — sender, title, and a bounded, redacted preview — before creating an account; signing up becomes the claim action. The preview is precomputed at handoff time, token-gated (hashed at rest, carried in a URL fragment and sent as a header), with constant 404s for every failure mode.
+- **Public share pages.** A shared session renders as a read-only page at `/s/{token}` — owner-revocable, password-capable, `no-store`/`noindex`, and hard-gated by a DLP scan of exactly the content served (tool inputs included), re-run whenever the underlying session changes.
+- **SSO in the Helm chart** (`api.sso` values block) plus a real-IdP smoke-test runbook; a Windows support scoping assessment (planned for v0.16 — docs now state platform support honestly).
+
+### Changed
+
+- README, site, and quickstart lead with one story: *your AI coding agent never starts from zero again.* Platform breadth moved below the fold.
+
+### Fixed
+
+- **SessionFS's own API keys (`sk_sfs_…`) were excluded from every DLP gate** by a deliberate allowlist entry — a user's real key could pass session-push scans, handoff previews, and share pages unredacted. The exclusion is removed and a dedicated detection pattern added; documentation placeholders remain covered by dummy-value filters.
+
 ## [0.14.0] - 2026-07-06
 
 **Resident agents + the SSO dashboard.** Two large feature bodies: a resident reviewer/implementer runner (autonomous, propose-only agents with a durable "mind"), and the dashboard surface for Organization SSO (which shipped backend-only in v0.13.x). Database migrations advance to **058** (057 resident foundation; 058 SSO browser-login). Both proven on PostgreSQL 16.

@@ -3,33 +3,39 @@ title: "Quickstart"
 ---
 
 **Time:** Under 2 minutes.
-**Prerequisites:** Python 3.10+
+**Prerequisites:** Python 3.10+ on macOS or Linux (Windows support is planned)
 
 ## 1. Install
 
 ```bash
-pip install sessionfs
+pipx install sessionfs
 ```
 
-This installs two commands: `sfs` (CLI) and `sfsd` (daemon).
+This installs two commands: `sfs` (CLI) and `sfsd` (daemon). See [Installation](/installation/) for alternative methods (brew, curl, pip).
 
-## 2. Initialize
+## 2. Run the Setup Wizard
 
 ```bash
 sfs init
 ```
 
-The interactive wizard auto-detects which AI tools you have installed, sets up the daemon, and optionally configures cloud sync. You can also skip this and configure manually.
+The wizard auto-detects which AI coding tools you have installed and asks which ones to track. It then starts the daemon, installs the MCP server for your tools, and — if you have existing sessions — captures your most recent one on the spot:
 
-## 3. Start the Daemon
-
-```bash
-sfs daemon start
+```
+✓ Captured your most recent session: "Debug auth middleware" (claude-code, 47 messages)
 ```
 
-The daemon watches your AI tools in the background using filesystem events (not polling). Negligible CPU overhead.
+Then it prints the payoff:
 
-It automatically detects and captures sessions from all nine supported tools:
+```
+Now ask your agent: "what did we do last session?"
+```
+
+Because MCP was installed in the same wizard step, you can ask that question immediately — your agent reads the captured session and picks up right where you left off.
+
+If you have no existing sessions yet, the wizard prints a graceful fallback and your first session will be captured automatically when you use your AI tool next.
+
+The daemon watches your AI tools in the background using filesystem events (not polling). Negligible CPU overhead. It automatically detects and captures sessions from all nine supported tools:
 
 - Claude Code
 - Codex CLI
@@ -40,6 +46,14 @@ It automatically detects and captures sessions from all nine supported tools:
 - Cline
 - Roo Code
 - Kilo Code
+
+## 3. Ask Your Agent
+
+Open Claude Code (or whichever tool you use) and ask:
+
+> "what did we do last session?"
+
+Your agent reads the captured session via MCP and catches up without you re-explaining anything.
 
 ## 4. Use Your Tools Normally
 
@@ -97,7 +111,7 @@ Four tools support resume: Claude Code, Codex, Gemini CLI, and Copilot CLI. Sess
 sfs doctor
 ```
 
-This runs 8 diagnostic checks and auto-repairs common issues (broken indexes, stale locks, permission problems).
+This runs 9 diagnostic checks — including capture health, which detects when a tool's format change breaks capture — and auto-repairs common issues (broken indexes, stale locks, permission problems).
 
 **"No sessions found" after `sfs list`**
 

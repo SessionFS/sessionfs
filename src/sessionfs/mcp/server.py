@@ -2119,13 +2119,35 @@ async def list_tools() -> list[Tool]:
     return _TOOLS
 
 
+def _emit_first_magic() -> None:
+    """v0.15 telemetry: first SUCCESSFUL memory read (fire once). Called after a
+    search_sessions / get_session_context / ask_project handler returns without
+    raising — never before, so a failed read doesn't count as magic."""
+    try:
+        from sessionfs.telemetry import emit_once
+
+        emit_once("first_magic", "first_magic")
+    except Exception:
+        pass
+
+
+def _result_is_error(result: object) -> bool:
+    """True for the handlers' error-shaped returns ({'error': ...}) — those
+    must NOT consume the once-only first_magic marker."""
+    return isinstance(result, dict) and "error" in result
+
+
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     try:
         if name == "search_sessions":
             result = _handle_search(arguments)
+            if not _result_is_error(result):
+                _emit_first_magic()
         elif name == "get_session_context":
             result = _handle_get_context(arguments)
+            if not _result_is_error(result):
+                _emit_first_magic()
         elif name == "list_recent_sessions":
             result = _handle_list_recent(arguments)
         elif name == "find_related_sessions":
@@ -2143,6 +2165,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(type="text", text=result if isinstance(result, str) else json.dumps(result, indent=2, default=str))]
         elif name == "ask_project":
             result = await _handle_ask_project(arguments)
+            if not _result_is_error(result):
+                _emit_first_magic()
             return [TextContent(type="text", text=result if isinstance(result, str) else json.dumps(result, indent=2, default=str))]
         elif name == "add_knowledge":
             result = await _handle_add_knowledge(arguments)

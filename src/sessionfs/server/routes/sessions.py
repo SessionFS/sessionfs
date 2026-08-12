@@ -2301,9 +2301,15 @@ async def create_share_link(
     db.add(share_link)
     await db.commit()
 
+    # M2 (Shield): the public page is served by the DASHBOARD app — never
+    # fall back to the API origin (it does not serve /s/{token}).
+    dashboard_url = os.environ.get(
+        "SFS_DASHBOARD_URL", "https://app.sessionfs.dev"
+    ).rstrip("/")
     return ShareLinkResponse(
         link_id=link_id,
         url=f"{os.environ.get('SFS_API_URL', 'https://api.sessionfs.dev')}/api/v1/sessions/share/{token}",
+        public_url=f"{dashboard_url}/s/{token}",
         expires_at=expires_at,
         has_password=password_hash is not None,
     )
@@ -2348,7 +2354,10 @@ async def _access_share_link_impl(
     if link.is_revoked:
         raise HTTPException(status_code=410, detail="Share link has been revoked")
 
-    if link.expires_at < datetime.now(timezone.utc):
+    # Compare naive datetimes — SQLite stores DateTime(timezone=True) as
+    # timezone-aware but returns naive on read (no tz support in sqlite).
+    _now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if link.expires_at.replace(tzinfo=None) < _now:
         raise HTTPException(status_code=410, detail="Share link has expired")
 
     if link.password_hash is not None:
@@ -2413,6 +2422,276 @@ async def access_share_link_post(
 ):
     """Access a password-protected share link via POST body (public, no auth)."""
     return await _access_share_link_impl(token, body.password, db, request)
+
+
+# ── Public share view (v0.14.0) ──────────────────────────────────────────
+# Separate router so the view lives at the cleaner /api/v1/share/{token}/view
+# path rather than under /api/v1/sessions/... (it is a public-facing URL).
+share_view_router = APIRouter()
+
+# Per-message content cap (characters) for the public view.  Keeps the
+# JSON payload under ~2 MB even for the longest sessions (500+ messages)
+# while being generous enough that most normal messages fit whole.
+_SHARE_MESSAGE_CAP = 8_000
+
+# DLP scan categories for share-view gate.  We scan for secrets only
+# (not PHI) because PHI patterns are noisy on code transcripts and the
+# primary risk is accidentally publishing API keys / tokens.
+_SHARE_DLP_CATEGORIES = ["secrets"]
+
+# Maximum total text to run DLP over (avoids scanning 10MB transcripts).
+_SHARE_DLP_MAX_BYTES = 500_000
+
+
+def _extract_share_messages(blob_data: bytes) -> list[dict]:
+    """Extract messages from a .sfs blob, capping each text block.
+
+    Tool results are INCLUDED (this is a full read-only transcript), but
+    every text/tool_result content block is capped to ``_SHARE_MESSAGE_CAP``
+    characters so a single giant Bash output doesn't blow the payload.
+    """
+    messages = _extract_messages_list(blob_data)
+    capped: list[dict] = []
+    for msg in messages:
+        msg_out: dict = {}
+        for key in ("role", "timestamp", "model", "tool_use_count"):
+            if key in msg:
+                msg_out[key] = msg[key]
+        content = msg.get("content")
+        if isinstance(content, str):
+            msg_out["content"] = content[:_SHARE_MESSAGE_CAP]
+        elif isinstance(content, list):
+            capped_blocks: list = []
+            for block in content:
+                if not isinstance(block, dict):
+                    # L3: non-dict blocks are stringified + capped, never
+                    # served verbatim/unbounded.
+                    capped_blocks.append(str(block)[:_SHARE_MESSAGE_CAP])
+                    continue
+                btype = block.get("type", "")
+                capped_block = dict(block)
+                if btype == "text":
+                    val = capped_block.get("text")
+                    if isinstance(val, str):
+                        capped_block["text"] = val[:_SHARE_MESSAGE_CAP]
+                elif btype == "tool_result":
+                    val = capped_block.get("content")
+                    if isinstance(val, str):
+                        capped_block["content"] = val[:_SHARE_MESSAGE_CAP]
+                    elif isinstance(val, list):
+                        # H1: nested-blocks form (the standard shape) — cap
+                        # each nested text block; stringify+cap the rest.
+                        nested: list = []
+                        for nb in val:
+                            if isinstance(nb, dict) and isinstance(
+                                nb.get("text"), str
+                            ):
+                                nb = dict(nb)
+                                nb["text"] = nb["text"][:_SHARE_MESSAGE_CAP]
+                                nested.append(nb)
+                            else:
+                                nested.append(str(nb)[:_SHARE_MESSAGE_CAP])
+                        capped_block["content"] = nested
+                elif btype == "tool_use":
+                    # H1: tool inputs (Bash commands, Write file contents…)
+                    # are exactly where secrets live — serialize + cap.
+                    _inp = capped_block.get("input")
+                    if _inp is not None:
+                        _ser = json.dumps(_inp, default=str)
+                        if len(_ser) > _SHARE_MESSAGE_CAP:
+                            capped_block["input"] = {
+                                "_truncated": _ser[:_SHARE_MESSAGE_CAP]
+                            }
+                elif btype == "thinking":
+                    val = capped_block.get("thinking") or capped_block.get("text")
+                    if isinstance(val, str):
+                        capped_block["thinking"] = val[:_SHARE_MESSAGE_CAP]
+                        # L2: drop the stray uncapped source key.
+                        capped_block.pop("text", None)
+                capped_blocks.append(capped_block)
+            msg_out["content"] = capped_blocks
+        capped.append(msg_out)
+    return capped
+
+
+def _run_share_dlp_scan(blob_data: bytes) -> tuple[bool, int]:
+    """Run DLP scan on the session blob for share-view gating.
+
+    Returns (passed: bool, finding_count: int).  Extracts messages from the
+    blob, builds the plain-text corpus, and scans for secrets.  The scan is
+    run ONCE and the result cached in the ShareLink row.
+
+    Design decision — scan-on-first-access + cache:
+      Scanning at share-creation time would add blob-extraction latency to
+      the create endpoint (which currently only writes a DB row).  Instead,
+      we scan lazily on first view access, stamp the result in the
+      ``dlp_checked`` column, and never re-scan.  This means:
+      - Share creation stays fast (DB insert only).
+      - DLP cost is paid only when someone actually views the link.
+      - Subsequent views are instant (cached boolean).
+      - If secrets are found the link is permanently blocked (dlp_checked=False).
+    """
+    # H1 (Shield): scan EXACTLY what will be served. The corpus is the JSON
+    # serialization of the CAPPED served message structure — so tool_use
+    # inputs, nested tool_result blocks, thinking, and stringified odd blocks
+    # are all inside the scan by construction, and nothing served can escape
+    # it (the old separate text-builder skipped tool_use entirely and
+    # diverged from the serve bounds).
+    served = _extract_share_messages(blob_data)
+    text = json.dumps(served, default=str)
+    if not text.strip():
+        return True, 0
+    from sessionfs.server.dlp import scan_dlp
+    findings = scan_dlp(text, categories=_SHARE_DLP_CATEGORIES)
+    return len(findings) == 0, len(findings)
+
+
+class ShareViewResponse(_BaseModel):
+    title: str | None
+    tool: str
+    created_at: str
+    message_count: int
+    messages: list[dict]
+    owner_display_name: str | None
+
+
+class ShareViewRequest(_BaseModel):
+    password: str | None = None
+
+
+async def _get_share_view_impl(
+    token: str,
+    password: str | None,
+    db: AsyncSession,
+    request: Request,
+    response: Response | None = None,
+) -> ShareViewResponse:
+    """Shared implementation for share view (GET and POST).
+
+    Validates the share link, checks DLP, extracts and returns the
+    public transcript.  NEVER returns session IDs, org IDs, or emails
+    beyond the owner's display name.
+    """
+    result = await db.execute(
+        select(ShareLink).where(ShareLink.token == token)
+    )
+    link = result.scalar_one_or_none()
+    if link is None:
+        raise HTTPException(status_code=404, detail="Share link not found")
+
+    if link.is_revoked:
+        raise HTTPException(status_code=404, detail="Share link not found")
+
+    _now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if link.expires_at.replace(tzinfo=None) < _now:
+        raise HTTPException(status_code=404, detail="Share link not found")
+
+    # Password check
+    if link.password_hash is not None:
+        if not password:
+            raise HTTPException(status_code=401, detail="Password required")
+        import hmac
+        stored = link.password_hash
+        if "$" in stored:
+            salt, expected_hex = stored.split("$", 1)
+            dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 100_000)
+            if not hmac.compare_digest(dk.hex(), expected_hex):
+                raise HTTPException(status_code=401, detail="Invalid password")
+        else:
+            provided = hashlib.sha256(password.encode()).hexdigest()
+            if not hmac.compare_digest(stored, provided):
+                raise HTTPException(status_code=401, detail="Invalid password")
+
+    # Fetch session
+    result = await db.execute(
+        select(Session).where(Session.id == link.session_id)
+    )
+    session = result.scalar_one_or_none()
+    if session is None or session.is_deleted:
+        raise HTTPException(status_code=404, detail="Share link not found")
+
+    # DLP gate — scan on first access; the verdict is bound to the session
+    # ETAG (H2, Shield): blobs are REPLACED on every sync push, so a clean
+    # verdict for yesterday's content must not authorize serving today's.
+    # Any etag change forces a re-scan; a re-scan can flip a link to blocked.
+    if link.dlp_checked is None or link.dlp_checked_etag != session.etag:
+        blob_store = _get_blob_store(request)
+        data = await blob_store.get(session.blob_key)
+        if data is None:
+            raise HTTPException(status_code=404, detail="Session blob not found")
+        passed, finding_count = _run_share_dlp_scan(data)
+        link.dlp_checked = passed
+        link.dlp_checked_etag = session.etag
+        link.dlp_checked_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        await db.commit()
+        if not passed:
+            logger.warning(
+                "share_view_dlp_blocked token=%s session_id=%s finding_count=%d",
+                token, session.id, finding_count,
+            )
+            raise HTTPException(
+                status_code=451,
+                detail="This shared session contains sensitive content and cannot be viewed publicly.",
+            )
+
+    if link.dlp_checked is False:
+        raise HTTPException(
+            status_code=451,
+            detail="This shared session contains sensitive content and cannot be viewed publicly.",
+        )
+
+    # Extract messages — if we already scanned, blob is available; else fetch it
+    blob_store = _get_blob_store(request)
+    data = await blob_store.get(session.blob_key)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Session blob not found")
+
+    messages = _extract_share_messages(data)
+
+    # Resolve owner display name
+    result = await db.execute(
+        select(User.display_name).where(User.id == link.user_id)
+    )
+    owner_row = result.one_or_none()
+    owner_display_name = owner_row[0] if owner_row else None
+
+    # M3 (Shield): explicit no-store — a shared cache/CDN heuristic-caching
+    # this 200 would outlive revocation/expiry/a later DLP block. noindex
+    # keeps revocable content out of search indexes.
+    if response is not None:
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Robots-Tag"] = "noindex"
+    return ShareViewResponse(
+        title=session.title,
+        tool=session.source_tool,
+        created_at=session.created_at.isoformat(),
+        message_count=len(messages),
+        messages=messages,
+        owner_display_name=owner_display_name,
+    )
+
+
+@share_view_router.get("/share/{token}/view", response_model=ShareViewResponse)
+async def share_view_get(
+    token: str,
+    request: Request,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+):
+    """Public share page view — no password (public, no auth)."""
+    return await _get_share_view_impl(token, None, db, request, response)
+
+
+@share_view_router.post("/share/{token}/view", response_model=ShareViewResponse)
+async def share_view_post(
+    token: str,
+    body: ShareViewRequest,
+    request: Request,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+):
+    """Public share page view with password (public, no auth)."""
+    return await _get_share_view_impl(token, body.password, db, request, response)
 
 
 _ALIAS_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{2,99}$")
