@@ -1,5 +1,7 @@
 # Install SessionFS
 
+> **Platforms:** macOS and Linux. Windows support is planned.
+
 Choose the path that fits your setup.
 
 ## Recommended: pipx

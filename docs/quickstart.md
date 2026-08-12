@@ -1,7 +1,7 @@
 # Quickstart
 
 **Time:** Under 2 minutes.
-**Prerequisites:** Python 3.10+
+**Prerequisites:** Python 3.10+ on macOS or Linux (Windows support is planned — [track it here](https://github.com/SessionFS/sessionfs/issues))
 
 ## 1. Install
 
