@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
-import { useParams, useSearchParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import MessageBlock from '../sessions/MessageBlock';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
+import { resolveApiBaseUrl } from '../auth/apiBase';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -23,9 +24,9 @@ type PageState =
 
 // Base URL for the share API — defaults to the dashboard origin's API.
 function shareApiBase(): string {
-  // In production, the dashboard is served from the same origin as the API.
-  // In dev, the Vite proxy forwards /api to the backend.
-  return window.location.origin;
+  // M2 (Shield): prod is split-host (app.* dashboard, api.* API) — resolve
+  // like every other surface, never assume same-origin.
+  return resolveApiBaseUrl();
 }
 
 async function fetchShareView(
@@ -105,7 +106,6 @@ function toolLabel(tool: string): string {
 
 export default function ShareView() {
   const { token } = useParams<{ token: string }>();
-  const [searchParams] = useSearchParams();
   const [state, setState] = useState<PageState>({ kind: 'loading' });
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -134,10 +134,9 @@ export default function ShareView() {
   };
 
   useEffect(() => {
-    // Check for password in query param (not recommended, but works for
-    // direct links from password-protected share dialog)
-    const qpPassword = searchParams.get('password');
-    load(qpPassword || undefined);
+    // M1 (Shield): passwords are NEVER accepted via URL — a protected link
+    // always shows the password prompt.
+    load(undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 

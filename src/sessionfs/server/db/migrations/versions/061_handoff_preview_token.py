@@ -1,6 +1,6 @@
 """Handoff preview token — unauthenticated recipient preview before signup.
 
-Revision ID: 060
+Revision ID: 061
 Revises: 059
 
 Strictly additive: one nullable column `preview_token_hash` on `handoffs`
@@ -28,7 +28,12 @@ def upgrade() -> None:
         "handoffs",
         sa.Column("preview_token_hash", sa.String(length=64), nullable=True),
     )
+    op.add_column(
+        "handoffs",
+        sa.Column("preview_snapshot", sa.Text(), nullable=True),
+    )
 
 
 def downgrade() -> None:
+    op.drop_column("handoffs", "preview_snapshot")
     op.drop_column("handoffs", "preview_token_hash")

@@ -8,7 +8,7 @@ import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Header, Depends, HTTPException, Request
 from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -337,7 +337,7 @@ async def create_handoff(
     # P1 pre-signup landing — generate a single-purpose preview token.
     # Only the sha256 hash is stored; the raw token goes into the
     # recipient email link alone. Irrecoverable if lost.
-    _preview_token = f"hpr_{secrets.token_hex(16)}"
+    _preview_token = f"hpr_{secrets.token_hex(32)}"
     handoff.preview_token_hash = hashlib.sha256(
         _preview_token.encode()
     ).hexdigest()
@@ -388,6 +388,36 @@ async def create_handoff(
         service_key_id=auth.service_key_id,
         service_key_name=auth.service_key_name,
     )
+
+    # M2: precompute the bounded preview ONCE here (authenticated, rate-limited
+    # path) and store it on the row — the unauthenticated preview endpoint
+    # serves ONLY this snapshot and never touches the blob store.
+    try:
+        _pv_blob_store = getattr(request.app.state, "blob_store", None)
+        if _pv_blob_store and session.blob_key:
+            import io as _io
+            import json as _json
+            import tarfile as _tarfile
+
+            _pv_data = await _pv_blob_store.get(session.blob_key)
+            if _pv_data:
+                _pv_raw: list[dict] = []
+                with _tarfile.open(fileobj=_io.BytesIO(_pv_data), mode="r:gz") as _tar:
+                    for _m in _tar.getmembers():
+                        if not _m.name.endswith("messages.jsonl"):
+                            continue
+                        _f = _tar.extractfile(_m)
+                        if _f:
+                            for _line in _f.read().decode("utf-8", errors="replace").splitlines():
+                                _line = _line.strip()
+                                if _line:
+                                    _pv_raw.append(_json.loads(_line))
+                        break
+                handoff.preview_snapshot = _json.dumps(
+                    _build_preview_snapshot(_pv_raw)
+                )
+    except Exception:
+        logger.warning("Handoff preview snapshot build failed for %s", handoff.id)
 
     await db.commit()
     await db.refresh(handoff)
@@ -1519,6 +1549,45 @@ async def get_handoff_summary(
 #  Pre-signup landing preview (P1 — tk_d1de83ad4a5d4187)
 # ---------------------------------------------------------------------------
 
+def _build_preview_snapshot(raw_messages: list[dict]) -> list[dict]:
+    """Bounded, redacted preview built ONCE at handoff creation (M2).
+
+    Order matters (L3): DLP-redact the FULL text first, then truncate — a
+    secret straddling the truncation boundary must not leak its prefix.
+    Redaction is secrets-pattern based and best-effort; truncation +
+    text-blocks-only is the primary bound.
+    """
+    out: list[dict] = []
+    for idx, msg in enumerate(raw_messages):
+        if len(out) >= PREVIEW_MESSAGE_LIMIT:
+            break
+        role = msg.get("role", "unknown")
+        content = msg.get("content", "")
+        text_parts: list[str] = []
+        if isinstance(content, str):
+            text_parts.append(content)
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text_parts.append(block.get("text", ""))
+        text = " ".join(text_parts).strip()
+        if not text:
+            continue
+        # DLP FIRST (full text), then truncate (L3).
+        try:
+            from sessionfs.server.dlp import redact_text, scan_dlp
+
+            findings = scan_dlp(text, categories=["secrets"])
+            if findings:
+                text = redact_text(text, findings)
+        except Exception:
+            pass  # best-effort; the bounds below still apply
+        if len(text) > PREVIEW_MESSAGE_CHAR_LIMIT:
+            text = text[: PREVIEW_MESSAGE_CHAR_LIMIT - 1] + "…"
+        out.append({"role": role, "text": text, "index": idx})
+    return out
+
+
 PREVIEW_MESSAGE_LIMIT = 6
 PREVIEW_MESSAGE_CHAR_LIMIT = 400
 
@@ -1528,7 +1597,7 @@ async def preview_handoff(
     handoff_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    token: str = "",
+    token: str = Header(default="", alias="X-Preview-Token"),
 ):
     """Unauthenticated handoff preview gated by a single-purpose preview token.
 
@@ -1544,9 +1613,7 @@ async def preview_handoff(
     All failure modes return constant 404 — wrong/absent token, revoked,
     expired, already-claimed-by-someone-else, or handoff does not exist.
     """
-    import io
     import json
-    import tarfile
 
     # --- 1. Look up handoff; 404 on miss ---
     result = await db.execute(select(Handoff).where(Handoff.id == handoff_id))
@@ -1586,85 +1653,22 @@ async def preview_handoff(
     sender_user = sender.scalar_one_or_none()
     sender_email = sender_user.email if sender_user else "unknown"
 
-    # --- 6. Extract bounded message preview from the session archive ---
+    # --- 6. Serve the PRECOMPUTED preview snapshot (M2: this endpoint is
+    # unauthenticated — it must never fetch or parse the session blob). A
+    # missing snapshot (creation-time build failed) yields an empty preview.
     preview_messages: list[PreviewMessage] = []
-    session_result = await db.execute(
-        select(Session).where(Session.id == handoff.session_id)
-    )
-    session = session_result.scalar_one_or_none()
-
-    if session is not None:
-        blob_store = getattr(request.app.state, "blob_store", None)
-        raw_messages: list[dict] = []
-
-        if blob_store and session.blob_key:
-            try:
-                data = await blob_store.get(session.blob_key)
-                if data:
-                    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
-                        for member in tar.getmembers():
-                            if not member.name.endswith("messages.jsonl"):
-                                continue
-                            f = tar.extractfile(member)
-                            if not f:
-                                continue
-                            content = f.read().decode("utf-8", errors="replace")
-                            for line in content.splitlines():
-                                line = line.strip()
-                                if line:
-                                    raw_messages.append(json.loads(line))
-                            break  # only one messages.jsonl per archive
-            except Exception:
-                logger.warning(
-                    "Handoff preview: failed to extract messages for %s",
-                    handoff.session_id,
+    if handoff.preview_snapshot:
+        try:
+            for entry in json.loads(handoff.preview_snapshot):
+                preview_messages.append(
+                    PreviewMessage(
+                        role=str(entry.get("role", "unknown")),
+                        text=str(entry.get("text", "")),
+                        index=int(entry.get("index", 0)),
+                    )
                 )
-
-        # Collect first PREVIEW_MESSAGE_LIMIT messages (text blocks only).
-        collected = 0
-        for idx, msg in enumerate(raw_messages):
-            if collected >= PREVIEW_MESSAGE_LIMIT:
-                break
-            role = msg.get("role", "unknown")
-            content = msg.get("content", "")
-
-            # Extract text: string content → use directly; list content →
-            # concatenate text blocks only (skip tool_use / tool_result).
-            text_parts: list[str] = []
-            if isinstance(content, str):
-                text_parts.append(content)
-            elif isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        text_parts.append(block.get("text", ""))
-
-            text = " ".join(text_parts).strip()
-            if not text:
-                continue
-
-            # Truncate to char limit (including ellipsis).
-            if len(text) > PREVIEW_MESSAGE_CHAR_LIMIT:
-                text = text[:PREVIEW_MESSAGE_CHAR_LIMIT - 1] + "…"
-
-            # DLP scan: if the text contains secrets, redact the matched
-            # spans. Best-effort — if the scrubber is unavailable the
-            # truncation + text-blocks-only bound is sufficient.
-            try:
-                from sessionfs.server.dlp import scan_dlp
-                findings = scan_dlp(text, categories=["secrets"])
-                if findings:
-                    # Redact matched text spans with [REDACTED].
-                    for finding in sorted(
-                        findings, key=lambda f: f.match_text, reverse=True
-                    ):
-                        text = text.replace(finding.match_text, "[REDACTED]")
-            except Exception:
-                pass  # DLP is defense-in-depth; never fail the preview.
-
-            preview_messages.append(
-                PreviewMessage(role=role, text=text, index=idx)
-            )
-            collected += 1
+        except Exception:
+            preview_messages = []
 
     return HandoffPreviewResponse(
         title=handoff.snapshot_title,

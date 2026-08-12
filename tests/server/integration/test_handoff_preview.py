@@ -1,6 +1,6 @@
 """Integration tests for the unauthenticated handoff preview endpoint (P1).
 
-GET /api/v1/handoffs/{handoff_id}/preview?token=... — gated by a
+GET /api/v1/handoffs/{handoff_id}/preview (X-Preview-Token header) — gated by a
 single-purpose preview token (sha256 at rest). All failure modes return
 constant 404.
 """
@@ -82,6 +82,12 @@ async def handoff_with_preview_token(
     tar_data = _make_messages_tar(messages)
     await blob_store.put(blob_key, tar_data)
 
+    # The endpoint serves ONLY the precomputed snapshot (Sentinel M2) — seed it
+    # exactly as creation builds it.
+    from sessionfs.server.routes.handoffs import _build_preview_snapshot
+    import json as _json
+    _snapshot_json = _json.dumps(_build_preview_snapshot(messages))
+
     session = Session(
         id=session_id,
         user_id=test_user.id,
@@ -108,6 +114,7 @@ async def handoff_with_preview_token(
         snapshot_tool="claude-code",
         snapshot_message_count=len(messages),
         preview_token_hash=token_hash,
+        preview_snapshot=_snapshot_json,
     )
     db_session.add(handoff)
     await db_session.commit()
@@ -127,7 +134,7 @@ class TestPreviewHappyPath:
         token = handoff_with_preview_token._raw_preview_token  # type: ignore[attr-defined]
         resp = await client.get(
             f"/api/v1/handoffs/{handoff_with_preview_token.id}/preview",
-            params={"token": token},
+            headers={"X-Preview-Token": token},
         )
         assert resp.status_code == 200, resp.text
         data = resp.json()
@@ -146,7 +153,7 @@ class TestPreviewHappyPath:
         token = handoff_with_preview_token._raw_preview_token  # type: ignore[attr-defined]
         resp = await client.get(
             f"/api/v1/handoffs/{handoff_with_preview_token.id}/preview",
-            params={"token": token},
+            headers={"X-Preview-Token": token},
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -166,7 +173,7 @@ class TestPreviewHappyPath:
         token = handoff_with_preview_token._raw_preview_token  # type: ignore[attr-defined]
         resp = await client.get(
             f"/api/v1/handoffs/{handoff_with_preview_token.id}/preview",
-            params={"token": token},
+            headers={"X-Preview-Token": token},
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -184,7 +191,7 @@ class TestPreviewHappyPath:
         token = handoff_with_preview_token._raw_preview_token  # type: ignore[attr-defined]
         resp = await client.get(
             f"/api/v1/handoffs/{handoff_with_preview_token.id}/preview",
-            params={"token": token},
+            headers={"X-Preview-Token": token},
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -200,7 +207,7 @@ class TestPreviewHappyPath:
         token = handoff_with_preview_token._raw_preview_token  # type: ignore[attr-defined]
         resp = await client.get(
             f"/api/v1/handoffs/{handoff_with_preview_token.id}/preview",
-            params={"token": token},
+            headers={"X-Preview-Token": token},
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -227,7 +234,7 @@ class TestPreviewConstant404:
         """Wrong token → 404, not 403."""
         resp = await client.get(
             f"/api/v1/handoffs/{handoff_with_preview_token.id}/preview",
-            params={"token": "hpr_wrongtoken1234567890"},
+            headers={"X-Preview-Token": "hpr_wrongtoken1234567890"},
         )
         assert resp.status_code == 404
 
@@ -238,7 +245,7 @@ class TestPreviewConstant404:
         """Handoff doesn't exist → 404."""
         resp = await client.get(
             "/api/v1/handoffs/hnd_nonexistent/preview",
-            params={"token": "hpr_sometoken1234567890"},
+            headers={"X-Preview-Token": "hpr_sometoken1234567890"},
         )
         assert resp.status_code == 404
 
@@ -260,7 +267,7 @@ class TestPreviewConstant404:
 
         resp = await client.get(
             f"/api/v1/handoffs/{handoff_with_preview_token.id}/preview",
-            params={"token": token},
+            headers={"X-Preview-Token": token},
         )
         assert resp.status_code == 404
 
@@ -284,7 +291,7 @@ class TestPreviewConstant404:
 
         resp = await client.get(
             f"/api/v1/handoffs/{handoff_with_preview_token.id}/preview",
-            params={"token": token},
+            headers={"X-Preview-Token": token},
         )
         assert resp.status_code == 404
 
@@ -310,7 +317,7 @@ class TestPreviewConstant404:
 
         resp = await client.get(
             f"/api/v1/handoffs/{handoff_with_preview_token.id}/preview",
-            params={"token": token},
+            headers={"X-Preview-Token": token},
         )
         assert resp.status_code == 404
 
@@ -321,67 +328,30 @@ class TestPreviewConstant404:
         """Empty string token → 404."""
         resp = await client.get(
             f"/api/v1/handoffs/{handoff_with_preview_token.id}/preview",
-            params={"token": ""},
+            headers={"X-Preview-Token": ""},
         )
         assert resp.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_preview_truncation_at_400_chars(
-        self,
-        client: AsyncClient,
-        db_session: AsyncSession,
-        handoff_with_preview_token: Handoff,
-        blob_store,
-    ):
-        """Messages longer than 400 chars are truncated with ellipsis."""
-        token = handoff_with_preview_token._raw_preview_token  # type: ignore[attr-defined]
+    def test_preview_truncation_at_400_chars(self):
+        """Truncation lives in the creation-time builder now (M2): a 500-char
+        message is DLP-scanned FULL-LENGTH first (L3), then truncated to 400
+        chars with an ellipsis."""
+        from sessionfs.server.routes.handoffs import _build_preview_snapshot
 
-        # Create a session with one long message (500 chars).
-        long_text = "A" * 500
-        messages = [{"role": "user", "content": long_text}]
-        tar_data = _make_messages_tar(messages)
+        out = _build_preview_snapshot([{"role": "user", "content": "A" * 500}])
+        assert len(out) == 1
+        assert len(out[0]["text"]) == 400
+        assert out[0]["text"].endswith("…")
 
-        import uuid as _uuid
-        new_session_id = f"ses_{_uuid.uuid4().hex[:12]}"
-        blob_key = f"sessions/test/{new_session_id}.tar.gz"
-        await blob_store.put(blob_key, tar_data)
-        from sessionfs.server.db.models import Session as Sess
-        sess = Sess(
-            id=new_session_id,
-            user_id=handoff_with_preview_token.sender_id,
-            title="Long Message Test",
-            source_tool="claude-code",
-            model_id="claude-sonnet-5",
-            message_count=1,
-            blob_key=blob_key,
-            blob_size_bytes=len(tar_data),
-            etag=hashlib.sha256(tar_data).hexdigest()[:16],
-        )
-        db_session.add(sess)
-        hnd = Handoff(
-            id=f"hnd_{_uuid.uuid4().hex[:8]}",
-            session_id=new_session_id,
-            sender_id=handoff_with_preview_token.sender_id,
-            recipient_email="recipient@example.com",
-            status="pending",
-            created_at=datetime.now(timezone.utc),
-            expires_at=datetime.now(timezone.utc) + timedelta(days=7),
-            snapshot_title="Long Message Test",
-            snapshot_tool="claude-code",
-            snapshot_message_count=1,
-            preview_token_hash=handoff_with_preview_token.preview_token_hash,
-        )
-        db_session.add(hnd)
-        await db_session.commit()
+    def test_secret_straddling_truncation_boundary_is_redacted(self):
+        """L3 regression: a secret crossing the 400-char boundary must be
+        redacted BEFORE truncation — its prefix must not leak."""
+        from sessionfs.server.routes.handoffs import _build_preview_snapshot
 
-        resp = await client.get(
-            f"/api/v1/handoffs/{hnd.id}/preview",
-            params={"token": token},
-        )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert len(data["preview_messages"]) == 1
-        msg = data["preview_messages"][0]
-        assert len(msg["text"]) <= 400
-        # Should have truncation indicator
-        assert msg["text"].endswith("…")
+        secret = "sk_sfs_9f2c47d18e6ba035c4a7d9e1f8b26034"  # realistic key (repeating hex is allowlisted as a dummy)
+        text = "x" * 390 + secret  # secret straddles char 400
+        out = _build_preview_snapshot([{"role": "user", "content": text}])
+        # Even the truncated PREFIX of the secret must be gone — under the
+        # truncate-first bug, chars 390-400 would read "sk_sfs_aaa".
+        assert out and "sk_sfs_" not in out[0]["text"]

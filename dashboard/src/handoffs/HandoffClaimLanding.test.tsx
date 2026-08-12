@@ -72,7 +72,7 @@ describe('HandoffClaimLanding', () => {
     // Check fetch was called with correct URL.
     const [url] = fetchMock.mock.calls[0];
     expect(url).toContain('/api/v1/handoffs/hnd_test/preview');
-    expect(url).toContain('token=hpr_validtoken123');
+    expect(url).not.toContain('token=')  // M1: token travels in a header, never the query;
   });
 
   it('shows dead-link state when token is missing from fragment', async () => {

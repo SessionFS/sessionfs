@@ -1,7 +1,7 @@
 """Add dlp_checked + dlp_checked_at to share_links for public view DLP gate.
 
-Revision ID: 060
-Revises: 059
+Revision ID: 062
+Revises: 061
 
 Strictly additive — two nullable columns.  dlp_checked is NULL until
 first access (scan-on-first-access + cache pattern); once stamped it is
@@ -28,10 +28,15 @@ def upgrade() -> None:
     )
     op.add_column(
         "share_links",
+        sa.Column("dlp_checked_etag", sa.String(length=64), nullable=True),
+    )
+    op.add_column(
+        "share_links",
         sa.Column("dlp_checked_at", sa.DateTime(timezone=True), nullable=True),
     )
 
 
 def downgrade() -> None:
     op.drop_column("share_links", "dlp_checked_at")
+    op.drop_column("share_links", "dlp_checked_etag")
     op.drop_column("share_links", "dlp_checked")

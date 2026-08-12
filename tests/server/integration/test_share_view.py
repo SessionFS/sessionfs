@@ -9,13 +9,11 @@ from __future__ import annotations
 import io
 import json
 import tarfile
-import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.db.models import Session, ShareLink, User
@@ -411,3 +409,78 @@ async def test_view_includes_tool_results(
     assert data["message_count"] == 3
     # Third message should be the tool result
     assert data["messages"][2]["role"] == "tool"
+
+
+@pytest.mark.asyncio
+async def test_dlp_blocks_secret_in_tool_use_input(
+    client: AsyncClient, db_session: AsyncSession, blob_store, test_user: User,
+):
+    """H1 (Shield): tool_use INPUTS are exactly where secrets live in coding
+    transcripts — a key inside a Bash command must trip the gate."""
+    messages = [
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "name": "Bash", "id": "t1",
+             "input": {"command": "export AWS_KEY=AKIAIOSFODNN7EXAMPLE && deploy"}},
+        ]},
+    ]
+    link, _s = await _create_share_link(db_session, blob_store, test_user, messages=messages)
+    resp = await client.get(f"/api/v1/share/{link.token}/view")
+    assert resp.status_code == 451
+
+
+@pytest.mark.asyncio
+async def test_dlp_blocks_secret_in_nested_tool_result(
+    client: AsyncClient, db_session: AsyncSession, blob_store, test_user: User,
+):
+    """H1 (Shield): the standard nested-blocks tool_result shape must be
+    scanned (the old text-builder skipped it entirely)."""
+    messages = [
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1",
+             "content": [{"type": "text",
+                          "text": "output: token AKIAIOSFODNN7EXAMPLE found"}]},
+        ]},
+    ]
+    link, _s = await _create_share_link(db_session, blob_store, test_user, messages=messages)
+    resp = await client.get(f"/api/v1/share/{link.token}/view")
+    assert resp.status_code == 451
+
+
+@pytest.mark.asyncio
+async def test_dlp_verdict_invalidated_on_blob_repush(
+    client: AsyncClient, db_session: AsyncSession, blob_store, test_user: User,
+):
+    """H2 (Shield): a clean verdict must not survive a blob re-push — the
+    etag binding forces a re-scan, and new secrets flip the link to 451."""
+    clean = [{"role": "user", "content": [{"type": "text", "text": "hello"}]}]
+    link, session = await _create_share_link(db_session, blob_store, test_user, messages=clean)
+    ok = await client.get(f"/api/v1/share/{link.token}/view")
+    assert ok.status_code == 200
+    await db_session.refresh(link)
+    assert link.dlp_checked is True and link.dlp_checked_etag == session.etag
+
+    # Simulate a sync re-push that adds a secret + changes the etag.
+    dirty = clean + [{"role": "user", "content": [
+        {"type": "text", "text": "my key: AKIAIOSFODNN7EXAMPLE"}]}]
+    new_blob = _make_tar(dirty)
+    await blob_store.put(session.blob_key, new_blob)
+    session.etag = "repushed-etag-123"
+    await db_session.commit()
+
+    blocked = await client.get(f"/api/v1/share/{link.token}/view")
+    assert blocked.status_code == 451
+    await db_session.refresh(link)
+    assert link.dlp_checked is False
+
+
+@pytest.mark.asyncio
+async def test_view_response_has_no_store_and_noindex_headers(
+    client: AsyncClient, db_session: AsyncSession, blob_store, test_user: User,
+):
+    """M3 (Shield): a shared cache must never outlive revocation."""
+    clean = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
+    link, _s = await _create_share_link(db_session, blob_store, test_user, messages=clean)
+    resp = await client.get(f"/api/v1/share/{link.token}/view")
+    assert resp.status_code == 200
+    assert resp.headers.get("cache-control") == "no-store"
+    assert resp.headers.get("x-robots-tag") == "noindex"

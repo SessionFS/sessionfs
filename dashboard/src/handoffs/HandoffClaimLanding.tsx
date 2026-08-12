@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useParams, Link } from 'react-router-dom';
 import { resolveApiBaseUrl } from '../auth/apiBase';
 import { Badge } from '../components/Badge';
 import Wordmark from '../components/Wordmark';
@@ -43,7 +43,6 @@ const STATUS_VARIANT: Record<string, 'warning' | 'success' | 'danger'> = {
  */
 export default function HandoffClaimLanding() {
   const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
   const [preview, setPreview] = useState<HandoffPreview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -71,7 +70,10 @@ export default function HandoffClaimLanding() {
     (async () => {
       try {
         const resp = await fetch(
-          `${base}/api/v1/handoffs/${encodeURIComponent(id!)}/preview?token=${encodeURIComponent(token)}`,
+          `${base}/api/v1/handoffs/${encodeURIComponent(id!)}/preview`,
+          // M1: the token travels in a HEADER — query strings land in server
+          // access logs, defeating the fragment design.
+          { headers: { 'X-Preview-Token': token } },
         );
         if (!resp.ok) {
           // All failure modes return 404; surface a generic dead-link state.

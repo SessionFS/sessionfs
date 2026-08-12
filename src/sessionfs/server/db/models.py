@@ -333,6 +333,11 @@ class Handoff(Base):
     # handoff creation); the hash gates the unauthenticated /preview
     # endpoint. Nullable — existing rows constant-404.
     preview_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    preview_snapshot: Mapped[str | None] = mapped_column(
+        Text, nullable=True,
+        comment="Precomputed bounded preview JSON (M2 — the unauthenticated "
+                "preview endpoint never touches the blob store)",
+    )
 
 
 class Team(Base):
@@ -556,6 +561,11 @@ class ShareLink(Base):
     # v0.14.0: DLP gate for public share pages (migration 060).
     # NULL = not yet checked; True = scanned, clean; False = scanned, blocked.
     dlp_checked: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    dlp_checked_etag: Mapped[str | None] = mapped_column(
+        String(64), nullable=True,
+        comment="session.etag the DLP verdict was computed against (H2 — "
+                "blob re-push invalidates the cached verdict)",
+    )
     dlp_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
