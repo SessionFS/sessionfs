@@ -12,3 +12,14 @@ data:
   {{- if .Values.api.corsOrigins }}
   SFS_CORS_ORIGINS: {{ .Values.api.corsOrigins | quote }}
   {{- end }}
+  {{- if .Values.api.sso.enabled }}
+  # OIDC SSO (v0.13+). client secrets are env: REFERENCES resolved by the app
+  # — the actual secret values belong in an existingSecret, never in values.
+  SFS_SSO_CALLBACK_URL: {{ .Values.api.sso.callbackUrl | quote }}
+  {{- if .Values.api.sso.dashboardUrl }}
+  SFS_DASHBOARD_URL: {{ .Values.api.sso.dashboardUrl | quote }}
+  {{- end }}
+  {{- if .Values.api.sso.redirectOrigins }}
+  SFS_SSO_REDIRECT_ORIGINS: {{ .Values.api.sso.redirectOrigins | quote }}
+  {{- end }}
+  {{- end }}
