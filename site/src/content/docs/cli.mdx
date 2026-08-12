@@ -1553,7 +1553,7 @@ Next steps:
 
 ## `sfs doctor`
 
-Run 8 health checks with auto-repair. Checks store directory, session count, index integrity, index freshness, daemon status, API reachability, authentication, and config permissions. Automatically repairs corrupted indexes.
+Run 9 health checks with auto-repair. Checks store directory, session count, index integrity, index freshness, daemon status, API reachability, authentication, config permissions, and capture health (detects when an AI tool's format change has silently broken capture — an idle tool is never flagged). Automatically repairs corrupted indexes.
 
 ```
 sfs doctor
@@ -1576,6 +1576,7 @@ $ sfs doctor
 │ API server           │ ✓      │ reachable (https://...)  │
 │ Authentication       │ ✓      │ me@example.com (team)    │
 │ Config permissions   │ ✓      │ permissions OK (0o600)   │
+│ Capture health       │ ✓      │ all watched tools healthy │
 └─────────────────────┴────────┴──────────────────────────┘
 ```
 

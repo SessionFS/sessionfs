@@ -95,6 +95,7 @@ export default defineConfig({
           label: 'Reference',
           items: [
             { label: 'REST API', slug: 'api' },
+            { label: 'Telemetry', slug: 'telemetry' },
             { label: 'Troubleshooting', slug: 'troubleshooting' },
           ],
         },

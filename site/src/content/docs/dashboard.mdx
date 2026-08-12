@@ -60,6 +60,7 @@ Displays the LLM Judge trust score (0--100), individual findings with CWE mappin
 
 - **Resume** — copies the `sfs resume` command for this session to your clipboard.
 - **Handoff** — opens the handoff modal to send the session to a teammate.
+- **Share** — creates a public share link. The recipient sees the session as a read-only page at `/s/{token}` — no account required. Links are owner-revocable, can be password-protected, are never cached or search-indexed, and are hard-gated by a DLP scan of exactly the content served (tool inputs included), re-run whenever the underlying session changes.
 - **Alias** — click the alias field to set a short memorable name (e.g., `auth-refactor`). Aliases are unique per user and can be used in place of session IDs in the CLI.
 - **Bookmark** — add the session to a folder from the more menu.
 
@@ -115,6 +116,7 @@ The Settings page (`/settings`) controls your account and sync preferences.
 - **LLM Judge** — enable or disable automatic audit on sync, set the confidence threshold, and choose which model to use for judge calls.
 - **GitHub Integration** — connect a GitHub App installation to enable PR-linked sessions and the GitHub Checks integration.
 - **GitLab Integration** — connect a GitLab project for MR-linked sessions.
+- **Capture Health** — a status card showing, per watched AI tool, whether capture is healthy. If a tool ships a format change that silently breaks capture, the daemon detects it (an idle tool is never flagged) and the card surfaces it here — the same signal reported by `sfs doctor`.
 
 ---
 
