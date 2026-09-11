@@ -23,6 +23,72 @@ from sessionfs.daemon.config import load_config
 from sessionfs.mcp.search import SessionSearchIndex
 from sessionfs.store.local import LocalStore
 
+import re
+
+# --- Repository-identifier validation (security) -------------------------------
+# Every project-scoped MCP tool interpolates a caller-supplied git remote into
+# `/api/v1/projects/{...}`. `normalize_git_remote`'s fallback returns the raw
+# string, so a remote such as `../admin/users` turned any of these tools into an
+# authenticated proxy to a different API endpoint. Validate and percent-encode.
+_REMOTE_URL_RE = re.compile(r"^(?:https?|ssh)://(?P<host>[^/?#\s]+)/(?P<path>[^?#]+?)/?$")
+_REMOTE_SCP_RE = re.compile(r"^[^@\s/:]+@(?P<host>[^:\s/]+):(?P<path>[^?#]+?)/?$")
+# User-less scp syntax (`github.com:owner/repo.git`) is valid git and is stored
+# verbatim by the server: host has no `/`, path has no `:`.
+_REMOTE_SCP_NOUSER_RE = re.compile(r"^(?P<host>[^@\s/:]+):(?P<path>[^?#:@\s]+?)/?$")
+_REMOTE_BARE_RE = re.compile(r"^(?P<path>[^?#:@\s]+?)/?$")
+
+
+def _strict_repository_identifier(git_remote: str) -> str:
+    """Validate a caller-supplied git remote and return the normalized
+    repository path used in `/api/v1/projects/{...}`, each segment
+    percent-encoded.
+
+    The check is REJECT-ONLY: it never narrows the syntax the server's
+    `normalize_git_remote` accepts (`+`, `~`, percent-encoded characters and
+    IPv6 hosts all pass). A remote is refused only for traversal or injection —
+    an empty, `.` or `..` segment (also after percent-decoding), `?`, `#`,
+    whitespace, control characters or backslashes.
+    """
+    from urllib.parse import quote, unquote
+
+    value = (git_remote or "").strip().rstrip("/")
+    if (
+        not value
+        or "\\" in value
+        or any(char.isspace() or ord(char) < 33 or ord(char) == 127 for char in value)
+    ):
+        raise ValueError("Could not parse git remote URL.")
+    match = (
+        _REMOTE_URL_RE.match(value)
+        or _REMOTE_SCP_RE.match(value)
+        or _REMOTE_SCP_NOUSER_RE.match(value)
+        or _REMOTE_BARE_RE.match(value)
+    )
+    if match is None:
+        raise ValueError("Could not parse git remote URL.")
+    path = match.group("path")
+    if path.endswith(".git"):
+        path = path[:-4]
+    for segment in path.split("/"):
+        decoded = unquote(segment)
+        if (
+            not segment
+            or segment in {".", ".."}
+            or "/" in decoded
+            or "\\" in decoded
+            or any(part in {".", ".."} for part in decoded.split("/"))
+        ):
+            raise ValueError("Could not parse git remote URL.")
+    # The lookup key must be EXACTLY what the server stored for the project, so
+    # after strict validation reuse the server's own normalization.
+    from sessionfs.server.github_app import normalize_git_remote
+
+    normalized = normalize_git_remote(value)
+    if not normalized or any(ord(char) < 33 or ord(char) == 127 for char in normalized):
+        raise ValueError("Could not parse git remote URL.")
+    return "/".join(quote(segment, safe="") for segment in normalized.split("/"))
+
+
 logger = logging.getLogger("sessionfs.mcp")
 
 app = Server("sessionfs")
@@ -2550,9 +2616,9 @@ async def _handle_get_project_context(args: dict) -> str:
     if not git_remote:
         return "No git repository detected. Pass git_remote explicitly or ensure the MCP server can access workspace roots."
 
-    from sessionfs.server.github_app import normalize_git_remote
-    normalized = normalize_git_remote(git_remote)
-    if not normalized:
+    try:
+        normalized = _strict_repository_identifier(git_remote)
+    except ValueError:
         return "Could not parse git remote URL."
 
     # Use the cloud API to fetch project context
@@ -2751,9 +2817,9 @@ async def _handle_search_knowledge(args: dict) -> str:
     if not git_remote:
         return "No git repository detected. Pass git_remote explicitly or ensure workspace roots are available."
 
-    from sessionfs.server.github_app import normalize_git_remote
-    normalized = normalize_git_remote(git_remote)
-    if not normalized:
+    try:
+        normalized = _strict_repository_identifier(git_remote)
+    except ValueError:
         return "Could not parse git remote URL."
 
     try:
@@ -2854,10 +2920,10 @@ async def _resolve_project_id(git_remote: str = "") -> tuple[str, str, str]:
     if not git_remote:
         raise Exception("No git repository detected. Pass git_remote explicitly or ensure workspace roots are available.")
 
-    from sessionfs.server.github_app import normalize_git_remote
-    normalized = normalize_git_remote(git_remote)
-    if not normalized:
-        raise Exception("Could not parse git remote URL.")
+    try:
+        normalized = _strict_repository_identifier(git_remote)
+    except ValueError as exc:
+        raise Exception("Could not parse git remote URL.") from exc
 
     config = load_config()
     if not config.sync.api_key:
@@ -3247,10 +3313,9 @@ async def _fetch_kb_entries_raw(args: dict) -> list[dict]:
     if not git_remote:
         return []
 
-    from sessionfs.server.github_app import normalize_git_remote
-
-    normalized = normalize_git_remote(git_remote)
-    if not normalized:
+    try:
+        normalized = _strict_repository_identifier(git_remote)
+    except ValueError:
         return []
 
     try:

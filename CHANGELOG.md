@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.1] - 2026-09-10
+
+**Security patch.** Fixes an authenticated request-forgery flaw in the MCP server that affects every release through 0.15.0. No schema changes; migrations remain at 062.
+
+### Fixed
+
+- **MCP server: caller-supplied git remotes are validated and percent-encoded before use.** Every project-scoped MCP tool interpolates its `git_remote` argument into the `/api/v1/projects/{...}` path, and the fallback in `normalize_git_remote` returns unrecognized input unchanged. A remote such as `../admin/users` was therefore normalized away by the HTTP client and the request — carrying the user's own API key — was issued against a different endpoint, turning any project-scoped tool into an authenticated proxy. This matters because MCP tools accept arguments chosen by the model, so prompt-injected content could reach API endpoints the MCP surface deliberately does not expose. Remotes are now rejected for traversal or injection (empty, `.` or `..` segments including percent-encoded forms, `?`, `#`, whitespace, control characters, backslashes) and each path segment is percent-encoded. The check is reject-only and never narrows the syntax the server accepts: `+`, `~`, percent-encoded characters, IPv6 hosts, GitLab subgroups, scheme-less `host/owner/repo` and user-less scp (`github.com:owner/repo.git`) remotes all continue to resolve.
+
 ## [0.15.0] - 2026-08-12
 
 **The adoption release.** No new platform features by design — this release removes the friction between installing SessionFS and feeling what it does, measures that journey, and protects it. Migrations advance to **062**, all proven on PostgreSQL 16.

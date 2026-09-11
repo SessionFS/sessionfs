@@ -2718,3 +2718,165 @@ class TestAddKnowledgeAttribution:
             "entity_ref": "src/db.py",
         })
         assert "upsert" not in captured["json"]
+
+
+class TestProjectResolverRemoteValidation:
+    """P1-1 (round 6): `git_remote` reaches the shared `_resolve_project_id`
+    used by EVERY project-scoped tool; it must be a strict repository id."""
+
+    @pytest.mark.parametrize(
+        "remote, expected",
+        [
+            # shapes normalize_git_remote's own tests cover
+            ("https://github.com/Acme/Skills.git", "acme/skills"),
+            ("  https://github.com/org/repo.git  ", "org/repo"),
+            ("https://github.com/acme/skills/", "acme/skills"),
+            ("git@github.com:SessionFS/sessionfs", "sessionfs/sessionfs"),
+            ("git@github.com:SessionFS/sessionfs.git", "sessionfs/sessionfs"),
+            ("git@gitlab.com:team/project.git", "team/project"),
+            ("https://gitlab.com/team/project", "team/project"),
+            ("ssh://git@github.com/acme/skills", None),  # server keeps ssh:// raw; key follows it
+            ("acme/skills", "acme/skills"),
+            ("https://gitlab.example.com:8443/team.x/repo-1", "team.x/repo-1"),
+            # scheme-less form existing users have stored (project fixtures use it)
+            ("github.com/acme/repo", "github.com/acme/repo"),
+            ("github.com/a/legacy-remote", "github.com/a/legacy-remote"),
+            # GitLab subgroups / self-hosted nested paths
+            ("https://gitlab.com/group/subgroup/repo.git", "group/subgroup/repo"),
+            ("https://git.corp.example/a/b/c/d/repo", "a/b/c/d/repo"),
+            ("ssh://git@host/a/b/c.git", None),
+            ("git@host:a/b/c.git", "a/b/c"),
+            ("http://localhost:3000/owner/repo.git", "owner/repo"),
+            ("Owner_1/Repo.Name", "owner_1/repo.name"),
+            # r11 P2-2: never narrower than the server's normalization
+            ("https://github.com/acme/repo+tools.git", None),  # key == server normalization, '+' encoded
+            ("https://git.example/~user/repo", "~user/repo"),
+            ("https://git.example/a%20b/repo%2Bx.git", None),
+            ("https://[::1]:8443/a/b.git", "a/b"),
+            ("git@[fe80::1]:owner/repo.git", None),
+        ],
+    )
+    def test_accepts_repository_identifiers(self, remote, expected):
+        """P2-6: for every accepted shape the lookup key is exactly the
+        server-side normalize_git_remote() result (percent-encoded per segment)."""
+        from urllib.parse import quote
+
+        from sessionfs.server.github_app import normalize_git_remote
+
+        key = mcp_server._strict_repository_identifier(remote)
+        # The resolver canonicalizes whitespace/trailing slash first; the server
+        # stores the same canonical input's normalization.
+        server_key = normalize_git_remote(remote.strip().rstrip("/"))
+        assert key == "/".join(quote(segment, safe="") for segment in server_key.split("/"))
+        if expected is not None:
+            assert key == expected
+
+    @pytest.mark.parametrize(
+        "remote",
+        [
+            "../admin/users",
+            "acme/../admin",
+            "https://github.com/acme/skills/../../admin/users",
+            "https://github.com/acme/skills?x=1",
+            "https://github.com/acme/skills#frag",
+            "https://github.com/acme//skills",
+            "git@github.com:../admin",
+            "a/./b",
+            "..",
+            ".",
+            "a b/c",
+            "a%2F../b",
+            "%2e%2e/b",
+            "a\\..\\b",
+            "acme/repo\x01",
+            "",
+        ],
+    )
+    def test_rejects_traversal_and_malformed_remotes(self, remote):
+        with pytest.raises(Exception, match="Could not parse git remote"):
+            mcp_server._strict_repository_identifier(remote)
+
+    @pytest.mark.asyncio
+    async def test_traversal_remote_never_reaches_the_network(self, monkeypatch):
+        """A traversal remote is refused locally: no HTTP request is issued by
+        any project-scoped tool that resolves a caller-supplied remote."""
+        import httpx
+
+        async def explode(*args, **kwargs):
+            raise AssertionError("must not be called")
+
+        monkeypatch.setattr(httpx.AsyncClient, "get", explode)
+        monkeypatch.setattr(httpx.AsyncClient, "post", explode)
+        for bad in (
+            "../admin/users",
+            "..%2fadmin%2fusers",
+            "https://h/a/../../admin",
+            "a//b",
+            "github.com/a/b?x=1",
+            "github.com/a/b#f",
+        ):
+            with pytest.raises(Exception, match="Could not parse git remote URL"):
+                mcp_server._strict_repository_identifier(bad)
+            with pytest.raises(Exception, match="Could not parse git remote URL"):
+                await mcp_server._resolve_project_id(bad)
+
+
+    async def test_resolver_percent_encodes_segments(self, monkeypatch):
+        import httpx
+
+        calls: list[str] = []
+
+        class _Resp:
+            status_code = 200
+
+            def json(self):
+                return {"id": "prj_1"}
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url, **kwargs):
+                calls.append(url)
+                return _Resp()
+
+        class _Cfg:
+            class sync:
+                api_key = "k"
+                api_url = "https://api.test/"
+
+        monkeypatch.setattr(httpx, "AsyncClient", _Client)
+        monkeypatch.setattr(mcp_server, "load_config", lambda: _Cfg)
+        api_url, _, project_id = await mcp_server._resolve_project_id("https://github.com/Acme/Skills.git")
+        assert project_id == "prj_1"
+        assert calls == ["https://api.test/api/v1/projects/acme/skills"]
+        calls.clear()
+        await mcp_server._resolve_project_id("github.com/Acme/Repo")
+        assert calls == ["https://api.test/api/v1/projects/github.com/acme/repo"]
+        calls.clear()
+        await mcp_server._resolve_project_id("https://gitlab.com/group/sub/repo.git")
+        assert calls == ["https://api.test/api/v1/projects/group/sub/repo"]
+
+
+def test_strict_repository_identifier_accepts_userless_scp_remotes():
+    """R19 P3-1: `github.com:owner/repo.git` is valid git syntax the server
+    stores verbatim; the strict validator must accept it (and only it)."""
+    from urllib.parse import quote
+
+    from sessionfs.server.github_app import normalize_git_remote
+
+    remote = "github.com:owner/repo.git"
+    expected = "/".join(quote(seg, safe="") for seg in normalize_git_remote(remote).split("/"))
+    assert mcp_server._strict_repository_identifier(remote) == expected
+    assert mcp_server._strict_repository_identifier("gitlab.example.com:group/sub/repo") == "/".join(
+        quote(seg, safe="") for seg in normalize_git_remote("gitlab.example.com:group/sub/repo").split("/")
+    )
+    for bad in ("github.com:owner/../repo", "github.com:owner//repo", "host:with:colon/repo", "github.com:owner/repo?x=1"):
+        with pytest.raises(Exception, match="Could not parse git remote URL"):
+            mcp_server._strict_repository_identifier(bad)
