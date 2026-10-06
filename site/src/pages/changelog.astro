@@ -17,14 +17,32 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.15.1 -->
+      <!-- v0.15.2 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.15.2</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">October 6, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">CLI Fix &mdash; Correct Exit Codes Under typer 0.27</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong><span class="font-mono text-accent text-sm">sfs</span> commands no longer report deliberate exits as crashes.</strong> On installs that pulled in typer 0.27 or newer, any command that exits with a specific code printed &ldquo;Unexpected error: N&rdquo; and exited with 1 instead of N, and a few commands that finish successfully reported failure. Declining a confirmation prompt also printed an unexpected-error message instead of a clean cancel. Exit codes are now correct on every typer release.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Who is affected:</strong> anyone scripting <span class="font-mono text-accent text-sm">sfs</span> or running it in CI (for example <span class="font-mono text-accent text-sm">sfs agent complete --enforce</span>) on a v0.15.0 or v0.15.1 install that resolved typer 0.27. <strong>Upgrading is recommended</strong> so scripts and CI jobs see the exit codes they expect.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">CLI-only. No server, schema or MCP behavior changed &mdash; migrations 001&ndash;062 (unchanged). 3,145 backend + 459 dashboard UI tests passing. 68 MCP tools (unchanged) &middot; 9 supported tools unchanged.</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.15.1 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
             <span class="text-brand font-semibold">v0.15.1</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">October 5, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Security Patch &mdash; MCP Server Git-Remote Validation</h2>
         <ul class="space-y-2 text-base text-muted">
