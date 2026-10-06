@@ -2780,7 +2780,6 @@ class TestProjectResolverRemoteValidation:
             "https://github.com/acme/skills/../../admin/users",
             "https://github.com/acme/skills?x=1",
             "https://github.com/acme/skills#frag",
-            "https://github.com/acme//skills",
             "git@github.com:../admin",
             "a/./b",
             "..",
@@ -2812,7 +2811,6 @@ class TestProjectResolverRemoteValidation:
             "../admin/users",
             "..%2fadmin%2fusers",
             "https://h/a/../../admin",
-            "a//b",
             "github.com/a/b?x=1",
             "github.com/a/b#f",
         ):
@@ -2878,7 +2876,7 @@ def test_strict_repository_identifier_accepts_userless_scp_remotes():
     assert mcp_server._strict_repository_identifier("gitlab.example.com:group/sub/repo") == "/".join(
         quote(seg, safe="") for seg in normalize_git_remote("gitlab.example.com:group/sub/repo").split("/")
     )
-    for bad in ("github.com:owner/../repo", "github.com:owner//repo", "host:with:colon/repo", "github.com:owner/repo?x=1"):
+    for bad in ("github.com:owner/../repo", "github.com:owner/%2e%2e/repo", "github.com:owner/repo?x=1"):
         with pytest.raises(Exception, match="Could not parse git remote URL"):
             mcp_server._strict_repository_identifier(bad)
 
@@ -3046,17 +3044,74 @@ class TestRepositoryKeyParityWithServer:
         from sessionfs.mcp.path_safety import _strict_repository_identifier
 
         _strict_repository_identifier("file:///srv/repos/foo.git")
-        for bad in ("file:///srv/../admin", "file:///", "https:///admin/users"):
+        for bad in ("file:///srv/../admin", "file:///srv/%2e%2e/admin"):
             with pytest.raises(ValueError):
                 _strict_repository_identifier(bad)
 
 
     def test_relative_and_doubled_separators_stay_rejected(self):
         """Relative local remotes carry traversal segments in the very key the
-        server stored, so they can never be requested safely; doubled leading
-        separators are not an absolute path."""
+        server stored, so they can never be requested safely. (Empty segments,
+        e.g. doubled separators, are harmless: they cannot collapse or leave the
+        /api/v1/projects/ prefix, so they are accepted with server parity.)"""
         from sessionfs.mcp.path_safety import _strict_repository_identifier
 
-        for bad in ("./relative/repo", "../sibling/repo", "//srv/git/project", "/srv//git/project", "/srv/../admin"):
+        for bad in ("./relative/repo", "../sibling/repo", "/srv/../admin", "/srv/%2e%2e/admin"):
             with pytest.raises(ValueError):
                 _strict_repository_identifier(bad)
+
+
+def test_remote_validator_fuzz_matches_the_server_exactly():
+    """Generative spec of the validator, guarding against it narrowing what the
+    server accepts (four compatibility regressions were found one shape at a
+    time before the validator was redefined over the requested key).
+
+    For every generated git-legal remote: accepted iff no segment of the key
+    the server stores is `.`/`..` (raw or percent-decoded) or decodes to a
+    separator/control character; when accepted, the lookup key decodes to
+    exactly that stored key.
+    """
+    import random
+    from urllib.parse import unquote
+
+    from sessionfs.mcp.path_safety import _strict_repository_identifier
+    from sessionfs.server.github_app import normalize_git_remote
+
+    def unsafe(stored: str) -> bool:
+        for seg in stored.split("/"):
+            dec = unquote(seg)
+            if seg in {".", ".."} or dec in {".", ".."} or "/" in dec or "\\" in dec:
+                return True
+            if any(ord(c) < 32 or ord(c) == 127 for c in dec):
+                return True
+        return False
+
+    rng = random.Random(20261006)
+    seg_alphabet = "abcXYZ019-_.~+@:%"
+    prefixes = ["", "/", "https://h.example/", "ssh://git@h.example/", "git@h.example:",
+                "git@h.example:/", "h.example:", "file:///", "git://h/", "user@host:/"]
+
+    def segment():
+        if rng.random() < 0.08:
+            return rng.choice([".", "..", "%2e", "%2E%2e", "%2f", "%2F..%2F", "%01"])
+        return "".join(rng.choice(seg_alphabet) for _ in range(rng.randint(1, 6)))
+
+    accepted = rejected = 0
+    for _ in range(5000):
+        remote = rng.choice(prefixes) + "/".join(segment() for _ in range(rng.randint(1, 4)))
+        if rng.random() < 0.2:
+            remote += ".git"
+        if rng.random() < 0.1:
+            remote += "/"
+        stored = normalize_git_remote(remote)
+        if not stored:
+            continue
+        if unsafe(stored):
+            with pytest.raises(ValueError):
+                _strict_repository_identifier(remote)
+            rejected += 1
+            continue
+        key = _strict_repository_identifier(remote)
+        assert unquote(key) == stored, f"{remote!r}: key {key!r} != stored {stored!r}"
+        accepted += 1
+    assert accepted > 2000 and rejected > 100
