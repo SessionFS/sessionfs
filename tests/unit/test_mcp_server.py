@@ -3022,6 +3022,15 @@ class TestRepositoryKeyParityWithServer:
             "file:///srv/repos/foo.git",
             "file:///srv/repos/foo",
             "  https://github.com/org/repo  ",
+            "git@example.com:/srv/git/project.git",
+            "user@host:/abs/path/repo.git",
+            "/srv/git/project.git",
+            "/home/user/repos/thing",
+            "file://localhost/srv/repos/foo.git",
+            "ssh://git@host:2222/org/repo.git",
+            "git+ssh://git@host/org/repo.git",
+            "git@host:~user/repo.git",
+            "~/repos/mine.git",
         ],
     )
     def test_key_decodes_to_the_server_normalization(self, remote):
@@ -3038,5 +3047,16 @@ class TestRepositoryKeyParityWithServer:
 
         _strict_repository_identifier("file:///srv/repos/foo.git")
         for bad in ("file:///srv/../admin", "file:///", "https:///admin/users"):
+            with pytest.raises(ValueError):
+                _strict_repository_identifier(bad)
+
+
+    def test_relative_and_doubled_separators_stay_rejected(self):
+        """Relative local remotes carry traversal segments in the very key the
+        server stored, so they can never be requested safely; doubled leading
+        separators are not an absolute path."""
+        from sessionfs.mcp.path_safety import _strict_repository_identifier
+
+        for bad in ("./relative/repo", "../sibling/repo", "//srv/git/project", "/srv//git/project", "/srv/../admin"):
             with pytest.raises(ValueError):
                 _strict_repository_identifier(bad)

@@ -68,6 +68,11 @@ def _strict_repository_identifier(git_remote: str) -> str:
     path = match.group("path")
     if path.endswith(".git"):
         path = path[:-4]
+    # Absolute-path remotes are valid git (`git@host:/srv/git/project.git`, a
+    # local `/srv/git/project.git`): allow ONE leading separator. Interior empty
+    # segments (`a//b`, `//srv`) and dot segments are still rejected below.
+    if path.startswith("/"):
+        path = path[1:]
     for segment in path.split("/"):
         decoded = unquote(segment)
         if (

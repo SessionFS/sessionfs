@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Remote validation also covers non-HTTP schemes.** `git://`, `git+ssh://` and upper-case scheme remotes (which the server stores verbatim) resolve again, and a dot segment smuggled in via the host of such a URL (`ssh://../admin`) is rejected.
 - **Dependencies:** PyJWT ≥ 2.15.1 (JWKS-set parsing, algorithm-confusion and signature-encoding advisories; the OIDC SSO path parses IdP key sets with `PyJWKSet`), urllib3 ≥ 2.8.0 and anyio ≥ 4.14.2 floors; dashboard dev-dependency lockfile refreshed (vitest, undici, js-yaml and others).
 
+### Known limitation
+
+- Repositories whose git remote is a *relative* local path (for example `../sibling/repo`) can no longer be used with project-scoped MCP tools. Such remotes are stored with `.`/`..` segments in the project key, which is exactly the traversal shape this release blocks, so they cannot be requested safely. Absolute local paths, `file://` remotes and every hosted form are unaffected.
+
 ## [0.15.0] - 2026-08-12
 
 **The adoption release.** No new platform features by design — this release removes the friction between installing SessionFS and feeling what it does, measures that journey, and protects it. Migrations advance to **062**, all proven on PostgreSQL 16.
