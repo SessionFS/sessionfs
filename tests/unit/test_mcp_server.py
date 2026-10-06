@@ -2880,3 +2880,120 @@ def test_strict_repository_identifier_accepts_userless_scp_remotes():
     for bad in ("github.com:owner/../repo", "github.com:owner//repo", "host:with:colon/repo", "github.com:owner/repo?x=1"):
         with pytest.raises(Exception, match="Could not parse git remote URL"):
             mcp_server._strict_repository_identifier(bad)
+
+
+class TestPathSegmentValidation:
+    """Shield-SR v0.15.1: the git_remote fix left the same request-forgery
+    class open on every OTHER caller-supplied id interpolated into an API path
+    (ticket_id, persona name, wiki slug, handoff id, work-queue id, run id,
+    entry id, session id). `_path_segment` closes it."""
+
+    @pytest.mark.parametrize(
+        "value, allow_slash, expected",
+        [
+            ("tk_0123abcd", False, "tk_0123abcd"),
+            ("atlas", False, "atlas"),
+            (42, False, "42"),
+            ("x?y", False, "x%3Fy"),
+            ("x#frag", False, "x%23frag"),
+            ("a b", False, "a%20b"),
+            ("concepts/auth-flow", True, "concepts/auth-flow"),
+        ],
+    )
+    def test_accepts_and_encodes(self, value, allow_slash, expected):
+        assert mcp_server._path_segment(value, allow_slash=allow_slash) == expected
+
+    @pytest.mark.parametrize(
+        "value, allow_slash",
+        [
+            ("../../../admin/users", False),
+            ("../../../admin/users", True),
+            ("..", False),
+            (".", True),
+            ("%2e%2e", False),
+            ("%2E%2E", True),
+            ("a/b", False),
+            ("a%2Fb", False),
+            ("concepts/../x", True),
+            ("concepts//x", True),
+            ("a\\..\\b", True),
+            ("tk_1\n", False),
+            ("", False),
+            (None, False),
+        ],
+    )
+    def test_rejects_traversal(self, value, allow_slash):
+        with pytest.raises(ValueError):
+            mcp_server._path_segment(value, allow_slash=allow_slash)
+
+    @pytest.mark.asyncio
+    async def test_get_ticket_cannot_reach_other_endpoint(self, monkeypatch):
+        """The exploit: get_ticket(ticket_id='../../../admin/users') used to
+        issue GET /api/v1/admin/users with the user's key."""
+        async def fake_resolve(git_remote=""):
+            return "https://api.example", "sk_sfs_test", "proj_1"
+
+        monkeypatch.setattr(mcp_server, "_resolve_project_id", fake_resolve)
+        requested: list[str] = []
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url, **kwargs):
+                requested.append(url)
+                raise AssertionError("request must not be sent")
+
+        import httpx
+
+        monkeypatch.setattr(httpx, "AsyncClient", _Client)
+        with pytest.raises(ValueError):
+            await mcp_server._handle_get_ticket({"ticket_id": "../../../admin/users"})
+        assert requested == []
+
+    def test_ssh_host_dot_segment_rejected(self):
+        """normalize_git_remote returns ssh:// URLs verbatim (host included),
+        so the host must not be able to inject a dot segment."""
+        for remote in ("ssh://../admin", "ssh://./admin", "git://../x/y"):
+            with pytest.raises(ValueError):
+                mcp_server._strict_repository_identifier(remote)
+
+    @pytest.mark.parametrize(
+        "remote",
+        ["git://github.com/o/r.git", "git+ssh://git@h.example/o/r.git", "HTTPS://github.com/o/r"],
+    )
+    def test_other_git_schemes_still_resolve(self, remote):
+        """Reject-only: schemes the server stores verbatim keep working."""
+        from urllib.parse import quote
+
+        from sessionfs.server.github_app import normalize_git_remote
+
+        key = mcp_server._strict_repository_identifier(remote)
+        assert key == "/".join(quote(s, safe="") for s in normalize_git_remote(remote).split("/"))
+
+
+class TestRemoteMcpPathSafety:
+    """The hosted (remote) MCP server had the same unvalidated interpolation."""
+
+    def test_cloud_client_encodes_session_id(self):
+        import inspect
+
+        from sessionfs.mcp import cloud_client
+
+        src = inspect.getsource(cloud_client.CloudAPIClient)
+        assert "/api/v1/sessions/{session_id}" not in src
+        assert "_path_segment(session_id)" in src
+
+    def test_remote_server_uses_strict_validator(self):
+        import inspect
+
+        from sessionfs.mcp import remote_server
+
+        src = inspect.getsource(remote_server)
+        assert "_strict_repository_identifier(git_remote)" in src

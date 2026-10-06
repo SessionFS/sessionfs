@@ -63,7 +63,16 @@ server = [
     # symlink traversal out of secrets_dir when secrets_nested_subdir=True).
     # We do not use that feature, but pin the floor as defense-in-depth.
     "pydantic-settings>=2.14.2,<3.0",
-    "PyJWT>=2.13.0,<3.0",
+    # >=2.15.1 clears the PYSEC-2026-414x/415x batch + CVE-2026-102275
+    # (PyJWKSet abort on one malformed RSA JWK, HMAC/asymmetric confusion,
+    # non-Base64URL signature acceptance, OKP JWK consistency). oidc_token.py
+    # parses IdP JWKS through PyJWKSet, so the JWKS-handling fixes are live.
+    "PyJWT>=2.15.1,<3.0",
+    # Transitive floors (defense-in-depth): urllib3 2.8.0 clears
+    # PYSEC-2026-4175/4176/4177 (streaming decompression bombs, proxy TLS
+    # options); anyio 4.14.2 clears PYSEC-2026-4024/4025.
+    "urllib3>=2.8.0,<3.0",
+    "anyio>=4.14.2,<5.0",
     "google-cloud-storage>=2.14,<4.0",
     "cryptography>=50.0.0",
     "stripe>=8.0,<16.0",

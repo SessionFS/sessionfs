@@ -23,71 +23,7 @@ from sessionfs.daemon.config import load_config
 from sessionfs.mcp.search import SessionSearchIndex
 from sessionfs.store.local import LocalStore
 
-import re
-
-# --- Repository-identifier validation (security) -------------------------------
-# Every project-scoped MCP tool interpolates a caller-supplied git remote into
-# `/api/v1/projects/{...}`. `normalize_git_remote`'s fallback returns the raw
-# string, so a remote such as `../admin/users` turned any of these tools into an
-# authenticated proxy to a different API endpoint. Validate and percent-encode.
-_REMOTE_URL_RE = re.compile(r"^(?:https?|ssh)://(?P<host>[^/?#\s]+)/(?P<path>[^?#]+?)/?$")
-_REMOTE_SCP_RE = re.compile(r"^[^@\s/:]+@(?P<host>[^:\s/]+):(?P<path>[^?#]+?)/?$")
-# User-less scp syntax (`github.com:owner/repo.git`) is valid git and is stored
-# verbatim by the server: host has no `/`, path has no `:`.
-_REMOTE_SCP_NOUSER_RE = re.compile(r"^(?P<host>[^@\s/:]+):(?P<path>[^?#:@\s]+?)/?$")
-_REMOTE_BARE_RE = re.compile(r"^(?P<path>[^?#:@\s]+?)/?$")
-
-
-def _strict_repository_identifier(git_remote: str) -> str:
-    """Validate a caller-supplied git remote and return the normalized
-    repository path used in `/api/v1/projects/{...}`, each segment
-    percent-encoded.
-
-    The check is REJECT-ONLY: it never narrows the syntax the server's
-    `normalize_git_remote` accepts (`+`, `~`, percent-encoded characters and
-    IPv6 hosts all pass). A remote is refused only for traversal or injection —
-    an empty, `.` or `..` segment (also after percent-decoding), `?`, `#`,
-    whitespace, control characters or backslashes.
-    """
-    from urllib.parse import quote, unquote
-
-    value = (git_remote or "").strip().rstrip("/")
-    if (
-        not value
-        or "\\" in value
-        or any(char.isspace() or ord(char) < 33 or ord(char) == 127 for char in value)
-    ):
-        raise ValueError("Could not parse git remote URL.")
-    match = (
-        _REMOTE_URL_RE.match(value)
-        or _REMOTE_SCP_RE.match(value)
-        or _REMOTE_SCP_NOUSER_RE.match(value)
-        or _REMOTE_BARE_RE.match(value)
-    )
-    if match is None:
-        raise ValueError("Could not parse git remote URL.")
-    path = match.group("path")
-    if path.endswith(".git"):
-        path = path[:-4]
-    for segment in path.split("/"):
-        decoded = unquote(segment)
-        if (
-            not segment
-            or segment in {".", ".."}
-            or "/" in decoded
-            or "\\" in decoded
-            or any(part in {".", ".."} for part in decoded.split("/"))
-        ):
-            raise ValueError("Could not parse git remote URL.")
-    # The lookup key must be EXACTLY what the server stored for the project, so
-    # after strict validation reuse the server's own normalization.
-    from sessionfs.server.github_app import normalize_git_remote
-
-    normalized = normalize_git_remote(value)
-    if not normalized or any(ord(char) < 33 or ord(char) == 127 for char in normalized):
-        raise ValueError("Could not parse git remote URL.")
-    return "/".join(quote(segment, safe="") for segment in normalized.split("/"))
-
+from sessionfs.mcp.path_safety import _path_segment, _strict_repository_identifier
 
 logger = logging.getLogger("sessionfs.mcp")
 
@@ -2845,11 +2781,14 @@ async def _handle_search_knowledge(args: dict) -> str:
         project_id = project_data.get("id", "")
 
         # Search entries
-        params = f"?search={query}&limit={limit}"
+        from urllib.parse import urlencode
+
+        query_params: dict[str, Any] = {"search": query, "limit": limit}
         if entry_type:
-            params += f"&type={entry_type}"
+            query_params["type"] = entry_type
         if args.get("_used_in_answer"):
-            params += "&used_in_answer=true"
+            query_params["used_in_answer"] = "true"
+        params = "?" + urlencode(query_params)
 
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(
@@ -3151,7 +3090,7 @@ async def _handle_update_wiki_page(args: dict) -> str:
 
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.put(
-                f"{api_url}/api/v1/projects/{project_id}/pages/{slug}",
+                f"{api_url}/api/v1/projects/{project_id}/pages/{_path_segment(slug, allow_slash=True)}",
                 json=payload,
                 headers={"Authorization": f"Bearer {api_key}"},
             )
@@ -3339,11 +3278,14 @@ async def _fetch_kb_entries_raw(args: dict) -> list[dict]:
         if not project_id:
             return []
 
-        params = f"?search={query}&limit={limit}"
+        from urllib.parse import urlencode
+
+        query_params: dict[str, Any] = {"search": query, "limit": limit}
         if entry_type:
-            params += f"&type={entry_type}"
+            query_params["type"] = entry_type
         if args.get("_used_in_answer"):
-            params += "&used_in_answer=true"
+            query_params["used_in_answer"] = "true"
+        params = "?" + urlencode(query_params)
 
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(
@@ -3449,7 +3391,7 @@ async def _handle_get_knowledge_entry(args: dict) -> dict:
     import httpx
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(
-            f"{api_url}/api/v1/projects/{project_id}/entries/{entry_id}",
+            f"{api_url}/api/v1/projects/{project_id}/entries/{_path_segment(entry_id)}",
             headers={"Authorization": f"Bearer {api_key}"},
         )
     if resp.status_code == 404:
@@ -3538,7 +3480,7 @@ async def _handle_get_wiki_page(args: dict) -> dict:
     import httpx
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(
-            f"{api_url}/api/v1/projects/{project_id}/pages/{slug}",
+            f"{api_url}/api/v1/projects/{project_id}/pages/{_path_segment(slug, allow_slash=True)}",
             headers={"Authorization": f"Bearer {api_key}"},
         )
     if resp.status_code == 404:
@@ -3576,7 +3518,7 @@ async def _handle_get_wiki_page_history(args: dict) -> dict:
 
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(
-            f"{api_url}/api/v1/projects/{project_id}/pages/{slug}/history",
+            f"{api_url}/api/v1/projects/{project_id}/pages/{_path_segment(slug, allow_slash=True)}/history",
             headers={"Authorization": f"Bearer {api_key}"},
             params=params,
         )
@@ -3621,7 +3563,7 @@ async def _handle_get_context_section(args: dict) -> dict:
     import httpx
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(
-            f"{api_url}/api/v1/projects/{project_id}/context/sections/{slug}",
+            f"{api_url}/api/v1/projects/{project_id}/context/sections/{_path_segment(slug)}",
             headers={"Authorization": f"Bearer {api_key}"},
         )
     if resp.status_code == 404:
@@ -3697,7 +3639,7 @@ async def _handle_rename_session(args: dict) -> dict:
         canonical_id = session_id
         if new_alias == "":
             del_resp = await client.delete(
-                f"{api_url}/api/v1/sessions/{session_id}/alias",
+                f"{api_url}/api/v1/sessions/{_path_segment(session_id)}/alias",
                 headers=headers,
             )
             if del_resp.status_code == 404:
@@ -3719,7 +3661,7 @@ async def _handle_rename_session(args: dict) -> dict:
                 return del_body if isinstance(del_body, dict) else {"id": canonical_id}
         if payload:
             resp = await client.patch(
-                f"{api_url}/api/v1/sessions/{canonical_id}",
+                f"{api_url}/api/v1/sessions/{_path_segment(canonical_id)}",
                 json=payload,
                 headers=headers,
             )
@@ -3732,7 +3674,7 @@ async def _handle_rename_session(args: dict) -> dict:
         # (defensive — this branch is unreachable given the earlier
         # at-least-one-of check, kept for safety).
         get_resp = await client.get(
-            f"{api_url}/api/v1/sessions/{canonical_id}",
+            f"{api_url}/api/v1/sessions/{_path_segment(canonical_id)}",
             headers=headers,
         )
         if get_resp.status_code >= 400:
@@ -3754,7 +3696,7 @@ async def _handle_get_session_provenance(args: dict) -> dict:
     api_url = config.sync.api_url.rstrip("/")
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(
-            f"{api_url}/api/v1/sessions/{session_id}/provenance",
+            f"{api_url}/api/v1/sessions/{_path_segment(session_id)}/provenance",
             headers={"Authorization": f"Bearer {config.sync.api_key}"},
         )
     if resp.status_code == 404:
@@ -3780,7 +3722,7 @@ async def _handle_get_session_retrieval_log(args: dict) -> dict:
         try:
             async with httpx.AsyncClient(timeout=15) as client:
                 resp = await client.get(
-                    f"{api_url}/api/v1/sessions/{session_id}/retrieval-log",
+                    f"{api_url}/api/v1/sessions/{_path_segment(session_id)}/retrieval-log",
                     headers={"Authorization": f"Bearer {config.sync.api_key}"},
                 )
             if resp.status_code == 200:
@@ -3895,7 +3837,7 @@ async def _handle_get_persona(args: dict) -> dict:
     import httpx
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(
-            f"{api_url}/api/v1/projects/{project_id}/personas/{name}",
+            f"{api_url}/api/v1/projects/{project_id}/personas/{_path_segment(name)}",
             headers={"Authorization": f"Bearer {api_key}"},
         )
     if resp.status_code == 404:
@@ -3946,7 +3888,7 @@ async def _handle_get_ticket(args: dict) -> dict:
     import httpx
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(
-            f"{api_url}/api/v1/projects/{project_id}/tickets/{ticket_id}",
+            f"{api_url}/api/v1/projects/{project_id}/tickets/{_path_segment(ticket_id)}",
             headers={"Authorization": f"Bearer {api_key}"},
         )
     if resp.status_code == 404:
@@ -3976,7 +3918,7 @@ async def _handle_get_ticket_review_state(args: dict) -> dict:
     import httpx
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(
-            f"{api_url}/api/v1/projects/{project_id}/tickets/{ticket_id}/review-state",
+            f"{api_url}/api/v1/projects/{project_id}/tickets/{_path_segment(ticket_id)}/review-state",
             headers={"Authorization": f"Bearer {api_key}"},
         )
     if resp.status_code == 404:
@@ -4027,7 +3969,7 @@ async def _handle_list_ticket_comments(args: dict) -> dict:
     import httpx
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(
-            f"{api_url}/api/v1/projects/{project_id}/tickets/{ticket_id}/comments",
+            f"{api_url}/api/v1/projects/{project_id}/tickets/{_path_segment(ticket_id)}/comments",
             headers={"Authorization": f"Bearer {api_key}"},
             params=params or None,
         )
@@ -4068,7 +4010,7 @@ async def _handle_start_ticket(args: dict) -> dict:
     import httpx
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
-            f"{api_url}/api/v1/projects/{project_id}/tickets/{ticket_id}/start",
+            f"{api_url}/api/v1/projects/{project_id}/tickets/{_path_segment(ticket_id)}/start",
             headers={"Authorization": f"Bearer {api_key}"},
             params=params,
         )
@@ -4225,7 +4167,7 @@ async def _handle_get_work_queue(args: dict) -> dict:
     import httpx
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(
-            f"{api_url}/api/v1/projects/{project_id}/work-queues/{queue_id}",
+            f"{api_url}/api/v1/projects/{project_id}/work-queues/{_path_segment(queue_id)}",
             headers={"Authorization": f"Bearer {api_key}"},
             params=params,
         )
@@ -4287,7 +4229,7 @@ async def _handle_set_work_queue_status(args: dict) -> dict:
     import httpx
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(
-            f"{api_url}/api/v1/projects/{project_id}/work-queues/{queue_id}/status",
+            f"{api_url}/api/v1/projects/{project_id}/work-queues/{_path_segment(queue_id)}/status",
             headers={"Authorization": f"Bearer {api_key}"},
             json=body,
         )
@@ -4329,7 +4271,7 @@ async def _handle_run_work_queue_step(args: dict) -> dict:
     import httpx
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
-            f"{api_url}/api/v1/projects/{project_id}/work-queues/{queue_id}/step",
+            f"{api_url}/api/v1/projects/{project_id}/work-queues/{_path_segment(queue_id)}/step",
             headers={"Authorization": f"Bearer {api_key}"},
             json=body,
         )
@@ -4386,7 +4328,7 @@ async def _handle_complete_work_queue_step(args: dict) -> dict:
     import httpx
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
-            f"{api_url}/api/v1/projects/{project_id}/work-queues/{queue_id}/step/complete",
+            f"{api_url}/api/v1/projects/{project_id}/work-queues/{_path_segment(queue_id)}/step/complete",
             headers={"Authorization": f"Bearer {api_key}"},
             json=body,
         )
@@ -4427,7 +4369,7 @@ async def _handle_complete_ticket(args: dict) -> dict:
     import httpx
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
-            f"{api_url}/api/v1/projects/{project_id}/tickets/{ticket_id}/complete",
+            f"{api_url}/api/v1/projects/{project_id}/tickets/{_path_segment(ticket_id)}/complete",
             headers={"Authorization": f"Bearer {api_key}"},
             json=body,
         )
@@ -4472,7 +4414,7 @@ async def _handle_add_ticket_comment(args: dict) -> dict:
     import httpx
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(
-            f"{api_url}/api/v1/projects/{project_id}/tickets/{ticket_id}/comments",
+            f"{api_url}/api/v1/projects/{project_id}/tickets/{_path_segment(ticket_id)}/comments",
             headers={"Authorization": f"Bearer {api_key}"},
             json=body,
         )
@@ -4564,7 +4506,7 @@ async def _handle_update_persona(args: dict) -> dict:
     import httpx
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.put(
-            f"{api_url}/api/v1/projects/{project_id}/personas/{name}",
+            f"{api_url}/api/v1/projects/{project_id}/personas/{_path_segment(name)}",
             headers={"Authorization": f"Bearer {api_key}"},
             json=body,
         )
@@ -4611,7 +4553,7 @@ async def _handle_delete_persona(args: dict) -> dict:
         params["force"] = "true"
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.delete(
-            f"{api_url}/api/v1/projects/{project_id}/personas/{name}",
+            f"{api_url}/api/v1/projects/{project_id}/personas/{_path_segment(name)}",
             headers={"Authorization": f"Bearer {api_key}"},
             params=params,
         )
@@ -4650,7 +4592,7 @@ async def _handle_assign_persona(args: dict) -> dict:
     import httpx
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.put(
-            f"{api_url}/api/v1/projects/{project_id}/tickets/{ticket_id}",
+            f"{api_url}/api/v1/projects/{project_id}/tickets/{_path_segment(ticket_id)}",
             headers={"Authorization": f"Bearer {api_key}"},
             json={"assigned_to": persona_name},
         )
@@ -4679,7 +4621,7 @@ async def _handle_assume_persona(args: dict) -> dict:
     import httpx
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(
-            f"{api_url}/api/v1/projects/{project_id}/personas/{persona_name}",
+            f"{api_url}/api/v1/projects/{project_id}/personas/{_path_segment(persona_name)}",
             headers={"Authorization": f"Bearer {api_key}"},
         )
     if resp.status_code == 404:
@@ -4752,7 +4694,7 @@ async def _handle_resolve_ticket(args: dict) -> dict:
 
     import httpx
     async with httpx.AsyncClient(timeout=30) as client:
-        url = f"{api_url}/api/v1/projects/{project_id}/tickets/{ticket_id}/accept"
+        url = f"{api_url}/api/v1/projects/{project_id}/tickets/{_path_segment(ticket_id)}/accept"
         if params:
             resp = await client.post(
                 url,
@@ -4797,7 +4739,7 @@ async def _handle_escalate_ticket(args: dict) -> dict:
     async with httpx.AsyncClient(timeout=15) as client:
         # Read current priority.
         get_resp = await client.get(
-            f"{api_url}/api/v1/projects/{project_id}/tickets/{ticket_id}",
+            f"{api_url}/api/v1/projects/{project_id}/tickets/{_path_segment(ticket_id)}",
             headers={"Authorization": f"Bearer {api_key}"},
         )
         if get_resp.status_code == 404:
@@ -4819,7 +4761,7 @@ async def _handle_escalate_ticket(args: dict) -> dict:
 
         # Bump priority via PUT.
         put_resp = await client.put(
-            f"{api_url}/api/v1/projects/{project_id}/tickets/{ticket_id}",
+            f"{api_url}/api/v1/projects/{project_id}/tickets/{_path_segment(ticket_id)}",
             headers={"Authorization": f"Bearer {api_key}"},
             json={"priority": new_priority},
         )
@@ -4834,7 +4776,7 @@ async def _handle_escalate_ticket(args: dict) -> dict:
         if reason:
             try:
                 cresp = await client.post(
-                    f"{api_url}/api/v1/projects/{project_id}/tickets/{ticket_id}/comments",
+                    f"{api_url}/api/v1/projects/{project_id}/tickets/{_path_segment(ticket_id)}/comments",
                     headers={"Authorization": f"Bearer {api_key}"},
                     json={"content": f"Escalated {current} → {new_priority}: {reason}"},
                 )
@@ -4922,7 +4864,7 @@ async def _handle_update_ticket(args: dict) -> dict:
     import httpx
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.put(
-            f"{api_url}/api/v1/projects/{project_id}/tickets/{ticket_id}",
+            f"{api_url}/api/v1/projects/{project_id}/tickets/{_path_segment(ticket_id)}",
             headers={"Authorization": f"Bearer {api_key}"},
             json=body,
         )
@@ -4990,7 +4932,7 @@ async def _handle_create_agent_run(args: dict) -> dict:
     if start_now and run_id:
         async with httpx.AsyncClient(timeout=30) as client:
             start_resp = await client.post(
-                f"{api_url}/api/v1/projects/{project_id}/agent-runs/{run_id}/start",
+                f"{api_url}/api/v1/projects/{project_id}/agent-runs/{_path_segment(run_id)}/start",
                 headers={"Authorization": f"Bearer {api_key}"},
             )
         if start_resp.status_code >= 400:
@@ -5032,7 +4974,7 @@ async def _handle_complete_agent_run(args: dict) -> dict:
     import httpx
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
-            f"{api_url}/api/v1/projects/{project_id}/agent-runs/{run_id}/complete",
+            f"{api_url}/api/v1/projects/{project_id}/agent-runs/{_path_segment(run_id)}/complete",
             headers={"Authorization": f"Bearer {api_key}"},
             json=body,
         )
@@ -5099,7 +5041,7 @@ async def _handle_dismiss_knowledge_entry(args: dict) -> dict:
     import httpx
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.put(
-            f"{api_url}/api/v1/projects/{project_id}/entries/{entry_id}",
+            f"{api_url}/api/v1/projects/{project_id}/entries/{_path_segment(entry_id)}",
             json=body,
             headers={"Authorization": f"Bearer {api_key}"},
         )
@@ -5134,7 +5076,7 @@ async def _handle_update_entry_confidence(args: dict) -> dict:
     import httpx
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.put(
-            f"{api_url}/api/v1/projects/{project_id}/entries/{entry_id}/confidence",
+            f"{api_url}/api/v1/projects/{project_id}/entries/{_path_segment(entry_id)}/confidence",
             json={"confidence": float(confidence)},
             headers={"Authorization": f"Bearer {api_key}"},
         )
@@ -5165,7 +5107,7 @@ async def _handle_promote_entry(args: dict) -> dict:
     import httpx
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.put(
-            f"{api_url}/api/v1/projects/{project_id}/entries/{entry_id}/promote",
+            f"{api_url}/api/v1/projects/{project_id}/entries/{_path_segment(entry_id)}/promote",
             headers={"Authorization": f"Bearer {api_key}"},
         )
     if resp.status_code == 404:
@@ -5264,7 +5206,7 @@ async def _handle_approve_ticket(args: dict) -> dict:
     import httpx
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
-            f"{api_url}/api/v1/projects/{project_id}/tickets/{ticket_id}/approve",
+            f"{api_url}/api/v1/projects/{project_id}/tickets/{_path_segment(ticket_id)}/approve",
             headers={"Authorization": f"Bearer {api_key}"},
         )
     if resp.status_code == 404:
@@ -5405,7 +5347,7 @@ async def _handle_claim_handoff(args: dict) -> dict:
 
     async with httpx.AsyncClient(timeout=60) as client:
         resp = await client.post(
-            f"{api_url}/api/v1/handoffs/{handoff_id}/claim",
+            f"{api_url}/api/v1/handoffs/{_path_segment(handoff_id)}/claim",
             headers={"Authorization": f"Bearer {api_key}"},
         )
     if resp.status_code >= 400:
@@ -5426,7 +5368,7 @@ async def _handle_get_handoff(args: dict) -> dict:
 
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(
-            f"{api_url}/api/v1/handoffs/{handoff_id}",
+            f"{api_url}/api/v1/handoffs/{_path_segment(handoff_id)}",
             headers={"Authorization": f"Bearer {api_key}"},
         )
     if resp.status_code >= 400:
@@ -5488,7 +5430,7 @@ async def _handle_revoke_handoff(args: dict) -> dict:
 
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(
-            f"{api_url}/api/v1/handoffs/{handoff_id}/revoke",
+            f"{api_url}/api/v1/handoffs/{_path_segment(handoff_id)}/revoke",
             headers={"Authorization": f"Bearer {api_key}"},
             json={"reason": reason},
         )
@@ -5515,7 +5457,7 @@ async def _handle_decline_handoff(args: dict) -> dict:
 
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(
-            f"{api_url}/api/v1/handoffs/{handoff_id}/decline",
+            f"{api_url}/api/v1/handoffs/{_path_segment(handoff_id)}/decline",
             headers={"Authorization": f"Bearer {api_key}"},
             json=body,
         )
@@ -5540,7 +5482,7 @@ async def _handle_add_handoff_comment(args: dict) -> dict:
 
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(
-            f"{api_url}/api/v1/handoffs/{handoff_id}/comments",
+            f"{api_url}/api/v1/handoffs/{_path_segment(handoff_id)}/comments",
             headers={"Authorization": f"Bearer {api_key}"},
             json={"content": content},
         )

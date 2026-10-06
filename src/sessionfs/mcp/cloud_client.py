@@ -12,6 +12,8 @@ from typing import Any
 
 import httpx
 
+from sessionfs.mcp.path_safety import _path_segment
+
 logger = logging.getLogger("sessionfs.mcp.cloud_client")
 
 DEFAULT_API_URL = "https://api.sessionfs.dev"
@@ -67,7 +69,7 @@ class CloudAPIClient:
         """Get session metadata."""
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             resp = await client.get(
-                f"{self.base_url}/api/v1/sessions/{session_id}",
+                f"{self.base_url}/api/v1/sessions/{_path_segment(session_id)}",
                 headers=self._headers(api_key),
             )
             resp.raise_for_status()
@@ -83,7 +85,7 @@ class CloudAPIClient:
         """Get paginated messages from a session."""
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             resp = await client.get(
-                f"{self.base_url}/api/v1/sessions/{session_id}/messages",
+                f"{self.base_url}/api/v1/sessions/{_path_segment(session_id)}/messages",
                 params={"page": page, "page_size": page_size},
                 headers=self._headers(api_key),
             )

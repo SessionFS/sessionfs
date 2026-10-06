@@ -17,14 +17,32 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.15.0 -->
+      <!-- v0.15.1 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.15.1</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">October 5, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Security Patch &mdash; MCP Server Git-Remote Validation</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Fixed an authenticated request-forgery flaw in the MCP server.</strong> Project-scoped MCP tools placed the caller-supplied <span class="font-mono text-accent text-sm">git_remote</span> argument directly into the API request path, so a crafted remote could redirect a request &mdash; carrying your own API key &mdash; to a different SessionFS API endpoint. Because MCP tool arguments are chosen by the model, prompt-injected content could use this to reach endpoints the MCP surface deliberately does not expose. Git remotes are now validated and safely encoded before use.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Who is affected:</strong> anyone using the SessionFS MCP server with any release through v0.15.0. <strong>Upgrading is recommended for all MCP users.</strong> Every legitimate remote form &mdash; HTTPS, SSH and scp-style, GitLab subgroups, IPv6 hosts, scheme-less <span class="font-mono text-accent text-sm">host/owner/repo</span> &mdash; continues to resolve exactly as before.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">No other behavior changed. No schema change &mdash; migrations 001&ndash;062 (unchanged). 3,084 backend + 459 dashboard UI tests passing. 68 MCP tools (unchanged) &middot; 9 supported tools unchanged.</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.15.0 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
             <span class="text-brand font-semibold">v0.15.0</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">August 12, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">The Adoption Release &mdash; Instant First Win &middot; Easier Installs &middot; Share Pages &middot; Handoff Previews</h2>
         <ul class="space-y-2 text-base text-muted">

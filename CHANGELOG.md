@@ -5,13 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.15.1] - 2026-09-10
+## [0.15.1] - 2026-10-05
 
 **Security patch.** Fixes an authenticated request-forgery flaw in the MCP server that affects every release through 0.15.0. No schema changes; migrations remain at 062.
 
 ### Fixed
 
 - **MCP server: caller-supplied git remotes are validated and percent-encoded before use.** Every project-scoped MCP tool interpolates its `git_remote` argument into the `/api/v1/projects/{...}` path, and the fallback in `normalize_git_remote` returns unrecognized input unchanged. A remote such as `../admin/users` was therefore normalized away by the HTTP client and the request — carrying the user's own API key — was issued against a different endpoint, turning any project-scoped tool into an authenticated proxy. This matters because MCP tools accept arguments chosen by the model, so prompt-injected content could reach API endpoints the MCP surface deliberately does not expose. Remotes are now rejected for traversal or injection (empty, `.` or `..` segments including percent-encoded forms, `?`, `#`, whitespace, control characters, backslashes) and each path segment is percent-encoded. The check is reject-only and never narrows the syntax the server accepts: `+`, `~`, percent-encoded characters, IPv6 hosts, GitLab subgroups, scheme-less `host/owner/repo` and user-less scp (`github.com:owner/repo.git`) remotes all continue to resolve.
+- **MCP server: every other caller-supplied identifier in an API path is validated and percent-encoded too.** The same flaw applied to ticket ids, persona names, wiki slugs, handoff ids, work-queue ids, agent-run ids, knowledge-entry ids and session ids (e.g. `get_ticket` with `ticket_id="../../../admin/users"`). All ~40 interpolation sites now go through a shared helper (`sessionfs.mcp.path_safety`) that rejects dot segments (raw or percent-encoded), empty segments, backslashes and control characters and encodes `/`, `?` and `#`. The hosted remote MCP server's `get_project_context` and session lookups get the same treatment, and knowledge-search query strings are now URL-encoded.
+- **Remote validation also covers non-HTTP schemes.** `git://`, `git+ssh://` and upper-case scheme remotes (which the server stores verbatim) resolve again, and a dot segment smuggled in via the host of such a URL (`ssh://../admin`) is rejected.
+- **Dependencies:** PyJWT ≥ 2.15.1 (JWKS-set parsing, algorithm-confusion and signature-encoding advisories; the OIDC SSO path parses IdP key sets with `PyJWKSet`), urllib3 ≥ 2.8.0 and anyio ≥ 4.14.2 floors; dashboard dev-dependency lockfile refreshed (vitest, undici, js-yaml and others).
 
 ## [0.15.0] - 2026-08-12
 

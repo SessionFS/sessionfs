@@ -290,9 +290,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             if not git_remote:
                 return [TextContent(type="text", text="Provide a git_remote argument (e.g. 'github.com/owner/repo' or SSH URL).")]
 
-            from sessionfs.server.github_app import normalize_git_remote
-            normalized = normalize_git_remote(git_remote)
-            if not normalized:
+            from sessionfs.mcp.path_safety import _strict_repository_identifier
+            try:
+                normalized = _strict_repository_identifier(git_remote)
+            except ValueError:
                 return [TextContent(type="text", text="Could not parse git remote URL.")]
 
             data = await cloud.get_project_context(api_key, normalized)
