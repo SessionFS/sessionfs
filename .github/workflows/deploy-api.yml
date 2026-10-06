@@ -78,22 +78,36 @@ jobs:
             -t "${{ env.IMAGE }}:latest" \
             .
 
-      # Vulnerability scan with Trivy
-      - name: Run Trivy vulnerability scanner
+      # Vulnerability scan with Trivy: a full report for code scanning, then a
+      # hard gate. Reporting is best-effort and must never block a deploy (an
+      # unavailable code-scanning endpoint once blocked every API deploy); the
+      # gate blocks on any CRITICAL/HIGH finding that has a fix available.
+      # Unfixed OS-package CVEs in the base image stay visible in the report.
+      - name: Trivy vulnerability report
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ steps.meta.outputs.image }}
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
-          exit-code: '1'
+          exit-code: '0'
         continue-on-error: true
 
       - name: Upload Trivy scan results
         uses: github/codeql-action/upload-sarif@v4
         if: always()
+        continue-on-error: true
         with:
           sarif_file: trivy-results.sarif
+
+      - name: Vulnerability gate (fixable CRITICAL/HIGH)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.meta.outputs.image }}
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
 
       - name: Push image
         id: push

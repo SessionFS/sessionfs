@@ -3,7 +3,10 @@ FROM python:3.11-slim AS builder
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src/ src/
-RUN pip install --no-cache-dir ".[server]"
+# The base image ships older pip/setuptools/wheel with published CVEs (and
+# setuptools vendors jaraco.context). Upgrade them before installing.
+RUN pip install --no-cache-dir --upgrade "pip>=26.1.2" "setuptools>=80.10" "wheel>=0.46.2" \
+    && pip install --no-cache-dir ".[server]"
 
 FROM python:3.11-slim AS runtime
 
@@ -13,13 +16,23 @@ FROM python:3.11-slim AS runtime
 RUN groupadd --system --gid 10001 sessionfs \
     && useradd --system --uid 10001 --gid sessionfs --no-create-home --shell /usr/sbin/nologin sessionfs
 
+# Upgrade the same tooling in this stage too: copying the builder's
+# site-packages merges into this image's own, so the base image's older
+# dist-info would otherwise survive next to the new versions and still
+# fail the vulnerability gate.
+RUN pip install --no-cache-dir --upgrade "pip>=26.1.2" "setuptools>=80.10" "wheel>=0.46.2"
+
 WORKDIR /app
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin/uvicorn /usr/local/bin/alembic /usr/local/bin/
 COPY src/ src/
 COPY alembic.ini .
 
-RUN chown -R sessionfs:sessionfs /app
+# The server never runs pip, and pip vendors its own copies of urllib3 and
+# msgpack that lag the fixed releases (even on the newest pip). Remove it
+# from the runtime image so those copies don't ship or trip the gate.
+RUN python -m pip uninstall -y pip \
+    && chown -R sessionfs:sessionfs /app
 
 USER 10001
 
