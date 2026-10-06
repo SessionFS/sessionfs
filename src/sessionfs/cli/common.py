@@ -93,6 +93,20 @@ def handle_errors(func):
     except (ImportError, AttributeError):
         # typer < 0.26 (or future renames) — fall back to standard click.
         pass
+    # v0.15.2 hotfix: typer 0.27 made `typer.Exit` and `typer.Abort` its own
+    # classes (`typer.exceptions.*`, plain RuntimeError subclasses) that inherit
+    # from NEITHER click family above. Without this, `raise typer.Exit(2)`
+    # fell through to the generic handler and printed "Unexpected error: 2"
+    # with exit code 1 — including `typer.Exit(0)` on success paths. Detect
+    # the public classes directly so exit codes survive any typer release.
+    import typer as _typer
+
+    _typer_exit = getattr(_typer, "Exit", None)
+    if isinstance(_typer_exit, type) and not issubclass(_typer_exit, _click_exit_bases):
+        _click_exit_bases = _click_exit_bases + (_typer_exit,)
+    _typer_abort = getattr(_typer, "Abort", None)
+    if isinstance(_typer_abort, type) and not issubclass(_typer_abort, _click_abort_bases):
+        _click_abort_bases = _click_abort_bases + (_typer_abort,)
 
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
@@ -108,7 +122,7 @@ def handle_errors(func):
             # — silently downgrading every CLI's `typer.Exit(2)` to a
             # generic 1. Re-raise as `SystemExit` so callers see the
             # intended code.
-            raise SystemExit(exc.exit_code)
+            raise SystemExit(getattr(exc, "exit_code", 1))
         except _click_exception_bases:
             # Re-raise so Typer's outer handler can render the standard
             # parser-error format ("Usage: ... \n Try '... --help'." +

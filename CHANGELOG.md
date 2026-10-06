@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.2] - 2026-10-06
+
+**CLI fix.** Restores correct exit codes for every `sfs` command when installed alongside typer 0.27 or newer. No server, schema or MCP changes; migrations remain at 062.
+
+### Fixed
+
+- **`sfs` commands no longer report deliberate exits as crashes.** typer 0.27 made `typer.Exit` and `typer.Abort` standalone exception classes that no longer inherit from click's, and the CLI's error handler only recognised click's. Any command that exits with a specific code therefore printed "Unexpected error: N" and exited with 1 instead of N, and a few commands that finish successfully through `typer.Exit(0)` reported failure. Scripts and CI jobs that rely on `sfs` exit codes (for example `sfs agent complete --enforce`) were affected. Declining a confirmation prompt also printed an unexpected-error message instead of a clean cancel. The handler now recognises typer's own classes on every typer release. Affects installations of 0.15.0 and 0.15.1 that resolved typer 0.27.
+
 ## [0.15.1] - 2026-10-05
 
 **Security patch.** Fixes an authenticated request-forgery flaw in the MCP server that affects every release through 0.15.0. No schema changes; migrations remain at 062.
