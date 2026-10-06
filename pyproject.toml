@@ -35,6 +35,7 @@ dependencies = [
     "rich>=13.0,<16.0",
     "httpx>=0.27,<1.0",
     "mcp>=1.28.1,<2.0",
+    "anyio>=4.14.2,<5.0",  # security floor; used by the local MCP client, so it belongs in base deps
     "tomli>=2.0; python_version < '3.11'",
 ]
 
@@ -72,7 +73,6 @@ server = [
     # PYSEC-2026-4175/4176/4177 (streaming decompression bombs, proxy TLS
     # options); anyio 4.14.2 clears PYSEC-2026-4024/4025.
     "urllib3>=2.8.0,<3.0",
-    "anyio>=4.14.2,<5.0",
     "google-cloud-storage>=2.14,<4.0",
     "cryptography>=50.0.0",
     "stripe>=8.0,<16.0",

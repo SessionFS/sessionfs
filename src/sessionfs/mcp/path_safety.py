@@ -22,6 +22,9 @@ from typing import Any
 _REMOTE_URL_RE = re.compile(
     r"^[A-Za-z][A-Za-z0-9+.-]*://(?P<host>[^/?#\s]+)/(?P<path>[^?#]+?)/?$"
 )
+# Hostless local-file remotes (`file:///srv/repos/foo.git`) are valid git and
+# are stored verbatim by the server; only the file scheme may omit the host.
+_REMOTE_FILE_RE = re.compile(r"^[Ff][Ii][Ll][Ee]://(?P<host>[^/?#\s]*)/(?P<path>[^?#]+?)/?$")
 _REMOTE_SCP_RE = re.compile(r"^[^@\s/:]+@(?P<host>[^:\s/]+):(?P<path>[^?#]+?)/?$")
 # User-less scp syntax (`github.com:owner/repo.git`) is valid git and is stored
 # verbatim by the server: host has no `/`, path has no `:`.
@@ -42,7 +45,11 @@ def _strict_repository_identifier(git_remote: str) -> str:
     """
     from urllib.parse import quote, unquote
 
-    value = (git_remote or "").strip().rstrip("/")
+    # Surrounding whitespace is never part of a remote. A trailing "/" IS kept for
+    # the lookup: the server stores normalize_git_remote(raw), which preserves it
+    # ("https://h/org/repo/" -> "org/repo/"), and the key must match exactly.
+    original = (git_remote or "").strip()
+    value = original.rstrip("/")
     if (
         not value
         or "\\" in value
@@ -51,6 +58,7 @@ def _strict_repository_identifier(git_remote: str) -> str:
         raise ValueError("Could not parse git remote URL.")
     match = (
         _REMOTE_URL_RE.match(value)
+        or _REMOTE_FILE_RE.match(value)
         or _REMOTE_SCP_RE.match(value)
         or _REMOTE_SCP_NOUSER_RE.match(value)
         or _REMOTE_BARE_RE.match(value)
@@ -74,7 +82,7 @@ def _strict_repository_identifier(git_remote: str) -> str:
     # after strict validation reuse the server's own normalization.
     from sessionfs.server.github_app import normalize_git_remote
 
-    normalized = normalize_git_remote(value)
+    normalized = normalize_git_remote(original)
     if not normalized or any(ord(char) < 33 or ord(char) == 127 for char in normalized):
         raise ValueError("Could not parse git remote URL.")
     # `normalize_git_remote` returns non-http(s) URLs verbatim, host included,

@@ -2730,7 +2730,7 @@ class TestProjectResolverRemoteValidation:
             # shapes normalize_git_remote's own tests cover
             ("https://github.com/Acme/Skills.git", "acme/skills"),
             ("  https://github.com/org/repo.git  ", "org/repo"),
-            ("https://github.com/acme/skills/", "acme/skills"),
+            ("https://github.com/acme/skills/", "acme/skills/"),
             ("git@github.com:SessionFS/sessionfs", "sessionfs/sessionfs"),
             ("git@github.com:SessionFS/sessionfs.git", "sessionfs/sessionfs"),
             ("git@gitlab.com:team/project.git", "team/project"),
@@ -2764,9 +2764,10 @@ class TestProjectResolverRemoteValidation:
         from sessionfs.server.github_app import normalize_git_remote
 
         key = mcp_server._strict_repository_identifier(remote)
-        # The resolver canonicalizes whitespace/trailing slash first; the server
-        # stores the same canonical input's normalization.
-        server_key = normalize_git_remote(remote.strip().rstrip("/"))
+        # The server stores normalize_git_remote() of the raw remote (only
+        # surrounding whitespace is dropped; a trailing "/" is preserved), so the
+        # lookup key must decode to exactly that.
+        server_key = normalize_git_remote(remote.strip())
         assert key == "/".join(quote(segment, safe="") for segment in server_key.split("/"))
         if expected is not None:
             assert key == expected
@@ -2997,3 +2998,45 @@ class TestRemoteMcpPathSafety:
 
         src = inspect.getsource(remote_server)
         assert "_strict_repository_identifier(git_remote)" in src
+
+
+class TestRepositoryKeyParityWithServer:
+    """The lookup key must be EXACTLY what the server stored for the project
+    (`normalize_git_remote` of the raw remote), or every project-scoped MCP
+    tool reports an existing project as missing."""
+
+    @pytest.mark.parametrize(
+        "remote",
+        [
+            "https://github.com/org/repo",
+            "https://github.com/org/repo/",
+            "https://github.com/org/repo.git",
+            "git@github.com:org/repo.git",
+            "git@github.com:org/repo.git/",
+            "ssh://git@host/a/b/c.git",
+            "git://host.example/team/project.git",
+            "HTTPS://GitHub.com/Org/Repo",
+            "https://gitlab.com/group/subgroup/repo.git",
+            "github.com:owner/repo.git",
+            "github.com/acme/repo",
+            "file:///srv/repos/foo.git",
+            "file:///srv/repos/foo",
+            "  https://github.com/org/repo  ",
+        ],
+    )
+    def test_key_decodes_to_the_server_normalization(self, remote):
+        from urllib.parse import unquote
+
+        from sessionfs.mcp.path_safety import _strict_repository_identifier
+        from sessionfs.server.github_app import normalize_git_remote
+
+        key = _strict_repository_identifier(remote)
+        assert unquote(key) == normalize_git_remote(remote.strip())
+
+    def test_file_scheme_alone_may_omit_the_host(self):
+        from sessionfs.mcp.path_safety import _strict_repository_identifier
+
+        _strict_repository_identifier("file:///srv/repos/foo.git")
+        for bad in ("file:///srv/../admin", "file:///", "https:///admin/users"):
+            with pytest.raises(ValueError):
+                _strict_repository_identifier(bad)
