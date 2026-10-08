@@ -52,7 +52,7 @@ def _manifest_signature(manifest_path: Path) -> str:
     """
     try:
         manifest = json.loads(manifest_path.read_text())
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError, RecursionError):  # ValueError covers JSONDecodeError
         return "-"
     if not isinstance(manifest, dict):
         return "-"
@@ -75,10 +75,12 @@ def _manifest_signature(manifest_path: Path) -> str:
 def _session_fingerprint(sfs_dir: Path) -> str:
     """Cheap change detector for a session.
 
-    The message and workspace files are only stat'ed (size and mtime), never
-    read, so checking every session costs a few syscalls each regardless of
-    session size. The small manifest is read so that sync-only rewrites of it
-    don't count as changes.
+    The message and workspace files are only stat'ed, never read, so checking
+    every session costs a few syscalls each regardless of session size. Size
+    and mtime alone can't be trusted (unpacking a cloud archive restores
+    mtimes, rounded to the second), so the inode and ctime are included too:
+    the OS updates ctime on every write and it can't be set back. The small
+    manifest is read so that sync-only rewrites of it don't count as changes.
     """
     parts = [f"manifest.json:{_manifest_signature(sfs_dir / 'manifest.json')}"]
     for name in ("messages.jsonl", "workspace.json"):
@@ -87,7 +89,7 @@ def _session_fingerprint(sfs_dir: Path) -> str:
         except OSError:
             parts.append(f"{name}:-")
         else:
-            parts.append(f"{name}:{st.st_size}:{st.st_mtime_ns}")
+            parts.append(f"{name}:{st.st_size}:{st.st_mtime_ns}:{st.st_ctime_ns}:{st.st_ino}")
     return "|".join(parts)
 
 # Patterns for extracting file paths and errors from message text
@@ -117,7 +119,13 @@ class SessionSearchIndex:
             row["name"] for row in self._conn.execute("PRAGMA table_info(search_meta)")
         }
         if "fingerprint" not in columns:
-            self._conn.execute("ALTER TABLE search_meta ADD COLUMN fingerprint TEXT")
+            try:
+                self._conn.execute("ALTER TABLE search_meta ADD COLUMN fingerprint TEXT")
+            except sqlite3.OperationalError as exc:
+                # Another process (a second MCP server, or `sfs mcp index`)
+                # upgraded the same database between our check and the ALTER.
+                if "duplicate column" not in str(exc).lower():
+                    raise
         self._conn.commit()
 
     @property
@@ -131,8 +139,10 @@ class SessionSearchIndex:
     ) -> bool:
         """Index a .sfs session directory for full-text search.
 
-        Returns False when the session has no readable manifest; any earlier
-        entry for it is removed so search doesn't keep serving stale content.
+        Returns False when the session has no readable manifest. An existing
+        entry is kept but marked for re-indexing, since the manifest may only be
+        mid-rewrite; a session that is really gone is pruned by ``reindex_all``
+        once its directory disappears.
         """
         # Fingerprint before reading: if the session changes mid-read, the
         # stored fingerprint is stale and the next pass re-indexes it.
@@ -143,15 +153,22 @@ class SessionSearchIndex:
 
         try:
             manifest = json.loads(manifest_path.read_text())
-        except (json.JSONDecodeError, OSError):
+        except (OSError, ValueError, RecursionError):  # ValueError covers JSONDecodeError
             manifest = None
         if not isinstance(manifest, dict):
-            self._remove(session_id)
+            self.conn.execute(
+                "UPDATE search_meta SET fingerprint = NULL WHERE session_id = ?", (session_id,)
+            )
+            self.conn.commit()
             return False
 
-        source = manifest.get("source", {})
-        model = manifest.get("model") or {}
-        stats = manifest.get("stats") or {}
+        # Store a fingerprint only for a complete read. After a transient read
+        # error the session must be retried, even if its files never change.
+        complete = True
+
+        source = _as_dict(manifest.get("source"))
+        model = _as_dict(manifest.get("model"))
+        stats = _as_dict(manifest.get("stats"))
 
         # Extract project path from workspace.json
         project_path = ""
@@ -159,9 +176,11 @@ class SessionSearchIndex:
         if workspace_path.exists():
             try:
                 workspace = json.loads(workspace_path.read_text())
-                project_path = workspace.get("root_path", "")
-            except (json.JSONDecodeError, OSError):
+                project_path = _as_text(_as_dict(workspace).get("root_path"))
+            except json.JSONDecodeError:
                 pass
+            except OSError:
+                complete = False
 
         # Extract text from messages
         all_text: list[str] = []
@@ -176,6 +195,8 @@ class SessionSearchIndex:
                         if not line:
                             continue
                         msg = json.loads(line)
+                        if not isinstance(msg, dict):
+                            continue
                         text = _extract_message_text(msg)
                         if text:
                             all_text.append(text)
@@ -185,8 +206,14 @@ class SessionSearchIndex:
                             # Extract error patterns
                             for match in _ERROR_RE.finditer(text):
                                 errors.append(match.group(0)[:200])
-            except (json.JSONDecodeError, OSError) as exc:
+            except json.JSONDecodeError as exc:
                 logger.warning("Failed to read messages for %s: %s", session_id, exc)
+            except OSError as exc:
+                complete = False
+                logger.warning("Failed to read messages for %s: %s", session_id, exc)
+
+        raw_count = stats.get("message_count")
+        message_count = raw_count if isinstance(raw_count, int) and not isinstance(raw_count, bool) else 0
 
         messages_text = "\n".join(all_text)
         file_paths_text = "\n".join(sorted(file_paths))
@@ -208,15 +235,15 @@ class SessionSearchIndex:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 session_id,
-                manifest.get("title") or "",
-                source.get("tool", ""),
-                model.get("model_id", ""),
+                _as_text(manifest.get("title")),
+                _as_text(source.get("tool")),
+                _as_text(model.get("model_id")),
                 project_path,
                 messages_text,
                 file_paths_text,
                 errors_text,
-                manifest.get("created_at", ""),
-                str(stats.get("message_count", 0)),
+                _as_text(manifest.get("created_at")),
+                str(message_count),
             ),
         )
 
@@ -226,8 +253,8 @@ class SessionSearchIndex:
             (
                 session_id,
                 datetime.now(timezone.utc).isoformat(),
-                stats.get("message_count", 0),
-                fingerprint,
+                message_count,
+                fingerprint if complete else None,
             ),
         )
         self.conn.commit()
@@ -364,14 +391,22 @@ class SessionSearchIndex:
             if sfs_dir.is_dir() and sfs_dir.name.endswith(".sfs"):
                 session_id = sfs_dir.name[:-4]  # Strip .sfs
                 present.add(session_id)
-                fingerprint = _session_fingerprint(sfs_dir)
-                if not force and known.get(session_id) == fingerprint:
-                    continue
-                if self.index_session(session_id, sfs_dir, fingerprint=fingerprint):
-                    count += 1
+                # One malformed session must not stop the rest of the pass.
+                try:
+                    fingerprint = _session_fingerprint(sfs_dir)
+                    if not force and known.get(session_id) == fingerprint:
+                        continue
+                    if self.index_session(session_id, sfs_dir, fingerprint=fingerprint):
+                        count += 1
+                except Exception:
+                    self.conn.rollback()
+                    logger.warning("Skipping session %r: could not index it", session_id,
+                                   exc_info=True)
 
+        # A pull from the cloud replaces a session directory by removing and
+        # recreating it, so re-check before treating a missing one as deleted.
         for session_id in known:
-            if session_id not in present:
+            if session_id not in present and not (sessions_dir / f"{session_id}.sfs").is_dir():
                 self._remove(session_id)
 
         return count
@@ -380,6 +415,21 @@ class SessionSearchIndex:
         if self._conn:
             self._conn.close()
             self._conn = None
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_text(value: Any) -> str:
+    """Coerce a manifest field to text without failing on unexpected types."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
+    return ""
 
 
 def _extract_message_text(msg: dict[str, Any]) -> str:

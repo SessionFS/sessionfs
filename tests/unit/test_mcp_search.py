@@ -221,15 +221,96 @@ class TestIncrementalReindex:
         assert search_index.reindex_all(tmp_path) == 1
         assert [r["session_id"] for r in search_index.search("quokka")] == ["ses_test1234abcdef"]
 
-    def test_session_whose_manifest_disappears_leaves_search(
+    def test_unreadable_manifest_keeps_entry_and_retries(
         self, search_index: SessionSearchIndex, sample_session: Path, tmp_path: Path,
     ):
+        """A manifest caught mid-rewrite must not drop the session from search."""
         search_index.reindex_all(tmp_path)
-        (sample_session / "manifest.json").unlink()
+        manifest_path = sample_session / "manifest.json"
+        good = manifest_path.read_text()
+        manifest_path.write_text('{"title": "half-writ')
 
         assert search_index.reindex_all(tmp_path) == 0
+        assert search_index.is_indexed("ses_test1234abcdef")
+        assert search_index.search("middleware")
+
+        # Once the manifest is whole again the session is re-indexed, even
+        # though it is back to exactly the content it was fingerprinted with.
+        manifest_path.write_text(good)
+        assert search_index.reindex_all(tmp_path) == 1
+
+    def test_same_size_rewrite_with_restored_mtime_is_detected(
+        self, search_index: SessionSearchIndex, sample_session: Path, tmp_path: Path,
+    ):
+        """Archive unpacks restore mtimes, so size+mtime alone would miss this."""
+        import os
+
+        search_index.reindex_all(tmp_path)
+        messages = sample_session / "messages.jsonl"
+        st = messages.stat()
+        content = messages.read_text()
+        assert "endpoint" in content
+        messages.write_text(content.replace("endpoint", "wombatxx"))  # same length
+        os.utime(messages, ns=(st.st_atime_ns, st.st_mtime_ns))
+        assert messages.stat().st_size == st.st_size
+        assert messages.stat().st_mtime_ns == st.st_mtime_ns
+
+        assert search_index.reindex_all(tmp_path) == 1
+        assert search_index.search("wombatxx")
+
+    def test_transient_read_error_is_retried(
+        self, search_index: SessionSearchIndex, sample_session: Path, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        import builtins
+
+        real_open = builtins.open
+
+        def failing_open(file, *args, **kwargs):
+            if str(file).endswith("messages.jsonl"):
+                raise PermissionError("transient")
+            return real_open(file, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", failing_open)
+        search_index.reindex_all(tmp_path)
+        monkeypatch.setattr(builtins, "open", real_open)
+
+        # Nothing about the files changed, but the earlier read was incomplete.
+        assert search_index.reindex_all(tmp_path) == 1
+        assert search_index.search("middleware")
+
+    def test_malformed_session_does_not_stop_the_pass(
+        self, search_index: SessionSearchIndex, sample_session: Path, tmp_path: Path,
+    ):
+        hostile = tmp_path / "sessions" / "ses_0000hostile0000.sfs"
+        hostile.mkdir(parents=True)
+        (hostile / "manifest.json").write_text(json.dumps({
+            "title": {"nested": "dict"},
+            "source": "not-a-dict",
+            "model": ["list"],
+            "stats": {"message_count": {"x": 1}},
+            "created_at": ["2026"],
+        }))
+        (hostile / "workspace.json").write_text(json.dumps(["not", "a", "dict"]))
+        (hostile / "messages.jsonl").write_text('"just a string"\n42\n[1, 2]\n')
+        deep = tmp_path / "sessions" / "ses_0001deepnesting.sfs"
+        deep.mkdir(parents=True)
+        (deep / "manifest.json").write_text("[" * 100000 + "]" * 100000)
+
+        assert search_index.reindex_all(tmp_path) == 2
+        assert search_index.is_indexed("ses_test1234abcdef")
+        assert search_index.is_indexed("ses_0000hostile0000")
+        assert search_index.search("middleware")
+
+    def test_session_whose_directory_disappears_leaves_search(
+        self, search_index: SessionSearchIndex, sample_session: Path, tmp_path: Path,
+    ):
+        import shutil
+
+        search_index.reindex_all(tmp_path)
+        shutil.rmtree(sample_session)
+        search_index.reindex_all(tmp_path)
         assert not search_index.is_indexed("ses_test1234abcdef")
-        assert search_index.search("middleware") == []
 
     def test_force_reindexes_everything(
         self, search_index: SessionSearchIndex, sample_session: Path, second_session: Path,
@@ -280,6 +361,37 @@ class TestIncrementalReindex:
         assert idx.reindex_all(tmp_path) == 0
         assert idx.search("middleware")
         idx.close()
+
+
+class TestConcurrentUpgrade:
+    def test_column_added_by_another_process_is_tolerated(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Two servers upgrading the same legacy index at once must both start."""
+        import sqlite3
+
+        db = tmp_path / "search.db"
+        first = SessionSearchIndex(db)
+        first.initialize()  # creates the current schema, column included
+        first.close()
+
+        # Simulate the race: this process saw no column, then lost to another.
+        real_connect = sqlite3.connect
+
+        class StaleView(sqlite3.Connection):
+            def execute(self, sql, *args):  # type: ignore[override]
+                if sql.startswith("PRAGMA table_info(search_meta)"):
+                    return super().execute(
+                        "SELECT 'session_id' AS name UNION ALL SELECT 'indexed_at'"
+                    )
+                return super().execute(sql, *args)
+
+        monkeypatch.setattr(
+            sqlite3, "connect", lambda *a, **k: real_connect(*a, factory=StaleView, **k)
+        )
+        second = SessionSearchIndex(db)
+        second.initialize()  # must not raise "duplicate column name"
+        second.close()
 
 
 class TestServerStartup:
