@@ -12,7 +12,13 @@ WORKDIR /app
 # Install only MCP server dependencies (no database, no storage)
 COPY pyproject.toml README.md ./
 COPY src/ src/
-RUN pip install --no-cache-dir ".[server]"
+# The base image ships older pip/setuptools/wheel with published CVEs (and
+# setuptools vendors jaraco.context and wheel), so upgrade them first. The
+# server never runs pip, and pip vendors its own copies of urllib3 and
+# msgpack that lag the fixed releases, so remove it once installing is done.
+RUN pip install --no-cache-dir --upgrade "pip>=26.1.2" "setuptools>=80.10" "wheel>=0.46.2" \
+    && pip install --no-cache-dir ".[server]" \
+    && python -m pip uninstall -y pip
 
 RUN chown -R sessionfs:sessionfs /app
 

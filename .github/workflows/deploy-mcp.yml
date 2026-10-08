@@ -6,6 +6,7 @@ on:
     paths:
       - 'src/sessionfs/mcp/**'
       - 'Dockerfile.mcp'
+      - '.github/workflows/deploy-mcp.yml'
   workflow_dispatch:
 
 permissions:
@@ -43,6 +44,31 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Set image tag
+        id: meta
+        run: echo "tag=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      # Build and scan before authenticating to GCP: neither needs
+      # credentials, and keeping the scanner ahead of auth means it never
+      # runs with deploy credentials on the runner.
+      - name: Build image
+        run: |
+          docker build -f Dockerfile.mcp \
+            -t "${{ env.IMAGE }}:${{ github.sha }}" \
+            -t "${{ env.IMAGE }}:latest" \
+            .
+
+      # Blocks the push on any CRITICAL/HIGH finding that has a fix
+      # available. Unfixed base-image OS findings don't block.
+      - name: Vulnerability gate (fixable CRITICAL/HIGH)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.IMAGE }}:${{ github.sha }}
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+
       - uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ env.WIF_PROVIDER }}
@@ -53,16 +79,8 @@ jobs:
       - name: Configure Docker
         run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
 
-      - name: Set image tag
-        id: meta
-        run: echo "tag=${{ github.sha }}" >> "$GITHUB_OUTPUT"
-
-      - name: Build and push
+      - name: Push image
         run: |
-          docker build -f Dockerfile.mcp \
-            -t "${{ env.IMAGE }}:${{ github.sha }}" \
-            -t "${{ env.IMAGE }}:latest" \
-            .
           docker push "${{ env.IMAGE }}:${{ github.sha }}"
           docker push "${{ env.IMAGE }}:latest"
 
