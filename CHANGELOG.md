@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.5] - 2026-10-08
+
+**MCP fix.** The local MCP server (`sfs mcp serve`) now connects immediately, no matter how many sessions you have. No server, schema or MCP tool changes; migrations remain at 062.
+
+### Fixed
+
+- **The local MCP server no longer times out on startup for heavy users.** On every start, `sfs mcp serve` rebuilt its full-text search index over every captured session before answering the AI tool's first request. With a few hundred sessions this took over 30 seconds, longer than MCP clients such as Claude Code wait, so the SessionFS MCP server failed to connect, and it got worse as sessions accumulated. The server now answers immediately (well under a second on a 378-session store that previously took 35 seconds) and updates the search index in the background.
+- **Search indexing is now incremental.** Sessions that haven't changed since they were last indexed are skipped, so after the first start, keeping the index current takes a fraction of a second. Changes to sync bookkeeping alone don't count as changes. `sfs mcp index` still rebuilds the whole index on demand.
+- **Deleted sessions no longer appear in MCP search results.** Search entries for sessions that were removed from disk are now cleaned up.
+
+### Upgrading
+
+The first start after upgrading re-indexes every session once, in the background; search results fill in as it completes.
+
 ## [0.15.4] - 2026-10-08
 
 **Container and deploy-pipeline security.** Extends the v0.15.3 hardening to the hosted remote MCP server image, and isolates the vulnerability scanner from deploy credentials in both server pipelines. No application, schema or MCP tool changes; migrations remain at 062.
