@@ -1166,3 +1166,32 @@ class TestModeObservedEveryTick:
         syncer.mark_session_dirty(sid)
         assert sid not in syncer._debounce_timestamps
         store.close()
+
+
+class TestNoDoubleEnqueue:
+    def test_entering_all_does_not_requeue_a_pending_session(self, tmp_path):
+        import json
+
+        from sessionfs.daemon.config import DaemonConfig, SyncConfig
+        from sessionfs.daemon.main import DaemonSyncer
+        from sessionfs.store.local import LocalStore
+
+        store = LocalStore(tmp_path)
+        store.initialize()
+        sid = "ses_aaaa0000pending0"
+        d = store.allocate_session_dir(sid)
+        m = {"session_id": sid, "title": "t", "created_at": "2026-10-08T00:00:00Z",
+             "source": {"tool": "claude-code"}, "sync": {"etag": "x", "dirty": True}}
+        (d / "manifest.json").write_text(json.dumps(m))
+        store.upsert_session_metadata(sid, m, str(d))
+        syncer = DaemonSyncer(
+            DaemonConfig(sync={"enabled": True, "api_key": "k", "auto": "selective"}), store
+        )
+        syncer._pending_sessions.add(sid)  # waiting for push_interval
+
+        syncer.config.sync = SyncConfig(enabled=True, api_key="k", auto="all")
+        syncer._observe_mode()
+
+        assert sid in syncer._pending_sessions
+        assert sid not in syncer._debounce_timestamps
+        store.close()

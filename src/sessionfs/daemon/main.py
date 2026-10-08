@@ -543,6 +543,10 @@ class DaemonSyncer:
             return
         for session in self.store.list_sessions():
             session_id = session["session_id"]
+            # Already waiting to be pushed: queuing it again would upload the
+            # same content twice.
+            if session_id in self._pending_sessions:
+                continue
             if self._needs_push(session_id):
                 self.mark_session_dirty(session_id)
 
