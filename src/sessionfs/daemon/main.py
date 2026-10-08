@@ -58,8 +58,11 @@ class DaemonSyncer:
         self._watchlist: set[str] = set()
         # False after an autosync mode change until the watchlist is fetched
         # again: the cached list may predate unwatches made while the mode was
-        # something else, so selective mode must not upload from it.
+        # something else, so selective mode must not upload from it. The mode
+        # can change through remote settings or a config reload, so changes
+        # are detected here (_observe_mode) rather than at each source.
         self._watchlist_fresh = True
+        self._observed_mode = config.sync.auto
         self._last_settings_check = 0.0
         # Per-session push failure counter. Resets to 0 on successful push.
         self.sync_failures: dict[str, int] = {}
@@ -90,10 +93,19 @@ class DaemonSyncer:
             )
         return self._sync_client
 
+    def _observe_mode(self) -> str:
+        """Return the current mode, invalidating the watchlist if it changed."""
+        mode = self.auto_mode
+        if mode != self._observed_mode:
+            self._observed_mode = mode
+            self._watchlist_fresh = False
+        return mode
+
     def mark_session_dirty(self, session_id: str) -> None:
         """Mark a session as needing sync, respecting autosync mode."""
         if not self.is_enabled:
             return
+        self._observe_mode()
 
         mode = self.auto_mode
         if mode == "off":
@@ -106,7 +118,7 @@ class DaemonSyncer:
         self._debounce_timestamps[session_id] = time.monotonic()
 
     def _is_allowed_by_mode(self, session_id: str) -> bool:
-        mode = self.auto_mode
+        mode = self._observe_mode()
         if mode == "all":
             return True
         if mode == "selective":
@@ -397,7 +409,7 @@ class DaemonSyncer:
                 if new_mode != self.config.sync.auto:
                     logger.info("Autosync mode changed: %s -> %s", self.config.sync.auto, new_mode)
                     self.config.sync.auto = new_mode
-                    self._watchlist_fresh = False
+                    self._observe_mode()
                     # Captures made while autosync was off (including when the
                     # startup settings fetch failed) were not queued; pick up
                     # everything that still needs a push. Selective mode does
@@ -442,7 +454,7 @@ class DaemonSyncer:
 
             # Fetch remote watchlist for selective autosync — replace local
             # set entirely so unwatches on other clients propagate.
-            if self.auto_mode == "selective":
+            if self._observe_mode() == "selective":
                 try:
                     wl_resp = await http.get(
                         f"{client.api_url}/api/v1/sync/watchlist",
@@ -518,36 +530,32 @@ class DaemonSyncer:
             return
         for session in self.store.list_sessions():
             session_id = session["session_id"]
-            session_dir = self.store.get_session_dir(session_id)
-            if not session_dir:
-                continue
-            manifest_path = session_dir / "manifest.json"
-            if not manifest_path.exists():
-                continue
-            try:
-                manifest = json.loads(manifest_path.read_text())
-            except (OSError, ValueError, RecursionError):
-                continue
-            sync_state = manifest.get("sync", {}) if isinstance(manifest, dict) else {}
-            if not isinstance(sync_state, dict):
-                sync_state = {}
-            # If no etag stored or marked dirty, it needs sync
-            if not sync_state.get("etag") or sync_state.get("dirty", True):
+            if self._needs_push(session_id):
                 self.mark_session_dirty(session_id)
 
     def _enqueue_dirty_watched(self, session_ids: set[str]) -> None:
         """Queue newly watchlisted sessions that are already dirty locally."""
         for session_id in session_ids:
-            session_dir = self.store.get_session_dir(session_id)
-            if not session_dir:
-                continue
-            manifest_path = session_dir / "manifest.json"
-            if not manifest_path.exists():
-                continue
-            manifest = json.loads(manifest_path.read_text())
-            sync_state = manifest.get("sync", {})
-            if not sync_state.get("etag") or sync_state.get("dirty", True):
+            if self._needs_push(session_id):
                 self._debounce_timestamps[session_id] = time.monotonic()
+
+    def _needs_push(self, session_id: str) -> bool:
+        """True if a local session has never been pushed or is marked dirty.
+
+        A session whose manifest can't be read is skipped (False) so one bad
+        session can't stop the others from being queued.
+        """
+        session_dir = self.store.get_session_dir(session_id)
+        if not session_dir:
+            return False
+        try:
+            manifest = json.loads((session_dir / "manifest.json").read_text())
+        except (OSError, ValueError, RecursionError):
+            return False
+        sync_state = manifest.get("sync", {}) if isinstance(manifest, dict) else {}
+        if not isinstance(sync_state, dict):
+            sync_state = {}
+        return not sync_state.get("etag") or bool(sync_state.get("dirty", True))
 
     def _mark_session_dirty_flag(self, session_id: str) -> None:
         """Set dirty=true in manifest so _collect_dirty_sessions re-queues it."""

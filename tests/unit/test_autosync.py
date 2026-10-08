@@ -1042,3 +1042,57 @@ class TestSelectiveFailsClosedOnStaleWatchlist:
         assert sid not in syncer._debounce_timestamps
         assert not syncer._is_allowed_by_mode(sid)
         store.close()
+
+
+class TestModeChangeFromAnySource:
+    def test_config_reload_round_trip_invalidates_watchlist(self, tmp_path):
+        """SIGHUP reload changes config.sync directly (selective -> all ->
+        selective); the cached watchlist must not be trusted afterwards."""
+        from sessionfs.daemon.config import DaemonConfig, SyncConfig
+        from sessionfs.daemon.main import DaemonSyncer
+
+        syncer = DaemonSyncer(
+            DaemonConfig(sync={"enabled": True, "api_key": "k", "auto": "selective",
+                               "debounce": 0}),
+            MagicMock(),
+        )
+        syncer._watchlist = {"ses_unwatched1"}
+        assert syncer._is_allowed_by_mode("ses_unwatched1")
+
+        syncer.config.sync = SyncConfig(enabled=True, api_key="k", auto="all")
+        syncer.mark_session_dirty("ses_unwatched1")  # queued under 'all'
+        syncer.config.sync = SyncConfig(enabled=True, api_key="k", auto="selective",
+                                        debounce=0)
+
+        with patch.object(syncer, "_maybe_check_remote_settings"), \
+                patch.object(syncer, "_sync_sessions") as push:
+            syncer.maybe_sync()
+        push.assert_not_called()
+        assert not syncer._pending_sessions
+        assert not syncer._debounce_timestamps
+
+    def test_bad_manifest_does_not_block_other_watched_sessions(self, tmp_path):
+        import json
+
+        from sessionfs.daemon.config import DaemonConfig
+        from sessionfs.daemon.main import DaemonSyncer
+        from sessionfs.store.local import LocalStore
+
+        store = LocalStore(tmp_path)
+        store.initialize()
+        good = "ses_bbbb0000good0000"
+        bad = "ses_aaaa0000bad00000"
+        for sid, body in ((bad, "{ corrupt"), (good, None)):
+            d = store.allocate_session_dir(sid)
+            m = {"session_id": sid, "title": "t", "created_at": "2026-10-08T00:00:00Z",
+                 "source": {"tool": "claude-code"}, "sync": {"etag": "x", "dirty": True}}
+            (d / "manifest.json").write_text(json.dumps(m))
+            store.upsert_session_metadata(sid, m, str(d))
+            if body is not None:
+                (d / "manifest.json").write_text(body)
+        syncer = DaemonSyncer(
+            DaemonConfig(sync={"enabled": True, "api_key": "k", "auto": "selective"}), store
+        )
+        syncer._enqueue_dirty_watched({bad, good})
+        assert set(syncer._debounce_timestamps) == {good}
+        store.close()
