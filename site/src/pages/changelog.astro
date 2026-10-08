@@ -17,14 +17,32 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.15.2 -->
+      <!-- v0.15.3 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.15.3</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">October 8, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Container Security &mdash; Hardened Server Image</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Zero fixable critical or high findings in the server image.</strong> Packaging tools are upgraded past their published advisories, and pip is removed from the runtime image entirely &mdash; the server never uses it, and its bundled libraries lag the fixed releases.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Deploys are gated on vulnerabilities.</strong> Every API deploy now fails if the image has a critical or high finding with a fix available. Base-image findings with no published fix stay visible in the scan report.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Server image only. No CLI, schema or MCP behavior changed &mdash; migrations 001&ndash;062 (unchanged). 3,145 backend + 459 dashboard UI tests passing. 68 MCP tools (unchanged) &middot; 9 supported tools unchanged. Self-hosted operators building from the published Dockerfile get the same hardening.</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.15.2 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
             <span class="text-brand font-semibold">v0.15.2</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">October 6, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">CLI Fix &mdash; Correct Exit Codes Under typer 0.27</h2>
         <ul class="space-y-2 text-base text-muted">

@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.3] - 2026-10-08
+
+**Container security.** Hardens the published API server image and adds a vulnerability gate to the API deploy. No application, schema or MCP changes; migrations remain at 062.
+
+### Changed
+
+- **API deploys are now gated on fixable vulnerabilities.** The image scan previously only produced a report. The deploy now fails on any critical or high finding in the server image that has a fix available. Findings in the base operating-system packages with no published fix remain visible in the scan report. Uploading the report to code scanning is now best-effort and can no longer block a deploy.
+
+### Security
+
+- **Server image no longer ships outdated packaging tools.** pip, setuptools and wheel are upgraded to releases that clear their published advisories, and pip is removed from the runtime image entirely, since the server never uses it and its bundled copies of urllib3 and msgpack lag the fixed releases. The image now has zero fixable critical or high findings. Self-hosted operators building from this Dockerfile get the same result; the CLI and the Python package are unchanged.
+
 ## [0.15.2] - 2026-10-06
 
 **CLI fix.** Restores correct exit codes for every `sfs` command when installed alongside typer 0.27 or newer. No server, schema or MCP changes; migrations remain at 062.
