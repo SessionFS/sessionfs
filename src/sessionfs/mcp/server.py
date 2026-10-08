@@ -5536,6 +5536,9 @@ def init_server(store_dir: Path | None = None) -> None:
     # correct anything a pass raced with; unchanged sessions cost a stat each.
     global _reindex_stop, _reindex_thread
     stop_background_reindex()
+    if _reindex_thread is not None:
+        # A previous indexer didn't stop in time; wait for it to finish.
+        _reindex_thread.join()
     _reindex_stop = threading.Event()
     _reindex_thread = _start_background_reindex(
         store_dir, search_db, interval=_REINDEX_INTERVAL_SECONDS, stop=_reindex_stop
@@ -5558,6 +5561,12 @@ def stop_background_reindex(timeout: float = 5.0) -> None:
         _reindex_stop.set()
     if _reindex_thread is not None:
         _reindex_thread.join(timeout)
+        if _reindex_thread.is_alive():
+            # Still finishing one large session. Keep the references so a new
+            # init_server() waits for it rather than running two indexers; at
+            # process exit the daemon thread ends and its open write rolls back.
+            logger.info("Search indexing still finishing a session at shutdown")
+            return
     _reindex_stop = None
     _reindex_thread = None
 

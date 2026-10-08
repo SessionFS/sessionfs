@@ -961,3 +961,84 @@ class TestModeDowngradeDrainsQueue:
         pushed = run.call_args[0][0] if run.called else None
         if pushed is not None:
             pushed.close()
+
+
+class TestSelectiveFailsClosedOnStaleWatchlist:
+    """Entering selective must not upload from a watchlist fetched before the
+    mode change (it may still list sessions unwatched in the meantime)."""
+
+    def _run_fetch(self, syncer, *, mode, watchlist_status, watchlist=()):
+        import asyncio
+
+        settings = MagicMock(status_code=200)
+        settings.json.return_value = {"mode": mode, "debounce_seconds": 0}
+        wl = MagicMock(status_code=watchlist_status)
+        wl.json.return_value = {"sessions": [{"session_id": s} for s in watchlist]}
+        other = MagicMock(status_code=404)
+        http = MagicMock()
+
+        async def get(url, **kwargs):
+            if url.endswith("/sync/settings"):
+                return settings
+            if url.endswith("/sync/watchlist"):
+                return wl
+            return other
+
+        async def put(*args, **kwargs):
+            return other
+
+        http.get = get
+        http.put = put
+        http.__aenter__ = MagicMock(return_value=asyncio.sleep(0, result=http))
+        http.__aexit__ = MagicMock(return_value=asyncio.sleep(0))
+        with patch("httpx.AsyncClient", return_value=http):
+            asyncio.run(syncer._fetch_remote_settings())
+
+    def _syncer(self, tmp_path):
+        import json
+
+        from sessionfs.daemon.config import DaemonConfig
+        from sessionfs.daemon.main import DaemonSyncer
+        from sessionfs.store.local import LocalStore
+
+        store = LocalStore(tmp_path)
+        store.initialize()
+        sid = "ses_aaaa0000unwatched"
+        d = store.allocate_session_dir(sid)
+        m = {"session_id": sid, "title": "t", "created_at": "2026-10-08T00:00:00Z",
+             "source": {"tool": "claude-code"}, "sync": {"etag": "x", "dirty": True}}
+        (d / "manifest.json").write_text(json.dumps(m))
+        store.upsert_session_metadata(sid, m, str(d))
+        syncer = DaemonSyncer(
+            DaemonConfig(sync={"enabled": True, "api_key": "k", "auto": "off", "debounce": 0}),
+            store,
+        )
+        syncer._watchlist = {sid}  # cached from an earlier selective period
+        return syncer, store, sid
+
+    def test_failed_watchlist_refresh_uploads_nothing(self, tmp_path):
+        syncer, store, sid = self._syncer(tmp_path)
+        self._run_fetch(syncer, mode="selective", watchlist_status=503)
+
+        syncer.mark_session_dirty(sid)
+        with patch.object(syncer, "_maybe_check_remote_settings"), \
+                patch.object(syncer, "_sync_sessions") as push:
+            syncer.maybe_sync()
+        push.assert_not_called()
+        assert not syncer._pending_sessions
+        store.close()
+
+    def test_successful_refresh_requeues_watched_dirty_sessions(self, tmp_path):
+        syncer, store, sid = self._syncer(tmp_path)
+        self._run_fetch(syncer, mode="selective", watchlist_status=503)
+        # Next poll: mode unchanged, refresh succeeds and still lists the session.
+        self._run_fetch(syncer, mode="selective", watchlist_status=200, watchlist=[sid])
+        assert sid in syncer._debounce_timestamps
+        store.close()
+
+    def test_successful_refresh_drops_unwatched(self, tmp_path):
+        syncer, store, sid = self._syncer(tmp_path)
+        self._run_fetch(syncer, mode="selective", watchlist_status=200, watchlist=[])
+        assert sid not in syncer._debounce_timestamps
+        assert not syncer._is_allowed_by_mode(sid)
+        store.close()

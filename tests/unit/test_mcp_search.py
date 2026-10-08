@@ -618,6 +618,43 @@ class TestServerStartup:
         assert not thread.is_alive()
         assert server._reindex_thread is None
 
+    def test_slow_indexer_is_waited_for_not_doubled(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        import threading
+
+        from sessionfs.mcp import server
+
+        (tmp_path / "sessions").mkdir()
+        release = threading.Event()
+        started = threading.Event()
+        running = {"now": 0, "max": 0}
+        lock = threading.Lock()
+
+        def slow(self, store_dir, **kwargs):
+            with lock:
+                running["now"] += 1
+                running["max"] = max(running["max"], running["now"])
+            started.set()
+            release.wait(10)
+            with lock:
+                running["now"] -= 1
+            return 0
+
+        monkeypatch.setattr(SessionSearchIndex, "reindex_all", slow)
+        monkeypatch.setattr(server, "_store", None)
+        monkeypatch.setattr(server, "_search", None)
+        server.init_server(tmp_path)
+        assert started.wait(5)
+
+        server.stop_background_reindex(timeout=0.1)  # times out mid-session
+        assert server._reindex_thread is not None  # still referenced
+
+        threading.Timer(0.3, release.set).start()
+        server.init_server(tmp_path)  # waits for the old indexer first
+        server.stop_background_reindex()
+        assert running["max"] == 1
+
     def test_background_indexing_failure_is_logged_not_raised(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
     ):

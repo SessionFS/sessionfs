@@ -56,6 +56,10 @@ class DaemonSyncer:
         self._pending_sessions: set[str] = set()
         self._debounce_timestamps: dict[str, float] = {}
         self._watchlist: set[str] = set()
+        # False after an autosync mode change until the watchlist is fetched
+        # again: the cached list may predate unwatches made while the mode was
+        # something else, so selective mode must not upload from it.
+        self._watchlist_fresh = True
         self._last_settings_check = 0.0
         # Per-session push failure counter. Resets to 0 on successful push.
         self.sync_failures: dict[str, int] = {}
@@ -96,7 +100,7 @@ class DaemonSyncer:
             # Still allow explicit pushes via _pending_sessions
             return
         elif mode == "selective":
-            if session_id not in self._watchlist:
+            if not self._watchlist_fresh or session_id not in self._watchlist:
                 return
         # mode == "all" or watchlisted in selective — debounce and queue
         self._debounce_timestamps[session_id] = time.monotonic()
@@ -106,7 +110,7 @@ class DaemonSyncer:
         if mode == "all":
             return True
         if mode == "selective":
-            return session_id in self._watchlist
+            return self._watchlist_fresh and session_id in self._watchlist
         return False
 
     def _drop_disallowed_queued_sessions(self) -> None:
@@ -393,10 +397,12 @@ class DaemonSyncer:
                 if new_mode != self.config.sync.auto:
                     logger.info("Autosync mode changed: %s -> %s", self.config.sync.auto, new_mode)
                     self.config.sync.auto = new_mode
+                    self._watchlist_fresh = False
                     # Captures made while autosync was off (including when the
                     # startup settings fetch failed) were not queued; pick up
-                    # everything that still needs a push.
-                    if new_mode != "off":
+                    # everything that still needs a push. Selective mode does
+                    # this once its watchlist has been refreshed, below.
+                    if new_mode == "all":
                         self.enqueue_dirty_sessions()
                 self.config.sync.debounce = data.get("debounce_seconds", 30)
 
@@ -456,13 +462,21 @@ class DaemonSyncer:
                         for sid in removed:
                             self._debounce_timestamps.pop(sid, None)
                             self._pending_sessions.discard(sid)
-                        # Detect newly added watches and queue dirty ones
+                        # Detect newly added watches and queue dirty ones. After
+                        # a mode change every watched session is re-checked,
+                        # since nothing was queued while the list was stale.
                         added = remote_ids - self._watchlist
+                        if not self._watchlist_fresh:
+                            added = set(remote_ids)
                         self._watchlist = remote_ids
+                        self._watchlist_fresh = True
                         if added:
                             self._enqueue_dirty_watched(added)
                 except Exception:
-                    pass  # Non-critical — keep using local watchlist
+                    # Keep using the local watchlist; if it is stale after a
+                    # mode change, selective mode uploads nothing until a
+                    # refresh succeeds.
+                    pass
 
             resp2 = await http.get(
                 f"{client.api_url}/api/v1/settings/audit-trigger",
