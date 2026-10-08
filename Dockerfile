@@ -16,11 +16,11 @@ FROM python:3.11-slim AS runtime
 RUN groupadd --system --gid 10001 sessionfs \
     && useradd --system --uid 10001 --gid sessionfs --no-create-home --shell /usr/sbin/nologin sessionfs
 
-# Upgrade the same tooling in this stage too: copying the builder's
-# site-packages merges into this image's own, so the base image's older
-# dist-info would otherwise survive next to the new versions and still
-# fail the vulnerability gate.
-RUN pip install --no-cache-dir --upgrade "pip>=26.1.2" "setuptools>=80.10" "wheel>=0.46.2"
+# Replace this stage's site-packages with the builder's rather than merging
+# into it. COPY merges directories, so the base image's older pip/setuptools/
+# wheel dist-info would otherwise survive next to the upgraded versions (and
+# a cached layer here could drift from the builder's resolved versions).
+RUN rm -rf /usr/local/lib/python3.11/site-packages
 
 WORKDIR /app
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
