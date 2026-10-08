@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.4] - 2026-10-08
+
+**Container security.** Extends the v0.15.3 hardening to the hosted remote MCP server image. No application, schema or MCP tool changes; migrations remain at 062.
+
+### Changed
+
+- **Remote MCP server deploys are now gated on fixable vulnerabilities.** The MCP server deploy previously ran no image scan at all. It now fails on any critical or high finding with a fix available, before the image is pushed. The image is built and scanned before the deploy authenticates to the cloud, so the scanner never runs with deploy credentials present.
+
+### Security
+
+- **Remote MCP server image no longer ships outdated packaging tools.** The image had 2 fixable high findings in the base image's setuptools (its bundled jaraco.context and wheel). pip, setuptools and wheel are now upgraded before installing, and pip is removed from the image afterwards. The image now has zero fixable critical or high findings.
+
 ## [0.15.3] - 2026-10-08
 
 **Container security.** Hardens the published API server image and adds a vulnerability gate to the API deploy. No application, schema or MCP changes; migrations remain at 062.
