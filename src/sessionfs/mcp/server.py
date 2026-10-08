@@ -5529,22 +5529,44 @@ def init_server(store_dir: Path | None = None) -> None:
     _search = SessionSearchIndex(search_db)
     _search.initialize()
 
-    # Bring the index up to date in the background. Indexing a large store
+    # Keep the index up to date in the background. Indexing a large store
     # can take longer than MCP clients wait for the server to answer its
     # first request, so the server must start serving before this finishes.
-    _start_background_reindex(store_dir, search_db)
+    # Later passes pick up sessions captured while the server runs and
+    # correct anything a pass raced with; unchanged sessions cost a stat each.
+    _start_background_reindex(store_dir, search_db, interval=_REINDEX_INTERVAL_SECONDS)
 
 
-def _start_background_reindex(store_dir: Path, search_db: Path) -> threading.Thread:
-    """Run an incremental reindex on its own connection in a daemon thread."""
+_REINDEX_INTERVAL_SECONDS = 60.0
+
+
+def _start_background_reindex(
+    store_dir: Path,
+    search_db: Path,
+    *,
+    interval: float | None = None,
+    stop: threading.Event | None = None,
+) -> threading.Thread:
+    """Run incremental reindex passes on their own connection in a daemon thread.
+
+    With ``interval`` set, a pass runs every ``interval`` seconds until
+    ``stop`` is set; otherwise a single pass runs.
+    """
+    stop_event = stop or threading.Event()
 
     def _run() -> None:
         index = SessionSearchIndex(search_db)
         try:
             index.initialize()
-            indexed = index.reindex_all(store_dir)
-            if indexed:
-                logger.info("Search index: %d sessions indexed", indexed)
+            while True:
+                try:
+                    indexed = index.reindex_all(store_dir)
+                    if indexed:
+                        logger.info("Search index: %d sessions indexed", indexed)
+                except Exception:
+                    logger.warning("Background search indexing failed", exc_info=True)
+                if interval is None or stop_event.wait(interval):
+                    break
         except Exception:
             logger.warning("Background search indexing failed", exc_info=True)
         finally:

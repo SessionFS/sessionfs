@@ -258,6 +258,44 @@ class TestIncrementalReindex:
         assert search_index.reindex_all(tmp_path) == 1
         assert search_index.search("wombatxx")
 
+    def test_read_error_keeps_last_good_entry(
+        self, search_index: SessionSearchIndex, sample_session: Path, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        import builtins
+
+        search_index.reindex_all(tmp_path)
+        _append_message(sample_session, "new text")  # forces a re-read
+        real_open = builtins.open
+
+        def failing_open(file, *args, **kwargs):
+            if str(file).endswith("messages.jsonl"):
+                raise PermissionError("transient")
+            return real_open(file, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", failing_open)
+        assert search_index.reindex_all(tmp_path) == 0
+        monkeypatch.setattr(builtins, "open", real_open)
+        assert search_index.search("middleware")  # previous content still served
+
+    def test_manifest_unreadable_on_two_passes_is_removed(
+        self, search_index: SessionSearchIndex, sample_session: Path, tmp_path: Path,
+    ):
+        search_index.reindex_all(tmp_path)
+        (sample_session / "manifest.json").write_text("not json")
+        search_index.reindex_all(tmp_path)
+        assert search_index.is_indexed("ses_test1234abcdef")  # one grace pass
+        search_index.reindex_all(tmp_path)
+        assert not search_index.is_indexed("ses_test1234abcdef")
+
+    def test_forced_rebuild_removes_unreadable_immediately(
+        self, search_index: SessionSearchIndex, sample_session: Path, tmp_path: Path,
+    ):
+        search_index.reindex_all(tmp_path)
+        (sample_session / "manifest.json").write_text("not json")
+        search_index.reindex_all(tmp_path, force=True)
+        assert not search_index.is_indexed("ses_test1234abcdef")
+
     def test_transient_read_error_is_retried(
         self, search_index: SessionSearchIndex, sample_session: Path, tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -416,13 +454,15 @@ class TestServerStartup:
         monkeypatch.setattr(server, "_store", None)
         monkeypatch.setattr(server, "_search", None)
 
+        stop = threading.Event()
         threads: list[threading.Thread] = []
         real_start = server._start_background_reindex
-        monkeypatch.setattr(
-            server,
-            "_start_background_reindex",
-            lambda *a: threads.append(real_start(*a)) or threads[-1],
-        )
+
+        def start(*args, **kwargs):
+            threads.append(real_start(*args, **kwargs, stop=stop))
+            return threads[-1]
+
+        monkeypatch.setattr(server, "_start_background_reindex", start)
 
         server.init_server(tmp_path)  # returns while indexing is still blocked
         assert started.wait(5)
@@ -430,9 +470,55 @@ class TestServerStartup:
         assert server._get_search().search("middleware") == []
 
         release.set()
+        for _ in range(100):
+            if server._get_search().search("middleware"):
+                break
+            threading.Event().wait(0.1)
+        assert server._get_search().search("middleware")
+        stop.set()
         threads[0].join(10)
         assert not threads[0].is_alive()
-        assert server._get_search().search("middleware")
+
+    def test_periodic_pass_picks_up_new_sessions_and_survives_errors(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        import threading
+
+        from sessionfs.mcp import server
+
+        (tmp_path / "sessions").mkdir()
+        calls = {"n": 0}
+        real_reindex = SessionSearchIndex.reindex_all
+
+        def flaky(self, store_dir, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("first pass fails")
+            return real_reindex(self, store_dir, **kwargs)
+
+        monkeypatch.setattr(SessionSearchIndex, "reindex_all", flaky)
+        stop = threading.Event()
+        thread = server._start_background_reindex(
+            tmp_path, tmp_path / "search.db", interval=0.05, stop=stop
+        )
+        # A session captured while the server is running...
+        d = tmp_path / "sessions" / "ses_live0000capture.sfs"
+        d.mkdir()
+        (d / "manifest.json").write_text(json.dumps({"title": "Platypus incident review"}))
+
+        reader = SessionSearchIndex(tmp_path / "search.db")
+        reader.initialize()
+        for _ in range(100):
+            if reader.search("platypus"):
+                break
+            threading.Event().wait(0.05)
+        # ...is picked up by a later pass, even after an earlier pass failed.
+        assert reader.search("platypus")
+        assert calls["n"] >= 2
+        stop.set()
+        thread.join(5)
+        assert not thread.is_alive()
+        reader.close()
 
     def test_background_indexing_failure_is_logged_not_raised(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,

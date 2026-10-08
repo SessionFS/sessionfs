@@ -12,9 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **The local MCP server no longer times out on startup for heavy users.** On every start, `sfs mcp serve` rebuilt its full-text search index over every captured session before answering the AI tool's first request. With a few hundred sessions this took over 30 seconds, longer than MCP clients such as Claude Code wait, so the SessionFS MCP server failed to connect, and it got worse as sessions accumulated. The server now answers immediately (well under a second on a 378-session store that previously took 35 seconds) and updates the search index in the background.
-- **Search indexing is now incremental.** Sessions that haven't changed since they were last indexed are skipped, so after the first start, keeping the index current takes a fraction of a second. Changes to sync bookkeeping alone don't count as changes. `sfs mcp index` still rebuilds the whole index on demand.
+- **Search indexing is now incremental and continuous.** Sessions that haven't changed since they were last indexed are skipped, so after the first start, keeping the index current takes a fraction of a second. Changes to sync bookkeeping alone don't count as changes. The server re-checks every minute, so sessions captured while it is running now appear in search within about a minute (previously not until the next restart). `sfs mcp index` still rebuilds the whole index on demand.
 - **Deleted sessions no longer appear in MCP search results.** Search entries for sessions that were removed from disk are now cleaned up.
-- **One malformed session no longer breaks local search.** A session with an unexpected manifest, workspace or message shape (for example, one pulled from a teammate) is now skipped and logged instead of stopping indexing for every session after it.
+- **One malformed session no longer breaks local search.** A session with an unexpected manifest, workspace or message shape (for example, one pulled from a teammate) is now skipped instead of stopping indexing for every session after it.
 
 ### Upgrading
 

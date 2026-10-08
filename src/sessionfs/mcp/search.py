@@ -135,14 +135,21 @@ class SessionSearchIndex:
         return self._conn
 
     def index_session(
-        self, session_id: str, sfs_dir: Path, fingerprint: str | None = None
+        self,
+        session_id: str,
+        sfs_dir: Path,
+        fingerprint: str | None = None,
+        *,
+        drop_if_unreadable: bool = False,
     ) -> bool:
         """Index a .sfs session directory for full-text search.
 
-        Returns False when the session has no readable manifest. An existing
-        entry is kept but marked for re-indexing, since the manifest may only be
-        mid-rewrite; a session that is really gone is pruned by ``reindex_all``
-        once its directory disappears.
+        Returns True when the session's entry was (re)written. If the manifest
+        can't be read, an existing entry is kept but marked for re-indexing,
+        since the manifest may only be mid-rewrite; with ``drop_if_unreadable``
+        the entry is removed instead. If the messages can't be read because of
+        an I/O error, an existing entry is left as it is and marked for retry
+        rather than replaced with partial content.
         """
         # Fingerprint before reading: if the session changes mid-read, the
         # stored fingerprint is stale and the next pass re-indexes it.
@@ -156,10 +163,19 @@ class SessionSearchIndex:
         except (OSError, ValueError, RecursionError):  # ValueError covers JSONDecodeError
             manifest = None
         if not isinstance(manifest, dict):
-            self.conn.execute(
-                "UPDATE search_meta SET fingerprint = NULL WHERE session_id = ?", (session_id,)
-            )
-            self.conn.commit()
+            if not self.is_indexed(session_id):
+                logger.debug("Not indexing %r: manifest is missing or unreadable", session_id)
+            elif drop_if_unreadable:
+                logger.warning(
+                    "Removing %r from search: manifest is still missing or unreadable",
+                    session_id,
+                )
+                self._remove(session_id)
+            else:
+                logger.warning(
+                    "Manifest for %r is missing or unreadable; will retry", session_id
+                )
+                self._mark_for_retry(session_id)
             return False
 
         # Store a fingerprint only for a complete read. After a transient read
@@ -212,6 +228,11 @@ class SessionSearchIndex:
                 complete = False
                 logger.warning("Failed to read messages for %s: %s", session_id, exc)
 
+        if not complete and self.is_indexed(session_id):
+            # Keep the last good entry rather than replace it with partial text.
+            self._mark_for_retry(session_id)
+            return False
+
         raw_count = stats.get("message_count")
         message_count = raw_count if isinstance(raw_count, int) and not isinstance(raw_count, bool) else 0
 
@@ -259,6 +280,12 @@ class SessionSearchIndex:
         )
         self.conn.commit()
         return True
+
+    def _mark_for_retry(self, session_id: str) -> None:
+        self.conn.execute(
+            "UPDATE search_meta SET fingerprint = NULL WHERE session_id = ?", (session_id,)
+        )
+        self.conn.commit()
 
     def _remove(self, session_id: str) -> None:
         self.conn.execute("DELETE FROM session_search WHERE session_id = ?", (session_id,))
@@ -374,7 +401,13 @@ class SessionSearchIndex:
 
         Sessions whose files are unchanged since they were last indexed are
         skipped unless ``force`` is set, and entries for sessions that no
-        longer exist on disk are removed.
+        longer exist on disk are removed. A session whose manifest is unreadable
+        is kept for one pass (it may be mid-rewrite) and removed if it is still
+        unreadable on the next pass, or immediately when ``force`` is set.
+
+        Races with the daemon or a cloud pull (a manifest mid-rewrite, a session
+        directory being replaced) can leave a session briefly mis-indexed; the
+        MCP server runs this pass periodically, so the next pass corrects it.
         """
         sessions_dir = store_dir / "sessions"
         if not sessions_dir.is_dir():
@@ -396,7 +429,15 @@ class SessionSearchIndex:
                     fingerprint = _session_fingerprint(sfs_dir)
                     if not force and known.get(session_id) == fingerprint:
                         continue
-                    if self.index_session(session_id, sfs_dir, fingerprint=fingerprint):
+                    # A NULL fingerprint means the last pass already marked the
+                    # session for retry.
+                    retrying = session_id in known and known[session_id] is None
+                    if self.index_session(
+                        session_id,
+                        sfs_dir,
+                        fingerprint=fingerprint,
+                        drop_if_unreadable=force or retrying,
+                    ):
                         count += 1
                 except Exception:
                     self.conn.rollback()
