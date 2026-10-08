@@ -14,6 +14,7 @@ import json
 import logging
 import re
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -410,7 +411,13 @@ class SessionSearchIndex:
             for row in rows
         ]
 
-    def reindex_all(self, store_dir: Path, *, force: bool = False) -> int:
+    def reindex_all(
+        self,
+        store_dir: Path,
+        *,
+        force: bool = False,
+        stop: threading.Event | None = None,
+    ) -> int:
         """Bring the index up to date with the store. Returns count indexed.
 
         Sessions whose files are unchanged since they were last indexed are
@@ -434,7 +441,11 @@ class SessionSearchIndex:
 
         present: set[str] = set()
         count = 0
+        stopped = False
         for sfs_dir in sessions_dir.iterdir():
+            if stop is not None and stop.is_set():
+                stopped = True
+                break
             if sfs_dir.is_dir() and sfs_dir.name.endswith(".sfs"):
                 session_id = sfs_dir.name[:-4]  # Strip .sfs
                 present.add(session_id)
@@ -455,7 +466,13 @@ class SessionSearchIndex:
                         drop_if_unreadable=force or retrying,
                     ):
                         count += 1
-                    self._failed.pop(session_id, None)
+                        self._failed.pop(session_id, None)
+                    elif not self.is_indexed(session_id):
+                        # No usable manifest and nothing indexed: don't re-read
+                        # it until its files change.
+                        self._failed[session_id] = fingerprint
+                    else:
+                        self._failed.pop(session_id, None)
                 except Exception:
                     self.conn.rollback()
                     logger.warning("Skipping session %r: could not index it", session_id,
@@ -465,6 +482,9 @@ class SessionSearchIndex:
 
         # A pull from the cloud replaces a session directory by removing and
         # recreating it, so re-check before treating a missing one as deleted.
+        # An interrupted pass didn't see every directory, so it can't prune.
+        if stopped:
+            return count
         for session_id in known:
             if session_id not in present and not (sessions_dir / f"{session_id}.sfs").is_dir():
                 self._remove(session_id)

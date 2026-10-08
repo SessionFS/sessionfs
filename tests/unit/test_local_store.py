@@ -96,8 +96,9 @@ def test_recapture_keeps_etag_and_marks_dirty(tmp_path: Path):
     synced = {**_BASE_MANIFEST, "sync": {"etag": "abc123", "last_sync_at": "x", "dirty": False}}
     _write_session(store, sid, synced)
 
-    # The capture pipeline writes a brand-new manifest with no sync block.
-    session_dir = _write_session(store, sid, dict(_BASE_MANIFEST))
+    # The capture pipeline writes a brand-new manifest with no sync block. A
+    # manifest-only change (e.g. a renamed chat) still counts as a change.
+    session_dir = _write_session(store, sid, {**_BASE_MANIFEST, "title": "renamed"})
 
     on_disk = json.loads((session_dir / "manifest.json").read_text())
     assert on_disk["sync"]["etag"] == "abc123"
@@ -244,4 +245,30 @@ def test_index_rebuild_does_not_notify(tmp_path: Path):
     store.add_write_listener(seen.append)
     store._rebuild_index_from_disk()
     assert seen == []
+    store.close()
+
+
+def test_restore_failure_keeps_stash_for_the_retry(tmp_path: Path, monkeypatch):
+    import sessionfs.store.local as local_mod
+
+    store = LocalStore(tmp_path)
+    store.initialize()
+    sid = "ses_aaaa1111bbbb2222"
+    _capture(store, sid, "hello", {**_BASE_MANIFEST, "sync": {"etag": "e1", "dirty": False}})
+
+    real = local_mod._write_json_atomic
+
+    def disk_full(path, data):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(local_mod, "_write_json_atomic", disk_full)
+    try:
+        _capture(store, sid, "hello again")
+    except OSError:
+        pass
+    monkeypatch.setattr(local_mod, "_write_json_atomic", real)
+
+    session_dir = _capture(store, sid, "hello again")
+    sync = json.loads((session_dir / "manifest.json").read_text())["sync"]
+    assert sync == {"etag": "e1", "dirty": True}
     store.close()

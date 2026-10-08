@@ -5548,7 +5548,11 @@ _reindex_thread: threading.Thread | None = None
 
 
 def stop_background_reindex(timeout: float = 5.0) -> None:
-    """Stop the periodic reindex thread, letting a pass in progress finish."""
+    """Stop the periodic reindex thread.
+
+    A pass in progress stops after the session it is indexing, so this
+    normally returns well within ``timeout``.
+    """
     global _reindex_stop, _reindex_thread
     if _reindex_stop is not None:
         _reindex_stop.set()
@@ -5578,7 +5582,7 @@ def _start_background_reindex(
             index.initialize()
             while True:
                 try:
-                    indexed = index.reindex_all(store_dir)
+                    indexed = index.reindex_all(store_dir, stop=stop_event)
                     if indexed:
                         logger.info("Search index: %d sessions indexed", indexed)
                 except Exception:

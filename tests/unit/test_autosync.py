@@ -919,3 +919,45 @@ class TestAutosyncTurnedOnLater:
             "ses_eeee5555ffff6666", "ses_eeee5555ffff7777",
         }
         store.close()
+
+
+class TestModeDowngradeDrainsQueue:
+    def _syncer(self, auto):
+        from sessionfs.daemon.config import DaemonConfig
+        from sessionfs.daemon.main import DaemonSyncer
+
+        return DaemonSyncer(
+            DaemonConfig(sync={"enabled": True, "api_key": "k", "auto": auto, "debounce": 0}),
+            MagicMock(),
+        )
+
+    def test_switching_off_cancels_queued_uploads(self):
+        syncer = self._syncer("all")
+        syncer.mark_session_dirty("ses_abc12345")
+        syncer._pending_sessions.add("ses_def67890")
+        syncer.config.sync.auto = "off"
+
+        with patch.object(syncer, "_maybe_check_remote_settings"), \
+                patch.object(syncer, "_sync_sessions") as push:
+            syncer.maybe_sync()
+
+        push.assert_not_called()
+        assert not syncer._debounce_timestamps
+        assert not syncer._pending_sessions
+
+    def test_switching_to_selective_keeps_only_watched(self):
+        syncer = self._syncer("all")
+        syncer.mark_session_dirty("ses_watched1")
+        syncer.mark_session_dirty("ses_unwatch1")
+        syncer.config.sync.auto = "selective"
+        syncer._watchlist = {"ses_watched1"}
+
+        with patch.object(syncer, "_maybe_check_remote_settings"), \
+                patch("asyncio.run") as run:
+            syncer.maybe_sync()
+
+        assert syncer._pending_sessions <= {"ses_watched1"}
+        assert "ses_unwatch1" not in syncer._debounce_timestamps
+        pushed = run.call_args[0][0] if run.called else None
+        if pushed is not None:
+            pushed.close()

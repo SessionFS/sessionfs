@@ -436,6 +436,42 @@ class TestPersistentFailures:
         assert search_index.search("kangaroo")
         assert search_index.search("middleware")
 
+    def test_session_without_usable_manifest_is_not_reread(
+        self, search_index: SessionSearchIndex, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        bad = tmp_path / "sessions" / "ses_badmanifest00000.sfs"
+        bad.mkdir(parents=True)
+        (bad / "manifest.json").write_text("{ not json")
+        reads = {"n": 0}
+        real = SessionSearchIndex.index_session
+
+        def counting(self, *args, **kwargs):
+            reads["n"] += 1
+            return real(self, *args, **kwargs)
+
+        monkeypatch.setattr(SessionSearchIndex, "index_session", counting)
+        search_index.reindex_all(tmp_path)
+        search_index.reindex_all(tmp_path)
+        assert reads["n"] == 1
+
+        (bad / "manifest.json").write_text(json.dumps({"title": "Wallaby fixed"}))
+        search_index.reindex_all(tmp_path)
+        assert search_index.search("wallaby")
+
+    def test_stopped_pass_ends_early_and_does_not_prune(
+        self, search_index: SessionSearchIndex, sample_session: Path, second_session: Path,
+        tmp_path: Path,
+    ):
+        import shutil
+        import threading
+
+        search_index.reindex_all(tmp_path)
+        shutil.rmtree(second_session)
+        stop = threading.Event()
+        stop.set()
+        assert search_index.reindex_all(tmp_path, stop=stop) == 0
+        assert search_index.is_indexed("ses_db1234migration")  # not pruned
+
     def test_legacy_row_still_gets_its_grace_pass(
         self, search_index: SessionSearchIndex, sample_session: Path, tmp_path: Path,
     ):

@@ -268,7 +268,9 @@ class LocalStore:
           index corruption. Recreate the index handle, reindex from
           disk, retry the write once.
         """
-        prior = self._pending_writes.pop(session_id, None)
+        # Consumed only once the whole upsert succeeds, so a failure part-way
+        # leaves the pre-rewrite state in place for the retry.
+        prior = self._pending_writes.get(session_id)
         changed = False
         if prior is not None:
             changed = prior.content is None or prior.content != _content_hash(Path(sfs_dir_path))
@@ -301,6 +303,7 @@ class LocalStore:
             # Retry the write
             self.index.upsert_session(session_id, manifest, sfs_dir_path)
 
+        self._pending_writes.pop(session_id, None)
         if changed and notify:
             for listener in self._write_listeners:
                 try:
@@ -338,25 +341,47 @@ class _PriorState(NamedTuple):
     content: str | None
 
 
-# The files whose bytes make up a session's content. The manifest is left
-# out: it is regenerated on every capture (timestamps, sync state).
-_CONTENT_FILES = ("messages.jsonl", "workspace.json", "tools.json")
-
-
 def _content_hash(session_dir: Path) -> str | None:
-    """Hash of a session's content files, or None if it has none yet."""
+    """Hash of what a sync would upload for a session, or None if it has none.
+
+    Covers every file ``pack_session`` packs. The manifest is hashed without
+    its ``sync`` block, which records upload state rather than content; two
+    captures of an unchanged session otherwise produce identical files.
+    Files are streamed, so large transcripts aren't loaded into memory.
+    """
+    if not session_dir.is_dir():
+        return None
     digest = hashlib.sha256()
     found = False
-    for name in _CONTENT_FILES:
-        try:
-            data = (session_dir / name).read_bytes()
-        except OSError:
-            digest.update(f"{name}:-;".encode())
+    for path in sorted(session_dir.rglob("*")):
+        # Skip our own in-flight atomic-write temp files.
+        if not path.is_file() or (path.name.startswith(".") and path.name.endswith(".tmp")):
             continue
+        rel = path.relative_to(session_dir).as_posix()
         found = True
-        digest.update(f"{name}:{len(data)};".encode())
-        digest.update(data)
+        digest.update(f"\0{rel}\0".encode())
+        try:
+            if rel == "manifest.json":
+                digest.update(_manifest_without_sync(path))
+                continue
+            with open(path, "rb") as f:
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    digest.update(chunk)
+        except OSError:
+            digest.update(b"<unreadable>")
     return digest.hexdigest() if found else None
+
+
+def _manifest_without_sync(path: Path) -> bytes:
+    raw = path.read_bytes()
+    try:
+        manifest = json.loads(raw)
+    except (ValueError, RecursionError):
+        return raw
+    if not isinstance(manifest, dict):
+        return raw
+    manifest.pop("sync", None)
+    return json.dumps(manifest, sort_keys=True).encode()
 
 
 def _read_sync_block(manifest_path: Path) -> dict[str, Any] | None:

@@ -101,6 +101,22 @@ class DaemonSyncer:
         # mode == "all" or watchlisted in selective — debounce and queue
         self._debounce_timestamps[session_id] = time.monotonic()
 
+    def _is_allowed_by_mode(self, session_id: str) -> bool:
+        mode = self.auto_mode
+        if mode == "all":
+            return True
+        if mode == "selective":
+            return session_id in self._watchlist
+        return False
+
+    def _drop_disallowed_queued_sessions(self) -> None:
+        for session_id in list(self._debounce_timestamps):
+            if not self._is_allowed_by_mode(session_id):
+                del self._debounce_timestamps[session_id]
+        self._pending_sessions = {
+            sid for sid in self._pending_sessions if self._is_allowed_by_mode(sid)
+        }
+
     def add_to_watchlist(self, session_id: str) -> None:
         """Add a session to the local autosync watchlist."""
         self._watchlist.add(session_id)
@@ -117,6 +133,11 @@ class DaemonSyncer:
 
         # Check for settings changes from API (every 60s)
         self._maybe_check_remote_settings()
+
+        # Drop queued work the current autosync mode no longer allows: the
+        # mode can change (from the dashboard or another device) after a
+        # session was queued, and turning autosync off must stop its uploads.
+        self._drop_disallowed_queued_sessions()
 
         # Promote debounced sessions to pending
         now = time.monotonic()
@@ -491,7 +512,7 @@ class DaemonSyncer:
                 continue
             try:
                 manifest = json.loads(manifest_path.read_text())
-            except (OSError, ValueError):
+            except (OSError, ValueError, RecursionError):
                 continue
             sync_state = manifest.get("sync", {}) if isinstance(manifest, dict) else {}
             if not isinstance(sync_state, dict):
