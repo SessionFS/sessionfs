@@ -834,3 +834,35 @@ class TestHandoffIdMisuseRedirect:
         assert not cmd_cloud._HANDOFF_ID_RE.match("ses_abc123def4567890")
         assert not cmd_cloud._HANDOFF_ID_RE.match("hnd_short")
         assert not cmd_cloud._HANDOFF_ID_RE.match("handoff_id")
+
+
+class TestDaemonQueuesCapturedSessions:
+    """Regression: autosync only queued sessions at daemon startup."""
+
+    def test_daemon_run_registers_capture_listener(self, tmp_path):
+        from sessionfs.daemon.config import DaemonConfig
+        from sessionfs.daemon.main import Daemon
+
+        config = DaemonConfig(
+            store_dir=tmp_path,
+            sync={"enabled": True, "api_key": "k", "auto": "all"},
+        )
+        daemon = Daemon(config)
+
+        class _Stop(Exception):
+            pass
+
+        with patch.object(daemon, "_setup_signals"), \
+                patch.object(daemon, "_check_permissions", side_effect=_Stop):
+            with pytest.raises(_Stop):
+                daemon.run()
+
+        session_dir = daemon.store.allocate_session_dir("ses_cccc3333dddd4444")
+        daemon.store.upsert_session_metadata(
+            "ses_cccc3333dddd4444",
+            {"session_id": "ses_cccc3333dddd4444", "title": "t",
+             "created_at": "2026-10-08T00:00:00Z", "source": {"tool": "claude-code"}},
+            str(session_dir),
+        )
+        assert "ses_cccc3333dddd4444" in daemon._syncer._debounce_timestamps
+        daemon.store.close()

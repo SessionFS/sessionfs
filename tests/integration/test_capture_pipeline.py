@@ -117,3 +117,54 @@ def test_missing_claude_dir(tmp_path: Path):
     assert status.sessions_tracked == 0
 
     store.close()
+
+
+def test_capture_queues_autosync_and_keeps_sync_state(
+    tmp_claude_home: Path, tmp_store: Path
+):
+    """A session captured while the daemon runs is queued for autosync, and a
+    re-capture keeps the etag from its last sync (regression: autosync only
+    synced sessions at daemon startup, and each capture erased sync state)."""
+    import os
+
+    from sessionfs.daemon.config import DaemonConfig
+    from sessionfs.daemon.main import DaemonSyncer
+
+    store = LocalStore(tmp_store)
+    store.initialize()
+    syncer = DaemonSyncer(
+        DaemonConfig(sync={"enabled": True, "api_key": "k", "auto": "all"}), store
+    )
+    store.add_write_listener(syncer.mark_session_dirty)
+
+    config = ClaudeCodeWatcherConfig(home_dir=tmp_claude_home)
+    watcher = ClaudeCodeWatcher(config=config, store=store, scan_interval=0.0)
+    watcher.full_scan()
+
+    captured = {row["session_id"] for row in store.list_sessions()}
+    assert captured
+    assert captured <= set(syncer._debounce_timestamps)
+
+    # Simulate a completed sync, then a change to the native session.
+    sid = sorted(captured)[0]
+    session_dir = store.get_session_dir(sid)
+    manifest_path = session_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["sync"] = {"etag": "etag-from-last-push", "dirty": False}
+    manifest_path.write_text(json.dumps(manifest))
+    syncer._debounce_timestamps.clear()
+
+    native = next(
+        Path(ref.native_path) for ref in watcher._tracked.values() if ref.sfs_session_id == sid
+    )
+    with open(native, "a") as f:
+        f.write("\n")
+    st = native.stat()
+    os.utime(native, (st.st_atime, st.st_mtime + 5))
+    watcher.full_scan()
+
+    sync = json.loads(manifest_path.read_text())["sync"]
+    assert sync["etag"] == "etag-from-last-push"
+    assert sync["dirty"] is True
+    assert sid in syncer._debounce_timestamps
+    store.close()

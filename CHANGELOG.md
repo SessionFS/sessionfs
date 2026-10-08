@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.15.5] - 2026-10-08
 
-**MCP fix.** The local MCP server (`sfs mcp serve`) now connects immediately, no matter how many sessions you have. No hosted server or MCP tool changes; server database migrations remain at 062. The local search index (`search.db`) gains a column and is upgraded in place automatically.
+**MCP and autosync fixes.** The local MCP server (`sfs mcp serve`) now connects immediately, no matter how many sessions you have, and autosync now syncs sessions as they are captured instead of only when the daemon starts. No hosted server or MCP tool changes; server database migrations remain at 062. The local search index (`search.db`) gains a column and is upgraded in place automatically.
 
 ### Fixed
 
@@ -16,9 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Deleted sessions no longer appear in MCP search results.** Search entries for sessions that were removed from disk are now cleaned up.
 - **One malformed session no longer breaks local search.** A session with an unexpected manifest, workspace or message shape (for example, one pulled from a teammate) is now skipped instead of stopping indexing for every session after it.
 
+- **Autosync now syncs sessions while the daemon is running.** With autosync on, sessions were only queued for upload when the daemon started, so sessions captured during a working day weren't synced until the next restart, and each restart then uploaded the whole backlog at once. Captured sessions are now queued as soon as they are captured (after the usual quiet period while a session is still being written).
+- **Re-captured sessions keep their sync state.** Every re-capture rewrote the session's manifest without its sync record, so the next upload went out without the etag that lets the server detect a conflicting copy from another device, and the session looked never-synced. The sync record is now carried across re-captures and the session is marked as changed.
+
 ### Upgrading
 
-The first start after upgrading re-indexes every session once, in the background; search results fill in as it completes.
+The first start after upgrading re-indexes every session once, in the background; search results fill in as it completes. With autosync on, the first daemon start after upgrading still uploads any sessions captured since your last restart.
 
 ## [0.15.4] - 2026-10-08
 

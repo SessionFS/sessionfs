@@ -788,6 +788,10 @@ class Daemon:
         """Main daemon loop."""
         self._setup_signals()
         self.store.initialize()
+        # Queue every session the watchers capture for autosync (subject to
+        # the autosync mode). Without this, sessions captured while the daemon
+        # runs were only picked up by the startup scan on the next restart.
+        self.store.add_write_listener(self._syncer.mark_session_dirty)
         self._check_permissions()
         self._init_watchers()
         self._write_pid()

@@ -21,6 +21,7 @@ import logging
 import os
 import sqlite3
 import stat
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +57,12 @@ class LocalStore:
         self._store_dir = store_dir
         self._sessions_dir = store_dir / "sessions"
         self._index: SessionIndex | None = None
+        # Sessions allocated for writing whose metadata hasn't been upserted
+        # yet, mapped to the sync block their manifest had before (or None).
+        # Capture rewrites manifest.json from scratch, which would otherwise
+        # erase the record that the session was synced and with which etag.
+        self._pending_writes: dict[str, dict[str, Any] | None] = {}
+        self._write_listeners: list[Callable[[str], None]] = []
 
     @property
     def store_dir(self) -> Path:
@@ -156,11 +163,25 @@ class LocalStore:
         return self._index
 
     def allocate_session_dir(self, session_id: str) -> Path:
-        """Get or create the .sfs directory for a session."""
+        """Get or create the .sfs directory for a session.
+
+        Callers then write the session's files and finish with
+        ``upsert_session_metadata``; the session's previous sync state is
+        carried across that rewrite (see ``upsert_session_metadata``).
+        """
         session_dir = self._sessions_dir / f"{session_id}.sfs"
+        self._pending_writes[session_id] = _read_sync_block(session_dir / "manifest.json")
         session_dir.mkdir(parents=True, exist_ok=True)
         _set_dir_permissions(session_dir)
         return session_dir
+
+    def add_write_listener(self, listener: Callable[[str], None]) -> None:
+        """Call ``listener(session_id)`` after each allocate-and-write of a session.
+
+        The daemon uses this to queue freshly captured sessions for autosync.
+        Index rebuilds and other metadata-only upserts don't notify.
+        """
+        self._write_listeners.append(listener)
 
     def get_session_dir(self, session_id: str) -> Path | None:
         """Get an existing session directory, or None."""
@@ -226,6 +247,16 @@ class LocalStore:
           index corruption. Recreate the index handle, reindex from
           disk, retry the write once.
         """
+        written = session_id in self._pending_writes
+        previous_sync = self._pending_writes.pop(session_id, None)
+        if previous_sync is not None and "sync" not in manifest:
+            # The session was rewritten (re-captured or re-imported) and the
+            # new manifest dropped its sync state. Keep the etag so the next
+            # push is conditional on what the server has, and mark the
+            # session dirty because its content may have changed.
+            manifest = {**manifest, "sync": {**previous_sync, "dirty": True}}
+            _write_json_atomic(Path(sfs_dir_path) / "manifest.json", manifest)
+
         try:
             self.index.upsert_session(session_id, manifest, sfs_dir_path)
         except sqlite3.IntegrityError:
@@ -243,6 +274,14 @@ class LocalStore:
                 self._index._needs_reindex = False
             # Retry the write
             self.index.upsert_session(session_id, manifest, sfs_dir_path)
+
+        if written:
+            for listener in self._write_listeners:
+                try:
+                    listener(session_id)
+                except Exception:
+                    logger.warning("Session write listener failed for %s", session_id,
+                                   exc_info=True)
 
     def get_session_metadata(self, session_id: str) -> dict[str, Any] | None:
         """Get a single session's index data by ID."""
@@ -266,3 +305,20 @@ class LocalStore:
         """Close the index database."""
         if self._index:
             self._index.close()
+
+
+def _read_sync_block(manifest_path: Path) -> dict[str, Any] | None:
+    """Return a manifest's ``sync`` block, or None if absent or unreadable."""
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except (OSError, ValueError, RecursionError):
+        return None
+    sync = manifest.get("sync") if isinstance(manifest, dict) else None
+    return dict(sync) if isinstance(sync, dict) else None
+
+
+def _write_json_atomic(path: Path, data: dict[str, Any]) -> None:
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    _set_file_permissions(tmp)
+    os.replace(tmp, path)
