@@ -543,18 +543,24 @@ class DaemonSyncer:
             return
         for session in self.store.list_sessions():
             session_id = session["session_id"]
-            # Already waiting to be pushed: queuing it again would upload the
-            # same content twice.
-            if session_id in self._pending_sessions:
-                continue
-            if self._needs_push(session_id):
+            if self._should_queue_backlog(session_id):
                 self.mark_session_dirty(session_id)
 
     def _enqueue_dirty_watched(self, session_ids: set[str]) -> None:
         """Queue newly watchlisted sessions that are already dirty locally."""
         for session_id in session_ids:
-            if self._needs_push(session_id):
+            if self._should_queue_backlog(session_id):
                 self._debounce_timestamps[session_id] = time.monotonic()
+
+    def _should_queue_backlog(self, session_id: str) -> bool:
+        """Whether a backlog scan should queue this session.
+
+        Shared by every backlog scan. A session already waiting to be pushed
+        is skipped: queuing it again would upload the same content twice.
+        """
+        if session_id in self._pending_sessions:
+            return False
+        return self._needs_push(session_id)
 
     def _needs_push(self, session_id: str) -> bool:
         """True if a local session has never been pushed or is marked dirty.
