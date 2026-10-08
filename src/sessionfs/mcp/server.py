@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -5528,10 +5529,30 @@ def init_server(store_dir: Path | None = None) -> None:
     _search = SessionSearchIndex(search_db)
     _search.initialize()
 
-    # Ensure all sessions are indexed
-    indexed = _search.reindex_all(store_dir)
-    if indexed:
-        logger.info("Search index: %d sessions indexed", indexed)
+    # Bring the index up to date in the background. Indexing a large store
+    # can take longer than MCP clients wait for the server to answer its
+    # first request, so the server must start serving before this finishes.
+    _start_background_reindex(store_dir, search_db)
+
+
+def _start_background_reindex(store_dir: Path, search_db: Path) -> threading.Thread:
+    """Run an incremental reindex on its own connection in a daemon thread."""
+
+    def _run() -> None:
+        index = SessionSearchIndex(search_db)
+        try:
+            index.initialize()
+            indexed = index.reindex_all(store_dir)
+            if indexed:
+                logger.info("Search index: %d sessions indexed", indexed)
+        except Exception:
+            logger.warning("Background search indexing failed", exc_info=True)
+        finally:
+            index.close()
+
+    thread = threading.Thread(target=_run, name="sfs-search-reindex", daemon=True)
+    thread.start()
+    return thread
 
 
 async def serve() -> None:

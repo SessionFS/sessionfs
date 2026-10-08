@@ -2,12 +2,14 @@
 
 Stores full-text content from messages, file paths, and error messages
 in a SQLite FTS5 virtual table for fast keyword search. The index lives
-at ~/.sessionfs/search.db and is updated incrementally when sessions
-are captured or synced.
+at ~/.sessionfs/search.db. ``reindex_all`` is incremental: each indexed
+session records a fingerprint of its files, and unchanged sessions are
+skipped on later passes.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -36,9 +38,57 @@ USING fts5(
 CREATE TABLE IF NOT EXISTS search_meta (
     session_id TEXT PRIMARY KEY,
     indexed_at TEXT NOT NULL,
-    message_count INTEGER DEFAULT 0
+    message_count INTEGER DEFAULT 0,
+    fingerprint TEXT
 );
 """
+
+def _manifest_signature(manifest_path: Path) -> str:
+    """Hash of only the manifest fields the index stores.
+
+    The manifest is rewritten for reasons that don't affect search (sync
+    bookkeeping such as etag and last_sync_at changes on every sync), so its
+    size and mtime would mark sessions dirty far more often than needed.
+    """
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return "-"
+    if not isinstance(manifest, dict):
+        return "-"
+
+    def sub(key: str, field: str) -> Any:
+        value = manifest.get(key)
+        return value.get(field) if isinstance(value, dict) else None
+
+    fields = [
+        manifest.get("title"),
+        manifest.get("created_at"),
+        sub("source", "tool"),
+        sub("model", "model_id"),
+        sub("stats", "message_count"),
+    ]
+    digest = hashlib.sha256(json.dumps(fields, default=str).encode()).hexdigest()
+    return digest[:16]
+
+
+def _session_fingerprint(sfs_dir: Path) -> str:
+    """Cheap change detector for a session.
+
+    The message and workspace files are only stat'ed (size and mtime), never
+    read, so checking every session costs a few syscalls each regardless of
+    session size. The small manifest is read so that sync-only rewrites of it
+    don't count as changes.
+    """
+    parts = [f"manifest.json:{_manifest_signature(sfs_dir / 'manifest.json')}"]
+    for name in ("messages.jsonl", "workspace.json"):
+        try:
+            st = (sfs_dir / name).stat()
+        except OSError:
+            parts.append(f"{name}:-")
+        else:
+            parts.append(f"{name}:{st.st_size}:{st.st_mtime_ns}")
+    return "|".join(parts)
 
 # Patterns for extracting file paths and errors from message text
 _FILE_PATH_RE = re.compile(r"(?:^|[\s\"'`(])(/[\w./-]{2,})(?:[\s\"'`):,]|$)", re.MULTILINE)
@@ -61,6 +111,13 @@ class SessionSearchIndex:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA_SQL)
+        # Indexes created before fingerprints existed lack the column; add it
+        # so those sessions get fingerprinted on the next pass.
+        columns = {
+            row["name"] for row in self._conn.execute("PRAGMA table_info(search_meta)")
+        }
+        if "fingerprint" not in columns:
+            self._conn.execute("ALTER TABLE search_meta ADD COLUMN fingerprint TEXT")
         self._conn.commit()
 
     @property
@@ -69,18 +126,28 @@ class SessionSearchIndex:
             raise RuntimeError("Search index not initialized")
         return self._conn
 
-    def index_session(self, session_id: str, sfs_dir: Path) -> None:
-        """Index a .sfs session directory for full-text search."""
+    def index_session(
+        self, session_id: str, sfs_dir: Path, fingerprint: str | None = None
+    ) -> bool:
+        """Index a .sfs session directory for full-text search.
+
+        Returns False when the session has no readable manifest; any earlier
+        entry for it is removed so search doesn't keep serving stale content.
+        """
+        # Fingerprint before reading: if the session changes mid-read, the
+        # stored fingerprint is stale and the next pass re-indexes it.
+        if fingerprint is None:
+            fingerprint = _session_fingerprint(sfs_dir)
         manifest_path = sfs_dir / "manifest.json"
         messages_path = sfs_dir / "messages.jsonl"
-
-        if not manifest_path.exists():
-            return
 
         try:
             manifest = json.loads(manifest_path.read_text())
         except (json.JSONDecodeError, OSError):
-            return
+            manifest = None
+        if not isinstance(manifest, dict):
+            self._remove(session_id)
+            return False
 
         source = manifest.get("source", {})
         model = manifest.get("model") or {}
@@ -154,9 +221,21 @@ class SessionSearchIndex:
         )
 
         self.conn.execute(
-            "INSERT INTO search_meta (session_id, indexed_at, message_count) VALUES (?, ?, ?)",
-            (session_id, datetime.now(timezone.utc).isoformat(), stats.get("message_count", 0)),
+            "INSERT INTO search_meta (session_id, indexed_at, message_count, fingerprint)"
+            " VALUES (?, ?, ?, ?)",
+            (
+                session_id,
+                datetime.now(timezone.utc).isoformat(),
+                stats.get("message_count", 0),
+                fingerprint,
+            ),
         )
+        self.conn.commit()
+        return True
+
+    def _remove(self, session_id: str) -> None:
+        self.conn.execute("DELETE FROM session_search WHERE session_id = ?", (session_id,))
+        self.conn.execute("DELETE FROM search_meta WHERE session_id = ?", (session_id,))
         self.conn.commit()
 
     def is_indexed(self, session_id: str) -> bool:
@@ -263,18 +342,37 @@ class SessionSearchIndex:
             for row in rows
         ]
 
-    def reindex_all(self, store_dir: Path) -> int:
-        """Reindex all sessions from the store. Returns count indexed."""
+    def reindex_all(self, store_dir: Path, *, force: bool = False) -> int:
+        """Bring the index up to date with the store. Returns count indexed.
+
+        Sessions whose files are unchanged since they were last indexed are
+        skipped unless ``force`` is set, and entries for sessions that no
+        longer exist on disk are removed.
+        """
         sessions_dir = store_dir / "sessions"
         if not sessions_dir.is_dir():
             return 0
 
+        known = {
+            row["session_id"]: row["fingerprint"]
+            for row in self.conn.execute("SELECT session_id, fingerprint FROM search_meta")
+        }
+
+        present: set[str] = set()
         count = 0
         for sfs_dir in sessions_dir.iterdir():
             if sfs_dir.is_dir() and sfs_dir.name.endswith(".sfs"):
                 session_id = sfs_dir.name[:-4]  # Strip .sfs
-                self.index_session(session_id, sfs_dir)
-                count += 1
+                present.add(session_id)
+                fingerprint = _session_fingerprint(sfs_dir)
+                if not force and known.get(session_id) == fingerprint:
+                    continue
+                if self.index_session(session_id, sfs_dir, fingerprint=fingerprint):
+                    count += 1
+
+        for session_id in known:
+            if session_id not in present:
+                self._remove(session_id)
 
         return count
 

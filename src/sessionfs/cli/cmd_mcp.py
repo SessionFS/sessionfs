@@ -586,7 +586,7 @@ def index() -> None:
     search = SessionSearchIndex(search_db)
     search.initialize()
 
-    count = search.reindex_all(store_dir)
+    count = search.reindex_all(store_dir, force=True)
     search.close()
 
     console.print(f"[green]Search index rebuilt: {count} sessions indexed.[/green]")

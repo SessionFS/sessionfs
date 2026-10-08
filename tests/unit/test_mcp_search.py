@@ -158,3 +158,181 @@ class TestFindByError:
         search_index.index_session("ses_db1234migration", second_session)
         results = search_index.find_by_error("segmentation fault")
         assert len(results) == 0
+
+
+def _append_message(sfs_dir: Path, text: str) -> None:
+    with open(sfs_dir / "messages.jsonl", "a") as f:
+        f.write(json.dumps({"role": "user", "content": [{"type": "text", "text": text}]}) + "\n")
+
+
+class TestIncrementalReindex:
+    def test_unchanged_sessions_are_skipped(
+        self, search_index: SessionSearchIndex, sample_session: Path, second_session: Path,
+        tmp_path: Path,
+    ):
+        assert search_index.reindex_all(tmp_path) == 2
+        assert search_index.reindex_all(tmp_path) == 0
+
+    def test_changed_session_is_reindexed(
+        self, search_index: SessionSearchIndex, sample_session: Path, second_session: Path,
+        tmp_path: Path,
+    ):
+        search_index.reindex_all(tmp_path)
+        _append_message(sample_session, "Rotated the zanzibar signing key")
+
+        assert search_index.reindex_all(tmp_path) == 1
+        results = search_index.search("zanzibar")
+        assert [r["session_id"] for r in results] == ["ses_test1234abcdef"]
+
+    def test_deleted_session_is_removed_from_index(
+        self, search_index: SessionSearchIndex, sample_session: Path, second_session: Path,
+        tmp_path: Path,
+    ):
+        import shutil
+
+        search_index.reindex_all(tmp_path)
+        shutil.rmtree(second_session)
+
+        search_index.reindex_all(tmp_path)
+        assert not search_index.is_indexed("ses_db1234migration")
+        assert search_index.search("migration") == []
+        assert search_index.is_indexed("ses_test1234abcdef")
+
+    def test_sync_bookkeeping_rewrite_does_not_trigger_reindex(
+        self, search_index: SessionSearchIndex, sample_session: Path, tmp_path: Path,
+    ):
+        search_index.reindex_all(tmp_path)
+        manifest_path = sample_session / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["sync"] = {"etag": "abc", "last_sync_at": "2026-10-08T05:30:00+00:00"}
+        manifest_path.write_text(json.dumps(manifest, indent=2))
+
+        assert search_index.reindex_all(tmp_path) == 0
+
+    def test_title_change_triggers_reindex(
+        self, search_index: SessionSearchIndex, sample_session: Path, tmp_path: Path,
+    ):
+        search_index.reindex_all(tmp_path)
+        manifest_path = sample_session / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["title"] = "Quokka rollout plan"
+        manifest_path.write_text(json.dumps(manifest))
+
+        assert search_index.reindex_all(tmp_path) == 1
+        assert [r["session_id"] for r in search_index.search("quokka")] == ["ses_test1234abcdef"]
+
+    def test_session_whose_manifest_disappears_leaves_search(
+        self, search_index: SessionSearchIndex, sample_session: Path, tmp_path: Path,
+    ):
+        search_index.reindex_all(tmp_path)
+        (sample_session / "manifest.json").unlink()
+
+        assert search_index.reindex_all(tmp_path) == 0
+        assert not search_index.is_indexed("ses_test1234abcdef")
+        assert search_index.search("middleware") == []
+
+    def test_force_reindexes_everything(
+        self, search_index: SessionSearchIndex, sample_session: Path, second_session: Path,
+        tmp_path: Path,
+    ):
+        search_index.reindex_all(tmp_path)
+        assert search_index.reindex_all(tmp_path, force=True) == 2
+
+    def test_session_without_manifest_is_not_counted_as_indexed(
+        self, search_index: SessionSearchIndex, tmp_path: Path,
+    ):
+        broken = tmp_path / "sessions" / "ses_nomanifest00000.sfs"
+        broken.mkdir(parents=True)
+        search_index.reindex_all(tmp_path)
+        assert not search_index.is_indexed("ses_nomanifest00000")
+
+    def test_index_built_before_fingerprints_is_upgraded(
+        self, sample_session: Path, tmp_path: Path,
+    ):
+        import sqlite3
+
+        db = tmp_path / "legacy.db"
+        conn = sqlite3.connect(str(db))
+        conn.executescript(
+            """
+            CREATE VIRTUAL TABLE session_search USING fts5(
+                session_id UNINDEXED, title, source_tool UNINDEXED,
+                model_id UNINDEXED, project_path, messages_text, file_paths,
+                error_messages, created_at UNINDEXED, message_count UNINDEXED
+            );
+            CREATE TABLE search_meta (
+                session_id TEXT PRIMARY KEY,
+                indexed_at TEXT NOT NULL,
+                message_count INTEGER DEFAULT 0
+            );
+            INSERT INTO search_meta (session_id, indexed_at, message_count)
+                VALUES ('ses_test1234abcdef', '2026-01-01T00:00:00+00:00', 4);
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        idx = SessionSearchIndex(db)
+        idx.initialize()
+        # Legacy rows have no fingerprint, so they are re-indexed once...
+        assert idx.reindex_all(tmp_path) == 1
+        # ...and skipped from then on.
+        assert idx.reindex_all(tmp_path) == 0
+        assert idx.search("middleware")
+        idx.close()
+
+
+class TestServerStartup:
+    def test_init_server_does_not_wait_for_indexing(
+        self, sample_session: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        """The server must be able to answer before the index is built."""
+        import threading
+
+        from sessionfs.mcp import server
+
+        started = threading.Event()
+        release = threading.Event()
+        real_reindex = SessionSearchIndex.reindex_all
+
+        def slow_reindex(self, store_dir, **kwargs):
+            started.set()
+            assert release.wait(10)
+            return real_reindex(self, store_dir, **kwargs)
+
+        monkeypatch.setattr(SessionSearchIndex, "reindex_all", slow_reindex)
+        monkeypatch.setattr(server, "_store", None)
+        monkeypatch.setattr(server, "_search", None)
+
+        threads: list[threading.Thread] = []
+        real_start = server._start_background_reindex
+        monkeypatch.setattr(
+            server,
+            "_start_background_reindex",
+            lambda *a: threads.append(real_start(*a)) or threads[-1],
+        )
+
+        server.init_server(tmp_path)  # returns while indexing is still blocked
+        assert started.wait(5)
+        assert threads[0].is_alive()
+        assert server._get_search().search("middleware") == []
+
+        release.set()
+        threads[0].join(10)
+        assert not threads[0].is_alive()
+        assert server._get_search().search("middleware")
+
+    def test_background_indexing_failure_is_logged_not_raised(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+    ):
+        from sessionfs.mcp import server
+
+        def boom(self, store_dir, **kwargs):
+            raise RuntimeError("disk on fire")
+
+        monkeypatch.setattr(SessionSearchIndex, "reindex_all", boom)
+        (tmp_path / "sessions").mkdir()
+        with caplog.at_level("WARNING", logger="sessionfs.mcp"):
+            thread = server._start_background_reindex(tmp_path, tmp_path / "search.db")
+            thread.join(10)
+        assert "Background search indexing failed" in caplog.text
