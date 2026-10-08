@@ -401,6 +401,53 @@ class TestIncrementalReindex:
         idx.close()
 
 
+class TestPersistentFailures:
+    def test_failing_session_is_retried_only_after_it_changes(
+        self, search_index: SessionSearchIndex, sample_session: Path, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        calls = {"n": 0}
+        real = SessionSearchIndex.index_session
+
+        def failing(self, session_id, sfs_dir, **kwargs):
+            calls["n"] += 1
+            raise RuntimeError("always fails")
+
+        monkeypatch.setattr(SessionSearchIndex, "index_session", failing)
+        search_index.reindex_all(tmp_path)
+        search_index.reindex_all(tmp_path)
+        assert calls["n"] == 1  # not re-read while unchanged
+
+        monkeypatch.setattr(SessionSearchIndex, "index_session", real)
+        _append_message(sample_session, "now fixed")
+        assert search_index.reindex_all(tmp_path) == 1
+        assert search_index.search("middleware")
+
+    def test_message_shapes_that_used_to_escape_are_indexed(
+        self, search_index: SessionSearchIndex, sample_session: Path, tmp_path: Path,
+    ):
+        with open(sample_session / "messages.jsonl", "ab") as f:
+            f.write(b'{"role": "user", "content": null}\n')
+            f.write(b'{"role": "user", "content": [{"type": "text", "text": {"x": 1}}]}\n')
+            f.write(b'{"role": "user", "content": [{"type": "tool_use", "name": 5,'
+                    b' "input": {"command": ["ls"]}}]}\n')
+            f.write(b'{"role": "user", "content": "caf\xe9 kangaroo"}\n')  # invalid UTF-8
+        assert search_index.reindex_all(tmp_path) == 1
+        assert search_index.search("kangaroo")
+        assert search_index.search("middleware")
+
+    def test_legacy_row_still_gets_its_grace_pass(
+        self, search_index: SessionSearchIndex, sample_session: Path, tmp_path: Path,
+    ):
+        search_index.reindex_all(tmp_path)
+        search_index.conn.execute("UPDATE search_meta SET fingerprint = NULL")
+        search_index.conn.commit()
+        (sample_session / "manifest.json").write_text("not json")
+
+        search_index.reindex_all(tmp_path)
+        assert search_index.is_indexed("ses_test1234abcdef")
+
+
 class TestConcurrentUpgrade:
     def test_column_added_by_another_process_is_tolerated(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -459,7 +506,7 @@ class TestServerStartup:
         real_start = server._start_background_reindex
 
         def start(*args, **kwargs):
-            threads.append(real_start(*args, **kwargs, stop=stop))
+            threads.append(real_start(*args, **{**kwargs, "stop": stop}))
             return threads[-1]
 
         monkeypatch.setattr(server, "_start_background_reindex", start)
@@ -519,6 +566,21 @@ class TestServerStartup:
         thread.join(5)
         assert not thread.is_alive()
         reader.close()
+
+    def test_stop_background_reindex_ends_the_thread(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        from sessionfs.mcp import server
+
+        monkeypatch.setattr(server, "_store", None)
+        monkeypatch.setattr(server, "_search", None)
+        server.init_server(tmp_path)
+        thread = server._reindex_thread
+        assert thread is not None and thread.is_alive()
+
+        server.stop_background_reindex()
+        assert not thread.is_alive()
+        assert server._reindex_thread is None
 
     def test_background_indexing_failure_is_logged_not_raised(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,

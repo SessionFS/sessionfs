@@ -16,14 +16,17 @@ Directory layout:
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import json
 import logging
 import os
 import sqlite3
 import stat
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from sessionfs.store.index import SessionIndex
 from sessionfs.watchers.base import NativeSessionRef
@@ -58,10 +61,11 @@ class LocalStore:
         self._sessions_dir = store_dir / "sessions"
         self._index: SessionIndex | None = None
         # Sessions allocated for writing whose metadata hasn't been upserted
-        # yet, mapped to the sync block their manifest had before (or None).
+        # yet, mapped to what they looked like before: their manifest's sync
+        # block (or None) and a hash of their content files (or None if new).
         # Capture rewrites manifest.json from scratch, which would otherwise
         # erase the record that the session was synced and with which etag.
-        self._pending_writes: dict[str, dict[str, Any] | None] = {}
+        self._pending_writes: dict[str, _PriorState] = {}
         self._write_listeners: list[Callable[[str], None]] = []
 
     @property
@@ -120,7 +124,10 @@ class LocalStore:
                 session_id = manifest.get(
                     "session_id", sfs_dir.name.replace(".sfs", "")
                 )
-                self.upsert_session_metadata(session_id, manifest, str(sfs_dir))
+                # A rebuild re-reads what is on disk; it is not a new write.
+                self.upsert_session_metadata(
+                    session_id, manifest, str(sfs_dir), notify=False
+                )
                 count += 1
             except Exception as exc:  # noqa: BLE001 — isolate per-session failure
                 skipped += 1
@@ -170,16 +177,25 @@ class LocalStore:
         carried across that rewrite (see ``upsert_session_metadata``).
         """
         session_dir = self._sessions_dir / f"{session_id}.sfs"
-        self._pending_writes[session_id] = _read_sync_block(session_dir / "manifest.json")
+        # If an earlier write of this session failed part-way (it never reached
+        # upsert), what is on disk now is a partial rewrite; keep the state
+        # recorded before that first attempt instead.
+        if session_id not in self._pending_writes:
+            self._pending_writes[session_id] = _PriorState(
+                sync=_read_sync_block(session_dir / "manifest.json"),
+                content=_content_hash(session_dir),
+            )
         session_dir.mkdir(parents=True, exist_ok=True)
         _set_dir_permissions(session_dir)
         return session_dir
 
     def add_write_listener(self, listener: Callable[[str], None]) -> None:
-        """Call ``listener(session_id)`` after each allocate-and-write of a session.
+        """Call ``listener(session_id)`` when a write changes a session's content.
 
         The daemon uses this to queue freshly captured sessions for autosync.
-        Index rebuilds and other metadata-only upserts don't notify.
+        Rewrites that leave the content unchanged (some tools re-capture every
+        session whenever a shared database changes), index rebuilds and other
+        metadata-only upserts don't notify.
         """
         self._write_listeners.append(listener)
 
@@ -225,7 +241,12 @@ class LocalStore:
             self.index.upsert_tracked_session(ref)
 
     def upsert_session_metadata(
-        self, session_id: str, manifest: dict[str, Any], sfs_dir_path: str
+        self,
+        session_id: str,
+        manifest: dict[str, Any],
+        sfs_dir_path: str,
+        *,
+        notify: bool = True,
     ) -> None:
         """Insert or update session metadata in the index.
 
@@ -247,15 +268,20 @@ class LocalStore:
           index corruption. Recreate the index handle, reindex from
           disk, retry the write once.
         """
-        written = session_id in self._pending_writes
-        previous_sync = self._pending_writes.pop(session_id, None)
-        if previous_sync is not None and "sync" not in manifest:
-            # The session was rewritten (re-captured or re-imported) and the
-            # new manifest dropped its sync state. Keep the etag so the next
-            # push is conditional on what the server has, and mark the
-            # session dirty because its content may have changed.
-            manifest = {**manifest, "sync": {**previous_sync, "dirty": True}}
-            _write_json_atomic(Path(sfs_dir_path) / "manifest.json", manifest)
+        prior = self._pending_writes.pop(session_id, None)
+        changed = False
+        if prior is not None:
+            changed = prior.content is None or prior.content != _content_hash(Path(sfs_dir_path))
+            if prior.sync is not None and "sync" not in manifest:
+                # The session was rewritten (re-captured or re-imported) and
+                # the new manifest dropped its sync state. Keep the etag so the
+                # next push is conditional on what the server has; mark it
+                # dirty only if the content actually changed.
+                sync = dict(prior.sync)
+                if changed:
+                    sync["dirty"] = True
+                manifest = {**manifest, "sync": sync}
+                _write_json_atomic(Path(sfs_dir_path) / "manifest.json", manifest)
 
         try:
             self.index.upsert_session(session_id, manifest, sfs_dir_path)
@@ -275,7 +301,7 @@ class LocalStore:
             # Retry the write
             self.index.upsert_session(session_id, manifest, sfs_dir_path)
 
-        if written:
+        if changed and notify:
             for listener in self._write_listeners:
                 try:
                     listener(session_id)
@@ -307,6 +333,32 @@ class LocalStore:
             self._index.close()
 
 
+class _PriorState(NamedTuple):
+    sync: dict[str, Any] | None
+    content: str | None
+
+
+# The files whose bytes make up a session's content. The manifest is left
+# out: it is regenerated on every capture (timestamps, sync state).
+_CONTENT_FILES = ("messages.jsonl", "workspace.json", "tools.json")
+
+
+def _content_hash(session_dir: Path) -> str | None:
+    """Hash of a session's content files, or None if it has none yet."""
+    digest = hashlib.sha256()
+    found = False
+    for name in _CONTENT_FILES:
+        try:
+            data = (session_dir / name).read_bytes()
+        except OSError:
+            digest.update(f"{name}:-;".encode())
+            continue
+        found = True
+        digest.update(f"{name}:{len(data)};".encode())
+        digest.update(data)
+    return digest.hexdigest() if found else None
+
+
 def _read_sync_block(manifest_path: Path) -> dict[str, Any] | None:
     """Return a manifest's ``sync`` block, or None if absent or unreadable."""
     try:
@@ -318,7 +370,15 @@ def _read_sync_block(manifest_path: Path) -> dict[str, Any] | None:
 
 
 def _write_json_atomic(path: Path, data: dict[str, Any]) -> None:
-    tmp = path.with_name(f".{path.name}.tmp")
-    tmp.write_text(json.dumps(data, indent=2))
-    _set_file_permissions(tmp)
-    os.replace(tmp, path)
+    """Replace ``path`` atomically with an owner-only (0600) JSON file."""
+    # mkstemp creates a uniquely named file with O_EXCL and mode 0600, so two
+    # writers can't share a temp file and a planted symlink isn't followed.
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(json.dumps(data, indent=2))
+        os.replace(tmp_name, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
+        raise

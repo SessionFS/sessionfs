@@ -372,6 +372,11 @@ class DaemonSyncer:
                 if new_mode != self.config.sync.auto:
                     logger.info("Autosync mode changed: %s -> %s", self.config.sync.auto, new_mode)
                     self.config.sync.auto = new_mode
+                    # Captures made while autosync was off (including when the
+                    # startup settings fetch failed) were not queued; pick up
+                    # everything that still needs a push.
+                    if new_mode != "off":
+                        self.enqueue_dirty_sessions()
                 self.config.sync.debounce = data.get("debounce_seconds", 30)
 
             # v0.15 P1 — upload per-watcher capture health so the
@@ -471,6 +476,29 @@ class DaemonSyncer:
         )
         manifest["sync"]["dirty"] = False
         manifest_path.write_text(json.dumps(manifest, indent=2))
+
+    def enqueue_dirty_sessions(self) -> None:
+        """Queue every local session that has never been pushed or is dirty."""
+        if not self.is_enabled:
+            return
+        for session in self.store.list_sessions():
+            session_id = session["session_id"]
+            session_dir = self.store.get_session_dir(session_id)
+            if not session_dir:
+                continue
+            manifest_path = session_dir / "manifest.json"
+            if not manifest_path.exists():
+                continue
+            try:
+                manifest = json.loads(manifest_path.read_text())
+            except (OSError, ValueError):
+                continue
+            sync_state = manifest.get("sync", {}) if isinstance(manifest, dict) else {}
+            if not isinstance(sync_state, dict):
+                sync_state = {}
+            # If no etag stored or marked dirty, it needs sync
+            if not sync_state.get("etag") or sync_state.get("dirty", True):
+                self.mark_session_dirty(session_id)
 
     def _enqueue_dirty_watched(self, session_ids: set[str]) -> None:
         """Queue newly watchlisted sessions that are already dirty locally."""
@@ -768,21 +796,7 @@ class Daemon:
 
     def _collect_dirty_sessions(self) -> None:
         """Mark all sessions with local changes as needing sync."""
-        if not self._syncer.is_enabled:
-            return
-        for session in self.store.list_sessions():
-            session_id = session["session_id"]
-            session_dir = self.store.get_session_dir(session_id)
-            if not session_dir:
-                continue
-            manifest_path = session_dir / "manifest.json"
-            if not manifest_path.exists():
-                continue
-            manifest = json.loads(manifest_path.read_text())
-            sync_state = manifest.get("sync", {})
-            # If no etag stored or marked dirty, it needs sync
-            if not sync_state.get("etag") or sync_state.get("dirty", True):
-                self._syncer.mark_session_dirty(session_id)
+        self._syncer.enqueue_dirty_sessions()
 
     def run(self) -> None:
         """Main daemon loop."""

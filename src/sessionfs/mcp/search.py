@@ -43,6 +43,12 @@ CREATE TABLE IF NOT EXISTS search_meta (
 );
 """
 
+# Stored as a session's fingerprint when its manifest could not be read: the
+# entry is kept for one more pass, then removed if the manifest is still bad.
+# Distinct from NULL, which also marks legacy rows and I/O-error retries.
+_MANIFEST_RETRY = "manifest-unreadable"
+
+
 def _manifest_signature(manifest_path: Path) -> str:
     """Hash of only the manifest fields the index stores.
 
@@ -106,6 +112,10 @@ class SessionSearchIndex:
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
         self._conn: sqlite3.Connection | None = None
+        # Sessions that raised while being indexed, with the fingerprint they
+        # had then. They are retried only once their files change, so a
+        # permanently malformed session isn't re-read on every pass.
+        self._failed: dict[str, str] = {}
 
     def initialize(self) -> None:
         self._conn = sqlite3.connect(str(self._db_path))
@@ -175,7 +185,11 @@ class SessionSearchIndex:
                 logger.warning(
                     "Manifest for %r is missing or unreadable; will retry", session_id
                 )
-                self._mark_for_retry(session_id)
+                self.conn.execute(
+                    "UPDATE search_meta SET fingerprint = ? WHERE session_id = ?",
+                    (_MANIFEST_RETRY, session_id),
+                )
+                self.conn.commit()
             return False
 
         # Store a fingerprint only for a complete read. After a transient read
@@ -205,7 +219,7 @@ class SessionSearchIndex:
 
         if messages_path.exists():
             try:
-                with open(messages_path) as f:
+                with open(messages_path, encoding="utf-8", errors="replace") as f:
                     for line in f:
                         line = line.strip()
                         if not line:
@@ -424,14 +438,16 @@ class SessionSearchIndex:
             if sfs_dir.is_dir() and sfs_dir.name.endswith(".sfs"):
                 session_id = sfs_dir.name[:-4]  # Strip .sfs
                 present.add(session_id)
+                fingerprint: str | None = None
                 # One malformed session must not stop the rest of the pass.
                 try:
                     fingerprint = _session_fingerprint(sfs_dir)
                     if not force and known.get(session_id) == fingerprint:
                         continue
-                    # A NULL fingerprint means the last pass already marked the
-                    # session for retry.
-                    retrying = session_id in known and known[session_id] is None
+                    if not force and self._failed.get(session_id) == fingerprint:
+                        continue
+                    # The last pass already found this manifest unreadable.
+                    retrying = known.get(session_id) == _MANIFEST_RETRY
                     if self.index_session(
                         session_id,
                         sfs_dir,
@@ -439,10 +455,13 @@ class SessionSearchIndex:
                         drop_if_unreadable=force or retrying,
                     ):
                         count += 1
+                    self._failed.pop(session_id, None)
                 except Exception:
                     self.conn.rollback()
                     logger.warning("Skipping session %r: could not index it", session_id,
                                    exc_info=True)
+                    if fingerprint is not None:
+                        self._failed[session_id] = fingerprint
 
         # A pull from the cloud replaces a session directory by removing and
         # recreating it, so re-check before treating a missing one as deleted.
@@ -478,6 +497,8 @@ def _extract_message_text(msg: dict[str, Any]) -> str:
     content = msg.get("content", [])
     if isinstance(content, str):
         return content
+    if not isinstance(content, list):
+        return ""
 
     parts = []
     for block in content:
@@ -486,13 +507,15 @@ def _extract_message_text(msg: dict[str, Any]) -> str:
         elif isinstance(block, dict):
             btype = block.get("type", "")
             if btype == "text":
-                parts.append(block.get("text", ""))
+                text = block.get("text", "")
+                if isinstance(text, str):
+                    parts.append(text)
             elif btype == "tool_use":
-                name = block.get("name", "")
+                name = _as_text(block.get("name"))
                 inp = block.get("input", {})
                 if isinstance(inp, dict):
                     cmd = inp.get("command", "")
-                    if cmd:
+                    if isinstance(cmd, str) and cmd:
                         parts.append(f"[{name}] {cmd}")
                     else:
                         parts.append(f"[{name}]")

@@ -171,3 +171,77 @@ def test_failing_write_listener_does_not_break_the_write(tmp_path: Path):
     _write_session(store, "ses_aaaa1111bbbb2222", dict(_BASE_MANIFEST))
     assert store.get_session_metadata("ses_aaaa1111bbbb2222") is not None
     store.close()
+
+
+def _write_content(session_dir: Path, text: str) -> None:
+    (session_dir / "messages.jsonl").write_text(json.dumps({"role": "user", "content": text}) + "\n")
+
+
+def _capture(store: LocalStore, sid: str, text: str, manifest: dict | None = None) -> Path:
+    session_dir = store.allocate_session_dir(sid)
+    _write_content(session_dir, text)
+    m = manifest if manifest is not None else dict(_BASE_MANIFEST)
+    (session_dir / "manifest.json").write_text(json.dumps(m))
+    store.upsert_session_metadata(sid, m, str(session_dir))
+    return session_dir
+
+
+def test_unchanged_rewrite_stays_clean_and_quiet(tmp_path: Path):
+    """Cursor re-captures every composer when its shared DB changes."""
+    store = LocalStore(tmp_path)
+    store.initialize()
+    sid = "ses_aaaa1111bbbb2222"
+    _capture(store, sid, "hello", {**_BASE_MANIFEST, "sync": {"etag": "e1", "dirty": False}})
+    seen: list[str] = []
+    store.add_write_listener(seen.append)
+
+    session_dir = _capture(store, sid, "hello")  # same content, fresh manifest
+
+    assert json.loads((session_dir / "manifest.json").read_text())["sync"] == {
+        "etag": "e1", "dirty": False,
+    }
+    assert seen == []
+    store.close()
+
+
+def test_changed_rewrite_notifies(tmp_path: Path):
+    store = LocalStore(tmp_path)
+    store.initialize()
+    sid = "ses_aaaa1111bbbb2222"
+    _capture(store, sid, "hello", {**_BASE_MANIFEST, "sync": {"etag": "e1", "dirty": False}})
+    seen: list[str] = []
+    store.add_write_listener(seen.append)
+
+    session_dir = _capture(store, sid, "hello again")
+
+    sync = json.loads((session_dir / "manifest.json").read_text())["sync"]
+    assert sync == {"etag": "e1", "dirty": True}
+    assert seen == [sid]
+    store.close()
+
+
+def test_retry_after_failed_capture_keeps_original_etag(tmp_path: Path):
+    store = LocalStore(tmp_path)
+    store.initialize()
+    sid = "ses_aaaa1111bbbb2222"
+    _capture(store, sid, "hello", {**_BASE_MANIFEST, "sync": {"etag": "e1", "dirty": False}})
+
+    # First attempt writes a fresh manifest, then fails before upsert.
+    session_dir = store.allocate_session_dir(sid)
+    (session_dir / "manifest.json").write_text(json.dumps(_BASE_MANIFEST))
+
+    # The retry succeeds.
+    session_dir = _capture(store, sid, "hello again")
+    assert json.loads((session_dir / "manifest.json").read_text())["sync"]["etag"] == "e1"
+    store.close()
+
+
+def test_index_rebuild_does_not_notify(tmp_path: Path):
+    store = LocalStore(tmp_path)
+    store.initialize()
+    _capture(store, "ses_aaaa1111bbbb2222", "hello")
+    seen: list[str] = []
+    store.add_write_listener(seen.append)
+    store._rebuild_index_from_disk()
+    assert seen == []
+    store.close()

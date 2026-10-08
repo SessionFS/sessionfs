@@ -5534,10 +5534,28 @@ def init_server(store_dir: Path | None = None) -> None:
     # first request, so the server must start serving before this finishes.
     # Later passes pick up sessions captured while the server runs and
     # correct anything a pass raced with; unchanged sessions cost a stat each.
-    _start_background_reindex(store_dir, search_db, interval=_REINDEX_INTERVAL_SECONDS)
+    global _reindex_stop, _reindex_thread
+    stop_background_reindex()
+    _reindex_stop = threading.Event()
+    _reindex_thread = _start_background_reindex(
+        store_dir, search_db, interval=_REINDEX_INTERVAL_SECONDS, stop=_reindex_stop
+    )
 
 
 _REINDEX_INTERVAL_SECONDS = 60.0
+_reindex_stop: threading.Event | None = None
+_reindex_thread: threading.Thread | None = None
+
+
+def stop_background_reindex(timeout: float = 5.0) -> None:
+    """Stop the periodic reindex thread, letting a pass in progress finish."""
+    global _reindex_stop, _reindex_thread
+    if _reindex_stop is not None:
+        _reindex_stop.set()
+    if _reindex_thread is not None:
+        _reindex_thread.join(timeout)
+    _reindex_stop = None
+    _reindex_thread = None
 
 
 def _start_background_reindex(
@@ -5583,5 +5601,8 @@ async def serve() -> None:
 
     init_server()
 
-    async with stdio_server() as (read_stream, write_stream):
-        await app.run(read_stream, write_stream, app.create_initialization_options())
+    try:
+        async with stdio_server() as (read_stream, write_stream):
+            await app.run(read_stream, write_stream, app.create_initialization_options())
+    finally:
+        stop_background_reindex()

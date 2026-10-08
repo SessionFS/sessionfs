@@ -157,10 +157,34 @@ def test_capture_queues_autosync_and_keeps_sync_state(
     native = next(
         Path(ref.native_path) for ref in watcher._tracked.values() if ref.sfs_session_id == sid
     )
+
+    def touch_later(path: Path) -> None:
+        st = path.stat()
+        os.utime(path, (st.st_atime, st.st_mtime + 5))
+
+    # A rewrite that changes nothing (some tools re-capture every session
+    # when a shared database changes) keeps the session clean and unqueued.
     with open(native, "a") as f:
         f.write("\n")
-    st = native.stat()
-    os.utime(native, (st.st_atime, st.st_mtime + 5))
+    touch_later(native)
+    watcher.full_scan()
+    sync = json.loads(manifest_path.read_text())["sync"]
+    assert sync == {"etag": "etag-from-last-push", "dirty": False}
+    assert sid not in syncer._debounce_timestamps
+
+    # A real content change keeps the etag, marks it dirty and queues it.
+    lines = native.read_text().splitlines()
+    for i, line in enumerate(lines):
+        record = json.loads(line) if line.strip() else None
+        message = record.get("message") if isinstance(record, dict) else None
+        if isinstance(message, dict) and isinstance(message.get("content"), str):
+            message["content"] += " (edited)"
+            lines[i] = json.dumps(record)
+            break
+    else:
+        raise AssertionError("fixture has no plain-text message to edit")
+    native.write_text("\n".join(lines) + "\n")
+    touch_later(native)
     watcher.full_scan()
 
     sync = json.loads(manifest_path.read_text())["sync"]

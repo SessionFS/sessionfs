@@ -866,3 +866,56 @@ class TestDaemonQueuesCapturedSessions:
         )
         assert "ses_cccc3333dddd4444" in daemon._syncer._debounce_timestamps
         daemon.store.close()
+
+
+class TestAutosyncTurnedOnLater:
+    def test_mode_change_enqueues_sessions_that_still_need_a_push(self, tmp_path):
+        """If the startup settings fetch failed, captures were dropped while
+        the mode was 'off'; turning autosync on must pick them up."""
+        import asyncio
+        import json
+
+        from sessionfs.daemon.config import DaemonConfig
+        from sessionfs.daemon.main import DaemonSyncer
+        from sessionfs.store.local import LocalStore
+
+        store = LocalStore(tmp_path)
+        store.initialize()
+        for sid, sync in (
+            ("ses_eeee5555ffff6666", None),
+            ("ses_eeee5555ffff7777", {"etag": "x", "dirty": True}),
+            ("ses_eeee5555ffff8888", {"etag": "x", "dirty": False}),
+        ):
+            d = store.allocate_session_dir(sid)
+            m = {"session_id": sid, "title": "t", "created_at": "2026-10-08T00:00:00Z",
+                 "source": {"tool": "claude-code"}}
+            if sync:
+                m["sync"] = sync
+            (d / "manifest.json").write_text(json.dumps(m))
+            store.upsert_session_metadata(sid, m, str(d))
+
+        syncer = DaemonSyncer(
+            DaemonConfig(sync={"enabled": True, "api_key": "k", "auto": "off"}), store
+        )
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"mode": "all", "debounce_seconds": 30}
+        other = MagicMock(status_code=404)
+        http = MagicMock()
+
+        async def get(url, **kwargs):
+            return response if url.endswith("/sync/settings") else other
+
+        async def put(*args, **kwargs):
+            return other
+
+        http.get = get
+        http.put = put
+        http.__aenter__ = MagicMock(return_value=asyncio.sleep(0, result=http))
+        http.__aexit__ = MagicMock(return_value=asyncio.sleep(0))
+        with patch("httpx.AsyncClient", return_value=http):
+            asyncio.run(syncer._fetch_remote_settings())
+
+        assert set(syncer._debounce_timestamps) == {
+            "ses_eeee5555ffff6666", "ses_eeee5555ffff7777",
+        }
+        store.close()
