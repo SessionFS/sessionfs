@@ -9,9 +9,11 @@ on:
       - '.github/workflows/deploy-mcp.yml'
   workflow_dispatch:
 
+# No job gets an OIDC token by default. Only the jobs that talk to GCP
+# (push, deploy) request id-token, so third-party actions in the scan job
+# can never mint a deploy credential.
 permissions:
   contents: read
-  id-token: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -35,39 +37,63 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: pytest tests/unit/test_mcp_*.py -v --tb=short
 
-  build-push:
-    name: Build & Push
+  # Build and scan with no cloud credentials and no OIDC permission. The
+  # scanned image is handed to the push job as an artifact, so what gets
+  # pushed is exactly what was scanned.
+  scan:
+    name: Build & Scan
     needs: test
     runs-on: ubuntu-latest
-    outputs:
-      image_tag: ${{ steps.meta.outputs.tag }}
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set image tag
-        id: meta
-        run: echo "tag=${{ github.sha }}" >> "$GITHUB_OUTPUT"
-
-      # Build and scan before authenticating to GCP: neither needs
-      # credentials, and keeping the scanner ahead of auth means it never
-      # runs with deploy credentials on the runner.
       - name: Build image
-        run: |
-          docker build -f Dockerfile.mcp \
-            -t "${{ env.IMAGE }}:${{ github.sha }}" \
-            -t "${{ env.IMAGE }}:latest" \
-            .
+        run: docker build -f Dockerfile.mcp -t sessionfs-mcp:scan .
 
-      # Blocks the push on any CRITICAL/HIGH finding that has a fix
-      # available. Unfixed base-image OS findings don't block.
+      # Blocks the deploy on any CRITICAL/HIGH finding that has a fix
+      # available. Unfixed base-image OS findings don't block. Pinned to a
+      # commit (v0.36.0, released after the March 2026 tag hijack).
       - name: Vulnerability gate (fixable CRITICAL/HIGH)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: ${{ env.IMAGE }}:${{ github.sha }}
+          image-ref: sessionfs-mcp:scan
           format: table
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: '1'
+
+      - name: Export scanned image
+        run: docker save sessionfs-mcp:scan | gzip > image.tar.gz
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mcp-image
+          path: image.tar.gz
+          retention-days: 1
+
+  build-push:
+    name: Push
+    needs: scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: mcp-image
+
+      - name: Load scanned image
+        run: |
+          gunzip -c image.tar.gz | docker load
+          docker tag sessionfs-mcp:scan "${{ env.IMAGE }}:${{ github.sha }}"
+          docker tag sessionfs-mcp:scan "${{ env.IMAGE }}:latest"
+
+      - name: Set image tag
+        id: meta
+        run: echo "tag=${{ github.sha }}" >> "$GITHUB_OUTPUT"
 
       - uses: google-github-actions/auth@v3
         with:
@@ -89,6 +115,9 @@ jobs:
     needs: build-push
     runs-on: ubuntu-latest
     environment: production
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: google-github-actions/auth@v3
         with:

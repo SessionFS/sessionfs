@@ -66,7 +66,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
 
       - name: Scan API image for vulnerabilities
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.IMAGE_PREFIX }}/sessionfs-api:${{ steps.version.outputs.version }}
           format: table
@@ -115,7 +115,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
 
       - name: Scan MCP image for vulnerabilities
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.IMAGE_PREFIX }}/sessionfs-mcp:${{ steps.version.outputs.version }}
           format: table
@@ -167,7 +167,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
 
       - name: Scan Dashboard image for vulnerabilities
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.IMAGE_PREFIX }}/sessionfs-dashboard:${{ steps.version.outputs.version }}
           format: table

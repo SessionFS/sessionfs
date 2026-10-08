@@ -110,7 +110,7 @@ jobs:
       # because the action's `severity:` input doesn't properly filter exit-code
       # for the `config` scan type — it exits 1 on any finding regardless of
       # severity. Running trivy directly honors --severity correctly.
-      - uses: aquasecurity/setup-trivy@v0.2.6
+      - uses: aquasecurity/setup-trivy@3fb12ec12f41e471780db15c232d5dd185dcb514 # v0.2.6
         with:
           version: v0.69.3
 

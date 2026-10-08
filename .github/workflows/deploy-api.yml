@@ -9,12 +9,14 @@ on:
       - 'Dockerfile'
       - 'alembic.ini'
       - 'pyproject.toml'
+      - '.github/workflows/deploy-api.yml'
   workflow_dispatch:
 
+# No job gets an OIDC token by default. Only the jobs that talk to GCP
+# (push, migrate, deploy) request id-token, so third-party actions in the
+# scan job can never mint a deploy credential.
 permissions:
   contents: read
-  id-token: write
-  security-events: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -41,41 +43,25 @@ jobs:
       - name: Run tests
         run: pytest tests/ -v --tb=short
 
-  # ---- Build, Scan, Push ----
+  # ---- Build & Scan (no cloud credentials, no OIDC) ----
+  # The scanned image is handed to the push job as an artifact, so what gets
+  # pushed is exactly what was scanned.
   build:
     name: Build & Scan
     needs: test
     runs-on: ubuntu-latest
-    outputs:
-      image_tag: ${{ steps.meta.outputs.tag }}
-      image_digest: ${{ steps.push.outputs.digest }}
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@v6
-
-      - uses: google-github-actions/auth@v3
-        with:
-          workload_identity_provider: ${{ env.WIF_PROVIDER }}
-          service_account: ${{ env.SERVICE_ACCOUNT }}
-
-      - uses: google-github-actions/setup-gcloud@v3
-
-      - name: Configure Docker
-        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
-
-      - name: Set image tag
-        id: meta
-        run: |
-          TAG="${{ github.sha }}"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "image=${{ env.IMAGE }}:${TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Build image
         run: |
           docker build \
             --label "org.opencontainers.image.revision=${{ github.sha }}" \
             --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
-            -t "${{ steps.meta.outputs.image }}" \
-            -t "${{ env.IMAGE }}:latest" \
+            -t sessionfs-api:scan \
             .
 
       # Vulnerability scan with Trivy: a full report for code scanning, then a
@@ -83,10 +69,11 @@ jobs:
       # unavailable code-scanning endpoint once blocked every API deploy); the
       # gate blocks on any CRITICAL/HIGH finding that has a fix available.
       # Unfixed OS-package CVEs in the base image stay visible in the report.
+      # Pinned to a commit (v0.36.0, released after the March 2026 tag hijack).
       - name: Trivy vulnerability report
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: ${{ steps.meta.outputs.image }}
+          image-ref: sessionfs-api:scan
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
@@ -101,13 +88,61 @@ jobs:
           sarif_file: trivy-results.sarif
 
       - name: Vulnerability gate (fixable CRITICAL/HIGH)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: ${{ steps.meta.outputs.image }}
+          image-ref: sessionfs-api:scan
           format: table
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: '1'
+
+      - name: Export scanned image
+        run: docker save sessionfs-api:scan | gzip > image.tar.gz
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: api-image
+          path: image.tar.gz
+          retention-days: 1
+
+  # ---- Push ----
+  push:
+    name: Push
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tag }}
+      image_digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: api-image
+
+      - name: Set image tag
+        id: meta
+        run: |
+          TAG="${{ github.sha }}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "image=${{ env.IMAGE }}:${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Load scanned image
+        run: |
+          gunzip -c image.tar.gz | docker load
+          docker tag sessionfs-api:scan "${{ steps.meta.outputs.image }}"
+          docker tag sessionfs-api:scan "${{ env.IMAGE }}:latest"
+
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: Configure Docker
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
 
       - name: Push image
         id: push
@@ -120,9 +155,12 @@ jobs:
   # ---- Migrate ----
   migrate:
     name: Run Migrations
-    needs: build
+    needs: push
     runs-on: ubuntu-latest
     environment: production
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v6
 
@@ -143,9 +181,12 @@ jobs:
   # ---- Deploy ----
   deploy:
     name: Deploy
-    needs: [build, migrate]
+    needs: [push, migrate]
     runs-on: ubuntu-latest
     environment: production
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: google-github-actions/auth@v3
         with:
@@ -157,7 +198,7 @@ jobs:
       - name: Deploy to Cloud Run
         run: |
           gcloud run services update ${{ env.SERVICE }} \
-            --image "${{ env.IMAGE }}:${{ needs.build.outputs.image_tag }}" \
+            --image "${{ env.IMAGE }}:${{ needs.push.outputs.image_tag }}" \
             --region ${{ env.REGION }} \
             --min-instances 1
 

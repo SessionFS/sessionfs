@@ -7,11 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.15.4] - 2026-10-08
 
-**Container security.** Extends the v0.15.3 hardening to the hosted remote MCP server image. No application, schema or MCP tool changes; migrations remain at 062.
+**Container and deploy-pipeline security.** Extends the v0.15.3 hardening to the hosted remote MCP server image, and isolates the vulnerability scanner from deploy credentials in both server pipelines. No application, schema or MCP tool changes; migrations remain at 062.
 
 ### Changed
 
-- **Remote MCP server deploys are now gated on fixable vulnerabilities.** The MCP server deploy previously ran no image scan at all. It now fails on any critical or high finding with a fix available, before the image is pushed. The image is built and scanned before the deploy authenticates to the cloud, so the scanner never runs with deploy credentials present.
+- **Remote MCP server deploys are now gated on fixable vulnerabilities.** The MCP server deploy previously ran no image scan at all. It now fails on any critical or high finding with a fix available, before the image is pushed.
+- **The scanner can no longer obtain deploy credentials.** In both the API and MCP deploys, the image is now built and scanned in a job that has no cloud credentials and no permission to request them. The scanned image is handed to a separate push job, so what is deployed is exactly what was scanned. Previously the scanner ran in the same job as the cloud login, and the whole workflow could request a deploy token.
+- **Third-party scanning actions are pinned to verified commits.** Every use of the Trivy GitHub Actions was tracking a moving reference. They are now pinned to specific commits released after the March 2026 Trivy supply-chain incident. SessionFS pipelines did not run during that incident's exposure window.
 
 ### Security
 
