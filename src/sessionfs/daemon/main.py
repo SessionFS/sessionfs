@@ -62,7 +62,10 @@ class DaemonSyncer:
         # can change through remote settings or a config reload, so changes
         # are detected here (_observe_mode) rather than at each source.
         self._watchlist_fresh = True
-        self._observed_mode = config.sync.auto
+        self._observed_state: tuple[bool, str] = (
+            bool(config.sync.enabled and config.sync.api_key),
+            config.sync.auto,
+        )
         self._last_settings_check = 0.0
         # Per-session push failure counter. Resets to 0 on successful push.
         self.sync_failures: dict[str, int] = {}
@@ -94,11 +97,23 @@ class DaemonSyncer:
         return self._sync_client
 
     def _observe_mode(self) -> str:
-        """Return the current mode, invalidating the watchlist if it changed."""
+        """Return the current mode, handling a change since it was last seen.
+
+        This is the single place mode transitions are handled, whatever made
+        them (remote settings, a config reload): the cached watchlist is
+        invalidated, and entering ``all`` queues every session that still needs
+        a push, since captures made under another mode weren't queued.
+        Selective mode catches up once its watchlist has been refreshed.
+        """
         mode = self.auto_mode
-        if mode != self._observed_mode:
-            self._observed_mode = mode
+        # Enabling or disabling sync counts as a change too: while disabled
+        # the watchlist isn't refreshed, so it can't be trusted afterwards.
+        state = (bool(self.is_enabled), mode)
+        if state != self._observed_state:
+            self._observed_state = state
             self._watchlist_fresh = False
+            if self.is_enabled and mode == "all":
+                self.enqueue_dirty_sessions()
         return mode
 
     def mark_session_dirty(self, session_id: str) -> None:
@@ -144,11 +159,15 @@ class DaemonSyncer:
 
     def maybe_sync(self) -> None:
         """Run sync if enough time has elapsed since last push. Non-blocking."""
+        # Observe the mode every tick (even while disabled or with nothing
+        # queued) so a change, and a change back, is never missed.
+        self._observe_mode()
         if not self.is_enabled:
             return
 
         # Check for settings changes from API (every 60s)
         self._maybe_check_remote_settings()
+        self._observe_mode()
 
         # Drop queued work the current autosync mode no longer allows: the
         # mode can change (from the dashboard or another device) after a
@@ -410,12 +429,6 @@ class DaemonSyncer:
                     logger.info("Autosync mode changed: %s -> %s", self.config.sync.auto, new_mode)
                     self.config.sync.auto = new_mode
                     self._observe_mode()
-                    # Captures made while autosync was off (including when the
-                    # startup settings fetch failed) were not queued; pick up
-                    # everything that still needs a push. Selective mode does
-                    # this once its watchlist has been refreshed, below.
-                    if new_mode == "all":
-                        self.enqueue_dirty_sessions()
                 self.config.sync.debounce = data.get("debounce_seconds", 30)
 
             # v0.15 P1 — upload per-watcher capture health so the
@@ -662,6 +675,7 @@ class Daemon:
             new_config = load_config(profile_config_path(self._pinned_profile))
             self.config.sync = new_config.sync
             self._syncer.config = self.config
+            self._syncer._observe_mode()
             logger.info("Config reloaded (sync.enabled=%s)", self.config.sync.enabled)
         except Exception:
             logger.exception("Failed to reload config")

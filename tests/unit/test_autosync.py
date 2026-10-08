@@ -1096,3 +1096,73 @@ class TestModeChangeFromAnySource:
         syncer._enqueue_dirty_watched({bad, good})
         assert set(syncer._debounce_timestamps) == {good}
         store.close()
+
+
+class TestModeObservedEveryTick:
+    """Mode transitions are handled on every tick, even when idle."""
+
+    def _syncer(self, tmp_path, auto):
+        import json
+
+        from sessionfs.daemon.config import DaemonConfig
+        from sessionfs.daemon.main import DaemonSyncer
+        from sessionfs.store.local import LocalStore
+
+        store = LocalStore(tmp_path)
+        store.initialize()
+        sid = "ses_aaaa0000backlog0"
+        d = store.allocate_session_dir(sid)
+        m = {"session_id": sid, "title": "t", "created_at": "2026-10-08T00:00:00Z",
+             "source": {"tool": "claude-code"}, "sync": {"etag": "x", "dirty": True}}
+        (d / "manifest.json").write_text(json.dumps(m))
+        store.upsert_session_metadata(sid, m, str(d))
+        syncer = DaemonSyncer(
+            DaemonConfig(sync={"enabled": True, "api_key": "k", "auto": auto, "debounce": 0}),
+            store,
+        )
+        return syncer, store, sid
+
+    def _tick(self, syncer):
+        with patch.object(syncer, "_maybe_check_remote_settings"), \
+                patch.object(syncer, "_sync_sessions") as push:
+            syncer.maybe_sync()
+        return push
+
+    def _reload(self, syncer, **sync):
+        from sessionfs.daemon.config import SyncConfig
+
+        syncer.config.sync = SyncConfig(api_key="k", debounce=0, **sync)
+
+    def test_idle_round_trip_through_all_invalidates_watchlist(self, tmp_path):
+        syncer, store, sid = self._syncer(tmp_path, "selective")
+        syncer._watchlist = {sid}
+        self._reload(syncer, enabled=True, auto="all")
+        self._tick(syncer)  # idle tick while in 'all'
+        syncer._debounce_timestamps.clear()
+        syncer._pending_sessions.clear()
+        self._reload(syncer, enabled=True, auto="selective")
+        self._tick(syncer)
+
+        syncer.mark_session_dirty(sid)  # a capture under the stale watchlist
+        push = self._tick(syncer)
+        push.assert_not_called()
+        assert sid not in syncer._debounce_timestamps
+        store.close()
+
+    def test_reload_to_all_queues_the_backlog(self, tmp_path):
+        syncer, store, sid = self._syncer(tmp_path, "off")
+        self._reload(syncer, enabled=True, auto="all")
+        self._tick(syncer)
+        assert sid in syncer._debounce_timestamps or sid in syncer._pending_sessions
+        store.close()
+
+    def test_disabled_period_invalidates_watchlist(self, tmp_path):
+        syncer, store, sid = self._syncer(tmp_path, "selective")
+        syncer._watchlist = {sid}
+        self._reload(syncer, enabled=False, auto="selective")
+        self._tick(syncer)
+        self._reload(syncer, enabled=True, auto="selective")
+        self._tick(syncer)
+        syncer.mark_session_dirty(sid)
+        assert sid not in syncer._debounce_timestamps
+        store.close()
