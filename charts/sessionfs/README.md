@@ -18,6 +18,7 @@ helm repo add sessionfs https://charts.sessionfs.dev
 helm repo update
 
 helm install sessionfs sessionfs/sessionfs \
+  --set mcp.enabled=false \
   -f values.minimal.yaml \
   --namespace sessionfs \
   --create-namespace
@@ -56,6 +57,7 @@ kubectl create secret generic sessionfs-secrets \
 
 ```bash
 helm install sessionfs sessionfs/sessionfs \
+  --set mcp.enabled=false \
   -f values.production.yaml \
   --namespace sessionfs \
   --set postgresql.enabled=false \
@@ -68,7 +70,6 @@ helm install sessionfs sessionfs/sessionfs \
   --set ingress.className=nginx \
   --set ingress.hosts[0].host=sessionfs.yourdomain.com \
   --set ingress.hosts[0].paths.api=/api \
-  --set ingress.hosts[0].paths.mcp=/mcp \
   --set ingress.hosts[0].paths.dashboard=/
 ```
 
@@ -100,6 +101,7 @@ kubectl create secret generic gcs-credentials \
 
 ```bash
 helm install sessionfs sessionfs/sessionfs \
+  --set mcp.enabled=false \
   -f values.production.yaml \
   --namespace sessionfs \
   --set postgresql.enabled=false \
@@ -112,7 +114,6 @@ helm install sessionfs sessionfs/sessionfs \
   --set ingress.className=gce \
   --set ingress.hosts[0].host=sessionfs.yourdomain.com \
   --set ingress.hosts[0].paths.api=/api \
-  --set ingress.hosts[0].paths.mcp=/mcp \
   --set ingress.hosts[0].paths.dashboard=/
 ```
 

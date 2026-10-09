@@ -99,6 +99,7 @@ Single replica, built-in PostgreSQL, no ingress:
 
 ```bash
 helm install sessionfs sessionfs/sessionfs \
+  --set mcp.enabled=false \
   -f values.minimal.yaml \
   --namespace sessionfs
 ```
@@ -115,6 +116,7 @@ Two API replicas, built-in PostgreSQL, ingress enabled:
 
 ```bash
 helm install sessionfs sessionfs/sessionfs \
+  --set mcp.enabled=false \
   --namespace sessionfs \
   --set ingress.hosts[0].host=sessionfs.yourdomain.com
 ```
@@ -419,6 +421,7 @@ SessionFS supports three email providers: Resend (SaaS), SMTP (enterprise), or n
 
 ```bash
 helm install sessionfs sessionfs/sessionfs \
+  --set mcp.enabled=false \
   --set email.provider=resend \
   --set email.resend.apiKey=$RESEND_KEY
 ```
@@ -427,6 +430,7 @@ helm install sessionfs sessionfs/sessionfs \
 
 ```bash
 helm install sessionfs sessionfs/sessionfs \
+  --set mcp.enabled=false \
   --set email.provider=smtp \
   --set email.smtp.host=smtp.company.internal \
   --set email.smtp.port=587 \
@@ -447,6 +451,7 @@ For implicit SSL (port 465):
 
 ```bash
 helm install sessionfs sessionfs/sessionfs \
+  --set mcp.enabled=false \
   --set email.provider=none \
   --set api.env.SFS_REQUIRE_EMAIL_VERIFICATION=false
 ```
@@ -462,6 +467,7 @@ kubectl create secret generic smtp-creds \
   --from-literal=password=$SMTP_PASS
 
 helm install sessionfs sessionfs/sessionfs \
+  --set mcp.enabled=false \
   --set email.provider=smtp \
   --set email.smtp.host=smtp.company.internal \
   --set email.smtp.existingSecret=smtp-creds
