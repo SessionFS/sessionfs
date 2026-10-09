@@ -136,8 +136,8 @@ helm install sessionfs sessionfs/sessionfs \
   --set ingress.className=nginx \
   --set ingress.hosts[0].host=sessionfs.yourdomain.com \
   --set ingress.hosts[0].paths.api=/api \
-  --set ingress.hosts[0].paths.mcp=/mcp \
-  --set ingress.hosts[0].paths.dashboard=/
+  --set ingress.hosts[0].paths.dashboard=/ \
+  --set mcp.enabled=false
 ```
 
 ## Secrets Management
@@ -315,7 +315,6 @@ ingress:
     - host: sessionfs.yourdomain.com
       paths:
         api: /api
-        mcp: /mcp
         dashboard: /
   tls:
     - secretName: sessionfs-tls
