@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.6] - 2026-10-09
+
+**Site and docs.** Upgrades the documentation site to Astro 7 and Starlight 0.42, which clears every npm advisory in the site build and fixes tables in the docs. No CLI, server, schema or MCP tool changes; migrations remain at 062.
+
+### Fixed
+
+- **Tables in the documentation render again.** The docs site was showing markdown tables (CLI flags, environment variables, API fields and others) as raw pipe-separated text. They now render as tables across all docs pages.
+- **The docs no longer point to an unavailable hosted MCP endpoint.** The remote-MCP pages told users to connect web clients to `https://mcp.sessionfs.dev`, which is not currently offered. They now say so, point to the local MCP server, and explain how self-hosted deployments enable the remote server through the Helm chart.
+
+### Security
+
+- **Site build dependencies have no known vulnerabilities.** Upgrading Astro (6 → 7) and Starlight (0.38 → 0.42) and refreshing transitive packages clears the 19 advisories reported against the site build (1 critical, 7 high, 11 moderate), including in development dependencies. The site is static, so these affected the build toolchain rather than visitors.
+
 ## [0.15.5] - 2026-10-08
 
 **MCP and autosync fixes.** The local MCP server (`sfs mcp serve`) now connects immediately, no matter how many sessions you have, and autosync now syncs sessions as they are captured instead of only when the daemon starts. No hosted server or MCP tool changes; server database migrations remain at 062. The local search index (`search.db`) gains a column and is upgraded in place automatically.
