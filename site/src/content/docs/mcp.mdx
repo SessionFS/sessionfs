@@ -4,7 +4,7 @@ title: "MCP Server"
 
 The SessionFS MCP server gives AI coding agents access to your session history and project knowledge base during conversations. Agents can search past sessions, read project context, and contribute knowledge back — building a shared memory that persists across tools and teammates.
 
-Transports: **stdio** for local use (agent launches `sfs mcp serve` as a subprocess) and **HTTP/SSE** for remote use on self-hosted deployments (see [Remote MCP](#remote-mcp-httpsse) — a hosted endpoint is not currently offered).
+Transports: **stdio** for local use (agent launches `sfs mcp serve` as a subprocess) Remote use over HTTP/SSE is not currently supported (see [Remote MCP](#remote-mcp-httpsse)).
 
 ## Installation
 
@@ -584,7 +584,7 @@ This creates a **knowledge loop**: each session reads project context at the sta
 
 ## Remote MCP (HTTP/SSE)
 
-For agents that cannot launch local processes (e.g., claude.ai), SessionFS can serve MCP over HTTP/SSE with OAuth authentication, using the same API key from `sfs auth login`. **A hosted endpoint is not currently offered** — use the local server above. Self-hosted deployments can run the remote server themselves by enabling `mcp.enabled` in the Helm chart (see [Self-Hosted](/self-hosted/)).
+Remote MCP over HTTP/SSE, for agents that cannot launch local processes (e.g., claude.ai), is **not currently supported** — neither as a hosted endpoint nor self-hosted. Use the local server above.
 
 ## Configuration
 

@@ -103,13 +103,8 @@ The MCP server exposes 36 tools across five categories (sessions, knowledge read
 
 ## Remote MCP (web-based clients)
 
-SessionFS can also serve MCP over HTTP for clients that can't launch a local process, such as claude.ai. **A hosted endpoint is not currently offered.** Use the local server above, which works with Claude Code, Codex, Cursor, Copilot, Gemini CLI and the other supported tools.
-
-Self-hosted deployments can run the remote server themselves: enable it in the Helm chart with `mcp.enabled=true` and route `/mcp` through your ingress (see [Self-Hosted Deployment](self-hosted.md)).
-
-Web-based MCP connectors have had open client-side issues that affect all remote MCP servers, for example tools not being listed after connecting ([anthropics/claude-ai-mcp#83](https://github.com/anthropics/claude-ai-mcp/issues/83)) or the Bearer token not being sent after OAuth completes ([anthropics/claude-ai-mcp#62](https://github.com/anthropics/claude-ai-mcp/issues/62)).
+Remote MCP over HTTP, for clients that can't launch a local process (such as claude.ai), is **not currently supported** — neither as a hosted endpoint nor self-hosted. Use the local server above, which works with Claude Code, Codex, Cursor, Copilot, Gemini CLI and the other supported tools.
 
 ## Privacy
 
 - Sessions are only accessible with your API key
-- A remote MCP server (self-hosted) is a stateless proxy — it queries the SessionFS API on your behalf and caches no session data

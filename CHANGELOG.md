@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Tables in the documentation render again.** The docs site was showing markdown tables (CLI flags, environment variables, API fields and others) as raw pipe-separated text. They now render as tables across all docs pages.
-- **The docs no longer point to an unavailable hosted MCP endpoint.** The remote-MCP pages told users to connect web clients to `https://mcp.sessionfs.dev`, which is not currently offered. They now say so, point to the local MCP server, and explain how self-hosted deployments enable the remote server through the Helm chart.
+- **The docs no longer point to an unavailable hosted MCP endpoint.** The remote-MCP pages told users to connect web clients to `https://mcp.sessionfs.dev`, which is not currently offered. They now say remote MCP is not currently supported (hosted or self-hosted) and point to the local MCP server, which works with every supported tool. The self-hosting docs mark the chart's MCP component as experimental.
 
 ### Security
 

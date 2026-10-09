@@ -7,7 +7,7 @@ Deploy SessionFS on your own Kubernetes cluster.
 SessionFS can be deployed to any Kubernetes cluster using the official Helm chart. The deployment includes:
 
 - **API Server** -- FastAPI application handling session CRUD, sync, and authentication
-- **MCP Server** -- Model Context Protocol bridge (optional)
+- **MCP Server** -- Model Context Protocol bridge (optional, experimental: remote MCP for web clients is not yet supported, so you can leave it disabled with `mcp.enabled=false`; desktop tools use the local `sfs mcp serve`)
 - **Web Dashboard** -- React management interface (optional)
 - **PostgreSQL** -- Built-in or external database
 - **Blob Storage** -- Local PVC, Amazon S3, or Google Cloud Storage
@@ -557,7 +557,7 @@ The following GitHub Actions pipelines handle deployment:
 | Workflow | Trigger | Target |
 |----------|---------|--------|
 | Deploy API | Push to main (server code changes) | Cloud Run |
-| Deploy MCP Server | Push to main (MCP code changes) | Cloud Run |
+| Deploy MCP Server | Manual (`workflow_dispatch`) while the hosted MCP is parked | Cloud Run |
 | Deploy Dashboard | Push to main (`dashboard/` changes) | Vercel |
 | Deploy Site | Push to main (`site/` changes) | Vercel |
 | Publish Container Images | After Release workflow | GHCR |

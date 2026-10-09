@@ -99,7 +99,7 @@ sfs project get-context > local-copy.md
 
 When connected to the SessionFS MCP server, AI agents can call `get_project_context` to read the shared document. This works with any MCP-aware tool (Claude Code, Cursor, etc.).
 
-The tool auto-detects the git remote from the current working directory when using the local MCP server. For the remote MCP server, pass the git remote as an argument.
+The tool auto-detects the git remote from the current working directory; you can also pass it explicitly as an argument.
 
 ## What to Include
 
