@@ -584,7 +584,7 @@ This creates a **knowledge loop**: each session reads project context at the sta
 
 ## Remote MCP (HTTP/SSE)
 
-For cloud-hosted agents (e.g., claude.ai) that cannot launch local processes, SessionFS supports HTTP/SSE transport with OAuth authentication. The remote server is deployed alongside the SessionFS API — agents connect via the SSE endpoint and authenticate using the same API key from `sfs auth login`. No separate service required.
+For agents that cannot launch local processes (e.g., claude.ai), SessionFS can serve MCP over HTTP/SSE with OAuth authentication, using the same API key from `sfs auth login`. **A hosted endpoint is not currently offered** — use the local server above. Self-hosted deployments can run the remote server themselves by enabling `mcp.enabled` in the Helm chart (see [Self-Hosted](/self-hosted/)).
 
 ## Configuration
 

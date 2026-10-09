@@ -1,13 +1,17 @@
 name: Deploy MCP Server
 
+# The hosted MCP server is parked: no custom domain and no public invoker
+# (sessionfs-infra terraform/mcp.tf). Deploys are manual-only until it is
+# un-parked; restore the push trigger below at the same time, since the
+# Verify step's anonymous /health check needs the public invoker back.
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'src/sessionfs/mcp/**'
-      - 'Dockerfile.mcp'
-      - '.github/workflows/deploy-mcp.yml'
   workflow_dispatch:
+  # push:
+  #   branches: [main]
+  #   paths:
+  #     - 'src/sessionfs/mcp/**'
+  #     - 'Dockerfile.mcp'
+  #     - '.github/workflows/deploy-mcp.yml'
 
 # No job gets an OIDC token by default. Only the jobs that talk to GCP
 # (push, deploy) request id-token, so third-party actions in the scan job

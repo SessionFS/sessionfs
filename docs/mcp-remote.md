@@ -101,29 +101,15 @@ The MCP server exposes 36 tools across five categories (sessions, knowledge read
 | `escalate_ticket` | Bump priority one level (low → medium → high → critical); optional rationale posted as a comment |
 | `add_ticket_comment` | Slack-like comment with optional persona attribution |
 
-## Remote MCP (Claude.ai Web)
+## Remote MCP (web-based clients)
 
-A remote MCP server runs at `https://mcp.sessionfs.dev` for web-based clients.
+SessionFS can also serve MCP over HTTP for clients that can't launch a local process, such as claude.ai. **A hosted endpoint is not currently offered.** Use the local server above, which works with Claude Code, Codex, Cursor, Copilot, Gemini CLI and the other supported tools.
 
-### Setup
+Self-hosted deployments can run the remote server themselves: enable it in the Helm chart with `mcp.enabled=true` and route `/mcp` through your ingress (see [Self-Hosted Deployment](self-hosted.md)).
 
-1. Push sessions to the cloud: `sfs sync`
-2. Go to [claude.ai](https://claude.ai) → Settings → Connectors
-3. Add MCP server: `https://mcp.sessionfs.dev`
-4. Enter your API key when prompted (`sfs config show`)
-
-### Known Limitations
-
-Claude.ai's MCP connector has open bugs that affect all remote MCP servers, not just SessionFS:
-
-- **Tools may not appear** — Claude.ai web sometimes skips `tools/list` after connecting ([anthropics/claude-ai-mcp#83](https://github.com/anthropics/claude-ai-mcp/issues/83))
-- **Auth popup may not close** — The authorize window can stay open after approval ([anthropics/claude-code#30218](https://github.com/anthropics/claude-code/issues/30218))
-- **Token may not be sent** — OAuth completes but Claude.ai never sends the Bearer token ([anthropics/claude-ai-mcp#62](https://github.com/anthropics/claude-ai-mcp/issues/62))
-
-These are Anthropic-side bugs being tracked. The local MCP server (Claude Code, Cursor, Copilot) works reliably. We recommend using the local server until the Claude.ai connector stabilizes.
+Web-based MCP connectors have had open client-side issues that affect all remote MCP servers, for example tools not being listed after connecting ([anthropics/claude-ai-mcp#83](https://github.com/anthropics/claude-ai-mcp/issues/83)) or the Bearer token not being sent after OAuth completes ([anthropics/claude-ai-mcp#62](https://github.com/anthropics/claude-ai-mcp/issues/62)).
 
 ## Privacy
 
 - Sessions are only accessible with your API key
-- The remote MCP server is a stateless proxy — queries the SessionFS API on your behalf
-- No session data is cached on the MCP server
+- A remote MCP server (self-hosted) is a stateless proxy — it queries the SessionFS API on your behalf and caches no session data
