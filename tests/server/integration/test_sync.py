@@ -372,14 +372,13 @@ async def test_sync_push_oversized_member_returns_413_for_paid_tier(
 
 
 @pytest.mark.asyncio
-async def test_sync_push_starter_tier_caps_at_10mb(
+async def test_sync_push_starter_tier_gets_paid_member_cap(
     client: AsyncClient, db_session
 ):
-    """A starter-tier user must be rejected at 11 MB — the paid 50 MB cap
-    only applies to pro/team/enterprise. Free tier can't sync at all
-    (cloud_sync is starter+), so starter is the smallest tier that
-    actually exercises the small per-member bucket. Tier resolution runs
-    through get_effective_tier so org membership inheritance is honoured.
+    """Starter is a paid plan (tk_59efad03840b4790): an 11 MB member that the
+    10 MB free bucket would reject must sync under the paid 50 MB cap. Tier
+    resolution runs through get_effective_tier so org membership inheritance
+    is honoured.
     """
     import uuid as _uuid
     from datetime import datetime as _dt, timezone as _tz
@@ -416,16 +415,7 @@ async def test_sync_push_starter_tier_caps_at_10mb(
         headers=starter_headers,
         files={"file": ("session.tar.gz", io.BytesIO(archive), "application/gzip")},
     )
-    assert resp.status_code == 413, resp.text[:200]
-    body = resp.json()
-    detail = body.get("detail", body.get("error", {}).get("details", body.get("error", body)))
-    if isinstance(detail, dict) and "detail" in detail:
-        detail = detail["detail"]
-    assert detail.get("limit_bytes") == 10 * 1024 * 1024, (
-        f"Starter tier should still cap at 10MB, got {detail}"
-    )
-    # Suggestion should mention upgrade for non-paid-bucket users
-    assert "upgrade" in detail.get("suggestion", "").lower()
+    assert resp.status_code == 201, resp.text[:200]
 
 
 @pytest.mark.asyncio
@@ -494,13 +484,11 @@ async def test_get_sync_settings_exposes_paid_tier_max_member_bytes(
 
 
 @pytest.mark.asyncio
-async def test_get_sync_settings_exposes_free_tier_max_member_bytes(
+async def test_get_sync_settings_exposes_paid_max_member_bytes_for_starter(
     client: AsyncClient, db_session
 ):
-    """Free-tier callers (anything below pro) must see the 10 MB free-tier
-    cap in `max_member_bytes`. Uses `starter` tier (smallest tier with
-    cloud_sync enabled) so the assertion exercises the non-paid bucket
-    in `_member_size_limit_for_tier`.
+    """Starter is the smallest paid plan, so `max_member_bytes` must report the
+    paid per-member cap, not the 10 MB free bucket (tk_59efad03840b4790).
     """
     import uuid as _uuid
     from datetime import datetime as _dt, timezone as _tz
@@ -510,7 +498,7 @@ async def test_get_sync_settings_exposes_free_tier_max_member_bytes(
         hash_api_key as _hash_key,
     )
     from sessionfs.server.db.models import ApiKey as _ApiKey, User as _User
-    from sessionfs.server.routes.sessions import SFS_MAX_SYNC_MEMBER_BYTES_FREE
+    from sessionfs.server.routes.sessions import SFS_MAX_SYNC_MEMBER_BYTES_PAID
 
     starter_user = _User(
         id=str(_uuid.uuid4()),
@@ -535,9 +523,9 @@ async def test_get_sync_settings_exposes_free_tier_max_member_bytes(
     resp = await client.get("/api/v1/sync/settings", headers=starter_headers)
     assert resp.status_code == 200, resp.text[:200]
     body = resp.json()
-    assert body["max_member_bytes"] == SFS_MAX_SYNC_MEMBER_BYTES_FREE, (
-        f"Starter tier should see free-tier cap, got {body['max_member_bytes']} "
-        f"expected {SFS_MAX_SYNC_MEMBER_BYTES_FREE}"
+    assert body["max_member_bytes"] == SFS_MAX_SYNC_MEMBER_BYTES_PAID, (
+        f"Starter tier should see the paid cap, got {body['max_member_bytes']} "
+        f"expected {SFS_MAX_SYNC_MEMBER_BYTES_PAID}"
     )
 
 

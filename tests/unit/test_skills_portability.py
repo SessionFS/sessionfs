@@ -23,6 +23,15 @@ from sessionfs.spec.instruction_provenance import discover
 runner = CliRunner()
 
 
+@pytest.fixture(autouse=True)
+def _plain_rich_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Typer forces a colour terminal under GITHUB_ACTIONS, which splits
+    flags like `--allow-hooks` with ANSI codes; render as a local run does."""
+    import typer.rich_utils
+
+    monkeypatch.setattr(typer.rich_utils, "FORCE_TERMINAL", False)
+
+
 def _write_skill(root: Path, name: str = "review-loop", *, scripts: bool = False) -> bytes:
     root.mkdir(parents=True, exist_ok=True)
     content = (
@@ -843,6 +852,12 @@ class _FakeGit:
                 if filters and not any(path == item or path.startswith(item + "/") for item in filters):
                     continue
                 rows.append(f"100644 blob {index:040x} {size}\t{path}".encode() + b"\0")
+            on_record = kwargs.get("on_record")
+            if on_record is not None:
+                # Mirror the real streaming runner: one record at a time.
+                for row in rows:
+                    on_record(row[:-1])
+                return b""
             return b"".join(rows)
         if args[0] == "cat-file":
             index = int(args[2], 16)
@@ -1297,11 +1312,15 @@ def test_safe_files_rejects_casefold_collision(tmp_path: Path, monkeypatch: pyte
     root = tmp_path / "skill"
     _write_skill(root)
     (root / "notes.md").write_text("a\n", encoding="utf-8")
+    # A case-sensitive host (Linux CI) holds both names for real; on APFS the
+    # second write aliases the first and the walk below reports the other name.
+    (root / "Notes.md").write_text("a\n", encoding="utf-8")
     real_walk = package_module.os.walk
 
     def walk(path, **kwargs):
         for dirpath, dirnames, filenames in real_walk(path, **kwargs):
-            yield dirpath, dirnames, [*filenames, *("Notes.md" for name in filenames if name == "notes.md")]
+            extra = ["Notes.md"] if "notes.md" in filenames and "Notes.md" not in filenames else []
+            yield dirpath, dirnames, [*filenames, *extra]
 
     monkeypatch.setattr(package_module.os, "walk", walk)
     with pytest.raises(SkillError, match="collides case-insensitively"):
@@ -3036,11 +3055,15 @@ def test_safe_files_rejects_unicode_normalization_collision(
     root = tmp_path / "skill"
     _write_skill(root)
     (root / f"{_NFC}.md").write_text("a\n", encoding="utf-8")
+    # Linux keeps both spellings; APFS aliases them, so the walk adds the other.
+    (root / f"{_NFD}.md").write_text("a\n", encoding="utf-8")
     real_walk = package_module.os.walk
 
     def walk(path, **kwargs):
         for dirpath, dirnames, filenames in real_walk(path, **kwargs):
-            extra = [f"{_NFD}.md" for name in filenames if name in {f"{_NFC}.md", f"{_NFD}.md"}]
+            spellings = {f"{_NFC}.md", f"{_NFD}.md"}
+            present = spellings & set(filenames)
+            extra = sorted(spellings - present) if len(present) == 1 else []
             yield dirpath, dirnames, [*filenames, *extra]
 
     monkeypatch.setattr(package_module.os, "walk", walk)
@@ -4109,11 +4132,14 @@ def test_newrelic_layout_skips_lowercase_skill_md_and_imports_the_rest(tmp_path:
     both = tmp_path / "both"
     _write_skill(both / "skills" / "dup", name="dup")
     (both / "plugin.json").write_text(json.dumps({"$schema": AGENT_PLUGIN_SCHEMA, "name": "both"}), encoding="utf-8")
+    dup = both / "skills" / "dup"
+    (dup / "skill.md").write_bytes((dup / "SKILL.md").read_bytes())  # real on Linux, alias on APFS
     real_walk = package_module.os.walk
 
     def walk(path, **kwargs):
         for dirpath, dirnames, filenames in real_walk(path, **kwargs):
-            extra = ["skill.md"] if "SKILL.md" in filenames and Path(dirpath).name == "dup" else []
+            missing = "SKILL.md" in filenames and "skill.md" not in filenames
+            extra = ["skill.md"] if missing and Path(dirpath).name == "dup" else []
             yield dirpath, dirnames, [*filenames, *extra]
 
     monkeypatch.setattr(package_module.os, "walk", walk)
@@ -4124,17 +4150,22 @@ def test_newrelic_layout_skips_lowercase_skill_md_and_imports_the_rest(tmp_path:
 def test_size_caps_match_the_official_marketplace_and_the_cli_still_refuses_beyond_them(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """R21-pre-b #3: 5,000 files / 128 MiB / 16 MiB per file (git + hosted follow);
-    the caps still refuse when exceeded."""
+    """R21-pre-b #3: 5,000 files / 128 MiB / 16 MiB per file (git follows the
+    client cap); the caps still refuse when exceeded. The hosted server cap is
+    deliberately lower (48 MiB unpacked, tk_8adce6018cbe4d5a) but still above
+    the largest official plugin (salesforce-development, ~38 MiB)."""
     from sessionfs.server.services import skill_packages
     from sessionfs.skills import package as package_module
     from sessionfs.skills import sources
 
     assert package_module.MAX_FILES == sources.MAX_GIT_FILES == skill_packages.MAX_PACKAGE_FILES == 5_000
-    assert package_module.MAX_TOTAL_BYTES == sources.MAX_GIT_TOTAL_BYTES == skill_packages.MAX_PACKAGE_BYTES == 128 * 1024 * 1024
+    assert package_module.MAX_TOTAL_BYTES == sources.MAX_GIT_TOTAL_BYTES == 128 * 1024 * 1024
+    assert skill_packages.MAX_PACKAGE_BYTES == 48 * 1024 * 1024
+    assert skill_packages.MAX_PACKAGE_BYTES > 38 * 1024 * 1024
     assert package_module.MAX_FILE_BYTES == sources.PER_FILE_CAP_BYTES == skill_packages.MAX_MEMBER_BYTES == 16 * 1024 * 1024
     assert sources.MAX_FETCH_BYTES == 256 * 1024 * 1024
-    assert skill_packages.MAX_UPLOAD_BYTES == 128 * 1024 * 1024
+    assert skill_packages.MAX_UPLOAD_BYTES == skill_packages.MAX_DECOMPRESSED_BYTES
+    assert skill_packages.MAX_UPLOAD_BYTES < 64 * 1024 * 1024
     source = tmp_path / "big"
     _write_skill(source)
     for index in range(3):
@@ -6426,3 +6457,260 @@ def test_ambiguous_characters_in_body_are_allowed(tmp_path: Path, char: str):
 def test_tagged_or_non_string_frontmatter_keys_are_rejected(tmp_path: Path, line: str, label: str):
     with pytest.raises(SkillError, match="frontmatter"):
         _import_skill_md(tmp_path, f"---\nname: review-loop\ndescription: d\n{line}\n---\n# x\n")
+
+
+# --- tk_8adce6018cbe4d5a: `git ls-tree` output is streamed, never buffered ---
+
+
+def _hostile_git(tmp_path: Path, body: str) -> tuple[Path, Path]:
+    """An executable stand-in for git whose `ls-tree` runs `body` (Python with
+    `out` = binary stdout); every invocation records its pid."""
+    import sys
+
+    pid_file = tmp_path / "git-pids"
+    script = tmp_path / "fake-git"
+    script.write_text(
+        f"#!{sys.executable}\n"
+        "import os, sys, time\n"
+        f"open({str(pid_file)!r}, 'a').write(f'{{os.getpid()}}\\n')\n"
+        "out = sys.stdout.buffer\n"
+        + "\n".join(body.splitlines())
+        + "\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    return script, pid_file
+
+
+def _run_tree_through_real_runner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str, *, subdir: str = ""
+) -> tuple[_FakeGit, Path]:
+    """Everything but `ls-tree` is served by _FakeGit; `ls-tree` goes through
+    the real streaming `_run_git` against a hostile executable."""
+    from sessionfs.skills import sources
+
+    script, pid_file = _hostile_git(tmp_path, body)
+    real_run_git = sources._run_git
+    fake = _FakeGit([])
+
+    def _dispatch(args, **kwargs):
+        if args[0] == "ls-tree":
+            fake.calls.append(list(args))
+            return real_run_git(args, **kwargs)
+        return fake(args, **kwargs)
+
+    monkeypatch.setattr(sources, "_run_git", _dispatch)
+    monkeypatch.setattr(sources.shutil, "which", lambda name: str(script))
+    with pytest.raises(SkillError) as excinfo:
+        with sources.materialize_source("https://github.com/acme/skills", subdir=subdir):
+            pass
+    fake.error = excinfo.value  # type: ignore[attr-defined]
+    return fake, pid_file
+
+
+def _assert_git_reaped(pid_file: Path) -> None:
+    pids = [int(line) for line in pid_file.read_text().split()]
+    assert pids
+    for pid in pids:
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+
+
+def test_git_tree_bomb_is_aborted_at_the_file_limit_and_git_killed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """An endless `ls-tree` listing trips MAX_GIT_FILES mid-stream: git is
+    killed and nothing is cat-file'd, instead of buffering the whole output."""
+    from sessionfs.skills import sources
+
+    monkeypatch.setattr(sources, "MAX_GIT_FILES", 50)
+    fake, pid_file = _run_tree_through_real_runner(
+        tmp_path,
+        monkeypatch,
+        "i = 0\n"
+        "while True:\n"
+        "    out.write(b'100644 blob %040x 1\\tf%d.md\\0' % (i, i))\n"
+        "    i += 1\n",
+    )
+    assert "exceeds import limits" in str(fake.error)  # type: ignore[attr-defined]
+    assert not any(call[0] == "cat-file" for call in fake.calls)
+    _assert_git_reaped(pid_file)
+
+
+def test_git_tree_depth_bomb_is_aborted_at_the_first_deep_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    deep = "/".join(["d"] * 17) + "/x.md"
+    fake, pid_file = _run_tree_through_real_runner(
+        tmp_path,
+        monkeypatch,
+        f"out.write(b'100644 blob {'0' * 40} 1\\t{deep}\\0')\n"
+        "out.flush()\n"
+        "time.sleep(30)\n",
+    )
+    assert "Unsafe Git tree path" in str(fake.error)  # type: ignore[attr-defined]
+    _assert_git_reaped(pid_file)
+
+
+def test_git_tree_overlong_path_is_refused_before_it_is_retained(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A path that cannot fit ustar is refused at its own record, so thousands of
+    multi-KiB paths are never accumulated before import rejects them."""
+    long_path = "/".join(["p" * 200] * 15) + "/x.md"  # 16 parts, ~3 KiB
+    fake, pid_file = _run_tree_through_real_runner(
+        tmp_path,
+        monkeypatch,
+        f"out.write(b'100644 blob {'0' * 40} 1\\t{long_path}\\0')\n"
+        "out.flush()\n"
+        "time.sleep(30)\n",
+    )
+    assert "ustar limit" in str(fake.error)  # type: ignore[attr-defined]
+    _assert_git_reaped(pid_file)
+
+
+def test_git_tree_unterminated_record_is_refused_without_buffering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    fake, pid_file = _run_tree_through_real_runner(
+        tmp_path,
+        monkeypatch,
+        "while True:\n    out.write(b'a' * 65536)\n",
+    )
+    assert "invalid entry" in str(fake.error)  # type: ignore[attr-defined]
+    _assert_git_reaped(pid_file)
+
+
+def test_streamed_git_tree_keeps_missing_object_mapping_and_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Existing behaviour survives streaming: a git missing-object failure still
+    maps to the per-file-cap message; a hung git still times out."""
+    from sessionfs.skills import sources
+
+    fake, _ = _run_tree_through_real_runner(
+        tmp_path,
+        monkeypatch,
+        "sys.stderr.write('fatal: could not read object abc123\\n')\n"
+        "sys.exit(128)\n",
+    )
+    assert "per-file limit" in str(fake.error)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(sources, "_GIT_TIMEOUT_SECONDS", 0.5)
+    hung_dir = tmp_path / "hung"
+    hung_dir.mkdir()
+    fake, pid_file = _run_tree_through_real_runner(
+        hung_dir, monkeypatch, "time.sleep(30)\n"
+    )
+    assert "timed out" in str(fake.error)  # type: ignore[attr-defined]
+    _assert_git_reaped(pid_file)
+
+
+def test_git_tree_rejection_text_is_never_relabelled_as_missing_object(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Our own mid-stream rejection is re-raised as-is even when the offending
+    path contains a git missing-object marker word."""
+    fake, _ = _run_tree_through_real_runner(
+        tmp_path,
+        monkeypatch,
+        "out.write(b'120000 blob %040x 1\\tlazy-link.md\\0' % 0)\n",
+    )
+    assert "unsupported entry: lazy-link.md" in str(fake.error)  # type: ignore[attr-defined]
+
+
+@pytest.mark.skipif(not hasattr(os, "killpg"), reason="POSIX process groups")
+def test_git_timeout_kills_descendants_holding_stdout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A descendant that inherited git's stdout (e.g. a remote helper) would
+    keep the pipe open after only git is killed; the whole process group is
+    killed so the read ends and the timeout fires promptly."""
+    import time
+
+    from sessionfs.skills import sources
+
+    grandchild_pid = tmp_path / "grandchild-pid"
+    monkeypatch.setattr(sources, "_GIT_TIMEOUT_SECONDS", 0.5)
+    started = time.monotonic()
+    fake, pid_file = _run_tree_through_real_runner(
+        tmp_path,
+        monkeypatch,
+        "import subprocess\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        f"open({str(grandchild_pid)!r}, 'w').write(str(child.pid))\n"
+        "time.sleep(60)\n",
+    )
+    assert "timed out" in str(fake.error)  # type: ignore[attr-defined]
+    assert time.monotonic() - started < 20
+    _assert_git_reaped(pid_file)
+    orphan = int(grandchild_pid.read_text())
+    for _ in range(100):
+        try:
+            os.kill(orphan, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:  # pragma: no cover - failure path
+        os.kill(orphan, 9)
+        pytest.fail("git's descendant survived the kill")
+
+
+def test_git_process_tree_kill_falls_back_without_process_groups(monkeypatch: pytest.MonkeyPatch):
+    """Windows (no os.killpg): only the direct child can be killed."""
+    from sessionfs.skills import sources
+
+    class _Proc:
+        pid = 4242
+        killed = False
+
+        def kill(self) -> None:
+            self.killed = True
+
+    monkeypatch.delattr(sources.os, "killpg", raising=False)
+    proc = _Proc()
+    sources._kill_process_tree(proc)  # type: ignore[arg-type]
+    assert proc.killed
+
+
+def _stream_records(tmp_path: Path, payload: bytes, max_record_bytes: int) -> list[bytes]:
+    """Feed `payload` through the real streaming runner via a child process."""
+    import sys
+
+    from sessionfs.skills import sources
+
+    script = tmp_path / "emit.py"
+    data = tmp_path / "payload.bin"
+    data.write_bytes(payload)
+    script.write_text(
+        "import sys\nsys.stdout.buffer.write(open(sys.argv[1], 'rb').read())\n", encoding="utf-8"
+    )
+    seen: list[bytes] = []
+    sources._run_streaming(
+        [sys.executable, str(script), str(data)],
+        cwd=tmp_path,
+        env=None,
+        on_record=seen.append,
+        timeout=30,
+        max_record_bytes=max_record_bytes,
+    )
+    return seen
+
+
+def test_streamed_complete_record_over_the_cap_is_refused_regardless_of_chunking(tmp_path: Path):
+    """A record whose NUL arrives in the same read is size-checked too."""
+    record = b"100644 blob " + b"0" * 40 + b" 1\t" + b"a" * 5000
+    with pytest.raises(SkillError, match="invalid entry"):
+        _stream_records(tmp_path, record + b"\0", max_record_bytes=4096)
+
+
+def test_streamed_record_budget_allows_a_deep_selected_subdir(tmp_path: Path):
+    """The cap excludes the selected subdir prefix: a deep, legitimate subdir
+    with a short file passes even though the full record exceeds 4 KiB."""
+    from sessionfs.skills import sources
+
+    subdir = "/".join(["s" * 252] * 16)
+    record = b"100644 blob " + b"0" * 40 + b" 1\t" + f"{subdir}/x.md".encode()
+    assert len(record) > sources.MAX_GIT_TREE_RECORD_BYTES
+    budget = sources.MAX_GIT_TREE_RECORD_BYTES + len(subdir.encode()) + 1
+    assert _stream_records(tmp_path, record + b"\0", max_record_bytes=budget) == [record]

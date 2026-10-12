@@ -88,9 +88,28 @@ The v0.16 public UI does not offer open self-service marketplace publishing. The
 
 Browsing, downloading, and loading approved instructions are available to every signed-in user, including the Free tier. Any declared license value is accepted for organization packages, including `UNLICENSED` or `proprietary` for internal work; packages without one are rejected with `license_required`.
 
+Hosted publishing limits:
+
+- A package can be at most 48 MiB unpacked (about 58 MiB compressed); larger uploads are rejected with `413 package_too_large` before the body is read. Local `sfs skill` imports keep their 128 MiB limit.
+- Each API process accepts a small number of publishes at a time and one per user; beyond that it answers `503 publish_busy` with a `Retry-After` header. An upload that stalls or takes longer than two minutes gets `408 publish_timeout`.
+- Personal packages count against your plan's storage (Starter 500 MB, Pro 2 GB, Team 1 GB per user, Enterprise unlimited). Organization packages count against the organization's storage, together with members' synced sessions.
+- Every package keeps at most 100 stored versions, and personal packages share a limit of 50 stored versions per user across all of them. Delete an unreferenced version to free a slot.
+
 Uploads must be plain ustar/GNU `tar.gz` archives **without** PAX or GNU extended headers (no `x`/`g`/`L`/`K` records): member paths must fit the ustar name/prefix fields, and archives created with `tar --format=ustar` or Python's `tarfile` `USTAR_FORMAT`/`GNU_FORMAT` with short paths qualify. Extended-header archives are rejected outright because their metadata records are read with whatever size they declare.
 
 Registry URLs are recorded as pinned references. SessionFS does not fetch arbitrary registry URLs on the server, avoiding an SSRF or credential-forwarding path.
+
+## Launch Catalog
+
+The public catalog starts with `sessionfs-workflows`, an MIT-licensed package written by SessionFS. It contains three instruction-only skills with no scripts, hooks, or MCP servers:
+
+| Skill | What it does |
+| --- | --- |
+| `session-handoff` | Hand a session to a teammate or another tool, or pick one up |
+| `ticket-workflow` | Work a SessionFS ticket from start to review |
+| `project-knowledge` | Load project context and record what you learn in the knowledge base |
+
+Find it under **Marketplace** in the dashboard. It reaches your tools the same way as any other package: request it for a project, load it through the target feed, or assign it to your organization. The source is also in the SessionFS repository under `catalog/sessionfs-workflows`, so you can also copy it into a project and run `sfs skill add ./sessionfs-workflows`.
 
 ## Service Keys
 

@@ -161,8 +161,12 @@ async def _authenticate_and_build_context(
     raw_key = auth_header[7:]
     key_hash = hash_api_key(raw_key)
 
-    # Rate limit by key hash (skip if disabled via SFS_RATE_LIMIT_PER_MINUTE=0)
-    if not _rate_limit_disabled and not limiter.is_allowed(key_hash):
+    # Rate limit by key hash (skip if disabled via SFS_RATE_LIMIT_PER_MINUTE=0).
+    # A request is charged once even when authenticated twice (the marketplace
+    # publish pre-check authenticates before the route dependency runs).
+    already_charged = getattr(request.state, "rate_limit_charged_key", None) == key_hash
+    request.state.rate_limit_charged_key = key_hash
+    if not already_charged and not _rate_limit_disabled and not limiter.is_allowed(key_hash):
         client_ip = request.client.host if request.client else "unknown"
         logger.warning(
             "Rate limited: client=%s limit=%d/min",

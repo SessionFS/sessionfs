@@ -25,14 +25,22 @@ from sessionfs.skills.package import (
     scan_mcp_tree,
 )
 
-MAX_UPLOAD_BYTES = 128 * 1024 * 1024
 MAX_PACKAGE_FILES = 5_000
 MAX_ARCHIVE_MEMBERS = 10_000
-MAX_PACKAGE_BYTES = 128 * 1024 * 1024
+# Hosted (server-side) expanded-package ceiling. Deliberately below the 128 MiB
+# client import cap (skills/package.py MAX_TOTAL_BYTES): every hosted publish is
+# decompressed, DLP-scanned and repacked on an API worker, so the server budget
+# is sized to the largest official-marketplace plugin (salesforce-development,
+# ~38 MiB unpacked) plus headroom, not to what a local import can tolerate.
+MAX_PACKAGE_BYTES = 48 * 1024 * 1024
 MAX_MEMBER_BYTES = 16 * 1024 * 1024
 # Hard ceiling on DECOMPRESSED bytes pulled from an upload. Reached before any
 # member cap can run when a GNU longname/PAX header claims a huge size.
 MAX_DECOMPRESSED_BYTES = MAX_PACKAGE_BYTES + MAX_ARCHIVE_MEMBERS * 1024
+# Compressed upload ceiling. A legitimate gzip stream is never meaningfully
+# larger than the tar stream it inflates to, so the decompressed budget bounds
+# it too (gzip's worst-case expansion on incompressible data is ~0.03%).
+MAX_UPLOAD_BYTES = MAX_DECOMPRESSED_BYTES
 MAX_EXTENDED_HEADER_BYTES = 4096
 MAX_DLP_TEXT_BYTES = 16 * 1024 * 1024
 MAX_INSTRUCTION_BYTES = 256 * 1024

@@ -17,14 +17,38 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.16.0 -->
+      <!-- v0.16.1 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.16.1</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">October 12, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Starter Sync Limits &middot; Marketplace Launch Catalog &middot; Hardened Publishing</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Launch catalog: <span class="font-mono text-accent text-sm">sessionfs-workflows</span>.</strong> An MIT-licensed package written by SessionFS with three instruction-only skills &mdash; <span class="font-mono text-accent text-sm">session-handoff</span>, <span class="font-mono text-accent text-sm">ticket-workflow</span> and <span class="font-mono text-accent text-sm">project-knowledge</span> &mdash; and no scripts, hooks or MCP servers. Find it under <strong>Marketplace</strong> in the dashboard, or copy it from <span class="font-mono text-accent text-sm">catalog/sessionfs-workflows</span> in the repository.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Starter gets paid sync limits.</strong> Starter customers were held to Free-tier sync limits. Starter now gets the paid per-session cap (300 MB) and per-file cap (50 MB), like every other paid plan.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Pro plan storage is 2 GB</strong>, matching the pricing page.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong><span class="font-mono text-accent text-sm">sfs sync status</span> reports your plan&rsquo;s storage</strong> &mdash; Starter 500 MB, Pro 2 GB, Team 1 GB per user, Enterprise unlimited &mdash; instead of the per-session upload cap. Free still reports its 50 MB sync limit. Personal Marketplace publishing is charged against the same plan storage.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Clearer oversized-session error.</strong> It suggested <span class="font-mono text-accent text-sm">sfs compact</span>, which doesn&rsquo;t exist; it now points to upgrading for a larger per-session limit.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Hardened hosted publishing.</strong> Hosted skill packages are capped at 48 MiB unpacked (about 58 MiB compressed), down from 128 MiB; local <span class="font-mono text-accent text-sm">sfs skill</span> imports keep the 128 MiB limit. Oversized uploads are refused before they are read, callers are authenticated before a publish slot is taken, busy servers answer <span class="font-mono text-accent text-sm">503 publish_busy</span> with <span class="font-mono text-accent text-sm">Retry-After</span>, and uploads that stall or take longer than two minutes get <span class="font-mono text-accent text-sm">408 publish_timeout</span>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Organization storage quota for publishing.</strong> Organization packages now count against the organization&rsquo;s storage, together with members&rsquo; synced sessions, and every package is limited to 100 stored versions.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Safer Git sources.</strong> A malicious Git repository can no longer exhaust memory during <span class="font-mono text-accent text-sm">sfs skill add</span>; the file listing is streamed and Git is stopped as soon as a file-count, depth, size or time limit is exceeded.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Migrations 001&ndash;063 (unchanged). 3839 backend tests + 486 dashboard UI tests passing. 76 MCP tools (unchanged) &middot; 9 supported tools unchanged.</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.16.0 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
             <span class="text-brand font-semibold">v0.16.0</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">October 11, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Skills &amp; Plugins Across Every Tool &middot; SessionFS Marketplace</h2>
         <ul class="space-y-2 text-base text-muted">

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import tarfile
@@ -1008,7 +1009,8 @@ async def test_personal_publish_is_metered_by_storage_and_version_cap(
 
     monkeypatch.setattr(marketplace_routes, "MAX_PERSONAL_PACKAGE_VERSIONS", 50)
     monkeypatch.setenv("SFS_MAX_SYNC_BYTES_FREE", "1")
-    monkeypatch.setenv("SFS_MAX_SYNC_BYTES_PAID", "1")
+    # Paid tiers are metered against their PLAN storage (tiers.get_storage_limit).
+    monkeypatch.setattr(marketplace_routes, "get_storage_limit", lambda tier: 1)
     over_quota = await client.post(
         "/api/v1/users/me/skills/packages",
         headers=auth_headers,
@@ -2226,8 +2228,9 @@ async def test_identical_republish_after_delete_creates_fresh_version_under_lock
     from sessionfs.server.db.models import SkillPackageVersion as _Version
     from sessionfs.server.routes import marketplace as marketplace_routes
 
-    source = inspect.getsource(marketplace_routes._publish_package)
+    source = inspect.getsource(marketplace_routes._locked_existing_version)
     assert ".with_for_update()  # lock order step 1: a concurrent delete cannot race the reuse" in source
+    assert "_locked_existing_version(" in inspect.getsource(marketplace_routes._publish_package)
     first = await client.post(
         "/api/v1/users/me/skills/packages",
         headers=auth_headers,
@@ -3723,13 +3726,15 @@ async def test_platform_admin_with_legacy_free_entitlement_gets_paid_storage_lim
     test_user: User,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The quota check must not fall back to the Free limit for such an admin."""
+    """The quota check must not fall back to the Free limit for such an admin:
+    a platform administrator's personal publish quota is unlimited."""
     from sessionfs.server.db.models import Entitlement
+    from sessionfs.server.routes import marketplace as marketplace_routes
 
     package = _package_tar()
-    # Free limit below the package size, paid limit comfortably above it.
+    # Free limit and every plan limit below the package size: only "unlimited" passes.
     monkeypatch.setenv("SFS_MAX_SYNC_BYTES_FREE", "1")
-    monkeypatch.setenv("SFS_MAX_SYNC_BYTES_PAID", str(50 * 1024 * 1024))
+    monkeypatch.setattr(marketplace_routes, "get_storage_limit", lambda tier: 1)
     now = datetime.now(timezone.utc)
     test_user.tier = "admin"
     db_session.add(
@@ -3763,7 +3768,923 @@ async def test_starter_user_gets_paid_storage_limit_for_personal_publish(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("SFS_MAX_SYNC_BYTES_FREE", "1")
-    monkeypatch.setenv("SFS_MAX_SYNC_BYTES_PAID", str(50 * 1024 * 1024))
     test_user.tier = "starter"
     await db_session.commit()
     await _publish_personal(client, auth_headers)
+
+
+@pytest.mark.parametrize(
+    ("tier", "expected"),
+    [
+        ("starter", 500 * 1024 * 1024),
+        ("pro", 2 * 1024 * 1024 * 1024),
+        ("team", 1024 * 1024 * 1024),
+        ("enterprise", 0),
+        ("admin", 0),
+    ],
+)
+async def test_personal_publish_quota_is_plan_storage_not_the_per_session_cap(
+    tier: str,
+    expected: int,
+    db_session: AsyncSession,
+    test_user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The aggregate personal quota is the plan storage /sync/status reports
+    (0 = unlimited), never the per-session SFS_MAX_SYNC_BYTES_PAID cap."""
+    from sessionfs.server.auth.dependencies import AuthContext
+    from sessionfs.server.routes import marketplace as marketplace_routes
+    from sessionfs.server.tiers import get_storage_limit
+
+    monkeypatch.setenv("SFS_MAX_SYNC_BYTES_PAID", "7")
+    test_user.tier = tier
+    await db_session.commit()
+    auth = AuthContext(user=test_user, api_key_id="k", key_kind="user")
+    limit = await marketplace_routes._personal_storage_limit(db_session, auth)
+    assert limit == expected
+    if tier != "admin":
+        assert limit == get_storage_limit(tier)
+
+
+async def test_free_personal_quota_keeps_the_free_sync_cap(
+    db_session: AsyncSession,
+    test_user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sessionfs.server.auth.dependencies import AuthContext
+    from sessionfs.server.routes import marketplace as marketplace_routes
+
+    monkeypatch.setenv("SFS_MAX_SYNC_BYTES_FREE", "12345")
+    test_user.tier = "free"
+    await db_session.commit()
+    auth = AuthContext(user=test_user, api_key_id="k", key_kind="user")
+    assert await marketplace_routes._personal_storage_limit(db_session, auth) == 12345
+
+
+# --- tk_8adce6018cbe4d5a: publish DoS + org quota + per-package version cap ---
+
+
+async def test_publish_rejects_declared_oversized_body_before_validation(
+    client: AsyncClient,
+    auth_headers: dict,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Content-Length above the compressed cap (+ multipart slack) is a 413
+    before the form is spooled or the package is validated."""
+    from sessionfs.server.routes import marketplace as marketplace_routes
+
+    def _never(*args, **kwargs):  # pragma: no cover - must not run
+        raise AssertionError("validation ran for an oversized upload")
+
+    monkeypatch.setattr(marketplace_routes, "validate_hosted_package", _never)
+    monkeypatch.setattr(marketplace_routes, "MAX_PUBLISH_REQUEST_BYTES", 64)
+    response = await client.post(
+        "/api/v1/users/me/skills/packages",
+        headers=auth_headers,
+        files={"package": ("p.tar.gz", _hooky_tar("toolarge"), "application/gzip")},
+    )
+    assert response.status_code == 413, response.text
+    assert response.json()["error"]["code"] == "package_too_large"
+
+
+async def test_publish_counts_chunked_body_without_content_length(
+    client: AsyncClient,
+    auth_headers: dict,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No Content-Length (chunked): the body is counted as it streams in."""
+    from sessionfs.server.routes import marketplace as marketplace_routes
+
+    def _never(*args, **kwargs):  # pragma: no cover - must not run
+        raise AssertionError("validation ran for an oversized upload")
+
+    monkeypatch.setattr(marketplace_routes, "validate_hosted_package", _never)
+    monkeypatch.setattr(marketplace_routes, "MAX_PUBLISH_REQUEST_BYTES", 1024)
+    boundary = "sfsboundary"
+    head = (
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"package\"; filename=\"p.tar.gz\"\r\n"
+        "Content-Type: application/gzip\r\n\r\n"
+    ).encode()
+
+    async def _body():
+        yield head
+        for _ in range(16):
+            yield b"x" * 512
+        yield f"\r\n--{boundary}--\r\n".encode()
+
+    response = await client.post(
+        "/api/v1/users/me/skills/packages",
+        headers={**auth_headers, "Content-Type": f"multipart/form-data; boundary={boundary}"},
+        content=_body(),
+    )
+    assert response.status_code == 413, response.text
+    assert response.json()["error"]["code"] == "package_too_large"
+
+
+async def test_publish_validation_runs_off_the_event_loop(
+    client: AsyncClient,
+    auth_headers: dict,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+
+    from sessionfs.server.routes import marketplace as marketplace_routes
+
+    real = marketplace_routes.validate_hosted_package
+    loop_thread = threading.get_ident()
+    seen: list[int] = []
+
+    def _recording(*args, **kwargs):
+        seen.append(threading.get_ident())
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(marketplace_routes, "validate_hosted_package", _recording)
+    response = await client.post(
+        "/api/v1/users/me/skills/packages",
+        headers=auth_headers,
+        files={"package": ("p.tar.gz", _hooky_tar("offloop"), "application/gzip")},
+    )
+    assert response.status_code == 201, response.text
+    assert seen and all(ident != loop_thread for ident in seen)
+
+
+async def test_publish_admission_is_non_blocking_and_returns_503_when_full(
+    client: AsyncClient,
+    auth_headers: dict,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Admission is decided BEFORE the body is read: when every slot is taken
+    the publish is refused at once with 503 publish_busy + Retry-After."""
+    from sessionfs.server.routes import marketplace as marketplace_routes
+
+    def _never(*args, **kwargs):  # pragma: no cover - must not run
+        raise AssertionError("validation ran while admission was full")
+
+    assert marketplace_routes.MAX_CONCURRENT_PUBLISHES == 2
+    monkeypatch.setattr(marketplace_routes, "validate_hosted_package", _never)
+    monkeypatch.setattr(marketplace_routes, "_active_publishes", marketplace_routes.MAX_CONCURRENT_PUBLISHES)
+    response = await client.post(
+        "/api/v1/users/me/skills/packages",
+        headers=auth_headers,
+        files={"package": ("p.tar.gz", _hooky_tar("busy"), "application/gzip")},
+    )
+    assert response.status_code == 503, response.text
+    assert response.json()["error"]["code"] == "publish_busy"
+    assert response.headers["retry-after"] == str(marketplace_routes.PUBLISH_BUSY_RETRY_AFTER_SECONDS)
+    # Slots are untouched by the refused request; a publish succeeds once one frees.
+    assert marketplace_routes._active_publishes == marketplace_routes.MAX_CONCURRENT_PUBLISHES
+    monkeypatch.setattr(marketplace_routes, "_active_publishes", 0)
+    monkeypatch.undo()
+    ok = await client.post(
+        "/api/v1/users/me/skills/packages",
+        headers=auth_headers,
+        files={"package": ("p.tar.gz", _hooky_tar("busy"), "application/gzip")},
+    )
+    assert ok.status_code == 201, ok.text
+    assert marketplace_routes._active_publishes == 0
+
+
+async def test_publish_admission_slots_are_bounded_and_released(monkeypatch: pytest.MonkeyPatch) -> None:
+    from sessionfs.server.routes import marketplace as marketplace_routes
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(marketplace_routes, "_active_publishes", 0)
+    monkeypatch.setattr(marketplace_routes, "_active_publishers", set())
+    async with marketplace_routes._publish_admission("alice"):
+        # (b) one in-flight publish per principal: alice cannot take slot two.
+        with pytest.raises(HTTPException) as same_user:
+            async with marketplace_routes._publish_admission("alice"):
+                pass  # pragma: no cover
+        assert same_user.value.status_code == 503
+        assert same_user.value.detail["code"] == "publish_busy"
+        assert marketplace_routes._active_publishes == 1
+        async with marketplace_routes._publish_admission("bob"):
+            assert marketplace_routes._active_publishes == 2
+            with pytest.raises(HTTPException) as busy:
+                async with marketplace_routes._publish_admission("carol"):
+                    pass  # pragma: no cover
+            assert busy.value.status_code == 503
+            assert busy.value.headers == {"Retry-After": str(marketplace_routes.PUBLISH_BUSY_RETRY_AFTER_SECONDS)}
+        assert marketplace_routes._active_publishes == 1
+        assert marketplace_routes._active_publishers == {"alice"}
+    assert marketplace_routes._active_publishes == 0
+    assert marketplace_routes._active_publishers == set()
+    # An exception inside the request still releases the slot.
+    with pytest.raises(RuntimeError):
+        async with marketplace_routes._publish_admission("alice"):
+            raise RuntimeError("boom")
+    assert marketplace_routes._active_publishes == 0
+    assert marketplace_routes._active_publishers == set()
+
+
+async def test_cancelled_publish_keeps_its_slot_until_the_worker_thread_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancelling the request while validation runs in a thread must not free
+    the slot early: the thread is still decompressing/scanning."""
+    import asyncio
+    import threading
+
+    from sessionfs.server.routes import marketplace as marketplace_routes
+
+    monkeypatch.setattr(marketplace_routes, "_active_publishes", 0)
+    started = threading.Event()
+    release = threading.Event()
+    loop_thread = threading.get_ident()
+    worker_threads: list[int] = []
+
+    def _slow(*args, **kwargs):
+        worker_threads.append(threading.get_ident())
+        started.set()
+        release.wait(10)
+        return "done"
+
+    monkeypatch.setattr(marketplace_routes, "validate_hosted_package", _slow)
+
+    async def _request() -> None:
+        async with marketplace_routes._publish_admission("cancelled-user"):
+            await marketplace_routes._validate_hosted_package_off_loop(
+                b"", source_locator="upload:x", source_commit=None, source_subdir="", dlp_policy=None
+            )
+
+    task = asyncio.create_task(_request())
+    while not started.is_set():
+        await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert worker_threads and worker_threads[0] != loop_thread
+    # The request is gone but its worker is not: the slot stays held.
+    assert marketplace_routes._active_publishes == 1
+    release.set()
+    for _ in range(500):
+        if marketplace_routes._active_publishes == 0:
+            break
+        await asyncio.sleep(0.01)
+    assert marketplace_routes._active_publishes == 0
+    assert "cancelled-user" not in marketplace_routes._active_publishers
+
+
+async def test_org_publish_is_charged_against_org_storage(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    test_user: User,
+) -> None:
+    """Org publishes consume the org's storage (org cache, else tier default)."""
+    org, _ = await _org_with_project(db_session, test_user)
+    org.storage_limit_bytes = 1
+    await db_session.commit()
+    response = await client.post(
+        f"/api/v1/orgs/{org.id}/skills/packages",
+        headers=auth_headers,
+        files={"package": ("p.tar.gz", _hooky_tar("orgquota"), "application/gzip")},
+    )
+    assert response.status_code == 413, response.text
+    body = response.json()["error"]
+    assert body["code"] == "storage_limit"
+    assert body["details"]["limit"] == 1
+
+
+async def test_org_publish_quota_is_entitlement_first(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    test_user: User,
+) -> None:
+    """An explicit entitlement storage limit wins over the org cache; 0 is unlimited."""
+    from sessionfs.server.db.models import Entitlement
+
+    org, _ = await _org_with_project(db_session, test_user)
+    org.storage_limit_bytes = 10 * 1024 * 1024 * 1024
+    now = datetime.now(timezone.utc)
+    entitlement = Entitlement(
+        owner_type="org",
+        owner_id=org.id,
+        source="manual",
+        tier="team",
+        storage_limit_bytes=1,
+        status="active",
+        billing_status="current",
+        current_period_start=now,
+        created_at=now,
+        updated_at=now,
+    )
+    db_session.add(entitlement)
+    await db_session.commit()
+    capped = await client.post(
+        f"/api/v1/orgs/{org.id}/skills/packages",
+        headers=auth_headers,
+        files={"package": ("p.tar.gz", _hooky_tar("entquota"), "application/gzip")},
+    )
+    assert capped.status_code == 413, capped.text
+    assert capped.json()["error"]["details"]["limit"] == 1
+
+    entitlement.storage_limit_bytes = 0  # unlimited
+    org.storage_limit_bytes = 1  # the entitlement still wins over the cache
+    await db_session.commit()
+    unlimited = await client.post(
+        f"/api/v1/orgs/{org.id}/skills/packages",
+        headers=auth_headers,
+        files={"package": ("p.tar.gz", _hooky_tar("entquota"), "application/gzip")},
+    )
+    assert unlimited.status_code == 201, unlimited.text
+
+
+async def test_org_publish_quota_counts_existing_org_packages(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    test_user: User,
+) -> None:
+    org, _ = await _org_with_project(db_session, test_user)
+    first = await client.post(
+        f"/api/v1/orgs/{org.id}/skills/packages",
+        headers=auth_headers,
+        files={"package": ("p.tar.gz", _hooky_tar("orgcount"), "application/gzip")},
+    )
+    assert first.status_code == 201, first.text
+    stored = first.json()["blob_size_bytes"]
+    # Room for exactly what is stored: the next new version no longer fits,
+    # but re-publishing the identical version (no new bytes) still does.
+    org.storage_limit_bytes = stored + 1
+    await db_session.commit()
+    again = await client.post(
+        f"/api/v1/orgs/{org.id}/skills/packages",
+        headers=auth_headers,
+        files={"package": ("p.tar.gz", _hooky_tar("orgcount"), "application/gzip")},
+    )
+    assert again.status_code == 201, again.text
+    second = await client.post(
+        f"/api/v1/orgs/{org.id}/skills/packages",
+        headers=auth_headers,
+        files={"package": ("p.tar.gz", _hooky_tar("orgcount", "v2"), "application/gzip")},
+    )
+    assert second.status_code == 413, second.text
+    assert second.json()["error"]["details"]["current_usage"] == stored
+
+
+async def test_platform_admin_public_publish_skips_storage_but_not_version_cap(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    test_user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sessionfs.server.routes import marketplace as marketplace_routes
+
+    org, _ = await _org_with_project(db_session, test_user)
+    org.storage_limit_bytes = 1
+    await db_session.commit()
+    _, admin_headers = await _platform_admin_headers(db_session)
+    monkeypatch.setattr(marketplace_routes, "MAX_PACKAGE_VERSIONS", 1)
+    public = await client.post(
+        f"/api/v1/orgs/{org.id}/skills/packages",
+        headers=admin_headers,
+        files={"package": ("p.tar.gz", _hooky_tar("platpub"), "application/gzip")},
+        data={"namespace": "pub", "collection": "pub", "visibility": "public"},
+    )
+    assert public.status_code == 201, public.text
+    capped = await client.post(
+        f"/api/v1/orgs/{org.id}/skills/packages",
+        headers=admin_headers,
+        files={"package": ("p.tar.gz", _hooky_tar("platpub", "v2"), "application/gzip")},
+        data={"namespace": "pub", "collection": "pub", "visibility": "public"},
+    )
+    assert capped.status_code == 429, capped.text
+    assert capped.json()["error"]["code"] == "skill_package_version_limit"
+    # The same admin publishing an ORG-visible listing is charged normally.
+    org_listing = await client.post(
+        f"/api/v1/orgs/{org.id}/skills/packages",
+        headers=admin_headers,
+        files={"package": ("p.tar.gz", _hooky_tar("platorg"), "application/gzip")},
+        data={"namespace": "pub", "collection": "pub", "visibility": "org"},
+    )
+    assert org_listing.status_code == 413, org_listing.text
+
+
+@pytest.mark.parametrize("owner", ["user", "org"])
+async def test_per_package_version_cap_applies_to_every_owner_type(
+    owner: str,
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    test_user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sessionfs.server.routes import marketplace as marketplace_routes
+
+    assert marketplace_routes.MAX_PACKAGE_VERSIONS == 100
+    monkeypatch.setattr(marketplace_routes, "MAX_PACKAGE_VERSIONS", 2)
+    if owner == "user":
+        url = "/api/v1/users/me/skills/packages"
+    else:
+        org, _ = await _org_with_project(db_session, test_user)
+        url = f"/api/v1/orgs/{org.id}/skills/packages"
+    for label in ("v1", "v2"):
+        ok = await client.post(
+            url,
+            headers=auth_headers,
+            files={"package": ("p.tar.gz", _hooky_tar("vcap", label), "application/gzip")},
+        )
+        assert ok.status_code == 201, ok.text
+    capped = await client.post(
+        url,
+        headers=auth_headers,
+        files={"package": ("p.tar.gz", _hooky_tar("vcap", "v3"), "application/gzip")},
+    )
+    assert capped.status_code == 429, capped.text
+    assert capped.json()["error"]["code"] == "skill_package_version_limit"
+    # A different package of the same owner is unaffected.
+    other = await client.post(
+        url,
+        headers=auth_headers,
+        files={"package": ("p.tar.gz", _hooky_tar("vcap-other"), "application/gzip")},
+    )
+    assert other.status_code == 201, other.text
+
+
+def _sized_session(user_id: str, size: int, *, deleted: bool = False) -> Session:
+    token = uuid.uuid4().hex[:16]
+    return Session(
+        id=f"ses_{token}",
+        user_id=user_id,
+        source_tool="codex",
+        blob_key=f"sessions/{token}.sfs",
+        etag=token,
+        blob_size_bytes=size,
+        is_deleted=deleted,
+    )
+
+
+async def test_org_publish_quota_charges_live_member_session_usage(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    test_user: User,
+) -> None:
+    """Org usage is computed live: synced sessions of every org member count
+    (deleted ones and non-members do not); the stale Organization.
+    storage_used_bytes cache is ignored."""
+    from sessionfs.server.routes import marketplace as marketplace_routes
+
+    org, _ = await _org_with_project(db_session, test_user)
+    outsider, _ = await _second_user_headers(db_session, email="outsider-quota@example.com")
+    member, _ = await _second_user_headers(db_session, email="member-quota@example.com")
+    db_session.add(OrgMember(org_id=org.id, user_id=member.id, role="member"))
+    db_session.add_all(
+        [
+            _sized_session(test_user.id, 1_000),
+            _sized_session(member.id, 2_000),
+            _sized_session(member.id, 50_000, deleted=True),
+            _sized_session(outsider.id, 70_000),
+        ]
+    )
+    org.storage_used_bytes = 999_999_999  # never maintained; must be ignored
+    org.storage_limit_bytes = 3_000 + 1  # room for the sessions, not for a package
+    await db_session.commit()
+    assert await marketplace_routes._org_storage_usage(db_session, org.id) == 3_000
+    response = await client.post(
+        f"/api/v1/orgs/{org.id}/skills/packages",
+        headers=auth_headers,
+        files={"package": ("p.tar.gz", _hooky_tar("livequota"), "application/gzip")},
+    )
+    assert response.status_code == 413, response.text
+    assert response.json()["error"]["details"]["current_usage"] == 3_000
+
+
+async def test_publicly_listed_org_versions_are_never_charged_to_the_org(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    test_user: User,
+) -> None:
+    from sessionfs.server.routes import marketplace as marketplace_routes
+
+    org, _ = await _org_with_project(db_session, test_user)
+    _, admin_headers = await _platform_admin_headers(db_session)
+    public = await client.post(
+        f"/api/v1/orgs/{org.id}/skills/packages",
+        headers=admin_headers,
+        files={"package": ("p.tar.gz", _hooky_tar("pubfree"), "application/gzip")},
+        data={"namespace": "pub", "collection": "pub", "visibility": "public"},
+    )
+    assert public.status_code == 201, public.text
+    assert await marketplace_routes._org_storage_usage(db_session, org.id) == 0
+    private = await client.post(
+        f"/api/v1/orgs/{org.id}/skills/packages",
+        headers=auth_headers,
+        files={"package": ("p.tar.gz", _hooky_tar("orgpaid"), "application/gzip")},
+    )
+    assert private.status_code == 201, private.text
+    private_bytes = private.json()["blob_size_bytes"]
+    assert await marketplace_routes._org_storage_usage(db_session, org.id) == private_bytes
+    # Later quota decisions see the same exclusion: room for exactly the org's
+    # own bytes, so the next org version is refused with current == private only.
+    org.storage_limit_bytes = private_bytes + 1
+    await db_session.commit()
+    refused = await client.post(
+        f"/api/v1/orgs/{org.id}/skills/packages",
+        headers=auth_headers,
+        files={"package": ("p.tar.gz", _hooky_tar("orgpaid", "v2"), "application/gzip")},
+    )
+    assert refused.status_code == 413, refused.text
+    assert refused.json()["error"]["details"]["current_usage"] == private_bytes
+
+
+@pytest.mark.parametrize("owner", ["user", "org"])
+async def test_identical_publish_racing_past_the_first_lookup_reuses_the_version(
+    owner: str,
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    test_user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The version-exists check is repeated AFTER the owner lock: an identical
+    publish that committed while we waited is reused, never 429-capped or
+    charged again."""
+    from sessionfs.server.routes import marketplace as marketplace_routes
+
+    if owner == "user":
+        url = "/api/v1/users/me/skills/packages"
+    else:
+        org, _ = await _org_with_project(db_session, test_user)
+        url = f"/api/v1/orgs/{org.id}/skills/packages"
+    first = await client.post(
+        url,
+        headers=auth_headers,
+        files={"package": ("p.tar.gz", _hooky_tar("racer"), "application/gzip")},
+    )
+    assert first.status_code == 201, first.text
+    # At the cap, and no storage left: only the reuse path can succeed.
+    monkeypatch.setattr(marketplace_routes, "MAX_PACKAGE_VERSIONS", 1)
+    monkeypatch.setattr(marketplace_routes, "MAX_PERSONAL_PACKAGE_VERSIONS", 1)
+    monkeypatch.setattr(marketplace_routes, "get_storage_limit", lambda tier: 1)
+    if owner == "org":
+        org.storage_limit_bytes = 1
+        await db_session.commit()
+    real_lookup = marketplace_routes._locked_existing_version
+    lookups = 0
+
+    async def _racing_lookup(db, package_id, content_hash):
+        nonlocal lookups
+        lookups += 1
+        if lookups == 1:
+            return None  # the winner had not committed yet at the first look
+        return await real_lookup(db, package_id, content_hash)
+
+    monkeypatch.setattr(marketplace_routes, "_locked_existing_version", _racing_lookup)
+    again = await client.post(
+        url,
+        headers=auth_headers,
+        files={"package": ("p.tar.gz", _hooky_tar("racer"), "application/gzip")},
+    )
+    assert again.status_code == 201, again.text
+    assert again.json()["version_id"] == first.json()["version_id"]
+    assert lookups == 2
+
+
+
+# --- Codex R2: authenticate before admission, per-user slot, body deadlines ---
+
+
+def _drip_multipart(boundary: str, *, chunk_delay: float, stall_after: int | None = None):
+    """A multipart body that trickles in: one 64-byte chunk every
+    `chunk_delay` seconds forever, or stalls forever after `stall_after`."""
+    import asyncio
+
+    head = (
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"package\"; filename=\"p.tar.gz\"\r\n"
+        "Content-Type: application/gzip\r\n\r\n"
+    ).encode()
+
+    async def _body():
+        yield head
+        sent = 0
+        while True:
+            if stall_after is not None and sent >= stall_after:
+                await asyncio.sleep(3600)
+            await asyncio.sleep(chunk_delay)
+            yield b"x" * 64
+            sent += 1
+
+    return _body()
+
+
+@pytest.mark.parametrize("auth", ["missing", "bogus"])
+async def test_unauthenticated_publish_is_401_before_any_slot_or_body_read(
+    auth: str,
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sessionfs.server.routes import marketplace as marketplace_routes
+
+    @contextlib.asynccontextmanager
+    async def _no_admission(principal):  # pragma: no cover - must not run
+        raise AssertionError("an unauthenticated request reached admission")
+        yield
+
+    monkeypatch.setattr(marketplace_routes, "_publish_admission", _no_admission)
+    body_read = False
+
+    async def _body():
+        nonlocal body_read
+        body_read = True
+        yield b"--b--\r\n"
+
+    headers = {"Content-Type": "multipart/form-data; boundary=b"}
+    if auth == "bogus":
+        headers["Authorization"] = "Bearer sfs_not_a_real_key"
+    response = await client.post("/api/v1/users/me/skills/packages", headers=headers, content=_body())
+    assert response.status_code == 401, response.text
+    assert body_read is False
+
+
+async def test_publish_without_the_route_scope_is_403_before_admission(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    test_user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sessionfs.server.routes import marketplace as marketplace_routes
+
+    org, _ = await _org_with_project(db_session, test_user)
+    headers = await _service_headers(db_session, user=test_user, org_id=org.id, scopes=["marketplace:read"])
+
+    @contextlib.asynccontextmanager
+    async def _no_admission(principal):  # pragma: no cover - must not run
+        raise AssertionError("a request without the route scope reached admission")
+        yield
+
+    monkeypatch.setattr(marketplace_routes, "_publish_admission", _no_admission)
+    response = await client.post(
+        f"/api/v1/orgs/{org.id}/skills/packages",
+        headers=headers,
+        files={"package": ("p.tar.gz", _hooky_tar("noscope"), "application/gzip")},
+    )
+    assert response.status_code == 403, response.text
+    assert "insufficient_scope" in response.text
+
+
+async def test_second_concurrent_publish_by_the_same_user_is_busy(
+    client: AsyncClient,
+    auth_headers: dict,
+    test_user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One authenticated principal holds at most one slot, even with a free one."""
+    from sessionfs.server.routes import marketplace as marketplace_routes
+
+    monkeypatch.setattr(marketplace_routes, "_active_publishes", 1)
+    monkeypatch.setattr(marketplace_routes, "_active_publishers", {str(test_user.id)})
+    response = await client.post(
+        "/api/v1/users/me/skills/packages",
+        headers=auth_headers,
+        files={"package": ("p.tar.gz", _hooky_tar("peruser"), "application/gzip")},
+    )
+    assert response.status_code == 503, response.text
+    assert response.json()["error"]["code"] == "publish_busy"
+    assert marketplace_routes._active_publishes == 1
+
+
+@pytest.mark.parametrize("mode", ["idle", "deadline"])
+async def test_dripped_or_withheld_publish_body_times_out_and_frees_the_slot(
+    mode: str,
+    client: AsyncClient,
+    auth_headers: dict,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(c) A body that stalls (idle) or trickles forever (deadline) is a 408
+    publish_timeout, and the slot + per-user entry are released."""
+    from sessionfs.server.routes import marketplace as marketplace_routes
+
+    monkeypatch.setattr(marketplace_routes, "_active_publishes", 0)
+    monkeypatch.setattr(marketplace_routes, "_active_publishers", set())
+    if mode == "idle":
+        monkeypatch.setattr(marketplace_routes, "PUBLISH_BODY_IDLE_SECONDS", 0.2)
+        body = _drip_multipart("b", chunk_delay=0.01, stall_after=2)
+    else:
+        monkeypatch.setattr(marketplace_routes, "PUBLISH_BODY_IDLE_SECONDS", 5.0)
+        monkeypatch.setattr(marketplace_routes, "PUBLISH_BODY_DEADLINE_SECONDS", 0.4)
+        body = _drip_multipart("b", chunk_delay=0.05)
+    response = await client.post(
+        "/api/v1/users/me/skills/packages",
+        headers={**auth_headers, "Content-Type": "multipart/form-data; boundary=b"},
+        content=body,
+    )
+    assert response.status_code == 408, response.text
+    assert response.json()["error"]["code"] == "publish_timeout"
+    assert marketplace_routes._active_publishes == 0
+    assert marketplace_routes._active_publishers == set()
+
+
+async def test_guarded_receive_bounds_declared_length_bodies_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The deadline wraps receive for Content-Length bodies as well, and stops
+    applying once the final body chunk has arrived."""
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from sessionfs.server.routes import marketplace as marketplace_routes
+
+    monkeypatch.setattr(marketplace_routes, "PUBLISH_BODY_IDLE_SECONDS", 0.1)
+    stalled = asyncio.Event()
+
+    async def _never():
+        await stalled.wait()
+        return {"type": "http.request", "body": b"", "more_body": False}  # pragma: no cover
+
+    receive = marketplace_routes._guarded_receive(_never, count_bytes=False)
+    with pytest.raises(HTTPException) as timed_out:
+        await receive()
+    assert timed_out.value.status_code == 408
+
+    messages = [
+        {"type": "http.request", "body": b"abc", "more_body": False},
+        {"type": "http.disconnect"},
+    ]
+
+    async def _complete_then_slow():
+        message = messages.pop(0)
+        if message["type"] == "http.disconnect":
+            await asyncio.sleep(0.3)  # longer than the idle limit: must pass through
+        return message
+
+    receive = marketplace_routes._guarded_receive(_complete_then_slow, count_bytes=False)
+    assert (await receive())["body"] == b"abc"
+    assert (await receive())["type"] == "http.disconnect"
+
+
+async def test_publish_pre_authentication_does_not_charge_the_rate_limit(
+    client: AsyncClient,
+    auth_headers: dict,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pre-admission auth check must not consume the per-key rate limit:
+    with one request per minute, a single publish still succeeds."""
+    from sessionfs.server.auth import dependencies
+
+    monkeypatch.setattr(dependencies, "_rate_limiter", dependencies.SlidingWindowRateLimiter(max_requests=1))
+    monkeypatch.setattr(dependencies, "_rate_limit_disabled", False)
+    await _publish_personal(client, auth_headers)
+
+
+async def test_rate_limited_key_is_429_before_any_slot_or_body_read(
+    client: AsyncClient,
+    auth_headers: dict,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pre-admission auth check enforces the per-key rate limit, so a key
+    that is already limited cannot occupy a publish slot with a slow body."""
+    from sessionfs.server.auth import dependencies
+    from sessionfs.server.routes import marketplace as marketplace_routes
+
+    limiter = dependencies.SlidingWindowRateLimiter(max_requests=1)
+    monkeypatch.setattr(dependencies, "_rate_limiter", limiter)
+    monkeypatch.setattr(dependencies, "_rate_limit_disabled", False)
+    first = await client.get("/api/v1/marketplace/packages", headers=auth_headers)
+    assert first.status_code == 200, first.text
+
+    @contextlib.asynccontextmanager
+    async def _no_admission(principal):  # pragma: no cover - must not run
+        raise AssertionError("a rate-limited request reached admission")
+        yield
+
+    monkeypatch.setattr(marketplace_routes, "_publish_admission", _no_admission)
+    body_read = False
+
+    async def _body():
+        nonlocal body_read
+        body_read = True
+        yield b"--b--\r\n"
+
+    headers = {**auth_headers, "Content-Type": "multipart/form-data; boundary=b"}
+    response = await client.post("/api/v1/users/me/skills/packages", headers=headers, content=_body())
+    assert response.status_code == 429, response.text
+    assert body_read is False
+
+
+def test_publish_owner_locks_do_not_conflict_with_foreign_key_locks():
+    """Owner-row locks must be FOR NO KEY UPDATE on PostgreSQL: inserting a
+    SkillPackage takes KEY SHARE on the referenced user/org row, which a plain
+    FOR UPDATE would conflict with and deadlock two concurrent first publishes."""
+    import inspect
+
+    from sqlalchemy import select as sa_select
+    from sqlalchemy.dialects import postgresql
+
+    from sessionfs.server.db.models import Organization
+    from sessionfs.server.routes import marketplace as marketplace_routes
+
+    for helper in (marketplace_routes._lock_user_row, marketplace_routes._lock_org_row):
+        assert "with_for_update(key_share=True)" in inspect.getsource(helper)
+    compiled = str(
+        sa_select(Organization.id).with_for_update(key_share=True).compile(dialect=postgresql.dialect())
+    )
+    assert compiled.rstrip().endswith("FOR NO KEY UPDATE")
+
+
+def _forbid_admission(monkeypatch: pytest.MonkeyPatch, reason: str) -> None:
+    from sessionfs.server.routes import marketplace as marketplace_routes
+
+    @contextlib.asynccontextmanager
+    async def _no_admission(principal):  # pragma: no cover - must not run
+        raise AssertionError(reason)
+        yield
+
+    monkeypatch.setattr(marketplace_routes, "_publish_admission", _no_admission)
+
+
+async def test_free_user_personal_publish_is_refused_before_admission(
+    client: AsyncClient,
+    auth_headers: dict,
+    db_session: AsyncSession,
+    test_user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller who could never publish (Free plan) must not hold a slot."""
+    test_user.tier = "free"
+    await db_session.commit()
+    _forbid_admission(monkeypatch, "a Free-tier publish reached admission")
+    response = await client.post(
+        "/api/v1/users/me/skills/packages",
+        headers=auth_headers,
+        files={"package": ("p.tar.gz", _package_tar(), "application/gzip")},
+    )
+    assert response.status_code == 403, response.text
+    assert "upgrade_required" in response.text
+
+
+async def test_org_member_without_admin_role_is_refused_before_admission(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    test_user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    org, _ = await _org_with_project(db_session, test_user)
+    member, member_headers = await _second_user_headers(db_session, email="member-publish@example.com")
+    db_session.add(OrgMember(org_id=org.id, user_id=member.id, role="member"))
+    await db_session.commit()
+    _forbid_admission(monkeypatch, "a non-admin org member reached admission")
+    response = await client.post(
+        f"/api/v1/orgs/{org.id}/skills/packages",
+        headers=member_headers,
+        files={"package": ("p.tar.gz", _package_tar(), "application/gzip")},
+    )
+    assert response.status_code == 403, response.text
+
+
+async def test_unknown_org_publish_is_refused_before_admission(
+    client: AsyncClient,
+    auth_headers: dict,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _forbid_admission(monkeypatch, "a publish to an unknown org reached admission")
+    response = await client.post(
+        "/api/v1/orgs/org_does_not_exist/skills/packages",
+        headers=auth_headers,
+        files={"package": ("p.tar.gz", _package_tar(), "application/gzip")},
+    )
+    assert response.status_code == 404, response.text
+
+
+async def test_sso_enforcement_runs_before_admission_for_explicitly_scoped_user_keys(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    test_user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """require_scope runs SSO enforcement after every passing scope check, not
+    only for wildcard keys; the publish pre-check must too, before a slot."""
+    from fastapi import HTTPException
+
+    from sessionfs.server.routes import marketplace as marketplace_routes
+
+    raw = generate_api_key()
+    db_session.add(
+        ApiKey(
+            id=str(uuid.uuid4()),
+            user_id=test_user.id,
+            key_hash=hash_api_key(raw),
+            name="scoped-user-key",
+            key_kind="user",
+            scopes=json.dumps(["marketplace:write"]),
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+    await db_session.commit()
+    checked: list[str] = []
+
+    async def _sso_locked(ctx, db):
+        checked.append(ctx.key_kind)
+        raise HTTPException(403, detail={"error": "sso_required"})
+
+    monkeypatch.setattr(marketplace_routes, "_sso_enforcement_check", _sso_locked)
+    _forbid_admission(monkeypatch, "an SSO-locked scoped user key reached admission")
+    response = await client.post(
+        "/api/v1/users/me/skills/packages",
+        headers={"Authorization": f"Bearer {raw}"},
+        files={"package": ("p.tar.gz", _package_tar(), "application/gzip")},
+    )
+    assert response.status_code == 403, response.text
+    assert checked == ["user"]

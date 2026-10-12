@@ -66,7 +66,7 @@ TIER_FEATURES: dict[Tier, dict] = {
             "oidc_sso",
             "marketplace_access",
         },
-        "storage_bytes": 500 * 1024 * 1024,  # 500 MB
+        "storage_bytes": 2 * 1024 * 1024 * 1024,  # 2 GB
         "description": "Everything including DLP and auto-audit",
     },
     Tier.TEAM: {
@@ -161,6 +161,10 @@ def get_features_for_tier(tier: Tier | str) -> set[str]:
             else:
                 return set()
     return set(TIER_FEATURES[tier]["features"])
+
+
+# Tiers that get the paid per-session sync caps (every plan above Free).
+SYNC_PAID_TIERS = frozenset({Tier.STARTER, Tier.PRO, Tier.TEAM, Tier.ENTERPRISE})
 
 
 def get_storage_limit(tier: Tier | str) -> int:

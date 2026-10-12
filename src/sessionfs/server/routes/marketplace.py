@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -11,19 +12,28 @@ import logging
 import os
 import re
 import secrets
+import contextlib
+import functools
+from collections.abc import AsyncIterator, Callable, Coroutine
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import and_, exists, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import (
+    WILDCARD_SCOPE,
     AuthContext,
+    _authenticate_and_build_context,
+    _sso_enforcement_check,
     assert_service_key_can_access_project,
+    get_rate_limiter,
     require_scope,
 )
 from sessionfs.server.auth.project_access import user_can_access_project
@@ -49,23 +59,277 @@ from sessionfs.server.routes.knowledge import _get_project_for_auth
 from sessionfs.server.services.entitlements import resolve_entitlement
 from sessionfs.server.services.skill_packages import (
     MAX_UPLOAD_BYTES,
+    HostedSkillPackage,
     HostedSkillPackageError,
     validate_hosted_package,
 )
 from sessionfs.server.storage.base import BlobStore
 from sessionfs.server.tier_gate import get_effective_tier
-from sessionfs.server.tiers import Tier, get_features_for_tier
+from sessionfs.server.tiers import Tier, get_features_for_tier, get_storage_limit
 from sessionfs.skills.adapters import PROJECT_SKILL_ROOTS, USER_SKILL_ROOTS
 from sessionfs.skills.models import SUPPORTED_TOOLS, validate_device_id
 
-router = APIRouter(prefix="/api/v1", tags=["skill-marketplace"])
 logger = logging.getLogger(__name__)
+
+# Multipart envelope allowance on top of the compressed package cap: boundaries,
+# part headers and the small form fields (namespace, collection, locator, ...).
+_PUBLISH_ENVELOPE_SLACK_BYTES = 1024 * 1024
+MAX_PUBLISH_REQUEST_BYTES = MAX_UPLOAD_BYTES + _PUBLISH_ENVELOPE_SLACK_BYTES
+
+
+def _publish_body_too_large() -> HTTPException:
+    return HTTPException(
+        413,
+        detail={
+            "code": "package_too_large",
+            "message": (
+                f"Skill package uploads are limited to {MAX_UPLOAD_BYTES // (1024 * 1024)} MiB compressed."
+            ),
+            "limit": MAX_UPLOAD_BYTES,
+        },
+    )
+
+
+# Per-process publish admission. A publish spools up to ~58 MiB of body and
+# then decompresses/scans/repacks it, so admission is decided BEFORE the body
+# is read and held for the whole request (validation included). When full the
+# request is refused at once (503 + Retry-After) rather than queued, so a burst
+# of parallel max-size uploads can never pile bodies up in memory. A plain
+# counter is enough: each worker process runs one event loop.
+#
+# Only an AUTHENTICATED caller holding the route's scope can take a slot, each
+# principal holds at most one slot at a time, and the body must arrive within
+# a hard deadline with no long idle gap - so neither anonymous clients nor one
+# paying user can pin every slot by dripping or withholding a body.
+MAX_CONCURRENT_PUBLISHES = 2
+PUBLISH_BUSY_RETRY_AFTER_SECONDS = 5
+PUBLISH_BODY_DEADLINE_SECONDS = 120.0
+PUBLISH_BODY_IDLE_SECONDS = 20.0
+_active_publishes = 0
+_active_publishers: set[str] = set()
+# Validation futures started under the current publish slot; the slot is only
+# released once every one of them has really finished (see _publish_admission).
+_publish_workers: ContextVar[list[asyncio.Future[Any]] | None] = ContextVar(
+    "sfs_publish_workers", default=None
+)
+
+
+def _publish_busy() -> HTTPException:
+    return HTTPException(
+        503,
+        detail={
+            "code": "publish_busy",
+            "message": "Too many skill packages are being published right now; retry shortly.",
+            "retry_after": PUBLISH_BUSY_RETRY_AFTER_SECONDS,
+        },
+        headers={"Retry-After": str(PUBLISH_BUSY_RETRY_AFTER_SECONDS)},
+    )
+
+
+def _publish_timeout() -> HTTPException:
+    return HTTPException(
+        408,
+        detail={
+            "code": "publish_timeout",
+            "message": (
+                "The package upload did not arrive in time "
+                f"(at most {int(PUBLISH_BODY_DEADLINE_SECONDS)} s in total, "
+                f"{int(PUBLISH_BODY_IDLE_SECONDS)} s between chunks)."
+            ),
+        },
+    )
+
+
+def _release_publish_slot(principal: str) -> None:
+    global _active_publishes
+    _active_publishes = max(0, _active_publishes - 1)
+    _active_publishers.discard(principal)
+
+
+def _consume_worker_result(future: asyncio.Future[Any]) -> None:
+    # A request cancelled mid-validation never awaits its future; retrieve the
+    # outcome so asyncio does not log "exception was never retrieved".
+    if not future.cancelled():
+        future.exception()
+
+
+@contextlib.asynccontextmanager
+async def _publish_admission(principal: str) -> AsyncIterator[None]:
+    """Take one of MAX_CONCURRENT_PUBLISHES slots without waiting, or 503 -
+    also 503 while `principal` (the authenticated user id) already holds one.
+
+    The slot is released when the request ends - unless a validation worker
+    thread is still running (the request was cancelled while it ran), in which
+    case release is deferred until that thread actually finishes."""
+    global _active_publishes
+    if _active_publishes >= MAX_CONCURRENT_PUBLISHES or principal in _active_publishers:
+        raise _publish_busy()
+    _active_publishes += 1
+    _active_publishers.add(principal)
+    workers: list[asyncio.Future[Any]] = []
+    token = _publish_workers.set(workers)
+    try:
+        yield
+    finally:
+        _publish_workers.reset(token)
+        running = [future for future in workers if not future.done()]
+        if running:
+            remaining = len(running)
+
+            def _worker_done(_future: asyncio.Future[Any]) -> None:
+                nonlocal remaining
+                remaining -= 1
+                if remaining == 0:
+                    _release_publish_slot(principal)
+
+            for future in running:
+                future.add_done_callback(_worker_done)
+        else:
+            _release_publish_slot(principal)
+
+
+_PublishAuthorizer = Callable[[AsyncSession, AuthContext, dict[str, Any]], Coroutine[Any, Any, Any]]
+
+
+async def _preauthenticate_publish(
+    request: Request, scopes: tuple[str, ...], authorize: _PublishAuthorizer | None
+) -> str:
+    """Authenticate AND authorize the caller BEFORE a publish slot is taken or
+    any body byte is read; returns the principal (user id). Authorization runs
+    the route's own pre-body checks (`authorize`: key type, plan, org role and
+    feature) plus SSO enforcement, so only a caller who could actually publish
+    can hold a slot. The route re-runs them afterwards and stays authoritative.
+
+    Mirrors require_scope(): same 401s from the shared auth path, same 403 for
+    a missing scope (wildcard satisfies any). The DB session is resolved the
+    way the route's own get_db dependency is (honoring dependency overrides)
+    and closed before the body is read. The route's dependency still runs
+    afterwards and remains the authoritative check (incl. SSO enforcement)."""
+    overrides = getattr(request.app, "dependency_overrides", {}) or {}
+    db_provider = overrides.get(get_db, get_db)
+    limiter = overrides.get(get_rate_limiter, get_rate_limiter)()
+    sessions = db_provider()
+    db = await sessions.__anext__()
+    try:
+        # Charges the per-key rate limit here, before any slot is taken; the
+        # shared auth path then skips the charge when the route's require_scope
+        # dependency authenticates the same request again.
+        ctx = await _authenticate_and_build_context(request, db, limiter)
+        principal = str(ctx.user.id)
+        key_scopes = list(ctx.scopes)
+        required = set(scopes)
+        if WILDCARD_SCOPE not in key_scopes and not required.intersection(key_scopes):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "insufficient_scope",
+                    "required": sorted(required),
+                    "current": key_scopes,
+                    "message": f"Scope required: one of {sorted(required)}. Key has: {key_scopes}.",
+                },
+            )
+        # Exactly as require_scope: SSO enforcement after every passing scope
+        # check (wildcard or explicit); it exempts service keys itself.
+        await _sso_enforcement_check(ctx, db)
+        if authorize is not None:
+            await authorize(db, ctx, dict(request.path_params))
+    finally:
+        await sessions.aclose()
+    return principal
+
+
+def _guarded_receive(upstream: Any, *, count_bytes: bool) -> Callable[[], Coroutine[Any, Any, Any]]:
+    """Wrap an ASGI receive for a publish body: 408 publish_timeout when the
+    whole body has not arrived within PUBLISH_BODY_DEADLINE_SECONDS or no
+    chunk arrives for PUBLISH_BODY_IDLE_SECONDS; with `count_bytes` (no
+    Content-Length) also 413 once the streamed body exceeds the cap. After the
+    final body chunk, later receives (disconnect listeners) pass through."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + PUBLISH_BODY_DEADLINE_SECONDS
+    received = 0
+    complete = False
+
+    async def receive() -> Any:
+        nonlocal received, complete
+        if complete:
+            return await upstream()
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise _publish_timeout()
+        try:
+            message = await asyncio.wait_for(
+                upstream(), timeout=min(remaining, PUBLISH_BODY_IDLE_SECONDS)
+            )
+        except asyncio.TimeoutError as exc:
+            raise _publish_timeout() from exc
+        if message.get("type") == "http.request":
+            if count_bytes:
+                received += len(message.get("body", b""))
+                if received > MAX_PUBLISH_REQUEST_BYTES:
+                    raise _publish_body_too_large()
+            if not message.get("more_body", False):
+                complete = True
+        return message
+
+    return receive
+
+
+def _capped_upload(
+    *scopes: str, authorize: _PublishAuthorizer | None = None
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Mark a publish endpoint (requiring ANY of `scopes`, exactly as its
+    require_scope dependency does, plus the route's pre-body `authorize`
+    checks) so the request is authenticated, authorized, admitted and
+    size/time-bounded BEFORE FastAPI spools the multipart form (which happens
+    ahead of every dependency and of the handler body)."""
+
+    def mark(endpoint: Callable[..., Any]) -> Callable[..., Any]:
+        endpoint._sfs_capped_upload = (scopes, authorize)  # type: ignore[attr-defined]
+        return endpoint
+
+    return mark
+
+
+class _MarketplaceRoute(APIRoute):
+    """Rejects oversized publish bodies on the declared Content-Length, and
+    counts bytes for bodies without one (chunked), before any form parsing."""
+
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        handler = super().get_route_handler()
+        marker: tuple[tuple[str, ...], _PublishAuthorizer | None] | None = getattr(
+            self.endpoint, "_sfs_capped_upload", None
+        )
+        if not marker:
+            return handler
+        scopes, authorize = marker
+
+        async def capped_handler(request: Request) -> Response:
+            declared = request.headers.get("content-length")
+            if declared is not None:
+                try:
+                    declared_bytes = int(declared)
+                except ValueError as exc:
+                    raise HTTPException(400, "Invalid Content-Length header") from exc
+                if declared_bytes > MAX_PUBLISH_REQUEST_BYTES:
+                    raise _publish_body_too_large()
+            # 1. authenticate + scope (no slot, no body read yet)
+            principal = await _preauthenticate_publish(request, scopes, authorize)
+            # 2. admission (global + per-principal), 3. bounded body read
+            async with _publish_admission(principal):
+                receive = _guarded_receive(request.receive, count_bytes=declared is None)
+                return await handler(Request(request.scope, receive))
+
+        return capped_handler
+
+
+router = APIRouter(prefix="/api/v1", tags=["skill-marketplace"], route_class=_MarketplaceRoute)
 
 # Lock order (PostgreSQL row locks; SQLite is single-writer):
 #   1. skill_package_versions row  (FOR UPDATE)  — version delete, assignment
 #      create, install-request approve all take this FIRST so a reference can
 #      never be created between delete's reference check and its delete.
-#   2. users row                   (FOR UPDATE)  — personal publish quota.
+#   2. users row / organizations row (FOR UPDATE) — publish quota + version cap
+#      for the owning principal (user for personal, org for org/public).
 # Never take (2) before (1) in the same transaction.
 
 _NAMESPACE_RE = re.compile(r"^[a-z0-9](?:[a-z0-9.-]{0,98}[a-z0-9])?$")
@@ -80,6 +344,41 @@ _ELEVATED_CAPABILITIES = _CAPABILITIES - {"instructions"}
 # Personal publishing quota (B5). Storage is charged against the same
 # free/paid sync ceilings the daemon already respects (routes/sync.py).
 MAX_PERSONAL_PACKAGE_VERSIONS = 50
+# Stored immutable versions per package, for every owner type (user, org and
+# platform-admin public publishes alike).
+MAX_PACKAGE_VERSIONS = 100
+
+
+async def _validate_hosted_package_off_loop(
+    data: bytes,
+    *,
+    source_locator: str,
+    source_commit: str | None,
+    source_subdir: str,
+    dlp_policy: dict | None,
+) -> HostedSkillPackage:
+    """Hosted validation (decompress, DLP regex, deterministic repack) is CPU-
+    and memory-heavy: run it in a worker thread so the event loop stays live.
+    Concurrency is bounded by the publish admission slot the caller holds; the
+    future is registered with that slot so a cancelled request keeps the slot
+    until the thread really finishes."""
+    loop = asyncio.get_running_loop()
+    future = loop.run_in_executor(
+        None,
+        functools.partial(
+            validate_hosted_package,
+            data,
+            source_locator=source_locator,
+            source_commit=source_commit,
+            source_subdir=source_subdir,
+            dlp_policy=dlp_policy,
+        ),
+    )
+    future.add_done_callback(_consume_worker_result)
+    workers = _publish_workers.get()
+    if workers is not None:
+        workers.append(future)
+    return await asyncio.shield(future)
 # Same-principal approval consent challenge: single-use emailed code, sha256 at
 # rest, 10-minute lifetime, invalidated after 5 wrong attempts.
 APPROVAL_CHALLENGE_TTL = timedelta(minutes=10)
@@ -741,8 +1040,15 @@ async def _publish_package(
     source_commit: str | None,
     source_subdir: str,
 ) -> dict:
-    """Shared publish path. Org publishes honor the org's DLP policy; personal
-    publishes are metered against the owner's storage quota and version cap."""
+    """Shared publish path. Org publishes honor the org's DLP policy. Personal
+    publishes are metered against the owner's storage quota and version cap;
+    org publishes against the org's entitlement storage (platform-admin public
+    listings excepted); every package against MAX_PACKAGE_VERSIONS.
+
+    The version identity (content_hash) is derived from the validated,
+    normalized tree, so the "version already exists" reuse check can only run
+    after validation; the request-size gate and the bounded off-loop
+    validation are what keep that work from starving the event loop."""
     namespace = namespace.strip().lower()
     if not _NAMESPACE_RE.fullmatch(namespace):
         raise HTTPException(422, "namespace must be a portable lowercase identifier")
@@ -760,6 +1066,8 @@ async def _publish_package(
     ):
         raise HTTPException(422, "source_subdir must be a safe relative path")
     data = await upload.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise _publish_body_too_large()
     if source_locator is None:
         filename = (upload.filename or "package.tar.gz").replace("\\", "/").rsplit("/", 1)[-1]
         locator = f"upload:{filename[:240]}"
@@ -780,7 +1088,7 @@ async def _publish_package(
         ):
             raise HTTPException(422, "source_locator must not embed credentials or query data")
     try:
-        hosted = validate_hosted_package(
+        hosted = await _validate_hosted_package_off_loop(
             data,
             source_locator=locator,
             source_commit=source_commit,
@@ -855,20 +1163,32 @@ async def _publish_package(
                     )
                 )
             ).scalar_one()
-    version = (
-        await db.execute(
-            select(SkillPackageVersion)
-            .where(
-                SkillPackageVersion.package_id == package.id,
-                SkillPackageVersion.content_hash == hosted.content_hash,
-            )
-            .with_for_update()  # lock order step 1: a concurrent delete cannot race the reuse
-        )
-    ).scalar_one_or_none()
+    version = await _locked_existing_version(db, package.id, hosted.content_hash)
     blob_to_write: tuple[str, bytes] | None = None
+    if version is None:
+        # Lock order step 2: serialize this owner's publishes, then look again.
+        # A concurrent identical publish may have committed the very version
+        # while we waited; it must be REUSED, never charged or capped again.
+        # (Nothing holds a version row lock while waiting on an owner row, so
+        # re-locking the now-visible version here cannot form a cycle.)
+        if owner_type == "user":
+            await _lock_user_row(db, auth.user.id)
+        elif org is not None:
+            await _lock_org_row(db, org.id)
+        version = await _locked_existing_version(db, package.id, hosted.content_hash)
     if version is None:
         if owner_type == "user":
             await _enforce_personal_publish_quota(db, auth, len(hosted.canonical_archive))
+        elif org is not None:
+            await _enforce_org_publish_quota(
+                db,
+                org,
+                len(hosted.canonical_archive),
+                # A platform administrator's PUBLIC listing is platform content,
+                # not the org's: exempt from the org storage quota only.
+                charge_storage=not (visibility == "public" and role == "platform_admin"),
+            )
+        await _enforce_package_version_cap(db, package.id)
         version_id = f"skv_{secrets.token_hex(12)}"
         # Generation-unique key: a deleted-then-republished version never shares
         # a key with a row a later publish can own, so a pending delete can
@@ -1015,16 +1335,48 @@ async def _cleanup_failed_publish_blob(db: AsyncSession, store: BlobStore, blob_
 
 
 async def _personal_storage_limit(db: AsyncSession, auth: AuthContext) -> int:
-    free_limit = int(os.environ.get("SFS_MAX_SYNC_BYTES_FREE", str(50 * 1024 * 1024)))
-    paid_limit = int(os.environ.get("SFS_MAX_SYNC_BYTES_PAID", str(300 * 1024 * 1024)))
+    """Aggregate personal storage (synced sessions + personal package
+    versions) in bytes; 0 = unlimited. Paid tiers get their PLAN storage from
+    tiers.get_storage_limit - the same figure /sync/status reports - not the
+    per-session sync cap. Free keeps SFS_MAX_SYNC_BYTES_FREE (Free cannot
+    publish anyway); a platform administrator is unlimited."""
     if auth.user.tier == "admin":
         # Same migration-050 caveat as the publish gate: a platform admin's
         # legacy `free` entitlement must not shrink their quota.
-        return paid_limit
+        return 0
     effective_tier = await get_effective_tier(auth.user, db)
-    # Starter is a paid tier that can publish personally, so it gets the paid limit.
-    paid_tiers = (Tier.STARTER, Tier.PRO, Tier.TEAM, Tier.ENTERPRISE)
-    return paid_limit if effective_tier in paid_tiers else free_limit
+    if effective_tier in (Tier.STARTER, Tier.PRO, Tier.TEAM, Tier.ENTERPRISE):
+        return get_storage_limit(effective_tier)
+    return int(os.environ.get("SFS_MAX_SYNC_BYTES_FREE", str(50 * 1024 * 1024)))
+
+
+# FOR NO KEY UPDATE (key_share=True): still serializes publishers on the owner
+# row, but does not conflict with the KEY SHARE lock PostgreSQL takes on that
+# row when the same transaction (or a concurrent one) inserts a SkillPackage
+# referencing it, so two first publishes cannot deadlock upgrading their locks.
+async def _lock_user_row(db: AsyncSession, user_id: str) -> None:
+    await db.execute(select(User.id).where(User.id == user_id).with_for_update(key_share=True))
+
+
+async def _lock_org_row(db: AsyncSession, org_id: str) -> None:
+    await db.execute(
+        select(Organization.id).where(Organization.id == org_id).with_for_update(key_share=True)
+    )
+
+
+async def _locked_existing_version(
+    db: AsyncSession, package_id: str, content_hash: str
+) -> SkillPackageVersion | None:
+    return (
+        await db.execute(
+            select(SkillPackageVersion)
+            .where(
+                SkillPackageVersion.package_id == package_id,
+                SkillPackageVersion.content_hash == content_hash,
+            )
+            .with_for_update()  # lock order step 1: a concurrent delete cannot race the reuse
+        )
+    ).scalar_one_or_none()
 
 
 async def _enforce_personal_publish_quota(
@@ -1033,10 +1385,10 @@ async def _enforce_personal_publish_quota(
     """B5: personal packages share the owner's sync storage ceiling and are
     capped at MAX_PERSONAL_PACKAGE_VERSIONS stored immutable versions.
 
-    The owner's user row is locked FOR UPDATE first so parallel uploads are
-    serialized through this check (PostgreSQL row lock; SQLite is single-
-    writer) and cannot both pass the count/quota read before inserting."""
-    await db.execute(select(User.id).where(User.id == auth.user.id).with_for_update())
+    The caller holds the owner's user row lock (FOR UPDATE, _lock_user_row),
+    so parallel uploads are serialized through this check (PostgreSQL row
+    lock; SQLite is single-writer) and cannot both pass the count/quota read
+    before inserting."""
     stored_versions, stored_bytes = (
         await db.execute(
             select(
@@ -1084,18 +1436,105 @@ async def _enforce_personal_publish_quota(
         )
 
 
-@router.post("/users/me/skills/packages", status_code=201)
-async def publish_personal_package(
-    request: Request,
-    package: UploadFile = File(...),
-    namespace: str = Form("personal"),
-    collection: str = Form("personal"),
-    source_locator: str | None = Form(None),
-    source_commit: str | None = Form(None),
-    source_subdir: str = Form(""),
-    auth: AuthContext = Depends(require_scope("marketplace:write")),
-    db: AsyncSession = Depends(get_db),
-) -> dict:
+async def _enforce_package_version_cap(db: AsyncSession, package_id: str) -> None:
+    """Every package (user, org or public) keeps at most MAX_PACKAGE_VERSIONS
+    stored immutable versions. Runs after the owner-row lock, so concurrent
+    publishes for one owner are serialized through the count."""
+    stored = (
+        await db.execute(
+            select(func.count(SkillPackageVersion.id)).where(
+                SkillPackageVersion.package_id == package_id
+            )
+        )
+    ).scalar_one()
+    if int(stored or 0) >= MAX_PACKAGE_VERSIONS:
+        raise HTTPException(
+            429,
+            detail={
+                "code": "skill_package_version_limit",
+                "message": (
+                    f"A package is limited to {MAX_PACKAGE_VERSIONS} stored versions; delete "
+                    "older versions before publishing another."
+                ),
+                "limit": MAX_PACKAGE_VERSIONS,
+                "current": int(stored or 0),
+            },
+        )
+
+
+async def _org_storage_limit(db: AsyncSession, org: Organization) -> int:
+    """The org's storage ceiling in bytes (0 = unlimited), entitlement-first:
+    an explicit entitlement limit wins, else the org's cached limit, else the
+    tier default (the same fallback tier_gate.check_storage applies)."""
+    entitlement = await resolve_entitlement("org", org.id, db)
+    if entitlement is not None and entitlement.storage_limit_bytes is not None:
+        return int(entitlement.storage_limit_bytes)
+    if org.storage_limit_bytes:
+        return int(org.storage_limit_bytes)
+    return get_storage_limit(await _org_tier(db, org))
+
+
+async def _org_storage_usage(db: AsyncSession, org_id: str) -> int:
+    """Live org storage usage in bytes: synced (non-deleted) sessions of every
+    org member plus every org-owned package version that is NOT publicly
+    listed. Public versions are platform content and are never charged to the
+    org, now or in any later quota calculation. Computed from source rows
+    because Organization.storage_used_bytes is not maintained."""
+    member_ids = select(OrgMember.user_id).where(OrgMember.org_id == org_id)
+    session_bytes = (
+        await db.execute(
+            select(func.coalesce(func.sum(Session.blob_size_bytes), 0)).where(
+                Session.user_id.in_(member_ids),
+                Session.is_deleted == False,  # noqa: E712
+            )
+        )
+    ).scalar_one()
+    publicly_listed = exists().where(
+        SkillMarketplaceListing.version_id == SkillPackageVersion.id,
+        SkillMarketplaceListing.visibility == "public",
+    )
+    package_bytes = (
+        await db.execute(
+            select(func.coalesce(func.sum(SkillPackageVersion.blob_size_bytes), 0))
+            .join(SkillPackage, SkillPackage.id == SkillPackageVersion.package_id)
+            .where(
+                SkillPackage.owner_type == "org",
+                SkillPackage.owner_id == org_id,
+                ~publicly_listed,
+            )
+        )
+    ).scalar_one()
+    return int(session_bytes or 0) + int(package_bytes or 0)
+
+
+async def _enforce_org_publish_quota(
+    db: AsyncSession, org: Organization, blob_size_bytes: int, *, charge_storage: bool
+) -> None:
+    """Org publishes are charged against the org's entitlement storage (live
+    member session usage + non-public org package versions). The caller holds
+    the org row lock (lock order step 2, _lock_org_row) so parallel publishes
+    cannot both pass the read."""
+    if not charge_storage:
+        return
+    limit = await _org_storage_limit(db, org)
+    if limit <= 0:
+        return
+    current = await _org_storage_usage(db, org.id)
+    if current + blob_size_bytes > limit:
+        raise HTTPException(
+            413,
+            detail={
+                "code": "storage_limit",
+                "message": "Publishing this package would exceed the organization's storage quota.",
+                "current_usage": current,
+                "limit": limit,
+                "package_bytes": blob_size_bytes,
+            },
+        )
+
+
+async def _authorize_personal_publish(db: AsyncSession, auth: AuthContext) -> None:
+    """Pre-body checks for a personal publish (also run before admission)."""
     if auth.key_kind != "user":
         raise HTTPException(403, "Service keys cannot publish personal packages")
     # Personal publishing is a paid capability (Starter+). Browsing, download
@@ -1114,6 +1553,36 @@ async def publish_personal_package(
                 "current_tier": tier.value,
             },
         )
+
+
+async def _authorize_org_publish(
+    db: AsyncSession, auth: AuthContext, org_id: str
+) -> tuple[Organization, str]:
+    """Pre-body checks for an org publish (also run before admission): org
+    admin/owner (or platform admin) and the team skill library feature. The
+    public-visibility check needs the form and stays in the route."""
+    org, role = await _org_access(db, auth, org_id, admin=True)
+    await _check_org_feature(db, org, "team_skill_library")
+    return org, role
+
+
+@router.post("/users/me/skills/packages", status_code=201)
+@_capped_upload(
+    "marketplace:write",
+    authorize=lambda db, auth, _params: _authorize_personal_publish(db, auth),
+)
+async def publish_personal_package(
+    request: Request,
+    package: UploadFile = File(...),
+    namespace: str = Form("personal"),
+    collection: str = Form("personal"),
+    source_locator: str | None = Form(None),
+    source_commit: str | None = Form(None),
+    source_subdir: str = Form(""),
+    auth: AuthContext = Depends(require_scope("marketplace:write")),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    await _authorize_personal_publish(db, auth)
     return await _publish_package(
         request=request,
         db=db,
@@ -1133,6 +1602,10 @@ async def publish_personal_package(
 
 
 @router.post("/orgs/{org_id}/skills/packages", status_code=201)
+@_capped_upload(
+    "skills:admin",
+    authorize=lambda db, auth, params: _authorize_org_publish(db, auth, str(params.get("org_id", ""))),
+)
 async def publish_org_package(
     org_id: str,
     request: Request,
@@ -1146,8 +1619,7 @@ async def publish_org_package(
     auth: AuthContext = Depends(require_scope("skills:admin")),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    org, role = await _org_access(db, auth, org_id, admin=True)
-    await _check_org_feature(db, org, "team_skill_library")
+    org, role = await _authorize_org_publish(db, auth, org_id)
     if visibility == "public" and role != "platform_admin":
         raise HTTPException(403, "Only a platform administrator can publish public packages")
     return await _publish_package(

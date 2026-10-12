@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.1] - 2026-10-12
+
+**Starter gets the storage it pays for, the Marketplace gets a launch catalog, and hosted publishing is hardened.**
+
+### Added
+- **Launch catalog: `sessionfs-workflows`.** An MIT-licensed, SessionFS-authored package with three instruction-only skills (no scripts, hooks, or MCP servers): `session-handoff`, `ticket-workflow`, and `project-knowledge`. Source lives in `catalog/sessionfs-workflows`; a test keeps it publishable through the hosted validator.
+
+### Changed
+- **Pro plan storage is 2 GB**, matching the pricing page (was 500 MB in the plan definition).
+- **`/sync/status` reports each paid plan's storage** (Starter 500 MB, Pro 2 GB, Team 1 GB per user, Enterprise unlimited) instead of the per-session upload cap. Free still reports its 50 MB sync cap.
+- **Hosted skill packages are capped at 48 MiB unpacked** (about 58 MiB compressed), down from 128 MiB. Local `sfs skill` imports keep the 128 MiB limit.
+
+### Fixed
+- **The oversized-session error suggested `sfs compact`, which does not exist.** It now points to upgrading for a larger per-session limit.
+- **Starter customers were held to Free-tier sync limits.** Starter now gets the paid per-session cap (300 MB) and per-file cap (50 MB), like every other paid plan.
+- **Publishing a skill package could stall the API.** Oversized uploads are rejected from `Content-Length` (or a running byte count for chunked bodies) before the form is read. Callers are authenticated before a publish slot is taken; each API process admits at most two publishes at a time and one per user, answering `503 publish_busy` with `Retry-After` beyond that; a body that stalls or takes longer than two minutes gets `408 publish_timeout`; validation runs off the event loop, and a slot is not freed until its validation thread has really finished.
+- **Organization publishes had no storage quota.** Org and org-visible publishes are charged against the organization's entitlement storage, counting members' synced sessions and the org's packages live. Every package is limited to 100 stored versions. Curated public listings by platform administrators are never charged to the org, but do count toward the version cap. An identical re-publish that races another reuses the existing version instead of hitting the cap.
+- **The personal publishing quota used the 300 MB per-session cap as total storage.** It now uses the plan's storage (Starter 500 MB, Pro 2 GB, Team 1 GB, Enterprise and platform administrators unlimited), matching `sfs sync status`.
+- **A malicious Git source could exhaust memory during `sfs skill add`.** `git ls-tree` output is streamed and git and any helper processes it started are stopped as soon as the file-count, depth, record-size, or time limit is exceeded.
+- **Skill portability tests failed on Linux CI** because of forced colour output and case-insensitive filename assumptions; the v0.16.0 API deploy was blocked by this and ships with this release.
+
 ## [0.16.0] - 2026-10-11
 
 **Skills and plugins across every tool, plus the SessionFS Marketplace.** Install a reusable Agent Skill or Agent Plugin once, pinned to an exact version, and use it in all supported coding agents — with a clear report of anything a tool can't support. Teams can browse a hosted catalog, share packages inside their organization, and approve what agents may load. Adds 8 MCP tools (68 → 76) and server migration 063.

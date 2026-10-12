@@ -69,7 +69,7 @@ class TestStorageLimits:
         assert get_storage_limit(Tier.STARTER) == 500 * 1024 * 1024
 
     def test_pro_has_500mb(self):
-        assert get_storage_limit(Tier.PRO) == 500 * 1024 * 1024
+        assert get_storage_limit(Tier.PRO) == 2 * 1024 * 1024 * 1024
 
     def test_team_has_1gb(self):
         assert get_storage_limit(Tier.TEAM) == 1024 * 1024 * 1024

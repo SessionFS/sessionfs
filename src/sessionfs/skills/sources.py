@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import re
+import signal
 import shutil
 # Git runs with a fixed argv, shell disabled, and an absolute executable path.
 import subprocess  # nosec B404
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit, urlunsplit
 
 from sessionfs.skills.models import SkillError, SourceIdentity
+from sessionfs.skills.package import USTAR_NAME_LIMIT, USTAR_PREFIX_LIMIT, fits_ustar
 from sessionfs.skills.path_safety import CasefoldCollisionTracker, is_link_or_reparse
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -21,6 +25,13 @@ _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 PER_FILE_CAP_BYTES = 16 * 1024 * 1024
 MAX_GIT_FILES = 5_000
 MAX_GIT_TOTAL_BYTES = 128 * 1024 * 1024
+# One NUL-terminated `ls-tree -lrz` record (mode, type, oid, size, TAB, path),
+# NOT counting the selected subdir prefix, which is added to the limit per
+# import. Package paths must fit ustar (~256 bytes) and are checked per entry
+# before being retained; a longer record is refused whether or not its NUL has
+# arrived yet, so acceptance never depends on pipe read boundaries.
+MAX_GIT_TREE_RECORD_BYTES = 4 * 1024
+_GIT_TIMEOUT_SECONDS = 60
 _LOCAL_SOURCE_TYPES = {"local", "local-project"}
 
 
@@ -119,8 +130,6 @@ _FILTER_UNSUPPORTED_MARKERS = (
 
 
 def _dir_size(path: Path) -> int:
-    import os
-
     total = 0
     for dirpath, _, filenames in os.walk(path):
         for name in filenames:
@@ -129,6 +138,26 @@ def _dir_size(path: Path) -> int:
             except OSError:
                 continue
     return total
+
+
+# POSIX: run git in its own session/process group so a kill reaches every
+# descendant (git-remote-https, ssh, ...). A surviving descendant that inherited
+# stdout would otherwise keep the pipe open and block the reader indefinitely.
+_NEW_PROCESS_GROUP = hasattr(os, "killpg")
+
+
+def _kill_process_tree(process: subprocess.Popen) -> None:
+    """Kill git and all of its descendants (POSIX process group), falling back
+    to killing just the child where process groups do not exist (Windows)."""
+    killpg = getattr(os, "killpg", None)
+    if killpg is not None and _NEW_PROCESS_GROUP:
+        try:
+            killpg(process.pid, signal.SIGKILL)
+            return
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    with contextlib.suppress(OSError):
+        process.kill()
 
 
 def _run_bounded(
@@ -146,7 +175,12 @@ def _run_bounded(
     import threading
 
     process = subprocess.Popen(  # nosec B603
-        argv, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env
+        argv,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        start_new_session=_NEW_PROCESS_GROUP,
     )
     tripped = threading.Event()
     stop = threading.Event()
@@ -155,7 +189,7 @@ def _run_bounded(
         while not stop.wait(_FETCH_WATCHDOG_INTERVAL):
             if _dir_size(watch_dir) > disk_cap:
                 tripped.set()
-                process.kill()
+                _kill_process_tree(process)
                 return
 
     watcher = threading.Thread(target=_watch, daemon=True)
@@ -163,7 +197,7 @@ def _run_bounded(
     try:
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
-        process.kill()
+        _kill_process_tree(process)
         process.communicate()
         raise SkillError("Git source operation timed out") from exc
     finally:
@@ -176,6 +210,72 @@ def _run_bounded(
     return process.returncode, stdout, stderr
 
 
+def _run_streaming(
+    argv: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str] | None,
+    on_record: Callable[[bytes], None],
+    timeout: float,
+    max_record_bytes: int = MAX_GIT_TREE_RECORD_BYTES,
+) -> tuple[int, bytes]:
+    """Run a subprocess and hand each NUL-terminated stdout record to
+    `on_record` as it arrives, never buffering the whole output. If
+    `on_record` raises (a limit was exceeded) the process is killed at once
+    and the exception propagates. stderr goes to a temp file so a chatty
+    process can never deadlock on a full pipe."""
+    import threading
+
+    with tempfile.TemporaryFile() as stderr_file:
+        process = subprocess.Popen(  # nosec B603
+            argv,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=stderr_file,
+            env=env,
+            start_new_session=_NEW_PROCESS_GROUP,
+        )
+        timed_out = threading.Event()
+
+        def _expire() -> None:
+            timed_out.set()
+            _kill_process_tree(process)
+
+        timer = threading.Timer(timeout, _expire)
+        timer.daemon = True
+        timer.start()
+        stdout = process.stdout
+        assert stdout is not None  # noqa: S101 - stdout=PIPE above
+        try:
+            pending = b""
+            while True:
+                chunk = stdout.read1(65536)
+                if not chunk:
+                    break
+                pending += chunk
+                *records, pending = pending.split(b"\0")
+                for record in records:
+                    if len(record) > max_record_bytes:
+                        raise SkillError("Git tree contains an invalid entry")
+                    on_record(record)
+                if len(pending) > max_record_bytes:
+                    raise SkillError("Git tree contains an invalid entry")
+            if pending:
+                on_record(pending)
+            returncode = process.wait()
+        except BaseException:
+            _kill_process_tree(process)
+            process.wait()
+            raise
+        finally:
+            timer.cancel()
+            stdout.close()
+        if timed_out.is_set():
+            raise SkillError("Git source operation timed out")
+        stderr_file.seek(0)
+        return returncode, stderr_file.read(64 * 1024)
+
+
 def _run_git(
     args: list[str],
     *,
@@ -185,20 +285,40 @@ def _run_git(
     watch_dir: Path | None = None,
     disk_cap: int | None = None,
     stderr_sink: list[str] | None = None,
+    on_record: Callable[[bytes], None] | None = None,
+    max_record_bytes: int = MAX_GIT_TREE_RECORD_BYTES,
 ) -> bytes:
+    """Run git hardened (no hooks, fixed argv, no shell, 60 s timeout).
+
+    With `on_record`, stdout is streamed record by record (NUL-separated) into
+    the callback instead of being returned, so a hostile tree listing is
+    refused - and git killed - as soon as a limit trips; returns b""."""
     git_path = shutil.which("git")
     if git_path is None:
         raise SkillError("git is required to import remote skills")
     run_env = None
     if env:
-        import os
-
         run_env = {**os.environ, **env}
     argv = [git_path, "-c", "core.hooksPath=/dev/null", *args]
     try:
-        if watch_dir is not None and disk_cap is not None:
+        if on_record is not None:
+            returncode, stderr = _run_streaming(
+                argv,
+                cwd=cwd,
+                env=run_env,
+                on_record=on_record,
+                timeout=_GIT_TIMEOUT_SECONDS,
+                max_record_bytes=max_record_bytes,
+            )
+            stdout = b""
+        elif watch_dir is not None and disk_cap is not None:
             returncode, stdout, stderr = _run_bounded(
-                argv, cwd=cwd, watch_dir=watch_dir, disk_cap=disk_cap, env=run_env, timeout=60
+                argv,
+                cwd=cwd,
+                watch_dir=watch_dir,
+                disk_cap=disk_cap,
+                env=run_env,
+                timeout=_GIT_TIMEOUT_SECONDS,
             )
         else:
             # Every dynamic value remains one argv element; no shell is involved.
@@ -208,7 +328,7 @@ def _run_git(
                 input=input_data,
                 capture_output=True,
                 check=False,
-                timeout=60,
+                timeout=_GIT_TIMEOUT_SECONDS,
                 env=run_env,
             )
             returncode, stdout, stderr = result.returncode, result.stdout, result.stderr
@@ -379,30 +499,26 @@ def materialize_source(
             pathspecs.append(clean_subdir)
         if pathspecs:
             tree_args.extend(["--", *pathspecs])
-        try:
-            # `ls-tree -l` prints sizes and would lazily fetch every blob the
-            # blob:limit filter left out; with lazy fetching disabled git fails
-            # instead, which can only mean a blob above the per-file cap.
-            entries = _run_git(tree_args, cwd=repo, env={"GIT_NO_LAZY_FETCH": "1"}).split(b"\0")
-        except SkillError as exc:
-            message = str(exc).lower()
-            if any(marker in message for marker in _MISSING_OBJECT_MARKERS):
-                raise SkillError(
-                    f"Git source contains a file above the {PER_FILE_CAP_BYTES}-byte per-file "
-                    "limit (its blob was withheld by the partial clone filter)"
-                ) from exc
-            raise
         output.mkdir()
         count = 0
         total = 0
+        records = 0
         collisions = CasefoldCollisionTracker()
         # Pass 1 (no fetch): parse and validate EVERY entry - mode, path
         # safety, case collisions, per-file cap, aggregate limits - so a
-        # rejected tree never causes a single blob to be cat-file'd.
+        # rejected tree never causes a single blob to be cat-file'd. Entries are
+        # validated AS GIT STREAMS THEM: a tree bomb (millions of entries, or
+        # absurdly deep paths) is refused and git killed at the first entry
+        # past a limit, never buffered in full.
         planned: list[tuple[PurePosixPath, str, int, str]] = []
-        for entry in entries:
+
+        def _plan_entry(entry: bytes) -> None:
+            nonlocal count, total, records
             if not entry:
-                continue
+                return
+            records += 1
+            if records > MAX_GIT_FILES:
+                raise SkillError("Git package exceeds import limits")
             try:
                 header, raw_path = entry.split(b"\t", 1)
                 mode, kind, object_id, raw_size = header.decode("ascii").split()
@@ -416,7 +532,7 @@ def materialize_source(
             if clean_subdir:
                 prefix = clean_subdir + "/"
                 if not relative.startswith(prefix):
-                    continue
+                    return
                 relative = relative[len(prefix):]
             pure = PurePosixPath(relative)
             if (
@@ -432,6 +548,14 @@ def materialize_source(
                 or len(pure.parts) > 16
             ):
                 raise SkillError(f"Unsafe Git tree path: {repository_path}")
+            # Refuse over-long paths HERE, before they are retained: import would
+            # reject them later anyway, but 5,000 multi-KiB paths (plus their
+            # collision-tracker prefixes) are enough to exhaust memory first.
+            if not fits_ustar(relative):
+                raise SkillError(
+                    f"Package path exceeds the ustar limit (name <= {USTAR_NAME_LIMIT} bytes with a "
+                    f"prefix <= {USTAR_PREFIX_LIMIT} bytes): {relative[:300]}"
+                )
             try:
                 # A.md vs a.md (or Docs/ vs docs/, a vs a/x): silently overwrites on
                 # case-insensitive filesystems and makes the hash host-dependent.
@@ -450,6 +574,41 @@ def materialize_source(
             if count > MAX_GIT_FILES or total > MAX_GIT_TOTAL_BYTES:
                 raise SkillError("Git package exceeds import limits")
             planned.append((pure, object_id, size, repository_path))
+
+        tree_rejections: list[SkillError] = []
+
+        def _on_tree_record(entry: bytes) -> None:
+            try:
+                _plan_entry(entry)
+            except SkillError as exc:
+                # Remember OUR rejection so it is never re-labelled below as a
+                # git missing-object failure (a path may contain marker words).
+                tree_rejections.append(exc)
+                raise
+
+        try:
+            # `ls-tree -l` prints sizes and would lazily fetch every blob the
+            # blob:limit filter left out; with lazy fetching disabled git fails
+            # instead, which can only mean a blob above the per-file cap.
+            _run_git(
+                tree_args,
+                cwd=repo,
+                env={"GIT_NO_LAZY_FETCH": "1"},
+                on_record=_on_tree_record,
+                # The fixed record budget applies to the part after the
+                # selected subdir, so a deep but legitimate subdir still fits.
+                max_record_bytes=MAX_GIT_TREE_RECORD_BYTES + len(clean_subdir.encode("utf-8")) + 1,
+            )
+        except SkillError as exc:
+            if exc in tree_rejections:
+                raise
+            message = str(exc).lower()
+            if any(marker in message for marker in _MISSING_OBJECT_MARKERS):
+                raise SkillError(
+                    f"Git source contains a file above the {PER_FILE_CAP_BYTES}-byte per-file "
+                    "limit (its blob was withheld by the partial clone filter)"
+                ) from exc
+            raise
         # Pass 2: fetch only after the whole tree passed validation.
         for pure, object_id, size, repository_path in planned:
             data = _run_git(["cat-file", "blob", object_id], cwd=repo)

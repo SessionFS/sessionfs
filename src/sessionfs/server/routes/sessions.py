@@ -67,9 +67,9 @@ def _sync_limit_for_tier(tier) -> int:
     personal user.tier field.
     """
     # Import locally to avoid circular imports at module load time
-    from sessionfs.server.tiers import Tier
+    from sessionfs.server.tiers import SYNC_PAID_TIERS
 
-    if tier in (Tier.PRO, Tier.TEAM, Tier.ENTERPRISE):
+    if tier in SYNC_PAID_TIERS:
         return SFS_MAX_SYNC_BYTES_PAID
     return SFS_MAX_SYNC_BYTES_FREE
 
@@ -178,9 +178,9 @@ def _member_size_limit_for_tier(tier) -> int:
     Mirrors `_sync_limit_for_tier` — call `get_effective_tier(user, db)` to
     resolve org tier inheritance before passing the result here.
     """
-    from sessionfs.server.tiers import Tier
+    from sessionfs.server.tiers import SYNC_PAID_TIERS
 
-    if tier in (Tier.PRO, Tier.TEAM, Tier.ENTERPRISE):
+    if tier in SYNC_PAID_TIERS:
         return SFS_MAX_SYNC_MEMBER_BYTES_PAID
     return SFS_MAX_SYNC_MEMBER_BYTES_FREE
 
@@ -1428,7 +1428,7 @@ async def sync_push(
                     "code": "PAYLOAD_TOO_LARGE",
                     "message": (
                         f"Session exceeds {limit_str} cloud limit for your tier. "
-                        "Run sfs compact to reduce size, or upgrade your plan."
+                        "Upgrade your plan for a larger per-session limit."
                     ),
                 },
             )
@@ -1444,7 +1444,7 @@ async def sync_push(
                     "code": "PAYLOAD_TOO_LARGE",
                     "message": (
                         f"Session exceeds {limit_str} cloud limit for your tier. "
-                        "Run sfs compact to reduce size, or upgrade your plan."
+                        "Upgrade your plan for a larger per-session limit."
                     ),
                 },
             )
