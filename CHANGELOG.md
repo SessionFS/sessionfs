@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0] - 2026-10-11
+
+**Skills and plugins across every tool, plus the SessionFS Marketplace.** Install a reusable Agent Skill or Agent Plugin once, pinned to an exact version, and use it in all supported coding agents — with a clear report of anything a tool can't support. Teams can browse a hosted catalog, share packages inside their organization, and approve what agents may load. Adds 8 MCP tools (68 → 76) and server migration 063.
+
+### Added
+
+- **`sfs skill` (alias `sfs plugin`).** Inspect, install, update, remove and roll back Agent Skills and Agent Plugins from a local path, a Git repository pinned to an exact commit, or a registered marketplace (including Claude Code marketplace repositories). One command installs for Claude Code, Codex, Gemini CLI, Cursor, GitHub Copilot, Amp, Cline, Kilo Code and Roo Code (legacy, since Roo's upstream repository was archived). Standard skills are kept byte-for-byte; anything a target tool can't express is listed as omitted rather than silently dropped.
+- **Safe installs.** Every install is planned first, checked for path safety and collisions, and applied as one transaction that rolls back cleanly on failure. Files you edited are never overwritten or deleted. `sfs skill doctor` reports drift and missing files.
+- **Reproducible setups.** A committed project lockfile plus `sfs skill sync --locked` reproduces exactly the same packages on another machine or in CI.
+- **Explicit consent for risky content.** Packages with scripts, hooks or tool grants need a specific flag (`--allow-scripts`, `--allow-hooks`, `--allow-executable-extensions`), bound to that exact package version; `--yes` alone is refused. Any change to a package's contents asks again.
+- **Multiple marketplaces.** Register several named marketplace sources per user or project with `sfs skill marketplace add|list|refresh|remove`, and search them with `sfs skill search`. Packages with the same name in two marketplaces never silently replace each other.
+- **SessionFS Marketplace (hosted).** Browse packages in the dashboard with their source, exact content hash, license, risk flags and a per-tool compatibility view. Every version is immutable and scanned for secrets on upload. Browsing and downloading are open to every signed-in user, including the Free tier.
+- **Publishing.** Starter and above can publish private personal packages. Team and Enterprise organizations can publish to their organization, and the public catalog is curated. Organization and public packages must declare a license.
+- **Team distribution.** Team and Enterprise organizations can manage registries, assign exact package versions to the organization, a member or a device, and run an install-approval queue per project. Enterprise organizations can attach policy to assignments.
+- **MCP marketplace tools.** Agents can search and preview marketplace packages, load an approved instruction-only skill into the current session (always marked as untrusted third-party text), and request an install. They can't write files, run scripts, enable hooks or start MCP servers; approval happens only in the dashboard or API, and approving your own request requires an emailed confirmation code.
+- **Package provenance in captured sessions.** Sessions record which skill packages were active, on every tier.
+
+### Security
+
+- Skill package uploads have a dedicated Cloud Armor rate limit.
+- Skill imports enforce per-file, per-package and file-count limits, refuse unsafe paths and symlinks, and never execute imported code while fetching, scanning or planning.
+
 ## [0.15.6] - 2026-10-09
 
 **Site and docs.** Upgrades the documentation site to Astro 7 and Starlight 0.42, which clears every npm advisory in the site build and fixes tables in the docs. No CLI, server, schema or MCP tool changes; migrations remain at 062.

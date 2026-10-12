@@ -28,6 +28,7 @@ const HelpPage = React.lazy(() => import('./help/HelpPage'));
 const GettingStartedPage = React.lazy(() => import('./onboarding/GettingStartedPage'));
 const OnboardingGate = React.lazy(() => import('./onboarding/OnboardingGate'));
 const ShareView = React.lazy(() => import('./share/ShareView'));
+const MarketplacePage = React.lazy(() => import('./marketplace/MarketplacePage'));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -79,6 +80,7 @@ export default function App() {
               <Route path="/sessions/:id" element={<SessionDetail />} />
               <Route path="/projects" element={<ProjectsPage />} />
               <Route path="/projects/:id" element={<ProjectDetail />} />
+              <Route path="/marketplace" element={<MarketplacePage />} />
               <Route path="/handoffs" element={<HandoffList />} />
               <Route path="/handoffs/:id" element={<HandoffDetail />} />
               <Route path="/transfers" element={<TransferInbox />} />

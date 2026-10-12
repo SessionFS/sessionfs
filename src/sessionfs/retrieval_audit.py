@@ -30,6 +30,8 @@ RETRIEVAL_TOOLS = {
     "get_context_section",
     "find_related_sessions",
     "get_session_context",
+    # v0.16: approved instruction-only skill loads are retrievals too.
+    "load_marketplace_skill",
 }
 
 
@@ -104,7 +106,22 @@ def sanitize_arguments(args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def collect_returned_refs(value: Any) -> dict[str, list[str]]:
+def _skill_package_ref(obj: dict[str, Any]) -> dict[str, str] | None:
+    """A marketplace package payload carries `package_id` plus its immutable
+    identity; it is audited as a skill ref, never as a persona."""
+    package_id = obj.get("package_id")
+    if not isinstance(package_id, str) or not package_id:
+        return None
+    if obj.get("version_id") is None and obj.get("content_hash") is None:
+        return None
+    return {
+        "package_id": package_id,
+        "version_id": str(obj.get("version_id") or ""),
+        "content_hash": str(obj.get("content_hash") or ""),
+    }
+
+
+def collect_returned_refs(value: Any) -> dict[str, list[Any]]:
     refs: dict[str, set[str]] = {
         "ids": set(),
         "kb_entry_ids": set(),
@@ -112,11 +129,16 @@ def collect_returned_refs(value: Any) -> dict[str, list[str]]:
         "session_ids": set(),
         "persona_names": set(),
     }
+    skill_refs: dict[tuple[str, str, str], dict[str, str]] = {}
 
     def walk(obj: Any, depth: int = 0) -> None:
         if depth > MAX_REF_WALK_DEPTH:
             return
         if isinstance(obj, dict):
+            skill_ref = _skill_package_ref(obj)
+            if skill_ref is not None:
+                key = (skill_ref["package_id"], skill_ref["version_id"], skill_ref["content_hash"])
+                skill_refs.setdefault(key, skill_ref)
             for key, item in obj.items():
                 if item is not None:
                     text = str(item)
@@ -128,7 +150,7 @@ def collect_returned_refs(value: Any) -> dict[str, list[str]]:
                         refs["slugs"].add(text)
                     elif key == "session_id":
                         refs["session_ids"].add(text)
-                    elif key == "name":
+                    elif key == "name" and skill_ref is None:
                         refs["persona_names"].add(text)
                 walk(item, depth + 1)
         elif isinstance(obj, list):
@@ -136,7 +158,10 @@ def collect_returned_refs(value: Any) -> dict[str, list[str]]:
                 walk(item, depth + 1)
 
     walk(value)
-    return {key: sorted(values) for key, values in refs.items() if values}
+    result: dict[str, list[Any]] = {key: sorted(values) for key, values in refs.items() if values}
+    if skill_refs:
+        result["skill_packages"] = [skill_refs[key] for key in sorted(skill_refs)]
+    return result
 
 
 def record_retrieval(

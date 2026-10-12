@@ -130,6 +130,7 @@ SessionFS converts between native formats automatically — message roles, tool 
 | `sfs init` | Interactive setup wizard — auto-detects tools, optional sync |
 | `sfs security scan\|fix` | Audit config permissions, API key exposure, dependencies |
 | `sfs org create\|list\|show\|invite\|remove` | Manage organizations, members, and roles |
+| `sfs skill inspect\|add\|list\|sync\|update\|remove\|rollback\|doctor` | Install portable Agent Skills / Agent Plugins across tools (`sfs plugin` is an alias) |
 | `sfs admin reindex` | Re-extract metadata for all cloud sessions |
 | `sfs admin create-trial\|create-license\|list\|extend\|revoke` | Manage self-hosted licenses |
 
@@ -224,6 +225,8 @@ Sessions are stored as `.sfs` directories:
 All file paths are relative to workspace root. Sessions are append-only — conflict resolution appends both sides rather than merging.
 
 ## Status
+
+**v0.16.0 — Public Beta.** 3780 backend tests + 486 dashboard tests passing. 63 database migrations. 76 MCP tools. **Skills and plugins across every tool, plus the SessionFS Marketplace.** `sfs skill` (alias `sfs plugin`) installs Agent Skills and Agent Plugins from a local path, a pinned Git commit, or a marketplace into every supported tool in one transaction, keeping standard skills byte-for-byte and listing anything a tool can't support. Risky content (scripts, hooks, tool grants) needs explicit consent bound to the exact package version, and `sfs skill sync --locked` reproduces a project's packages on any machine. The hosted Marketplace shows each immutable version's source, hash, license, risk and per-tool compatibility: browsing is open to every signed-in user, private publishing is Starter+, and Team/Enterprise organizations get registries, assignments and install approvals. 8 new MCP tools let agents search, preview and load approved instruction-only skills, and request installs, without ever writing files or enabling executable content. Migration 063.
 
 **v0.15.6 — Public Beta.** Site and docs. 3198 backend tests + 459 dashboard tests passing. 62 database migrations (unchanged). 68 MCP tools. The documentation site moves to Astro 7 and Starlight 0.42: no known vulnerabilities in the site build, tables in the docs render properly again, and the docs no longer point to the unavailable remote MCP endpoint. No CLI, server, schema or MCP tool changes.
 

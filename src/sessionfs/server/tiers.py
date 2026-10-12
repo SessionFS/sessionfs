@@ -37,6 +37,7 @@ TIER_FEATURES: dict[Tier, dict] = {
             "judge_manual",
             "summary_deterministic",
             "oidc_sso",
+            "marketplace_access",
         },
         "storage_bytes": 500 * 1024 * 1024,  # 500 MB
         "description": "Cloud sync + dashboard + manual judge",
@@ -63,6 +64,7 @@ TIER_FEATURES: dict[Tier, dict] = {
             "custom_base_url",
             "agent_personas",
             "oidc_sso",
+            "marketplace_access",
         },
         "storage_bytes": 500 * 1024 * 1024,  # 500 MB
         "description": "Everything including DLP and auto-audit",
@@ -95,6 +97,8 @@ TIER_FEATURES: dict[Tier, dict] = {
             "agent_runs",
             "team_handoff",
             "oidc_sso",
+            "marketplace_access",
+            "team_skill_library",
         },
         "storage_bytes": 1024 * 1024 * 1024,  # 1 GB per user
         "description": "Pro + team management",
@@ -135,6 +139,9 @@ TIER_FEATURES: dict[Tier, dict] = {
             "audit_retention_6yr",
             "breach_notifications",
             "custom_patterns",
+            "marketplace_access",
+            "team_skill_library",
+            "skills_policy",
         },
         "storage_bytes": 0,  # Unlimited (self-hosted)
         "description": "Self-hosted + HIPAA + governance",

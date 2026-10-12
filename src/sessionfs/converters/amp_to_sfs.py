@@ -35,9 +35,33 @@ class AmpParsedSession:
     message_count: int = 0
     turn_count: int = 0
     tool_use_count: int = 0
+    workspace_root: str | None = None
     total_input_tokens: int = 0
     total_output_tokens: int = 0
     parse_errors: list[str] = field(default_factory=list)
+
+
+_WORKSPACE_KEYS = ("cwd", "workingDirectory", "workspaceRoot", "workspaceFolder", "repoRoot", "rootPath")
+_WORKSPACE_TAG_PREFIXES = ("cwd:", "workspace:", "repoRoot:", "root:")
+
+
+def _extract_workspace_root(data: dict[str, Any]) -> str | None:
+    """Best-effort workspace root from the thread's env/initial block or tags."""
+    env_raw = data.get("env")
+    env: dict[str, Any] = env_raw if isinstance(env_raw, dict) else {}
+    initial_raw = env.get("initial")
+    initial: dict[str, Any] = initial_raw if isinstance(initial_raw, dict) else {}
+    for source in (initial, env, data):
+        for key in _WORKSPACE_KEYS:
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    for tag in initial.get("tags", []) or []:
+        if isinstance(tag, str):
+            for prefix in _WORKSPACE_TAG_PREFIXES:
+                if tag.startswith(prefix) and tag[len(prefix):].strip():
+                    return tag[len(prefix):].strip()
+    return None
 
 
 def _extract_model_from_tags(env: dict[str, Any] | None) -> str | None:
@@ -101,6 +125,7 @@ def parse_amp_session(thread_path: Path) -> AmpParsedSession:
         source_path=str(thread_path),
         start_time=start_time,
         model=model,
+        workspace_root=_extract_workspace_root(data),
         total_input_tokens=input_tokens,
         total_output_tokens=output_tokens,
     )
@@ -264,6 +289,11 @@ def convert_amp_to_sfs(
     }
 
     (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    if amp_session.workspace_root:
+        # Same shape as the Cline/Claude Code converters so provenance and
+        # workspace-aware features can find the project root.
+        workspace = {"root_path": amp_session.workspace_root, "git": {}}
+        (output_dir / "workspace.json").write_text(json.dumps(workspace, indent=2))
 
     with open(output_dir / "messages.jsonl", "w") as f:
         for msg in messages:

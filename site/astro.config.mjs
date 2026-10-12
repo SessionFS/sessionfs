@@ -66,6 +66,7 @@ export default defineConfig({
             { label: 'MCP Server', slug: 'mcp' },
             { label: 'Git Integration', slug: 'git-integration' },
             { label: 'Project Context', slug: 'project-context' },
+            { label: 'Skills Marketplace', slug: 'skills-marketplace' },
           ],
         },
         {

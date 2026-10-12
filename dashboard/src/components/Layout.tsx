@@ -29,6 +29,9 @@ const sessionsIcon = mkIcon(
 const projectsIcon = mkIcon(
   <><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></>
 );
+const marketplaceIcon = mkIcon(
+  <><path d="M4 7h16M7 4v6M17 4v6" /><rect x="3" y="7" width="18" height="14" rx="2" /><path d="M8 13h3v3H8zM14 13h3" /></>
+);
 const handoffsIcon = mkIcon(
   <><path d="M16 3h5v5M21 3l-7 7M8 21H3v-5M3 21l7-7" /><circle cx="12" cy="12" r="2" /></>
 );
@@ -81,6 +84,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: '/', label: 'Sessions', icon: sessionsIcon, match: (p: string) => p === '/' },
       { to: '/projects', label: 'Projects', icon: projectsIcon, match: (p: string) => p.startsWith('/projects') },
+      { to: '/marketplace', label: 'Marketplace', icon: marketplaceIcon, match: (p: string) => p.startsWith('/marketplace') },
       { to: '/handoffs', label: 'Handoffs', icon: handoffsIcon, match: (p: string) => p.startsWith('/handoffs'), badgeKey: 'pending' },
     ],
   },

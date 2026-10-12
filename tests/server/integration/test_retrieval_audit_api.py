@@ -376,3 +376,51 @@ async def test_create_context_accepts_null_link_fields(
     body = resp.json()
     assert body["ticket_id"] is None
     assert body["persona_name"] is None
+
+
+async def test_marketplace_skill_refs_round_trip_through_the_audit_api(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """R20 P2-1: the literal `collect_returned_refs` output of a marketplace
+    load (structured `skill_packages` refs) is accepted and read back intact."""
+    from sessionfs.retrieval_audit import collect_returned_refs
+
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    ticket = await _make_ticket(db_session, project, user)
+    ctx_resp = await client.post(
+        f"/api/v1/projects/{project.id}/retrieval-audit-contexts",
+        headers=_hdrs(key),
+        json={"ticket_id": ticket.id, "lease_epoch": 1},
+    )
+    assert ctx_resp.status_code == 201, ctx_resp.text
+    context_id = ctx_resp.json()["id"]
+    load_result = {
+        "package_id": "spk_1",
+        "version_id": "skv_1",
+        "content_hash": "sha256:" + "a" * 64,
+        "name": "review-helper",
+        "listing_id": "sml_1",
+        "instruction_bundle": [{"path": "skills/review/SKILL.md", "content": "# x"}],
+    }
+    refs = collect_returned_refs(load_result)
+    assert refs["skill_packages"] == [{"package_id": "spk_1", "version_id": "skv_1", "content_hash": "sha256:" + "a" * 64}]
+    event = await client.post(
+        f"/api/v1/projects/{project.id}/retrieval-audit-events",
+        headers=_hdrs(key),
+        json={"context_id": context_id, "tool_name": "load_marketplace_skill", "arguments": {"version_id": "skv_1"}, "returned_refs": refs},
+    )
+    assert event.status_code == 201, event.text
+    assert event.json()["returned_refs"] == refs
+    log = await client.get(f"/api/v1/retrieval-audit-contexts/{context_id}/events", headers=_hdrs(key))
+    assert log.status_code == 200
+    assert log.json()["events"][0]["returned_refs"]["skill_packages"] == refs["skill_packages"]
+    assert "persona_names" not in log.json()["events"][0]["returned_refs"]
+    # Malformed structured refs are still refused (never silently coerced).
+    for bad in ({"skill_packages": [{"package_id": 1}]}, {"skill_packages": [42]}, {"skill_packages": [{}]}):
+        rejected = await client.post(
+            f"/api/v1/projects/{project.id}/retrieval-audit-events",
+            headers=_hdrs(key),
+            json={"context_id": context_id, "tool_name": "load_marketplace_skill", "returned_refs": bad},
+        )
+        assert rejected.status_code == 422, bad

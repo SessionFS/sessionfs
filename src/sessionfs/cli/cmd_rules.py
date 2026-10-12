@@ -146,16 +146,9 @@ def _get_git_remote() -> str | None:
 
 
 def _get_git_root() -> Path | None:
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode == 0:
-            return Path(result.stdout.strip())
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
-    return None
+    from sessionfs.project_root import find_git_toplevel
+
+    return find_git_toplevel()
 
 
 def _normalize_remote(url: str) -> str:

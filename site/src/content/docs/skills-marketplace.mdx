@@ -1,0 +1,106 @@
+---
+title: "Skills Marketplace"
+description: "Portable Agent Skills and Agent Plugins with immutable provenance, cross-tool translation, approvals, and managed assignments."
+---
+
+SessionFS treats reusable agent capability as a governed package. A team can inspect one immutable Agent Skill or Agent Plugin, see what changes across tools, then consume the same package through local installation, an authenticated feed, MCP instruction loading, or an organization assignment.
+
+The canonical authoring formats remain [Agent Skills](https://agentskills.io/) and Agent Plugins 1.0. SessionFS adds source identity, content hashes, DLP scanning, compatibility plans, consent, policy, and session provenance; it does not introduce a competing skill language.
+
+## Before You Trust a Package
+
+Every Marketplace detail response and dashboard dossier includes:
+
+- Immutable `version_id` and SHA-256 content hash
+- Source type, locator, subdirectory, and pinned commit when supplied
+- Public, personal, or organization visibility
+- Verification state and declared license
+- Per-tool instruction count and deliberate omissions
+- Risk flags for scripts, MCP declarations, and executable extensions
+
+Previewed instructions are **untrusted text**. Previewing does not install, approve, or execute anything.
+
+## Four Consumption Modes
+
+### 1. Local Device Installation
+
+Use `sfs skill` when an engineer or CI runner controls the filesystem:
+
+```bash
+sfs skill inspect https://github.com/acme/agent-capabilities.git --pin <40-char-sha>
+sfs skill add https://github.com/acme/agent-capabilities.git \
+  --pin <40-char-sha> \
+  --for claude-code \
+  --for codex
+```
+
+The client computes a deterministic plan, checks collisions and path safety, writes through a transaction journal, and records the actual output hashes. SessionFS refuses unmanaged-file clobbering. Consent is an inert allowlist, not a denylist: any skill asset that is not plain documentation or data (`.md`, `.txt`, `.json`, `.yaml`, images, `LICENSE`, ...) needs `--allow-scripts`; `SKILL.md` frontmatter `hooks:` or `allowed-tools:` needs `--allow-hooks`; a `hooks.json` or `hooks/` directory inside a skill needs `--allow-executable-extensions`. `--yes` alone is refused for any of these, with the message naming the hook or tool grant. Local MCP activation is not silently enabled.
+
+### 2. Authenticated Target Feed
+
+`GET /api/v1/marketplace/feeds/{tool}` returns a target-aware portability plan with the immutable download path, target install roots, and omitted components.
+
+For generic hosted uploads this is a **SessionFS authenticated download-and-translate feed**, not a vendor-native marketplace claim. Vendor-native installation requires a future verified source adapter that can satisfy that vendor's own source contract. The response makes this explicit with:
+
+```json
+{
+  "projection_type": "sessionfs-portability-plan",
+  "native_marketplace_install": false,
+  "delivery": "authenticated-download-and-translate"
+}
+```
+
+### 3. MCP Runtime Instructions
+
+Agents can search and preview packages over MCP. To load instruction text into a live agent context:
+
+1. Call `request_skill_install` with the exact `version_id`, `content_hash`, project, target tool, and scope.
+2. A project owner/admin approves the exact hash from the dashboard **Marketplace** tab (or `POST .../skill-install-requests/{id}/approve` with `approved_capabilities`), confirming each elevated capability, or an organization admin creates a matching assignment. Approval is not available over MCP. If the approver is the same principal that filed the request, the server also requires a single-use confirmation code emailed to that account (`POST .../skill-install-requests/{id}/challenge`, 10-minute lifetime).
+3. Call `load_marketplace_skill` for that project and tool.
+
+The load response is instruction-only. It explicitly reports `executable_components_included: false` and `untrusted: true` with a fixed preamble marking the text as third-party data. MCP cannot write device paths or activate scripts, hooks, executable extensions, or local MCP servers.
+
+### 4. Organization Assignments
+
+Team and Enterprise organizations can manage multiple registry references and assign exact package versions to the entire organization, one member, or one member's device. Device assignments bind both the user and device identifier; another organization member cannot claim a guessed device ID.
+
+Assignments are desired state. Clients still perform local preflight and installation. Enterprise policy may make an assignment required, but it does not turn the server into a remote code-execution path.
+
+## Supported Tools
+
+`sfs skill` plans and installs packages for Claude Code, Codex, Gemini CLI, Cursor, GitHub Copilot, Amp, Cline, Kilo Code, and Roo Code. Roo Code support is **legacy**: its upstream repository was archived in May 2026, so the adapter keeps working but will not track future Roo changes.
+
+## Dashboard Workflow
+
+Open **Marketplace** in the dashboard to search everything visible to your identity. Package detail shows the trust dossier and compatibility matrix. Choose **Request for project** to create an instruction-only request. Project owners/admins decide pending requests from the project's **Marketplace** tab.
+
+Organization members also see registry policy and effective assignments. Private packages remain hidden from users outside the owning organization; unauthorized detail and download requests return `404` rather than disclosing existence.
+
+## Publishing Boundary
+
+The v0.16 public UI does not offer open self-service marketplace publishing. The authenticated API supports private user uploads, organization-admin uploads, and platform-admin curated public uploads. Uploads are bounded, path-safe, DLP-scanned, normalized, and stored as immutable canonical archives.
+
+| Who can publish | Visibility | Requirement |
+| --- | --- | --- |
+| Any signed-in user on Starter or above | Personal (only you) | None beyond the upload checks |
+| Organization admins on Team or Enterprise | Organization | The package's `plugin.json` must declare a `license` |
+| Platform administrators | Public (curated catalog) | The package's `plugin.json` must declare a `license` |
+
+Browsing, downloading, and loading approved instructions are available to every signed-in user, including the Free tier. Any declared license value is accepted for organization packages, including `UNLICENSED` or `proprietary` for internal work; packages without one are rejected with `license_required`.
+
+Uploads must be plain ustar/GNU `tar.gz` archives **without** PAX or GNU extended headers (no `x`/`g`/`L`/`K` records): member paths must fit the ustar name/prefix fields, and archives created with `tar --format=ustar` or Python's `tarfile` `USTAR_FORMAT`/`GNU_FORMAT` with short paths qualify. Extended-header archives are rejected outright because their metadata records are read with whatever size they declare.
+
+Registry URLs are recorded as pinned references. SessionFS does not fetch arbitrary registry URLs on the server, avoiding an SSRF or credential-forwarding path.
+
+## Service Keys
+
+Automated clients should use the minimum required scopes:
+
+- `marketplace:read` for search, inspect, preview, download, and feeds
+- `marketplace:write` for package publishing
+- `skills:read` for assignments, requests, and approved instruction loading
+- `skills:request` to create/cancel requests
+- `skills:approve` to approve project requests
+- `skills:admin` for organization registries, packages, and assignments
+
+Service keys remain organization-bound. A key cannot cross its organization even if it knows another resource ID.

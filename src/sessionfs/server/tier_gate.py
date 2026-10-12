@@ -41,11 +41,26 @@ class UserContext:
 async def get_user_org_membership(
     user_id: str, db: AsyncSession
 ) -> OrgMember | None:
-    """Get user's organization membership, if any."""
+    """Get the user's PRIMARY organization membership, if any.
+
+    A user may belong to several organizations; the membership for their
+    `default_org_id` wins, then the earliest joined. Never raises
+    MultipleResultsFound (which 500'd every tier-gated route for multi-org
+    users)."""
+    from sqlalchemy import case
+
     result = await db.execute(
-        select(OrgMember).where(OrgMember.user_id == user_id)
+        select(OrgMember)
+        .join(User, User.id == OrgMember.user_id)
+        .where(OrgMember.user_id == user_id)
+        .order_by(
+            case((OrgMember.org_id == User.default_org_id, 0), else_=1),
+            OrgMember.joined_at,
+            OrgMember.org_id,
+        )
+        .limit(1)
     )
-    return result.scalar_one_or_none()
+    return result.scalars().first()
 
 
 async def _get_org(org_id: str, db: AsyncSession) -> Organization | None:

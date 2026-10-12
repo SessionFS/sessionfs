@@ -2538,6 +2538,436 @@ class OrgAuditEvent(Base):
     )
 
 
+# v0.16 — portable skills/plugins marketplace (migration 063).
+
+
+class SkillPackage(Base):
+    """Logical package identity; bytes live in immutable version rows."""
+
+    __tablename__ = "skill_packages"
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_type",
+            "owner_id",
+            "namespace",
+            "source_type",
+            "source_locator",
+            "source_subdir",
+            "name",
+            name="uq_skill_package_source_identity",
+        ),
+        Index("idx_skill_packages_org_name", "org_id", "name"),
+        Index("idx_skill_packages_created_by", "created_by_user_id"),
+        CheckConstraint(
+            "owner_type IN ('system', 'org', 'user')",
+            name="ck_skill_package_owner_type",
+        ),
+        CheckConstraint(
+            "(owner_type = 'system' AND org_id IS NULL) OR "
+            "(owner_type = 'org' AND org_id IS NOT NULL AND owner_id = org_id) OR "
+            "(owner_type = 'user' AND org_id IS NULL)",
+            name="ck_skill_package_owner_scope",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    owner_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    org_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True
+    )
+    namespace: Mapped[str] = mapped_column(String(100), nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    source_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    source_locator: Mapped[str] = mapped_column(String(500), nullable=False)
+    source_subdir: Mapped[str] = mapped_column(String(500), nullable=False, server_default="")
+    current_version_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    is_yanked: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class SkillPackageVersion(Base):
+    """Immutable package bytes and hash-bound inspection metadata."""
+
+    __tablename__ = "skill_package_versions"
+    __table_args__ = (
+        UniqueConstraint("package_id", "content_hash", name="uq_skill_version_hash"),
+        Index("idx_skill_versions_package_created", "package_id", "created_at"),
+        Index("idx_skill_versions_content_hash", "content_hash"),
+        Index("idx_skill_versions_created_by", "created_by_user_id"),
+        CheckConstraint(
+            "dlp_status IN ('passed', 'blocked')",
+            name="ck_skill_version_dlp_status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    package_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("skill_packages.id", ondelete="CASCADE"), nullable=False
+    )
+    version_label: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    content_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_commit: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    agent_plugin_schema: Mapped[str] = mapped_column(String(200), nullable=False)
+    manifest_json: Mapped[str] = mapped_column(Text, nullable=False)
+    risk_summary: Mapped[str] = mapped_column(Text, nullable=False, server_default="{}")
+    compatibility: Mapped[str] = mapped_column(Text, nullable=False, server_default="{}")
+    instruction_bundle: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    license_metadata: Mapped[str] = mapped_column(Text, nullable=False, server_default="{}")
+    signature_metadata: Mapped[str] = mapped_column(Text, nullable=False, server_default="{}")
+    dlp_status: Mapped[str] = mapped_column(String(20), nullable=False)
+    blob_key: Mapped[str] = mapped_column(String(700), nullable=False, unique=True)
+    blob_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class SkillVersionTool(Base):
+    """One row per (version, supported tool): the SQL-side compatibility filter."""
+
+    __tablename__ = "skill_version_tools"
+    __table_args__ = (Index("idx_skill_version_tools_tool", "tool", "version_id"),)
+
+    version_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("skill_package_versions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    tool: Mapped[str] = mapped_column(String(50), primary_key=True)
+
+
+class SkillMarketplaceListing(Base):
+    __tablename__ = "skill_marketplace_listings"
+    __table_args__ = (
+        UniqueConstraint("collection", "version_id", name="uq_skill_listing_collection_version"),
+        Index(
+            "idx_skill_listing_visibility_state",
+            "visibility",
+            "org_id",
+            "is_published",
+            "is_yanked",
+        ),
+        Index("idx_skill_listing_search_name", "name"),
+        Index("idx_skill_listing_package", "package_id"),
+        Index("idx_skill_listing_owner_user", "owner_user_id"),
+        Index("idx_skill_listing_version", "version_id"),
+        Index("idx_skill_listing_org", "org_id"),
+        Index("idx_skill_listing_published_by", "published_by_user_id"),
+        CheckConstraint(
+            "visibility IN ('public', 'user', 'org')",
+            name="ck_skill_listing_visibility",
+        ),
+        CheckConstraint(
+            "(visibility = 'public' AND org_id IS NULL AND owner_user_id IS NULL) OR "
+            "(visibility = 'user' AND org_id IS NULL AND owner_user_id IS NOT NULL) OR "
+            "(visibility = 'org' AND org_id IS NOT NULL AND owner_user_id IS NULL)",
+            name="ck_skill_listing_visibility_owner",
+        ),
+        CheckConstraint(
+            "verification_state IN ('verified', 'unverified', 'blocked')",
+            name="ck_skill_listing_verification_state",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    collection: Mapped[str] = mapped_column(
+        String(100), nullable=False, default="sessionfs", server_default="sessionfs"
+    )
+    package_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("skill_packages.id", ondelete="CASCADE"), nullable=False
+    )
+    version_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("skill_package_versions.id", ondelete="CASCADE"), nullable=False
+    )
+    org_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True
+    )
+    owner_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=True
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    visibility: Mapped[str] = mapped_column(String(20), nullable=False)
+    is_published: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    is_yanked: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    verification_state: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="verified", server_default="verified"
+    )
+    search_text: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    published_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    published_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class SkillConsentReceipt(Base):
+    __tablename__ = "skill_consent_receipts"
+    __table_args__ = (
+        Index("idx_skill_consent_actor_hash", "actor_user_id", "content_hash"),
+        Index("idx_skill_consent_version", "version_id"),
+        Index("idx_skill_consent_request", "install_request_id"),
+        CheckConstraint(
+            "actor_type IN ('user', 'service_key')",
+            name="ck_skill_consent_actor_type",
+        ),
+        CheckConstraint(
+            "scope IN ('project', 'user', 'org', 'device')",
+            name="ck_skill_consent_scope",
+        ),
+        CheckConstraint(
+            "capability IN ('instructions', 'assets', 'scripts', 'mcp', 'hooks')",
+            name="ck_skill_consent_capability",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # Plain string, deliberately NOT a ForeignKey: a consent receipt is an
+    # AUDIT ROW and must outlive the version it consented to (the same
+    # audit-row-survival convention AgentRun uses for persona/ticket/session).
+    # An ON DELETE CASCADE here destroyed the consent evidence at the exact
+    # moment a version was deleted; `deleted_at` archives it instead.
+    version_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+    actor_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    actor_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    capability: Mapped[str] = mapped_column(String(50), nullable=False)
+    target_tool: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    scope: Mapped[str] = mapped_column(String(20), nullable=False)
+    device_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    managed_policy_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    install_request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    project_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Archived (soft-deleted) when the consented version was deleted. The row
+    # is retained as durable consent evidence; every read filters it out.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class SkillMarketplaceRegistry(Base):
+    __tablename__ = "skill_marketplace_registries"
+    __table_args__ = (
+        UniqueConstraint("owner_type", "owner_id", "alias", name="uq_skill_registry_alias"),
+        Index("idx_skill_registry_org", "org_id", "policy_state"),
+        Index("idx_skill_registry_created_by", "created_by_user_id"),
+        CheckConstraint(
+            "owner_type IN ('user', 'project', 'org')",
+            name="ck_skill_registry_owner_type",
+        ),
+        CheckConstraint(
+            "policy_state IN ('approved', 'review', 'blocked')",
+            name="ck_skill_registry_policy_state",
+        ),
+        CheckConstraint(
+            "(owner_type = 'org' AND org_id IS NOT NULL AND owner_id = org_id) OR "
+            "(owner_type = 'user' AND org_id IS NULL) OR "
+            "owner_type = 'project'",
+            name="ck_skill_registry_owner_scope",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    owner_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    org_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True
+    )
+    alias: Mapped[str] = mapped_column(String(50), nullable=False)
+    source_url: Mapped[str] = mapped_column(String(500), nullable=False)
+    refresh_commit: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    policy_state: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="approved", server_default="approved"
+    )
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class SkillInstallRequest(Base):
+    __tablename__ = "skill_install_requests"
+    __table_args__ = (
+        Index("idx_skill_request_project_status", "project_id", "status", "created_at"),
+        Index("idx_skill_request_user_status", "requested_by_user_id", "status"),
+        Index("idx_skill_request_version", "version_id"),
+        Index("idx_skill_request_target_user", "target_user_id"),
+        Index("idx_skill_request_approved_by", "approved_by_user_id"),
+        CheckConstraint(
+            "status IN ('pending', 'approved', 'rejected', 'cancelled', 'applied', 'revoked')",
+            name="ck_skill_request_status",
+        ),
+        CheckConstraint(
+            "target_scope IN ('project', 'user', 'device')",
+            name="ck_skill_request_target_scope",
+        ),
+        CheckConstraint(
+            "target_scope != 'device' OR target_device_id IS NOT NULL",
+            name="ck_skill_request_device_target",
+        ),
+        CheckConstraint(
+            "requested_via IN ('api', 'mcp')",
+            name="ck_skill_request_requested_via",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    # Plain string, deliberately NOT a ForeignKey: a decided request is the
+    # ATTRIBUTION record for "who asked for this package" and must outlive the
+    # version. An ON DELETE CASCADE erased that trail (and dangled the consent
+    # receipt's install_request_id) the moment a version was deleted.
+    version_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+    requested_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    requested_by_session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    requested_actor_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="user", server_default="user"
+    )
+    requested_by_service_key_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    requested_by_service_key_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    target_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=True
+    )
+    target_device_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    target_scope: Mapped[str] = mapped_column(String(20), nullable=False)
+    target_tools: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    requested_capabilities: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="pending")
+    # 'api' | 'mcp' — request origin, for DISPLAY only. Caller-supplied under
+    # bearer auth, so it is never a security input; same-principal approval is
+    # gated by the emailed confirmation code below instead.
+    requested_via: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="api", server_default="api"
+    )
+    approval_challenge_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Issuance rate limit anchor (a new code may be issued at most every
+    # APPROVAL_CHALLENGE_MIN_INTERVAL); cleared when a delivery fails.
+    approval_challenge_issued_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    approval_challenge_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    approval_challenge_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    approved_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Archived (soft-deleted) when the requested version was deleted. Only
+    # TERMINAL requests are archived; pending ones are hard-deleted because
+    # they can never be acted on again. Every read path filters this out.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class OrgSkillAssignment(Base):
+    __tablename__ = "org_skill_assignments"
+    __table_args__ = (
+        Index(
+            "uq_org_skill_assignment_org_user",
+            "org_id",
+            "version_id",
+            "target_type",
+            "target_id",
+            unique=True,
+            postgresql_where=text("target_type != 'device'"),
+            sqlite_where=text("target_type != 'device'"),
+        ),
+        Index(
+            "uq_org_skill_assignment_device",
+            "org_id",
+            "version_id",
+            "target_user_id",
+            "target_id",
+            unique=True,
+            postgresql_where=text("target_type = 'device'"),
+            sqlite_where=text("target_type = 'device'"),
+        ),
+        Index("idx_org_skill_assignment_target", "org_id", "target_type", "target_id"),
+        Index("idx_org_skill_assignment_version", "version_id"),
+        Index("idx_org_skill_assignment_target_user", "target_user_id"),
+        Index("idx_org_skill_assignment_created_by", "created_by_user_id"),
+        CheckConstraint(
+            "target_type IN ('org', 'user', 'device')",
+            name="ck_org_skill_assignment_target_type",
+        ),
+        CheckConstraint(
+            "(target_type = 'org' AND target_id = '*' AND target_user_id IS NULL) OR "
+            "(target_type = 'user' AND target_user_id IS NOT NULL AND "
+            "target_id = target_user_id) OR "
+            "(target_type = 'device' AND target_user_id IS NOT NULL AND target_id != '*')",
+            name="ck_org_skill_assignment_target_binding",
+        ),
+        CheckConstraint(
+            "mode IN ('required', 'optional')",
+            name="ck_org_skill_assignment_mode",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    org_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    version_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("skill_package_versions.id", ondelete="CASCADE"), nullable=False
+    )
+    content_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    target_id: Mapped[str] = mapped_column(String(100), nullable=False, server_default="*")
+    target_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=True
+    )
+    mode: Mapped[str] = mapped_column(String(20), nullable=False, server_default="optional")
+    target_tools: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    policy_snapshot: Mapped[str] = mapped_column(Text, nullable=False, server_default="{}")
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class ActivationAttempt(Base):
     """Durable single-use token store for license activation.
 

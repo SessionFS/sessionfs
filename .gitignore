@@ -32,7 +32,9 @@ Thumbs.db
 *.pem
 
 # SessionFS local data (never commit user sessions)
-.sessionfs/
+.sessionfs/*
+!.sessionfs/skills.lock.json
+!.sessionfs/marketplaces.json
 
 # Internal — never commit to main (see .release/private-files.txt)
 .agents/

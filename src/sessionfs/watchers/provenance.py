@@ -14,6 +14,17 @@ from pathlib import Path
 logger = logging.getLogger("sfsd.provenance")
 
 
+def workspace_root_from_session(session_dir: Path) -> str | None:
+    """Read `workspace.json.root_path` from a converted .sfs directory."""
+    try:
+        raw = (session_dir / "workspace.json").read_text(encoding="utf-8")
+        value = json.loads(raw)
+        root = value.get("root_path") if isinstance(value, dict) else None
+        return root if isinstance(root, str) and root else None
+    except (OSError, ValueError):
+        return None
+
+
 def annotate_manifest_with_provenance(
     session_dir: Path,
     tool: str,

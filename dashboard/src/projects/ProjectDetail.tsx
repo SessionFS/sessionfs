@@ -31,6 +31,7 @@ import TransferPanel from './TransferPanel';
 import PersonasTab from './PersonasTab';
 import TicketsTab from './TicketsTab';
 import AgentRunsTab from './AgentRunsTab';
+import MarketplaceTab from './MarketplaceTab';
 import ReposTab from './ReposTab';
 import MergeSurface from './MergeSurface';
 import { useMyOrgs } from '../transfers/useTransfers';
@@ -44,6 +45,7 @@ type ProjectTab =
   | 'personas'
   | 'tickets'
   | 'agent-runs'
+  | 'marketplace'
   | 'repos'
   | 'merge'
   | 'history'
@@ -1098,6 +1100,7 @@ export default function ProjectDetail() {
     { key: 'personas', label: 'Personas' },
     { key: 'tickets', label: 'Tickets' },
     { key: 'agent-runs', label: 'Agent runs' },
+    { key: 'marketplace', label: 'Marketplace' },
     { key: 'repos', label: 'Repos' },
     { key: 'merge', label: 'Merge' },
     { key: 'transfer', label: 'Transfer' },
@@ -1414,6 +1417,12 @@ export default function ProjectDetail() {
       {activeTab === 'agent-runs' && (
         <Card key={`agent-runs-${tabKey}`} level="elevated" className="mt-4 tab-panel-enter rounded-xl shadow-[var(--shadow-sm)] p-4">
           <AgentRunsTab projectId={project.id} />
+        </Card>
+      )}
+
+      {activeTab === 'marketplace' && (
+        <Card key={`marketplace-${tabKey}`} level="elevated" className="mt-4 tab-panel-enter rounded-xl shadow-[var(--shadow-sm)] p-4">
+          <MarketplaceTab projectId={project.id} />
         </Card>
       )}
 

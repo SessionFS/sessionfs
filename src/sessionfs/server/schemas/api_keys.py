@@ -43,6 +43,15 @@ VALID_SCOPES = frozenset(
         "resident_memory:read",
         "resident_memory:write",
         "retrieval_audit:read",
+        # v0.16 portable skills/plugins marketplace. Discovery is separate
+        # from activation; approval and org administration are separately
+        # mintable so service principals receive least privilege.
+        "marketplace:read",
+        "marketplace:write",
+        "skills:read",
+        "skills:request",
+        "skills:approve",
+        "skills:admin",
         "admin:*",
     }
 )

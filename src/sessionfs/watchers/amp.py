@@ -152,6 +152,10 @@ class AmpWatcher:
             session_dir = self._store.allocate_session_dir(sfs_id)
             convert_amp_to_sfs(native_path, session_dir, session_id=sfs_id)
 
+            # Migration 028 / v0.16: annotate manifest with instruction provenance
+            # (managed skill packages included) for this tool + workspace.
+            from sessionfs.watchers.provenance import annotate_manifest_with_provenance
+            annotate_manifest_with_provenance(session_dir, "amp", amp_session.workspace_root)
             # v0.10.1 Phase 6: tag with active ticket + persona if any.
             from sessionfs.watchers.active_ticket_annot import (
                 annotate_manifest_with_active_ticket,
@@ -171,6 +175,7 @@ class AmpWatcher:
                 last_mtime=mtime,
                 last_size=size,
                 last_captured_at=datetime.now(timezone.utc).isoformat(),
+                project_path=amp_session.workspace_root,
             )
             self._tracked[native_id] = ref
             self._store.upsert_tracked_session(ref)

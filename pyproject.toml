@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sessionfs"
-version = "0.15.6"
+version = "0.16.0"
 description = "Capture, sync, and resume AI coding sessions across 9 tools — Claude Code, Codex, Gemini, Copilot, Cursor, Amp, Cline, Roo Code, and Kilo Code."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -35,6 +35,7 @@ dependencies = [
     "rich>=13.0,<16.0",
     "httpx>=0.27,<1.0",
     "mcp>=1.28.1,<2.0",
+    "PyYAML>=6.0,<7.0",
     "anyio>=4.14.2,<5.0",  # security floor; used by the local MCP client, so it belongs in base deps
     "tomli>=2.0; python_version < '3.11'",
 ]
@@ -93,6 +94,7 @@ dev = [
     # surface union-attr issues that 1.20.2 caught on main. Bump
     # both bounds together when bumping; never widen unilaterally.
     "mypy>=1.20,<2.0",
+    "types-PyYAML>=6.0,<7.0",
     "build>=1.0,<2.0",
     "bandit>=1.7,<2.0",
     "pip-audit>=2.7,<3.0",

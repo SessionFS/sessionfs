@@ -1740,3 +1740,25 @@ Manage tickets with a server-enforced FSM (`suggested → open → in_progress �
 | `sfs ticket escalate <id> --reason "..."` | Raise priority + append audit comment |
 
 The active-ticket bundle is stored locally and read by all 9 daemon watchers (claude_code, codex, copilot, cursor, gemini, amp, cline, roo_code, kilo_code). Captured sessions carry the bundle in their `manifest.json` and the server populates `sessions.persona_name` + `sessions.ticket_id` on upload.
+
+---
+
+## `sfs skill` / `sfs plugin`
+
+Import, inspect, and install portable Agent Skills and Agent Plugins locally. SessionFS preserves standards payloads, pins Git sources, computes deterministic target plans, discloses omissions, and records package provenance on captured sessions. `sfs plugin` is an alias of `sfs skill`.
+
+| Command | Description |
+|---------|-------------|
+| `sfs skill inspect SOURCE [--pin REF] [--subdir PATH]` | Validate and inspect a local path, Git source, or named local marketplace package without installing |
+| `sfs skill add SOURCE [--for TOOL] [--scope project\|user]` | Plan and transactionally install across one or more tools |
+| `sfs skill list` / `sfs skill show ID` | Inspect installed state, provenance, hashes, targets, and omissions |
+| `sfs skill plan ID` / `sfs skill compile ID [--for TOOL] [--drop TOOL] [--yes]` | Compute a side-effect-free plan or re-apply the pinned package. `--for` is additive (installed targets are always kept); only `--drop TOOL` removes a tool, after listing the managed files to be unlinked and confirming (`--yes` in non-interactive mode) |
+| `sfs skill sync --locked` | Reproduce exact project lockfile state without upgrading |
+| `sfs skill remove ID` / `sfs skill update ID` | Remove or update a package while preserving unmanaged (dirty) files; `update` previews old → new hash, commit, plan and capability diff and requires `--yes` |
+| `sfs skill rollback ID --to HASH` | Re-apply a cached immutable version; `--to` is required and must be an exact `sha256:<64 hex>` (or bare 64-hex) digest |
+| `sfs skill doctor` | Detect drift, missing files, unsafe paths, and state mismatches |
+| `sfs skill marketplace add URL --name NAME --pin SHA` | Register one pinned local marketplace source |
+| `sfs skill marketplace list\|refresh\|remove` | Manage multiple user/project registry aliases explicitly |
+| `sfs skill search QUERY` | Search metadata across registered local marketplaces |
+
+Risky capabilities require explicit flags bound to the exact package hash: `--allow-scripts` for any non-inert skill asset (the policy is an inert allowlist, so `.rb`, `.bat`, `.exe`, `Makefile`, and suffix-less files all count), `--allow-hooks` for `SKILL.md` frontmatter `hooks:` / `allowed-tools:` grants, and `--allow-executable-extensions` for a `hooks.json` or `hooks/` directory shipped inside a skill. `--yes` alone is refused for these and the error names the hook or tool grant. Local MCP activation remains reserved: SessionFS does not silently enable it.

@@ -174,6 +174,15 @@ class ClineWatcher:
             session_dir = self._store.allocate_session_dir(sfs_id)
             convert_cline_to_sfs(cline_session, session_dir, session_id=sfs_id)
 
+            # Migration 028 / v0.16: annotate manifest with instruction provenance
+            # (managed skill packages included) for this tool + workspace.
+            from sessionfs.watchers.provenance import (
+                annotate_manifest_with_provenance,
+                workspace_root_from_session,
+            )
+            annotate_manifest_with_provenance(
+                session_dir, self._tool, workspace_root_from_session(session_dir) or cline_session.workspace_folder
+            )
             # v0.10.1 Phase 6: tag with active ticket + persona if any.
             from sessionfs.watchers.active_ticket_annot import (
                 annotate_manifest_with_active_ticket,

@@ -13,7 +13,7 @@ from sessionfs.server.config import ServerConfig
 from sessionfs.server.db.engine import close_engine, init_engine
 from sessionfs.server.errors import register_exception_handlers
 from sessionfs.server.middleware import RequestLoggingMiddleware
-from sessionfs.server.routes import activation, admin, admin_licenses, agent_runs, api_keys, audit, auth, auth_sso, billing, bookmarks, dlp, handoffs, health, helm, knowledge, org, org_members, personas, project_transfers, projects, residents, retrieval_audit, rules, sessions, settings, sso_admin, summaries, sync, teams, telemetry, tickets, trusted_reviewers, webhooks, wiki, work_queues
+from sessionfs.server.routes import activation, admin, admin_licenses, agent_runs, api_keys, audit, auth, auth_sso, billing, bookmarks, dlp, handoffs, health, helm, knowledge, marketplace, org, org_members, personas, project_transfers, projects, residents, retrieval_audit, rules, sessions, settings, sso_admin, summaries, sync, teams, telemetry, tickets, trusted_reviewers, webhooks, wiki, work_queues
 from sessionfs.server.storage.local import LocalBlobStore
 
 
@@ -155,6 +155,8 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     # Work queues same precedence (WQ-P2): `/work-queues` subpath under
     # projects must beat the projects catch-all `/{git_remote:path}`.
     app.include_router(work_queues.router)
+    # Marketplace has project subpaths and must precede the project catch-all.
+    app.include_router(marketplace.router)
     app.include_router(projects.router)
     app.include_router(summaries.router)
     app.include_router(summaries.batch_router)

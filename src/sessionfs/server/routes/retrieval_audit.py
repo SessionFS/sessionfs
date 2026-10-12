@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -53,13 +53,43 @@ class RetrievalAuditContextResponse(BaseModel):
     closed_at: datetime | None
 
 
+_MAX_REF_ELEMENTS = 500
+_MAX_REF_FIELDS = 8
+_MAX_REF_TEXT = 256
+
+
 class RetrievalAuditEventCreate(BaseModel):
     context_id: str
     session_id: str | None = None
     tool_name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
-    returned_refs: dict[str, list[str]] = Field(default_factory=dict)
+    # Plain id refs (`kb_entry_ids: ["42"]`) and structured refs such as the
+    # marketplace `skill_packages` entries ({package_id, version_id,
+    # content_hash}); anything else is rejected so the event is never
+    # silently dropped by a shape the local JSONL writer produces.
+    returned_refs: dict[str, list[str | dict[str, str]]] = Field(default_factory=dict)
     source: str = "mcp"
+
+    @field_validator("returned_refs")
+    @classmethod
+    def _validate_refs(cls, value: dict[str, list[str | dict[str, str]]]) -> dict[str, list[str | dict[str, str]]]:
+        for key, items in value.items():
+            if not isinstance(key, str) or not key or len(key) > 64:
+                raise ValueError("returned_refs keys must be short strings")
+            if len(items) > _MAX_REF_ELEMENTS:
+                raise ValueError(f"returned_refs.{key} has too many elements")
+            for item in items:
+                if isinstance(item, dict):
+                    if not item or len(item) > _MAX_REF_FIELDS:
+                        raise ValueError(f"returned_refs.{key} structured ref has an invalid field count")
+                    for field_name, field_value in item.items():
+                        if not isinstance(field_name, str) or not field_name or len(field_name) > 64:
+                            raise ValueError(f"returned_refs.{key} structured ref has an invalid field name")
+                        if not isinstance(field_value, str) or len(field_value) > _MAX_REF_TEXT:
+                            raise ValueError(f"returned_refs.{key}.{field_name} must be a short string")
+                elif not isinstance(item, str):
+                    raise ValueError(f"returned_refs.{key} elements must be strings or objects")
+        return value
 
 
 class RetrievalAuditEventResponse(BaseModel):

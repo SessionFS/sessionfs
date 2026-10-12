@@ -283,6 +283,7 @@ export interface ProjectContext {
   git_remote_normalized: string;
   context_document: string;
   owner_id: string;
+  org_id?: string | null;
   created_at: string;
   updated_at: string;
   session_count?: number;
@@ -629,6 +630,124 @@ export interface AgentRun {
   duration_seconds: number | null;
 }
 
+// ------------------------------------------------------------------
+// Skills and plugins marketplace (v0.16)
+// ------------------------------------------------------------------
+
+export interface MarketplaceCompatibility {
+  native_skills: boolean;
+  instruction_files: number;
+  omitted_components: string[];
+}
+
+export interface MarketplacePackage {
+  listing_id: string;
+  collection: string;
+  visibility: 'public' | 'user' | 'org';
+  /** Set for user-private listings; the owner may delete their own versions. */
+  owner_user_id?: string | null;
+  org_id?: string | null;
+  verification_state: 'verified' | 'unverified' | 'blocked';
+  package_id: string;
+  namespace: string;
+  name: string;
+  display_name: string;
+  description: string;
+  version_id: string;
+  version: string | null;
+  content_hash: string;
+  source: {
+    type: string;
+    locator: string;
+    subdir: string;
+    commit: string | null;
+  };
+  risk: {
+    scripts?: boolean;
+    mcp?: boolean;
+    executable_extensions?: boolean;
+    /** SKILL.md frontmatter `hooks:` / `allowed-tools:` — executed or pre-approved on invocation. */
+    hooks?: boolean;
+    allowed_tools?: string[];
+    hook_events?: string[];
+    disclosed_metadata?: Record<string, Record<string, string>>;
+    instruction_only_load?: boolean;
+  };
+  compatibility: Record<string, MarketplaceCompatibility>;
+  license: { declared?: boolean; value?: string };
+  signature: Record<string, unknown>;
+  blob_size_bytes: number;
+  published_at: string;
+  untrusted?: boolean;
+  untrusted_preamble?: string;
+  untrusted_preview?: boolean;
+  instruction_preview?: { path: string; content: string }[];
+}
+
+export interface MarketplaceSearchResponse {
+  items: MarketplacePackage[];
+  /** Number of items on THIS page (not a total). */
+  count: number;
+  has_more: boolean;
+  /** Opaque keyset cursor for the next page; null when has_more is false. */
+  next_cursor: string | null;
+}
+
+export interface SkillInstallRequest {
+  id: string;
+  project_id: string;
+  version_id: string;
+  content_hash: string;
+  requested_by_user_id: string | null;
+  requested_by_session_id: string | null;
+  target_user_id: string | null;
+  target_device_id: string | null;
+  target_scope: 'project' | 'user' | 'device';
+  target_tools: string[];
+  requested_capabilities: string[];
+  /** Request origin, display only (caller-supplied). */
+  requested_via: 'api' | 'mcp';
+  /** Approving one's own request requires the emailed single-use confirmation code. */
+  self_approval_requires_confirmation: boolean;
+  approval_challenge_pending: boolean;
+  status: 'pending' | 'approved' | 'rejected' | 'cancelled' | 'applied' | 'revoked';
+  /** Concrete grants behind the requested capabilities (from the version's risk summary). */
+  hook_events?: string[];
+  allowed_tools?: string[];
+  risk?: { scripts?: boolean; mcp?: boolean; hooks?: boolean; executable_extensions?: boolean };
+  approved_by_user_id: string | null;
+  decided_at: string | null;
+  created_at: string;
+}
+
+export interface SkillAssignment {
+  id: string;
+  org_id: string;
+  version_id: string;
+  content_hash: string;
+  target_type: 'org' | 'user' | 'device';
+  target_id: string;
+  target_user_id: string | null;
+  mode: 'required' | 'optional';
+  target_tools: string[];
+  policy: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface SkillRegistry {
+  id: string;
+  owner_type: 'user' | 'project' | 'org';
+  owner_id: string;
+  org_id: string | null;
+  alias: string;
+  source_url: string;
+  refresh_commit: string | null;
+  policy_state: 'approved' | 'review' | 'blocked';
+  server_fetch_enabled: false;
+  created_at: string;
+  updated_at: string;
+}
+
 export class ApiError extends Error {
   status: number;
   /** v0.10.x envelope code, when the response body parses cleanly. */
@@ -706,7 +825,13 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       const body = await resp.text();
       throw new ApiError(resp.status, body);
     }
-    return resp.json();
+    // 204 No Content (DELETE routes) and empty bodies resolve to undefined
+    // instead of failing on `resp.json()` after a successful call.
+    if (resp.status === 204 || resp.headers.get('content-length') === '0') {
+      return undefined as T;
+    }
+    const text = await resp.text();
+    return (text ? JSON.parse(text) : undefined) as T;
   }
 
   /**
@@ -1455,6 +1580,116 @@ export function createApiClient(baseUrl: string, apiKey: string) {
 
     getAgentRun: (projectId: string, runId: string) =>
       request<AgentRun>(`/api/v1/projects/${projectId}/agent-runs/${runId}`),
+
+    // ── v0.16 Skills and plugins marketplace ──
+    searchMarketplace: (params: { q?: string; tool?: string; limit?: number; cursor?: string } = {}) => {
+      const sp = new URLSearchParams();
+      if (params.q) sp.set('q', params.q);
+      if (params.tool) sp.set('tool', params.tool);
+      if (params.limit) sp.set('limit', String(params.limit));
+      if (params.cursor) sp.set('cursor', params.cursor);
+      const qs = sp.toString();
+      return request<MarketplaceSearchResponse>(
+        `/api/v1/marketplace/packages${qs ? `?${qs}` : ''}`,
+      );
+    },
+
+    getMarketplacePackage: (packageId: string) =>
+      request<MarketplacePackage>(`/api/v1/marketplace/packages/${packageId}`),
+
+    previewMarketplaceVersion: (versionId: string) =>
+      request<MarketplacePackage>(`/api/v1/marketplace/versions/${versionId}/preview`),
+
+    downloadMarketplaceVersion: async (versionId: string): Promise<Blob> => {
+      const resp = await fetch(
+        `${baseUrl}/api/v1/marketplace/versions/${encodeURIComponent(versionId)}/download`,
+        { headers: { Authorization: `Bearer ${apiKey}` } },
+      );
+      if (!resp.ok) throw new ApiError(resp.status, await resp.text());
+      return resp.blob();
+    },
+
+    listSkillInstallRequests: (projectId: string, status?: string) => {
+      const qs = status ? `?status=${encodeURIComponent(status)}` : '';
+      return request<{ items: SkillInstallRequest[]; can_approve: boolean }>(
+        `/api/v1/projects/${projectId}/skill-install-requests${qs}`,
+      );
+    },
+
+    createSkillInstallRequest: (
+      projectId: string,
+      body: {
+        version_id: string;
+        content_hash: string;
+        target_scope: 'project' | 'user' | 'device';
+        target_device_id?: string;
+        target_tools: string[];
+        requested_capabilities: string[];
+      },
+    ) => request<SkillInstallRequest>(
+      `/api/v1/projects/${projectId}/skill-install-requests`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+
+    approveSkillInstallRequest: (
+      projectId: string,
+      requestId: string,
+      approvedCapabilities: string[],
+      confirmationCode?: string,
+    ) =>
+      request<SkillInstallRequest>(
+        `/api/v1/projects/${projectId}/skill-install-requests/${requestId}/approve`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            approved_capabilities: approvedCapabilities,
+            ...(confirmationCode ? { confirmation_code: confirmationCode } : {}),
+          }),
+        },
+      ),
+
+    /** Owner-only: delete one immutable personal version (409 while referenced). */
+    deletePersonalSkillVersion: (packageId: string, versionId: string) =>
+      request<void>(
+        `/api/v1/users/me/skills/packages/${encodeURIComponent(packageId)}/versions/${encodeURIComponent(versionId)}`,
+        { method: 'DELETE' },
+      ),
+
+    /** Requester or project admin: revoke an approved/applied grant (device state untouched). */
+    revokeSkillInstallRequest: (projectId: string, requestId: string) =>
+      request<SkillInstallRequest & { previous_status?: string; warning?: string }>(
+        `/api/v1/projects/${projectId}/skill-install-requests/${requestId}/revoke`,
+        { method: 'POST' },
+      ),
+
+    /** Requester-only: emails a single-use code required to approve one's own request. */
+    challengeSkillInstallRequest: (projectId: string, requestId: string) =>
+      request<{ id: string; status: string; delivery: 'email' | 'unavailable'; expires_at: string }>(
+        `/api/v1/projects/${projectId}/skill-install-requests/${requestId}/challenge`,
+        { method: 'POST' },
+      ),
+
+    cancelSkillInstallRequest: (projectId: string, requestId: string) =>
+      request<SkillInstallRequest>(
+        `/api/v1/projects/${projectId}/skill-install-requests/${requestId}/cancel`,
+        { method: 'POST' },
+      ),
+
+    listEffectiveSkillAssignments: (params: { device_id?: string; tool?: string } = {}) => {
+      const sp = new URLSearchParams();
+      if (params.device_id) sp.set('device_id', params.device_id);
+      if (params.tool) sp.set('tool', params.tool);
+      const qs = sp.toString();
+      return request<{ items: SkillAssignment[] }>(
+        `/api/v1/users/me/skills/assignments${qs ? `?${qs}` : ''}`,
+      );
+    },
+
+    listOrgSkillAssignments: (orgId: string) =>
+      request<{ items: SkillAssignment[] }>(`/api/v1/orgs/${orgId}/skills/assignments`),
+
+    listOrgSkillRegistries: (orgId: string) =>
+      request<{ items: SkillRegistry[] }>(`/api/v1/orgs/${orgId}/skills/registries`),
 
     // ── Multi-Repo Projects (v0.11) ──
     listProjectRepos: (projectId: string) =>

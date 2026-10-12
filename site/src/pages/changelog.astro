@@ -17,14 +17,41 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.15.6 -->
+      <!-- v0.16.0 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.16.0</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">October 11, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Skills &amp; Plugins Across Every Tool &middot; SessionFS Marketplace</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong><span class="font-mono text-accent text-sm">sfs skill</span> (alias <span class="font-mono text-accent text-sm">sfs plugin</span>).</strong> Inspect, install, update, remove and roll back Agent Skills and Agent Plugins from a local path, a Git repository pinned to an exact commit, or a registered marketplace (including Claude Code marketplace repositories). One command installs for Claude Code, Codex, Gemini CLI, Cursor, GitHub Copilot, Amp, Cline, Kilo Code and Roo Code (legacy, since Roo&rsquo;s upstream repository was archived). Standard skills are kept byte-for-byte; anything a target tool can&rsquo;t express is listed as omitted rather than silently dropped.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Safe installs.</strong> Every install is planned first, checked for path safety and collisions, and applied as one transaction that rolls back cleanly on failure. Files you edited are never overwritten or deleted. <span class="font-mono text-accent text-sm">sfs skill doctor</span> reports drift and missing files.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Reproducible setups.</strong> A committed project lockfile plus <span class="font-mono text-accent text-sm">sfs skill sync --locked</span> reproduces exactly the same packages on another machine or in CI.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Explicit consent for risky content.</strong> Packages with scripts, hooks or tool grants need a specific flag (<span class="font-mono text-accent text-sm">--allow-scripts</span>, <span class="font-mono text-accent text-sm">--allow-hooks</span>, <span class="font-mono text-accent text-sm">--allow-executable-extensions</span>), bound to that exact package version; <span class="font-mono text-accent text-sm">--yes</span> alone is refused. Any change to a package&rsquo;s contents asks again.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Multiple marketplaces.</strong> Register several named marketplace sources per user or project with <span class="font-mono text-accent text-sm">sfs skill marketplace add|list|refresh|remove</span>, and search them with <span class="font-mono text-accent text-sm">sfs skill search</span>. Packages with the same name in two marketplaces never silently replace each other.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>SessionFS Marketplace (hosted).</strong> Browse packages in the dashboard with their source, exact content hash, license, risk flags and a per-tool compatibility view. Every version is immutable and scanned for secrets on upload. Browsing and downloading are open to every signed-in user, including the Free tier.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Publishing.</strong> Starter and above can publish private personal packages. Team and Enterprise organizations can publish to their organization, and the public catalog is curated. Organization and public packages must declare a license.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Team distribution.</strong> Team and Enterprise organizations can manage registries, assign exact package versions to the organization, a member or a device, and run an install-approval queue per project. Enterprise organizations can attach policy to assignments.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>MCP marketplace tools.</strong> Agents can search and preview marketplace packages, load an approved instruction-only skill into the current session (always marked as untrusted third-party text), and request an install. They can&rsquo;t write files, run scripts, enable hooks or start MCP servers; approval happens only in the dashboard or API, and approving your own request requires an emailed confirmation code.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Package provenance in captured sessions.</strong> Sessions record which skill packages were active, on every tier.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Security.</strong> Skill package uploads have a dedicated Cloud Armor rate limit. Skill imports enforce per-file, per-package and file-count limits, refuse unsafe paths and symlinks, and never execute imported code while fetching, scanning or planning.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Migrations 001&ndash;063 (063 skills and marketplace), proven on PostgreSQL 16. 3780 backend tests + 486 dashboard UI tests passing. 76 MCP tools (8 new marketplace tools, up from 68) &middot; 9 supported tools unchanged.</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.15.6 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
             <span class="text-brand font-semibold">v0.15.6</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">October 9, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Site &amp; Docs &mdash; Astro 7, Working Tables</h2>
         <ul class="space-y-2 text-base text-muted">

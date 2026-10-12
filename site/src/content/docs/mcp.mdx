@@ -32,7 +32,7 @@ sfs mcp install --for claude-code --skip-instructions
 
 ## Tools
 
-The MCP server exposes 68 tools in nine categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), and Work Queues.
+The MCP server exposes 76 tools in ten categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, and Skills Marketplace.
 
 ### Session Tools
 
@@ -575,6 +575,25 @@ Heartbeat: return one bounded directive (a single intent plus a small comment de
 #### `complete_work_queue_step`
 
 Report the result of the directive returned by `run_work_queue_step`. This is the only call that durably advances the queue.
+
+### Skills Marketplace
+
+Marketplace tools separate discovery from authority. Search and preview return metadata or visibly untrusted text. `load_marketplace_skill` returns instruction text only after an exact-version project approval or organization assignment; it never installs files or activates scripts, hooks, executable extensions, or local MCP processes. Every preview and load response carries `untrusted: true` plus a fixed `untrusted_preamble` telling the model the content is third-party data, not instructions from the user.
+
+**Approval is never brokered over MCP.** A project owner/admin approves from the dashboard or API, confirming each elevated capability (scripts, hooks, MCP, assets) explicitly. If the approver is the same principal that filed the request, the server additionally requires a single-use confirmation code emailed to that account (`POST .../challenge`); `requested_via` is recorded for display only. This closes the preview → request → approve → load self-approval loop.
+
+| Tool | Purpose |
+|------|---------|
+| `search_skill_marketplace` | Search public, personal, and authorized organization listings; optionally filter by target tool |
+| `get_marketplace_package` | Inspect immutable hash, provenance, license, verification, risk, and compatibility metadata |
+| `preview_marketplace_skill` | Read a bounded, untrusted instruction preview without granting consent |
+| `load_marketplace_skill` | Load approved instruction-only context for one project/tool/device boundary |
+| `request_skill_install` | Request an exact hash for project, user, or device scope |
+| `get_skill_install_request` | Inspect one request |
+| `list_skill_install_requests` | List project requests, optionally filtered by status |
+| `cancel_skill_install_request` | Cancel a pending request as requester or project admin |
+
+Use the [Skills Marketplace guide](/skills-marketplace/) for the four consumption modes and their security boundaries.
 
 ## Agent Knowledge Contribution
 

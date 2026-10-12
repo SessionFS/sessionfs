@@ -248,6 +248,29 @@ class TestRetrievalAudit:
             nested = {"child": nested}
         assert collect_returned_refs(nested) == {}
 
+    def test_marketplace_loads_are_audited_as_skill_refs_not_personas(self):
+        """R17 P2-4: a package payload records {package_id, version_id,
+        content_hash} under skill_packages and never a persona ref."""
+        result = {
+            "package_id": "spk_1",
+            "version_id": "skv_1",
+            "content_hash": "sha256:" + "a" * 64,
+            "name": "review-helper",
+            "listing_id": "sml_1",
+            "instruction_bundle": [{"path": "skills/review/SKILL.md", "content": "# x"}],
+        }
+        refs = collect_returned_refs(result)
+        assert refs["skill_packages"] == [
+            {"package_id": "spk_1", "version_id": "skv_1", "content_hash": "sha256:" + "a" * 64}
+        ]
+        assert "persona_names" not in refs
+        # A persona payload is still a persona; a bare package_id without identity is not a skill ref.
+        assert collect_returned_refs({"name": "atlas"})["persona_names"] == ["atlas"]
+        assert "skill_packages" not in collect_returned_refs({"package_id": "spk_1", "name": "x"})
+        # Nested under a list (search results) each package is recorded once.
+        nested = {"items": [result, dict(result)]}
+        assert len(collect_returned_refs(nested)["skill_packages"]) == 1
+
     def test_sanitize_arguments_strips_secret_shaped_keys(self):
         sanitized = sanitize_arguments({
             "query": "rate limit",
@@ -276,13 +299,11 @@ class TestToolRegistryV0996:
     (create/claim/get/list_inbox/list_sent/revoke/decline/comment = 8).
     Total: 53."""
 
-    def test_tool_count_is_68(self):
+    def test_tool_count_is_76(self):
         from sessionfs.mcp.server import _TOOLS
-        assert len(_TOOLS) == 68, (
-            f"Expected 68 MCP tools after WQ-P3 (tk_3de50bf7bb73418b) added "
-            f"run_work_queue_step / complete_work_queue_step on top of WQ-P2's "
-            f"create_work_queue / get_work_queue / list_work_queues / "
-            f"set_work_queue_status, got {len(_TOOLS)}"
+        assert len(_TOOLS) == 76, (
+            "Expected 76 MCP tools after the hosted marketplace added eight "
+            f"discovery and approval tools, got {len(_TOOLS)}"
         )
 
     def test_new_tools_registered(self):
@@ -337,8 +358,20 @@ class TestToolRegistryV0996:
             # WQ-P3 step engine (tk_3de50bf7bb73418b)
             "run_work_queue_step",
             "complete_work_queue_step",
+            # v0.16 hosted skill/plugin marketplace
+            "search_skill_marketplace",
+            "get_marketplace_package",
+            "preview_marketplace_skill",
+            "load_marketplace_skill",
+            "request_skill_install",
+            "get_skill_install_request",
+            "list_skill_install_requests",
+            "cancel_skill_install_request",
         ):
             assert new_tool in names, f"Missing MCP tool: {new_tool}"
+        # A3: approval is dashboard/CLI/API only — never brokered over MCP,
+        # otherwise the same principal can preview -> request -> approve -> load.
+        assert "approve_skill_install_request" not in names
 
     def test_new_tool_descriptions_include_mcp_over_cli_guidance(self):
         """Brief mandates each new tool's description must steer agents
@@ -2720,6 +2753,192 @@ class TestAddKnowledgeAttribution:
         assert "upsert" not in captured["json"]
 
 
+_PKG = "spk_" + "0" * 24
+_VER = "skv_" + "1" * 24
+_REQ = "sir_" + "2" * 24
+_REQ2 = "sir_" + "3" * 24
+
+
+class TestMarketplaceMcpTools:
+    @pytest.fixture
+    def marketplace_http(self, monkeypatch):
+        import httpx
+
+        calls: list[dict] = []
+
+        async def _resolve(_remote: str = ""):
+            return ("https://api.test", "test-key", "proj_test")
+
+        class _Response:
+            status_code = 200
+            text = '{"ok": true}'
+
+            def json(self):
+                return {"ok": True}
+
+        class _Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def get(self, url, *, headers=None, params=None):
+                calls.append({"method": "GET", "url": url, "params": params or {}})
+                return _Response()
+
+            async def post(self, url, *, headers=None, json=None):
+                calls.append({"method": "POST", "url": url, "json": json})
+                return _Response()
+
+        monkeypatch.setattr(mcp_server, "_resolve_project_id", _resolve)
+        monkeypatch.setattr(
+            mcp_server,
+            "_marketplace_api_config",
+            lambda: ("https://api.test", "test-key"),
+        )
+        monkeypatch.setattr(httpx, "AsyncClient", _Client)
+        return calls
+
+    @pytest.mark.asyncio
+    async def test_discovery_and_preview_dispatch(self, marketplace_http):
+        result = await mcp_server._handle_search_skill_marketplace(
+            {"query": "review", "tool": "codex", "limit": 5}
+        )
+        assert result == {"ok": True}
+        assert marketplace_http[-1] == {
+            "method": "GET",
+            "url": "https://api.test/api/v1/marketplace/packages",
+            "params": {"q": "review", "tool": "codex", "limit": 5},
+        }
+
+        # P2-1: the opaque page cursor is passed through untouched; garbage is refused locally.
+        await mcp_server._handle_search_skill_marketplace({"query": "review", "cursor": "eyJwIjoi"})
+        assert marketplace_http[-1]["params"] == {"q": "review", "cursor": "eyJwIjoi"}
+        assert "error" in await mcp_server._handle_search_skill_marketplace({"cursor": 5})
+        assert "error" in await mcp_server._handle_search_skill_marketplace({"cursor": "x" * 600})
+
+        await mcp_server._handle_get_marketplace_package({"package_id": _PKG})
+        assert marketplace_http[-1]["url"].endswith(f"/marketplace/packages/{_PKG}")
+        await mcp_server._handle_preview_marketplace_skill({"version_id": _VER})
+        assert marketplace_http[-1]["url"].endswith(f"/marketplace/versions/{_VER}/preview")
+
+    @pytest.mark.asyncio
+    async def test_approval_gated_load_and_request_lifecycle_dispatch(self, marketplace_http):
+        await mcp_server._handle_request_skill_install(
+            {
+                "version_id": _VER,
+                "content_hash": "sha256:abc",
+                "target_scope": "device",
+                "target_device_id": "runner-1",
+                "target_tools": ["codex"],
+            }
+        )
+        call = marketplace_http[-1]
+        assert call["url"].endswith("/projects/proj_test/skill-install-requests")
+        assert call["json"]["content_hash"] == "sha256:abc"
+        assert call["json"]["requested_capabilities"] == ["instructions"]
+        # A3.2: the server refuses self-approval of MCP-originated requests.
+        assert call["json"]["requested_via"] == "mcp"
+
+        await mcp_server._handle_load_marketplace_skill(
+            {"version_id": _VER, "tool": "codex", "device_id": "runner-1"}
+        )
+        call = marketplace_http[-1]
+        assert call["url"].endswith(f"/marketplace/versions/{_VER}/instructions")
+        assert call["params"] == {
+            "project_id": "proj_test",
+            "tool": "codex",
+            "device_id": "runner-1",
+        }
+        # A3.3: loaded bundles are third-party data, never user instructions.
+        loaded = await mcp_server._handle_load_marketplace_skill({"version_id": _VER, "tool": "codex"})
+        assert loaded["untrusted"] is True
+        assert "UNTRUSTED THIRD-PARTY CONTENT" in loaded["untrusted_preamble"]
+        previewed = await mcp_server._handle_preview_marketplace_skill({"version_id": _VER})
+        assert previewed["untrusted"] is True
+
+        await mcp_server._handle_get_skill_install_request({"request_id": _REQ})
+        assert marketplace_http[-1]["url"].endswith(f"/skill-install-requests/{_REQ}")
+        await mcp_server._handle_list_skill_install_requests({"status": "pending"})
+        assert marketplace_http[-1]["params"] == {"status": "pending"}
+        await mcp_server._handle_cancel_skill_install_request({"request_id": _REQ2})
+        assert marketplace_http[-1]["url"].endswith(f"/skill-install-requests/{_REQ2}/cancel")
+        # A3: approval is never brokered over MCP.
+        assert not hasattr(mcp_server, "_handle_approve_skill_install_request")
+        before = len(marketplace_http)
+        denied = await mcp_server._handle_install_request_action({"request_id": _REQ}, "approve")
+        assert "error" in denied
+        assert len(marketplace_http) == before
+
+    @pytest.mark.asyncio
+    async def test_marketplace_validation_happens_before_network(self, marketplace_http):
+        assert "error" in await mcp_server._handle_get_marketplace_package({})
+        assert "error" in await mcp_server._handle_preview_marketplace_skill({})
+        assert "error" in await mcp_server._handle_load_marketplace_skill(
+            {"version_id": _VER}
+        )
+        assert "error" in await mcp_server._handle_request_skill_install(
+            {"version_id": _VER}
+        )
+        assert marketplace_http == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "traversal",
+        [
+            "../../admin/users",
+            "spk_1/../../admin/users",
+            "skv_" + "a" * 24 + "/../../admin/users",
+            "%2e%2e%2fadmin",
+            "spk_" + "A" * 24,
+            "",
+        ],
+    )
+    async def test_marketplace_path_ids_are_validated_locally(self, marketplace_http, traversal):
+        """A5: caller ids are interpolated into authenticated URL paths — a
+        traversal value must be rejected locally with NO HTTP call made."""
+        handlers = [
+            (mcp_server._handle_get_marketplace_package, {"package_id": traversal}),
+            (mcp_server._handle_preview_marketplace_skill, {"version_id": traversal}),
+            (mcp_server._handle_load_marketplace_skill, {"version_id": traversal, "tool": "codex"}),
+            (mcp_server._handle_request_skill_install, {"version_id": traversal, "content_hash": "sha256:a"}),
+            (mcp_server._handle_get_skill_install_request, {"request_id": traversal}),
+            (mcp_server._handle_cancel_skill_install_request, {"request_id": traversal}),
+        ]
+        for handler, args in handlers:
+            result = await handler(args)
+            assert "error" in result, handler.__name__
+        assert marketplace_http == []
+
+    @pytest.mark.asyncio
+    async def test_marketplace_path_segments_are_percent_encoded(self, marketplace_http, monkeypatch):
+        """Even a validated id is encoded, and the resolved project id is too."""
+        async def _resolve(_remote: str = ""):
+            return ("https://api.test", "test-key", "proj/../x")
+
+        monkeypatch.setattr(mcp_server, "_resolve_project_id", _resolve)
+        await mcp_server._handle_get_skill_install_request({"request_id": _REQ})
+        assert "/projects/proj%2F..%2Fx/skill-install-requests/" in marketplace_http[-1]["url"]
+        # Device ids follow the server's rule (printable, no control chars):
+        # Unicode and spaces are fine, control characters are rejected locally.
+        assert "error" in await mcp_server._handle_load_marketplace_skill(
+            {"version_id": _VER, "tool": "codex", "device_id": "bad\x00id"}
+        )
+        unicode_ok = await mcp_server._handle_load_marketplace_skill(
+            {"version_id": _VER, "tool": "codex", "device_id": "Ola's MacBook ✓ runner 1"}
+        )
+        assert "error" not in unicode_ok
+        assert marketplace_http[-1]["params"]["device_id"] == "Ola's MacBook ✓ runner 1"
+        assert "error" in await mcp_server._handle_list_skill_install_requests(
+            {"status": "pending/../../admin"}
+        )
+
+
+
 class TestProjectResolverRemoteValidation:
     """P1-1 (round 6): `git_remote` reaches the shared `_resolve_project_id`
     used by EVERY project-scoped tool; it must be a strict repository id."""
@@ -2819,7 +3038,41 @@ class TestProjectResolverRemoteValidation:
             with pytest.raises(Exception, match="Could not parse git remote URL"):
                 await mcp_server._resolve_project_id(bad)
 
+    @pytest.mark.asyncio
+    async def test_marketplace_tools_refuse_traversal_remote(self, monkeypatch):
+        import httpx
 
+        calls: list[str] = []
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url, **kwargs):
+                calls.append(url)
+                raise AssertionError("must not be called")
+
+        monkeypatch.setattr(httpx, "AsyncClient", _Client)
+        for handler, args in (
+            (mcp_server._handle_list_skill_install_requests, {"git_remote": "../admin/users"}),
+            (mcp_server._handle_load_marketplace_skill, {"version_id": _VER, "tool": "codex", "git_remote": "../admin/users"}),
+            (mcp_server._handle_request_skill_install, {"version_id": _VER, "content_hash": "sha256:a", "git_remote": "../admin/users"}),
+            (mcp_server._handle_get_skill_install_request, {"request_id": _REQ, "git_remote": "../admin/users"}),
+            (mcp_server._handle_cancel_skill_install_request, {"request_id": _REQ, "git_remote": "../admin/users"}),
+        ):
+            result = await handler(args)
+            assert "error" in result and "git remote" in result["error"]
+        with pytest.raises(Exception, match="Could not parse git remote"):
+            await mcp_server._resolve_project_id("../admin/users")
+        assert calls == []
+
+    @pytest.mark.asyncio
     async def test_resolver_percent_encodes_segments(self, monkeypatch):
         import httpx
 
