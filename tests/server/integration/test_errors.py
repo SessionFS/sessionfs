@@ -162,3 +162,24 @@ class TestIntegrityErrorHandler:
         # Even the unknown class returns a structured body, not plain
         # text — that's the contract the CLI/dashboard parser depends on.
         assert "error" in body and isinstance(body["error"], dict)
+
+
+def test_integrity_error_log_carries_no_row_values(caplog):
+    """PostgreSQL's message can quote the failing row or key values (session
+    text, titles, emails, secrets). The log keeps only structural facts."""
+    import logging
+
+    message = (
+        'null value in column "title" violates not-null constraint\n'
+        "DETAIL:  Failing row contains (ses_1, SENTINEL_SECRET_VALUE, ...)."
+    )
+    app = _build_test_app(message, "23502")
+    with caplog.at_level(logging.ERROR, logger="sessionfs.api"):
+        with TestClient(app) as client:
+            resp = client.get("/_test/integrity")
+    assert resp.status_code == 422
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert "IntegrityError on" in logged
+    assert "SENTINEL_SECRET_VALUE" not in logged
+    assert "Failing row" not in logged
+    assert "missing_required_field" in logged

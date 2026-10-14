@@ -328,6 +328,29 @@ $ sfs daemon status
 └──────────────────┴────────────────────────┘
 ```
 
+If pushes for a session keep failing (server errors, rate limits, network), the daemon backs off instead of retrying every cycle: after 1 minute, 5 minutes, 15 minutes, then hourly. After a long failing streak (12 attempts over at least six hours) it pauses that session until the session changes, the daemon restarts, or you run `sfs daemon retry-sync`. `sfs daemon status` lists these sessions with their failure count and last error, and `sfs doctor` reports them under "Sync retries".
+
+---
+
+## `sfs daemon retry-sync`
+
+Retry sessions whose sync is backing off or paused after failed pushes, on the daemon's next sync cycle.
+
+```
+sfs daemon retry-sync [SESSION_ID]
+```
+
+| Argument / Option | Description |
+|----------|-------------|
+| `SESSION_ID` | Retry just this session (a unique prefix of its ID also works). Omit to retry every session that is backing off or paused. |
+| `--config PATH` | The config file the daemon was started with, if you started it with `sfs daemon start --config`. |
+
+**Example:**
+
+```bash
+$ sfs daemon retry-sync ses_abc12345
+```
+
 ---
 
 ## `sfs daemon logs`

@@ -473,3 +473,55 @@ class TestRetentionDisabled:
         candidates = pruner.get_prunable_sessions(config)
 
         assert len(candidates) == 0
+
+
+class TestPruneNeverLosesUnuploadedChanges:
+    """A session uploaded once (etag) with newer local changes (sync.dirty)
+    is not synced, and sessions the daemon still intends to upload are never
+    pruned — otherwise a backing-off session's changes could be deleted."""
+
+    def test_dirty_session_with_etag_is_not_pruned(self, tmp_path):
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        conn = _setup_db(tmp_path)
+        sfs_dir = _create_session(sessions_dir, conn, "ses_dirty", age_days=100, synced=True)
+        manifest = json.loads((sfs_dir / "manifest.json").read_text())
+        manifest["sync"]["dirty"] = True
+        (sfs_dir / "manifest.json").write_text(json.dumps(manifest))
+
+        result = SessionPruner(sessions_dir, conn).prune(StorageConfig(synced_retention_days=30))
+        assert result.pruned_count == 0
+        assert sfs_dir.exists()
+
+    def test_protected_sessions_are_never_pruned(self, tmp_path):
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        conn = _setup_db(tmp_path)
+        kept = _create_session(sessions_dir, conn, "ses_pending", age_days=100, synced=True)
+        gone = _create_session(sessions_dir, conn, "ses_done", age_days=100, synced=True)
+
+        result = SessionPruner(sessions_dir, conn).prune(
+            StorageConfig(synced_retention_days=30), force=True, protect={"ses_pending"}
+        )
+        assert kept.exists()
+        assert not gone.exists()
+        assert result.pruned_count == 1
+
+
+def test_storage_cap_pass_picks_other_sessions_when_one_is_protected(tmp_path):
+    """A protected (awaiting-upload) session must not be counted as freed;
+    the storage-cap pass has to select something it can actually delete."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    conn = _setup_db(tmp_path)
+    protected_dir = _create_session(
+        sessions_dir, conn, "ses_waiting", age_days=100, size_bytes=60_000, synced=True
+    )
+    other_dir = _create_session(
+        sessions_dir, conn, "ses_safe", age_days=5, size_bytes=60_000, synced=True
+    )
+    config = StorageConfig(synced_retention_days=30, max_local_bytes=100_000)
+    result = SessionPruner(sessions_dir, conn).prune(config, protect={"ses_waiting"})
+    assert protected_dir.exists()
+    assert not other_dir.exists()
+    assert result.pruned_count == 1

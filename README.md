@@ -122,6 +122,7 @@ SessionFS converts between native formats automatically — message roles, tool 
 | `sfs storage prune` | Prune old sessions to free disk space |
 | `sfs daemon start\|stop\|restart\|status\|logs` | Manage the background daemon |
 | `sfs daemon rebuild-index` | Rebuild local session index from .sfs files on disk |
+| `sfs daemon retry-sync [SESSION_ID]` | Retry sessions whose sync is backing off or paused after failed pushes |
 | `sfs watcher list\|enable\|disable` | Manage tool watchers |
 | `sfs auth login\|signup\|status` | Manage cloud authentication |
 | `sfs config show\|set` | Manage configuration |
@@ -225,6 +226,8 @@ Sessions are stored as `.sfs` directories:
 All file paths are relative to workspace root. Sessions are append-only — conflict resolution appends both sides rather than merging.
 
 ## Status
+
+**v0.17.1 — Public Beta.** 4020 backend tests + 492 dashboard tests passing. 64 database migrations (unchanged). 79 MCP tools. The daemon now backs off on sessions whose pushes keep failing (1 min, 5 min, 15 min, then hourly, pausing after a long failing streak) instead of retrying every cycle, with the state shown in `sfs daemon status` and `sfs doctor` and a new `sfs daemon retry-sync`. Local cleanup never removes changes that haven't been uploaded yet, and server error logs no longer include session content.
 
 **v0.17.0 — Public Beta.** 3996 backend tests + 492 dashboard tests passing. 64 database migrations. 79 MCP tools. **Agent feedback records** let teams record whether an agent's work was useful (routing, summaries, actionability, duplicates, outcomes) and see quality summaries per persona, through the API, 3 new MCP tools and `sfs agent feedback`. **Self-service org membership for enterprises:** auto-join by verified email domain, `sfs org set-role`, and `sfs org remove` by email or in bulk. **Self-hosted fixes:** DLP redaction keeps session files intact and also catches secrets in JSON keys and field pairs, NUL bytes no longer break sync, Codex sessions with `"info": null` are captured, migrations run in order under ArgoCD with a schema-aware readiness probe, and local-license installs start cleanly. Migration 064.
 

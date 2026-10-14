@@ -24,6 +24,29 @@ _PG_NOT_NULL_VIOLATION = "23502"
 _PG_CHECK_VIOLATION = "23514"
 
 
+def _integrity_error_summary(exc: IntegrityError, code: str) -> str:
+    """Loggable description of an IntegrityError with no row values.
+
+    Uses only the driver's structural attributes (asyncpg exposes them on the
+    wrapped exception) and the classified code.
+    """
+    parts = [f"code={code}"]
+    orig = getattr(exc, "orig", None)
+    candidates = [orig, getattr(orig, "__cause__", None)]
+    seen: set[str] = set()
+    for source in candidates:
+        if source is None:
+            continue
+        for attr in ("sqlstate", "pgcode", "constraint_name", "table_name", "column_name"):
+            value = getattr(source, attr, None)
+            value = getattr(value, "value", value)
+            if isinstance(value, str) and value and attr not in seen:
+                seen.add(attr)
+                parts.append(f"{attr}={value}")
+    parts.append(f"driver={type(orig).__name__ if orig is not None else type(exc).__name__}")
+    return " ".join(parts)
+
+
 def _classify_integrity_error(exc: IntegrityError) -> tuple[str, str, str, int]:
     """Map a SQLAlchemy IntegrityError to (code, message, raw_detail, status).
 
@@ -150,16 +173,17 @@ def register_exception_handlers(app: FastAPI) -> None:
         instead of Starlette's default plain-text 'Internal Server
         Error'. najitestech (GH #51 ask #2) was the trigger.
 
-        Always log the raw exception at ERROR with the request path so
-        Cloud Run + Sentry-like ingestion still get the full DBAPI
-        message — the client envelope intentionally strips the raw
-        text to avoid leaking column names or row values."""
-        code, message, raw_text, status = _classify_integrity_error(exc)
+        The log line carries only structural facts (class, SQLSTATE,
+        constraint/table/column names), never the database's message:
+        PostgreSQL details such as "Failing row contains (...)" or
+        "Key (...)=(...)" include row values — session text, titles,
+        emails, even secrets. The client envelope is stripped too."""
+        code, message, _raw_text, status = _classify_integrity_error(exc)
         logger.error(
             "IntegrityError on %s %s: %s",
             request.method,
             request.url.path,
-            raw_text,
+            _integrity_error_summary(exc, code),
         )
         body = ErrorResponse(
             error=ErrorDetail(

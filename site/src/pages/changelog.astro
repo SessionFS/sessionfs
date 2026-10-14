@@ -17,14 +17,35 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.17.0 -->
+      <!-- v0.17.1 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
-            <span class="text-brand font-semibold">v0.17.0</span>
+            <span class="text-brand font-semibold">v0.17.1</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">October 14, 2026</span>
           <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Sync Backoff &middot; <span class="font-mono">sfs daemon retry-sync</span> &middot; Quieter Server Logs</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong><span class="font-mono text-accent text-sm">sfs daemon retry-sync [SESSION_ID]</span></strong> asks the running daemon to retry sessions whose sync is backing off or paused. A unique prefix of the session ID works; <span class="font-mono text-accent text-sm">--config</span> targets a daemon started with a custom config.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Sync backs off on repeated failures.</strong> When pushes for a session keep failing with server errors, rate limits or network problems, the daemon now retries after 1 minute, 5 minutes, 15 minutes, then hourly, instead of every push interval. After 12 failures over at least six hours it pauses that session until its content changes, the daemon restarts, or you run <span class="font-mono text-accent text-sm">sfs daemon retry-sync</span>. <span class="font-mono text-accent text-sm">sfs daemon status</span> and <span class="font-mono text-accent text-sm">sfs doctor</span> list these sessions with their last error.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Local cleanup never removes changes that haven&rsquo;t been uploaded.</strong> A session with newer local changes than the server holds is no longer treated as synced, and sessions the daemon still intends to upload are skipped by automatic pruning.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Fixed: one session was retried 15,670 times.</strong> Its pushes failed because of a NUL byte (fixed in v0.17.0); the daemon now backs off instead.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Fixed: server error logs could include session content.</strong> Failed database statements no longer log their values, and integrity errors log only the error type and constraint, never the row data the database quotes.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Migrations 001&ndash;064 unchanged. 4020 backend tests + 492 dashboard UI tests passing. 79 MCP tools &middot; 9 supported tools unchanged.</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.17.0 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.17.0</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">October 14, 2026</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Agent Feedback Records &middot; Domain Auto-Join &middot; Self-Hosted Fixes</h2>
         <ul class="space-y-2 text-base text-muted">

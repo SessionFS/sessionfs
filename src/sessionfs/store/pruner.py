@@ -103,6 +103,21 @@ def _human_bytes(b: int) -> str:
         return f"{b / 1024 ** 3:.2f} GB"
 
 
+def _manifest_is_synced(manifest: dict[str, Any] | None) -> bool:
+    """Whether the server holds this session's current content.
+
+    An etag alone only says the session was uploaded once; ``sync.dirty``
+    means newer local changes are still waiting to upload, and deleting the
+    local copy then would lose them.
+    """
+    if not manifest:
+        return False
+    sync = manifest.get("sync")
+    if not isinstance(sync, dict):
+        return False
+    return bool(sync.get("etag")) and not sync.get("dirty")
+
+
 def _dir_size(path: Path) -> int:
     """Calculate total size of a directory in bytes."""
     total = 0
@@ -154,7 +169,7 @@ class SessionPruner:
 
                 # Check sync status from manifest
                 manifest = self._read_manifest(sfs_dir)
-                if manifest and manifest.get("sync", {}).get("etag"):
+                if _manifest_is_synced(manifest):
                     synced += 1
                 else:
                     unsynced += 1
@@ -170,9 +185,18 @@ class SessionPruner:
         return usage
 
     def get_prunable_sessions(
-        self, config: StorageConfig, usage: StorageUsage | None = None
+        self,
+        config: StorageConfig,
+        usage: StorageUsage | None = None,
+        protect: set[str] | None = None,
     ) -> list[PrunableSession]:
-        """List sessions eligible for pruning under current policy."""
+        """List sessions eligible for pruning under current policy.
+
+        ``protect`` sessions are never candidates, so the space they occupy
+        is not counted as freed and the storage-cap pass picks other
+        sessions instead.
+        """
+        protected = protect or set()
         if usage is None:
             usage = self.calculate_usage()
 
@@ -185,6 +209,8 @@ class SessionPruner:
 
         for row in rows:
             sid = row["session_id"]
+            if sid in protected:
+                continue
             sfs_dir = self._sessions_dir / f"{sid}.sfs"
             if not sfs_dir.is_dir():
                 continue
@@ -201,9 +227,7 @@ class SessionPruner:
             size_bytes = _dir_size(sfs_dir)
             manifest = self._read_manifest(sfs_dir)
 
-            is_synced = bool(
-                manifest and manifest.get("sync", {}).get("etag")
-            )
+            is_synced = _manifest_is_synced(manifest)
             is_bookmarked = bool(
                 manifest and manifest.get("bookmarked")
             )
@@ -240,7 +264,7 @@ class SessionPruner:
             all_sessions = []
             for row in rows:
                 sid = row["session_id"]
-                if sid in age_candidate_ids:
+                if sid in age_candidate_ids or sid in protected:
                     continue
                 sfs_dir = self._sessions_dir / f"{sid}.sfs"
                 if not sfs_dir.is_dir():
@@ -258,9 +282,7 @@ class SessionPruner:
                 size_bytes = _dir_size(sfs_dir)
                 manifest = self._read_manifest(sfs_dir)
 
-                is_synced = bool(
-                    manifest and manifest.get("sync", {}).get("etag")
-                )
+                is_synced = _manifest_is_synced(manifest)
                 is_bookmarked = bool(
                     manifest and manifest.get("bookmarked")
                 )
@@ -301,6 +323,7 @@ class SessionPruner:
         config: StorageConfig,
         dry_run: bool = False,
         force: bool = False,
+        protect: set[str] | None = None,
     ) -> PruneResult:
         """Run pruning based on configured retention policy.
 
@@ -308,12 +331,18 @@ class SessionPruner:
             config: Storage configuration with retention settings.
             dry_run: If True, calculate but don't delete.
             force: If True, delete even unsynced/bookmarked/aliased sessions.
+            protect: Session IDs never pruned, even with force (e.g. the
+                daemon's sessions still queued or backing off for upload).
         """
         usage = self.calculate_usage()
-        candidates = self.get_prunable_sessions(config, usage)
+        candidates = self.get_prunable_sessions(config, usage, protect=protect)
         result = PruneResult()
 
         for session in candidates:
+            if protect and session.session_id in protect:
+                result.skipped_unsynced += 1
+                continue
+
             # Respect bookmarks
             if session.is_bookmarked and config.preserve_bookmarked and not force:
                 result.skipped_bookmarked += 1

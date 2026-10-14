@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.1] - 2026-10-14
+
+**The daemon stops hammering the server on failing pushes, and server logs stop recording session content.**
+
+### Added
+- **`sfs daemon retry-sync [SESSION_ID]`** asks the running daemon to retry sessions whose sync is backing off or paused (a unique prefix of the ID works; `--config` targets a daemon started with a custom config).
+
+### Changed
+- **Sync backs off on repeated failures.** When pushes for a session keep failing with server errors, rate limits or network problems, the daemon now retries after 1 minute, 5 minutes, 15 minutes, then hourly, instead of every push interval. After 12 failures over at least six hours it pauses that session until its content changes, the daemon restarts, or you run `sfs daemon retry-sync`. `sfs daemon status` and `sfs doctor` list these sessions with their last error.
+- **Local cleanup never removes changes that haven't been uploaded.** A session with newer local changes than the server holds is no longer treated as synced, and sessions the daemon still intends to upload are skipped by automatic pruning.
+
+### Fixed
+- **One session was retried 15,670 times.** Its pushes failed because of a NUL byte (fixed in v0.17.0); the daemon now backs off instead.
+- **Server error logs could include session content.** Failed database statements no longer log their values, and integrity errors log only the error type and constraint, never the row data the database quotes.
+- **CI type check on Python 3.12** for the agent feedback summary.
+
 ## [0.17.0] - 2026-10-14
 
 **Agent feedback records, self-service org membership for enterprises, and a round of fixes for self-hosted teams.** Adds 3 MCP tools (76 → 79) and server migration 064.

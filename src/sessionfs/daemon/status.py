@@ -44,6 +44,8 @@ class DaemonStatus(BaseModel):
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
     sessions_total: int = 0
+    # Sessions whose pushes keep failing transiently: backing off or paused.
+    sync_backoff: list[dict] = Field(default_factory=list)
 
 
 def write_status(status: DaemonStatus, status_path: Path) -> None:

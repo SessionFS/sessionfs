@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import secrets
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -453,16 +453,16 @@ async def get_agent_feedback_summary(
     )
 
     rows = (await db.execute(stmt)).all()
-    groups = [
-        {
-            "feedback_type": feedback_type,
-            "verdict": verdict,
-            "label": label,
-            "count": count,
-        }
-        for feedback_type, verdict, label, count in rows
-    ]
-    return AgentFeedbackSummaryResponse(
-        total=sum(g["count"] for g in groups),
-        groups=groups,
-    )
+    groups: list[dict[str, Any]] = []
+    total = 0
+    for feedback_type, verdict, label, count in rows:
+        groups.append(
+            {
+                "feedback_type": feedback_type,
+                "verdict": verdict,
+                "label": label,
+                "count": count,
+            }
+        )
+        total += cast(int, count)  # SQL COUNT is always an integer
+    return AgentFeedbackSummaryResponse(total=total, groups=groups)

@@ -113,6 +113,9 @@ def doctor() -> None:
     # 6. Capture health — any watcher reporting degraded?
     _check_capture_health(table, store_dir)
 
+    # 6b. Sync backoff — sessions whose pushes keep failing?
+    _check_sync_backoff(table, store_dir)
+
     # 7. API reachable (GET /health with timeout)
     api_ok = False
     api_detail = "not configured"
@@ -201,6 +204,31 @@ def doctor() -> None:
 
     if repaired:
         console.print("[green]Auto-repair completed successfully.[/green]")
+
+
+def _check_sync_backoff(table: Table, store_dir: Path) -> None:
+    """Report sessions the daemon is backing off on or has paused."""
+    daemon_path = store_dir / "daemon.json"
+    if not daemon_path.exists():
+        return
+    try:
+        import json
+
+        raw = json.loads(daemon_path.read_text())
+        rows = raw.get("sync_backoff", []) if isinstance(raw, dict) else []
+        if not isinstance(rows, list):
+            rows = []
+    except (ValueError, OSError):
+        return
+    rows = [r for r in rows if isinstance(r, dict)]
+    if not rows:
+        table.add_row("Sync retries", _check_mark(True), "no sessions failing to sync")
+        return
+    paused = [r for r in rows if r.get("paused")]
+    detail = f"{len(rows) - len(paused)} backing off, {len(paused)} paused"
+    if paused:
+        detail += " — see 'sfs daemon status'; retry with 'sfs daemon retry-sync'"
+    table.add_row("Sync retries", _check_mark(not paused), detail)
 
 
 def _check_capture_health(table: Table, store_dir: Path) -> None:

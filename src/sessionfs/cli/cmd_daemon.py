@@ -175,7 +175,31 @@ def status() -> None:
                 f"[{color}]{health}[/{color}] ({w.sessions_tracked} sessions)",
             )
 
+        backing_off = [b for b in daemon_status.sync_backoff if not b.get("paused")]
+        paused = [b for b in daemon_status.sync_backoff if b.get("paused")]
+        if backing_off:
+            table.add_row(
+                "Sync retrying",
+                f"[yellow]{len(backing_off)} session(s) backing off after failed pushes[/yellow]",
+            )
+        if paused:
+            table.add_row(
+                "Sync paused",
+                f"[red]{len(paused)} session(s) paused after repeated failures[/red]",
+            )
+
         console.print(table)
+        for row in daemon_status.sync_backoff:
+            state = "paused" if row.get("paused") else f"next retry {row.get('next_retry_at')}"
+            console.print(
+                f"  {row.get('session_id', '')}  {row.get('failures')} failures, "
+                f"{state} — {row.get('last_error', '')}"
+            )
+        if paused:
+            console.print(
+                "[dim]Paused sessions retry when they change or the daemon restarts. "
+                "Retry now with: sfs daemon retry-sync[/dim]"
+            )
     elif running:
         console.print(f"[green]Daemon running (PID {pid}), no status file yet.[/green]")
     else:
@@ -237,6 +261,36 @@ def logs(
         all_lines = log_file.read_text().splitlines()
         for line in all_lines[-lines:]:
             console.print(line)
+
+
+@daemon_app.command("retry-sync")
+def retry_sync(
+    session_id: str = typer.Argument(
+        None, help="Session to retry now (default: every session that is backing off or paused)"
+    ),
+    config: str | None = typer.Option(
+        None, help="Path to config.toml, if the daemon was started with --config"
+    ),
+) -> None:
+    """Retry sessions whose sync is backing off or paused after failed pushes."""
+    from sessionfs.daemon.sync_backoff import write_retry_request
+
+    if config:
+        from sessionfs.daemon.config import load_config
+
+        store_dir = load_config(Path(config)).store_dir
+    else:
+        store_dir = get_store_dir()
+    store_dir.mkdir(parents=True, exist_ok=True)
+    write_retry_request(store_dir, [session_id] if session_id else None)
+    pid = _resolve_daemon_pid()
+    if pid is None or not _is_running(pid):
+        console.print(
+            "[yellow]Daemon is not running; the retry will happen when it starts.[/yellow]"
+        )
+        return
+    target = session_id or "all backing-off and paused sessions"
+    console.print(f"[green]Asked the daemon to retry {target} on its next sync cycle.[/green]")
 
 
 @daemon_app.command("rebuild-index")

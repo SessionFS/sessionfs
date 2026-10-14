@@ -165,6 +165,14 @@ The daemon and CLI share a SQLite index. If you see "database is locked", it usu
 2. Stop all daemons: `sfs daemon stop`
 3. Restart: `sfs daemon start`
 
+### A session isn't syncing / keeps failing
+
+When pushes for a session keep failing (server errors, rate limits, network problems), the daemon backs off rather than retrying every cycle: after 1 minute, 5 minutes, 15 minutes, then hourly. After 12 failures over at least six hours it pauses that session until the session changes, the daemon restarts, or you retry it.
+
+1. See which sessions are backing off or paused, with their last error: `sfs daemon status` (or `sfs doctor`, under "Sync retries")
+2. Fix the underlying cause if the error points to one (for example `sfs auth status` for authentication problems)
+3. Retry now instead of waiting: `sfs daemon retry-sync ses_abc12345` (a unique prefix of the ID works), or `sfs daemon retry-sync` with no ID to retry every backing-off or paused session. If you started the daemon with `--config`, pass the same `--config PATH`.
+
 ### Autosync not working
 
 1. Check mode: `sfs sync status`

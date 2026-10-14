@@ -80,8 +80,15 @@ def init_engine(
             "pool_pre_ping": True,  # Verify connections before use
         }
 
+    # hide_parameters: a failed statement's error (and anything that logs it)
+    # must not include the bound values — they carry session text, titles and
+    # search content, which can hold secrets before DLP has run.
     _engine = create_async_engine(
-        clean_url, echo=echo, connect_args=connect_args, **pool_kwargs,
+        clean_url,
+        echo=echo,
+        connect_args=connect_args,
+        hide_parameters=True,
+        **pool_kwargs,
     )
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
     return _engine

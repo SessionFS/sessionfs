@@ -69,6 +69,13 @@ class DaemonSyncer:
         self._last_settings_check = 0.0
         # Per-session push failure counter. Resets to 0 on successful push.
         self.sync_failures: dict[str, int] = {}
+        # Backoff for repeated transient failures (tk_14864c41f6344820).
+        from sessionfs.daemon.sync_backoff import SyncBackoff
+
+        self.backoff = SyncBackoff()
+        # session_id -> (stat fingerprint, content hash), so a failing
+        # session's content is only re-hashed when its files changed on disk.
+        self._content_fp_cache: dict[str, tuple[str, str]] = {}
 
     @property
     def is_enabled(self) -> bool:
@@ -118,6 +125,9 @@ class DaemonSyncer:
 
     def mark_session_dirty(self, session_id: str) -> None:
         """Mark a session as needing sync, respecting autosync mode."""
+        # The store saw a real content change: never trust a cached content
+        # hash (a same-size rewrite can keep file times on coarse filesystems).
+        self._content_fp_cache.pop(session_id, None)
         if not self.is_enabled:
             return
         self._observe_mode()
@@ -185,6 +195,8 @@ class DaemonSyncer:
             self._pending_sessions.add(sid)
             del self._debounce_timestamps[sid]
 
+        self._apply_retry_request()
+
         if not self._pending_sessions:
             return
 
@@ -199,6 +211,59 @@ class DaemonSyncer:
         except Exception:
             logger.exception("Sync cycle failed")
 
+    def _content_fingerprint(self, session_id: str, session_dir) -> str:
+        """Hash of the session's syncable content (as LocalStore computes it).
+
+        Some tools rewrite unchanged sessions, which changes file times but
+        not content; only a real content change should re-arm a paused
+        session or start a fresh failure streak.
+        """
+        from sessionfs.daemon.sync_backoff import session_fingerprint
+        from sessionfs.store.local import _content_hash
+
+        if session_dir is None:
+            return ""
+        try:
+            stat_fp = session_fingerprint(session_dir)
+            cached = self._content_fp_cache.get(session_id)
+            if cached is not None and cached[0] == stat_fp:
+                return cached[1]
+            content = _content_hash(session_dir) or ""
+        except Exception:
+            # One unreadable session must not abort the whole sync batch.
+            logger.debug("Could not fingerprint session %s", session_id[:12], exc_info=True)
+            cached = self._content_fp_cache.get(session_id)
+            return cached[1] if cached else ""
+        self._content_fp_cache[session_id] = (stat_fp, content)
+        return content
+
+    def sessions_awaiting_upload(self) -> set[str]:
+        """Sessions with local changes the syncer still intends to upload."""
+        return (
+            set(self._pending_sessions)
+            | set(self._debounce_timestamps)
+            | set(self.backoff.entries)
+        )
+
+    def _forget_backoff(self, session_id: str) -> None:
+        """Drop backoff state when a session leaves the transient path."""
+        self.backoff.record_success(session_id)
+        self._content_fp_cache.pop(session_id, None)
+
+    def _apply_retry_request(self) -> None:
+        """Honour `sfs daemon retry-sync`: forget backoff so sessions retry now."""
+        from sessionfs.daemon.sync_backoff import take_retry_request
+
+        request = take_retry_request(self.config.store_dir)
+        if request is None:
+            return
+        retry_all, session_ids = request
+        cleared = self.backoff.clear(None if retry_all else session_ids)
+        for session_id in cleared:
+            self._pending_sessions.add(session_id)
+        if cleared:
+            logger.info("Retrying sync now for %d session(s) on request", len(cleared))
+
     async def _sync_sessions(self, session_ids: set[str]) -> None:
         """Push pending sessions to the server."""
         from sessionfs.store.deleted import is_excluded
@@ -210,13 +275,41 @@ class DaemonSyncer:
             SyncTooLargeError,
         )
 
+        from sessionfs.daemon.sync_backoff import backoff_delay, now_pair
+
         client = self._get_client()
 
-        # Mark all as queued before starting
+        # Skip sessions still waiting out a backoff (or paused after a long
+        # run of transient failures). They stay pending, but cost nothing —
+        # no pack, no push, no watch-status call — until they are due again.
+        fingerprints: dict[str, str] = {}
+        now_mono, _now_wall = now_pair()
+        due: list[str] = []
         for session_id in session_ids:
+            # Excluded sessions are dropped before any lookup (see the
+            # tk_714456298d424202 note in the loop below).
+            if is_excluded(session_id, base_dir=self.config.store_dir):
+                due.append(session_id)
+                continue
+            if session_id not in self.backoff.entries:
+                due.append(session_id)
+                continue
+            backoff_dir = self.store.get_session_dir(session_id)
+            if not backoff_dir:
+                # Gone locally (e.g. pruned): let the loop below drop it and
+                # its backoff state instead of leaving it paused forever.
+                due.append(session_id)
+                continue
+            fingerprint = self._content_fingerprint(session_id, backoff_dir)
+            fingerprints[session_id] = fingerprint
+            if self.backoff.should_attempt(session_id, fingerprint, now_mono):
+                due.append(session_id)
+
+        # Mark due sessions as queued before starting
+        for session_id in due:
             await self._update_watch_status(session_id, "queued", client)
 
-        for session_id in session_ids:
+        for session_id in due:
             # tk_714456298d424202 — short-circuit excluded sessions before
             # pack/push. Without this, a single excluded large session
             # retries every cycle, starving the async event loop on
@@ -232,11 +325,13 @@ class DaemonSyncer:
                     session_id[:12],
                 )
                 self._pending_sessions.discard(session_id)
+                self._forget_backoff(session_id)
                 continue
 
             session_dir = self.store.get_session_dir(session_id)
             if not session_dir:
                 self._pending_sessions.discard(session_id)
+                self._forget_backoff(session_id)
                 continue
 
             try:
@@ -252,6 +347,7 @@ class DaemonSyncer:
                 self._consecutive_failures = 0
                 # Reset the per-session failure counter on success.
                 self.sync_failures.pop(session_id, None)
+                self._forget_backoff(session_id)
 
                 logger.info(
                     "Synced session %s (etag=%s, size=%d)",
@@ -275,6 +371,7 @@ class DaemonSyncer:
                     base_dir=self.config.store_dir,
                 )
                 self._pending_sessions.discard(session_id)
+                self._forget_backoff(session_id)
                 logger.info(
                     "Session %s deleted on server — local copy cleaned up",
                     session_id[:12],
@@ -290,6 +387,9 @@ class DaemonSyncer:
                 # but keep dirty=true so _collect_dirty_sessions re-queues it.
                 self._store_local_etag(session_id, exc.current_etag)
                 self._mark_session_dirty_flag(session_id)
+                # A conflict is not a transient server failure; retry next
+                # cycle with the remote etag rather than waiting out backoff.
+                self._forget_backoff(session_id)
 
             except SyncTooLargeError as exc:
                 # Permanent error: session exceeds the 10MB per-file cap.
@@ -303,23 +403,25 @@ class DaemonSyncer:
                     self.config.sync.retry_max,
                     exc,
                 )
+                self._forget_backoff(session_id)
                 self._record_session_failure(session_id, str(exc))
 
             except SyncError as exc:
-                # Transient error (429, 5xx, network) — log and retry next
-                # cycle. Do NOT count toward the per-session exclusion
-                # threshold; that's reserved for permanent errors like 413.
+                # Transient error (429, 5xx, network). Not counted toward the
+                # per-session exclusion threshold (reserved for permanent
+                # errors like 413), but backed off: retried after 1 min, 5 min,
+                # 15 min, then hourly, and paused after a long failing streak.
                 self._consecutive_failures += 1
                 await self._update_watch_status(session_id, "failed", client)
-                logger.warning(
-                    "Sync failed for %s (transient, failures=%d/%d): %s",
-                    session_id[:12],
-                    self._consecutive_failures,
-                    self.config.sync.retry_max,
-                    exc,
+                self._record_transient_failure(
+                    session_id,
+                    fingerprints.get(session_id)
+                    or self._content_fingerprint(session_id, session_dir),
+                    str(exc),
+                    backoff_delay,
                 )
 
-            except Exception:
+            except Exception as exc:
                 # Unknown/unexpected error path. Treat as transient by
                 # default — better to retry a session that should have
                 # been excluded than to permanently exclude a healthy one
@@ -327,11 +429,45 @@ class DaemonSyncer:
                 self._consecutive_failures += 1
                 await self._update_watch_status(session_id, "failed", client)
                 logger.exception("Unexpected sync error for %s", session_id[:12])
+                self._record_transient_failure(
+                    session_id,
+                    fingerprints.get(session_id)
+                    or self._content_fingerprint(session_id, session_dir),
+                    repr(exc),
+                    backoff_delay,
+                )
 
         try:
             await client.close()
         except Exception:
             pass
+
+    def _record_transient_failure(
+        self, session_id: str, fingerprint: str, error: str, backoff_delay
+    ) -> None:
+        from sessionfs.daemon.sync_backoff import now_pair
+
+        was_paused = (
+            session_id in self.backoff.entries and self.backoff.entries[session_id].paused
+        )
+        entry = self.backoff.record_failure(session_id, fingerprint, error, *now_pair())
+        if entry.paused and not was_paused:
+            logger.warning(
+                "Sync paused for %s after %d transient failures: %s. It will retry "
+                "when the session changes, the daemon restarts, or you run "
+                "'sfs daemon retry-sync'.",
+                session_id[:12],
+                entry.failures,
+                error,
+            )
+        else:
+            logger.warning(
+                "Sync failed for %s (transient, attempt %d, next retry in %ds): %s",
+                session_id[:12],
+                entry.failures,
+                backoff_delay(entry.failures),
+                error,
+            )
 
     def _record_session_failure(self, session_id: str, error_msg: str) -> None:
         """Increment the per-session failure counter and exclude after threshold.
@@ -790,10 +926,12 @@ class Daemon:
         """Write current daemon status to daemon.json."""
         watcher_statuses = [w.get_status() for w in self.watchers]
         total = sum(ws.sessions_tracked for ws in watcher_statuses)
+        syncer = getattr(self, "_syncer", None)
         status = DaemonStatus(
             store_dir=str(self.config.store_dir),
             watchers=watcher_statuses,
             sessions_total=total,
+            sync_backoff=syncer.backoff.snapshot() if syncer is not None else [],
         )
         write_status(status, self._status_path)
 
@@ -851,7 +989,10 @@ class Daemon:
                 self._capture_paused = False
 
             # Auto-prune synced sessions past retention
-            result = pruner.prune(sc, dry_run=False, force=False)
+            # Never prune a session the syncer still intends to upload
+            # (queued, debouncing, or backing off after failed pushes).
+            protect = self._syncer.sessions_awaiting_upload() if self._syncer else set()
+            result = pruner.prune(sc, dry_run=False, force=False, protect=protect)
             if result.pruned_count > 0:
                 logger.info(
                     "Pruned %d sessions, freed %s",
