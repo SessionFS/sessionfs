@@ -100,7 +100,60 @@ PUT    /api/v1/org/members/{user_id}/role   # Change role (admin only)
 DELETE /api/v1/org/members/{user_id}         # Remove member (admin only)
 ```
 
-Role must be `admin` or `member`. Admins cannot change their own role or remove themselves.
+Role must be `admin` or `member`. Admins cannot change their own role or remove themselves, and ownership transfer is a separate flow (`POST /api/v1/orgs/{org_id}/owner/transfer`) — `owner` is never assignable via the role endpoint.
+
+The CLI accepts a user ID **or email** for both operations, and supports bulk removal:
+
+```bash
+sfs org set-role alice@example.com admin
+sfs org remove bob@example.com
+sfs org remove --bulk members.txt --yes   # one user ID/email per line
+```
+
+## Auto-join by verified domain (v0.17.0)
+
+Organizations can automatically add users as members when their email is
+verified against a domain the org has already verified. This is managed via
+the org settings surface:
+
+```
+GET /api/v1/orgs/{org_id}/settings          # includes auto_join_domains
+PUT /api/v1/orgs/{org_id}/settings          # {"auto_join_domains": ["example.com"]}
+```
+
+- Each domain must already be **verified** by this org (via SSO domain
+  verification). Submitting an unverified domain is rejected with a `422`.
+- Auto-join requires a paid plan (the `oidc_sso` feature). If the org loses
+  that entitlement, auto-join stops at join time.
+- When a user verifies their email address (by clicking the verification
+  email, or when an administrator verifies them) and they are not yet a member
+  of any org, and exactly one org lists their email domain for auto-join, they
+  are added as a **member** (never admin or owner).
+- Auto-join needs email verification switched on, because it relies on users
+  proving they own their address. On deployments that skip email verification
+  (`SFS_REQUIRE_EMAIL_VERIFICATION=false`), auto-join never runs; use SSO
+  sign-in, which provisions members automatically, instead.
+- Self-hosted: auto-join also requires `SFS_VERIFICATION_SECRET` to be set to a
+  random value of at least 32 characters (the Helm chart generates one for
+  you). With the built-in default secret, verification links could be forged,
+  so auto-join stays off.
+- Auto-join applies when a user verifies their email. Accounts that were
+  already verified before you enabled it are not added retroactively; invite
+  them instead.
+- Seat limits still apply — a full org skips the join and records an
+  `auto_join_skipped_seat_cap` audit event rather than failing the user's
+  sign-in or verification.
+- Users who were previously removed, or who already have an invite to the
+  organization (accepted, declined or pending), are never added by auto-join.
+
+The dashboard exposes a checkbox per verified domain under
+**Settings > Organization**, and the CLI mirrors it:
+
+```bash
+sfs org auto-join list
+sfs org auto-join add example.com
+sfs org auto-join remove example.com
+```
 
 ## Viewing org info
 
@@ -142,7 +195,7 @@ Starting in v0.10.0, a user can belong to more than one organization. The new mu
 
 - `GET /api/v1/orgs` — list the caller's memberships with role.
 - `GET/POST/PUT/DELETE /api/v1/orgs/{org_id}/members[/...]` — list, invite, promote/demote, and remove members in a specific org.
-- `GET/PUT /api/v1/orgs/{org_id}/settings` — read/write the org's knowledge base creation defaults (`kb_retention_days`, `kb_max_context_words`, `kb_section_page_limit`). New org-scoped projects inherit these defaults at create time.
+- `GET/PUT /api/v1/orgs/{org_id}/settings` — read/write the org's knowledge base creation defaults (`kb_retention_days`, `kb_max_context_words`, `kb_section_page_limit`) and verified-domain auto-join (`auto_join_domains`). New org-scoped projects inherit these defaults at create time.
 - `GET /api/v1/auth/me` includes `default_org_id`; `PUT /api/v1/auth/me/default-org` sets it (membership validated).
 
 Removal preserves all member-authored data — sessions stay user-owned, org-scoped projects auto-transfer to the removing admin (with a `ProjectTransfer` audit row), KB entries keep their authorship, and pending transfers tied to the removed user's standing are cancelled. The legacy `/api/v1/org/members/...` routes still work and delegate to the same services as the multi-org routes, so both URL surfaces enforce the same invariants.

@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import Session, SessionSummaryRecord, User
+from sessionfs.server.sanitize import strip_nul
 from sessionfs.server.storage.base import BlobStore
 from sessionfs.server.tier_gate import UserContext, check_feature, get_user_context
 
@@ -210,6 +211,10 @@ async def generate_narrative_summary(
         base_url=base_url,
     )
 
+    # LLM output can carry \u0000, which json.loads turns into a real NUL that
+    # PostgreSQL text columns reject; strip it before either write path.
+    _strip_summary_nuls(summary)
+
     # Update the DB record with narrative fields. v0.10.7 R2 — also
     # refresh personas_active so regenerations don't leave the cached
     # value stale relative to the latest manifest/messages scan.
@@ -347,7 +352,23 @@ async def _generate_summary(session: Session, request: Request):
     return summarize_session(messages, manifest, workspace)
 
 
+def _strip_summary_nuls(summary) -> None:
+    """Strip NUL bytes from the summary's plain-text fields, in place.
+
+    These fields are bound to PostgreSQL text columns, which reject NUL. The
+    list fields are stored via json.dumps, which escapes NUL, so they are safe.
+    """
+    for field in ("what_happened", "outcome", "narrative_model"):
+        value = getattr(summary, field, None)
+        cleaned, removed = strip_nul(value)
+        if removed:
+            setattr(summary, field, cleaned)
+
+
 def _summary_to_record(session_id: str, summary) -> SessionSummaryRecord:
+    _strip_summary_nuls(summary)
+    what_happened = summary.what_happened
+    outcome = summary.outcome
     return SessionSummaryRecord(
         session_id=session_id,
         duration_minutes=summary.duration_minutes,
@@ -360,9 +381,9 @@ def _summary_to_record(session_id: str, summary) -> SessionSummaryRecord:
         tests_failed=summary.tests_failed,
         packages_installed=json.dumps(summary.packages_installed),
         errors_encountered=json.dumps(summary.errors_encountered),
-        what_happened=summary.what_happened,
+        what_happened=what_happened,
         key_decisions=json.dumps(summary.key_decisions) if summary.key_decisions else None,
-        outcome=summary.outcome,
+        outcome=outcome,
         open_issues=json.dumps(summary.open_issues) if summary.open_issues else None,
         narrative_model=summary.narrative_model,
         personas_active=json.dumps(summary.personas_active or []),

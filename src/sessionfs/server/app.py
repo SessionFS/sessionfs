@@ -13,7 +13,7 @@ from sessionfs.server.config import ServerConfig
 from sessionfs.server.db.engine import close_engine, init_engine
 from sessionfs.server.errors import register_exception_handlers
 from sessionfs.server.middleware import RequestLoggingMiddleware
-from sessionfs.server.routes import activation, admin, admin_licenses, agent_runs, api_keys, audit, auth, auth_sso, billing, bookmarks, dlp, handoffs, health, helm, knowledge, marketplace, org, org_members, personas, project_transfers, projects, residents, retrieval_audit, rules, sessions, settings, sso_admin, summaries, sync, teams, telemetry, tickets, trusted_reviewers, webhooks, wiki, work_queues
+from sessionfs.server.routes import activation, admin, admin_licenses, agent_feedback, agent_runs, api_keys, audit, auth, auth_sso, billing, bookmarks, dlp, handoffs, health, helm, knowledge, marketplace, org, org_members, personas, project_transfers, projects, residents, retrieval_audit, rules, sessions, settings, sso_admin, summaries, sync, teams, telemetry, tickets, trusted_reviewers, webhooks, wiki, work_queues
 from sessionfs.server.storage.local import LocalBlobStore
 
 
@@ -45,6 +45,14 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
             pool_timeout=config.database_pool_timeout,
             pool_recycle=config.database_pool_recycle,
         )
+
+        # Defense in depth (GitHub #66): if the DB schema does not match the
+        # code's alembic head (e.g. the migration step was skipped on deploy),
+        # log one actionable error. Best-effort and bounded, so it never blocks
+        # startup or /health.
+        from sessionfs.server.db.migration_check import log_migration_gap_if_behind
+
+        await log_migration_gap_if_behind()
 
         if config.blob_store_type == "s3":
             from sessionfs.server.storage.s3 import S3BlobStore
@@ -151,6 +159,7 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     # Agent runs same precedence (v0.10.2): `/agent-runs` subpath under
     # projects must beat the projects catch-all `/{git_remote:path}`.
     app.include_router(agent_runs.router)
+    app.include_router(agent_feedback.router)
     app.include_router(retrieval_audit.router)
     # Work queues same precedence (WQ-P2): `/work-queues` subpath under
     # projects must beat the projects catch-all `/{git_remote:path}`.

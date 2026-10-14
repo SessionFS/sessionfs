@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
+from sessionfs.cli import common
 from sessionfs.cli.common import read_sfs_messages, resolve_session_id
 from sessionfs.store.local import LocalStore
 
@@ -84,3 +86,37 @@ def test_read_sfs_messages(tmp_path: Path):
 def test_read_sfs_messages_missing(tmp_path: Path):
     result = read_sfs_messages(tmp_path / "nonexistent")
     assert result == []
+
+
+def test_read_sfs_messages_skips_malformed_line_with_warning(tmp_path: Path):
+    """GH #65 — a line left unbalanced by the raw-text DLP redaction path
+    (the backslash escaping the closing quote was swallowed) must be skipped
+    with a warning, not crash resume/display."""
+    session_dir = tmp_path / "session.sfs"
+    session_dir.mkdir()
+
+    valid = [
+        {"msg_id": "1", "role": "user", "content": [{"type": "text", "text": "Hi"}]},
+        {"msg_id": "3", "role": "assistant", "content": [{"type": "text", "text": "Bye"}]},
+    ]
+    # Corrupted serialization: the `\\"` ends the value string, then a bare
+    # `"` dangles — invalid JSON, but must not raise.
+    corrupt = '{"msg_id": "2", "content": [{"type": "text", "text": "database_url = \\"postgres://u:p@h/db""}]}'
+
+    with open(session_dir / "messages.jsonl", "w") as f:
+        f.write(json.dumps(valid[0]) + "\n")
+        f.write(corrupt + "\n")
+        f.write(json.dumps(valid[1]) + "\n")
+
+    captured: list[str] = []
+
+    def capture(*args, **_kwargs):
+        captured.append(str(args[0]) if args else "")
+
+    with patch.object(common.err_console, "print", side_effect=capture):
+        result = read_sfs_messages(session_dir, session_id="ses_test123")
+
+    assert [m["msg_id"] for m in result] == ["1", "3"]
+    assert captured == [
+        "[yellow]Skipped 1 unreadable message line in ses_test123[/yellow]"
+    ]

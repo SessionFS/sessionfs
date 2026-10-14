@@ -94,9 +94,14 @@ async def create_organization(
     if existing.scalar_one_or_none():
         raise HTTPException(409, f"Organization slug '{data.slug}' is already taken")
 
+    # Lock the user row first (the user -> org order shared with invite
+    # acceptance and domain auto-join) so a concurrent membership insert for
+    # this user elsewhere can't slip in between the check and the insert.
+    await db.execute(select(User).where(User.id == user.id).with_for_update())
+
     # Check user isn't already in an org
     existing_member = await db.execute(
-        select(OrgMember).where(OrgMember.user_id == user.id)
+        select(OrgMember).where(OrgMember.user_id == user.id).limit(1)
     )
     if existing_member.scalar_one_or_none():
         raise HTTPException(409, "You are already a member of an organization")
@@ -408,16 +413,24 @@ async def accept_invite(
     if (invite.email or "").strip().lower() != (user.email or "").strip().lower():
         raise HTTPException(403, "This invite is for a different email address")
 
+    # Lock the user row first (same user -> org order as domain auto-join),
+    # then check membership, so a concurrent auto-join into another org and
+    # this acceptance can't both see "no membership" and both insert.
+    await db.execute(select(User).where(User.id == user.id).with_for_update())
+
     # Check user isn't already in an org
     existing = await db.execute(
-        select(OrgMember).where(OrgMember.user_id == user.id)
+        select(OrgMember).where(OrgMember.user_id == user.id).limit(1)
     )
     if existing.scalar_one_or_none():
         raise HTTPException(409, "You are already a member of an organization")
 
-    # Re-check seat capacity at acceptance time (not just invite creation)
+    # Re-check seat capacity at acceptance time (not just invite creation).
+    # Lock the Organization row so this serializes with SSO JIT provisioning,
+    # domain auto-join and other acceptances, which lock the same row before
+    # counting seats; otherwise two can both see one free seat.
     org_result = await db.execute(
-        select(Organization).where(Organization.id == invite.org_id)
+        select(Organization).where(Organization.id == invite.org_id).with_for_update()
     )
     org = org_result.scalar_one_or_none()
     if org:

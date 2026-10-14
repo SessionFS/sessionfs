@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.0] - 2026-10-14
+
+**Agent feedback records, self-service org membership for enterprises, and a round of fixes for self-hosted teams.** Adds 3 MCP tools (76 → 79) and server migration 064.
+
+### Added
+- **Agent feedback records (GitHub #54).** Record whether an agent's work was useful once a human has reviewed it: routing, summaries, actionability, duplicates and outcomes, each with a verdict and an optional label from a fixed vocabulary. Records attach to an agent run, a ticket or a ticket comment and are append-only. A summary endpoint counts them by type, verdict and label, optionally per persona. When a ticket created by an agent is moved from one persona to another, a `wrong_route` record is captured automatically. Available on Team and Enterprise through the API, the new MCP tools `record_agent_feedback`, `list_agent_feedback` and `get_agent_feedback_summary`, and `sfs agent feedback add|list|summary`. New service-key scopes `agent_feedback:read` and `agent_feedback:write`.
+- **Auto-join by verified email domain (GitHub #59).** Organizations can list domains they have verified; when someone verifies an email address on one of those domains and isn't in an organization yet, they join as a member. Seat limits apply, people who were removed or already invited are never added this way, and nobody becomes an admin automatically. Requires a paid plan with SSO and real email verification. Manage it in the dashboard or with `sfs org auto-join list|add|remove`.
+- **`sfs org set-role`** changes a member's role by user ID or email.
+- **`sfs org remove` accepts an email, and `--bulk <file>` removes many members.** Every entry is checked against the member list before anyone is removed.
+- **Readiness endpoint `/health/ready`** reports whether the database schema is migrated for the running version. The Helm chart's readiness probe uses it.
+
+### Changed
+- **DLP redaction works on decoded JSON values.** Secrets are now also found in JSON field names, in `"field": "value"` pairs, inside quoted strings and in malformed lines. Content that DLP can't fully inspect (for example, nested too deeply or with repeated keys) is refused rather than stored as clean. Redaction keeps every other value exactly as it was, including numbers. The public share check uses the same scanning.
+- **Helm under ArgoCD runs in order:** database first, then migrations, then (in local license mode) the license seed, then the API and MCP servers. Fresh Helm installs create the migration job alongside the database instead of as a pre-install hook.
+- **Self-hosted: domain auto-join requires `SFS_VERIFICATION_SECRET`** to be set to a random value of at least 32 characters (the Helm chart sets one). Email verification links must also match the account's current address.
+
+### Fixed
+- **DLP redaction could corrupt session files (GitHub #65).** Redacting a quoted value could leave unbalanced escaping, so `sfs resume` and handoff pickup failed. `sfs resume` now also skips lines already damaged this way and says how many it skipped.
+- **A NUL byte in session content caused a 500 on push (GitHub #67)** and the daemon retried forever. The push is now accepted and the NUL is stripped from the copies stored in the database; the session archive itself is unchanged.
+- **The Codex watcher skipped sessions containing `"info": null` (GitHub #64).**
+- **Database migrations didn't run before the API under ArgoCD (GitHub #66).** The API also logs a clear error at startup if the database schema doesn't match the code.
+- **Fresh installs in local license mode never started**, because the license check waited on the API it was guarding. The check now runs in cloud license mode only.
+- **Concurrent membership changes.** Accepting an invite, creating an org, activating a license, auto-join, and verifying or deleting a domain now take their locks in one consistent order, so they can't exceed the seat limit, add a user to two orgs or deadlock.
+- **Saving org settings could undo a concurrent change**, and saving only KB settings cleared auto-join domains.
+- **Member removals are now recorded in the organization audit log.**
+
 ## [0.16.1] - 2026-10-12
 
 **Starter gets the storage it pays for, the Marketplace gets a launch catalog, and hosted publishing is hardened.**

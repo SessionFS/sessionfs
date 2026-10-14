@@ -5,10 +5,12 @@ metadata:
   name: {{ include "sessionfs.fullname" . }}-mcp
   labels:
     {{- include "sessionfs.componentLabels" (list . "mcp") | nindent 4 }}
-  {{- with .Values.commonAnnotations }}
   annotations:
+    # ArgoCD: roll out after migrations (wave 1) and the license seed (wave 2).
+    "argocd.argoproj.io/sync-wave": "3"
+    {{- with .Values.commonAnnotations }}
     {{- toYaml . | nindent 4 }}
-  {{- end }}
+    {{- end }}
 spec:
   {{- if not .Values.mcp.autoscaling.enabled }}
   replicas: {{ .Values.mcp.replicaCount }}

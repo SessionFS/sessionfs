@@ -58,6 +58,7 @@ Available scopes (the `*` wildcard is reserved for legacy user/admin keys; servi
 | `knowledge:read`, `knowledge:write` | ✅ live (v0.10.19) | `GET /entries`, `GET /entries/{id}`, `POST /entries/add`, `PUT /entries/{id}` (dismiss/update/refresh/promote/supersede) |
 | `personas:read`, `personas:write` | ✅ live (v0.10.20) | Persona list/get + create/update/delete |
 | `agent_runs:read` | ✅ live (v0.10.21) | `GET /agent-runs`, `GET /agent-runs/{run_id}` |
+| `agent_feedback:read`, `agent_feedback:write` | ✅ live (v0.17) | `GET /agent-feedback`, `GET /agent-feedback/summary`, `POST /agent-feedback` |
 | `marketplace:read`, `marketplace:write` | ✅ live (v0.16) | Marketplace search/inspect/download/feed + personal package/registry publishing |
 | `skills:read`, `skills:request`, `skills:approve`, `skills:admin` | ✅ live (v0.16) | Approved instruction load, install-request lifecycle, org registries/packages/assignments |
 | `sessions:read`, `rules:read`, `rules:write`, `retrieval_audit:read`, `admin:*` | Reserved | Not yet opted in on any route |
@@ -248,6 +249,7 @@ All package versions are immutable and addressed by `content_hash`. Visibility f
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/health` | None | Health check |
+| GET | `/health/ready` | None | Readiness: reports whether the database schema is migrated for the running version (used by the Helm readiness probe) |
 
 ## OpenAPI
 

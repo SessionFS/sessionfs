@@ -54,6 +54,7 @@ from sessionfs.server.db.models import (
     ApiKey,
     ExternalIdentity,
     OrgAuditEvent,
+    OrgDomainVerification,
     OrgIdentityProvider,
     OrgInvite,
     OrgMember,
@@ -63,6 +64,7 @@ from sessionfs.server.db.models import (
     ProjectTransfer,
     User,
 )
+from sessionfs.server.services.auto_join import org_has_oidc_sso
 
 logger = logging.getLogger("sessionfs.api")
 router = APIRouter(prefix="/api/v1/orgs", tags=["org-members"])
@@ -256,6 +258,10 @@ class OrgGeneralSettings(BaseModel):
     kb_retention_days: int | None = None
     kb_max_context_words: int | None = None
     kb_section_page_limit: int | None = None
+    # GitHub #59 — verified-email-domain auto-join (v0.17.0). ``None``
+    # is the "leave unchanged on partial PUT" sentinel; the stored/returned
+    # value is always a list ([] when unset).
+    auto_join_domains: list[str] | None = None
 
 
 def _read_general_settings(org: Organization) -> OrgGeneralSettings:
@@ -265,10 +271,14 @@ def _read_general_settings(org: Organization) -> OrgGeneralSettings:
     except (ValueError, TypeError):
         raw = {}
     general = raw.get("general", {}) if isinstance(raw, dict) else {}
+    auto_join = general.get("auto_join_domains")
+    if not isinstance(auto_join, list):
+        auto_join = []
     return OrgGeneralSettings(
         kb_retention_days=general.get("kb_retention_days"),
         kb_max_context_words=general.get("kb_max_context_words"),
         kb_section_page_limit=general.get("kb_section_page_limit"),
+        auto_join_domains=auto_join,
     )
 
 
@@ -302,6 +312,18 @@ async def update_org_settings(
     role = await _require_member(db, user, org_id)
     if role not in ("admin", "owner"):
         raise HTTPException(403, "Only org admins or owners can change settings")
+    # Lock and re-read the org before merging: the whole settings JSON is
+    # rewritten below, so a concurrent save based on a stale read could
+    # otherwise restore a value another admin just removed (e.g. an
+    # auto-join domain).
+    org = (
+        await db.execute(
+            select(Organization)
+            .where(Organization.id == org_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
 
     # Range guards — None means "no override" and is always accepted.
     if body.kb_retention_days is not None and not (1 <= body.kb_retention_days <= 730):
@@ -315,6 +337,68 @@ async def update_org_settings(
     ):
         raise HTTPException(400, "kb_section_page_limit must be between 1 and 200")
 
+    # GitHub #59 — auto-join domains: normalize, validate against THIS
+    # org's verified domains, and gate the feature on oidc_sso (only when
+    # a non-empty list is actually being set — clearing the list is always
+    # allowed, and kb_*-only PUTs must not hit the entitlement gate).
+    if body.auto_join_domains is not None:
+        normalized: list[str] = []
+        for raw_domain in body.auto_join_domains:
+            d = (raw_domain or "").strip().lower()
+            if d and d not in normalized:
+                normalized.append(d)
+        body.auto_join_domains = normalized
+
+        # Validate only domains being ADDED. Domains already stored stay
+        # accepted (auto-join re-checks verification and entitlement at join
+        # time), so a domain that later lost verification never blocks
+        # saving other settings or removing it.
+        try:
+            _stored_settings = (
+                json.loads(org.settings) if isinstance(org.settings, str) else (org.settings or {})
+            )
+        except (ValueError, TypeError):
+            _stored_settings = {}
+        _stored_general = (
+            _stored_settings.get("general") if isinstance(_stored_settings, dict) else None
+        )
+        _stored_domains = (
+            _stored_general.get("auto_join_domains") if isinstance(_stored_general, dict) else None
+        )
+        already_stored = set(_stored_domains) if isinstance(_stored_domains, list) else set()
+        added = [d for d in normalized if d not in already_stored]
+
+        if added:
+            if not await org_has_oidc_sso(org, db):
+                raise HTTPException(
+                    403,
+                    {
+                        "error": "upgrade_required",
+                        "feature": "oidc_sso",
+                        "message": "Auto-join by verified domain requires a paid plan (OIDC SSO).",
+                    },
+                )
+            verified_domains = set(
+                (
+                    await db.execute(
+                        select(OrgDomainVerification.domain).where(
+                            OrgDomainVerification.org_id == org_id,
+                            OrgDomainVerification.status == "verified",
+                        )
+                    )
+                ).scalars().all()
+            )
+            for d in added:
+                if d not in verified_domains:
+                    raise HTTPException(
+                        422,
+                        {
+                            "code": "unverified_domain",
+                            "message": f"Domain '{d}' is not verified by this organization",
+                            "domain": d,
+                        },
+                    )
+
     import json as _json
     try:
         raw = _json.loads(org.settings) if isinstance(org.settings, str) else (org.settings or {})
@@ -322,9 +406,14 @@ async def update_org_settings(
         raw = {}
     if not isinstance(raw, dict):
         raw = {}
-    raw["general"] = {
-        k: v for k, v in body.model_dump().items() if v is not None
-    }
+    stored_general = raw.get("general")
+    previous_general: dict = stored_general if isinstance(stored_general, dict) else {}
+    general = {k: v for k, v in body.model_dump().items() if v is not None}
+    # auto_join_domains omitted (None) means "leave unchanged": a client that
+    # only edits KB settings must not silently switch auto-join off.
+    if body.auto_join_domains is None and "auto_join_domains" in previous_general:
+        general["auto_join_domains"] = previous_general["auto_join_domains"]
+    raw["general"] = general
     org.settings = _json.dumps(raw)
     await db.commit()
     await db.refresh(org)
@@ -1074,6 +1163,30 @@ async def perform_member_removal(
     await db.execute(
         delete(OrgMember).where(
             OrgMember.org_id == org_id, OrgMember.user_id == target_user_id
+        )
+    )
+
+    # GitHub #59 — audit the removal so auto-join can detect previously
+    # removed members (OrgMember rows are hard-deleted; there is no
+    # removed_at / is_active column to key off).
+    target_user = (
+        await db.execute(select(User).where(User.id == target_user_id))
+    ).scalar_one_or_none()
+    org_name = (
+        await db.execute(select(Organization.name).where(Organization.id == org_id))
+    ).scalar_one_or_none()
+    db.add(
+        OrgAuditEvent(
+            id=f"oae_{secrets.token_hex(12)}",
+            org_id=org_id,
+            org_name_snapshot=org_name or "",
+            event_type="member_removed",
+            actor_user_id=removing_admin.id,
+            actor_email_snapshot=removing_admin.email,
+            actor_role_at_time=remover_role,
+            target_type="user",
+            target_id=target_user_id,
+            target_email_snapshot=target_user.email if target_user else None,
         )
     )
 

@@ -2807,3 +2807,24 @@ async def test_entity_ref_upsert_does_not_leak_across_projects(
     assert refreshed.superseded_by is None
 
 
+
+
+@pytest.mark.asyncio
+async def test_extraction_drops_entries_that_were_only_nul_bytes(
+    db_session: AsyncSession, test_user: User, test_project: Project, sample_summary: SessionSummary
+):
+    """A decision that was only NUL characters is empty after sanitizing and
+    must not be stored as a blank knowledge entry."""
+    from sessionfs.server.services.knowledge import extract_knowledge_entries
+
+    sample_summary.key_decisions = ["\x00\x00", "Use FastAPI instead of Flask"]
+    entries = await extract_knowledge_entries(
+        session_id="ses_test123",
+        summary=sample_summary,
+        project_id=test_project.id,
+        user_id=test_user.id,
+        db=db_session,
+    )
+    assert all(e.content and e.content.strip() for e in entries)
+    decisions = [e.content for e in entries if e.entry_type == "decision"]
+    assert decisions == ["Use FastAPI instead of Flask"]

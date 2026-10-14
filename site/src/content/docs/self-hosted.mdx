@@ -348,7 +348,7 @@ helm upgrade sessionfs sessionfs/sessionfs \
   --reuse-values
 ```
 
-Database migrations run automatically as a Helm post-upgrade hook.
+Database migrations run automatically as a Helm pre-upgrade hook.
 
 ## Troubleshooting
 
@@ -478,7 +478,15 @@ helm install sessionfs sessionfs/sessionfs \
 
 ### Automatic (Helm)
 
-Migrations run automatically on `helm install` and `helm upgrade` via a post-install/post-upgrade hook. The migration job runs before the API pods start (hook weight `-5`).
+Migrations run automatically on `helm install` and `helm upgrade`. On upgrades the migration job is a pre-upgrade hook that finishes before new API pods start (hook weight `-5`). On a fresh install the job is created alongside the database and its credentials and retries until the database is ready; API pods report ready only once the schema is migrated, so new code never serves against an old schema.
+
+### ArgoCD
+
+If you deploy SessionFS with ArgoCD (through its Helm source, or by rendering the chart with `helm template`), the chart orders the rollout with ArgoCD sync waves: the database and its credentials come up first, then the migration job runs, then (in local license mode) the license is seeded, and only after those succeed do the API and MCP deployments roll to the new version.
+
+Nothing to configure: the annotations ship in the chart. As a safety net, API pods only report ready (`/health/ready`) once the database schema has been migrated for their version, so they never take traffic against an old schema, and the API logs a clear error at startup if the schema does not match.
+
+If you ever run `alembic upgrade head` by hand, restart the API deployment afterwards (`kubectl rollout restart deployment/sessionfs-api`) so its database connections pick up the new schema.
 
 ### Manual
 
@@ -494,7 +502,7 @@ If the migration job fails, check logs:
 kubectl logs job/sessionfs-migrate-<revision> -n sessionfs
 ```
 
-The API will fail to start if tables don't exist. Ensure migrations complete first. The Helm hook handles ordering automatically.
+If the schema does not match the running code (for example, a migration was skipped), the API logs a clear error at startup naming both revisions and the fix. Check the API logs if authenticated routes start failing with "column ... does not exist".
 
 ## Rate Limiting
 

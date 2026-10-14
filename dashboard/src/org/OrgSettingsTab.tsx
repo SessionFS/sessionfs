@@ -33,6 +33,7 @@ import {
   useOrgSettings,
   useUpdateOrgSettings,
 } from './useOrgSettings';
+import { useDomains } from './useSso';
 import { Button, Input } from '../components/ui';
 
 interface OrgSettingsTabProps {
@@ -45,6 +46,7 @@ type FormState = {
   kb_retention_days: string;
   kb_max_context_words: string;
   kb_section_page_limit: string;
+  auto_join_domains: string[];
 };
 
 function settingsToForm(s: OrgGeneralSettings | undefined): FormState {
@@ -52,6 +54,7 @@ function settingsToForm(s: OrgGeneralSettings | undefined): FormState {
     kb_retention_days: s?.kb_retention_days?.toString() ?? '',
     kb_max_context_words: s?.kb_max_context_words?.toString() ?? '',
     kb_section_page_limit: s?.kb_section_page_limit?.toString() ?? '',
+    auto_join_domains: s?.auto_join_domains ?? [],
   };
 }
 
@@ -64,6 +67,8 @@ function parseIntOrNull(v: string): number | null {
 
 export default function OrgSettingsTab({ orgId, canEdit }: OrgSettingsTabProps) {
   const { data, isLoading, error } = useOrgSettings(orgId);
+  // The domain list is admin-only; members never request it.
+  const domains = useDomains(canEdit ? orgId : undefined);
   const update = useUpdateOrgSettings(orgId);
   const { addToast } = useToast();
 
@@ -84,6 +89,13 @@ export default function OrgSettingsTab({ orgId, canEdit }: OrgSettingsTabProps) 
       kb_max_context_words: parseIntOrNull(form.kb_max_context_words),
       kb_section_page_limit: parseIntOrNull(form.kb_section_page_limit),
     };
+    // Only send auto-join domains when they changed, so saving KB settings
+    // never re-validates (and fails on) a domain configured earlier.
+    const savedDomains = data?.auto_join_domains ?? [];
+    const domainsChanged =
+      savedDomains.length !== form.auto_join_domains.length ||
+      savedDomains.some((d) => !form.auto_join_domains.includes(d));
+    if (domainsChanged) payload.auto_join_domains = form.auto_join_domains;
     // Reject any NaN (bad numeric input) before sending.
     for (const [k, v] of Object.entries(payload)) {
       if (Number.isNaN(v as number)) {
@@ -96,6 +108,23 @@ export default function OrgSettingsTab({ orgId, canEdit }: OrgSettingsTabProps) 
       onError: (err) => addToast('error', `Save failed: ${err.message}`),
     });
   };
+
+  const toggleDomain = (domain: string) => {
+    setForm((f) => ({
+      ...f,
+      auto_join_domains: f.auto_join_domains.includes(domain)
+        ? f.auto_join_domains.filter((d) => d !== domain)
+        : [...f.auto_join_domains, domain],
+    }));
+  };
+
+  const verifiedDomains = (domains.data ?? []).filter((d) => d.status === 'verified');
+  // Configured domains that are no longer verified (deleted or re-pending).
+  // Auto-join ignores them; show them so they can be removed. Only judged once
+  // the domain list has actually loaded.
+  const staleDomains = canEdit && domains.isSuccess
+    ? form.auto_join_domains.filter((d) => !verifiedDomains.some((v) => v.domain === d))
+    : [];
 
   const field = (key: keyof FormState, label: string, hint: string) => (
     <div className="flex flex-col gap-1">
@@ -136,6 +165,73 @@ export default function OrgSettingsTab({ orgId, canEdit }: OrgSettingsTabProps) 
           'KB section page limit',
           'Maximum pages a single KB section can generate (1-200).',
         )}
+
+        <div className="flex flex-col gap-2">
+          <span className="text-sm text-text-primary">Auto-join by verified domain</span>
+          <span className="text-xs text-text-tertiary">
+            When a user verifies an email on one of these domains, they are
+            automatically added to this org as a member. Requires a verified
+            domain and a paid plan (OIDC SSO).
+          </span>
+          {!canEdit ? (
+            <span className="text-sm text-text-secondary">
+              {form.auto_join_domains.length > 0
+                ? form.auto_join_domains.join(', ')
+                : 'Not enabled.'}
+            </span>
+          ) : domains.isLoading ? (
+            <span className="text-xs text-text-tertiary">Loading domains…</span>
+          ) : domains.isError ? (
+            <span role="alert" className="text-xs text-text-tertiary">
+              Could not load verified domains. Auto-join settings are unchanged.
+            </span>
+          ) : verifiedDomains.length === 0 ? (
+            <span className="text-xs text-text-tertiary">
+              No verified domains yet. Verify a domain under SSO to enable auto-join.
+            </span>
+          ) : (
+            verifiedDomains.map((d) => {
+              const checked = form.auto_join_domains.includes(d.domain);
+              return (
+                <label
+                  key={d.id}
+                  className="flex items-center gap-2 px-3 py-2 border border-border rounded-lg bg-bg-primary cursor-pointer hover:bg-surface-hover transition-colors"
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => toggleDomain(d.domain)}
+                    disabled={!canEdit || update.isPending}
+                    className="accent-[var(--brand)]"
+                    aria-label={`Auto-join ${d.domain}`}
+                  />
+                  <span className="text-sm text-text-primary">{d.domain}</span>
+                </label>
+              );
+            })
+          )}
+          {staleDomains.map((domain) => (
+            <div
+              key={`stale-${domain}`}
+              role="status"
+              className="flex items-center justify-between gap-2 px-3 py-2 border border-border rounded-lg bg-bg-primary"
+            >
+              <span className="text-sm text-text-secondary">
+                {domain} is no longer verified, so auto-join skips it.
+              </span>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => toggleDomain(domain)}
+                disabled={!canEdit || update.isPending}
+                aria-label={`Remove ${domain} from auto-join`}
+              >
+                Remove
+              </Button>
+            </div>
+          ))}
+        </div>
+
         <Button
           type="submit"
           variant="primary"

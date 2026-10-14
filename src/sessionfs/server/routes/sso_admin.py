@@ -876,8 +876,31 @@ async def verify_domain(
         # Allow re-verification of a failed domain
         pass
 
-    # Resolve TXT records
+    # Resolve TXT records before taking any lock (DNS can be slow).
     txt_records = await _resolve_txt(dv.domain)
+
+    # Lock in the same org -> domain order as domain deletion and domain
+    # auto-join, then re-read the row: it may have been deleted or changed
+    # while DNS resolved, and taking the row first would deadlock against a
+    # concurrent delete holding the org.
+    await db.execute(
+        select(Organization.id).where(Organization.id == org_id).with_for_update()
+    )
+    dv = (
+        await db.execute(
+            select(OrgDomainVerification)
+            .where(
+                OrgDomainVerification.id == domain_id,
+                OrgDomainVerification.org_id == org_id,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if dv is None:
+        raise HTTPException(404, "Domain verification request not found")
+    if dv.status == "verified":
+        raise HTTPException(409, "Domain is already verified")
     expected = f"{_DOMAIN_VERIFICATION_PREFIX}{dv.verification_token}"
     found = any(expected in r for r in txt_records)
 
@@ -992,12 +1015,21 @@ async def delete_domain(
     org = await _org_or_404(db, org_id)
     role = await _require_owner_or_admin(db, user, org_id)
 
+    # Lock the org before the domain row: domain auto-join locks org then
+    # domain, so taking them in the same order serializes the two instead of
+    # deadlocking (the audit insert below needs a key-share lock on the org).
+    await db.execute(
+        select(Organization.id).where(Organization.id == org_id).with_for_update()
+    )
+
     dv = (
         await db.execute(
-            select(OrgDomainVerification).where(
+            select(OrgDomainVerification)
+            .where(
                 OrgDomainVerification.id == domain_id,
                 OrgDomainVerification.org_id == org_id,
             )
+            .with_for_update()
         )
     ).scalar_one_or_none()
     if dv is None:

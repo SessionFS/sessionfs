@@ -24,6 +24,12 @@ from mcp.types import TextContent, Tool
 from sessionfs.cli.common import read_sfs_messages
 from sessionfs.daemon.config import load_config
 from sessionfs.mcp.search import SessionSearchIndex
+from sessionfs.server.schemas.agent_feedback import (
+    ALL_LABELS,
+    FEEDBACK_TYPES,
+    VERDICTS,
+    label_valid_for_type,
+)
 from sessionfs.skills.models import SUPPORTED_TOOLS as SUPPORTED_SKILL_TOOLS
 from sessionfs.skills.models import validate_device_id
 from sessionfs.store.local import LocalStore
@@ -1492,6 +1498,103 @@ _TOOLS = [
         },
     ),
     Tool(
+        name="record_agent_feedback",
+        description=(
+            "Record a structured feedback/outcome note on agent work. A "
+            "record points at least one target (agent_run_id, ticket_id, "
+            "or comment_id), all of which must belong to the same project. "
+            "`feedback_type` classifies the signal, `verdict` is "
+            "positive/negative/neutral, and `label` is an optional fixed "
+            "vocabulary word valid for that feedback_type. Append-only.\n\n"
+            "Feedback types + valid labels:\n"
+            "  route → correct_route | wrong_route\n"
+            "  summary → summary_good | summary_bad\n"
+            "  actionability → actionable | not_actionable\n"
+            "  duplicate → duplicate | new_issue\n"
+            "  resolution → false_positive | flaky | resolved_by_fix | "
+            "resolved_by_test_update\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs agent feedback add` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "feedback_type": {
+                    "type": "string",
+                    "enum": list(FEEDBACK_TYPES),
+                },
+                "verdict": {
+                    "type": "string",
+                    "enum": list(VERDICTS),
+                },
+                "label": {
+                    "type": "string",
+                    "enum": sorted(ALL_LABELS),
+                },
+                "final_owner": {"type": "string"},
+                "notes": {"type": "string"},
+                "agent_run_id": {"type": "string"},
+                "ticket_id": {"type": "string"},
+                "comment_id": {"type": "string"},
+                "git_remote": {"type": "string"},
+            },
+            "required": ["feedback_type", "verdict"],
+        },
+    ),
+    Tool(
+        name="list_agent_feedback",
+        description=(
+            "List agent-feedback records in the project, oldest-first with "
+            "a stable (created_at, id) cursor. Filter by target "
+            "(agent_run_id, ticket_id), feedback_type, verdict, label, or "
+            "persona (matched via the record's run/ticket).\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs agent feedback list` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "agent_run_id": {"type": "string"},
+                "ticket_id": {"type": "string"},
+                "feedback_type": {
+                    "type": "string",
+                    "enum": list(FEEDBACK_TYPES),
+                },
+                "verdict": {
+                    "type": "string",
+                    "enum": list(VERDICTS),
+                },
+                "label": {
+                    "type": "string",
+                    "enum": sorted(ALL_LABELS),
+                },
+                "persona": {"type": "string"},
+                "since": {"type": "string"},
+                "since_id": {"type": "string"},
+                "limit": {"type": "integer", "default": 100},
+                "git_remote": {"type": "string"},
+            },
+        },
+    ),
+    Tool(
+        name="get_agent_feedback_summary",
+        description=(
+            "Summarize agent-feedback records in the project as grouped "
+            "counts by feedback_type × verdict × label (pure SQL, no LLM). "
+            "Optionally filter by persona or a `since` timestamp.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs agent feedback summary` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "persona": {"type": "string"},
+                "since": {"type": "string"},
+                "git_remote": {"type": "string"},
+            },
+        },
+    ),
+    Tool(
         name="dismiss_knowledge_entry",
         description=(
             "Dismiss a knowledge entry that's wrong, stale, or no longer "
@@ -2368,6 +2471,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_complete_agent_run(arguments)
         elif name == "list_agent_runs":
             result = await _handle_list_agent_runs(arguments)
+        elif name == "record_agent_feedback":
+            result = await _handle_record_agent_feedback(arguments)
+        elif name == "list_agent_feedback":
+            result = await _handle_list_agent_feedback(arguments)
+        elif name == "get_agent_feedback_summary":
+            result = await _handle_get_agent_feedback_summary(arguments)
         elif name == "dismiss_knowledge_entry":
             result = await _handle_dismiss_knowledge_entry(arguments)
         elif name == "update_entry_confidence":
@@ -5158,6 +5267,132 @@ async def _handle_list_agent_runs(args: dict) -> dict:
     if resp.status_code >= 400:
         return {"error": f"API error {resp.status_code}: {resp.text}"}
     return {"agent_runs": resp.json()}
+
+
+async def _handle_record_agent_feedback(args: dict) -> dict:
+    """Wrap POST /api/v1/projects/{project_id}/agent-feedback.
+
+    Validates the vocabulary + at-least-one-target BEFORE resolving the
+    project so a malformed call surfaces locally, not as a DNS/network
+    error (same ordering as dismiss_knowledge_entry).
+    """
+    feedback_type = (args.get("feedback_type") or "").strip()
+    verdict = (args.get("verdict") or "").strip()
+    if feedback_type not in FEEDBACK_TYPES:
+        return {
+            "error": f"feedback_type must be one of: {list(FEEDBACK_TYPES)}"
+        }
+    if verdict not in VERDICTS:
+        return {"error": f"verdict must be one of: {list(VERDICTS)}"}
+    label = args.get("label")
+    if label is not None and not isinstance(label, str):
+        return {"error": "label must be a string"}
+    label = (label or "").strip() or None
+    if not label_valid_for_type(feedback_type, label):
+        return {
+            "error": f"label {label!r} is not valid for feedback_type "
+            f"{feedback_type!r}"
+        }
+    targets = [
+        args.get("agent_run_id"),
+        args.get("ticket_id"),
+        args.get("comment_id"),
+    ]
+    if not any(isinstance(t, str) and t.strip() for t in targets):
+        return {
+            "error": "at least one target is required: agent_run_id, "
+            "ticket_id, or comment_id"
+        }
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    body: dict[str, Any] = {
+        "feedback_type": feedback_type,
+        "verdict": verdict,
+    }
+    if label:
+        body["label"] = label
+    for key in ("agent_run_id", "ticket_id", "comment_id"):
+        val = args.get(key)
+        if isinstance(val, str) and val.strip():
+            body[key] = val.strip()
+    for key in ("final_owner", "notes"):
+        val = args.get(key)
+        if isinstance(val, str) and val.strip():
+            body[key] = val.strip()
+
+    import httpx
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{api_url}/api/v1/projects/{project_id}/agent-feedback",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=body,
+        )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_list_agent_feedback(args: dict) -> dict:
+    """Wrap GET /api/v1/projects/{project_id}/agent-feedback."""
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    params: dict[str, str] = {}
+    for key in (
+        "agent_run_id", "ticket_id", "feedback_type", "verdict",
+        "label", "persona", "since", "since_id",
+    ):
+        val = args.get(key)
+        if isinstance(val, str) and val.strip():
+            params[key] = val.strip()
+    limit = args.get("limit")
+    if isinstance(limit, int) and limit > 0:
+        params["limit"] = str(limit)
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/projects/{project_id}/agent-feedback",
+            headers={"Authorization": f"Bearer {api_key}"},
+            params=params,
+        )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return {"agent_feedback": resp.json()}
+
+
+async def _handle_get_agent_feedback_summary(args: dict) -> dict:
+    """Wrap GET /api/v1/projects/{project_id}/agent-feedback/summary."""
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    params: dict[str, str] = {}
+    for key in ("persona", "since"):
+        val = args.get(key)
+        if isinstance(val, str) and val.strip():
+            params[key] = val.strip()
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/projects/{project_id}/agent-feedback/summary",
+            headers={"Authorization": f"Bearer {api_key}"},
+            params=params,
+        )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
 
 
 async def _handle_dismiss_knowledge_entry(args: dict) -> dict:

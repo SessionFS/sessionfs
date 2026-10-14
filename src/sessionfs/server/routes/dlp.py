@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.db.engine import get_db
-from sessionfs.server.db.models import Session
+from sessionfs.server.db.models import Organization, Session
 from sessionfs.server.dlp import (
     DEFAULT_DLP_POLICY,
     scan_dlp,
@@ -122,9 +122,21 @@ async def update_dlp_policy(
     if not ctx.org:
         raise HTTPException(400, "DLP policy requires an organization")
 
+    # Lock and re-read the org: the whole settings JSON is rewritten below, so
+    # merging into a stale copy could undo a concurrent change to another
+    # section (e.g. an admin removing an auto-join domain).
+    org = (
+        await db.execute(
+            select(Organization)
+            .where(Organization.id == ctx.org.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
+
     # Merge updates into existing policy (don't overwrite unset fields)
     try:
-        settings = json.loads(ctx.org.settings) if isinstance(ctx.org.settings, str) else ctx.org.settings
+        settings = json.loads(org.settings) if isinstance(org.settings, str) else org.settings
     except (json.JSONDecodeError, TypeError):
         settings = {}
     if not isinstance(settings, dict):
@@ -145,7 +157,7 @@ async def update_dlp_policy(
         raise HTTPException(422, str(e))
 
     settings["dlp"] = validated
-    ctx.org.settings = json.dumps(settings)
+    org.settings = json.dumps(settings)
     await db.commit()
 
     return DLPPolicyResponse(

@@ -209,11 +209,25 @@ def _read_messages(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     messages = []
+    skipped = 0
     with open(path) as f:
         for line in f:
             line = line.strip()
-            if line:
+            if not line:
+                continue
+            try:
                 messages.append(json.loads(line))
+            except json.JSONDecodeError:
+                skipped += 1
+    if skipped:
+        session_dir = path.parent.name
+        sid = session_dir[:-4] if session_dir.endswith(".sfs") else session_dir
+        logger.warning(
+            "Skipped %d unreadable message %s in %s",
+            skipped,
+            "line" if skipped == 1 else "lines",
+            sid,
+        )
     return messages
 
 

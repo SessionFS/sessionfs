@@ -28,6 +28,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 import typer
 from rich.markdown import Markdown
@@ -386,4 +387,163 @@ def list_agents(
             r.get("policy_result") or "-",
             r.get("created_at", "")[:19],
         )
+    console.print(table)
+
+
+# ── `sfs agent feedback …` — structured feedback/outcome records ──
+#
+# v0.17.0. A feedback record points at least one target (agent run,
+# ticket, or ticket comment) within a single project, classified by
+# feedback_type × verdict × optional label. Append-only; `sfs agent
+# feedback summary` is pure SQL group-by, no LLM.
+
+
+feedback_app = typer.Typer(
+    name="feedback",
+    help="Structured feedback/outcome records on agent work (Team+).",
+    no_args_is_help=True,
+)
+
+agent_app.add_typer(feedback_app, name="feedback")
+
+
+def _feedback_params(locals_: dict, keys: tuple[str, ...]) -> str:
+    """Build a URL query suffix from non-empty option values."""
+    params: list[tuple[str, str]] = []
+    for key in keys:
+        val = locals_.get(key)
+        if isinstance(val, str) and val.strip():
+            params.append((key, val.strip()))
+    return ("?" + urlencode(params)) if params else ""
+
+
+@feedback_app.command("add")
+@handle_errors
+def add_feedback(
+    feedback_type: str = typer.Option(
+        ..., "--type",
+        help="route / summary / actionability / duplicate / resolution",
+    ),
+    verdict: str = typer.Option(
+        ..., "--verdict", help="positive / negative / neutral",
+    ),
+    label: str | None = typer.Option(None, "--label"),
+    final_owner: str | None = typer.Option(None, "--final-owner"),
+    notes: str | None = typer.Option(None, "--notes"),
+    agent_run_id: str | None = typer.Option(None, "--agent-run"),
+    ticket_id: str | None = typer.Option(None, "--ticket"),
+    comment_id: str | None = typer.Option(None, "--comment"),
+    format_: str = typer.Option("text", "--format", help="text / json"),
+) -> None:
+    """Record a structured feedback/outcome note on agent work."""
+    body: dict = {
+        "feedback_type": feedback_type.strip(),
+        "verdict": verdict.strip(),
+    }
+    for k, v in (
+        ("label", label), ("final_owner", final_owner), ("notes", notes),
+        ("agent_run_id", agent_run_id), ("ticket_id", ticket_id),
+        ("comment_id", comment_id),
+    ):
+        if v and v.strip():
+            body[k] = v.strip()
+
+    s, resp = _post("/api/v1/projects/{p}/agent-feedback", body)
+    if s >= 400 or not isinstance(resp, dict):
+        err_console.print(f"[red]Create failed ({s}): {resp}[/red]")
+        raise typer.Exit(1)
+    if format_ == "json":
+        sys.stdout.write(_json.dumps(resp, indent=2, default=str) + "\n")
+        return
+    console.print(
+        f"[green]Recorded {resp['id']}[/green] — "
+        f"{resp['feedback_type']} / {resp['verdict']}"
+        + (f" / {resp['label']}" if resp.get("label") else "")
+    )
+
+
+@feedback_app.command("list")
+@handle_errors
+def list_feedback(
+    agent_run_id: str | None = typer.Option(None, "--agent-run"),
+    ticket_id: str | None = typer.Option(None, "--ticket"),
+    feedback_type: str | None = typer.Option(None, "--type"),
+    verdict: str | None = typer.Option(None, "--verdict"),
+    label: str | None = typer.Option(None, "--label"),
+    persona: str | None = typer.Option(None, "--persona"),
+    limit: int = typer.Option(100, "--limit"),
+    format_: str = typer.Option("text", "--format", help="text / json"),
+) -> None:
+    """List feedback records, oldest-first with filters."""
+    suffix = _feedback_params(
+        locals(),
+        ("agent_run_id", "ticket_id", "feedback_type", "verdict",
+         "label", "persona"),
+    )
+    if suffix:
+        suffix += f"{'&' if '?' in suffix else '?'}limit={limit}"
+    else:
+        suffix = f"?limit={limit}"
+    s, resp = _get(f"/api/v1/projects/{{p}}/agent-feedback{suffix}")
+    if s >= 400 or not isinstance(resp, list):
+        err_console.print(f"[red]API error ({s}): {resp}[/red]")
+        raise typer.Exit(1)
+    if format_ == "json":
+        sys.stdout.write(_json.dumps(resp, indent=2, default=str) + "\n")
+        return
+    if not resp:
+        console.print("[dim]No feedback records match.[/dim]")
+        return
+    table = Table()
+    table.add_column("ID", style="cyan")
+    table.add_column("Type")
+    table.add_column("Verdict")
+    table.add_column("Label", style="dim")
+    table.add_column("Source")
+    table.add_column("Created", style="dim")
+    for r in resp:
+        table.add_row(
+            r["id"],
+            r["feedback_type"],
+            r["verdict"],
+            r.get("label") or "-",
+            r.get("source") or "-",
+            r.get("created_at", "")[:19],
+        )
+    console.print(table)
+
+
+@feedback_app.command("summary")
+@handle_errors
+def summary_feedback(
+    persona: str | None = typer.Option(None, "--persona"),
+    since: str | None = typer.Option(None, "--since"),
+    format_: str = typer.Option("text", "--format", help="text / json"),
+) -> None:
+    """Grouped counts by feedback_type × verdict × label (no LLM)."""
+    suffix = _feedback_params(locals(), ("persona", "since"))
+    s, resp = _get(f"/api/v1/projects/{{p}}/agent-feedback/summary{suffix}")
+    if s >= 400 or not isinstance(resp, dict):
+        err_console.print(f"[red]API error ({s}): {resp}[/red]")
+        raise typer.Exit(1)
+    if format_ == "json":
+        sys.stdout.write(_json.dumps(resp, indent=2, default=str) + "\n")
+        return
+    groups = resp.get("groups", [])
+    if not groups:
+        console.print("[dim]No feedback records yet.[/dim]")
+        return
+    table = Table()
+    table.add_column("Type")
+    table.add_column("Verdict")
+    table.add_column("Label", style="dim")
+    table.add_column("Count", justify="right")
+    for g in groups:
+        table.add_row(
+            g["feedback_type"],
+            g["verdict"],
+            g.get("label") or "-",
+            str(g["count"]),
+        )
+    table.title = f"Agent feedback — {resp.get('total', 0)} total"
     console.print(table)

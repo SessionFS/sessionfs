@@ -1935,6 +1935,103 @@ class AgentRun(Base):
     service_key_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
 
+class AgentFeedback(Base):
+    """Structured outcome/feedback record on agent work (v0.17.0).
+
+    Append-only. A record points at at least one target — an agent run,
+    a ticket, or a ticket comment — all of which must belong to the
+    same `project_id` (enforced at the route layer so a guessed
+    cross-project id surfaces as 404, never as a leak). Targets are FKs
+    with SET NULL so the feedback row survives target deletion while the
+    audit triple + `final_owner`/`notes` retain the human-readable trail.
+    "At least one target" is therefore enforced on create only, not by a
+    DB CHECK (which would block deleting the last referenced target).
+
+    `feedback_type` / `verdict` / `source` are enum-as-strings with
+    inline CHECK constraints (mirroring migration 064). `label` is a
+    fixed vocabulary validated per feedback_type at the route layer.
+    """
+
+    __tablename__ = "agent_feedback"
+    __table_args__ = (
+        CheckConstraint(
+            "feedback_type IN ('route','summary','actionability',"
+            "'duplicate','resolution')",
+            name="ck_agent_feedback_type",
+        ),
+        CheckConstraint(
+            "verdict IN ('positive','negative','neutral')",
+            name="ck_agent_feedback_verdict",
+        ),
+        CheckConstraint(
+            "source IN ('human','auto')",
+            name="ck_agent_feedback_source",
+        ),
+        Index("idx_agent_feedback_project_created", "project_id", "created_at"),
+        Index("idx_agent_feedback_run", "agent_run_id"),
+        Index("idx_agent_feedback_ticket", "ticket_id"),
+        Index("idx_agent_feedback_comment", "comment_id"),
+        Index(
+            "uq_agent_feedback_auto_route",
+            "ticket_id",
+            "final_owner",
+            unique=True,
+            sqlite_where=text("source = 'auto' AND label = 'wrong_route'"),
+            postgresql_where=text("source = 'auto' AND label = 'wrong_route'"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # afb_<hex>
+    project_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    # Targets — at least one required (see CHECK above).
+    agent_run_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("agent_runs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    ticket_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("tickets.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    comment_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("ticket_comments.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    # Classification.
+    feedback_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    verdict: Mapped[str] = mapped_column(String(10), nullable=False)
+    label: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    final_owner: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="human", server_default="human"
+    )
+
+    # Audit triple (v0.10.10 service-key provenance pattern).
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    actor_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="user", server_default="user"
+    )
+    service_key_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    service_key_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class WorkQueue(Base):
     """A durable, project-scoped plan for an agent to service tickets.
 

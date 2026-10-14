@@ -38,9 +38,15 @@ Access your deployment via port-forward:
 
 {{- if .Values.migrations.enabled }}
 
-Database migrations will run automatically as a post-install/post-upgrade hook.
+Database migrations run automatically before new API pods serve traffic (as
+a pre-upgrade hook on upgrades, a job alongside the database on fresh installs,
+and ordered by sync waves under ArgoCD).
+The API logs a clear error at startup if the schema does not match the code.
 Check migration status:
   kubectl get jobs -l app.kubernetes.io/component=migration
+
+If you migrate the database manually with `alembic upgrade head`, restart the API
+afterwards so it re-reads the new schema.
 {{- end }}
 
 For more information, visit https://sessionfs.dev/docs/self-hosted

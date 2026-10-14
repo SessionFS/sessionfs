@@ -1524,24 +1524,96 @@ $ sfs org members
 └───────────────────────┴────────┴────────────┘
 ```
 
-### `sfs org remove`
+### `sfs org set-role`
 
-Remove a member from the organization (admin only). Cannot remove yourself.
+Change a member's role (admin only). Accepts a user ID or email. Ownership
+transfer is a separate flow and is not allowed here.
 
 ```
-sfs org remove USER_ID
+sfs org set-role USER_ID_OR_EMAIL admin|member
 ```
 
 | Argument | Required | Description |
 |----------|----------|-------------|
-| `USER_ID` | yes | User ID of the member to remove |
+| `USER_ID_OR_EMAIL` | yes | User ID or email of the member |
+| `ROLE` | yes | New role: `admin` or `member` |
+
+**Example:**
+
+```bash
+$ sfs org set-role alice@example.com admin
+
+Role for alice@example.com changed to admin.
+```
+
+### `sfs org remove`
+
+Remove a member from the organization (admin only). Accepts a user ID or
+email. Cannot remove yourself, the owner, or the last admin.
+
+```
+sfs org remove USER_ID_OR_EMAIL [OPTIONS]
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `USER_ID_OR_EMAIL` | yes | User ID or email of the member to remove |
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--bulk` | string | — | File with one user ID/email per line (`#` comments and blank lines ignored) |
+| `--yes` | flag | — | Skip the confirmation prompt for bulk removal |
 
 **Example:**
 
 ```bash
 $ sfs org remove usr_b0b123
 
-Removed usr_b0b123 from Acme Corp.
+Member usr_b0b123 removed.
+```
+
+**Bulk removal** resolves every entry up front and aborts before removing
+anything if any entry can't be resolved, then removes one at a time and
+continues past individual failures:
+
+```bash
+$ sfs org remove --bulk members.txt --yes
+
+About to remove:
+  - usr_b0b123
+  - alice@example.com
+Removed 2 of 2 member(s).
+```
+
+### `sfs org auto-join`
+
+Manage auto-join by verified email domain. When a user verifies an email on
+one of these domains (and is not yet in any org), they are added to the org
+as a member. Requires a verified domain and a paid plan (OIDC SSO).
+
+```
+sfs org auto-join list
+sfs org auto-join add DOMAIN
+sfs org auto-join remove DOMAIN
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| `list` | Show the domains currently configured for auto-join |
+| `add DOMAIN` | Enable auto-join for a verified email domain |
+| `remove DOMAIN` | Disable auto-join for a domain |
+
+**Example:**
+
+```bash
+$ sfs org auto-join list
+example.com
+
+$ sfs org auto-join add example.com
+Enabled auto-join for example.com.
+
+$ sfs org auto-join remove example.com
+Disabled auto-join for example.com.
 ```
 
 ---
@@ -2368,6 +2440,44 @@ sfs agent list [--persona NAME] [--status STATUS]
 ```
 
 Default sort: `created_at` descending. See `docs/integrations/github-actions-agent-run.yml` and `docs/integrations/gitlab-agent-run.yml` for full CI-workflow examples wired up against `sfs agent run/complete/status` + the `--output-id` capture pattern.
+
+### `sfs agent feedback …` (v0.17.0)
+
+Append-only structured feedback/outcome records on agent work. A record points at least one target (`--agent-run`, `--ticket`, or `--comment`), all within the same project, and classifies the signal by `--type` × `--verdict` × optional `--label`. **Tier:** Team+.
+
+The label vocabulary is fixed per `--type`:
+
+| `--type` | Valid `--label` values |
+|----------|------------------------|
+| `route` | `correct_route`, `wrong_route` |
+| `summary` | `summary_good`, `summary_bad` |
+| `actionability` | `actionable`, `not_actionable` |
+| `duplicate` | `duplicate`, `new_issue` |
+| `resolution` | `false_positive`, `flaky`, `resolved_by_fix`, `resolved_by_test_update` |
+
+Reassigning an agent-created ticket to a different persona auto-records `route` / `negative` / `wrong_route` (source `auto`) — see `assign_persona`.
+
+```
+sfs agent feedback add --type route --verdict negative --label wrong_route \
+    --ticket TK_ID --final-owner sentinel [--notes "..."] [--format text|json]
+sfs agent feedback list [--agent-run ID] [--ticket ID] [--type T] [--verdict V]
+                        [--label L] [--persona NAME] [--limit N] [--format text|json]
+sfs agent feedback summary [--persona NAME] [--since ISO] [--format text|json]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--type` | Feedback category (`route` / `summary` / `actionability` / `duplicate` / `resolution`). Required for `add`. |
+| `--verdict` | `positive` / `negative` / `neutral`. Required for `add`. |
+| `--label` | Fixed vocabulary word valid for `--type`. |
+| `--final-owner` | Persona/owner the signal points at (≤100 chars). |
+| `--notes` | Free-form note (≤4000 chars). |
+| `--agent-run`, `--ticket`, `--comment` | Targets; at least one required for `add`. |
+| `--persona` | Filter `list`/`summary` to records whose run or ticket belongs to this persona. |
+| `--since` | ISO timestamp — only records after it (for `summary`; `list` paginates via cursor). |
+| `--format` | `text` (Rich table) or `json` (machine-safe stdout). |
+
+`summary` is pure SQL aggregation (grouped counts by type × verdict × label) — no LLM. `--format json` on `list`/`summary` emits parseable output to stdout for scripting.
 
 ---
 

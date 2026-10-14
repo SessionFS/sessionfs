@@ -272,3 +272,127 @@ def test_agent_complete_findings_accepts_list_of_objects(monkeypatch, tmp_path):
         ],
     )
     assert result.exit_code == 0
+
+
+# ── v0.17.0 `sfs agent feedback …` ───────────────────────────────
+
+
+def test_agent_feedback_add_posts_body_and_prints_id(monkeypatch):
+    """add builds the POST body from flags (target + vocabulary) and
+    emits the created id."""
+    from sessionfs.cli import cmd_agent
+
+    captured = {}
+
+    monkeypatch.setattr(
+        cmd_agent, "_resolve_project",
+        lambda: ("https://api.test", "k", "proj_a"),
+    )
+
+    async def _fake_api(method, path, api_url, api_key, json_data=None, extra_headers=None):
+        captured["method"] = method
+        captured["path"] = path
+        captured["json_data"] = json_data
+        return (201, {
+            "id": "afb_abc123",
+            "project_id": "proj_a",
+            "feedback_type": "route",
+            "verdict": "negative",
+            "label": "wrong_route",
+            "final_owner": "sentinel",
+            "notes": None,
+            "source": "human",
+            "ticket_id": "tk_1",
+            "agent_run_id": None,
+            "comment_id": None,
+            "created_by_user_id": "u",
+            "actor_type": "user",
+            "service_key_id": None,
+            "service_key_name": None,
+            "created_at": "2026-10-13T00:00:00Z",
+        }, {})
+
+    monkeypatch.setattr(cmd_agent, "_api_request", _fake_api)
+
+    result = runner.invoke(agent_app, [
+        "feedback", "add",
+        "--type", "route",
+        "--verdict", "negative",
+        "--label", "wrong_route",
+        "--ticket", "tk_1",
+        "--final-owner", "sentinel",
+    ])
+    assert result.exit_code == 0, result.output
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/api/v1/projects/proj_a/agent-feedback"
+    assert captured["json_data"]["feedback_type"] == "route"
+    assert captured["json_data"]["ticket_id"] == "tk_1"
+    assert captured["json_data"]["final_owner"] == "sentinel"
+    assert "afb_abc123" in result.output
+
+
+def test_agent_feedback_list_json_emits_parseable_list(monkeypatch):
+    import json
+    from sessionfs.cli import cmd_agent
+
+    monkeypatch.setattr(
+        cmd_agent, "_resolve_project",
+        lambda: ("https://api.test", "k", "proj_a"),
+    )
+
+    async def _fake_api(method, path, api_url, api_key, json_data=None, extra_headers=None):
+        return (200, [{
+            "id": "afb_abc123",
+            "project_id": "proj_a",
+            "feedback_type": "route",
+            "verdict": "negative",
+            "label": "wrong_route",
+            "source": "auto",
+            "ticket_id": "tk_1",
+            "agent_run_id": None,
+            "comment_id": None,
+            "final_owner": "sentinel",
+            "notes": None,
+            "created_by_user_id": "u",
+            "actor_type": "user",
+            "service_key_id": None,
+            "service_key_name": None,
+            "created_at": "2026-10-13T00:00:00Z",
+        }], {})
+
+    monkeypatch.setattr(cmd_agent, "_api_request", _fake_api)
+
+    result = runner.invoke(agent_app, ["feedback", "list", "--format", "json"])
+    assert result.exit_code == 0
+    parsed = json.loads(result.output.strip())
+    assert isinstance(parsed, list)
+    assert parsed[0]["id"] == "afb_abc123"
+
+
+def test_agent_feedback_summary_json_emits_parseable_object(monkeypatch):
+    import json
+    from sessionfs.cli import cmd_agent
+
+    monkeypatch.setattr(
+        cmd_agent, "_resolve_project",
+        lambda: ("https://api.test", "k", "proj_a"),
+    )
+
+    async def _fake_api(method, path, api_url, api_key, json_data=None, extra_headers=None):
+        return (200, {
+            "total": 3,
+            "groups": [
+                {"feedback_type": "route", "verdict": "negative",
+                 "label": "wrong_route", "count": 2},
+                {"feedback_type": "summary", "verdict": "positive",
+                 "label": "summary_good", "count": 1},
+            ],
+        }, {})
+
+    monkeypatch.setattr(cmd_agent, "_api_request", _fake_api)
+
+    result = runner.invoke(agent_app, ["feedback", "summary", "--format", "json"])
+    assert result.exit_code == 0
+    parsed = json.loads(result.output.strip())
+    assert parsed["total"] == 3
+    assert len(parsed["groups"]) == 2

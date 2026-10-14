@@ -15,7 +15,7 @@ from sessionfs.server.auth.rate_limit import SlidingWindowRateLimiter
 # Rate limit signups: 5 per IP per hour
 _signup_limiter = SlidingWindowRateLimiter(max_requests=5, window_seconds=3600)
 from fastapi.responses import HTMLResponse
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pydantic import BaseModel
@@ -24,6 +24,7 @@ from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.auth.keys import generate_api_key, hash_api_key
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import ApiKey, Organization, OrgMember, User
+from sessionfs.server.services.auto_join import maybe_auto_join
 from sessionfs.server.schemas.auth import (
     ApiKeySummary,
     CreateApiKeyRequest,
@@ -33,6 +34,24 @@ from sessionfs.server.schemas.auth import (
 )
 
 SFS_VERIFICATION_SECRET = os.environ.get("SFS_VERIFICATION_SECRET", "dev-verification-secret")
+
+# Fallback values that ship in the code. A verification link signed with one of
+# these can be forged by anyone, so it must never be treated as proof that a
+# user owns an email address for anything beyond the account itself.
+_KNOWN_DEFAULT_SECRETS = frozenset({"dev-verification-secret", "dev-secret"})
+
+
+def verification_links_are_trustworthy() -> bool:
+    """True when email verification JWTs are signed with a real secret.
+
+    Org auto-join by email domain relies on the verification link proving
+    ownership of the address; with an unset or shipped default secret an
+    attacker can sign their own link, so auto-join is skipped.
+    """
+    return (
+        SFS_VERIFICATION_SECRET not in _KNOWN_DEFAULT_SECRETS
+        and len(SFS_VERIFICATION_SECRET) >= 32
+    )
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
@@ -228,6 +247,9 @@ async def signup(
         # Auto-verify in environments without email
         user.email_verified = True
         await db.commit()
+        # Deliberately NO auto-join here: this path marks the address verified
+        # without the user proving they own it, so joining by email domain would
+        # let anyone sign up as name@victim.com and land in that org.
         message = "Account created and verified."
 
     return SignupResponse(
@@ -281,8 +303,35 @@ async def verify_email(
             status_code=404,
         )
 
-    user.email_verified = True
+    # The link must be for the address the account currently has.
+    token_email = payload.get("email")
+    if not isinstance(token_email, str) or token_email.strip().lower() != (
+        user.email or ""
+    ).strip().lower():
+        return HTMLResponse(
+            content="<html><body><h1>Verification Failed</h1>"
+            "<p>Invalid verification link.</p>"
+            "</body></html>",
+            status_code=400,
+        )
+
+    # Claim the unverified -> verified transition atomically: only the request
+    # that actually flips it runs auto-join, so concurrent or replayed uses of
+    # a still-valid link never run it twice.
+    flipped = await db.execute(
+        update(User)
+        .where(
+            User.id == user.id,
+            or_(User.email_verified.is_(False), User.email_verified.is_(None)),
+        )
+        .values(email_verified=True)
+    )
     await db.commit()
+
+    # GitHub #59 — auto-join verified-email users by domain, but only when the
+    # link could not have been forged (see verification_links_are_trustworthy).
+    if flipped.rowcount == 1 and verification_links_are_trustworthy():
+        await maybe_auto_join(user, db)
 
     return HTMLResponse(
         content="<html><body><h1>Email Verified!</h1>"

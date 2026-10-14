@@ -283,17 +283,37 @@ def _resolve_alias(store: LocalStore, alias: str) -> str | None:
     return None
 
 
-def read_sfs_messages(session_dir: Path) -> list[dict[str, Any]]:
-    """Read messages from a session's messages.jsonl."""
+def read_sfs_messages(session_dir: Path, *, session_id: str | None = None) -> list[dict[str, Any]]:
+    """Read messages from a session's messages.jsonl.
+
+    Tolerates malformed lines (e.g. a line whose JSON was corrupted in the
+    field by the DLP redaction bug fixed in v0.17.0) so resume/display never crash
+    on a bad line: skip them, count them, and print one warning naming the
+    count and the session. Capture/watchers use their own stricter readers
+    and are intentionally unchanged.
+    """
     messages_path = session_dir / "messages.jsonl"
     if not messages_path.exists():
         return []
+    sid = session_id or (
+        session_dir.name[:-4] if session_dir.name.endswith(".sfs") else session_dir.name
+    )
     messages = []
+    skipped = 0
     with open(messages_path) as f:
         for line in f:
             line = line.strip()
-            if line:
+            if not line:
+                continue
+            try:
                 messages.append(json.loads(line))
+            except json.JSONDecodeError:
+                skipped += 1
+    if skipped:
+        err_console.print(
+            f"[yellow]Skipped {skipped} unreadable message "
+            f"{'line' if skipped == 1 else 'lines'} in {sid}[/yellow]"
+        )
     return messages
 
 

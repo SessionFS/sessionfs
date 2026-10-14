@@ -7,6 +7,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from sessionfs.server.db.models import KnowledgeEntry
+from sessionfs.server.sanitize import strip_nul
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -206,6 +207,14 @@ async def extract_knowledge_entries(
     # project window, (c) intra-batch dedup so the same run can't add two
     # near-duplicates. The combined filter closes the "near-duplicates
     # accumulate across sessions" gap from the pre-release review.
+    # Before dedup, strip NUL bytes from archive-derived content/source
+    # context — asyncpg rejects \x00 in text columns and the daemon would
+    # retry the background extraction forever.
+    for e in entries:
+        e.content, _ = strip_nul(e.content)
+        e.source_context, _ = strip_nul(e.source_context)
+    # An entry that was only NUL bytes is now empty; never store it.
+    entries = [e for e in entries if isinstance(e.content, str) and e.content.strip()]
     new_entries: list[KnowledgeEntry] = []
     batch_contents: list[str] = []
     for e in entries:
@@ -337,6 +346,13 @@ async def extract_knowledge_with_llm(
         # Semantic dedup: exact-match for this session, word-overlap
         # against the project window, AND intra-batch dedup so the LLM
         # can't sneak near-duplicates past us inside one response.
+        # Strip NUL bytes from LLM-derived content before binding to PG text
+        # columns (asyncpg rejects \x00).
+        for e in entries:
+            e.content, _ = strip_nul(e.content)
+            e.source_context, _ = strip_nul(e.source_context)
+        # An entry that was only NUL bytes is now empty; never store it.
+        entries = [e for e in entries if isinstance(e.content, str) and e.content.strip()]
         new_entries: list[KnowledgeEntry] = []
         batch_contents: list[str] = []
         for e in entries:

@@ -95,7 +95,11 @@ def parse_codex_session(jsonl_path: Path) -> CodexParsedSession:
 
             ts = entry.get("timestamp", "")
             entry_type = entry.get("type", "")
-            payload = entry.get("payload", {})
+            # Codex can emit a top-level `"payload": null` — treat any non-dict
+            # as empty so a single malformed entry never aborts the session.
+            payload = entry.get("payload")
+            if not isinstance(payload, dict):
+                payload = {}
 
             if entry_type == "session_meta":
                 session.originator = payload.get("originator", "")
@@ -132,10 +136,16 @@ def parse_codex_session(jsonl_path: Path) -> CodexParsedSession:
                     session.turn_count += 1
 
                 elif evt_type == "token_count":
-                    info = payload.get("info", {})
-                    total_usage = info.get("total_token_usage", {})
-                    session.total_input_tokens = total_usage.get("input_tokens", 0)
-                    session.total_output_tokens = total_usage.get("output_tokens", 0)
+                    # Codex emits `{"type": "token_count", "info": null}` in
+                    # normal operation, and `total_token_usage` can itself be
+                    # null. Treat any non-dict as empty so a single malformed
+                    # event never aborts capture of the whole session.
+                    info = payload.get("info") or {}
+                    if isinstance(info, dict):
+                        total_usage = info.get("total_token_usage") or {}
+                        if isinstance(total_usage, dict):
+                            session.total_input_tokens = total_usage.get("input_tokens", 0)
+                            session.total_output_tokens = total_usage.get("output_tokens", 0)
 
                 elif evt_type == "agent_message":
                     text = payload.get("message", "")
@@ -227,7 +237,7 @@ def parse_codex_session(jsonl_path: Path) -> CodexParsedSession:
                             "name": payload.get("name", "unknown"),
                             "input": json.loads(payload.get("arguments", "{}"))
                             if isinstance(payload.get("arguments"), str)
-                            else payload.get("arguments", {}),
+                            else (payload.get("arguments") or {}),
                         }],
                         "timestamp": ts,
                         "model": session.model,
@@ -236,7 +246,7 @@ def parse_codex_session(jsonl_path: Path) -> CodexParsedSession:
                     session.tool_use_count += 1
 
                 elif ri_type == "function_call_output":
-                    output = payload.get("output", {})
+                    output = payload.get("output") or {}
                     text = output.get("text", "") if isinstance(output, dict) else str(output)
                     sfs_messages.append({
                         "msg_id": f"msg_{len(sfs_messages):04d}",

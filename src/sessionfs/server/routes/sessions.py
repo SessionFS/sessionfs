@@ -45,6 +45,7 @@ from sessionfs.server.schemas.sessions import (
     WorkspaceResponse,
     ToolsResponse,
 )
+from sessionfs.server.sanitize import sanitize_meta, strip_nul
 from sessionfs.server.storage.base import BlobStore
 
 logger = logging.getLogger("sessionfs.api")
@@ -794,6 +795,15 @@ async def upload_session(
     meta = _extract_manifest_metadata(data)
     messages_text = _extract_messages_text(data)
 
+    # Strip NUL bytes from archive-derived values before binding to PG text
+    # columns (asyncpg rejects \x00 → daemon retries forever). The blob is
+    # never modified; only the derived metadata is sanitized.
+    nul_count = 0
+    meta, n = sanitize_meta(meta)
+    nul_count += n
+    messages_text, n = strip_nul(messages_text)
+    nul_count += n
+
     # Extract git metadata for PR matching + session denormalized tag.
     # C-site (§2.2C C1): session.git_remote_normalized is a per-session
     # metadata column — NOT project resolution.  The project_id linkage
@@ -807,6 +817,19 @@ async def upload_session(
         git_remote_normalized = normalize_git_remote(workspace_data.get("git_remote", ""))
         git_branch = workspace_data.get("git_branch", "")
         git_commit = workspace_data.get("git_commit", "")
+    git_remote_normalized, n = strip_nul(git_remote_normalized)
+    nul_count += n
+    git_branch, n = strip_nul(git_branch)
+    nul_count += n
+    git_commit, n = strip_nul(git_commit)
+    nul_count += n
+
+    if nul_count:
+        logger.warning(
+            "Stripped %d NUL byte(s) from archive-derived metadata for session %s",
+            nul_count,
+            session_id,
+        )
 
     # v0.10.0 Phase 5 Round 3 (KB entry 287) — mirror the sync_push
     # project_id resolution on this upload surface too. Codex flagged
@@ -1512,10 +1535,28 @@ async def sync_push(
         meta = _extract_manifest_metadata(data)
         messages_text = _extract_messages_text(data)
 
+        # Strip NUL bytes from archive-derived values before they are bound
+        # to PostgreSQL text columns (asyncpg rejects \x00 → daemon retries
+        # forever). The blob itself is never modified; only the derived
+        # metadata is sanitized so the push is ACCEPTED. `messages_text` may
+        # be re-extracted after DLP redaction below, so it is sanitized once
+        # at the final binding point (after git extraction).
+        nul_count = 0
+        meta, n = sanitize_meta(meta)
+        nul_count += n
+
         # DLP scan (after extraction, before blob storage)
         dlp_scan_results = None
         if is_org_user and org:
-            from sessionfs.server.dlp import get_org_dlp_policy, redact_and_repack
+            from sessionfs.server.dlp import (
+                DlpUninspectableError,
+                custom_marker_labels,
+                dedupe_findings,
+                decoded_json_text,
+                get_org_dlp_policy,
+                mask_redaction_markers,
+                redact_and_repack,
+            )
 
             dlp_policy = get_org_dlp_policy(org)
             if dlp_policy and dlp_policy.get("enabled"):
@@ -1524,23 +1565,60 @@ async def sync_push(
                 import io as _io
                 import tarfile as _tarfile
                 scan_text_parts: list[str] = []
+                uninspectable: list[str] = []
                 try:
                     with _tarfile.open(fileobj=_io.BytesIO(data), mode="r:gz") as _tar:
                         for _member in _tar.getmembers():
-                            if _member.name.endswith((".json", ".jsonl")):
-                                _f = _tar.extractfile(_member)
-                                if _f:
-                                    scan_text_parts.append(_f.read().decode("utf-8", errors="replace"))
-                except Exception:
-                    if not scan_text_parts:
-                        scan_text_parts.append(messages_text)
-                full_scan_text = "\n".join(scan_text_parts)
+                            if not _member.name.endswith((".json", ".jsonl")):
+                                continue
+                            _f = _tar.extractfile(_member)
+                            if not _f:
+                                continue
+                            _raw = _f.read().decode("utf-8", errors="replace")
+                            scan_text_parts.append(_raw)
+                            # Also scan the decoded keys/strings: inside
+                            # serialized JSON, quoted secrets are hidden
+                            # behind escaped quotes the patterns can't see.
+                            try:
+                                scan_text_parts.append(decoded_json_text(_raw))
+                            except DlpUninspectableError:
+                                uninspectable.append(_member.name)
+                except Exception as scan_exc:
+                    # Fail closed: an error part-way through the archive must
+                    # not leave the remaining members unscanned.
+                    logger.warning(
+                        "DLP could not read archive for session %s: %s", session_id, scan_exc
+                    )
+                    uninspectable.append("archive")
+                if uninspectable:
+                    # Fail closed: content DLP cannot fully read must not be
+                    # stored as if it were clean. Permanent 400, not a retry.
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "error": "dlp_uninspectable",
+                            "message": (
+                                "Session content could not be fully scanned by "
+                                "the organization's DLP policy (for example, it "
+                                "is nested too deeply or contains values that "
+                                "can't be parsed)."
+                            ),
+                            "files": uninspectable,
+                        },
+                    )
+                # Genuine redaction markers from an earlier redact are not new
+                # findings (password = "[REDACTED:…]" would otherwise re-match).
+                full_scan_text = mask_redaction_markers(
+                    "\n".join(scan_text_parts), dlp_policy.get("custom_patterns")
+                )
 
-                findings = scan_dlp(
-                    full_scan_text,
-                    categories=dlp_policy.get("categories", ["secrets"]),
-                    custom_patterns=dlp_policy.get("custom_patterns"),
-                    allowlist=dlp_policy.get("allowlist"),
+                findings = dedupe_findings(
+                    scan_dlp(
+                        full_scan_text,
+                        categories=dlp_policy.get("categories", ["secrets"]),
+                        custom_patterns=dlp_policy.get("custom_patterns"),
+                        allowlist=dlp_policy.get("allowlist"),
+                    )
                 )
                 mode = dlp_policy.get("mode", "warn")
                 dlp_scan_results = {
@@ -1550,6 +1628,10 @@ async def sync_push(
                     "finding_types": list({f.pattern_name for f in findings}),
                     "action_taken": mode if findings else "clean",
                     "categories_scanned": dlp_policy.get("categories", ["secrets"]),
+                    # Custom pattern names redaction may write as marker
+                    # labels, kept with the session so the share gate still
+                    # recognises them after the policy or membership changes.
+                    "marker_labels": custom_marker_labels(dlp_policy.get("custom_patterns")),
                 }
                 if findings:
                     if mode == "block":
@@ -1584,6 +1666,9 @@ async def sync_push(
                                 member_limit_bytes=_member_size_limit_for_tier(
                                     effective_tier
                                 ),
+                                categories=dlp_policy.get("categories", ["secrets"]),
+                                custom_patterns=dlp_policy.get("custom_patterns"),
+                                allowlist=dlp_policy.get("allowlist"),
                             )
                         except DlpMemberTooLargeError as exc:
                             # Same 413 envelope as `_check_member_sizes` so
@@ -1609,7 +1694,20 @@ async def sync_push(
                                     ),
                                 },
                             ) from exc
+                        except ValueError as exc:
+                            # Malformed archive or a redaction invariant
+                            # violation (valid JSON in, valid JSON out). A
+                            # permanent 4xx, not a transient 500 the daemon
+                            # would retry forever.
+                            raise HTTPException(status_code=400, detail=str(exc)) from exc
                         messages_text = _extract_messages_text(data)
+                        # Title, tags and other manifest fields were read
+                        # before redaction; re-read them from the redacted
+                        # archive so a secret in a tag or title never reaches
+                        # the database or the session list.
+                        meta = _extract_manifest_metadata(data)
+                        meta, n = sanitize_meta(meta)
+                        nul_count += n
 
         # Extract git metadata for PR matching
         workspace_data = _extract_workspace_from_archive(data)
@@ -1621,6 +1719,21 @@ async def sync_push(
             git_remote_normalized = normalize_git_remote(workspace_data.get("git_remote", ""))
             git_branch = workspace_data.get("git_branch", "")
             git_commit = workspace_data.get("git_commit", "")
+        git_remote_normalized, n = strip_nul(git_remote_normalized)
+        nul_count += n
+        git_branch, n = strip_nul(git_branch)
+        nul_count += n
+        git_commit, n = strip_nul(git_commit)
+        nul_count += n
+        messages_text, n = strip_nul(messages_text)
+        nul_count += n
+
+        if nul_count:
+            logger.warning(
+                "Stripped %d NUL byte(s) from archive-derived metadata for session %s",
+                nul_count,
+                session_id,
+            )
 
         # v0.10.0 Phase 5 Round 4 (KB entry 289): project_id resolution
         # MUST run inside the Phase 3 write transaction, not here in
@@ -1983,6 +2096,20 @@ async def _auto_extract_knowledge(
         logger.warning("Background knowledge extraction failed for %s", session_id, exc_info=True)
 
 
+def _raw_messages_text(data: bytes) -> str:
+    """The raw messages.jsonl text from an archive ("" when absent/unreadable)."""
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+            for member in tar.getmembers():
+                if member.name.endswith("messages.jsonl"):
+                    f = tar.extractfile(member)
+                    if f:
+                        return f.read().decode("utf-8", errors="replace")
+    except Exception:
+        pass
+    return ""
+
+
 def _extract_messages_list(data: bytes) -> list[dict]:
     """Extract messages from archive as a list of dicts."""
     try:
@@ -2169,6 +2296,14 @@ async def reindex_sessions(
             meta = _extract_manifest_metadata(data)
             messages_text = _extract_messages_text(data)
 
+            # Strip NUL bytes from archive-derived values before binding to
+            # PG text columns (asyncpg rejects \x00).
+            nul_count = 0
+            meta, n = sanitize_meta(meta)
+            nul_count += n
+            messages_text, n = strip_nul(messages_text)
+            nul_count += n
+
             session.title = meta["title"]
             session.tags = meta["tags"]
             session.source_tool = meta["source_tool"]
@@ -2202,9 +2337,19 @@ async def reindex_sessions(
             ws = _extract_workspace_from_archive(data)
             if ws:
                 from sessionfs.server.github_app import normalize_git_remote
-                session.git_remote_normalized = normalize_git_remote(ws.get("git_remote", ""))
-                session.git_branch = ws.get("git_branch", "")
-                session.git_commit = ws.get("git_commit", "")
+                session.git_remote_normalized, n = strip_nul(normalize_git_remote(ws.get("git_remote", "")))
+                nul_count += n
+                session.git_branch, n = strip_nul(ws.get("git_branch", ""))
+                nul_count += n
+                session.git_commit, n = strip_nul(ws.get("git_commit", ""))
+                nul_count += n
+
+            if nul_count:
+                _logger.warning(
+                    "Stripped %d NUL byte(s) from archive-derived metadata for session %s",
+                    nul_count,
+                    session.id,
+                )
 
             updated += 1
 
@@ -2514,7 +2659,46 @@ def _extract_share_messages(blob_data: bytes) -> list[dict]:
     return capped
 
 
-def _run_share_dlp_scan(blob_data: bytes) -> tuple[bool, int]:
+async def _owner_custom_patterns(db: AsyncSession, user_id: str) -> list[dict]:
+    """Custom DLP patterns of every org the session owner belongs to.
+
+    A session redacted under an org policy carries markers labelled with that
+    policy's custom pattern names; the share gate must recognise them as
+    markers rather than re-flag them (e.g. password = "[REDACTED:my_rule]").
+    """
+    from sessionfs.server.db.models import OrgMember, Organization
+
+    orgs = (
+        await db.execute(
+            select(Organization)
+            .join(OrgMember, OrgMember.org_id == Organization.id)
+            .where(OrgMember.user_id == user_id)
+        )
+    ).scalars().all()
+    patterns: list[dict] = []
+    for org in orgs:
+        # Read the stored policy even when DLP is currently disabled: sessions
+        # redacted while it was on still carry its markers.
+        try:
+            settings = json.loads(org.settings) if isinstance(org.settings, str) else org.settings
+        except (ValueError, TypeError):
+            settings = None
+        policy = settings.get("dlp") if isinstance(settings, dict) else None
+        if not isinstance(policy, dict):
+            continue
+        for cp in policy.get("custom_patterns") or []:
+            # Keep the whole definition: a name is only a safe marker label if
+            # the policy's own detectors don't flag it, which needs the regex.
+            if isinstance(cp, dict) and cp.get("name"):
+                patterns.append(cp)
+    return patterns
+
+
+def _run_share_dlp_scan(
+    blob_data: bytes,
+    marker_patterns: list[dict] | None = None,
+    trusted_labels: tuple[str, ...] = (),
+) -> tuple[bool, int]:
     """Run DLP scan on the session blob for share-view gating.
 
     Returns (passed: bool, finding_count: int).  Extracts messages from the
@@ -2537,12 +2721,41 @@ def _run_share_dlp_scan(blob_data: bytes) -> tuple[bool, int]:
     # are all inside the scan by construction, and nothing served can escape
     # it (the old separate text-builder skipped tool_use entirely and
     # diverged from the serve bounds).
+    from sessionfs.server.dlp import (
+        DlpUninspectableError,
+        decoded_json_text,
+        dedupe_findings,
+        mask_redaction_markers,
+        scan_dlp,
+    )
+
+    # The served transcript is built by a lenient parser that drops content it
+    # cannot read. Content DLP cannot fully inspect (unparseable lines, too
+    # deep, repeated keys) must block the link rather than pass as an empty,
+    # "clean" transcript. A session with no messages.jsonl serves nothing.
+    try:
+        decoded_json_text(_raw_messages_text(blob_data), strict=True)
+    except DlpUninspectableError:
+        return False, 1
+
     served = _extract_share_messages(blob_data)
     text = json.dumps(served, default=str)
     if not text.strip():
         return True, 0
-    from sessionfs.server.dlp import scan_dlp
-    findings = scan_dlp(text, categories=_SHARE_DLP_CATEGORIES)
+    # Scan the decoded strings too: in serialized JSON a quoted secret sits
+    # behind escaped quotes (password = \"…\") that the patterns can't see.
+    try:
+        decoded = decoded_json_text(text)
+    except DlpUninspectableError:
+        # Cannot be fully inspected, so it must not be served publicly.
+        return False, 1
+    # Markers left by an earlier redaction are not secrets.
+    findings = dedupe_findings(
+        scan_dlp(
+            mask_redaction_markers(text + "\n" + decoded, marker_patterns, trusted_labels),
+            categories=_SHARE_DLP_CATEGORIES,
+        )
+    )
     return len(findings) == 0, len(findings)
 
 
@@ -2619,7 +2832,19 @@ async def _get_share_view_impl(
         data = await blob_store.get(session.blob_key)
         if data is None:
             raise HTTPException(status_code=404, detail="Session blob not found")
-        passed, finding_count = _run_share_dlp_scan(data)
+        marker_patterns = await _owner_custom_patterns(db, session.user_id)
+        # Labels recorded (already vetted) when this session was scanned stay
+        # trusted even if the policy was edited or the owner left that org.
+        try:
+            stored = json.loads(session.dlp_scan_results or "{}")
+        except (ValueError, TypeError):
+            stored = {}
+        trusted_labels: tuple[str, ...] = ()
+        if isinstance(stored, dict):
+            trusted_labels = tuple(
+                label for label in stored.get("marker_labels") or [] if isinstance(label, str)
+            )
+        passed, finding_count = _run_share_dlp_scan(data, marker_patterns, trusted_labels)
         link.dlp_checked = passed
         link.dlp_checked_etag = session.etag
         link.dlp_checked_at = datetime.now(timezone.utc).replace(tzinfo=None)

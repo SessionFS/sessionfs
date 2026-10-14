@@ -548,3 +548,515 @@ async def test_put_sync_settings_returns_max_member_bytes(
     assert body["max_member_bytes"] == SFS_MAX_SYNC_MEMBER_BYTES_PAID, (
         f"PUT should echo the paid-tier cap, got {body['max_member_bytes']}"
     )
+
+
+# ---- NUL-byte stripping in archive-derived metadata (GH #67) ----
+
+
+def _build_nul_archive(session_id: str) -> bytes:
+    """Build a valid .sfs tar.gz whose manifest/messages/workspace carry NUL
+    bytes (JSON ``\\u0000`` escapes, decoded to real ``\\x00`` on the server)
+    in archive-derived fields. Reproduces the asyncpg
+    ``CharacterNotInRepertoireError`` that made the daemon retry forever.
+    """
+    import json
+    import tarfile
+
+    manifest = json.dumps({
+        "sfs_version": "0.1.0",
+        "session_id": session_id,
+        "title": "NUL\x00Title",
+        "source": {
+            "tool": "claude\x00code",
+            "tool_version": "1.0\x00.0",
+            "original_session_id": "abc\x00123",
+        },
+        "model": {
+            "provider": "anthropic\x00",
+            "model_id": "claude-opus\x004-6",
+        },
+        "stats": {"message_count": 1, "turn_count": 1},
+    }).encode()
+
+    msg = json.dumps({
+        "msg_id": "m1",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "hello\x00world"}],
+        "timestamp": "2026-03-20T14:31:00Z",
+    }).encode()
+
+    workspace = json.dumps({
+        "root_path": "/home/user/project",
+        "git": {
+            "remote_url": "https://github.com/example/repo",
+            "branch": "ma\x00in",
+            "commit_sha": "abc123",
+        },
+        "files": [{"path": "src/main.py", "role": "edited"}],
+    }).encode()
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for name, payload in (
+            ("manifest.json", manifest),
+            ("messages.jsonl", msg + b"\n"),
+            ("workspace.json", workspace),
+        ):
+            info = tarfile.TarInfo(name=name)
+            info.size = len(payload)
+            tar.addfile(info, io.BytesIO(payload))
+    return buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_sync_push_nul_bytes_in_archive_metadata_stripped(
+    client: AsyncClient, auth_headers: dict, db_session
+):
+    """GH #67: a pushed archive whose derived metadata contains NUL bytes must
+    be ACCEPTED (2xx) with NULs stripped from the derived DB columns. The blob
+    itself is preserved byte-for-byte (never sanitized in place)."""
+    from sqlalchemy import select
+
+    from sessionfs.server.db.models import Session
+
+    session_id = "ses_nulmeta1234abcd"
+    archive = _build_nul_archive(session_id)
+
+    resp = await client.put(
+        f"/api/v1/sessions/{session_id}/sync",
+        headers=auth_headers,
+        files={"file": ("session.tar.gz", io.BytesIO(archive), "application/gzip")},
+    )
+    assert resp.status_code == 201, resp.text[:300]
+
+    # Derived metadata columns are NUL-free.
+    detail = (await client.get(
+        f"/api/v1/sessions/{session_id}", headers=auth_headers
+    )).json()
+    assert detail["source_tool"] == "claudecode"
+    assert detail["source_tool_version"] == "1.0.0"
+    assert detail["model_id"] == "claude-opus4-6"
+    assert detail["model_provider"] == "anthropic"
+    assert detail["original_session_id"] == "abc123"
+    assert "\x00" not in (detail["title"] or "")
+
+    # The internal search text column is also NUL-free (bound from the same
+    # archive-derived extraction).
+    row = (
+        await db_session.execute(
+            select(Session.messages_text).where(Session.id == session_id)
+        )
+    ).scalar_one_or_none()
+    assert row is not None
+    assert "\x00" not in row
+
+    # The pushed blob is preserved untouched — only derived columns are
+    # sanitized, never the archive itself.
+    pull = await client.get(f"/api/v1/sessions/{session_id}/sync", headers=auth_headers)
+    assert pull.status_code == 200
+    assert pull.content == archive
+
+
+@pytest.mark.asyncio
+async def test_sync_push_dlp_redact_catches_a_quoted_secret_and_keeps_json_valid(
+    client: AsyncClient, auth_headers: dict, db_session, test_user
+):
+    """GH #65 + review: with an org DLP policy in REDACT mode, a secret quoted
+    inside message text (escaped quotes in the serialized JSONL, invisible to a
+    raw-text scan) is found, redacted, and every stored line stays valid JSON."""
+    import json
+    import tarfile
+    import uuid as _uuid
+
+    from sessionfs.server.db.models import OrgMember, Organization
+
+    org = Organization(
+        id=f"org_{_uuid.uuid4().hex[:12]}",
+        name="DLP Org",
+        slug=f"dlp-{_uuid.uuid4().hex[:6]}",
+        tier="team",
+        seats_limit=10,
+        settings=json.dumps(
+            {"dlp": {"enabled": True, "mode": "redact", "categories": ["secrets"]}}
+        ),
+    )
+    db_session.add(org)
+    db_session.add(OrgMember(org_id=org.id, user_id=test_user.id, role="admin"))
+    await db_session.commit()
+
+    session_id = "ses_dlpquoted1234ab"
+    manifest = json.dumps({
+        "sfs_version": "0.1.0",
+        "session_id": session_id,
+        "title": "dlp",
+        "source": {"tool": "claude-code"},
+        "stats": {"message_count": 1, "turn_count": 1},
+    }).encode()
+    messages = (
+        json.dumps({
+            "msg_id": "m1",
+            "role": "assistant",
+            "content": [{
+                "type": "text",
+                # Only a quoted secret: the raw scan of the serialized line sees
+                # \"…\" and finds nothing, so only the decoded scan can catch it.
+                "text": 'password = "supersecretvalue123"',
+            }],
+        }) + "\n"
+    ).encode()
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for name, payload in (("manifest.json", manifest), ("messages.jsonl", messages)):
+            info = tarfile.TarInfo(name=name)
+            info.size = len(payload)
+            tar.addfile(info, io.BytesIO(payload))
+
+    resp = await client.put(
+        f"/api/v1/sessions/{session_id}/sync",
+        headers=auth_headers,
+        files={"file": ("session.tar.gz", io.BytesIO(buf.getvalue()), "application/gzip")},
+    )
+    assert resp.status_code == 201, resp.text[:300]
+
+    pull = await client.get(f"/api/v1/sessions/{session_id}/sync", headers=auth_headers)
+    assert pull.status_code == 200
+    with tarfile.open(fileobj=io.BytesIO(pull.content), mode="r:gz") as tar:
+        stored = tar.extractfile("messages.jsonl").read().decode("utf-8")
+    lines = [ln for ln in stored.splitlines() if ln.strip()]
+    text = json.loads(lines[0])["content"][0]["text"]  # still valid JSON
+    assert "supersecretvalue123" not in stored
+    assert "[REDACTED:generic_password_assignment]" in text
+
+
+@pytest.mark.asyncio
+async def test_sync_push_dlp_refuses_content_too_deep_to_scan(
+    client: AsyncClient, auth_headers: dict, db_session, test_user
+):
+    """A JSON member DLP cannot fully inspect must not be stored as clean."""
+    import json
+    import tarfile
+    import uuid as _uuid
+
+    from sessionfs.server.db.models import OrgMember, Organization
+
+    org = Organization(
+        id=f"org_{_uuid.uuid4().hex[:12]}",
+        name="DLP Org",
+        slug=f"dlp-{_uuid.uuid4().hex[:6]}",
+        tier="team",
+        seats_limit=10,
+        settings=json.dumps({"dlp": {"enabled": True, "mode": "block", "categories": ["secrets"]}}),
+    )
+    db_session.add(org)
+    db_session.add(OrgMember(org_id=org.id, user_id=test_user.id, role="admin"))
+    await db_session.commit()
+
+    session_id = "ses_dlpdeep12345678"
+    manifest = json.dumps({
+        "sfs_version": "0.1.0", "session_id": session_id, "title": "deep",
+        "source": {"tool": "claude-code"}, "stats": {"message_count": 1, "turn_count": 1},
+    }).encode()
+    deep_line = ('{"msg_id":"m1","role":"user","content":' + "[" * 300 + '"x"' + "]" * 300 + "}\n").encode()
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for name, payload in (("manifest.json", manifest), ("messages.jsonl", deep_line)):
+            info = tarfile.TarInfo(name=name)
+            info.size = len(payload)
+            tar.addfile(info, io.BytesIO(payload))
+
+    resp = await client.put(
+        f"/api/v1/sessions/{session_id}/sync",
+        headers=auth_headers,
+        files={"file": ("session.tar.gz", io.BytesIO(buf.getvalue()), "application/gzip")},
+    )
+    assert resp.status_code == 400, resp.text[:300]
+    assert "dlp_uninspectable" in resp.text
+
+
+async def _dlp_redact_org(db_session, test_user):
+    import json
+    import uuid as _uuid
+
+    from sessionfs.server.db.models import OrgMember, Organization
+
+    org = Organization(
+        id=f"org_{_uuid.uuid4().hex[:12]}",
+        name="DLP Org",
+        slug=f"dlp-{_uuid.uuid4().hex[:6]}",
+        tier="team",
+        seats_limit=10,
+        settings=json.dumps({"dlp": {"enabled": True, "mode": "redact", "categories": ["secrets"]}}),
+    )
+    db_session.add(org)
+    db_session.add(OrgMember(org_id=org.id, user_id=test_user.id, role="admin"))
+    await db_session.commit()
+
+
+def _sfs_archive(session_id: str, messages: bytes, tags: list[str] | None = None) -> bytes:
+    import json
+    import tarfile
+
+    manifest = json.dumps({
+        "sfs_version": "0.1.0",
+        "session_id": session_id,
+        "title": "deploy",
+        "tags": tags or [],
+        "source": {"tool": "claude-code"},
+        "stats": {"message_count": 1, "turn_count": 1},
+    }).encode()
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for name, payload in (("manifest.json", manifest), ("messages.jsonl", messages)):
+            info = tarfile.TarInfo(name=name)
+            info.size = len(payload)
+            tar.addfile(info, io.BytesIO(payload))
+    return buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_sync_push_dlp_redacts_manifest_tags_in_the_database(
+    client: AsyncClient, auth_headers: dict, db_session, test_user
+):
+    """Session title/tags are read from the manifest; redaction must reach
+    the database copy, not just the stored archive."""
+    import json
+    import tarfile
+
+    from sqlalchemy import select
+
+    from sessionfs.server.db.models import Session
+
+    await _dlp_redact_org(db_session, test_user)
+    session_id = "ses_dlptags12345678"
+    good = json.dumps({"msg_id": "m1", "role": "user", "content": "hello"})
+    archive = _sfs_archive(
+        session_id, (good + "\n").encode(), tags=['password = "tagsecretvalue99"']
+    )
+    resp = await client.put(
+        f"/api/v1/sessions/{session_id}/sync",
+        headers=auth_headers,
+        files={"file": ("session.tar.gz", io.BytesIO(archive), "application/gzip")},
+    )
+    assert resp.status_code == 201, resp.text[:300]
+
+    row = (await db_session.execute(select(Session).where(Session.id == session_id))).scalar_one()
+    await db_session.refresh(row)
+    assert "tagsecretvalue99" not in (row.tags or "")
+    pull = await client.get(f"/api/v1/sessions/{session_id}/sync", headers=auth_headers)
+    with tarfile.open(fileobj=io.BytesIO(pull.content), mode="r:gz") as tar:
+        assert "tagsecretvalue99" not in tar.extractfile("manifest.json").read().decode()
+
+
+@pytest.mark.asyncio
+async def test_sync_push_dlp_finds_quoted_secrets_in_malformed_lines(
+    client: AsyncClient, auth_headers: dict, db_session, test_user
+):
+    import json
+    import tarfile
+
+    await _dlp_redact_org(db_session, test_user)
+    session_id = "ses_dlpmalformed123"
+    good = json.dumps({"msg_id": "m1", "role": "user", "content": "hello"})
+    malformed = '{"msg_id": "m2", "role": "user", "content": "password = \\"linesecretvalue99\\"",}'
+    archive = _sfs_archive(session_id, (good + "\n" + malformed + "\n").encode())
+    resp = await client.put(
+        f"/api/v1/sessions/{session_id}/sync",
+        headers=auth_headers,
+        files={"file": ("session.tar.gz", io.BytesIO(archive), "application/gzip")},
+    )
+    assert resp.status_code == 201, resp.text[:300]
+    pull = await client.get(f"/api/v1/sessions/{session_id}/sync", headers=auth_headers)
+    with tarfile.open(fileobj=io.BytesIO(pull.content), mode="r:gz") as tar:
+        stored = tar.extractfile("messages.jsonl").read().decode("utf-8")
+    assert "linesecretvalue99" not in stored
+    assert stored.splitlines()[0] == good  # the valid line is untouched
+
+
+@pytest.mark.asyncio
+async def test_sync_push_of_an_already_redacted_session_is_not_blocked(
+    client: AsyncClient, auth_headers: dict, db_session, test_user
+):
+    """Genuine markers from an earlier redaction are not new findings, but a
+    secret wrapped to look like a marker still is."""
+    import json
+    import uuid as _uuid
+
+    from sessionfs.server.db.models import OrgMember, Organization
+
+    org = Organization(
+        id=f"org_{_uuid.uuid4().hex[:12]}",
+        name="DLP Org",
+        slug=f"dlp-{_uuid.uuid4().hex[:6]}",
+        tier="team",
+        seats_limit=10,
+        settings=json.dumps({"dlp": {"enabled": True, "mode": "block", "categories": ["secrets"]}}),
+    )
+    db_session.add(org)
+    db_session.add(OrgMember(org_id=org.id, user_id=test_user.id, role="admin"))
+    await db_session.commit()
+
+    redacted = json.dumps({"msg_id": "m1", "input": {"password": "[REDACTED:generic_password_assignment]"}})
+    resp = await client.put(
+        "/api/v1/sessions/ses_dlprepush12345a/sync",
+        headers=auth_headers,
+        files={"file": ("s.tar.gz", io.BytesIO(_sfs_archive("ses_dlprepush12345a", (redacted + "\n").encode())), "application/gzip")},
+    )
+    assert resp.status_code == 201, resp.text[:300]
+
+    disguised = json.dumps({"msg_id": "m1", "content": '[REDACTED:password = "supersecret123"]'})
+    resp = await client.put(
+        "/api/v1/sessions/ses_dlprepush12345b/sync",
+        headers=auth_headers,
+        files={"file": ("s.tar.gz", io.BytesIO(_sfs_archive("ses_dlprepush12345b", (disguised + "\n").encode())), "application/gzip")},
+    )
+    assert resp.status_code == 403, resp.text[:300]
+
+
+@pytest.mark.asyncio
+async def test_sync_push_blocks_a_secret_next_to_a_genuine_marker(
+    client: AsyncClient, auth_headers: dict, db_session, test_user
+):
+    import json
+    import uuid as _uuid
+
+    from sessionfs.server.db.models import OrgMember, Organization
+
+    org = Organization(
+        id=f"org_{_uuid.uuid4().hex[:12]}",
+        name="DLP Org",
+        slug=f"dlp-{_uuid.uuid4().hex[:6]}",
+        tier="team",
+        seats_limit=10,
+        settings=json.dumps({"dlp": {"enabled": True, "mode": "block", "categories": ["secrets"]}}),
+    )
+    db_session.add(org)
+    db_session.add(OrgMember(org_id=org.id, user_id=test_user.id, role="admin"))
+    await db_session.commit()
+
+    for i, value in enumerate((
+        "[REDACTED:database_url]supersecret123",
+        "supersecret123[REDACTED:database_url]",
+    )):
+        sid = f"ses_dlpadjacent123{i}"
+        line = json.dumps({"msg_id": "m1", "input": {"password": value}})
+        resp = await client.put(
+            f"/api/v1/sessions/{sid}/sync",
+            headers=auth_headers,
+            files={"file": ("s.tar.gz", io.BytesIO(_sfs_archive(sid, (line + "\n").encode())), "application/gzip")},
+        )
+        assert resp.status_code == 403, (value, resp.text[:300])
+
+
+@pytest.mark.asyncio
+async def test_marker_collision_suffix_cannot_hide_a_numeric_secret(
+    client: AsyncClient, auth_headers: dict, db_session, test_user
+):
+    import json
+    import uuid as _uuid
+
+    from sessionfs.server.db.models import OrgMember, Organization
+
+    org = Organization(
+        id=f"org_{_uuid.uuid4().hex[:12]}",
+        name="DLP Org",
+        slug=f"dlp-{_uuid.uuid4().hex[:6]}",
+        tier="team",
+        seats_limit=10,
+        settings=json.dumps({"dlp": {"enabled": True, "mode": "block", "categories": ["secrets"]}}),
+    )
+    db_session.add(org)
+    db_session.add(OrgMember(org_id=org.id, user_id=test_user.id, role="admin"))
+    await db_session.commit()
+
+    sid = "ses_dlpsuffix123456"
+    line = json.dumps({"msg_id": "m1", "content": 'password = "[REDACTED:database_url]#12345678"'})
+    resp = await client.put(
+        f"/api/v1/sessions/{sid}/sync",
+        headers=auth_headers,
+        files={"file": ("s.tar.gz", io.BytesIO(_sfs_archive(sid, (line + "\n").encode())), "application/gzip")},
+    )
+    assert resp.status_code == 403, resp.text[:300]
+
+
+@pytest.mark.asyncio
+async def test_sync_dlp_counts_one_secret_once(
+    client: AsyncClient, auth_headers: dict, db_session, test_user
+):
+    import json
+    import uuid as _uuid
+
+    from sessionfs.server.db.models import OrgMember, Organization
+
+    org = Organization(
+        id=f"org_{_uuid.uuid4().hex[:12]}",
+        name="DLP Org",
+        slug=f"dlp-{_uuid.uuid4().hex[:6]}",
+        tier="team",
+        seats_limit=10,
+        settings=json.dumps({"dlp": {"enabled": True, "mode": "block", "categories": ["secrets"]}}),
+    )
+    db_session.add(org)
+    db_session.add(OrgMember(org_id=org.id, user_id=test_user.id, role="admin"))
+    await db_session.commit()
+
+    sid = "ses_dlpcountonce123"
+    line = json.dumps({"msg_id": "m1", "input": {"api_key": "sk-proj-abcdefghijklmnopqrstuvwx1234"}})
+    resp = await client.put(
+        f"/api/v1/sessions/{sid}/sync",
+        headers=auth_headers,
+        files={"file": ("s.tar.gz", io.BytesIO(_sfs_archive(sid, (line + "\n").encode())), "application/gzip")},
+    )
+    assert resp.status_code == 403, resp.text[:300]
+    body = resp.json()
+    detail = body.get("detail", body.get("error", {}).get("details", body.get("error", body)))
+    if isinstance(detail, dict) and "detail" in detail:
+        detail = detail["detail"]
+    openai = [f for f in detail["findings"] if f["pattern"] == "openai_api_key"]
+    assert len(openai) == 1, detail
+
+
+@pytest.mark.asyncio
+async def test_sync_dlp_refuses_unparseable_member_before_a_secret(
+    client: AsyncClient, auth_headers: dict, db_session, test_user
+):
+    """A member that stops the parser (an integer past Python's digit limit)
+    must not end the scan early and let a later member's secret through."""
+    import json
+    import tarfile
+    import uuid as _uuid
+
+    from sessionfs.server.db.models import OrgMember, Organization
+
+    org = Organization(
+        id=f"org_{_uuid.uuid4().hex[:12]}",
+        name="DLP Org",
+        slug=f"dlp-{_uuid.uuid4().hex[:6]}",
+        tier="team",
+        seats_limit=10,
+        settings=json.dumps({"dlp": {"enabled": True, "mode": "block", "categories": ["secrets"]}}),
+    )
+    db_session.add(org)
+    db_session.add(OrgMember(org_id=org.id, user_id=test_user.id, role="admin"))
+    await db_session.commit()
+
+    sid = "ses_dlpbigint123456"
+    big = ('{"n": ' + "9" * 5000 + "}").encode()
+    manifest = json.dumps({
+        "sfs_version": "0.1.0", "session_id": sid, "title": "x",
+        "source": {"tool": "claude-code"}, "stats": {"message_count": 1, "turn_count": 1},
+    }).encode()
+    secret_line = (json.dumps({"msg_id": "m1", "content": "key sk-proj-abcdefghijklmnopqrstuvwx1234"}) + "\n").encode()
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for name, payload in (("aaa.json", big), ("manifest.json", manifest), ("messages.jsonl", secret_line)):
+            info = tarfile.TarInfo(name=name)
+            info.size = len(payload)
+            tar.addfile(info, io.BytesIO(payload))
+
+    resp = await client.put(
+        f"/api/v1/sessions/{sid}/sync",
+        headers=auth_headers,
+        files={"file": ("s.tar.gz", io.BytesIO(buf.getvalue()), "application/gzip")},
+    )
+    assert resp.status_code in (400, 403), resp.text[:300]
+    assert resp.status_code != 201

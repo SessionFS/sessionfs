@@ -10,7 +10,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import OrgSettingsTab from './OrgSettingsTab';
 
-const { hooks, toastHook, toastApi } = vi.hoisted(() => {
+const { hooks, toastHook, toastApi, ssoHooks } = vi.hoisted(() => {
   const toastApi = { addToast: vi.fn(), removeToast: vi.fn(), toasts: [] };
   return {
     hooks: {
@@ -19,10 +19,12 @@ const { hooks, toastHook, toastApi } = vi.hoisted(() => {
     },
     toastHook: { useToast: vi.fn() },
     toastApi,
+    ssoHooks: { useDomains: vi.fn() },
   };
 });
 
 vi.mock('./useOrgSettings', () => hooks);
+vi.mock('./useSso', () => ({ useDomains: ssoHooks.useDomains }));
 vi.mock('../hooks/useToast', () => toastHook);
 
 function makeMutation(extra: Record<string, unknown> = {}) {
@@ -46,9 +48,11 @@ beforeEach(() => {
   for (const h of Object.values(hooks)) h.mockReset();
   toastHook.useToast.mockReset();
   toastApi.addToast.mockReset();
+  ssoHooks.useDomains.mockReset();
   hooks.useOrgSettings.mockReturnValue({ data: DEFAULTS, isLoading: false, error: null });
   hooks.useUpdateOrgSettings.mockReturnValue(makeMutation());
   toastHook.useToast.mockReturnValue(toastApi);
+  ssoHooks.useDomains.mockReturnValue({ data: [], isLoading: false, isSuccess: true, isError: false, error: null });
 });
 
 describe('OrgSettingsTab', () => {
@@ -180,5 +184,112 @@ describe('OrgSettingsTab', () => {
       'error',
       expect.stringMatching(/between 1 and 730/i),
     );
+  });
+
+  it('toggles a verified domain into auto_join_domains on submit', async () => {
+    ssoHooks.useDomains.mockReturnValue({
+      data: [{ id: 'odv_1', domain: 'corp.com', status: 'verified' }],
+      isLoading: false,
+      isSuccess: true,
+      isError: false,
+      error: null,
+    });
+    const update = makeMutation();
+    hooks.useUpdateOrgSettings.mockReturnValue(update);
+    render(<OrgSettingsTab orgId="org_x" canEdit={true} />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByLabelText(/^auto-join corp\.com$/i));
+    await user.click(screen.getByRole('button', { name: /save org settings/i }));
+
+    expect(update.mutate).toHaveBeenCalledTimes(1);
+    const body = update.mutate.mock.calls[0][0];
+    expect(body.auto_join_domains).toEqual(['corp.com']);
+  });
+
+  it('omits unverified domains from the auto-join control', async () => {
+    ssoHooks.useDomains.mockReturnValue({
+      data: [
+        { id: 'odv_1', domain: 'corp.com', status: 'verified' },
+        { id: 'odv_2', domain: 'pending.com', status: 'pending' },
+      ],
+      isLoading: false,
+      isSuccess: true,
+      isError: false,
+      error: null,
+    });
+    render(<OrgSettingsTab orgId="org_x" canEdit={true} />);
+    expect(await screen.findByLabelText(/^auto-join corp\.com$/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/^auto-join pending\.com$/i)).toBeNull();
+  });
+
+  it('does not resend unchanged auto-join domains when saving KB settings', async () => {
+    hooks.useOrgSettings.mockReturnValue({
+      data: { ...DEFAULTS, auto_join_domains: ['gone.com'] },
+      isLoading: false,
+      error: null,
+    });
+    const update = makeMutation();
+    hooks.useUpdateOrgSettings.mockReturnValue(update);
+    render(<OrgSettingsTab orgId="org_x" canEdit={true} />);
+    const user = userEvent.setup();
+
+    const kbRetention = await screen.findByLabelText(/^KB retention \(days\)$/);
+    await user.clear(kbRetention);
+    await user.type(kbRetention, '30');
+    await user.click(screen.getByRole('button', { name: /save org settings/i }));
+
+    const body = update.mutate.mock.calls[0][0];
+    expect(body.kb_retention_days).toBe(30);
+    expect('auto_join_domains' in body).toBe(false);
+  });
+
+  it('shows a configured domain that is no longer verified and lets it be removed', async () => {
+    hooks.useOrgSettings.mockReturnValue({
+      data: { ...DEFAULTS, auto_join_domains: ['gone.com'] },
+      isLoading: false,
+      error: null,
+    });
+    const update = makeMutation();
+    hooks.useUpdateOrgSettings.mockReturnValue(update);
+    render(<OrgSettingsTab orgId="org_x" canEdit={true} />);
+    const user = userEvent.setup();
+
+    expect(await screen.findByText(/gone\.com is no longer verified/i)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /remove gone\.com from auto-join/i }));
+    await user.click(screen.getByRole('button', { name: /save org settings/i }));
+
+    expect(update.mutate.mock.calls[0][0].auto_join_domains).toEqual([]);
+  });
+
+  it('does not flag configured domains as stale while domains load or fail', async () => {
+    hooks.useOrgSettings.mockReturnValue({
+      data: { ...DEFAULTS, auto_join_domains: ['corp.com'] },
+      isLoading: false,
+      error: null,
+    });
+    for (const state of [
+      { data: undefined, isLoading: true, isSuccess: false, isError: false, error: null },
+      { data: undefined, isLoading: false, isSuccess: false, isError: true, error: new Error('x') },
+    ]) {
+      ssoHooks.useDomains.mockReturnValue(state);
+      const { unmount } = render(<OrgSettingsTab orgId="org_x" canEdit={true} />);
+      await screen.findByLabelText(/^KB retention \(days\)$/);
+      expect(screen.queryByText(/no longer verified/i)).toBeNull();
+      expect(screen.queryByRole('button', { name: /remove corp\.com/i })).toBeNull();
+      unmount();
+    }
+  });
+
+  it('members see configured domains read-only and never request the admin domain list', async () => {
+    hooks.useOrgSettings.mockReturnValue({
+      data: { ...DEFAULTS, auto_join_domains: ['corp.com'] },
+      isLoading: false,
+      error: null,
+    });
+    render(<OrgSettingsTab orgId="org_x" canEdit={false} />);
+    expect(await screen.findByText('corp.com')).toBeInTheDocument();
+    expect(screen.queryByText(/no longer verified/i)).toBeNull();
+    expect(ssoHooks.useDomains).toHaveBeenCalledWith(undefined);
   });
 });

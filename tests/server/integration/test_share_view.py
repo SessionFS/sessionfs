@@ -484,3 +484,250 @@ async def test_view_response_has_no_store_and_noindex_headers(
     assert resp.status_code == 200
     assert resp.headers.get("cache-control") == "no-store"
     assert resp.headers.get("x-robots-tag") == "noindex"
+
+
+@pytest.mark.asyncio
+async def test_dlp_gate_blocks_a_quoted_secret_inside_json(
+    client: AsyncClient, db_session: AsyncSession, blob_store, test_user: User,
+):
+    """A quoted secret (password = "…") is hidden behind escaped quotes in the
+    serialized JSON the gate scans; the decoded-text scan must still catch it."""
+    messages = [
+        {"role": "user", "content": [{"type": "text", "text": 'config: password = "supersecretvalue123"'}]},
+    ]
+    link, _session = await _create_share_link(db_session, blob_store, test_user, messages=messages)
+
+    resp = await client.get(f"/api/v1/share/{link.token}/view")
+    assert resp.status_code == 451, resp.text
+
+
+@pytest.mark.asyncio
+async def test_dlp_gate_blocks_a_secret_held_as_a_json_field(
+    client: AsyncClient, db_session: AsyncSession, blob_store, test_user: User,
+):
+    messages = [
+        {"role": "assistant", "content": [{
+            "type": "tool_use", "name": "connect", "input": {"password": "supersecretvalue123"},
+        }]},
+    ]
+    link, _session = await _create_share_link(db_session, blob_store, test_user, messages=messages)
+    resp = await client.get(f"/api/v1/share/{link.token}/view")
+    assert resp.status_code == 451, resp.text
+
+
+@pytest.mark.asyncio
+async def test_dlp_gate_blocks_messages_it_cannot_fully_inspect(
+    client: AsyncClient, db_session: AsyncSession, blob_store, test_user: User,
+):
+    """A messages.jsonl line too deep to parse must block the link, not be
+    served as an empty transcript cached as clean."""
+    deep = {"role": "user", "content": [{"type": "text", "text": "hi"}]}
+    for _ in range(300):
+        deep = {"n": deep}
+    link, _session = await _create_share_link(
+        db_session, blob_store, test_user, messages=[deep]
+    )
+    resp = await client.get(f"/api/v1/share/{link.token}/view")
+    assert resp.status_code == 451, resp.text
+
+
+def test_dlp_gate_blocks_an_unreadable_message_line():
+    """One malformed messages.jsonl line makes the lenient transcript reader
+    return nothing; that must block the link, not cache it as clean."""
+    from sessionfs.server.routes.sessions import _run_share_dlp_scan
+
+    good = json.dumps({"role": "user", "content": [{"type": "text", "text": "hi"}]})
+    payload = (good + "\n" + '{"role": "user", "content": [broken' + "\n").encode()
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        info = tarfile.TarInfo(name="messages.jsonl")
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+
+    passed, count = _run_share_dlp_scan(buf.getvalue())
+    assert passed is False
+    assert count >= 1
+
+    clean = io.BytesIO()
+    with tarfile.open(fileobj=clean, mode="w:gz") as tar:
+        data = (good + "\n").encode()
+        info = tarfile.TarInfo(name="messages.jsonl")
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    assert _run_share_dlp_scan(clean.getvalue()) == (True, 0)
+
+
+@pytest.mark.asyncio
+async def test_dlp_gate_serves_an_already_redacted_session(
+    client: AsyncClient, db_session: AsyncSession, blob_store, test_user: User,
+):
+    messages = [
+        {"role": "assistant", "content": [{
+            "type": "tool_use", "name": "connect",
+            "input": {"password": "[REDACTED:generic_password_assignment]"},
+        }]},
+    ]
+    link, _session = await _create_share_link(db_session, blob_store, test_user, messages=messages)
+    resp = await client.get(f"/api/v1/share/{link.token}/view")
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_dlp_gate_catches_a_secret_next_to_a_genuine_marker(
+    client: AsyncClient, db_session: AsyncSession, blob_store, test_user: User,
+):
+    for value in (
+        "[REDACTED:database_url]supersecret123",
+        "supersecret123[REDACTED:database_url]",
+        "super[REDACTED:database_url]secret123xyz",
+    ):
+        messages = [{"role": "assistant", "content": [{
+            "type": "tool_use", "name": "connect", "input": {"password": value},
+        }]}]
+        link, _session = await _create_share_link(db_session, blob_store, test_user, messages=messages)
+        resp = await client.get(f"/api/v1/share/{link.token}/view")
+        assert resp.status_code == 451, (value, resp.text)
+
+
+@pytest.mark.asyncio
+async def test_dlp_gate_recognises_the_owner_orgs_custom_markers(
+    client: AsyncClient, db_session: AsyncSession, blob_store, test_user: User,
+):
+    import uuid as _uuid
+
+    from sessionfs.server.db.models import OrgMember, Organization
+
+    org = Organization(
+        id=f"org_{_uuid.uuid4().hex[:12]}",
+        name="DLP Org",
+        slug=f"dlp-{_uuid.uuid4().hex[:6]}",
+        tier="team",
+        seats_limit=10,
+        settings=json.dumps({"dlp": {
+            "enabled": True, "mode": "redact", "categories": ["secrets"],
+            "custom_patterns": [{"name": "employee_code", "regex": r"EMP-\d{5}", "category": "secret", "severity": "high"}],
+        }}),
+    )
+    db_session.add(org)
+    db_session.add(OrgMember(org_id=org.id, user_id=test_user.id, role="admin"))
+    await db_session.commit()
+
+    messages = [{"role": "assistant", "content": [{
+        "type": "tool_use", "name": "connect", "input": {"password": "[REDACTED:employee_code]"},
+    }]}]
+    link, _session = await _create_share_link(db_session, blob_store, test_user, messages=messages)
+    resp = await client.get(f"/api/v1/share/{link.token}/view")
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_dlp_gate_recognises_custom_markers_after_dlp_is_disabled(
+    client: AsyncClient, db_session: AsyncSession, blob_store, test_user: User,
+):
+    import uuid as _uuid
+
+    from sessionfs.server.db.models import OrgMember, Organization
+
+    org = Organization(
+        id=f"org_{_uuid.uuid4().hex[:12]}",
+        name="DLP Org",
+        slug=f"dlp-{_uuid.uuid4().hex[:6]}",
+        tier="team",
+        seats_limit=10,
+        settings=json.dumps({"dlp": {
+            "enabled": False, "mode": "redact", "categories": ["secrets"],
+            "custom_patterns": [{"name": "employee_code", "regex": r"EMP-\d{5}", "category": "secret", "severity": "high"}],
+        }}),
+    )
+    db_session.add(org)
+    db_session.add(OrgMember(org_id=org.id, user_id=test_user.id, role="admin"))
+    await db_session.commit()
+
+    messages = [{"role": "assistant", "content": [{
+        "type": "tool_use", "name": "connect", "input": {"password": "[REDACTED:employee_code]"},
+    }]}]
+    link, _session = await _create_share_link(db_session, blob_store, test_user, messages=messages)
+    resp = await client.get(f"/api/v1/share/{link.token}/view")
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_dlp_gate_trusts_labels_recorded_with_the_session(
+    client: AsyncClient, db_session: AsyncSession, blob_store, test_user: User,
+):
+    """The custom pattern that redacted a session may since have been renamed
+    or the owner may have left that org; the labels recorded on the session
+    when it was scanned still count."""
+    messages = [{"role": "assistant", "content": [{
+        "type": "tool_use", "name": "connect", "input": {"password": "[REDACTED:old_rule]"},
+    }]}]
+    link, session = await _create_share_link(db_session, blob_store, test_user, messages=messages)
+    session.dlp_scan_results = json.dumps({"action_taken": "redact", "marker_labels": ["old_rule"]})
+    await db_session.commit()
+    resp = await client.get(f"/api/v1/share/{link.token}/view")
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_dlp_gate_does_not_trust_a_marker_named_after_a_secret(
+    client: AsyncClient, db_session: AsyncSession, blob_store, test_user: User,
+):
+    """Even if an org rule is named like a secret, a marker carrying that name
+    is scanned rather than trusted."""
+    import uuid as _uuid
+
+    from sessionfs.server.db.models import OrgMember, Organization
+
+    secret_name = "sk-proj-abcdefghijklmnopqrstuvwxyz123456"
+    org = Organization(
+        id=f"org_{_uuid.uuid4().hex[:12]}",
+        name="DLP Org",
+        slug=f"dlp-{_uuid.uuid4().hex[:6]}",
+        tier="team",
+        seats_limit=10,
+        settings=json.dumps({"dlp": {
+            "enabled": True, "mode": "redact", "categories": ["secrets"],
+            "custom_patterns": [{"name": secret_name, "regex": r"EMP-\d{5}", "category": "secret", "severity": "high"}],
+        }}),
+    )
+    db_session.add(org)
+    db_session.add(OrgMember(org_id=org.id, user_id=test_user.id, role="admin"))
+    await db_session.commit()
+
+    messages = [{"role": "assistant", "content": [{"type": "text", "text": f"[REDACTED:{secret_name}]"}]}]
+    link, _session = await _create_share_link(db_session, blob_store, test_user, messages=messages)
+    resp = await client.get(f"/api/v1/share/{link.token}/view")
+    assert resp.status_code == 451, resp.text
+
+
+@pytest.mark.asyncio
+async def test_dlp_gate_vets_owner_org_labels_against_their_own_rules(
+    client: AsyncClient, db_session: AsyncSession, blob_store, test_user: User,
+):
+    """A rule whose name its own regex matches (EMP-12345 / EMP-\\d{5}) is not
+    a safe label, so a marker carrying it is scanned rather than trusted."""
+    import uuid as _uuid
+
+    from sessionfs.server.db.models import OrgMember, Organization
+
+    org = Organization(
+        id=f"org_{_uuid.uuid4().hex[:12]}",
+        name="DLP Org",
+        slug=f"dlp-{_uuid.uuid4().hex[:6]}",
+        tier="team",
+        seats_limit=10,
+        settings=json.dumps({"dlp": {
+            "enabled": True, "mode": "redact", "categories": ["secrets"],
+            "custom_patterns": [{"name": "EMP-12345", "regex": r"EMP-\d{5}", "category": "secret", "severity": "high"}],
+        }}),
+    )
+    db_session.add(org)
+    db_session.add(OrgMember(org_id=org.id, user_id=test_user.id, role="admin"))
+    await db_session.commit()
+
+    messages = [{"role": "assistant", "content": [{
+        "type": "text", "text": 'password = "[REDACTED:EMP-12345]"',
+    }]}]
+    link, _session = await _create_share_link(db_session, blob_store, test_user, messages=messages)
+    resp = await client.get(f"/api/v1/share/{link.token}/view")
+    assert resp.status_code == 451, resp.text

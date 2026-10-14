@@ -92,6 +92,8 @@ async def test_get_settings_returns_defaults_when_unset(
     assert all(body[k] is None for k in (
         "kb_retention_days", "kb_max_context_words", "kb_section_page_limit",
     ))
+    # auto_join_domains defaults to an empty list (GitHub #59, v0.17.0).
+    assert body["auto_join_domains"] == []
     # Phase 6 Round 3 (KB 298) — retention_days and compile_model are
     # not part of the schema anymore (no runtime consumer).
     assert "retention_days" not in body
@@ -108,6 +110,7 @@ async def test_admin_can_update_all_fields(
         "kb_retention_days": 90,
         "kb_max_context_words": 4000,
         "kb_section_page_limit": 50,
+        "auto_join_domains": [],
     }
     resp = await client.put(
         f"/api/v1/orgs/{org.id}/settings", headers=_hdrs(key), json=payload

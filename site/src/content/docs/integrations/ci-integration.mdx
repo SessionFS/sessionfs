@@ -243,6 +243,19 @@ sfs agent list               List recent runs with filters.
 
 Same operations are available through 3 MCP tools (`create_agent_run`, `complete_agent_run`, `list_agent_runs`) and the underlying REST API at `/api/v1/projects/{project_id}/agent-runs`.
 
+## Agent feedback (outcome records)
+
+Beyond the pass/fail `AgentRun` record, SessionFS lets you attach **structured feedback** to agent work — a lightweight signal that classifies *what kind* of outcome happened, not just whether it passed:
+
+```text
+sfs agent feedback add --type route --verdict negative --label wrong_route \
+    --ticket TK_ID --final-owner sentinel
+sfs agent feedback list --type route
+sfs agent feedback summary
+```
+
+Each record points at a run, ticket, or comment and carries a fixed vocabulary — `route` (`correct_route`/`wrong_route`), `summary` (`summary_good`/`summary_bad`), `actionability` (`actionable`/`not_actionable`), `duplicate` (`duplicate`/`new_issue`), `resolution` (`false_positive`/`flaky`/`resolved_by_fix`/`resolved_by_test_update`). Reassigning an agent-created ticket to a different persona auto-records a `route`/`negative`/`wrong_route` entry, so the router learns from every correction. `summary` is pure SQL aggregation — no LLM. The same surface is available as 3 MCP tools (`record_agent_feedback`, `list_agent_feedback`, `get_agent_feedback_summary`).
+
 ## What this does NOT do
 
 - **No transcript / session capture.** AgentRun records the *outcome* of a review; the model's transcript is not uploaded.

@@ -38,6 +38,8 @@ are now done.
 from __future__ import annotations
 
 import json
+import logging
+import secrets
 import uuid
 from datetime import datetime, timezone
 
@@ -45,11 +47,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, field_validator
 from sqlalchemy import and_, func, insert, literal, or_, select, update
 from sqlalchemy import false as sa_false
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import AuthContext, get_current_user, require_scope
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import (
+    AgentFeedback,
     AgentPersona,
     KnowledgeEntry,
     Organization,
@@ -67,6 +71,8 @@ from sessionfs.server.routes.wiki import _get_project_or_404
 from sessionfs.server.tier_gate import UserContext, check_feature, get_user_context
 
 router = APIRouter(prefix="/api/v1/projects", tags=["tickets"])
+
+logger = logging.getLogger("sessionfs.api")
 
 
 # ── FSM constants ──
@@ -141,6 +147,83 @@ async def _resolve_persona_name(
         )
     ).scalars().first()
     return row
+
+
+async def _maybe_capture_route_feedback(
+    db: AsyncSession,
+    project_id: str,
+    ticket: Ticket,
+    old_assigned: str | None,
+    new_assigned: str,
+    reassigned_by: User,
+) -> None:
+    """v0.17.0 — best-effort auto-capture of route feedback on reassignment.
+
+    Fires when a ticket with agent provenance (a `created_by_persona` is set,
+    or it was created by a service key) is MOVED from one persona to a different
+    one. A first assignment (no previous owner) is not a routing mistake.
+    Records one canonical `route / negative / wrong_route` row per
+    (ticket, new owner), `source=auto`, attributed to the user who made the
+    reassignment (this route only admits user keys). A ticket with no agent
+    identity (e.g. created with source="agent" but no persona) is skipped:
+    there is no agent the record could judge.
+
+    Never raises — a feedback-write bug must not break ticket reassignment.
+    """
+    try:
+        if not old_assigned or old_assigned == new_assigned:
+            return
+        agent_created = (
+            ticket.created_by_persona is not None
+            or ticket.actor_type == "service_key"
+        )
+        if not agent_created:
+            return
+        # Write the reassignment's own pending changes OUTSIDE the savepoint
+        # first; otherwise the query below would autoflush them into it and a
+        # savepoint rollback would silently discard the reassignment.
+        await db.flush()
+        # Once per (ticket, new owner). Everything below runs inside a
+        # savepoint: on PostgreSQL any failed
+        # statement (or a racing insert hitting the partial unique index)
+        # would otherwise abort the outer transaction and turn a valid
+        # reassignment into a 500. The savepoint rolls back on its own.
+        async with db.begin_nested():
+            # Only an earlier AUTOMATIC record counts as a duplicate: a human
+            # recording the same judgement must not suppress the automatic one.
+            existing = (
+                await db.execute(
+                    select(AgentFeedback.id)
+                    .where(
+                        AgentFeedback.ticket_id == ticket.id,
+                        AgentFeedback.source == "auto",
+                        AgentFeedback.label == "wrong_route",
+                        AgentFeedback.final_owner == new_assigned,
+                    )
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                return
+            db.add(
+                AgentFeedback(
+                    id=f"afb_{secrets.token_hex(12)}",
+                    project_id=project_id,
+                    ticket_id=ticket.id,
+                    feedback_type="route",
+                    verdict="negative",
+                    label="wrong_route",
+                    final_owner=new_assigned,
+                    source="auto",
+                    created_at=datetime.now(timezone.utc),
+                    created_by_user_id=reassigned_by.id,
+                    actor_type="user",
+                )
+            )
+    except IntegrityError:
+        pass  # a concurrent reassignment already recorded it
+    except Exception:  # noqa: BLE001 — best-effort; never fail reassignment
+        logger.exception("auto-capture route feedback failed (best-effort)")
 
 
 def _legal_next(current: str, kind: str = "task") -> set[str]:
@@ -1312,8 +1395,20 @@ async def update_ticket(
             db, project_id, body.assigned_to
         )
         new_assigned = canonical if canonical is not None else body.assigned_to
-        _record("assigned_to", ticket.assigned_to, new_assigned)
+        old_assigned = ticket.assigned_to
+        _record("assigned_to", old_assigned, new_assigned)
         ticket.assigned_to = new_assigned
+        # v0.17.0 — auto-capture route feedback when an agent-created
+        # ticket is reassigned to a *different* persona. Best-effort:
+        # feedback capture must never fail the reassignment.
+        await _maybe_capture_route_feedback(
+            db=db,
+            project_id=project_id,
+            ticket=ticket,
+            old_assigned=old_assigned,
+            new_assigned=new_assigned,
+            reassigned_by=user,
+        )
     if body.context_refs is not None:
         old_refs = json.loads(ticket.context_refs or "[]")
         _record("context_refs", old_refs, body.context_refs)

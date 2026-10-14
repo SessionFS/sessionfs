@@ -16,6 +16,7 @@ from sessionfs.cli.common import (
     err_console,
     get_session_dir_or_exit,
     open_store,
+    read_sfs_messages,
     resolve_session_id,
 )
 
@@ -209,14 +210,9 @@ def _resume_in_claude_code(
     # Build full conversation transcript for Claude Code
     import tempfile
 
-    messages_path = session_dir / "messages.jsonl"
-    all_messages: list[dict] = []
-    if messages_path.exists():
-        with open(messages_path) as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    all_messages.append(json.loads(line))
+    all_messages = read_sfs_messages(
+        session_dir, session_id=manifest.get("session_id")
+    )
 
     main_msgs = [m for m in all_messages if not m.get("is_sidechain")]
 

@@ -4,10 +4,12 @@ metadata:
   name: {{ include "sessionfs.fullname" . }}-api
   labels:
     {{- include "sessionfs.componentLabels" (list . "api") | nindent 4 }}
-  {{- with .Values.commonAnnotations }}
   annotations:
+    # ArgoCD: roll out after migrations (wave 1) and the license seed (wave 2).
+    "argocd.argoproj.io/sync-wave": "3"
+    {{- with .Values.commonAnnotations }}
     {{- toYaml . | nindent 4 }}
-  {{- end }}
+    {{- end }}
 spec:
   {{- if not .Values.api.autoscaling.enabled }}
   replicas: {{ .Values.api.replicaCount }}
@@ -29,7 +31,13 @@ spec:
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if .Values.license.key }}
+      {{- /*
+        Remote license check, cloud mode only. In local mode the license lives
+        in this deployment's own database (seeded by the seed-license job) and
+        the API reads it there; checking it by calling this same API would wait
+        for a pod that can't start until the check passes.
+      */}}
+      {{- if and .Values.license.key (ne .Values.license.mode "local") }}
       initContainers:
         - name: license-check
           image: curlimages/curl:8.12.1
@@ -44,11 +52,7 @@ spec:
           command: ["sh", "-c"]
           args:
             - |
-              {{- if eq .Values.license.mode "local" }}
-              VALIDATE_URL="http://{{ include "sessionfs.fullname" . }}-api:{{ .Values.api.service.port }}/api/v1/helm/validate"
-              {{- else }}
               VALIDATE_URL="{{ .Values.license.server | default "https://api.sessionfs.dev" }}/api/v1/helm/validate"
-              {{- end }}
 
               ATTEMPT=0
               MAX_RETRIES=5
@@ -242,11 +246,15 @@ spec:
           # Readiness: keep tight so traffic drains quickly from a struggling pod.
           readinessProbe:
             httpGet:
-              path: /health
+              # Not ready until the database schema is migrated for this
+              # version, so new pods never serve against an old schema.
+              path: /health/ready
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
-            timeoutSeconds: 3
+            # Must exceed the handler's 1 s database budget
+            # (READINESS_DB_TIMEOUT_SECONDS) with margin.
+            timeoutSeconds: 5
             failureThreshold: 3
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}

@@ -31,6 +31,11 @@ VALID_SCOPES = frozenset(
         "rules:write",
         "agent_runs:read",
         "agent_runs:write",
+        # v0.17.0 — structured agent-feedback records. read lists/summarizes;
+        # write creates. Kept narrow so a reviewer principal can post/consume
+        # feedback without the broader agent_runs write surface.
+        "agent_feedback:read",
+        "agent_feedback:write",
         # WQ-P2 (tk_3481237f3b0847d6) — agent work-queue management surface.
         # work_queues:read inspects (list/get); work_queues:write acts
         # (create/set-status). Same shape as tickets:read/write. User

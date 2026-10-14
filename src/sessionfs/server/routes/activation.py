@@ -183,6 +183,10 @@ async def _phase_b_commit(
     # may ALREADY hold duplicate memberships (the very state this guard
     # defends against). scalar_one_or_none() would raise MultipleResultsFound
     # and turn the intended 409 into a 500. (Codex R1 on tk_29b3e43f1ee94130.)
+    # Lock the user row first (the user -> org order shared with invite
+    # acceptance and domain auto-join) so a concurrent membership insert for
+    # this user elsewhere can't slip in between the check and the insert.
+    await db.execute(select(User).where(User.id == user.id).with_for_update())
     already_member = await db.execute(
         select(OrgMember.id).where(OrgMember.user_id == user.id).limit(1)
     )

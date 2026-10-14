@@ -11,8 +11,6 @@ import pytest
 
 from sessionfs.security.secrets import (
     DLPFinding,
-    PHI_PATTERNS,
-    SECRET_PATTERNS,
     scan_dlp,
 )
 from sessionfs.server.dlp import (
@@ -623,3 +621,619 @@ class TestRedactAndRepackMemberLimit:
         assert exc.member_name == "messages.jsonl"
         assert exc.member_size > limit
         assert exc.limit_bytes == limit
+
+
+# =========================================================================
+# redact_and_repack value-level redaction (GH #65)
+# =========================================================================
+
+
+class TestValueLevelRedaction:
+    """Regression for the #65 bug: raw-text redaction over serialized JSON
+    left unbalanced quote-escape sequences (a `database_url` match that
+    swallowed the backslash escaping a closing `"`), corrupting
+    messages.jsonl. The fix redacts at the decoded-VALUE level and
+    re-serializes, so JSON stays valid; unchanged lines stay byte-identical;
+    and lines that fail to parse as JSON fall back to raw-text redaction.
+    """
+
+    @staticmethod
+    def _archive_with_messages(lines: list[str]) -> bytes:
+        import io
+        import tarfile
+
+        payload = ("\n".join(lines) + "\n").encode("utf-8")
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            info = tarfile.TarInfo(name="messages.jsonl")
+            info.size = len(payload)
+            tar.addfile(info, io.BytesIO(payload))
+        return buf.getvalue()
+
+    @staticmethod
+    def _read_messages(archive: bytes) -> bytes:
+        import io
+        import tarfile
+
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
+            for member in tar.getmembers():
+                if member.name == "messages.jsonl":
+                    f = tar.extractfile(member)
+                    assert f is not None
+                    return f.read()
+        raise AssertionError("messages.jsonl not present in repacked archive")
+
+    def test_database_url_escaped_quotes_stays_valid_json(self):
+        """A Terraform-style `database_url = "postgres://..."` inside a JSON
+        string value (quotes JSON-escaped) must redact WITHOUT leaving the
+        line unparseable — the pre-fix failure mode."""
+        import json
+
+        from sessionfs.server.dlp import redact_and_repack
+
+        msg = {
+            "msg_id": "m1",
+            "role": "assistant",
+            "content": [{
+                "type": "text",
+                "text": 'database_url = "postgresql://user:pass@db.example.com:5432/app"',
+            }],
+        }
+        line = json.dumps(msg)
+        # Sanity: the inner quotes really are JSON-escaped in the serialized line.
+        assert '\\"' in line
+        archive = self._archive_with_messages([line])
+
+        findings = scan_dlp(line, categories=["secrets"])
+        assert any(f.pattern_name == "database_url" for f in findings)
+
+        repacked = redact_and_repack(archive, findings)
+        repacked_lines = self._read_messages(repacked).decode("utf-8").splitlines()
+
+        for ln in repacked_lines:
+            json.loads(ln)  # must NOT raise — every line remains valid JSON
+        joined = "\n".join(repacked_lines)
+        assert "postgresql://user:pass@db.example.com:5432/app" not in joined
+        assert "[REDACTED:database_url]" in joined
+
+    def test_generic_password_assignment_escaped_quotes(self):
+        import json
+
+        from sessionfs.server.dlp import redact_and_repack
+
+        msg = {
+            "msg_id": "m2",
+            "role": "assistant",
+            "content": [{
+                "type": "text",
+                "text": 'password = "supersecretvalue123"',
+            }],
+        }
+        line = json.dumps(msg)
+        # Sanity: the inner quotes really are JSON-escaped, so the raw-text
+        # scan (whose `['\"]` anchors miss `\"`) cannot see this assignment.
+        assert '\\"' in line
+        archive = self._archive_with_messages([line])
+
+        findings = scan_dlp(line, categories=["secrets"])
+        assert findings == []
+
+        # The value-level re-scan catches it on the DECODED string. Pass
+        # categories explicitly so the re-scan runs even with no raw findings.
+        repacked = redact_and_repack(archive, findings, categories=["secrets"])
+        repacked_lines = self._read_messages(repacked).decode("utf-8").splitlines()
+        for ln in repacked_lines:
+            json.loads(ln)
+        joined = "\n".join(repacked_lines)
+        assert "supersecretvalue123" not in joined
+        assert "[REDACTED:generic_password_assignment]" in joined
+
+    def test_raw_findings_are_still_redacted_when_rescan_misses_them(self):
+        """Value-level redaction must be at least as strict as the old raw pass.
+
+        A raw-scan finding the decoded re-scan cannot reproduce (here a custom
+        pattern the re-scan is not configured with, whose match text in the
+        serialized JSON carries an escaped quote) must still be redacted in
+        its decoded spelling.
+        """
+        import json
+
+        from sessionfs.server.dlp import DLPFinding, redact_and_repack
+
+        line = json.dumps({"msg_id": "m9", "content": 'token is ab"cd-SECRETPART-99 ok'})
+        archive = self._archive_with_messages([line])
+        raw_match = 'ab\\"cd-SECRETPART-99'
+        assert raw_match in line  # how it appears in the serialized line
+        findings = [
+            DLPFinding(
+                pattern_name="custom_token",
+                category="secret",
+                severity="high",
+                line_number=1,
+                match_text=raw_match,
+                context="",
+            )
+        ]
+        repacked = redact_and_repack(archive, findings, categories=["secrets"])
+        out = self._read_messages(repacked).decode("utf-8").splitlines()
+        decoded = json.loads(out[0])["content"]
+        assert "SECRETPART" not in decoded
+        assert decoded == "token is [REDACTED:custom_token] ok"
+
+    def test_secret_in_a_json_key_is_redacted(self):
+        import json
+
+        from sessionfs.server.dlp import redact_and_repack
+
+        key = "sk-proj-abcdefghijklmnopqrstuvwxyz123456"
+        line = json.dumps({"msg_id": "k1", "input": {key: "x", "other": "y"}})
+        archive = self._archive_with_messages([line])
+        repacked = redact_and_repack(archive, [], categories=["secrets"])
+        out = self._read_messages(repacked).decode("utf-8")
+        assert key not in out
+        record = json.loads(out.splitlines()[0])
+        assert record["input"]["other"] == "y"
+        assert "[REDACTED:openai_api_key]" in record["input"]
+
+    def test_two_keys_redacting_to_the_same_marker_are_both_kept(self):
+        import json
+
+        from sessionfs.server.dlp import redact_and_repack
+
+        k1 = "sk-proj-aaaaaaaaaaaaaaaaaaaaaaaaaaaa1111"
+        k2 = "sk-proj-bbbbbbbbbbbbbbbbbbbbbbbbbbbb2222"
+        line = json.dumps({"msg_id": "k2", "input": {k1: "one", k2: "two"}})
+        archive = self._archive_with_messages([line])
+        repacked = redact_and_repack(archive, [], categories=["secrets"])
+        record = json.loads(self._read_messages(repacked).decode("utf-8").splitlines()[0])
+        assert sorted(record["input"].values()) == ["one", "two"]
+        assert k1 not in json.dumps(record) and k2 not in json.dumps(record)
+
+    def test_secret_held_as_a_number_is_redacted(self):
+        import json
+
+        from sessionfs.server.dlp import redact_and_repack
+
+        line = json.dumps({"msg_id": "n1", "input": {"account": 987654321012}})
+        archive = self._archive_with_messages([line])
+        repacked = redact_and_repack(
+            archive,
+            [],
+            categories=["secrets"],
+            custom_patterns=[
+                {"name": "acct", "regex": r"\b\d{12}\b", "category": "secret", "severity": "high"}
+            ],
+        )
+        record = json.loads(self._read_messages(repacked).decode("utf-8").splitlines()[0])
+        assert record["input"]["account"] == "[REDACTED:acct]"
+
+    def test_decoded_text_exposes_quoted_secrets_the_raw_scan_misses(self):
+        import json
+
+        from sessionfs.security.secrets import scan_dlp
+        from sessionfs.server.dlp import decoded_json_text
+
+        line = json.dumps({"content": 'password = "supersecretvalue123"'})
+        assert scan_dlp(line, categories=["secrets"]) == []
+        found = scan_dlp(decoded_json_text(line), categories=["secrets"])
+        assert {f.pattern_name for f in found} == {"generic_password_assignment"}
+
+    def test_secret_held_as_a_json_field_pair_is_found_and_redacted(self):
+        """{"password": "…"} is a key and a value in JSON, so neither the
+        serialized line nor the bare value matches assignment patterns."""
+        import json
+
+        from sessionfs.security.secrets import scan_dlp
+        from sessionfs.server.dlp import decoded_json_text, redact_and_repack
+
+        line = json.dumps({"msg_id": "p1", "input": {"password": "supersecretvalue123", "user": "ok"}})
+        assert scan_dlp(line, categories=["secrets"]) == []
+        assert scan_dlp(decoded_json_text(line), categories=["secrets"])
+
+        archive = self._archive_with_messages([line])
+        repacked = redact_and_repack(archive, [], categories=["secrets"])
+        record = json.loads(self._read_messages(repacked).decode("utf-8").splitlines()[0])
+        assert record["input"]["password"] == "[REDACTED:generic_password_assignment]"
+        assert record["input"]["user"] == "ok"
+
+    def test_redacted_key_never_overwrites_an_existing_marker_key(self):
+        import json
+
+        from sessionfs.server.dlp import redact_and_repack
+
+        secret_key = "sk-proj-cccccccccccccccccccccccccccc3333"
+        line = json.dumps({
+            "msg_id": "c1",
+            "input": {secret_key: "one", "[REDACTED:openai_api_key]": "two"},
+        })
+        archive = self._archive_with_messages([line])
+        repacked = redact_and_repack(archive, [], categories=["secrets"])
+        record = json.loads(self._read_messages(repacked).decode("utf-8").splitlines()[0])
+        assert sorted(record["input"].values()) == ["one", "two"]
+
+    def test_too_deeply_nested_json_is_uninspectable_not_clean(self):
+        import pytest
+
+        from sessionfs.server.dlp import (
+            DlpUninspectableError,
+            decoded_json_text,
+            redact_and_repack,
+        )
+
+        deep = "[" * 5000 + "]" * 5000
+        with pytest.raises(DlpUninspectableError):
+            decoded_json_text(deep)
+        moderately_deep = "[" * 300 + '"x"' + "]" * 300
+        with pytest.raises(DlpUninspectableError):
+            decoded_json_text(moderately_deep)
+        archive = self._archive_with_messages([moderately_deep])
+        with pytest.raises(ValueError):
+            redact_and_repack(archive, [], categories=["secrets"])
+
+    def test_field_pair_survives_quotes_backslashes_and_line_breaks(self):
+        """Characters inside the value must not end the synthetic quoted value
+        early and hide the rest of the secret from assignment patterns."""
+        import json
+
+        from sessionfs.security.secrets import scan_dlp
+        from sessionfs.server.dlp import decoded_json_text, redact_and_repack
+
+        for value in (
+            'abc"abcdefghijk',
+            "abc\\abcdefghijk",
+            "abc\nabcdefghijk",
+            "abc\u2028abcdefghijk",
+            "abc\x1cabcdefghijk",
+            "abc\x1dabcdefghijk",
+            "abc\x1eabcdefghijk",
+        ):
+            line = json.dumps({"msg_id": "q", "input": {"password": value}})
+            found = scan_dlp(decoded_json_text(line), categories=["secrets"])
+            assert found, repr(value)
+            archive = self._archive_with_messages([line])
+            repacked = redact_and_repack(archive, [], categories=["secrets"])
+            record = json.loads(self._read_messages(repacked).decode("utf-8").splitlines()[0])
+            assert record["input"]["password"] == "[REDACTED:generic_password_assignment]", repr(value)
+
+    def test_repeated_json_keys_are_uninspectable(self):
+        import pytest
+
+        from sessionfs.server.dlp import DlpUninspectableError, decoded_json_text, redact_and_repack
+
+        line = '{"input": {"password": "abcdefghijk", "password": "ok"}}'
+        with pytest.raises(DlpUninspectableError):
+            decoded_json_text(line)
+        archive = self._archive_with_messages([line])
+        with pytest.raises(ValueError):
+            redact_and_repack(archive, [], categories=["secrets"])
+
+    def test_backslash_inside_a_quoted_password_is_still_detected(self):
+        """The password pattern must not stop at a backslash: decoded text such
+        as password = "abcd\\efghijkl" was caught before value-level redaction
+        and must still be."""
+        import json
+
+        from sessionfs.security.secrets import scan_dlp
+        from sessionfs.server.dlp import decoded_json_text, redact_and_repack
+
+        text = 'password = "abcd\\efghijkl"'
+        assert scan_dlp(text, categories=["secrets"])
+        line = json.dumps({"msg_id": "b1", "content": text})
+        assert scan_dlp(decoded_json_text(line), categories=["secrets"])
+        archive = self._archive_with_messages([line])
+        repacked = redact_and_repack(archive, [], categories=["secrets"])
+        out = self._read_messages(repacked).decode("utf-8")
+        assert "efghijkl" not in out
+        json.loads(out.splitlines()[0])
+
+    def test_custom_pattern_written_against_serialized_json_is_removed(self):
+        """A custom pattern can match JSON structure (field name + value). The
+        value-level pass can't see it, so the residual sweep must remove the
+        values it covers instead of reporting it redacted and storing it."""
+        import json
+        import re as _re
+
+        from sessionfs.security.secrets import scan_dlp
+        from sessionfs.server.dlp import redact_and_repack
+
+        policy = [{
+            "name": "employee_code",
+            "regex": r'"employee_code"\s*:\s*"[^"]{8,}"',
+            "category": "secret",
+            "severity": "high",
+        }]
+        line = json.dumps({"msg_id": "e1", "input": {"employee_code": "EMP-77421-X", "team": "ops"}})
+        archive = self._archive_with_messages([line])
+        findings = scan_dlp(line, categories=["secrets"], custom_patterns=policy)
+        assert findings
+        repacked = redact_and_repack(archive, findings, categories=["secrets"], custom_patterns=policy)
+        out = self._read_messages(repacked).decode("utf-8")
+        assert "EMP-77421-X" not in out
+        record = json.loads(out.splitlines()[0])
+        assert record["input"]["team"] == "ops"
+        assert not _re.search(policy[0]["regex"], out)
+
+    def test_malformed_line_secret_with_unicode_escaped_quotes_is_removed(self):
+        import json
+
+        from sessionfs.security.secrets import scan_dlp
+        from sessionfs.server.dlp import decoded_json_text, redact_and_repack
+
+        line = '{"msg_id": "u1", "content": "password = \\u0022linesecretvalue99\\u0022",}'
+        findings = scan_dlp(line + "\n" + decoded_json_text(line), categories=["secrets"])
+        assert findings
+        archive = self._archive_with_messages([json.dumps({"msg_id": "ok"}), line])
+        repacked = redact_and_repack(archive, findings, categories=["secrets"])
+        out = self._read_messages(repacked).decode("utf-8")
+        assert "linesecretvalue99" not in out
+        assert out.splitlines()[0] == json.dumps({"msg_id": "ok"})
+
+    def test_reserialization_cannot_hide_a_structural_match(self):
+        """Redacting one value re-serializes the line (whitespace changes), so
+        a structural pattern must be re-checked against the NEW text."""
+        import json
+        import re as _re
+
+        from sessionfs.security.secrets import scan_dlp
+        from sessionfs.server.dlp import redact_and_repack
+
+        policy = [
+            {"name": "leak", "regex": r"LEAKONE123", "category": "secret", "severity": "high"},
+            {
+                "name": "employee_code",
+                "regex": r'"employee_code"\s*:\s*"[^"]{8,}"',
+                "category": "secret",
+                "severity": "high",
+            },
+        ]
+        line = json.dumps({"other": "LEAKONE123", "employee_code": "EMP-77421-X"})
+        findings = scan_dlp(line, categories=["secrets"], custom_patterns=policy)
+        archive = self._archive_with_messages([line])
+        repacked = redact_and_repack(archive, findings, categories=["secrets"], custom_patterns=policy)
+        out = self._read_messages(repacked).decode("utf-8")
+        assert "LEAKONE123" not in out and "EMP-77421-X" not in out
+        assert not _re.search(policy[1]["regex"], out)
+        json.loads(out.splitlines()[0])
+
+    def test_malformed_line_keeps_context_for_later_patterns(self):
+        """A first-pass match (here a custom rule on the word 'password') must
+        not erase the context another pattern needs to find the secret."""
+        from sessionfs.security.secrets import scan_dlp
+        from sessionfs.server.dlp import decoded_json_text, redact_and_repack
+
+        policy = [{"name": "pw_word", "regex": r"password", "category": "secret", "severity": "low"}]
+        line = '{"content":"password = \\u0022supersecretvalue99\\u0022",}'
+        findings = scan_dlp(
+            line + "\n" + decoded_json_text(line), categories=["secrets"], custom_patterns=policy
+        )
+        archive = self._archive_with_messages([line])
+        repacked = redact_and_repack(archive, findings, categories=["secrets"], custom_patterns=policy)
+        out = self._read_messages(repacked).decode("utf-8")
+        assert "supersecretvalue99" not in out
+
+    def test_existing_redaction_markers_are_not_reprocessed(self):
+        """Re-pushing an already-redacted session leaves it byte-identical."""
+        import json
+
+        from sessionfs.server.dlp import redact_and_repack
+
+        line = json.dumps({"msg_id": "r1", "content": 'password = "[REDACTED:generic_password_assignment]"'})
+        archive = self._archive_with_messages([line])
+        repacked = redact_and_repack(archive, [], categories=["secrets"])
+        assert self._read_messages(repacked).decode("utf-8").splitlines()[0] == line
+
+    def test_overlapping_matches_redact_their_whole_union(self):
+        """A short custom match inside a longer password assignment must not
+        win and leave the rest of the secret in place."""
+        import json
+
+        from sessionfs.server.dlp import redact_and_repack
+
+        policy = [{"name": "prefix", "regex": r"Xpassword", "category": "secret", "severity": "low"}]
+        line = json.dumps({"msg_id": "o1", "content": 'Xpassword = "supersecretvalue123"'})
+        archive = self._archive_with_messages([line])
+        repacked = redact_and_repack(archive, [], categories=["secrets"], custom_patterns=policy)
+        out = self._read_messages(repacked).decode("utf-8")
+        assert "supersecretvalue123" not in out
+        json.loads(out.splitlines()[0])
+
+    def test_span_serializer_matches_json_dumps_exactly(self):
+        import json
+
+        from sessionfs.server.dlp import _serialize, _serialize_with_spans
+
+        samples = [
+            {},
+            [],
+            {"a": 1, "b": [1, 2.5, None, True, "x\"y\n\u2028é"], "c": {}, "d": [], "e": {"f": [{}]}},
+            [{"k": "v"}, [], [[]], "s", 0, -1.5e10, False],
+            "just a string",
+            42,
+        ]
+        for obj in samples:
+            for indent in (None, 2):
+                text, spans = _serialize_with_spans(obj, indent)
+                assert text == _serialize(obj, indent)
+                if indent is None:
+                    assert text == json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+                else:
+                    assert text == json.dumps(obj, ensure_ascii=False, indent=2)
+                for start, end, _path in spans:
+                    json.loads(text[start:end])  # every span is one whole token
+
+    def test_residual_redaction_touches_only_the_matched_occurrence(self):
+        """An identical value elsewhere in the document must not be redacted."""
+        import json
+
+        from sessionfs.security.secrets import scan_dlp
+        from sessionfs.server.dlp import redact_and_repack
+
+        policy = [{
+            "name": "employee_code",
+            "regex": r'"employee_code"\s*:\s*"[^"]{8,}"',
+            "category": "secret",
+            "severity": "high",
+        }]
+        line = json.dumps({"safe": "SAMEVALUE12345", "employee_code": "SAMEVALUE12345"})
+        findings = scan_dlp(line, categories=["secrets"], custom_patterns=policy)
+        archive = self._archive_with_messages([line])
+        repacked = redact_and_repack(archive, findings, categories=["secrets"], custom_patterns=policy)
+        record = json.loads(self._read_messages(repacked).decode("utf-8").splitlines()[0])
+        assert record["safe"] == "SAMEVALUE12345"
+        assert "SAMEVALUE12345" not in json.dumps({k: v for k, v in record.items() if k != "safe"})
+
+    def test_marker_shaped_text_is_not_trusted(self):
+        """Pushed text that merely looks like a redaction marker must be
+        scanned like anything else, or a secret could hide inside one."""
+        import json
+
+        from sessionfs.security.secrets import scan_dlp
+        from sessionfs.server.dlp import decoded_json_text, redact_and_repack
+
+        for content in (
+            '[REDACTED:password = "supersecret123"]',
+            "[REDACTED:sk-proj-abcdefghijklmnopqrstuvwxyz123456]",
+        ):
+            line = json.dumps({"content": content})
+            findings = scan_dlp(line + "\n" + decoded_json_text(line), categories=["secrets"])
+            archive = self._archive_with_messages([line])
+            repacked = redact_and_repack(archive, findings, categories=["secrets"])
+            out = self._read_messages(repacked).decode("utf-8")
+            assert "supersecret123" not in out, content
+            assert "abcdefghijklmnopqrstuvwxyz123456" not in out, content
+
+    def test_genuine_markers_from_custom_patterns_are_left_alone(self):
+        import json
+
+        from sessionfs.server.dlp import redact_and_repack
+
+        policy = [{"name": "employee_code", "regex": r"EMP-\d{5}", "category": "secret", "severity": "high"}]
+        line = json.dumps({"content": 'password = "[REDACTED:employee_code]"'})
+        archive = self._archive_with_messages([line])
+        repacked = redact_and_repack(archive, [], categories=["secrets"], custom_patterns=policy)
+        assert self._read_messages(repacked).decode("utf-8").splitlines()[0] == line
+
+    def test_redaction_preserves_numbers_exactly(self):
+        """Rewriting a redacted line must not round decimals or turn huge
+        exponents into Infinity (not valid JSON)."""
+        import json
+
+        from sessionfs.server.dlp import redact_and_repack
+
+        line = (
+            '{"large":1e9999,"precise":3.14159265358979323846264338327950288,'
+            '"big":' + "9" * 5000 + ',"neg":-0.0,"password":"x","note":"password = \\"supersecretvalue123\\""}'
+        )
+        archive = self._archive_with_messages([line])
+        repacked = redact_and_repack(archive, [], categories=["secrets"])
+        out = self._read_messages(repacked).decode("utf-8").splitlines()[0]
+        assert "supersecretvalue123" not in out
+        assert '"large":1e9999' in out
+        assert '"precise":3.14159265358979323846264338327950288' in out
+        assert '"big":' + "9" * 5000 in out
+        assert '"neg":-0.0' in out
+
+        def strict(constant: str) -> None:
+            raise AssertionError(f"non-standard JSON constant {constant}")
+
+        import sys as _sys
+
+        old_limit = _sys.get_int_max_str_digits() if hasattr(_sys, "get_int_max_str_digits") else None
+        if old_limit is not None:
+            _sys.set_int_max_str_digits(0)
+        try:
+            json.loads(out, parse_constant=strict)
+        finally:
+            if old_limit is not None:
+                _sys.set_int_max_str_digits(old_limit)
+
+    def test_a_custom_rule_named_like_a_secret_never_puts_it_in_a_marker(self):
+        """A custom pattern whose NAME is itself a secret must not have that
+        name written into markers (later scans trust and skip markers)."""
+        import json
+
+        from sessionfs.server.dlp import custom_marker_labels, redact_and_repack
+
+        secret_name = "sk-proj-abcdefghijklmnopqrstuvwxyz123456"
+        policy = [{"name": secret_name, "regex": r"EMP-\d{5}", "category": "secret", "severity": "high"}]
+        assert custom_marker_labels(policy) == []
+        line = json.dumps({"content": "badge EMP-12345 issued"})
+        archive = self._archive_with_messages([line])
+        repacked = redact_and_repack(archive, [], categories=["secrets"], custom_patterns=policy)
+        out = self._read_messages(repacked).decode("utf-8")
+        assert "EMP-12345" not in out
+        assert secret_name not in out
+        assert "[REDACTED:custom_pattern]" in out
+
+    def test_nested_tool_use_and_tool_result_redacted(self):
+        import json
+
+        from sessionfs.server.dlp import redact_and_repack
+
+        tool_use = {
+            "msg_id": "m3",
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use",
+                "tool_name": "bash",
+                "tool_use_id": "tu1",
+                "input": {"command": "export DATABASE_URL=postgresql://user:pass@db.example.com:5432/app"},
+            }],
+        }
+        tool_result = {
+            "msg_id": "m4",
+            "role": "tool",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": "tu1",
+                "content": "connected to postgresql://user:pass@db.example.com:5432/app",
+            }],
+        }
+        lines = [json.dumps(tool_use), json.dumps(tool_result)]
+        archive = self._archive_with_messages(lines)
+
+        findings = scan_dlp("\n".join(lines), categories=["secrets"])
+        assert any(f.pattern_name == "database_url" for f in findings)
+
+        repacked = redact_and_repack(archive, findings)
+        repacked_text = self._read_messages(repacked).decode("utf-8")
+        assert "postgresql://user:pass@db.example.com:5432/app" not in repacked_text
+        assert repacked_text.count("[REDACTED:database_url]") == 2
+
+    def test_unchanged_lines_are_byte_identical(self):
+        import json
+
+        from sessionfs.server.dlp import redact_and_repack
+
+        clean = '{"a":  1,  "b": 2}'  # unusual spacing must be preserved verbatim
+        secret = json.dumps({
+            "msg_id": "m5",
+            "role": "assistant",
+            "content": [{
+                "type": "text",
+                "text": 'database_url = "postgresql://user:pass@db.example.com:5432/app"',
+            }],
+        })
+        archive = self._archive_with_messages([clean, secret])
+
+        findings = scan_dlp(clean + "\n" + secret, categories=["secrets"])
+        repacked = redact_and_repack(archive, findings)
+        repacked_lines = self._read_messages(repacked).decode("utf-8").splitlines()
+
+        # The clean line must survive byte-for-byte (no re-serialization).
+        assert clean in repacked_lines
+        assert "[REDACTED:database_url]" in "\n".join(repacked_lines)
+
+    def test_malformed_line_redacted_via_raw_fallback(self):
+        from sessionfs.server.dlp import redact_and_repack
+
+        malformed = 'password = "supersecretvalue123"'  # NOT valid JSON
+        archive = self._archive_with_messages([malformed])
+
+        findings = scan_dlp(malformed, categories=["secrets"])
+        assert any(f.pattern_name == "generic_password_assignment" for f in findings)
+
+        repacked = redact_and_repack(archive, findings)
+        repacked_text = self._read_messages(repacked).decode("utf-8")
+        assert "supersecretvalue123" not in repacked_text
+        assert "[REDACTED:generic_password_assignment]" in repacked_text

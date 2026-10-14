@@ -6,16 +6,38 @@ metadata:
   labels:
     {{- include "sessionfs.componentLabels" (list . "migration") | nindent 4 }}
   annotations:
-    # Pre-* hooks ensure schema is migrated BEFORE new pods start.
-    # Without this, rolling restarts launch new code against old schema and fail with
+    {{- if not .Release.IsInstall }}
+    # Upgrades: a pre-upgrade hook migrates BEFORE new pods start. Without
+    # this, rolling restarts launch new code against old schema and fail with
     # "column X does not exist". The job blocks the rollout on failure.
-    "helm.sh/hook": pre-install,pre-upgrade
+    #
+    # Fresh installs get no Helm hook: a pre-install hook runs before the
+    # chart's ServiceAccount, database Secret and bundled PostgreSQL exist, so
+    # it could never start. The Job is created alongside them instead, retries
+    # until the database accepts connections, and the API's readiness probe
+    # (/health/ready) keeps pods out of service until the schema is migrated.
+    "helm.sh/hook": pre-upgrade
     # Negative weight runs this before any other pre-* hooks (e.g. seed jobs).
     "helm.sh/hook-weight": "-5"
     # before-hook-creation: deletes the prior Job before creating a new one (fixes the
     # ArgoCD "job already exists" failure mode). hook-succeeded: cleans up after success
     # so the namespace doesn't accumulate completed Jobs.
     "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    {{- end }}
+    # ArgoCD (GitHub #66): run as a Sync-phase hook in wave 1. ArgoCD applies
+    # waves in order and waits for each to be healthy, so the database and its
+    # Secret/ServiceAccount (default wave 0) are up first, this Job migrates, and
+    # then the license seed (wave 2), and only then do the api/mcp Deployments
+    # (wave 3) roll to the new image.
+    # Plain Helm ignores these. (ArgoCD renders with `helm template`, which is
+    # always an "install", so no helm.sh/hook annotations reach it.)
+    # A Sync hook (not PreSync) is deliberate: PreSync runs before ANY manifest
+    # is applied, so on a fresh install the database would not exist yet.
+    "argocd.argoproj.io/hook": Sync
+    "argocd.argoproj.io/sync-wave": "1"
+    # BeforeHookCreation also handles the Job name ending in .Release.Revision,
+    # which is always 1 when ArgoCD renders the chart with `helm template`.
+    "argocd.argoproj.io/hook-delete-policy": BeforeHookCreation,HookSucceeded
     {{- with .Values.commonAnnotations }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
@@ -43,7 +65,22 @@ spec:
           # the schema the new API code expects.
           image: {{ include "sessionfs.api.image" . }}
           imagePullPolicy: {{ .Values.api.image.pullPolicy | default .Values.global.imagePullPolicy }}
-          command: ["alembic", "upgrade", "head"]
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              # Retry while the database comes up: on a fresh install the bundled
+              # PostgreSQL may still be starting when this Job begins.
+              attempt=0
+              until alembic upgrade head; do
+                attempt=$((attempt + 1))
+                if [ "$attempt" -ge 60 ]; then
+                  echo "migrations failed after $attempt attempts" >&2
+                  exit 1
+                fi
+                sleep 5
+              done
+              echo "migrations complete"
           env:
             {{- /* Reuse the same DATABASE_URL the API uses */}}
             {{- include "sessionfs.databaseEnv" . | nindent 12 }}

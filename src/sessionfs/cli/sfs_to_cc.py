@@ -361,11 +361,23 @@ def reverse_convert_session(
     messages_path = session_dir / "messages.jsonl"
     messages: list[dict[str, Any]] = []
     if messages_path.exists():
+        skipped = 0
         with open(messages_path) as f:
             for line in f:
                 line = line.strip()
-                if line:
+                if not line:
+                    continue
+                try:
                     messages.append(json.loads(line))
+                except json.JSONDecodeError:
+                    skipped += 1
+        if skipped:
+            _writeback_logger.warning(
+                "Skipped %d unreadable message %s in %s",
+                skipped,
+                "line" if skipped == 1 else "lines",
+                manifest.get("session_id", session_dir.name),
+            )
 
     # Filter out sidechain messages
     all_main_messages = [m for m in messages if not m.get("is_sidechain")]

@@ -32,7 +32,7 @@ sfs mcp install --for claude-code --skip-instructions
 
 ## Tools
 
-The MCP server exposes 76 tools in ten categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, and Skills Marketplace.
+The MCP server exposes 79 tools in eleven categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Agent Feedback (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, and Skills Marketplace.
 
 ### Session Tools
 
@@ -575,6 +575,65 @@ Heartbeat: return one bounded directive (a single intent plus a small comment de
 #### `complete_work_queue_step`
 
 Report the result of the directive returned by `run_work_queue_step`. This is the only call that durably advances the queue.
+
+### Agent Feedback (Team+)
+
+Structured, append-only outcome records on agent work. Each record points at least one target (`agent_run_id`, `ticket_id`, or `comment_id`) — all of which must belong to the same project — and classifies the signal with a `feedback_type` × `verdict` × optional `label`. Tier-gated by the `agent_runs` feature flag (Team+); service keys use the `agent_feedback:read` / `agent_feedback:write` scopes.
+
+The fixed label vocabulary per type:
+
+| `feedback_type` | Valid `label`s |
+|-----------------|----------------|
+| `route` | `correct_route`, `wrong_route` |
+| `summary` | `summary_good`, `summary_bad` |
+| `actionability` | `actionable`, `not_actionable` |
+| `duplicate` | `duplicate`, `new_issue` |
+| `resolution` | `false_positive`, `flaky`, `resolved_by_fix`, `resolved_by_test_update` |
+
+Reassigning an agent-created ticket to a different persona auto-records a `route` / `negative` / `wrong_route` record (`source="auto"`, `final_owner` = the new persona), once per (ticket, new owner) — so the router learns from every correction.
+
+#### `record_agent_feedback`
+
+Create one feedback record. At least one of `agent_run_id` / `ticket_id` / `comment_id` is required, and each target is validated against the project (cross-project targets return 404).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `feedback_type` | string | yes | One of `route`, `summary`, `actionability`, `duplicate`, `resolution` |
+| `verdict` | string | yes | `positive`, `negative`, or `neutral` |
+| `label` | string | no | Fixed vocabulary word valid for the chosen `feedback_type` |
+| `final_owner` | string | no | Persona/owner the signal points at (≤100 chars) |
+| `notes` | string | no | Free-form note (≤4000 chars) |
+| `agent_run_id` | string | no | Target agent run |
+| `ticket_id` | string | no | Target ticket |
+| `comment_id` | string | no | Target ticket comment |
+| `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
+
+#### `list_agent_feedback`
+
+List feedback records oldest-first with a stable `(created_at, id)` cursor. Filter by target (`agent_run_id`, `ticket_id`), `feedback_type`, `verdict`, `label`, or `persona` (matched via the record's run/ticket).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `agent_run_id` | string | no | Filter to a single run |
+| `ticket_id` | string | no | Filter to a single ticket |
+| `feedback_type` | string | no | Type filter |
+| `verdict` | string | no | Verdict filter |
+| `label` | string | no | Label filter |
+| `persona` | string | no | Match records whose run or ticket belongs to this persona |
+| `since` | string | no | ISO timestamp cursor |
+| `since_id` | string | no | ID tiebreaker for the `since` cursor |
+| `limit` | number | no | Page size (default 100) |
+| `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
+
+#### `get_agent_feedback_summary`
+
+Grouped counts by `feedback_type` × `verdict` × `label` — pure SQL aggregation, no LLM. Optionally filter by `persona` or `since`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `persona` | string | no | Only records whose run/ticket belongs to this persona |
+| `since` | string | no | Only records after this ISO timestamp |
+| `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
 
 ### Skills Marketplace
 

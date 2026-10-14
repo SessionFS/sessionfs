@@ -28,6 +28,7 @@ from sessionfs.server.db.models import (
     SsoExchangeCode,
     User,
 )
+from sessionfs.server.services.auto_join import maybe_auto_join
 from sessionfs.server.services.entitlements import apply_entitlement
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
@@ -226,6 +227,9 @@ async def force_verify_user(
 
     await _log_action(db, admin.id, "verify", "user", user_id)
     await db.commit()
+
+    # GitHub #59 — auto-join verified-email users by domain.
+    await maybe_auto_join(user, db)
 
     return {"user_id": user_id, "email_verified": True}
 
@@ -606,9 +610,16 @@ async def admin_create_org(
     if existing is not None:
         raise HTTPException(409, f"Organization slug '{slug}' is already taken")
 
+    # Lock the user row first (the user -> org order shared with invite
+    # acceptance and domain auto-join) so a concurrent membership insert for
+    # this user elsewhere can't slip in between the check and the insert.
+    await db.execute(select(User).where(User.id == owner_user_id).with_for_update())
+
     # Owner can't already be in an org
     existing_member = (
-        await db.execute(select(OrgMember).where(OrgMember.user_id == owner_user_id))
+        await db.execute(
+            select(OrgMember).where(OrgMember.user_id == owner_user_id).limit(1)
+        )
     ).scalar_one_or_none()
     if existing_member is not None:
         raise HTTPException(

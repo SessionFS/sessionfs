@@ -299,11 +299,11 @@ class TestToolRegistryV0996:
     (create/claim/get/list_inbox/list_sent/revoke/decline/comment = 8).
     Total: 53."""
 
-    def test_tool_count_is_76(self):
+    def test_tool_count_is_79(self):
         from sessionfs.mcp.server import _TOOLS
-        assert len(_TOOLS) == 76, (
-            "Expected 76 MCP tools after the hosted marketplace added eight "
-            f"discovery and approval tools, got {len(_TOOLS)}"
+        assert len(_TOOLS) == 79, (
+            "Expected 79 MCP tools after the agent-feedback tools added three "
+            f"(record/list/summary), got {len(_TOOLS)}"
         )
 
     def test_new_tools_registered(self):
@@ -367,6 +367,10 @@ class TestToolRegistryV0996:
             "get_skill_install_request",
             "list_skill_install_requests",
             "cancel_skill_install_request",
+            # v0.17.0 agent feedback (structured agent-work outcomes)
+            "record_agent_feedback",
+            "list_agent_feedback",
+            "get_agent_feedback_summary",
         ):
             assert new_tool in names, f"Missing MCP tool: {new_tool}"
         # A3: approval is dashboard/CLI/API only — never brokered over MCP,
@@ -574,6 +578,108 @@ class TestNewToolDispatch:
         result = await mcp_server._handle_get_wiki_page({})
         assert "error" in result
         assert "slug" in result["error"].lower()
+
+    # ── v0.17.0 agent-feedback dispatch ──
+
+    @pytest.mark.asyncio
+    async def test_dispatch_record_agent_feedback(self, fake_resolver, fake_httpx, captured):
+        result = await mcp_server._handle_record_agent_feedback({
+            "feedback_type": "route",
+            "verdict": "negative",
+            "label": "wrong_route",
+            "ticket_id": "tk_1",
+            "final_owner": "sentinel",
+            "notes": "misrouted",
+        })
+        assert captured["method"] == "POST"
+        assert captured["url"] == (
+            "https://api.test/api/v1/projects/proj_test/agent-feedback"
+        )
+        assert captured["json"] == {
+            "feedback_type": "route",
+            "verdict": "negative",
+            "label": "wrong_route",
+            "ticket_id": "tk_1",
+            "final_owner": "sentinel",
+            "notes": "misrouted",
+        }
+        assert "error" not in result
+
+    @pytest.mark.asyncio
+    async def test_dispatch_record_agent_feedback_requires_target(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        result = await mcp_server._handle_record_agent_feedback({
+            "feedback_type": "route",
+            "verdict": "negative",
+        })
+        # Rejected locally BEFORE any project resolution / network call.
+        assert "at least one target" in result["error"]
+        assert not captured
+
+    @pytest.mark.asyncio
+    async def test_dispatch_record_agent_feedback_rejects_bad_type(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        result = await mcp_server._handle_record_agent_feedback({
+            "feedback_type": "bogus",
+            "verdict": "negative",
+            "ticket_id": "tk_1",
+        })
+        assert "feedback_type" in result["error"]
+        assert not captured
+
+    @pytest.mark.asyncio
+    async def test_dispatch_record_agent_feedback_rejects_label_mismatch(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        result = await mcp_server._handle_record_agent_feedback({
+            "feedback_type": "duplicate",
+            "verdict": "positive",
+            "label": "wrong_route",
+            "ticket_id": "tk_1",
+        })
+        assert "not valid for feedback_type" in result["error"]
+        assert not captured
+
+    @pytest.mark.asyncio
+    async def test_dispatch_list_agent_feedback(self, fake_resolver, fake_httpx, captured):
+        result = await mcp_server._handle_list_agent_feedback({
+            "feedback_type": "route",
+            "verdict": "negative",
+            "label": "wrong_route",
+            "persona": "sentinel",
+            "since": "2026-10-01T00:00:00Z",
+            "since_id": "afb_1",
+            "limit": 50,
+        })
+        assert captured["method"] == "GET"
+        assert captured["url"] == (
+            "https://api.test/api/v1/projects/proj_test/agent-feedback"
+        )
+        assert captured["params"]["feedback_type"] == "route"
+        assert captured["params"]["verdict"] == "negative"
+        assert captured["params"]["label"] == "wrong_route"
+        assert captured["params"]["persona"] == "sentinel"
+        assert captured["params"]["since"] == "2026-10-01T00:00:00Z"
+        assert captured["params"]["since_id"] == "afb_1"
+        assert captured["params"]["limit"] == "50"
+        assert "agent_feedback" in result
+
+    @pytest.mark.asyncio
+    async def test_dispatch_get_agent_feedback_summary(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        await mcp_server._handle_get_agent_feedback_summary({
+            "persona": "sentinel",
+            "since": "2026-10-01T00:00:00Z",
+        })
+        assert captured["method"] == "GET"
+        assert captured["url"] == (
+            "https://api.test/api/v1/projects/proj_test/agent-feedback/summary"
+        )
+        assert captured["params"]["persona"] == "sentinel"
+        assert captured["params"]["since"] == "2026-10-01T00:00:00Z"
 
     @pytest.mark.asyncio
     async def test_dispatch_get_knowledge_health(self, fake_resolver, fake_httpx, captured):

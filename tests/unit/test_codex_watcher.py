@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 
 from sessionfs.watchers.codex import (
-    CodexParsedSession,
     parse_codex_session,
     convert_codex_to_sfs,
     discover_codex_sessions,
@@ -327,3 +326,88 @@ def test_convert_codex_session_with_null_content_to_sfs(
 
     manifest = json.loads((sfs_dir / "manifest.json").read_text())
     assert manifest["source"]["tool"] == "codex"
+
+
+# ---------- Regression tests: explicit "info": null in token_count events ----------
+
+
+def _write_token_count_rollout(tmp_path: Path, info: object) -> Path:
+    """Write a minimal rollout whose only token_count event carries `info`.
+
+    `info` is passed through verbatim so callers can exercise the null/partial
+    shapes Codex emits in the wild. A valid user message is included so a
+    successful capture is observable via message_count.
+    """
+    sessions_dir = tmp_path / "sessions" / "2026" / "05" / "01"
+    sessions_dir.mkdir(parents=True)
+    path = sessions_dir / "rollout-2026-05-01T10-00-00-ccccdddd-eeee-ffff-8888-999999999999.jsonl"
+
+    lines = [
+        {
+            "timestamp": "2026-05-01T10:00:00Z",
+            "type": "session_meta",
+            "payload": {
+                "id": "ccccdddd-eeee-ffff-8888-999999999999",
+                "cwd": "/tmp/token_null",
+                "originator": "codex_cli",
+                "cli_version": "0.120.0",
+                "model_provider": "openai",
+                "git": None,
+            },
+        },
+        {
+            "timestamp": "2026-05-01T10:00:01Z",
+            "type": "event_msg",
+            "payload": {"type": "task_started", "turn_id": "turn-001"},
+        },
+        {
+            "timestamp": "2026-05-01T10:00:02Z",
+            "type": "event_msg",
+            "payload": {"type": "user_message", "message": "count tokens please"},
+        },
+        {
+            "timestamp": "2026-05-01T10:00:03Z",
+            "type": "event_msg",
+            "payload": {"type": "token_count", "info": info},
+        },
+        {
+            "timestamp": "2026-05-01T10:00:04Z",
+            "type": "event_msg",
+            "payload": {"type": "task_complete", "turn_id": "turn-001"},
+        },
+    ]
+
+    with open(path, "w") as f:
+        for line in lines:
+            f.write(json.dumps(line) + "\n")
+
+    return path
+
+
+def test_parse_token_count_with_null_info(tmp_path: Path):
+    """A token_count event with `"info": null` must not abort capture.
+
+    Codex emits this exact shape in normal operation. Before the fix this
+    raised AttributeError (None.get) and the whole session failed to capture,
+    then was retried every scan.
+    """
+    path = _write_token_count_rollout(tmp_path, info=None)
+    session = parse_codex_session(path)
+    assert session is not None
+    assert session.session_id == "ccccdddd-eeee-ffff-8888-999999999999"
+    # The valid user message must still have been parsed.
+    assert session.message_count == 1
+    assert session.first_prompt == "count tokens please"
+    # No token totals were available — remain at the default of zero.
+    assert session.total_input_tokens == 0
+    assert session.total_output_tokens == 0
+
+
+def test_parse_token_count_with_null_total_usage(tmp_path: Path):
+    """A token_count `info` with `"total_token_usage": null` must not crash."""
+    path = _write_token_count_rollout(tmp_path, info={"total_token_usage": None})
+    session = parse_codex_session(path)
+    assert session is not None
+    assert session.message_count == 1
+    assert session.total_input_tokens == 0
+    assert session.total_output_tokens == 0

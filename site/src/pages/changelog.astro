@@ -17,14 +17,46 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.16.1 -->
+      <!-- v0.17.0 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.17.0</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">October 14, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Agent Feedback Records &middot; Domain Auto-Join &middot; Self-Hosted Fixes</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Agent feedback records (GitHub #54).</strong> Record whether an agent&rsquo;s work was useful once a human has reviewed it &mdash; routing, summaries, actionability, duplicates and outcomes &mdash; each with a verdict and an optional label from a fixed vocabulary. Records attach to an agent run, a ticket or a ticket comment and are append-only. A summary counts them by type, verdict and label, optionally per persona. When a ticket created by an agent is moved from one persona to another, a <span class="font-mono text-accent text-sm">wrong_route</span> record is captured automatically. Available on Team and Enterprise through the API, three new MCP tools (<span class="font-mono text-accent text-sm">record_agent_feedback</span>, <span class="font-mono text-accent text-sm">list_agent_feedback</span>, <span class="font-mono text-accent text-sm">get_agent_feedback_summary</span>) and <span class="font-mono text-accent text-sm">sfs agent feedback add|list|summary</span>. New service-key scopes <span class="font-mono text-accent text-sm">agent_feedback:read</span> and <span class="font-mono text-accent text-sm">agent_feedback:write</span>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Auto-join by verified email domain (GitHub #59).</strong> Organizations can list domains they have verified; when someone verifies an email address on one of those domains and isn&rsquo;t in an organization yet, they join as a member. Seat limits apply, people who were removed or already invited are never added this way, and nobody becomes an admin automatically. Requires a paid plan with SSO and real email verification. Manage it in the dashboard or with <span class="font-mono text-accent text-sm">sfs org auto-join list|add|remove</span>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong><span class="font-mono text-accent text-sm">sfs org set-role</span></strong> changes a member&rsquo;s role by user ID or email.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong><span class="font-mono text-accent text-sm">sfs org remove</span> accepts an email, and <span class="font-mono text-accent text-sm">--bulk &lt;file&gt;</span> removes many members.</strong> Every entry is checked against the member list before anyone is removed.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Readiness endpoint <span class="font-mono text-accent text-sm">/health/ready</span></strong> reports whether the database schema is migrated for the running version. The Helm chart&rsquo;s readiness probe uses it.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>DLP redaction works on decoded JSON values.</strong> Secrets are now also found in JSON field names, in <span class="font-mono text-accent text-sm">"field": "value"</span> pairs, inside quoted strings and in malformed lines. Content that DLP can&rsquo;t fully inspect (for example, nested too deeply or with repeated keys) is refused rather than stored as clean. Redaction keeps every other value exactly as it was, including numbers. The public share check uses the same scanning.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Helm under ArgoCD runs in order:</strong> database first, then migrations, then (in local license mode) the license seed, then the API and MCP servers. Fresh Helm installs create the migration job alongside the database instead of as a pre-install hook.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Self-hosted: domain auto-join requires <span class="font-mono text-accent text-sm">SFS_VERIFICATION_SECRET</span></strong> to be set to a random value of at least 32 characters (the Helm chart sets one). Email verification links must also match the account&rsquo;s current address.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Fixed: DLP redaction could corrupt session files (GitHub #65).</strong> Redacting a quoted value could leave unbalanced escaping, so <span class="font-mono text-accent text-sm">sfs resume</span> and handoff pickup failed. <span class="font-mono text-accent text-sm">sfs resume</span> now also skips lines already damaged this way and says how many it skipped.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Fixed: a NUL byte in session content caused a 500 on push (GitHub #67)</strong> and the daemon retried forever. The push is now accepted and the NUL is stripped from the copies stored in the database; the session archive itself is unchanged.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Fixed: the Codex watcher skipped sessions containing <span class="font-mono text-accent text-sm">"info": null</span> (GitHub #64).</strong></li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Fixed: database migrations didn&rsquo;t run before the API under ArgoCD (GitHub #66).</strong> The API also logs a clear error at startup if the database schema doesn&rsquo;t match the code.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Fixed: fresh installs in local license mode never started</strong>, because the license check waited on the API it was guarding. The check now runs in cloud license mode only.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Fixed: concurrent membership changes.</strong> Accepting an invite, creating an org, activating a license, auto-join, and verifying or deleting a domain now take their locks in one consistent order, so they can&rsquo;t exceed the seat limit, add a user to two orgs or deadlock.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Fixed: saving org settings could undo a concurrent change</strong>, and saving only KB settings cleared auto-join domains.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Member removals are now recorded in the organization audit log.</strong></li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Migrations 001&ndash;064 (064 agent feedback records), proven on PostgreSQL. 3996 backend tests + 492 dashboard UI tests passing. 79 MCP tools (3 new, up from 76) &middot; 9 supported tools unchanged.</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.16.1 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
             <span class="text-brand font-semibold">v0.16.1</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">October 12, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Starter Sync Limits &middot; Marketplace Launch Catalog &middot; Hardened Publishing</h2>
         <ul class="space-y-2 text-base text-muted">
