@@ -493,9 +493,11 @@ def test_push_help_lists_timeout_flag():
 
     from sessionfs.cli.main import app
 
+    from tests.utils.ansi import strip_ansi
+
     result = CliRunner().invoke(app, ["push", "--help"])
     assert result.exit_code == 0
-    assert "--timeout" in result.output
+    assert "--timeout" in strip_ansi(result.output)
 
 
 @pytest.mark.asyncio

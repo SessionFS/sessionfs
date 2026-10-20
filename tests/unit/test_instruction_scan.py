@@ -547,8 +547,10 @@ def _filled(token: str) -> str:
 # typical time. Both measure PROCESS CPU time (time.process_time), never wall
 # clock, so a loaded machine (a parallel suite, other builds) cannot fail
 # them. The strict wall-clock budgets of the design doc are marked `perf`
-# and excluded by default (pyproject addopts `-m 'not perf'`).
-_HEADROOM = 5
+# and excluded by default (pyproject addopts `-m 'not perf'`). CI runners
+# are several times slower than a developer machine (~6x on the 256 KiB
+# paths), so the absolute headroom is wide; the ratio checks carry linearity.
+_HEADROOM = 20
 _CPU = time.process_time
 
 

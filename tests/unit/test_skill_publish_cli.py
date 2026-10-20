@@ -14,6 +14,7 @@ from sessionfs.cli.cmd_skill import skill_app
 from sessionfs.profiles import ResolvedAuth
 from sessionfs.skills import publishing
 from sessionfs.skills.package import AGENT_PLUGIN_SCHEMA
+from tests.utils.ansi import strip_ansi
 from sessionfs.skills.publish_validation import (
     REASON_HINTS,
     HostedSkillPackageError,
@@ -384,7 +385,7 @@ def test_publish_rejects_conflicting_target(tmp_path: Path, fake_auth) -> None:
     root = _write_package(tmp_path / "pkg")
     result = runner.invoke(skill_app, ["publish", str(root), "--visibility", "org", "--yes"])
     assert result.exit_code != 0
-    assert "--org" in result.output
+    assert "--org" in strip_ansi(result.output)
 
 
 # --- symlink-swap (TOCTOU) defence in directory packing -----------------------
@@ -758,7 +759,7 @@ def test_publish_refuses_unsafe_org_before_any_request(
     result = runner.invoke(skill_app, ["publish", str(root), "--org", org_id, "--yes"], terminal_width=200)
     assert result.exit_code != 0
     assert no_network == []
-    assert "--org must be an organization id" in result.output
+    assert "--org must be an organization id" in strip_ansi(result.output)
 
 
 @pytest.mark.parametrize("org_id", _TRAVERSAL_ORGS)
