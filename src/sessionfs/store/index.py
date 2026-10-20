@@ -70,6 +70,50 @@ INSERT OR IGNORE INTO schema_version (version) VALUES (1);
 """
 
 
+def delete_session_rows(conn: sqlite3.Connection, session_id: str) -> None:
+    """Remove a session from the local index, plus the native refs to it.
+
+    ``tracked_sessions.sfs_session_id`` references ``sessions.session_id``
+    and the index runs with ``PRAGMA foreign_keys=ON``, so the tracked rows
+    must go first — deleting ``sessions`` first fails with "FOREIGN KEY
+    constraint failed" whenever a native ref exists. Every local delete
+    path (``sfs delete``, server-410 cleanup, watchers) uses this.
+    """
+    try:
+        conn.execute("DELETE FROM tracked_sessions WHERE sfs_session_id = ?", (session_id,))
+        conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+        conn.commit()
+    except BaseException:
+        # Never leave a half-done write transaction open on the connection.
+        conn.rollback()
+        raise
+
+
+def prune_session_rows(conn: sqlite3.Connection, session_id: str) -> None:
+    """Remove a pruned session's index row but keep its native tracking row.
+
+    Pruning frees disk for a session whose native source still exists, so
+    deleting the ``tracked_sessions`` row would make the next watcher scan
+    see that source as brand-new and recapture (and re-allocate) it. The
+    native fingerprint (``last_mtime`` / ``last_size``) is the part change
+    detection needs, so the row stays but its ``sfs_session_id`` link — and
+    the ``last_captured_at`` marker it was captured — are cleared. The source
+    is then treated as already seen and only recaptured once it changes.
+    """
+    try:
+        conn.execute(
+            "UPDATE tracked_sessions SET sfs_session_id = NULL, last_captured_at = NULL "
+            "WHERE sfs_session_id = ?",
+            (session_id,),
+        )
+        conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+        conn.commit()
+    except BaseException:
+        # Never leave a half-done write transaction open on the connection.
+        conn.rollback()
+        raise
+
+
 class SessionIndex:
     """SQLite-backed session metadata index."""
 
@@ -306,6 +350,10 @@ class SessionIndex:
             "SELECT * FROM sessions ORDER BY created_at DESC"
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def delete_session(self, session_id: str) -> None:
+        """Remove a session and the native refs that point at it."""
+        delete_session_rows(self.conn, session_id)
 
     def session_count(self) -> int:
         """Return total number of sessions."""

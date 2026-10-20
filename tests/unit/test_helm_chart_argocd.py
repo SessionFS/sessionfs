@@ -138,3 +138,57 @@ def test_upgrades_keep_the_pre_upgrade_hook():
     ann = _annotations(job)
     assert ann["helm.sh/hook"] == "pre-upgrade"
     assert "before-hook-creation" in ann["helm.sh/hook-delete-policy"]
+
+
+def test_api_proxy_waits_as_long_as_the_cli_upload_timeout():
+    """GitHub #68: nginx's 60s default would 504 a slow sync push first."""
+    conf = _doc(_render(), "ConfigMap", "dashboard-nginx")["data"]["default.conf"]
+    api_block = conf.split("location /api/")[1].split("}")[0]
+    assert "proxy_read_timeout 300s;" in api_block
+    assert "proxy_send_timeout 300s;" in api_block
+
+    conf = _doc(
+        _render("--set", "dashboard.apiProxyTimeout=900s"), "ConfigMap", "dashboard-nginx"
+    )["data"]["default.conf"]
+    assert "proxy_read_timeout 900s;" in conf
+
+
+def test_ingress_gives_ingress_nginx_the_same_limits_unless_overridden():
+    ann = _annotations(_doc(_render(), "Ingress", "sessionfs"))
+    assert ann["nginx.ingress.kubernetes.io/proxy-read-timeout"] == "300"
+    assert ann["nginx.ingress.kubernetes.io/proxy-send-timeout"] == "300"
+    assert ann["nginx.ingress.kubernetes.io/proxy-body-size"] == "100m"
+
+    ann = _annotations(_doc(_render(
+        "--set", "dashboard.apiProxyTimeout=600s",
+        "--set-string", "ingress.annotations.nginx\\.ingress\\.kubernetes\\.io/proxy-read-timeout=900",
+        "--set-string", "ingress.annotations.example\\.com/keep=yes",
+    ), "Ingress", "sessionfs"))
+    assert ann["nginx.ingress.kubernetes.io/proxy-read-timeout"] == "900"
+    assert ann["nginx.ingress.kubernetes.io/proxy-send-timeout"] == "600"
+    assert ann["example.com/keep"] == "yes"
+
+
+def test_dashboard_restarts_when_its_nginx_config_changes():
+    def checksum(*extra):
+        dep = _doc(_render(*extra), "Deployment", "dashboard")
+        return dep["spec"]["template"]["metadata"]["annotations"]["checksum/nginx-config"]
+
+    assert checksum() != checksum("--set", "dashboard.apiProxyTimeout=600s")
+
+
+@pytest.mark.parametrize("bad", ["5m", "500ms", "0", "abc"])
+def test_api_proxy_timeout_must_be_whole_seconds(bad):
+    cmd = ["helm", "template", "sessionfs", CHART_DIR,
+           "--set-string", f"dashboard.apiProxyTimeout={bad}"]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "apiProxyTimeout must be whole seconds" in result.stderr
+
+
+@pytest.mark.parametrize("bad", ["0", "false"])
+def test_api_proxy_timeout_zero_or_false_is_rejected_not_defaulted(bad):
+    cmd = ["helm", "template", "sessionfs", CHART_DIR, "--set", f"dashboard.apiProxyTimeout={bad}"]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "apiProxyTimeout must be whole seconds" in result.stderr

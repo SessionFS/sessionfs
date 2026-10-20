@@ -17,10 +17,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.auth.rate_limit import SlidingWindowRateLimiter
 from sessionfs.server.db.engine import get_db
-from sessionfs.server.db.models import AdminAction, Project, ProjectRepo, Session, User
-from sessionfs.server.tier_gate import UserContext, check_feature, get_user_context
+from sessionfs.server.db.models import AdminAction, OrgMember, Project, ProjectRepo, Session, User
+from sessionfs.server.tier_gate import (
+    UserContext,
+    check_feature,
+    get_user_context,
+    raise_project_upgrade_required,
+    resolve_org_plan_tier,
+)
+from sessionfs.server.tiers import get_features_for_tier
 
 router = APIRouter(prefix="/api/v1/projects", tags=["projects"])
+
+# Pre-migration-073 reclaimed projects were marked by rewriting their
+# legacy remote to "reclaimed:<project-id>". That namespace was never
+# reserved, so an attacker could squat any project's future placeholder
+# (tk_b6c5e184ba8d4aa1). Reclaimed is now STRUCTURAL — a NULL legacy
+# remote plus repo_reclaimed_at — and this prefix is rejected on every
+# caller-controlled remote input so the old strings can never be
+# reintroduced.
+RECLAIMED_REMOTE_PREFIX = "reclaimed:"
 
 DEFAULT_TEMPLATE = """\
 # Project Context
@@ -52,6 +68,17 @@ class CreateProjectRequest(BaseModel):
     # project is personal (org_id stays NULL). If provided, the creator
     # must be a member of that org (server validates).
     org_id: str | None = None
+
+    @field_validator("git_remote_normalized")
+    @classmethod
+    def validate_remote(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("git_remote_normalized cannot be empty")
+        if v.lower().startswith(RECLAIMED_REMOTE_PREFIX):
+            # Reserved namespace (structural reclaimed state lives in
+            # repo_reclaimed_at, not in this column).
+            raise ValueError("git_remote_normalized uses a reserved prefix")
+        return v
 
 
 class UpdateContextRequest(BaseModel):
@@ -98,6 +125,9 @@ class ProjectResponse(BaseModel):
     kb_section_page_limit: int = 30
     # P3: populated on detail endpoints only (omitted on list to avoid N+1).
     repos: list[ProjectRepoResponse] | None = None
+    # Empty string for a repo-reclaimed project (its column is NULL);
+    # repo_reclaimed distinguishes that state from a real remote.
+    repo_reclaimed: bool = False
 
 
 class LinkRepoRequest(BaseModel):
@@ -151,6 +181,8 @@ class MergeResponse(BaseModel):
     skipped_ke_ids: list[str] | None = None
     skipped_link_ids: list[str] | None = None
     rules_action: str | None = None
+    would_refuse: bool | None = None
+    blocking_reason: str | None = None
 
 
 async def _check_repo_access(db: AsyncSession, user_id: str, git_remote: str) -> bool:
@@ -169,24 +201,59 @@ async def _check_repo_access(db: AsyncSession, user_id: str, git_remote: str) ->
     project = await resolve_project_by_remote(db, git_remote)
     if project is None:
         return False
+    predicates = [Session.project_id == project.id]
+    # A project whose legacy column is NULL (repo-reclaimed, or nulled
+    # by migration 073 after losing a conflict) must never add the
+    # remote equality: `== None` renders IS NULL and would match every
+    # session with a NULL remote.
+    if project.git_remote_normalized is not None:
+        predicates.append(
+            Session.git_remote_normalized == project.git_remote_normalized
+        )
+    predicates.append(
+        Session.git_remote_normalized.in_(
+            select(ProjectRepo.git_remote_normalized).where(
+                ProjectRepo.project_id == project.id,
+            )
+        )
+    )
     stmt = (
         select(Session.id)
         .where(
             Session.user_id == user_id,
-            or_(
-                Session.project_id == project.id,
-                Session.git_remote_normalized == project.git_remote_normalized,
-                Session.git_remote_normalized.in_(
-                    select(ProjectRepo.git_remote_normalized).where(
-                        ProjectRepo.project_id == project.id,
-                    )
-                ),
-            ),
+            or_(*predicates),
         )
         .limit(1)
     )
     result = await db.execute(stmt)
     return result.scalar_one_or_none() is not None
+
+
+def _project_response(
+    project: Project,
+    *,
+    session_count: int = 0,
+    repos: list[ProjectRepoResponse] | None = None,
+) -> ProjectResponse:
+    """Build a ProjectResponse, mapping the structural reclaimed state
+    (NULL git_remote_normalized + repo_reclaimed_at) onto the wire
+    shape: empty remote string + repo_reclaimed flag."""
+    return ProjectResponse(
+        id=project.id,
+        name=project.name,
+        git_remote_normalized=project.git_remote_normalized or "",
+        context_document=project.context_document,
+        owner_id=project.owner_id,
+        created_at=project.created_at,
+        updated_at=project.updated_at,
+        session_count=session_count,
+        auto_narrative=getattr(project, "auto_narrative", False),
+        kb_retention_days=getattr(project, "kb_retention_days", 180),
+        kb_max_context_words=getattr(project, "kb_max_context_words", 8000),
+        kb_section_page_limit=getattr(project, "kb_section_page_limit", 30),
+        repos=repos,
+        repo_reclaimed=project.repo_reclaimed_at is not None,
+    )
 
 
 @router.get("/", response_model=list[ProjectResponse])
@@ -268,7 +335,10 @@ async def list_projects(
         # Primary remotes (from Project) + linked remotes (from ProjectRepo).
         remote_to_pids: dict[str, set[str]] = {}
         for p in projects:
-            remote_to_pids.setdefault(p.git_remote_normalized, set()).add(p.id)
+            # A repo-reclaimed project's legacy column is NULL — never a
+            # session-remote key.
+            if p.git_remote_normalized:
+                remote_to_pids.setdefault(p.git_remote_normalized, set()).add(p.id)
         repos_stmt = select(
             ProjectRepo.project_id,
             ProjectRepo.git_remote_normalized,
@@ -301,20 +371,7 @@ async def list_projects(
         session_counts = {}
 
     return [
-        ProjectResponse(
-            id=p.id,
-            name=p.name,
-            git_remote_normalized=p.git_remote_normalized,
-            context_document=p.context_document,
-            owner_id=p.owner_id,
-            created_at=p.created_at,
-            updated_at=p.updated_at,
-            session_count=session_counts.get(p.id, 0),
-            auto_narrative=getattr(p, "auto_narrative", False),
-            kb_retention_days=getattr(p, "kb_retention_days", 180),
-            kb_max_context_words=getattr(p, "kb_max_context_words", 8000),
-            kb_section_page_limit=getattr(p, "kb_section_page_limit", 30),
-        )
+        _project_response(p, session_count=session_counts.get(p.id, 0))
         for p in projects
     ]
 
@@ -419,30 +476,43 @@ async def create_project(
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> ProjectResponse:
-    """Create a project context for a repository."""
-    check_feature(ctx, "project_context")
-    # Check for existing project — both the legacy projects table column
-    # AND the project_repos join table (multi-repo P2 A4).
-    stmt = select(Project).where(Project.git_remote_normalized == body.git_remote_normalized)
-    result = await db.execute(stmt)
-    existing = result.scalar_one_or_none()
-    if existing:
-        raise HTTPException(409, "Project already exists for this repository")
-    from sessionfs.server.db.models import ProjectRepo
-    repo_check = await db.execute(
-        select(ProjectRepo.id).where(
-            ProjectRepo.git_remote_normalized == body.git_remote_normalized,
-        ).limit(1)
-    )
-    if repo_check.scalar_one_or_none() is not None:
-        raise HTTPException(409, "Project already exists for this repository")
+    """Create a project context for a repository.
 
-    # v0.10.0 Phase 5 — validate org_id if provided. Caller must be a
-    # member of the target org. Server is load-bearing here; CLI/dashboard
-    # may pre-filter but cannot be trusted.
+    The new project is paid for by its owner: the requested org's plan,
+    or the caller's own plan for a personal project (tk_a90e4015ad984cde).
+    Membership is checked before the org's plan, so the plan of an org
+    the caller is not in is never revealed.
+    """
+    # GH #70 — creation can race member removal / user deactivation, so take
+    # the caller's user lock (+ the target org's lock) BEFORE checking
+    # membership/plan/active-user state, then re-read the authorization
+    # state under the locks (scope_locks.py global order: user then org).
+    from sessionfs.server.services.scope_locks import lock_scopes
+
+    await lock_scopes(
+        db, user_ids=[user.id], org_ids=[body.org_id] if body.org_id else []
+    )
+
+    # Re-read the caller under the user lock: a concurrent delete may have
+    # deactivated them while we waited. Never create for an inactive user.
+    locked_user = (
+        await db.execute(
+            select(User)
+            .where(User.id == user.id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if locked_user is None or not locked_user.is_active:
+        raise HTTPException(409, "Account is inactive or no longer exists")
+
     org_general: dict = {}
     if body.org_id is not None:
+        # Single consolidated membership check under the org lock (folds in
+        # the former duplicate pre-insert check). Membership is checked
+        # before the org's plan, so the plan of an org the caller is not in
+        # is never revealed.
         from sessionfs.server.db.models import OrgMember, Organization
+
         membership = (
             await db.execute(
                 select(OrgMember).where(
@@ -456,6 +526,9 @@ async def create_project(
                 403,
                 "You are not a member of the requested org",
             )
+        plan = await resolve_org_plan_tier(body.org_id, db)
+        if "project_context" not in get_features_for_tier(plan):
+            raise_project_upgrade_required("project_context", plan, None)
 
         # v0.10.0 Phase 6 Round 2 (KB entry 296) — pragmatic
         # inheritance: seed the new project's kb_* defaults from the
@@ -484,6 +557,24 @@ async def create_project(
                 general = settings_obj.get("general", {})
                 if isinstance(general, dict):
                     org_general = general
+    else:
+        check_feature(ctx, "project_context")
+
+    # Check for existing project — both the legacy projects table column
+    # AND the project_repos join table (multi-repo P2 A4).
+    stmt = select(Project).where(Project.git_remote_normalized == body.git_remote_normalized)
+    result = await db.execute(stmt)
+    existing = result.scalar_one_or_none()
+    if existing:
+        raise HTTPException(409, "Project already exists for this repository")
+    from sessionfs.server.db.models import ProjectRepo
+    repo_check = await db.execute(
+        select(ProjectRepo.id).where(
+            ProjectRepo.git_remote_normalized == body.git_remote_normalized,
+        ).limit(1)
+    )
+    if repo_check.scalar_one_or_none() is not None:
+        raise HTTPException(409, "Project already exists for this repository")
 
     project_kwargs: dict = {
         "id": f"proj_{uuid.uuid4().hex[:16]}",
@@ -503,6 +594,22 @@ async def create_project(
 
     project = Project(**project_kwargs)
     db.add(project)
+    # Every new project also carries its primary remote in project_repos,
+    # atomically (tk_b6c5e184ba8d4aa1): a project that exists ONLY in the
+    # legacy projects.git_remote_normalized column was an installation-
+    # claim hijack path — a verified link of the same remote conflicted
+    # with the legacy unique column instead of displacing the squatter.
+    # The row is unverified ('legacy_backfill', matching the migration
+    # 073 backfill): a verified owner can still displace it.
+    db.add(ProjectRepo(
+        id=f"repo_{uuid.uuid4().hex[:16]}",
+        project_id=project.id,
+        git_remote_normalized=body.git_remote_normalized,
+        is_primary=True,
+        verified=False,
+        verification_method="legacy_backfill",
+        added_by_user_id=user.id,
+    ))
     await db.commit()
     await db.refresh(project)
 
@@ -517,19 +624,7 @@ async def create_project(
             blob_store,
         )
 
-    return ProjectResponse(
-        id=project.id,
-        name=project.name,
-        git_remote_normalized=project.git_remote_normalized,
-        context_document=project.context_document,
-        owner_id=project.owner_id,
-        created_at=project.created_at,
-        updated_at=project.updated_at,
-        auto_narrative=getattr(project, "auto_narrative", False),
-        kb_retention_days=getattr(project, "kb_retention_days", 180),
-        kb_max_context_words=getattr(project, "kb_max_context_words", 8000),
-        kb_section_page_limit=getattr(project, "kb_section_page_limit", 30),
-    )
+    return _project_response(project)
 
 
 # ── P3: Multi-Repo Link / Unlink / List ──────────────────────────────────
@@ -598,13 +693,14 @@ async def link_repo(
     verification (Sentinel F1). Verified rows can displace unverified
     holders atomically (§6.2). No tier gate — free for all tiers (Q3).
     """
-    from sqlalchemy import func, update
+    from sqlalchemy import case, func, update
 
     from sessionfs.server.auth.project_access import (
         user_can_access_project,
         user_is_project_admin,
     )
     from sessionfs.server.github_app import (
+        github_owner_repo_from_remote,
         normalize_git_remote,
         verify_repo_ownership,
     )
@@ -632,11 +728,201 @@ async def link_repo(
     normalized = normalize_git_remote(body.git_remote)
     if not normalized:
         raise HTTPException(400, "Could not parse git remote URL")
+    if normalized.lower().startswith(RECLAIMED_REMOTE_PREFIX):
+        # Reserved namespace: reclaimed state is structural
+        # (repo_reclaimed_at), never a caller-supplied remote value.
+        raise HTTPException(400, "git_remote uses a reserved prefix")
 
-    # 2b. Repo-reclaimed revival: a project with zero repos (or
+    # Nothing is written before verification: end this read transaction so
+    # no connection or row lock is held across the GitHub calls below.
+    await db.commit()
+
+    # 3. GitHub ownership verification (N2: OUTSIDE the swap transaction).
+    #    MUST run BEFORE the locked holder check so the displacement
+    #    rules can distinguish verified-vs-verified from
+    #    verified-vs-unverified.
+    #    The normalized remote has no host, so owner/repo is taken from
+    #    the RAW remote and only for a github.com remote with exactly two
+    #    path segments: another host (GitLab, self-hosted) or a subgroup
+    #    path (group/sub/repo) must never be checked against GitHub's
+    #    sub/repo. Anything else stays owner_attested.
+    verified: bool = False
+    verification_method: str | None = "owner_attested"
+    provider: str | None = None
+    provider_repo_id: str | None = None
+
+    github_ref = github_owner_repo_from_remote(body.git_remote)
+    if github_ref is not None:
+        owner, repo_name = github_ref
+        verified, verification_method, provider, provider_repo_id = (
+            await verify_repo_ownership(db, user.id, owner, repo_name)
+        )
+
+    # 3b. Re-check authorization against freshly LOCKED sources: standing
+    #     may have changed while GitHub was being called. Lock order (same
+    #     as membership changes): user -> org member -> project. FOR SHARE
+    #     on the user and membership rows serializes this link with a
+    #     concurrent deactivation / demotion / removal (which take FOR
+    #     UPDATE): either they commit first and we see it, or they wait
+    #     until this link has committed. The project rows themselves are
+    #     locked below (4c) together with every holder project, in one
+    #     deterministic id-ordered query.
+    caller = (await db.execute(
+        select(User.id, User.is_active)
+        .where(User.id == user.id)
+        .with_for_update(read=True)
+    )).first()
+    if caller is None or not caller.is_active:
+        raise HTTPException(403, "Only a project admin can link repos")
+    project_org_id = (await db.execute(
+        select(Project.org_id).where(Project.id == project_id)
+    )).scalar_one_or_none()
+    if project_org_id is not None:
+        await db.execute(
+            select(OrgMember.user_id)
+            .where(OrgMember.org_id == project_org_id, OrgMember.user_id == user.id)
+            .with_for_update(read=True)
+        )
+
+    # 4. Holder PROBE, unlocked (N2: no live HTTP calls inside the lock —
+    #    verification was done in step 3). Applies F3 access-gating and the
+    #    displacement rules. The candidate rows are only identified here;
+    #    they are locked by id in step 4c AFTER every affected project is
+    #    locked in id order. Locking ProjectRepo before Project inverts the
+    #    order unlink_repo / merge take (Project -> ProjectRepo) and would
+    #    deadlock, so the probe must not take a row lock.
+    remote_holder_probe = (await db.execute(
+        select(ProjectRepo.id, ProjectRepo.project_id, ProjectRepo.verified).where(
+            ProjectRepo.git_remote_normalized == normalized,
+        )
+    )).first()
+    # A repository renamed on GitHub keeps its provider id: a row holding
+    # the same (provider, provider_repo_id) under an OLD remote is the same
+    # repository and goes through the same displacement rules, so a stale
+    # holder can never block the real owner after a rename.
+    id_holder_probe = None
+    if provider and provider_repo_id:
+        id_holder_probe = (await db.execute(
+            select(ProjectRepo.id, ProjectRepo.project_id, ProjectRepo.verified).where(
+                ProjectRepo.provider == provider,
+                ProjectRepo.provider_repo_id == provider_repo_id,
+                ProjectRepo.git_remote_normalized != normalized,
+            )
+        )).first()
+
+    # 4b. Legacy holder: a project holding `normalized` ONLY in its
+    #     legacy projects.git_remote_normalized column, with no
+    #     project_repos row for it (pre-073 projects could exist in that
+    #     state; the 073 backfill writes rows where it can). Such a
+    #     squatter otherwise blocked the verified owner's link with a
+    #     uniqueness conflict on the legacy column and stayed eligible
+    #     for legacy access paths (tk_b6c5e184ba8d4aa1). It is resolved
+    #     under the same rules as an unverified ProjectRepo holder.
+    #     Merge tombstones (merged_into_project_id set) are excluded: they
+    #     redirect to their target, and marking one repo_reclaimed would
+    #     corrupt the merged-vs-reclaimed distinction migration 073 keeps
+    #     separate. merge.py nulls the tombstone's legacy remote at merge
+    #     time, so a tombstone no longer squats a remote at all.
+    legacy_holder = (await db.execute(
+        select(Project).where(
+            Project.git_remote_normalized == normalized,
+            Project.id != project_id,
+            Project.merged_into_project_id.is_(None),
+            ~select(ProjectRepo.id).where(
+                ProjectRepo.project_id == Project.id,
+                ProjectRepo.git_remote_normalized == normalized,
+            ).exists(),
+        )
+    )).scalar_one_or_none()
+
+    # 4c. Lock EVERY affected project (target + probed holders) FOR UPDATE
+    #     in deterministic project-id order before any of its repos is
+    #     deleted or counted (tk_b6c5e184ba8d4aa1). Locking the target and
+    #     its holders in ONE ORDER BY Project.id query means two concurrent
+    #     links acquire the same projects in the same order and cannot
+    #     deadlock (one link's target is the other's holder). FOR UPDATE
+    #     also conflicts with the FOR KEY SHARE a concurrent link takes
+    #     when inserting a project_repos row that references the project,
+    #     so the zero-repo count below can never miss a concurrently-linked
+    #     repository and mark a project reclaimed while it still has one.
+    holder_project_ids = sorted(
+        {project_id}
+        | {
+            holder.project_id
+            for holder in (remote_holder_probe, id_holder_probe)
+            if holder is not None
+        }
+        | ({legacy_holder.id} if legacy_holder is not None else set())
+    )
+    await db.execute(
+        select(Project)
+        .where(Project.id.in_(holder_project_ids))
+        .order_by(Project.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    # Re-select the probed ProjectRepo rows FOR UPDATE by id now that their
+    # parent projects are locked, and re-validate their classification: the
+    # row's remote/provider identity may have changed between the unlocked
+    # probe and the lock, so a holder whose key no longer matches is dropped
+    # (the unique indexes remain the final backstop for any late writer).
+    remote_holder = None
+    if remote_holder_probe is not None:
+        remote_holder = (await db.execute(
+            select(ProjectRepo)
+            .where(ProjectRepo.id == remote_holder_probe.id)
+            .with_for_update()
+        )).scalar_one_or_none()
+        if remote_holder is not None and remote_holder.git_remote_normalized != normalized:
+            remote_holder = None
+    id_holder = None
+    if id_holder_probe is not None:
+        id_holder = (await db.execute(
+            select(ProjectRepo)
+            .where(ProjectRepo.id == id_holder_probe.id)
+            .with_for_update()
+        )).scalar_one_or_none()
+        if id_holder is not None and not (
+            id_holder.provider == provider
+            and id_holder.provider_repo_id == provider_repo_id
+            and id_holder.git_remote_normalized != normalized
+        ):
+            id_holder = None
+
+    # Classify both holders BEFORE changing anything. Rename within the same
+    # project: this project already links the repository (same provider id)
+    # under its OLD name. That row is renamed in place after the normal
+    # rules have run against any OTHER row holding the new name (an
+    # unverified one is displaced, a verified one is a genuine 409), all in
+    # this one transaction.
+    same_project_rename = (
+        id_holder is not None
+        and id_holder.project_id == project_id
+        and verified
+    )
+    holders_to_resolve = (remote_holder,) if same_project_rename else (remote_holder, id_holder)
+    # Re-load the target project under its lock and re-check that its org
+    # did not change and the caller still administers it (standing may have
+    # changed while GitHub was being called).
+    project = (await db.execute(
+        select(Project)
+        .where(Project.id == project_id)
+        .execution_options(populate_existing=True)
+    )).scalar_one_or_none()
+    if project is None:
+        raise HTTPException(404, "Project not found")
+    if project.org_id != project_org_id:
+        raise HTTPException(409, "Project changed while linking; retry")
+    if not await user_is_project_admin(db, user.id, project):
+        raise HTTPException(403, "Only a project admin can link repos")
+
+    # 3c. Repo-reclaimed revival: a project with zero repos (or
     #     repo_reclaimed_at set from a prior displacement) gets its
     #     first new link as the forced primary, clearing the orphaned
-    #     state and repopulating the project's primary remote.
+    #     state. The legacy column is NOT mirrored here: a legacy-only
+    #     holder (4b/5b) may still occupy that unique value, and the
+    #     mirror must happen only after it has been displaced — the
+    #     forced primary makes step 6 do it.
     repo_count = (await db.execute(
         select(func.count(ProjectRepo.id)).where(
             ProjectRepo.project_id == project_id,
@@ -645,44 +931,33 @@ async def link_repo(
     if repo_count == 0 or project.repo_reclaimed_at is not None:
         body.is_primary = True
         project.repo_reclaimed_at = None
-        project.git_remote_normalized = normalized
 
-    # 3. GitHub ownership verification (N2: OUTSIDE the swap transaction).
-    #    MUST run BEFORE the locked holder check so the displacement
-    #    rules can distinguish verified-vs-verified from
-    #    verified-vs-unverified.
-    #    Extract owner/repo: for bare format github.com/owner/repo (3 parts)
-    #    the last two are owner+repo; for owner/repo (2 parts) use as-is.
-    parts = normalized.split("/")
-    verified: bool = False
-    verification_method: str | None = "owner_attested"
-    provider: str | None = None
-    provider_repo_id: str | None = None
+    # Re-validate the legacy holder under its lock: its column (or a
+    # project_repos row for this remote) may have changed between the
+    # unlocked probe above and the lock. ProjectRepo holders were locked
+    # at selection time and cannot have moved.
+    if legacy_holder is not None:
+        still_legacy = legacy_holder.git_remote_normalized == normalized and (
+            await db.execute(
+                select(ProjectRepo.id).where(
+                    ProjectRepo.project_id == legacy_holder.id,
+                    ProjectRepo.git_remote_normalized == normalized,
+                ).limit(1)
+            )
+        ).first() is None
+        if not still_legacy:
+            legacy_holder = None
 
-    owner: str | None = None
-    repo_name: str | None = None
-    if len(parts) == 2:
-        owner, repo_name = parts[0], parts[1]
-    elif len(parts) == 3:
-        owner, repo_name = parts[1], parts[2]
-
-    if owner and repo_name:
-        verified, verification_method, provider, provider_repo_id = (
-            await verify_repo_ownership(db, user.id, owner, repo_name)
-        )
-
-    # 4. Holder check with FOR UPDATE (N2: no live HTTP calls inside
-    #    the lock — verification was done in step 3).  Applies F3
-    #    access-gating and the displacement rules.
-    holder = (await db.execute(
-        select(ProjectRepo).where(
-            ProjectRepo.git_remote_normalized == normalized,
-        ).with_for_update()
-    )).scalar_one_or_none()
-
-    if holder is not None:
+    # A same-project re-verification is recorded here and returned after
+    # the other holders (legacy squatter, rename holder) are resolved.
+    upgraded_own_holder = None
+    for holder in holders_to_resolve:
+        if holder is None:
+            continue
         # F3 access-gating for 409: only disclose existing_project_id
-        # to callers who can access the holding project.
+        # to callers who can access the holding project. The project row
+        # was already locked FOR UPDATE + refreshed above (4c); this
+        # fetch hits the identity map.
         holding_project = (await db.execute(
             select(Project).where(Project.id == holder.project_id)
         )).scalar_one_or_none()
@@ -743,6 +1018,56 @@ async def link_repo(
             )
         else:
             # verified beats unverified → DISPLACE (§6.2)
+            if holder.project_id == project_id and not same_project_rename:
+                # Same-project re-verification: this project already links
+                # the repository unverified; proving ownership upgrades the
+                # existing row in place instead of deleting it (deleting
+                # would transiently mark the project reclaimed, null its
+                # legacy remote, and drop its primary flag — tk_b6c5e184ba8d4aa1).
+                # Skips the in-place upgrade when a same-project rename is in
+                # flight: the new-name holder is a duplicate of the old-name
+                # row (same provider+repo_id) and must be displaced, not
+                # upgraded, or the partial-unique provider index would see
+                # both rows at commit and 500 the rename.
+                holder.verified = True
+                holder.verification_method = verification_method
+                holder.provider = provider
+                holder.provider_repo_id = provider_repo_id
+                if project.repo_reclaimed_at is not None:
+                    project.repo_reclaimed_at = None
+                # An explicit is_primary=true on a same-project re-verification
+                # must be honored exactly like step 6: demote the current
+                # primary (keep it linked), promote this row, and mirror the
+                # legacy column. The early return below used to skip step 6
+                # wholesale, silently dropping the caller's primary request.
+                if body.is_primary and not holder.is_primary:
+                    await db.execute(
+                        update(ProjectRepo)
+                        .where(
+                            ProjectRepo.project_id == project_id,
+                            ProjectRepo.is_primary == True,  # noqa: E712
+                            ProjectRepo.id != holder.id,
+                        )
+                        .values(is_primary=False)
+                    )
+                    await db.flush()  # land the demote before the promote
+                    holder.is_primary = True
+                if holder.is_primary:
+                    # projects.git_remote_normalized is globally unique; a
+                    # displaced (repo-reclaimed) project may still carry this
+                    # string. The project_repos row is authoritative for
+                    # resolution, so only mirror when it is free (same guard
+                    # as the rename path below).
+                    taken = (await db.execute(
+                        select(Project.id).where(
+                            Project.git_remote_normalized == normalized,
+                            Project.id != project_id,
+                        )
+                    )).first()
+                    if taken is None:
+                        project.git_remote_normalized = normalized
+                upgraded_own_holder = holder
+                continue
             holder_project_id = holder.project_id
             holder_was_primary = holder.is_primary
 
@@ -773,11 +1098,21 @@ async def link_repo(
             if remaining_count == 0:
                 # Holder has NO repos left → repo_reclaimed orphaned state.
                 # Data stays with the holder (NEVER auto-imported).
+                # Reclaimed is structural: the legacy remote is nulled in
+                # the same transaction, so legacy remote fallbacks can
+                # never resolve to (or grant access to) the displaced
+                # project, and the claimant can take the name. No
+                # placeholder string — the 'reclaimed:' namespace was
+                # attacker-claimable and is reserved.
                 await db.execute(
                     update(Project)
                     .where(Project.id == holder_project_id)
-                    .values(repo_reclaimed_at=func.now())
+                    .values(
+                        repo_reclaimed_at=func.now(),
+                        git_remote_normalized=None,
+                    )
                 )
+                await db.flush()
             elif holder_was_primary:
                 # Holder has other repos — promote oldest to primary.
                 oldest = (await db.execute(
@@ -811,6 +1146,7 @@ async def link_repo(
                     "old_verified": holder.verified,
                     "old_verification_method": holder.verification_method,
                     "old_is_primary": holder_was_primary,
+                    "legacy_holder": False,
                     "cross_org": bool(
                         holding_project
                         and project.org_id is not None
@@ -823,6 +1159,144 @@ async def link_repo(
                 }),
             )
             db.add(displacement_audit)
+
+    # 5b. Resolve the legacy holder (a project holding `normalized` ONLY
+    #     in its legacy column) under the same rules as an unverified
+    #     ProjectRepo holder: an unverified claimant cannot displace
+    #     (409); a verified owner displaces the squatted legacy value.
+    if legacy_holder is not None:
+        if not verified:
+            # F3 access-gating on the existing_project_id disclosure.
+            if await user_can_access_project(db, user.id, legacy_holder):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "repo_already_linked",
+                        "message": (
+                            "This repo is already linked to another "
+                            "project. Unlink it from that project first, "
+                            "or merge the projects."
+                        ),
+                        "existing_project_id": legacy_holder.id,
+                    },
+                )
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "repo_already_linked",
+                    "message": "This repo is already linked to another project.",
+                },
+            )
+        # Verified → displace. The holder project is locked (4c), so
+        # this count cannot miss a concurrently-linked repository.
+        legacy_repo_count = (await db.execute(
+            select(func.count(ProjectRepo.id)).where(
+                ProjectRepo.project_id == legacy_holder.id,
+            )
+        )).scalar() or 0
+        if legacy_repo_count == 0:
+            # No repositories left: structurally reclaimed — NULL legacy
+            # remote + repo_reclaimed_at, never a placeholder string. A
+            # merge tombstone is a distinct state and must never be marked
+            # reclaimed (migration 073 guards the same CASE), so the stamp
+            # is conditional even though the probe above already excludes
+            # tombstones — defense in depth.
+            await db.execute(
+                update(Project)
+                .where(Project.id == legacy_holder.id)
+                .values(
+                    repo_reclaimed_at=case(
+                        (Project.merged_into_project_id.is_(None), func.now()),
+                        else_=Project.repo_reclaimed_at,
+                    ),
+                    git_remote_normalized=None,
+                )
+            )
+        else:
+            # The project keeps its real repositories; only the squatted
+            # legacy value is displaced. Realign the column to the
+            # project's primary (else oldest) repository.
+            legacy_primary = (await db.execute(
+                select(ProjectRepo)
+                .where(ProjectRepo.project_id == legacy_holder.id)
+                .order_by(
+                    ProjectRepo.is_primary.desc(), ProjectRepo.created_at.asc()
+                )
+                .limit(1)
+            )).scalar_one()
+            await db.execute(
+                update(Project)
+                .where(Project.id == legacy_holder.id)
+                .values(git_remote_normalized=legacy_primary.git_remote_normalized)
+            )
+        await db.flush()
+        db.add(AdminAction(
+            id=f"adm_{uuid.uuid4().hex[:16]}",
+            admin_id=user.id,
+            action="repo_displaced",
+            target_type="project_repo",
+            target_id=legacy_holder.id,
+            details=json.dumps({
+                "displaced_remote": normalized,
+                "claimant_project_id": project_id,
+                "claimant_user_id": user.id,
+                "claimant_user_email": user.email,
+                "old_verified": False,
+                "old_verification_method": None,
+                "old_is_primary": True,
+                "legacy_holder": True,
+                "legacy_repo_count": legacy_repo_count,
+                "cross_org": bool(
+                    project.org_id is not None
+                    and legacy_holder.org_id is not None
+                    and project.org_id != legacy_holder.org_id
+                ),
+                "actor_user_id": user.id,
+                "actor_email": user.email,
+            }),
+        ))
+
+    if upgraded_own_holder is not None:
+        await db.commit()
+        await db.refresh(upgraded_own_holder)
+        return _repo_to_response(upgraded_own_holder)
+
+    if same_project_rename:
+        assert id_holder is not None
+        await db.flush()  # any displaced new-name holder is gone first
+        id_holder.git_remote_normalized = normalized
+        id_holder.verified = verified
+        id_holder.verification_method = verification_method
+        id_holder.provider = provider
+        id_holder.provider_repo_id = provider_repo_id
+        if body.is_primary and not id_holder.is_primary:
+            await db.execute(
+                update(ProjectRepo)
+                .where(
+                    ProjectRepo.project_id == project_id,
+                    ProjectRepo.is_primary == True,  # noqa: E712
+                    ProjectRepo.id != id_holder.id,
+                )
+                .values(is_primary=False)
+            )
+            await db.flush()
+            id_holder.is_primary = True
+        if id_holder.is_primary:
+            # projects.git_remote_normalized is globally unique; a displaced
+            # (repo-reclaimed) project may still carry this string. The
+            # project_repos row is authoritative for resolution, so only
+            # mirror the new name when it is free.
+            taken = (await db.execute(
+                select(Project.id).where(
+                    Project.git_remote_normalized == normalized,
+                    Project.id != project_id,
+                )
+            )).first()
+            if taken is None:
+                project.git_remote_normalized = normalized
+        await db.commit()
+        await db.refresh(id_holder)
+        return _repo_to_response(id_holder)
 
     # 6. Handle is_primary: DEMOTE the existing primary (keep the row),
     #    do NOT unlink it (tk_b3fc4a81446544ff). The previous primary
@@ -894,9 +1368,17 @@ async def unlink_repo(
             },
         )
 
-    # 1. Load + authz the target project.
+    # 1. Lock + authz the target project. unlink holds exactly one project
+    #    lock, so it cannot join a deadlock cycle with link (which locks a
+    #    set of projects in id order), but it MUST take FOR UPDATE so the
+    #    repo count and the was_primary read below cannot race a concurrent
+    #    displacement that re-promotes the repo being unlinked
+    #    (tk_b6c5e184ba8d4aa1).
     project = (await db.execute(
-        select(Project).where(Project.id == project_id)
+        select(Project)
+        .where(Project.id == project_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )).scalar_one_or_none()
     if project is None:
         raise HTTPException(404, "Project not found")
@@ -1030,20 +1512,7 @@ async def get_project(
     if not await user_can_access_project(db, user.id, project):
         raise HTTPException(403, "No access to this project")
 
-    return ProjectResponse(
-        id=project.id,
-        name=project.name,
-        git_remote_normalized=project.git_remote_normalized,
-        context_document=project.context_document,
-        owner_id=project.owner_id,
-        created_at=project.created_at,
-        updated_at=project.updated_at,
-        auto_narrative=getattr(project, "auto_narrative", False),
-        kb_retention_days=getattr(project, "kb_retention_days", 180),
-        kb_max_context_words=getattr(project, "kb_max_context_words", 8000),
-        kb_section_page_limit=getattr(project, "kb_section_page_limit", 30),
-        repos=await _repos_for_project(db, project.id),
-    )
+    return _project_response(project, repos=await _repos_for_project(db, project.id))
 
 
 @router.put("/{git_remote_normalized:path}/context")
@@ -1243,20 +1712,7 @@ async def update_project(
     await db.commit()
     await db.refresh(project)
 
-    return ProjectResponse(
-        id=project.id,
-        name=project.name,
-        git_remote_normalized=project.git_remote_normalized,
-        context_document=project.context_document,
-        owner_id=project.owner_id,
-        created_at=project.created_at,
-        updated_at=project.updated_at,
-        auto_narrative=getattr(project, "auto_narrative", False),
-        kb_retention_days=getattr(project, "kb_retention_days", 180),
-        kb_max_context_words=getattr(project, "kb_max_context_words", 8000),
-        kb_section_page_limit=getattr(project, "kb_section_page_limit", 30),
-        repos=await _repos_for_project(db, project.id),
-    )
+    return _project_response(project, repos=await _repos_for_project(db, project.id))
 
 
 @router.delete("/{project_id}")

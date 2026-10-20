@@ -18,13 +18,13 @@ from collections.abc import AsyncIterator, Callable, Coroutine
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, urlunsplit
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import and_, exists, func, or_, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import and_, case, delete, exists, false, func, or_, select, text, update
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import (
@@ -46,28 +46,38 @@ from sessionfs.server.db.models import (
     OrgSkillAssignment,
     Project,
     Session,
+    SkillBlockedContentHash,
     SkillConsentReceipt,
+    SkillGrantGeneration,
     SkillInstallRequest,
     SkillMarketplaceListing,
     SkillMarketplaceRegistry,
     SkillPackage,
     SkillPackageVersion,
+    SkillPublisher,
+    SkillPublishToken,
     SkillVersionTool,
     User,
 )
 from sessionfs.server.routes.knowledge import _get_project_for_auth
-from sessionfs.server.services.entitlements import resolve_entitlement
+from sessionfs.server.services import publishers as publishers_service
+from sessionfs.server.services import skill_disclosure
+from sessionfs.server.services.entitlements import lock_active_entitlement, resolve_entitlement
+from sessionfs.server.services.skill_scanning import ensure_ruleset, stage_publish_scan
 from sessionfs.server.services.skill_packages import (
     MAX_UPLOAD_BYTES,
     HostedSkillPackage,
     HostedSkillPackageError,
+    check_publish_license,
     validate_hosted_package,
 )
 from sessionfs.server.storage.base import BlobStore
 from sessionfs.server.tier_gate import get_effective_tier
 from sessionfs.server.tiers import Tier, get_features_for_tier, get_storage_limit
 from sessionfs.skills.adapters import PROJECT_SKILL_ROOTS, USER_SKILL_ROOTS
+from sessionfs.skills.disclosure import build_disclosure
 from sessionfs.skills.models import SUPPORTED_TOOLS, validate_device_id
+from sessionfs.skills.publish_validation import COLLECTION_RE, NAMESPACE_RE
 
 logger = logging.getLogger(__name__)
 
@@ -274,17 +284,26 @@ def _guarded_receive(upstream: Any, *, count_bytes: bool) -> Callable[[], Corout
     return receive
 
 
+_PublishPreauth = Callable[[Request], Coroutine[Any, Any, str]]
+
+
 def _capped_upload(
-    *scopes: str, authorize: _PublishAuthorizer | None = None
+    *scopes: str,
+    authorize: _PublishAuthorizer | None = None,
+    preauth: _PublishPreauth | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Mark a publish endpoint (requiring ANY of `scopes`, exactly as its
     require_scope dependency does, plus the route's pre-body `authorize`
     checks) so the request is authenticated, authorized, admitted and
     size/time-bounded BEFORE FastAPI spools the multipart form (which happens
-    ahead of every dependency and of the handler body)."""
+    ahead of every dependency and of the handler body).
+
+    `preauth` replaces the API-key pre-authentication for a route that is
+    authenticated by something else (trusted-publishing publish tokens); it
+    must return the admission principal or raise."""
 
     def mark(endpoint: Callable[..., Any]) -> Callable[..., Any]:
-        endpoint._sfs_capped_upload = (scopes, authorize)  # type: ignore[attr-defined]
+        endpoint._sfs_capped_upload = (scopes, authorize, preauth)  # type: ignore[attr-defined]
         return endpoint
 
     return mark
@@ -296,12 +315,12 @@ class _MarketplaceRoute(APIRoute):
 
     def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
         handler = super().get_route_handler()
-        marker: tuple[tuple[str, ...], _PublishAuthorizer | None] | None = getattr(
-            self.endpoint, "_sfs_capped_upload", None
+        marker: tuple[tuple[str, ...], _PublishAuthorizer | None, _PublishPreauth | None] | None = (
+            getattr(self.endpoint, "_sfs_capped_upload", None)
         )
         if not marker:
             return handler
-        scopes, authorize = marker
+        scopes, authorize, preauth = marker
 
         async def capped_handler(request: Request) -> Response:
             declared = request.headers.get("content-length")
@@ -313,7 +332,10 @@ class _MarketplaceRoute(APIRoute):
                 if declared_bytes > MAX_PUBLISH_REQUEST_BYTES:
                     raise _publish_body_too_large()
             # 1. authenticate + scope (no slot, no body read yet)
-            principal = await _preauthenticate_publish(request, scopes, authorize)
+            if preauth is not None:
+                principal = await preauth(request)
+            else:
+                principal = await _preauthenticate_publish(request, scopes, authorize)
             # 2. admission (global + per-principal), 3. bounded body read
             async with _publish_admission(principal):
                 receive = _guarded_receive(request.receive, count_bytes=declared is None)
@@ -332,8 +354,9 @@ router = APIRouter(prefix="/api/v1", tags=["skill-marketplace"], route_class=_Ma
 #      for the owning principal (user for personal, org for org/public).
 # Never take (2) before (1) in the same transaction.
 
-_NAMESPACE_RE = re.compile(r"^[a-z0-9](?:[a-z0-9.-]{0,98}[a-z0-9])?$")
-_COLLECTION_RE = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,98}[a-z0-9])?$")
+# Shared with the CLI publisher (sessionfs.skills.publish_validation).
+_NAMESPACE_RE = NAMESPACE_RE
+_COLLECTION_RE = COLLECTION_RE
 _ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,49}$")
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _CONTENT_HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -481,6 +504,20 @@ class InstallRequestApprove(BaseModel):
     approved_capabilities: list[str] = Field(default_factory=list)
     # Required when the approver is the principal that filed the request.
     confirmation_code: str | None = Field(None, max_length=64)
+    # Marketplace v2 D2: when this request UPDATES a version already approved
+    # in the project, an update that widens access (or changes executable
+    # content) needs these explicit acknowledgements. Never implied.
+    acknowledge_widening: bool = False
+    acknowledge_code_change: bool = False
+    # The update_digest of the diff the approver reviewed (from the 409).
+    update_digest: str | None = Field(None, max_length=80)
+    # The disclosure the approver saw (dashboard). When given, it must match
+    # the version's current complete manifest under the grant lock, else 409
+    # disclosure_changed. API callers that omit it approve the access the
+    # server computes at decision time.
+    capability_digest: str | None = Field(None, max_length=80)
+    consent_rule_version: int | None = None
+    disclosure_digest: str | None = Field(None, max_length=80)
 
     @field_validator("approved_capabilities")
     @classmethod
@@ -500,6 +537,10 @@ class AssignmentCreate(BaseModel):
     mode: Literal["required", "optional"] = "optional"
     target_tools: list[str] = Field(default_factory=list)
     policy: dict = Field(default_factory=dict)
+    # The disclosure the admin saw (optional; see InstallRequestApprove).
+    capability_digest: str | None = Field(None, max_length=80)
+    consent_rule_version: int | None = None
+    disclosure_digest: str | None = Field(None, max_length=80)
 
     @field_validator("content_hash")
     @classmethod
@@ -523,6 +564,202 @@ def _json(raw: str, fallback):
     except (TypeError, ValueError):
         return fallback
     return value if isinstance(value, type(fallback)) else fallback
+
+
+def _strict_names(raw: str | None, allowed: set[str]) -> list[str] | None:
+    """A stored tool / capability list, or None when the stored JSON is not a
+    list of known names. Grant paths never coerce a corrupt list (an empty
+    list means "every tool"), and responses never emit a guessed one."""
+    try:
+        value = json.loads(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(value, list) or not all(isinstance(item, str) and item in allowed for item in value):
+        return None
+    return value
+
+
+def _stored_tools(raw: str | None) -> list[str] | None:
+    return _strict_names(raw, set(SUPPORTED_TOOLS))
+
+
+def _stored_capabilities(raw: str | None) -> list[str] | None:
+    return _strict_names(raw, _CAPABILITIES)
+
+
+def _grants_tool(raw: str | None, tool: str) -> bool:
+    """True when a grant's stored target_tools admits ``tool``: an empty
+    list is unrestricted; corrupt JSON grants nothing."""
+    tools = _stored_tools(raw)
+    return tools is not None and (not tools or tool in tools)
+
+
+def _request_record_ok(row: SkillInstallRequest) -> bool:
+    return (
+        _stored_tools(row.target_tools) is not None
+        and _stored_capabilities(row.requested_capabilities) is not None
+    )
+
+
+def _assignment_record_ok(row: OrgSkillAssignment) -> bool:
+    return _stored_tools(row.target_tools) is not None
+
+
+GRANT_PAGE_DEFAULT = 100
+GRANT_PAGE_MAX = 500
+
+
+def _encode_grant_cursor(generation: str, row_id: str) -> str:
+    raw = f"grant:{generation}:{row_id}"
+    return base64.urlsafe_b64encode(raw.encode()).decode("ascii").rstrip("=")
+
+
+def _decode_grant_cursor(raw: str | None) -> tuple[str, str] | None:
+    """Opaque keyset cursor for the grant lists: the collection generation it
+    was issued under, and the last row id served. Pages are ordered by id, a
+    stable total order on every database."""
+    if raw is None or not raw.strip():
+        return None
+    value = raw.strip()
+    try:
+        decoded = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4)).decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise HTTPException(422, "Invalid cursor") from exc
+    parts = decoded.split(":")
+    if len(parts) != 3 or parts[0] != "grant" or not parts[1] or not 0 < len(parts[2]) <= 64:
+        raise HTTPException(422, "Invalid cursor")
+    return parts[1], parts[2]
+
+
+def _listing_changed() -> HTTPException:
+    return HTTPException(
+        409,
+        detail={
+            "code": "listing_changed",
+            "message": (
+                "The grant list changed while it was being paged; restart from the first page."
+            ),
+        },
+    )
+
+
+async def _grant_generations(db: AsyncSession, scope_type: str, scope_ids: list[str]) -> dict[str, int]:
+    if not scope_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(SkillGrantGeneration.scope_id, SkillGrantGeneration.generation).where(
+                SkillGrantGeneration.scope_type == scope_type,
+                SkillGrantGeneration.scope_id.in_(sorted(set(scope_ids))),
+            )
+        )
+    ).all()
+    found = {scope_id: generation for scope_id, generation in rows}
+    return {scope_id: found.get(scope_id, 0) for scope_id in sorted(set(scope_ids))}
+
+
+async def grant_generation_token(db: AsyncSession, scope_type: str, scope_ids: list[str]) -> str:
+    """Opaque token over the scopes' current generations (and the scope set
+    itself, so a membership change also changes the token)."""
+    generations = await _grant_generations(db, scope_type, scope_ids)
+    material = scope_type + "|" + ";".join(f"{key}={value}" for key, value in generations.items())
+    return hashlib.sha256(material.encode()).hexdigest()[:24]
+
+
+async def bump_grant_generations(db: AsyncSession, scope_type: str, scope_ids) -> None:
+    """Increment the change counter of every scope (sorted, to keep a stable
+    lock order). Call at the END of a grant write's transaction."""
+    ids = sorted({scope_id for scope_id in scope_ids if scope_id})
+    if not ids:
+        return
+    connection = await db.connection()
+    if connection.dialect.name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as dialect_insert
+    else:
+        from sqlalchemy.dialects.sqlite import insert as dialect_insert
+    for scope_id in ids:
+        statement = dialect_insert(SkillGrantGeneration).values(
+            scope_type=scope_type, scope_id=scope_id, generation=1
+        )
+        statement = statement.on_conflict_do_update(
+            index_elements=["scope_type", "scope_id"],
+            set_={"generation": SkillGrantGeneration.generation + 1},
+        )
+        await db.execute(statement)
+
+
+async def bump_grant_generations_for_versions(db: AsyncSession, version_ids) -> None:
+    """A listing or moderation change can flip these versions' deliverability,
+    which changes what the grant lists show: bump every org (assignments) and
+    project (install requests) scope that references them. Call at the END of
+    the writing transaction (generation rows are the last locks taken)."""
+    ids = sorted({version_id for version_id in version_ids if version_id})
+    if not ids:
+        return
+    orgs = (
+        await db.execute(
+            select(OrgSkillAssignment.org_id).where(OrgSkillAssignment.version_id.in_(ids)).distinct()
+        )
+    ).scalars().all()
+    projects = (
+        await db.execute(
+            select(SkillInstallRequest.project_id)
+            .where(SkillInstallRequest.version_id.in_(ids))
+            .distinct()
+        )
+    ).scalars().all()
+    await bump_grant_generations(db, "org", orgs)
+    await bump_grant_generations(db, "project", projects)
+
+
+async def _grant_page(
+    db: AsyncSession,
+    statement,
+    model,
+    *,
+    cursor: str | None,
+    limit: int,
+    generation: str,
+    scope_type: str,
+    scope_ids: list[str],
+):
+    """One keyset page (id order) plus has_more / next_cursor, detected by
+    fetching limit + 1. ``generation`` must be read BEFORE the rows: a cursor
+    issued under another generation means the collection changed mid-walk
+    (a row could sort before the cursor), so it is refused with 409
+    listing_changed rather than silently missing that row. next_cursor is
+    the last row FETCHED for the page (before any per-row filtering), so
+    filtered rows never open a gap.
+
+    The generation is re-read AFTER the rows: under READ COMMITTED a writer
+    can insert (or newly expose) a row and bump the generation between the
+    two statements, which would leave this page - possibly the last one -
+    carrying a stale generation with that row missing. Any change between
+    the reads is a 409 listing_changed, on every page including the first."""
+    after = _decode_grant_cursor(cursor)
+    if after is not None:
+        cursor_generation, last_id = after
+        if cursor_generation != generation:
+            raise _listing_changed()
+        statement = statement.where(model.id > last_id)
+    rows = list((await db.execute(statement.order_by(model.id).limit(limit + 1))).scalars().all())
+    if await grant_generation_token(db, scope_type, scope_ids) != generation:
+        raise _listing_changed()
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    next_cursor = _encode_grant_cursor(generation, rows[-1].id) if has_more and rows else None
+    return rows, has_more, next_cursor
+
+
+def _grant_record_corrupt(record_id: str) -> HTTPException:
+    return HTTPException(
+        500,
+        detail={
+            "code": "grant_record_corrupt",
+            "message": "This grant record's stored targeting is unreadable; it is not served or honored.",
+            "record_id": record_id,
+        },
+    )
 
 
 def _blob_store(request: Request) -> BlobStore:
@@ -569,26 +806,256 @@ def _visibility_predicate(auth: AuthContext, org_ids: list[str]):
 def _deliverable_predicates() -> list:
     """Every delivery / grant path shares these: unpublished, yanked and BLOCKED
     rows are invisible, always as a constant 404 so a blocked state discloses
-    nothing. Block state is VERSION-WIDE: a version is undeliverable when its
-    DLP status is blocked or when ANY of its listings (in any collection) was
-    blocked, regardless of which listing is being looked up.
+    nothing. PLATFORM state is VERSION-WIDE (DLP status, or ANY listing's
+    is_yanked / verification_state) and package-wide (skill_packages.
+    is_yanked); OWNER state (org / personal moderation) is listing-scoped and
+    never hides a public listing. Both are also CONTENT-WIDE through the
+    durable blocklist (see content_hash_blocked). Evaluated per listing;
+    callers must join SkillPackage and SkillPackageVersion.
     """
     return [
         SkillMarketplaceListing.is_published.is_(True),
         SkillMarketplaceListing.is_yanked.is_(False),
+        # Listing moderation (migration 071, §4.6): a public listing awaiting
+        # review (first version from a publisher, or an access-widening
+        # update) or rejected by a moderator is never delivered.
+        SkillMarketplaceListing.moderation_state == "approved",
         SkillPackage.is_yanked.is_(False),
+        # Owner (org / personal) moderation is listing-scoped: it hides the
+        # owner's own non-public listings only, never a public listing.
+        SkillMarketplaceListing.owner_state.is_(None),
+        or_(
+            SkillPackage.owner_state.is_(None),
+            SkillMarketplaceListing.visibility == "public",
+        ),
         SkillPackageVersion.id.not_in(_blocked_version_ids()),
+        # Platform-layer instruction-scan quarantine (migration 069, §5.6): a
+        # rescan's new critical finding stops every NEW delivery. Grants are
+        # not revoked; only a human block does that.
+        SkillPackageVersion.quarantined_at.is_(None),
+        ~content_hash_blocked(
+            SkillPackageVersion.content_hash,
+            SkillPackage.org_id,
+            SkillMarketplaceListing.visibility,
+        ),
     ]
+
+
+def content_hash_blocked(content_hash, package_org_id, listing_visibility):
+    """EXISTS an active durable block for these bytes on this listing.
+
+    The blocklist (skill_blocked_content_hashes, migration 066) outlives every
+    package / version / listing row, so deleting a blocked version and
+    re-publishing identical bytes never delivers them.
+
+    Audience-aware: a global block (scope_org_id NULL, platform admins only)
+    applies to every listing. An org admin's block applies only to that
+    org's own NON-PUBLIC listings: a PUBLIC listing reaches people outside
+    the org, and only a platform admin may take public listings down, so an
+    org block can never hide a public copy of the same bytes (even one the
+    org owns). ``listing_visibility`` is the listing's visibility column, or
+    a literal visibility string at publish time. Moderation lives in
+    routes/marketplace_moderation.py."""
+    if isinstance(listing_visibility, str):
+        org_block_applies = (
+            SkillBlockedContentHash.scope_org_id == package_org_id
+            if listing_visibility != "public"
+            else false()
+        )
+    else:
+        org_block_applies = and_(
+            SkillBlockedContentHash.scope_org_id == package_org_id,
+            listing_visibility != "public",
+        )
+    return exists(
+        select(SkillBlockedContentHash.id).where(
+            SkillBlockedContentHash.content_hash == content_hash,
+            SkillBlockedContentHash.lifted_at.is_(None),
+            or_(SkillBlockedContentHash.scope_org_id.is_(None), org_block_applies),
+        )
+    )
+
+
+def content_hash_lock_key(content_hash: str) -> int:
+    """Signed 64-bit advisory-lock key for one content hash."""
+    digest = hashlib.sha256(f"sessionfs-skill-content:{content_hash}".encode()).digest()
+    return int.from_bytes(digest[:8], "big", signed=True)
+
+
+async def lock_content_hashes(db: AsyncSession, content_hashes: list[str]) -> None:
+    """Transaction-scoped lock shared by every grant-creating path and every
+    content-hash block / restore (routes/marketplace_moderation.py).
+
+    Lock order: version row(s) FOR UPDATE first, then these (sorted), then the
+    owner rows. A grant path (and publish) re-runs its full deliverability /
+    blocklist check AFTER this lock, so a block either commits first (the
+    check then sees the blocklist row and refuses) or waits for the grant to
+    commit (and then revokes it).
+
+    SQLite has no advisory locks and only takes its database write lock at a
+    transaction's first write, so a zero-row UPDATE opens the write
+    transaction here: every writer that reached this point is serialized
+    until commit, exactly like the PostgreSQL path."""
+    connection = await db.connection()
+    if connection.dialect.name != "postgresql":
+        await db.execute(text("UPDATE skill_blocked_content_hashes SET id = id WHERE 1 = 0"))
+        return
+    for content_hash in sorted(set(content_hashes)):
+        await db.execute(
+            text("SELECT pg_advisory_xact_lock(:key)"), {"key": content_hash_lock_key(content_hash)}
+        )
+
+
+async def _lock_version_for_grant(db: AsyncSession, version_id: str) -> SkillPackageVersion | None:
+    """Lock order step 1 (version row) plus the content-hash lock. Callers must
+    run (or re-run) their deliverability check after this returns."""
+    version = (
+        await db.execute(
+            select(SkillPackageVersion)
+            .where(SkillPackageVersion.id == version_id)
+            .with_for_update()  # lock order step 1 (see module header)
+        )
+    ).scalar_one_or_none()
+    if version is not None:
+        await lock_content_hashes(db, [version.content_hash])
+    return version
+
+
+async def _take_delivery_locks(db: AsyncSession, version: SkillPackageVersion) -> None:
+    """SHARED locks in the takedown protocol's order, so a re-check after the
+    content was read waits for any in-flight takedown before deciding:
+
+    - PostgreSQL: the version row (FOR SHARE), then the content hash (shared
+      advisory lock). Moderation holds these exclusively until commit. Shared
+      locks never block other readers.
+    - SQLite: moderation holds the database write lock from its first write
+      until commit, and a plain read would see the pre-takedown state. A
+      zero-row UPDATE takes the write lock, waiting (busy timeout) for any
+      in-flight takedown to commit; a timeout is a retryable 503."""
+    connection = await db.connection()
+    if connection.dialect.name == "postgresql":
+        await db.execute(
+            select(SkillPackageVersion.id)
+            .where(SkillPackageVersion.id == version.id)
+            .with_for_update(read=True)
+        )
+        await db.execute(
+            text("SELECT pg_advisory_xact_lock_shared(:key)"),
+            {"key": content_hash_lock_key(version.content_hash)},
+        )
+    else:
+        try:
+            await db.execute(text("UPDATE skill_blocked_content_hashes SET id = id WHERE 1 = 0"))
+        except OperationalError as exc:
+            if "locked" not in str(exc).lower():
+                raise
+            raise HTTPException(
+                503,
+                detail={
+                    "code": "marketplace_busy",
+                    "message": "The marketplace is busy; retry shortly.",
+                },
+                headers={"Retry-After": "1"},
+            ) from None
+
+
+async def _revalidate_delivery(
+    db: AsyncSession,
+    auth: AuthContext,
+    version: SkillPackageVersion,
+    *,
+    release: bool = True,
+) -> None:
+    """Re-check deliverability AFTER the content was read, immediately before
+    it is returned, so a yank / block that commits in between is honored
+    with the same constant 404 as the up-front check. The re-check first
+    waits for any in-flight takedown (see ``_take_delivery_locks``).
+
+    With ``release`` (the default) the transaction is committed right after
+    the decision, so the locks are not held while the response is sent.
+    Nothing is written, and ORM objects stay loaded (expire_on_commit=False).
+    """
+    await _take_delivery_locks(db, version)
+    try:
+        await _visible_row(db, auth, version_id=version.id)
+    finally:
+        if release:
+            await db.commit()
+
+
+async def _has_active_block(
+    db: AsyncSession, *, package: SkillPackage, version: SkillPackageVersion
+) -> bool:
+    """Any active BLOCK that applies to this version: a platform block on one
+    of its listings, an owner block on one of its listings or on its package,
+    or an active content-hash block on its bytes (global, or scoped to its
+    package's org - which also covers whole-package blocks, since those
+    write a hash row for every version). Yanks are not blocks."""
+    if package.owner_state == "blocked" or package.platform_state == "blocked":
+        return True
+    listing_blocked = (
+        await db.execute(
+            select(SkillMarketplaceListing.id).where(
+                SkillMarketplaceListing.version_id == version.id,
+                or_(
+                    SkillMarketplaceListing.verification_state == "blocked",
+                    SkillMarketplaceListing.owner_state == "blocked",
+                ),
+            ).limit(1)
+        )
+    ).scalar_one_or_none()
+    if listing_blocked is not None:
+        return True
+    hash_blocked = (
+        await db.execute(
+            select(SkillBlockedContentHash.id).where(
+                SkillBlockedContentHash.content_hash == version.content_hash,
+                SkillBlockedContentHash.lifted_at.is_(None),
+                or_(
+                    SkillBlockedContentHash.scope_org_id.is_(None),
+                    SkillBlockedContentHash.scope_org_id == package.org_id,
+                ),
+            ).limit(1)
+        )
+    ).scalar_one_or_none()
+    return hash_blocked is not None
+
+
+async def _refuse_blocked_content(
+    db: AsyncSession, content_hash: str, org_id: str | None, *, visibility: str
+) -> None:
+    """Publish gate: blocked bytes can never be (re-)listed where the block
+    applies (global blocks everywhere; an org block on that org's non-public
+    listings)."""
+    blocked = (
+        await db.execute(select(content_hash_blocked(content_hash, org_id, visibility)))
+    ).scalar()
+    if blocked:
+        raise HTTPException(
+            403,
+            detail={
+                "code": "content_blocked",
+                "message": (
+                    "This package's content was blocked by a marketplace moderator "
+                    "and cannot be published."
+                ),
+            },
+        )
 
 
 def _blocked_version_ids():
     """Subquery of version ids that must never be delivered: DLP-blocked, or
-    carrying any listing whose verification was blocked."""
+    carrying any listing whose verification was blocked or that was yanked
+    (moderation is VERSION-WIDE, so re-listing a yanked version in another
+    collection never revives it)."""
     dlp_blocked = select(SkillPackageVersion.id).where(SkillPackageVersion.dlp_status == "blocked")
-    listing_blocked = select(SkillMarketplaceListing.version_id).where(
-        SkillMarketplaceListing.verification_state == "blocked"
+    listing_revoked = select(SkillMarketplaceListing.version_id).where(
+        or_(
+            SkillMarketplaceListing.verification_state == "blocked",
+            SkillMarketplaceListing.is_yanked.is_(True),
+        )
     )
-    return dlp_blocked.union(listing_blocked)
+    return dlp_blocked.union(listing_revoked)
 
 
 def _encode_cursor(published_at: datetime, listing_id: str) -> str:
@@ -844,7 +1311,16 @@ def _package_response(listing, package, version, *, include_instructions: bool =
         "owner_user_id": listing.owner_user_id,
         "org_id": listing.org_id,
         "verification_state": listing.verification_state,
+        # Moderation of THIS listing, split from publisher identity (§4.3).
+        "moderation_state": listing.moderation_state,
         "package_id": package.id,
+        # Publisher that owns the namespace (null for unclaimed per-owner
+        # namespaces). Search and get attach the full "publisher" block.
+        "publisher_id": package.publisher_id,
+        # The org that owns the package (null for personal and system
+        # packages): an org-scoped content block applies only to packages
+        # owned by that org, so clients persist this at install time.
+        "owner_org_id": package.org_id,
         "namespace": package.namespace,
         "name": package.name,
         "display_name": package.display_name,
@@ -854,14 +1330,20 @@ def _package_response(listing, package, version, *, include_instructions: bool =
         "content_hash": version.content_hash,
         "source": {
             "type": package.source_type,
-            "locator": package.source_locator,
+            "locator": displayed_source_locator(package.source_locator),
             "subdir": package.source_subdir,
             "commit": version.source_commit,
         },
         "risk": _json(version.risk_summary, {}),
         "compatibility": _json(version.compatibility, {}),
         "license": _json(version.license_metadata, {}),
-        "signature": _json(version.signature_metadata, {}),
+        "signature": _json(listing.signature_metadata, _json(version.signature_metadata, {})),
+        # Latest instruction scan (§5.8): ruleset, max severity, counts and
+        # value-free findings. Full detail: GET /marketplace/versions/{id}/scan.
+        "scan": _json(version.scan_summary, {}),
+        # Capability digest (§3.2); null until the manifest exists. The full
+        # card: GET /marketplace/versions/{id}/disclosure.
+        "capability_digest": version.capability_digest,
         "blob_size_bytes": version.blob_size_bytes,
         "published_at": listing.published_at.isoformat(),
     }
@@ -915,6 +1397,7 @@ async def search_marketplace(
     has_more = len(rows) > limit
     rows = rows[:limit]
     items = [_package_response(*row) for row in rows]
+    await attach_publishers(db, items)
     next_cursor = _encode_cursor(rows[-1][0].published_at, rows[-1][0].id) if has_more and rows else None
     return {"items": items, "count": len(items), "has_more": has_more, "next_cursor": next_cursor}
 
@@ -925,12 +1408,25 @@ async def get_marketplace_package(
     auth: AuthContext = Depends(require_scope("marketplace:read")),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    return _package_response(*(await _visible_row(db, auth, package_id=package_id)))
+    item = _package_response(*(await _visible_row(db, auth, package_id=package_id)))
+    await attach_publishers(db, [item])
+    return item
+
+
+async def attach_publishers(db: AsyncSession, items: list[dict]) -> None:
+    """Attach the public publisher block (namespace, status, badges derived
+    from live verification rows only) to listing responses, in one query."""
+    blocks = await publishers_service.publisher_blocks(
+        db, [str(item["publisher_id"]) for item in items if item.get("publisher_id")]
+    )
+    for item in items:
+        item["publisher"] = blocks.get(item.get("publisher_id") or "")
 
 
 @router.get("/marketplace/versions/{version_id}/preview")
 async def preview_marketplace_version(
     version_id: str,
+    request: Request,
     auth: AuthContext = Depends(require_scope("marketplace:read")),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -953,6 +1449,22 @@ async def preview_marketplace_version(
             "instruction_preview": preview,
         }
     )
+    # Install disclosure (marketplace v2 §3.3): the same card as
+    # GET /marketplace/versions/{id}/disclosure, for every tool. Computed
+    # BEFORE the delivery re-check, which then runs last (and commits a
+    # lazily computed manifest with it).
+    manifest = await skill_disclosure.version_manifest(db, _blob_store(request), version)
+    result["disclosure"] = (
+        build_disclosure(
+            manifest,
+            version_id=version.id,
+            content_hash=version.content_hash,
+            provenance=skill_disclosure.version_provenance(version),
+        )
+        if manifest is not None
+        else None
+    )
+    await _revalidate_delivery(db, auth, version)
     return result
 
 
@@ -967,6 +1479,7 @@ async def download_marketplace_version(
     payload = await _blob_store(request).get(version.blob_key)
     if payload is None:
         raise HTTPException(503, "Marketplace package blob is unavailable")
+    await _revalidate_delivery(db, auth, version)
     return Response(
         content=payload,
         media_type="application/gzip",
@@ -1023,6 +1536,92 @@ async def marketplace_feed(
     }
 
 
+def _package_blocked() -> HTTPException:
+    return HTTPException(
+        403,
+        detail={
+            "code": "package_blocked",
+            "message": "This package is blocked by marketplace moderation and cannot be published to.",
+        },
+    )
+
+
+_LOCATOR_REJECTED = "source_locator must not embed credentials, a query string or a fragment"
+_SCP_LOCATOR_RE = re.compile(r"^(?P<user>[^@/\s]+)@(?P<host>[^/:\s]+):(?P<path>.+)$")
+_URL_USERINFO_RE = re.compile(r"^(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)[^/]*@")
+
+
+def canonical_source_locator(locator: str) -> str:
+    """The canonical, credential-free form of a user-supplied source locator,
+    or ValueError.
+
+    - A password is refused in ANY scheme (``git+https://oauth2:TOKEN@...``).
+    - A username is refused everywhere except the conventional ``git@`` on
+      ssh-family locators (``ssh://git@host/x``, ``git+ssh://git@...``,
+      scp-style ``git@host:x``).
+    - Remote locators may not carry a query string or fragment.
+    - URLs are rebuilt from their parts: lower-case scheme and host, no
+      userinfo other than ``git@`` for ssh, no query or fragment.
+    """
+    if "://" in locator:
+        try:
+            parsed = urlsplit(locator)
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError("source_locator is not a valid URL") from exc
+        scheme = parsed.scheme.lower()
+        family = scheme.rsplit("+", 1)[-1]
+        if parsed.password is not None or ":" in (parsed.netloc.rpartition("@")[0]):
+            raise ValueError(_LOCATOR_REJECTED)
+        username = parsed.username
+        if username is not None and not (family == "ssh" and username == "git"):
+            raise ValueError(_LOCATOR_REJECTED)
+        if parsed.query or parsed.fragment or "?" in locator or "#" in locator:
+            raise ValueError(_LOCATOR_REJECTED)
+        host = parsed.hostname or ""
+        if ":" in host:
+            host = f"[{host}]"
+        netloc = host + (f":{port}" if port is not None else "")
+        if username == "git":
+            netloc = f"git@{netloc}"
+        return urlunsplit((scheme, netloc, parsed.path, "", ""))
+    scp = _SCP_LOCATOR_RE.match(locator)
+    if scp is not None:
+        if ":" in scp.group("user") or scp.group("user") != "git":
+            raise ValueError(_LOCATOR_REJECTED)
+        if "?" in locator or "#" in locator:
+            raise ValueError(_LOCATOR_REJECTED)
+    return locator
+
+
+def displayed_source_locator(stored: str) -> str:
+    """Defensive redaction for responses: a locator stored before the
+    canonical rules (or by any other path) never returns a credential,
+    query string or fragment."""
+    if stored.startswith("upload:"):
+        return stored  # server-generated from the upload's file name
+    try:
+        return canonical_source_locator(stored)
+    except ValueError:
+        value = stored.split("#", 1)[0].split("?", 1)[0]
+        if "://" in value:
+            return _URL_USERINFO_RE.sub(lambda match: match.group("scheme"), value)
+        scp = _SCP_LOCATOR_RE.match(value)
+        if scp is not None:
+            return f"{scp.group('host')}:{scp.group('path')}"
+        return value
+
+
+def _package_rejected(exc: HostedSkillPackageError) -> HTTPException:
+    """422 for a package the shared publish validator refused. ``reason`` is
+    the validator's stable sub-code (the CLI explains it); the path, line and
+    DLP finding locations stay local and are never echoed."""
+    return HTTPException(
+        422,
+        detail={"code": exc.code, "message": str(exc), "reason": exc.reason},
+    )
+
+
 async def _publish_package(
     *,
     request: Request,
@@ -1039,6 +1638,12 @@ async def _publish_package(
     source_locator: str | None,
     source_commit: str | None,
     source_subdir: str,
+    publisher: SkillPublisher | None = None,
+    provenance: dict | None = None,
+    expected_name: str | None = None,
+    allow_confusable_name: bool = False,
+    publish_token_id: str | None = None,
+    reauthorize: Callable[[AsyncSession], Coroutine[Any, Any, None]] | None = None,
 ) -> dict:
     """Shared publish path. Org publishes honor the org's DLP policy. Personal
     publishes are metered against the owner's storage quota and version cap;
@@ -1049,6 +1654,8 @@ async def _publish_package(
     normalized tree, so the "version already exists" reuse check can only run
     after validation; the request-size gate and the bounded off-loop
     validation are what keep that work from starving the event loop."""
+    # Raw input first: strip() would silently drop control characters.
+    publishers_service.reject_forbidden_code_points(namespace, field="namespace")
     namespace = namespace.strip().lower()
     if not _NAMESPACE_RE.fullmatch(namespace):
         raise HTTPException(422, "namespace must be a portable lowercase identifier")
@@ -1079,14 +1686,13 @@ async def _publish_package(
             or any(ord(char) < 32 or ord(char) == 127 for char in locator)
         ):
             raise HTTPException(422, "source_locator must be printable and at most 500 characters")
-        parsed_locator = urlparse(locator)
-        if parsed_locator.scheme in {"http", "https", "ssh"} and (
-            parsed_locator.password
-            or (parsed_locator.scheme in {"http", "https"} and parsed_locator.username)
-            or parsed_locator.query
-            or parsed_locator.fragment
-        ):
-            raise HTTPException(422, "source_locator must not embed credentials or query data")
+        try:
+            locator = canonical_source_locator(locator)
+        except ValueError as exc:
+            raise HTTPException(
+                422,
+                detail={"code": "invalid_source_locator", "message": str(exc)},
+            ) from None
     try:
         hosted = await _validate_hosted_package_off_loop(
             data,
@@ -1096,199 +1702,408 @@ async def _publish_package(
             dlp_policy=get_org_dlp_policy(org) if org else None,
         )
     except HostedSkillPackageError as exc:
+        raise _package_rejected(exc) from exc
+    if expected_name is not None and hosted.name != expected_name:
+        # A package-scoped trusted-publishing token publishes that package only.
         raise HTTPException(
-            422,
-            detail={"code": "invalid_skill_package", "message": str(exc)},
-        ) from exc
-    if owner_type == "org" and not hosted.license_metadata.get("declared"):
+            403,
+            detail={
+                "code": "publish_token_package_mismatch",
+                "message": "This publish token is scoped to a different package.",
+            },
+        )
+    # Trusted publishing records the publishing run's SHA as publication
+    # provenance (signature_metadata). It never overwrites the publisher's
+    # declared source_commit: nothing binds the archive to that commit.
+    try:
         # Org and public listings redistribute the package to other people, so
         # the package must state its license (§14 #5). Any declared value is
         # accepted, including "UNLICENSED" / "proprietary" for internal work.
-        raise HTTPException(
-            422,
-            detail={
-                "code": "license_required",
-                "message": (
-                    "Packages published to an organization or public listing must declare "
-                    "a license in plugin.json (for example \"MIT\" or \"UNLICENSED\")."
-                ),
-            },
-        )
-    existing = (
-        await db.execute(
-            select(SkillPackage).where(
-                SkillPackage.owner_type == owner_type,
-                SkillPackage.owner_id == owner_id,
-                SkillPackage.namespace == namespace,
-                SkillPackage.source_type == "hosted-upload",
-                SkillPackage.source_locator == locator,
-                SkillPackage.source_subdir == source_subdir,
-                SkillPackage.name == hosted.name,
-            )
-        )
-    ).scalar_one_or_none()
-    package = existing or SkillPackage(
-        id=f"spk_{secrets.token_hex(12)}",
-        owner_type=owner_type,
-        owner_id=owner_id,
-        org_id=org.id if org else None,
-        namespace=namespace,
-        name=hosted.name,
-        display_name=hosted.name.replace("-", " ").title(),
-        description=hosted.description,
-        source_type="hosted-upload",
-        source_locator=locator,
-        source_subdir=source_subdir,
-        created_by_user_id=auth.user.id,
+        check_publish_license(hosted, owner_type=owner_type, visibility=visibility)
+    except HostedSkillPackageError as exc:
+        raise _package_rejected(exc) from exc
+    # A package that cannot be analyzed completely could never be granted
+    # (every grant needs a complete manifest): refuse it before any version
+    # lookup, so a re-publish of existing bytes is refused too.
+    skill_disclosure.reject_incomplete_manifest(hosted)
+    # Bytes under an active moderation block are refused before any row is
+    # written, including a re-listing of an existing version.
+    await _refuse_blocked_content(
+        db, hosted.content_hash, org.id if org else None, visibility=visibility
     )
-    if existing is None:
-        db.add(package)
-        try:
-            await db.flush()
-        except IntegrityError:
-            # Concurrent FIRST publish of the same package identity: adopt the
-            # winner's package row and continue into version resolution.
-            await db.rollback()
-            await _reload_after_rollback(db, auth, org)
-            package = (
-                await db.execute(
-                    select(SkillPackage).where(
-                        SkillPackage.owner_type == owner_type,
-                        SkillPackage.owner_id == owner_id,
-                        SkillPackage.namespace == namespace,
-                        SkillPackage.source_type == "hosted-upload",
-                        SkillPackage.source_locator == locator,
-                        SkillPackage.source_subdir == source_subdir,
-                        SkillPackage.name == hosted.name,
-                    )
-                )
-            ).scalar_one()
-    version = await _locked_existing_version(db, package.id, hosted.content_hash)
-    blob_to_write: tuple[str, bytes] | None = None
-    if version is None:
-        # Lock order step 2: serialize this owner's publishes, then look again.
-        # A concurrent identical publish may have committed the very version
-        # while we waited; it must be REUSED, never charged or capped again.
-        # (Nothing holds a version row lock while waiting on an owner row, so
-        # re-locking the now-visible version here cannot form a cycle.)
-        if owner_type == "user":
-            await _lock_user_row(db, auth.user.id)
-        elif org is not None:
-            await _lock_org_row(db, org.id)
-        version = await _locked_existing_version(db, package.id, hosted.content_hash)
-    if version is None:
-        if owner_type == "user":
-            await _enforce_personal_publish_quota(db, auth, len(hosted.canonical_archive))
-        elif org is not None:
-            await _enforce_org_publish_quota(
-                db,
-                org,
-                len(hosted.canonical_archive),
-                # A platform administrator's PUBLIC listing is platform content,
-                # not the org's: exempt from the org storage quota only.
-                charge_storage=not (visibility == "public" and role == "platform_admin"),
+    identity = select(SkillPackage).where(
+        SkillPackage.owner_type == owner_type,
+        SkillPackage.owner_id == owner_id,
+        SkillPackage.namespace == namespace,
+        SkillPackage.source_type == "hosted-upload",
+        SkillPackage.source_locator == locator,
+        SkillPackage.source_subdir == source_subdir,
+        SkillPackage.name == hosted.name,
+    )
+    # Upload the blob BEFORE any lock (global promotion, namespace, publisher,
+    # owner rows, entitlement): a slow put of up to MAX_UPLOAD_BYTES must not
+    # stall other publishes, claims, promotions or entitlement changes.
+    # Everything is re-checked under the locks below; the blob is removed on
+    # every failure path and when the publish ends up reusing an existing
+    # version. The key is generation-unique (fresh version id), so no other
+    # publish can ever reference it and its cleanup can never touch another
+    # publish's blob.
+    new_package_id = f"spk_{secrets.token_hex(12)}"
+    version_id = f"skv_{secrets.token_hex(12)}"
+    prewritten_key: str | None = None
+    unlocked_existing = (await db.execute(identity)).scalar_one_or_none()
+    if unlocked_existing is not None and unlocked_existing.platform_state == "blocked":
+        raise _package_blocked()
+    if unlocked_existing is None or (
+        await db.execute(
+            select(SkillPackageVersion.id)
+            .where(
+                SkillPackageVersion.package_id == unlocked_existing.id,
+                SkillPackageVersion.content_hash == hosted.content_hash,
             )
-        await _enforce_package_version_cap(db, package.id)
-        version_id = f"skv_{secrets.token_hex(12)}"
-        # Generation-unique key: a deleted-then-republished version never shares
-        # a key with a row a later publish can own, so a pending delete can
-        # never remove a newer version's blob.
-        blob_key = (
-            f"skills/{owner_type}/{owner_id}/{package.id}/"
+            .limit(1)
+        )
+    ).scalar_one_or_none() is None:
+        key_package_id = unlocked_existing.id if unlocked_existing is not None else new_package_id
+        prewritten_key = (
+            f"skills/{owner_type}/{owner_id}/{key_package_id}/"
             f"{hosted.content_hash[7:]}-{version_id[4:]}.tar.gz"
         )
-        blob_to_write = (blob_key, hosted.canonical_archive)
-        version = SkillPackageVersion(
-            id=version_id,
-            package_id=package.id,
-            version_label=hosted.version,
-            content_hash=hosted.content_hash,
-            source_commit=hosted.source_commit,
-            agent_plugin_schema=hosted.agent_plugin_schema,
-            manifest_json=json.dumps(hosted.manifest, sort_keys=True),
-            risk_summary=json.dumps(hosted.risk_summary, sort_keys=True),
-            compatibility=json.dumps(hosted.compatibility, sort_keys=True),
-            license_metadata=json.dumps(hosted.license_metadata, sort_keys=True),
-            instruction_bundle=json.dumps(hosted.instruction_bundle),
-            dlp_status="passed",
-            blob_key=blob_key,
-            blob_size_bytes=len(hosted.canonical_archive),
+        try:
+            await _blob_store(request).put(prewritten_key, hosted.canonical_archive)
+        except BaseException:
+            await _discard_publish_blob(db, _blob_store(request), prewritten_key)
+            raise
+    blob_referenced = False
+    try:
+        # Lock order: global promotion (public only) -> namespace (advisory,
+        # by confusable skeleton) -> publisher -> version -> owner rows ->
+        # package -> content hash. Serializes a first publish with a
+        # concurrent claim of the same (or a lookalike) namespace: everything
+        # below re-checks ownership under it. No lock is held across the
+        # upload validation or the blob put above.
+        if visibility == "public":
+            # Public names are protected names: serialize with promotions to
+            # verified and reserved-name changes (global lock, first in order).
+            await publishers_service.lock_confusable_promotion(db)
+        await publishers_service.lock_namespace(db, namespace)
+        existing = (
+            await db.execute(identity.execution_options(populate_existing=True))
+        ).scalar_one_or_none()
+        if existing is not None and existing.platform_state == "blocked":
+            # A platform-blocked package takes no new versions or listings.
+            raise _package_blocked()
+
+        async def _authorize_publisher(current_existing, forced_publisher):
+            # Namespace ownership, lookalike gate and public-publishing rules (§4).
+            # Takes the publisher row lock (the publisher serialization point).
+            return await publishers_service.resolve_publish_publisher(
+                db,
+                namespace=namespace,
+                owner_type=owner_type,
+                owner_id=owner_id,
+                visibility=visibility,
+                platform_admin=role == "platform_admin",
+                is_new_package=current_existing is None,
+                package_name=hosted.name,
+                forced=forced_publisher,
+                # The lookalike name gate runs when the package gets its FIRST
+                # public listing, even if its private row/version already exists.
+                first_public_listing=visibility == "public"
+                and (
+                    current_existing is None
+                    or not await publishers_service.has_public_listing(db, current_existing.id)
+                ),
+                package_id=current_existing.id if current_existing is not None else None,
+                allow_confusable_name=allow_confusable_name,
+            )
+
+        resolved_publisher = await _authorize_publisher(existing, publisher)
+        # Scalars captured now: a rollback below expires ORM instances.
+        resolved_publisher_id = resolved_publisher.id if resolved_publisher is not None else None
+        locks_publisher = resolved_publisher is not None and resolved_publisher.owner_type != "system"
+        resolved_generation = resolved_publisher.auth_generation if resolved_publisher is not None else None
+        if locks_publisher and existing is None:
+            # Holding the publisher lock, every other publish under this publisher
+            # has committed or not started: re-query the identity so a concurrent
+            # FIRST publish is adopted here instead of failing on the unique key
+            # (whose rollback would drop the publisher lock).
+            existing = (
+                await db.execute(identity.execution_options(populate_existing=True))
+            ).scalar_one_or_none()
+            if existing is not None and existing.platform_state == "blocked":
+                raise _package_blocked()
+        rolled_back = False
+        # NOTE: a legacy package's publisher_id is re-derived only AFTER the
+        # version and package rows are locked (below): assigning it here would
+        # autoflush an UPDATE of the package row ahead of the version lock and
+        # invert the version -> package order moderation uses (deadlock).
+        package = existing or SkillPackage(
+            id=new_package_id,
+            owner_type=owner_type,
+            owner_id=owner_id,
+            org_id=org.id if org else None,
+            namespace=namespace,
+            name=hosted.name,
+            display_name=hosted.name.replace("-", " ").title(),
+            description=hosted.description,
+            source_type="hosted-upload",
+            source_locator=locator,
+            source_subdir=source_subdir,
+            publisher_id=resolved_publisher_id,
             created_by_user_id=auth.user.id,
         )
-        db.add(version)
-        for supported_tool in sorted(hosted.compatibility):
-            db.add(SkillVersionTool(version_id=version_id, tool=str(supported_tool)[:50]))
-        # Snapshot scalars BEFORE the flush: rollback() expires persistent
-        # instances and a lazy refresh under asyncio raises MissingGreenlet.
-        package_id_snapshot = package.id
-        try:
-            await db.flush()
-        except IntegrityError:
-            # Two identical uploads raced past the version query: the loser
-            # adopts the winner's immutable version instead of failing.
-            await db.rollback()
-            await _reload_after_rollback(db, auth, org)
-            blob_to_write = None
-            package = (
-                await db.execute(select(SkillPackage).where(SkillPackage.id == package_id_snapshot))
-            ).scalar_one()
-            version = (
+        if existing is None:
+            db.add(package)
+            try:
+                await db.flush()
+            except IntegrityError:
+                # Concurrent FIRST publish of the same package identity: adopt the
+                # winner's package row and continue into version resolution.
+                await db.rollback()
+                rolled_back = True
+                await _reload_after_rollback(db, auth, org)
+                package = (
+                    await db.execute(
+                        select(SkillPackage).where(
+                            SkillPackage.owner_type == owner_type,
+                            SkillPackage.owner_id == owner_id,
+                            SkillPackage.namespace == namespace,
+                            SkillPackage.source_type == "hosted-upload",
+                            SkillPackage.source_locator == locator,
+                            SkillPackage.source_subdir == source_subdir,
+                            SkillPackage.name == hosted.name,
+                        )
+                    )
+                ).scalar_one()
+        version = await _locked_existing_version(db, package.id, hosted.content_hash)
+        if reauthorize is not None:
+            # Caller's final authorization fence, taken AFTER the version lock
+            # (lock order: version -> membership -> user/entitlement -> remaining
+            # owner rows) and held through commit. The version-flush rollback below
+            # releases it; it is re-run once the publisher lock is re-taken.
+            await reauthorize(db)
+        blob_to_write: tuple[str, bytes] | None = None
+        if version is None:
+            # Lock order step 2: serialize this owner's publishes, then look again.
+            # A concurrent identical publish may have committed the very version
+            # while we waited; it must be REUSED, never charged or capped again.
+            # (Nothing holds a version row lock while waiting on an owner row, so
+            # re-locking the now-visible version here cannot form a cycle.)
+            if owner_type == "user":
+                await _lock_user_row(db, auth.user.id)
+            elif org is not None:
+                await _lock_org_row(db, org.id)
+            version = await _locked_existing_version(db, package.id, hosted.content_hash)
+        if version is None:
+            if owner_type == "user":
+                await _enforce_personal_publish_quota(db, auth, len(hosted.canonical_archive))
+            elif org is not None:
+                await _enforce_org_publish_quota(
+                    db,
+                    org,
+                    len(hosted.canonical_archive),
+                    # A platform administrator's PUBLIC listing is platform content,
+                    # not the org's: exempt from the org storage quota only.
+                    charge_storage=not (visibility == "public" and role == "platform_admin"),
+                )
+            await _enforce_package_version_cap(db, package.id)
+            # Publication order is a monotonic, package-scoped sequence allocated
+            # under the owner row lock taken above (every publish of this package
+            # serializes on it), so two publishes within the same second never
+            # tie on created_at + random id.
+            publication_seq = (
                 await db.execute(
-                    select(SkillPackageVersion).where(
-                        SkillPackageVersion.package_id == package.id,
-                        SkillPackageVersion.content_hash == hosted.content_hash,
+                    select(func.coalesce(func.max(SkillPackageVersion.publication_seq), 0) + 1).where(
+                        SkillPackageVersion.package_id == package.id
                     )
                 )
             ).scalar_one()
-    package.current_version_id = version.id
-    listing = (
-        await db.execute(
-            select(SkillMarketplaceListing).where(
-                SkillMarketplaceListing.collection == collection,
-                SkillMarketplaceListing.version_id == version.id,
+            if prewritten_key is None:
+                # The unlocked look-ahead saw this version, so no blob was written;
+                # it was deleted while this publish waited for its locks. Never
+                # upload under the locks: the caller retries.
+                raise HTTPException(
+                    409,
+                    detail={
+                        "code": "publish_conflict",
+                        "message": "This version changed while the publish was in progress; retry.",
+                    },
+                )
+            blob_key = prewritten_key
+            blob_to_write = (blob_key, hosted.canonical_archive)
+            # Before the version is added: this INSERT autoflushes the session, and
+            # the version's own flush must stay inside the IntegrityError guard below.
+            await ensure_ruleset(db)
+            version = SkillPackageVersion(
+                id=version_id,
+                package_id=package.id,
+                version_label=hosted.version,
+                content_hash=hosted.content_hash,
+                source_commit=hosted.source_commit,
+                agent_plugin_schema=hosted.agent_plugin_schema,
+                manifest_json=json.dumps(hosted.manifest, sort_keys=True),
+                risk_summary=json.dumps(hosted.risk_summary, sort_keys=True),
+                compatibility=json.dumps(hosted.compatibility, sort_keys=True),
+                license_metadata=json.dumps(hosted.license_metadata, sort_keys=True),
+                instruction_bundle=json.dumps(hosted.instruction_bundle),
+                signature_metadata=json.dumps(provenance or {}, sort_keys=True),
+                dlp_status="passed",
+                blob_key=blob_key,
+                blob_size_bytes=len(hosted.canonical_archive),
+                created_by_user_id=auth.user.id,
+                publication_seq=publication_seq,
             )
+            db.add(version)
+            # Publish-time instruction scan (critical was already refused by the
+            # shared validator): stored per version, summarized on the card.
+            stage_publish_scan(db, version, hosted.instruction_scan)
+            # Byte-derived capability manifest for disclosure and D2 (§3.6).
+            skill_disclosure.stage_capability_manifest(version, hosted)
+            for supported_tool in sorted(hosted.compatibility):
+                db.add(SkillVersionTool(version_id=version_id, tool=str(supported_tool)[:50]))
+            # Snapshot scalars BEFORE the flush: rollback() expires persistent
+            # instances and a lazy refresh under asyncio raises MissingGreenlet.
+            package_id_snapshot = package.id
+            try:
+                await db.flush()
+            except IntegrityError:
+                # Two identical uploads raced past the version query: the loser
+                # adopts the winner's immutable version instead of failing.
+                await db.rollback()
+                rolled_back = True
+                await _reload_after_rollback(db, auth, org)
+                blob_to_write = None
+                package = (
+                    await db.execute(select(SkillPackage).where(SkillPackage.id == package_id_snapshot))
+                ).scalar_one()
+                version = (
+                    await db.execute(
+                        select(SkillPackageVersion).where(
+                            SkillPackageVersion.package_id == package.id,
+                            SkillPackageVersion.content_hash == hosted.content_hash,
+                        )
+                    )
+                ).scalar_one()
+        # Publisher lifecycle (suspension, tombstone, trust revocation) is
+        # serialized on the publisher row. Re-take that lock before anything is
+        # listed: a rollback above (concurrent identical upload) released it, and
+        # the publish must never land under a publisher suspended meanwhile.
+        if locks_publisher and resolved_publisher_id is not None:
+            current = await publishers_service.lock_publisher(db, resolved_publisher_id)
+            if (
+                current is None
+                or current.status != "active"
+                or current.auth_generation != resolved_generation
+            ):
+                raise HTTPException(
+                    403,
+                    detail={
+                        "code": "publisher_suspended",
+                        "message": "This publisher's authorization changed during the publish; retry.",
+                    },
+                )
+            if rolled_back:
+                # The rollback released the lock: restart authorization under the
+                # re-taken lock (status, verification, cohort, name gate).
+                current = await _authorize_publisher(package, current)
+            resolved_publisher = current
+        elif rolled_back and resolved_publisher_id is not None:
+            resolved_publisher = await db.get(SkillPublisher, resolved_publisher_id)
+        if rolled_back and reauthorize is not None:
+            # A rollback released the publisher lock (and, for the version-flush
+            # rollback, the fence's own locks). Run the fence again now that the
+            # publisher lock is re-taken: its checks that are serialized on the
+            # publisher row (trusted publishing's trust and generation) must be
+            # made under that lock, and released fence locks are taken again.
+            await reauthorize(db)
+        # Content-hash locking protocol (shared with moderation and every grant
+        # path): package row, then the content-hash lock (SQLite: the write
+        # lock), then re-check the blocklist. A block that committed after the
+        # early check above is seen here; one that starts now waits for this
+        # publish and then sees (and blocks) the new version. Nothing below -
+        # current_version_id, the listing, the blob - is written before this.
+        locked_state = (
+            await db.execute(
+                select(SkillPackage.platform_state)
+                .where(SkillPackage.id == package.id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if locked_state == "blocked":
+            raise _package_blocked()  # a platform block that landed mid-publish
+        if package.publisher_id != resolved_publisher_id:
+            # Re-derived on every publish (a package never keeps a publisher that
+            # no longer owns its namespace, or a wrong legacy attribution), now
+            # that the version and package rows are locked in order.
+            package.publisher_id = resolved_publisher_id
+        await lock_content_hashes(db, [hosted.content_hash])
+        await _refuse_blocked_content(
+            db, hosted.content_hash, org.id if org else None, visibility=visibility
         )
-    ).scalar_one_or_none()
-    if listing is not None and listing.visibility != visibility:
-        # Never silently widen or narrow an existing listing's audience.
-        existing_visibility = listing.visibility  # snapshot BEFORE rollback expires it
-        await db.rollback()
-        raise HTTPException(
-            409,
-            detail={
-                "code": "visibility_mismatch",
-                "message": (
-                    f"This version is already listed in collection {collection!r} with visibility "
-                    f"{existing_visibility!r}; publish into another collection or delete the listing first."
-                ),
-                "existing_visibility": existing_visibility,
-                "requested_visibility": visibility,
-            },
-        )
-    if listing is None:
-        listing = SkillMarketplaceListing(
-            id=f"sml_{secrets.token_hex(12)}",
-            collection=collection,
-            package_id=package.id,
-            version_id=version.id,
-            org_id=org.id if visibility == "org" and org else None,
-            owner_user_id=auth.user.id if visibility == "user" else None,
-            name=hosted.name,
-            description=hosted.description,
-            visibility=visibility,
-            verification_state="verified" if visibility == "public" else "unverified",
-            search_text=" ".join(
-                [namespace, hosted.name, hosted.description, *[item["path"] for item in hosted.instruction_bundle]]
-            ).casefold(),
-            published_by_user_id=auth.user.id,
-            # Set client-side so the keyset cursor compares against a value
-            # rendered by the same type (server defaults differ in precision).
-            published_at=datetime.now(timezone.utc),
-        )
-        db.add(listing)
-    try:
-        if blob_to_write is not None:
-            await _blob_store(request).put(*blob_to_write)
+        package.current_version_id = version.id
+        listing = (
+            await db.execute(
+                select(SkillMarketplaceListing).where(
+                    SkillMarketplaceListing.collection == collection,
+                    SkillMarketplaceListing.version_id == version.id,
+                )
+            )
+        ).scalar_one_or_none()
+        if listing is not None and listing.visibility != visibility:
+            # Never silently widen or narrow an existing listing's audience.
+            existing_visibility = listing.visibility  # snapshot BEFORE rollback expires it
+            await db.rollback()
+            raise HTTPException(
+                409,
+                detail={
+                    "code": "visibility_mismatch",
+                    "message": (
+                        f"This version is already listed in collection {collection!r} with visibility "
+                        f"{existing_visibility!r}; publish into another collection or delete the listing first."
+                    ),
+                    "existing_visibility": existing_visibility,
+                    "requested_visibility": visibility,
+                },
+            )
+        if listing is None:
+            moderation_state, moderation_reason = "approved", None
+            if visibility == "public" and resolved_publisher is not None:
+                moderation_state, moderation_reason = await publishers_service.public_moderation_state(
+                    db,
+                    publisher=resolved_publisher,
+                    package=package,
+                    version=version,
+                    platform_admin=role == "platform_admin",
+                    provenance=provenance,
+                )
+            listing = SkillMarketplaceListing(
+                id=f"sml_{secrets.token_hex(12)}",
+                collection=collection,
+                package_id=package.id,
+                version_id=version.id,
+                org_id=org.id if visibility == "org" and org else None,
+                owner_user_id=auth.user.id if visibility == "user" else None,
+                name=hosted.name,
+                description=hosted.description,
+                visibility=visibility,
+                verification_state="verified" if visibility == "public" else "unverified",
+                moderation_state=moderation_state,
+                moderation_reason=moderation_reason,
+                search_text=" ".join(
+                    [namespace, hosted.name, hosted.description, *[item["path"] for item in hosted.instruction_bundle]]
+                ).casefold(),
+                published_by_user_id=auth.user.id,
+                # Per-listing publication provenance: a reused (deduplicated)
+                # version keeps the provenance of the run that FIRST minted it on
+                # the version row; this records the provenance of THIS publish so
+                # responses and trust-downgrade moderation compare like-for-like.
+                signature_metadata=json.dumps(provenance or {}, sort_keys=True),
+                # Set client-side so the keyset cursor compares against a value
+                # rendered by the same type (server defaults differ in precision).
+                published_at=datetime.now(timezone.utc),
+            )
+            db.add(listing)
         if org:
             _audit(
                 db,
@@ -1298,16 +2113,47 @@ async def _publish_package(
                 event_type="skill_package_published",
                 target_type="skill_package",
                 target_id=package.id,
-                after={"version_id": version.id, "content_hash": version.content_hash},
+                after={
+                    "version_id": version.id,
+                    "content_hash": version.content_hash,
+                    "visibility": visibility,
+                    "moderation_state": listing.moderation_state,
+                    "trusted_publisher_id": (provenance or {}).get("trusted_publisher_id"),
+                    # Platform-admin override of the package-name lookalike
+                    # check (explicit, off by default) is audited here.
+                    "confusable_name_override": bool(allow_confusable_name),
+                },
+            )
+        # A new listing can make this version deliverable to grant holders
+        # (e.g. a public listing of a version whose org listing is yanked).
+        await bump_grant_generations_for_versions(db, [version.id])
+        if publish_token_id is not None:
+            # Trusted publishing: link the (already burned) token to the
+            # version in the same transaction as the publish itself.
+            await db.execute(
+                update(SkillPublishToken)
+                .where(SkillPublishToken.id == publish_token_id)
+                .values(used_for_version_id=version.id)
+                .execution_options(synchronize_session=False)
             )
         await db.commit()
-    except Exception:
+        blob_referenced = blob_to_write is not None
+    except BaseException:
+        # Every failure after the blob upload - authorization, quota, a
+        # moderation block, a lost race, a failed commit - removes this
+        # publish's blob unless a committed version references its key.
         await db.rollback()
-        if blob_to_write is not None:
-            await _cleanup_failed_publish_blob(db, _blob_store(request), blob_to_write[0])
+        if prewritten_key is not None:
+            await _discard_publish_blob(db, _blob_store(request), prewritten_key)
         raise
+    if prewritten_key is not None and not blob_referenced:
+        # The publish reused an existing version (dedup, or a concurrent
+        # identical upload won): this publish's blob is not referenced.
+        await _discard_publish_blob(db, _blob_store(request), prewritten_key)
     await db.refresh(listing)
-    return _package_response(listing, package, version)
+    result = _package_response(listing, package, version)
+    await attach_publishers(db, [result])
+    return result
 
 
 async def _reload_after_rollback(db: AsyncSession, auth: AuthContext, org: Organization | None) -> None:
@@ -1317,6 +2163,15 @@ async def _reload_after_rollback(db: AsyncSession, auth: AuthContext, org: Organ
     for instance in (auth.user, org):
         if instance is not None and instance in db:
             await db.refresh(instance)
+
+
+async def _discard_publish_blob(db: AsyncSession, store: BlobStore, blob_key: str) -> None:
+    """Best-effort removal of a publish's pre-written blob. A cleanup failure
+    is logged, never raised over the publish's own outcome."""
+    try:
+        await _cleanup_failed_publish_blob(db, store, blob_key)
+    except Exception:
+        logger.warning("skill_publish_blob_cleanup_failed key=%s", blob_key, exc_info=True)
 
 
 async def _cleanup_failed_publish_blob(db: AsyncSession, store: BlobStore, blob_key: str) -> None:
@@ -1555,6 +2410,122 @@ async def _authorize_personal_publish(db: AsyncSession, auth: AuthContext) -> No
         )
 
 
+async def _lock_primary_membership(db: AsyncSession, user_id: str) -> OrgMember | None:
+    """The user's PRIMARY org membership (default_org_id first, then earliest
+    joined), locked FOR SHARE on the OrgMember row only — the join to User is
+    for the default_org_id ordering, not for locking. Held through commit so a
+    concurrent removal or demotion cannot commit between this fence and the
+    fenced write."""
+    return (
+        await db.execute(
+            select(OrgMember)
+            .join(User, User.id == OrgMember.user_id)
+            .where(OrgMember.user_id == user_id)
+            .order_by(
+                case((OrgMember.org_id == User.default_org_id, 0), else_=1),
+                OrgMember.joined_at,
+                OrgMember.org_id,
+            )
+            .limit(1)
+            .with_for_update(read=True, of=OrgMember.__table__)
+        )
+    ).scalars().first()
+
+
+async def _fence_personal_tier(db: AsyncSession, *, user_id: str) -> None:
+    """Final personal-publish/claim authorization fence, held through commit.
+
+    Lock order (owner rows): the primary membership FOR SHARE, then the org
+    (or, for a solo user, the user) entitlement row FOR UPDATE — the
+    serialization point against a concurrent apply_entitlement downgrade —
+    then the user row FOR NO KEY UPDATE, reloaded: still active, and still on
+    the personal publishing tier. A deactivation or downgrade committed after
+    authentication must not let an in-flight publish (including a new public
+    listing) or a permanent namespace claim commit."""
+    membership = await _lock_primary_membership(db, user_id)
+    if membership is not None:
+        await lock_active_entitlement(db, "org", membership.org_id)
+    else:
+        await lock_active_entitlement(db, "user", user_id)
+    user = (
+        await db.execute(
+            select(User)
+            .where(User.id == user_id)
+            .with_for_update(key_share=True)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if user is None or not user.is_active:
+        raise HTTPException(403, "User account is inactive")
+    if user.tier == "admin":
+        return
+    tier = await get_effective_tier(user, db, membership=membership)
+    if "marketplace_access" not in get_features_for_tier(tier):
+        raise HTTPException(
+            403,
+            detail={
+                "code": "upgrade_required",
+                "message": "Publishing personal skill packages requires the Starter tier or above.",
+                "feature": "marketplace_access",
+                "current_tier": tier.value,
+            },
+        )
+
+
+async def _reauthorize_personal_publish(db: AsyncSession, *, user_id: str) -> None:
+    """Final personal-publish authorization, run inside the final publish
+    transaction and again after any collision-recovery rollback."""
+    await _fence_personal_tier(db, user_id=user_id)
+
+
+async def _fence_org_feature(db: AsyncSession, *, org_id: str) -> None:
+    """Lock the org's active entitlement FOR UPDATE and re-run the
+    team_skill_library check: a downgrade committed after the pre-body check is
+    seen before the fenced write commits."""
+    await lock_active_entitlement(db, "org", org_id)
+    org = (
+        await db.execute(
+            select(Organization)
+            .where(Organization.id == org_id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if org is None:
+        raise HTTPException(404, "Organization not found")
+    await _check_org_feature(db, org, "team_skill_library")
+
+
+async def _fence_org_publisher(db: AsyncSession, *, org_id: str, user_id: str) -> None:
+    """Final org-publish authorization held through commit.
+
+    Lock order (owner rows): membership FOR SHARE (still owner/admin), then
+    the org's active entitlement FOR UPDATE (still Team+, team_skill_library),
+    then the user row FOR NO KEY UPDATE (still active). Entitlement before
+    user matches ``apply_entitlement``'s entitlement-then-mirror order and
+    keeps every fence (personal, org, trusted) consistent."""
+    role = (
+        await db.execute(
+            select(OrgMember.role)
+            .where(OrgMember.org_id == org_id, OrgMember.user_id == user_id)
+            .with_for_update(read=True)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if role not in ("owner", "admin"):
+        raise HTTPException(403, "Organization admin or owner role required")
+    await _fence_org_feature(db, org_id=org_id)
+    active = (
+        await db.execute(
+            select(User.is_active)
+            .where(User.id == user_id)
+            .with_for_update(key_share=True)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if active is False or active is None:
+        raise HTTPException(403, "User account is inactive")
+
+
 async def _authorize_org_publish(
     db: AsyncSession, auth: AuthContext, org_id: str
 ) -> tuple[Organization, str]:
@@ -1576,12 +2547,17 @@ async def publish_personal_package(
     package: UploadFile = File(...),
     namespace: str = Form("personal"),
     collection: str = Form("personal"),
+    visibility: Literal["user", "public"] = Form("user"),
     source_locator: str | None = Form(None),
     source_commit: str | None = Form(None),
     source_subdir: str = Form(""),
     auth: AuthContext = Depends(require_scope("marketplace:write")),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    """Personal publish. ``visibility=public`` is allowed only under the
+    caller's own verified publisher namespace opted into public publishing
+    (D1); the shared path enforces it and holds first / widening versions
+    for review."""
     await _authorize_personal_publish(db, auth)
     return await _publish_package(
         request=request,
@@ -1594,10 +2570,11 @@ async def publish_personal_package(
         upload=package,
         namespace=namespace,
         collection=collection,
-        visibility="user",
+        visibility=visibility,
         source_locator=source_locator,
         source_commit=source_commit,
         source_subdir=source_subdir,
+        reauthorize=functools.partial(_reauthorize_personal_publish, user_id=auth.user.id),
     )
 
 
@@ -1616,12 +2593,19 @@ async def publish_org_package(
     source_locator: str | None = Form(None),
     source_commit: str | None = Form(None),
     source_subdir: str = Form(""),
+    # Platform administrators only: skip the package-name lookalike check
+    # for this publish (audited). Off by default.
+    allow_confusable_name: bool = Form(False),
     auth: AuthContext = Depends(require_scope("skills:admin")),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     org, role = await _authorize_org_publish(db, auth, org_id)
-    if visibility == "public" and role != "platform_admin":
-        raise HTTPException(403, "Only a platform administrator can publish public packages")
+    if visibility == "public" and role != "platform_admin" and auth.key_kind != "user":
+        # Opening public publishing to verified publishers (D1) is for people,
+        # not automation keys: CI publishes through trusted publishing.
+        raise HTTPException(403, "Service keys cannot publish public packages")
+    # Non-admin public publishes are authorized in the shared path: only the
+    # org's own verified publisher namespace, opted into public publishing.
     return await _publish_package(
         request=request,
         db=db,
@@ -1637,6 +2621,12 @@ async def publish_org_package(
         source_locator=source_locator,
         source_commit=source_commit,
         source_subdir=source_subdir,
+        allow_confusable_name=allow_confusable_name,
+        reauthorize=(
+            None
+            if role == "platform_admin"
+            else functools.partial(_fence_org_publisher, org_id=org.id, user_id=auth.user.id)
+        ),
     )
 
 
@@ -1677,6 +2667,15 @@ async def _delete_version(
     ).scalar_one_or_none()
     if version is None:
         raise HTTPException(404, "Marketplace package version not found")
+    # Same lock order as moderation (version row -> package row -> content
+    # hash), taken BEFORE the active-block check and held through commit: a
+    # block on these bytes (from any version / package) either commits first
+    # and is seen below, or waits for this delete. The content-hash lock also
+    # opens the SQLite write transaction, serializing there too.
+    await db.execute(
+        select(SkillPackage.id).where(SkillPackage.id == package.id).with_for_update()
+    )
+    await lock_content_hashes(db, [version.content_hash])
     # A PUBLIC listing is globally visible: only a platform administrator on a
     # USER key may delete it. Org owners/admins (and any service key) cannot
     # remove or even learn about a public version's cross-tenant references.
@@ -1690,10 +2689,29 @@ async def _delete_version(
     ).scalar_one_or_none()
     if publicly_listed is not None and not (auth.key_kind == "user" and auth.user.tier == "admin"):
         raise HTTPException(403, "Only a platform administrator can delete a publicly listed version")
+    # A BLOCKED version cannot be deleted: a restore needs the version and
+    # its listings, so deleting it would make a block irreversible (and keep
+    # identical bytes unpublishable forever). Yanks do not block deletion.
+    if await _has_active_block(db, package=package, version=version):
+        raise HTTPException(
+            409,
+            detail={
+                "code": "active_block",
+                "message": (
+                    "This version is blocked by marketplace moderation. A moderator must "
+                    "restore it before it can be deleted."
+                ),
+            },
+        )
     assignments = list(
         (
             await db.execute(
-                select(OrgSkillAssignment).where(OrgSkillAssignment.version_id == version.id)
+                select(OrgSkillAssignment).where(
+                    OrgSkillAssignment.version_id == version.id,
+                    # Revoked assignments (a block) are history, not references:
+                    # they never block deletion and survive it (no FK, 066).
+                    OrgSkillAssignment.revoked_at.is_(None),
+                )
             )
         ).scalars().all()
     )
@@ -1779,6 +2797,24 @@ async def _delete_version(
             )
         )
     ).scalars().all()
+    deleted_assignment_orgs = set(
+        (
+            await db.execute(
+                select(OrgSkillAssignment.org_id)
+                .where(OrgSkillAssignment.version_id == version.id)
+                .distinct()
+            )
+        ).scalars().all()
+    )
+    deleted_request_projects = {row.project_id for row in pending} | set(
+        (
+            await db.execute(
+                select(SkillInstallRequest.project_id).where(
+                    SkillInstallRequest.version_id == version.id
+                )
+            )
+        ).scalars().all()
+    )
     for row in pending:
         await db.delete(row)
     archived_requests = (
@@ -1799,7 +2835,7 @@ async def _delete_version(
             await db.execute(
                 select(SkillPackageVersion.id)
                 .where(SkillPackageVersion.package_id == package.id)
-                .order_by(SkillPackageVersion.created_at.desc())
+                .order_by(SkillPackageVersion.publication_seq.desc().nullslast())
                 .limit(1)
             )
         ).scalar_one_or_none()
@@ -1841,6 +2877,8 @@ async def _delete_version(
         archived_requests,
         len(pending),
     )
+    await bump_grant_generations(db, "project", deleted_request_projects)
+    await bump_grant_generations(db, "org", deleted_assignment_orgs)
     await db.commit()
     try:
         await _blob_store(request).delete(blob_key)
@@ -2012,6 +3050,10 @@ async def create_org_registry(
 
 
 def _request_response(row: SkillInstallRequest, risk: dict | None = None) -> dict:
+    target_tools = _stored_tools(row.target_tools)
+    requested_capabilities = _stored_capabilities(row.requested_capabilities)
+    if target_tools is None or requested_capabilities is None:
+        raise _grant_record_corrupt(row.id)
     risk = risk or {}
     return {
         "id": row.id,
@@ -2033,8 +3075,8 @@ def _request_response(row: SkillInstallRequest, risk: dict | None = None) -> dic
         "target_user_id": row.target_user_id,
         "target_device_id": row.target_device_id,
         "target_scope": row.target_scope,
-        "target_tools": _json(row.target_tools, []),
-        "requested_capabilities": _json(row.requested_capabilities, []),
+        "target_tools": target_tools,
+        "requested_capabilities": requested_capabilities,
         "requested_via": row.requested_via,
         "requested_actor_type": row.requested_actor_type,
         "requested_by_service_key_id": row.requested_by_service_key_id,
@@ -2050,6 +3092,17 @@ def _request_response(row: SkillInstallRequest, risk: dict | None = None) -> dic
         "approved_by_user_id": row.approved_by_user_id,
         "decided_at": row.decided_at.isoformat() if row.decided_at else None,
         "created_at": row.created_at.isoformat(),
+        # The version's capability digest (§3.2). On an approved request it is
+        # the access the approver confirmed; devices use it to accept an
+        # update that widens access without asking again.
+        "package_id": row.package_id,
+        "superseded_by_request_id": row.superseded_by_request_id,
+        "capability_digest": (
+            row.approved_capability_digest
+            if row.status in {"approved", "applied"}
+            and row.approved_consent_rule_version == skill_disclosure.CONSENT_RULE_VERSION
+            else None
+        ),
     }
 
 
@@ -2098,19 +3151,13 @@ async def create_install_request(
 ) -> dict:
     project = await _project_access(db, auth, project_id)
     await _require_project_org_feature(db, project, "team_skill_library")
-    candidates = await _visible_listings(db, auth, version_id=body.version_id)
-    listing, _, version = candidates[0]
-    # Lock order step 1 (see module header): hold the version row so a
-    # concurrent delete cannot remove it between this lookup and the insert.
-    locked_version = (
-        await db.execute(
-            select(SkillPackageVersion)
-            .where(SkillPackageVersion.id == version.id)
-            .with_for_update()
-        )
-    ).scalar_one_or_none()
+    # Lock order step 1 + content-hash lock BEFORE the deliverability check, so
+    # a concurrent block / delete cannot slip between the check and the insert.
+    locked_version = await _lock_version_for_grant(db, body.version_id)
     if locked_version is None:
         raise HTTPException(404, "Marketplace package not found")
+    candidates = await _visible_listings(db, auth, version_id=body.version_id)
+    listing, _, version = candidates[0]
     version = locked_version
     target_user_id = body.target_user_id or auth.user.id
     # The listing must be visible to the principals who will approve and load
@@ -2186,6 +3233,10 @@ async def create_install_request(
         target_user_id=target_user_id,
         target_device_id=body.target_device_id,
         target_scope=body.target_scope,
+        package_id=version.package_id,
+        grant_scope_key=skill_disclosure.grant_scope_key(
+            body.target_scope, target_user_id, body.target_device_id
+        ),
         target_tools=json.dumps(body.target_tools),
         requested_capabilities=json.dumps(body.requested_capabilities),
         requested_via=body.requested_via,
@@ -2228,15 +3279,58 @@ async def create_install_request(
                     "requested_capabilities": body.requested_capabilities,
                 },
             )
+    await bump_grant_generations(db, "project", [project.id])
     await db.commit()
     await db.refresh(row)
     return _request_response(row, request_risk)
+
+
+@router.get("/marketplace/projects/resolve")
+async def resolve_marketplace_project(
+    git_remote: str = Query(..., min_length=1, max_length=500),
+    auth: AuthContext = Depends(require_scope("skills:read")),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Resolve a normalized git remote to the project it belongs to, for
+    skill install / instruction loading. Returns ONLY ``{"project_id",
+    "name"}``.
+
+    Service keys are admitted (``skills:read``) and bounded by their org and
+    project allowlist through the same ``_project_access`` the install
+    request and instruction routes use; user keys need ordinary project
+    access. Unknown remote, no access, a foreign org or a project outside
+    the key's allowlist are all the same constant 404. Merged projects
+    resolve to their surviving target, which is authorized itself."""
+    from sessionfs.server.services.project_resolver import (
+        ProjectResolutionLoopError,
+        resolve_project_by_remote,
+    )
+
+    not_found = HTTPException(404, "Project not found")
+    remote = git_remote.strip()
+    if not remote:
+        raise not_found
+    try:
+        project = await resolve_project_by_remote(db, remote, follow_tombstone=True)
+    except ProjectResolutionLoopError:
+        raise not_found from None
+    if project is None:
+        raise not_found
+    try:
+        project = await _project_access(db, auth, project.id)
+    except HTTPException as exc:
+        if exc.status_code in (403, 404):
+            raise not_found from None
+        raise
+    return {"project_id": project.id, "name": project.name}
 
 
 @router.get("/projects/{project_id}/skill-install-requests")
 async def list_install_requests(
     project_id: str,
     status: str | None = Query(None),
+    limit: int = Query(GRANT_PAGE_DEFAULT, ge=1, le=GRANT_PAGE_MAX),
+    cursor: str | None = Query(None, max_length=512),
     auth: AuthContext = Depends(require_scope("skills:read")),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -2250,15 +3344,35 @@ async def list_install_requests(
         SkillInstallRequest.project_id == project_id,
         SkillInstallRequest.deleted_at.is_(None),
     )
+    if auth.key_kind == "service":
+        # Service keys see only project-scoped requests: user- and
+        # device-targeted ones belong to the humans they target.
+        statement = statement.where(SkillInstallRequest.target_scope == "project")
     if status:
         statement = statement.where(SkillInstallRequest.status == status)
-    rows = (
-        await db.execute(statement.order_by(SkillInstallRequest.created_at.desc()).limit(100))
-    ).scalars().all()
-    risks = await _version_risks(db, [row.version_id for row in rows])
+    generation = await grant_generation_token(db, "project", [project_id])
+    rows, has_more, next_cursor = await _grant_page(
+        db,
+        statement,
+        SkillInstallRequest,
+        cursor=cursor,
+        limit=limit,
+        generation=generation,
+        scope_type="project",
+        scope_ids=[project_id],
+    )
+    # Rows with unreadable targeting are omitted and flagged, never guessed.
+    readable = [row for row in rows if _request_record_ok(row)]
+    omitted = len(rows) - len(readable)
+    risks = await _version_risks(db, [row.version_id for row in readable])
     return {
-        "items": [_request_response(row, risks.get(row.version_id)) for row in rows],
+        "items": [_request_response(row, risks.get(row.version_id)) for row in readable],
         "can_approve": can_approve,
+        "incomplete": omitted > 0,
+        "omitted_count": omitted,
+        "has_more": has_more,
+        "next_cursor": next_cursor,
+        "generation": generation,
     }
 
 
@@ -2279,7 +3393,7 @@ async def get_install_request(
             )
         )
     ).scalar_one_or_none()
-    if row is None:
+    if row is None or (auth.key_kind == "service" and row.target_scope != "project"):
         raise HTTPException(404, "Install request not found")
     return await _request_with_risk(db, row)
 
@@ -2288,6 +3402,7 @@ async def get_install_request(
 async def approve_install_request(
     project_id: str,
     request_id: str,
+    request: Request,
     body: InstallRequestApprove | None = None,
     auth: AuthContext = Depends(require_scope("skills:approve")),
     db: AsyncSession = Depends(get_db),
@@ -2324,9 +3439,83 @@ async def approve_install_request(
         challenge_predicate = await _verify_approval_challenge(
             db, row, body.confirmation_code if body else None
         )
-    requested = set(_json(row.requested_capabilities, [])) | {"instructions"}
+    stored_capabilities = _stored_capabilities(row.requested_capabilities)
+    stored_tools = _stored_tools(row.target_tools)
+    if stored_capabilities is None or stored_tools is None:
+        raise _grant_record_corrupt(row.id)  # never approve a guessed scope
+    requested = set(stored_capabilities) | {"instructions"}
     approved = set(body.approved_capabilities) if body else set()
-    missing = sorted((requested & _ELEVATED_CAPABILITIES) - approved)
+    # Lock first (version row, then content hash), THEN check deliverability:
+    # a block that commits while we wait is seen; one that starts after us
+    # waits for this approval and then revokes it.
+    version = await _lock_version_for_grant(db, row.version_id)
+    await _visible_row(db, auth, version_id=row.version_id)
+    if version is None or version.content_hash != row.content_hash:
+        raise HTTPException(
+            409,
+            detail={
+                "code": "content_hash_mismatch",
+                "message": "The install request no longer matches its immutable version.",
+            },
+        )
+    # Marketplace v2 D2: an approval of an earlier version never authorizes
+    # an update that widens access or changes executable content.
+    # D2 carry-forward: a text update keeps the capabilities consented on the
+    # previous approval; a code update keeps all but the changed ones; a
+    # widening update keeps nothing (and needs the acknowledgement).
+    # Serialize approvals of this (project, package, target scope / user /
+    # device): the previous-version lookup and the D2 classification below
+    # run under the lock, so two pending versions cannot both skip re-consent.
+    await skill_disclosure.lock_grant_scope(
+        db,
+        skill_disclosure.grant_scope_lock_key(
+            row.project_id, version.package_id, row.target_scope, row.target_user_id, row.target_device_id
+        ),
+    )
+    store = _blob_store(request)
+    manifest = await skill_disclosure.require_manifest(db, store, version)
+    previous = await skill_disclosure.previous_request_version(db, row, version.package_id)
+    carried: dict[str, list[SkillConsentReceipt]] = {}
+    if previous is not None:
+        previous_request, previous_version = previous
+        # A legacy or stale prior approval is an unknown baseline (widening).
+        update_info = await skill_disclosure.classify_grant_update(
+            db,
+            store,
+            previous_version,
+            version,
+            digest=previous_request.approved_capability_digest,
+            rule_version=previous_request.approved_consent_rule_version,
+        )
+        skill_disclosure.enforce_reapproval(
+            update_info,
+            approve_widening=bool(body and body.acknowledge_widening),
+            approve_code_change=bool(body and body.acknowledge_code_change),
+            trusted_code=False,
+            widening_flag="acknowledge_widening",
+            code_flag="acknowledge_code_change",
+            expected_digest=skill_disclosure.update_digest(
+                prior_id=previous_request.id,
+                old=previous_version,
+                new=version,
+                bound_digest=previous_request.approved_capability_digest,
+                update=update_info,
+            ),
+            given_digest=body.update_digest if body else None,
+        )
+        carried = await skill_disclosure.carried_receipts(db, previous_request, update_info)
+    # Carried consent is per (capability, target tool, scope): a receipt for
+    # one tool never covers another; an unrestricted receipt covers any tool.
+    receipt_tools_needed: list[str | None] = list(stored_tools) or [None]
+    covered = {
+        capability
+        for capability, receipts in carried.items()
+        if all(
+            skill_disclosure.carry_source(receipts, tool, row.target_scope) is not None
+            for tool in receipt_tools_needed
+        )
+    }
+    missing = sorted((requested & _ELEVATED_CAPABILITIES) - approved - covered)
     if missing:
         raise HTTPException(
             422,
@@ -2337,23 +3526,26 @@ async def approve_install_request(
                 "missing": missing,
             },
         )
-    await _visible_row(db, auth, version_id=row.version_id)
-    version = (
-        await db.execute(
-            select(SkillPackageVersion)
-            .where(SkillPackageVersion.id == row.version_id)
-            .with_for_update()  # lock order step 1: serialize with version delete
-        )
-    ).scalar_one_or_none()
-    if version is None or version.content_hash != row.content_hash:
-        raise HTTPException(
-            409,
-            detail={
-                "code": "content_hash_mismatch",
-                "message": "The install request no longer matches its immutable version.",
-            },
-        )
+    skill_disclosure.require_displayed_disclosure(
+        version,
+        body.capability_digest if body else None,
+        body.consent_rule_version if body else None,
+        disclosure_digest=body.disclosure_digest if body else None,
+        manifest=manifest,
+        tools=list(stored_tools),
+        scope="project" if row.target_scope == "project" else "user",
+    )
+    consent_fields = skill_disclosure.receipt_fields(manifest)
+    bound_digest = consent_fields.get("capability_digest")
     now = datetime.now(timezone.utc)
+    # Carried consent is re-validated under lock right before it is used: a
+    # source receipt revoked meanwhile (revocation takes the same locks) is
+    # never carried into the new grant.
+    await skill_disclosure.recheck_carried_sources(db, carried)
+    # One active approved version per (project, package, grant scope): the
+    # replaced approvals are superseded (never granting again, receipts
+    # invalidated) before this one is approved, under the grant-scope lock.
+    superseded = await skill_disclosure.supersede_active_requests(db, row, version.package_id, now)
     statement = (
         update(SkillInstallRequest)
         .where(SkillInstallRequest.id == row.id, SkillInstallRequest.status == "pending")
@@ -2363,6 +3555,16 @@ async def approve_install_request(
             decided_at=now,
             approval_challenge_hash=None,
             approval_challenge_expires_at=None,
+            # The access approved, bound immutably to this request (devices
+            # accept a widening update only for exactly this digest).
+            approved_capability_digest=bound_digest,
+            approved_consent_rule_version=(
+                skill_disclosure.CONSENT_RULE_VERSION if bound_digest else None
+            ),
+            package_id=version.package_id,
+            grant_scope_key=skill_disclosure.grant_scope_key(
+                row.target_scope, row.target_user_id, row.target_device_id
+            ),
         )
     )
     if challenge_predicate is not None:
@@ -2379,12 +3581,17 @@ async def approve_install_request(
         )
     # Receipts are written only for capabilities the approver confirmed
     # (intersection) plus the always-implied instruction load.
-    capabilities = (requested & (approved | {"instructions"})) | {"instructions"}
+    capabilities = (requested & (approved | covered | {"instructions"})) | {"instructions"}
     # One receipt per requested tool; target_tool=None ONLY when the request
     # was unrestricted. Receipts are bound to this request + project.
-    receipt_tools: list[str | None] = list(_json(row.target_tools, [])) or [None]
+    receipt_tools: list[str | None] = list(stored_tools) or [None]
     for capability in sorted(capabilities):
         for target_tool in receipt_tools:
+            source = (
+                skill_disclosure.carry_source(carried.get(capability) or [], target_tool, row.target_scope)
+                if capability not in approved
+                else None
+            )
             db.add(
                 SkillConsentReceipt(
                     id=f"scr_{secrets.token_hex(12)}",
@@ -2398,6 +3605,8 @@ async def approve_install_request(
                     device_id=row.target_device_id,
                     install_request_id=row.id,
                     project_id=row.project_id,
+                    carried_forward_from_receipt_id=source.id if source is not None else None,
+                    **consent_fields,
                 )
             )
     if org:
@@ -2414,8 +3623,10 @@ async def approve_install_request(
                 "content_hash": row.content_hash,
                 "approved_capabilities": sorted(capabilities),
                 "requested_via": row.requested_via,
+                "superseded_request_ids": superseded,
             },
         )
+    await bump_grant_generations(db, "project", [row.project_id])
     await db.commit()
     refreshed = await db.get(SkillInstallRequest, row.id)
     assert refreshed is not None
@@ -2476,6 +3687,7 @@ async def _verify_approval_challenge(
             )
             .values(approval_challenge_hash=None, approval_challenge_expires_at=None)
         )
+        await bump_grant_generations(db, "project", [row.project_id])
         await db.commit()
         raise _challenge_denied()
     return SkillInstallRequest.approval_challenge_hash == stored
@@ -2582,6 +3794,7 @@ async def challenge_install_request(
             approval_challenge_attempts=0,
         )
     )
+    await bump_grant_generations(db, "project", [row.project_id])
     await db.commit()
     email_service = getattr(request.app.state, "email_service", None)
     delivery = "unavailable"
@@ -2637,6 +3850,7 @@ async def challenge_install_request(
                     target_id=row.id,
                     after={"delivery": delivery},
                 )
+        await bump_grant_generations(db, "project", [row.project_id])
         await db.commit()
         logger.warning("skill_install_challenge_delivery_failed request=%s delivery=%s", row.id, delivery)
         raise HTTPException(
@@ -2706,7 +3920,34 @@ async def revoke_install_request(
         org, role = await _project_admin(db, auth, project)
     elif project.org_id is not None:
         org = await db.get(Organization, project.org_id)
-    previous_status = row.status
+    # Same lock order as approval: the version row (+ content hash), then the
+    # grant-scope lock, then the request and its receipts re-read under lock.
+    # An approval that is carrying this request's consent forward is thereby
+    # serialized with this revocation (it either sees the revocation or
+    # finishes first and supersedes this request).
+    revoked_version = await _lock_version_for_grant(db, row.version_id)
+    package_id = row.package_id or (revoked_version.package_id if revoked_version else None)
+    if package_id:
+        await skill_disclosure.lock_grant_scope(
+            db,
+            skill_disclosure.grant_scope_lock_key(
+                row.project_id, package_id, row.target_scope, row.target_user_id, row.target_device_id
+            ),
+        )
+    locked_row = (
+        await db.execute(
+            select(SkillInstallRequest)
+            .where(SkillInstallRequest.id == row.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
+    await db.execute(
+        select(SkillConsentReceipt.id)
+        .where(SkillConsentReceipt.install_request_id == row.id)
+        .with_for_update()
+    )
+    previous_status = locked_row.status
     now = datetime.now(timezone.utc)
     result = await db.execute(
         update(SkillInstallRequest)
@@ -2745,6 +3986,7 @@ async def revoke_install_request(
             target_id=row.id,
             after={"version_id": row.version_id, "previous_status": previous_status},
         )
+    await bump_grant_generations(db, "project", [row.project_id])
     await db.commit()
     refreshed = await db.get(SkillInstallRequest, row.id)
     assert refreshed is not None
@@ -2792,6 +4034,7 @@ async def cancel_install_request(
                 "message": "The install request has already been decided.",
             },
         )
+    await bump_grant_generations(db, "project", [row.project_id])
     await db.commit()
     refreshed = await db.get(SkillInstallRequest, row.id)
     assert refreshed is not None
@@ -2815,24 +4058,11 @@ async def _has_instruction_grant(
                 SkillInstallRequest.content_hash == version.content_hash,
                 SkillInstallRequest.status.in_(["approved", "applied"]),
                 SkillInstallRequest.deleted_at.is_(None),
-                or_(
-                    SkillInstallRequest.target_scope == "project",
-                    and_(
-                        SkillInstallRequest.target_scope == "user",
-                        SkillInstallRequest.target_user_id == auth.user.id,
-                    ),
-                    and_(
-                        SkillInstallRequest.target_scope == "device",
-                        SkillInstallRequest.target_user_id == auth.user.id,
-                        SkillInstallRequest.target_device_id == device_id,
-                    ),
-                ),
+                or_(*_request_target_predicates(auth, device_id)),
             )
         )
     ).scalars().all()
-    request_grant = any(
-        not (tools := _json(row.target_tools, [])) or tool in tools for row in requests
-    )
+    request_grant = any(_grants_tool(row.target_tools, tool) for row in requests)
     # A version that became blocked (DLP or verification) after approval must
     # stop granting: re-check at load, independent of the stored rows.
     if version.dlp_status == "blocked" or (
@@ -2876,22 +4106,63 @@ async def _has_instruction_grant(
                 OrgSkillAssignment.org_id == project.org_id,
                 OrgSkillAssignment.version_id == version.id,
                 OrgSkillAssignment.content_hash == version.content_hash,
-                or_(
-                    OrgSkillAssignment.target_type == "org",
-                    and_(
-                        OrgSkillAssignment.target_type == "user",
-                        OrgSkillAssignment.target_id == auth.user.id,
-                    ),
-                    and_(
-                        OrgSkillAssignment.target_type == "device",
-                        OrgSkillAssignment.target_user_id == auth.user.id,
-                        OrgSkillAssignment.target_id == device_id,
-                    ),
-                ),
+                OrgSkillAssignment.revoked_at.is_(None),  # revoked by a block (066)
+                or_(*_assignment_target_predicates(auth, device_id)),
             )
         )
     ).scalars().all()
-    return any(not (tools := _json(row.target_tools, [])) or tool in tools for row in assignments)
+    return any(_grants_tool(row.target_tools, tool) for row in assignments)
+
+
+def _request_target_predicates(auth: AuthContext, device_id: str | None) -> list:
+    """Install-request grants that apply to this principal.
+
+    A service key acts for its org, not for the user who created it
+    (auth.user is that creator), so only PROJECT-scoped grants apply to it;
+    user- and device-scoped grants belong to the human they target."""
+    predicates = [SkillInstallRequest.target_scope == "project"]
+    if auth.key_kind == "service":
+        return predicates
+    predicates.append(
+        and_(
+            SkillInstallRequest.target_scope == "user",
+            SkillInstallRequest.target_user_id == auth.user.id,
+        )
+    )
+    predicates.append(
+        and_(
+            SkillInstallRequest.target_scope == "device",
+            SkillInstallRequest.target_user_id == auth.user.id,
+            SkillInstallRequest.target_device_id == device_id,
+        )
+    )
+    return predicates
+
+
+def _assignment_target_predicates(auth: AuthContext, device_id: str | None) -> list:
+    """Assignment targets that apply to this principal.
+
+    A service key acts for its ORG, not for the user who created it
+    (auth.user is that creator), so it receives only org-wide assignments;
+    user- and device-targeted assignments are for the human principal."""
+    predicates = [OrgSkillAssignment.target_type == "org"]
+    if auth.key_kind == "service":
+        return predicates
+    predicates.append(
+        and_(
+            OrgSkillAssignment.target_type == "user",
+            OrgSkillAssignment.target_id == auth.user.id,
+        )
+    )
+    if device_id:
+        predicates.append(
+            and_(
+                OrgSkillAssignment.target_type == "device",
+                OrgSkillAssignment.target_user_id == auth.user.id,
+                OrgSkillAssignment.target_id == device_id,
+            )
+        )
+    return predicates
 
 
 @router.get("/marketplace/versions/{version_id}/instructions")
@@ -2912,10 +4183,9 @@ async def load_marketplace_instructions(
             raise HTTPException(422, str(exc)) from exc
     project = await _project_access(db, auth, project_id)
     listing, package, version = await _visible_row(db, auth, version_id=version_id)
-    if not await _has_instruction_grant(
-        db, auth=auth, project=project, version=version, tool=tool, device_id=device_id
-    ):
-        raise HTTPException(
+
+    def approval_required() -> HTTPException:
+        return HTTPException(
             403,
             detail={
                 "code": "install_approval_required",
@@ -2923,6 +4193,26 @@ async def load_marketplace_instructions(
                 "version_id": version.id,
             },
         )
+
+    if not await _has_instruction_grant(
+        db, auth=auth, project=project, version=version, tool=tool, device_id=device_id
+    ):
+        # A takedown that landed after the visibility check also revokes the
+        # grant; answer it with the same 404 as the up-front check.
+        await _revalidate_delivery(db, auth, version)
+        raise approval_required()
+    # Re-validate under the takedown protocol's locks, then re-check the
+    # grant (a block revokes grants) while still holding them; release
+    # before anything is audited or sent.
+    await _revalidate_delivery(db, auth, version, release=False)
+    try:
+        granted = await _has_instruction_grant(
+            db, auth=auth, project=project, version=version, tool=tool, device_id=device_id
+        )
+    finally:
+        await db.commit()
+    if not granted:
+        raise approval_required()
     # Every successful approved load is audited: actor, project, tool, package + hash.
     if project.org_id is not None:
         org = await db.get(Organization, project.org_id)
@@ -2971,6 +4261,9 @@ async def load_marketplace_instructions(
 
 
 def _assignment_response(row: OrgSkillAssignment) -> dict:
+    target_tools = _stored_tools(row.target_tools)
+    if target_tools is None:
+        raise _grant_record_corrupt(row.id)
     return {
         "id": row.id,
         "org_id": row.org_id,
@@ -2980,30 +4273,61 @@ def _assignment_response(row: OrgSkillAssignment) -> dict:
         "target_id": row.target_id,
         "target_user_id": row.target_user_id,
         "mode": row.mode,
-        "target_tools": _json(row.target_tools, []),
+        "target_tools": target_tools,
         "policy": _json(row.policy_snapshot, {}),
         "created_at": row.created_at.isoformat(),
+        "revoked_at": row.revoked_at.isoformat() if row.revoked_at else None,
+        # The access the admin approved for this version (§3.4); devices use
+        # it to accept an update that widens access without asking again.
+        "capability_digest": (
+            row.capability_digest
+            if row.consent_rule_version == skill_disclosure.CONSENT_RULE_VERSION
+            else None
+        ),
+        "superseded_at": row.superseded_at.isoformat() if row.superseded_at else None,
+        "superseded_by_assignment_id": row.superseded_by_assignment_id,
+        "package_id": row.package_id,
     }
 
 
 @router.get("/orgs/{org_id}/skills/assignments")
 async def list_org_assignments(
     org_id: str,
+    limit: int = Query(GRANT_PAGE_DEFAULT, ge=1, le=GRANT_PAGE_MAX),
+    cursor: str | None = Query(None, max_length=512),
     auth: AuthContext = Depends(require_scope("skills:read")),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     org, _ = await _org_access(db, auth, org_id)
     await _check_org_feature(db, org, "team_skill_library")
-    rows = (
-        await db.execute(select(OrgSkillAssignment).where(OrgSkillAssignment.org_id == org.id))
-    ).scalars().all()
-    return {"items": [_assignment_response(row) for row in rows]}
+    generation = await grant_generation_token(db, "org", [org.id])
+    rows, has_more, next_cursor = await _grant_page(
+        db,
+        select(OrgSkillAssignment).where(OrgSkillAssignment.org_id == org.id),
+        OrgSkillAssignment,
+        cursor=cursor,
+        limit=limit,
+        generation=generation,
+        scope_type="org",
+        scope_ids=[org.id],
+    )
+    readable = [row for row in rows if _assignment_record_ok(row)]
+    omitted = len(rows) - len(readable)
+    return {
+        "items": [_assignment_response(row) for row in readable],
+        "incomplete": omitted > 0,
+        "omitted_count": omitted,
+        "has_more": has_more,
+        "next_cursor": next_cursor,
+        "generation": generation,
+    }
 
 
 @router.post("/orgs/{org_id}/skills/assignments", status_code=201)
 async def create_org_assignment(
     org_id: str,
     body: AssignmentCreate,
+    request: Request,
     auth: AuthContext = Depends(require_scope("skills:admin")),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -3011,6 +4335,10 @@ async def create_org_assignment(
     await _check_org_feature(db, org, "team_skill_library")
     if body.policy:
         await _check_org_feature(db, org, "skills_policy")
+    # Lock first (version row, then content hash), THEN check deliverability.
+    locked = await _lock_version_for_grant(db, body.version_id)
+    if locked is None:
+        raise HTTPException(404, "Marketplace package not found")
     candidates = await _visible_listings(db, auth, version_id=body.version_id)
     # Prefer a public listing, else this org's own listing; a listing in some
     # OTHER org the caller belongs to never qualifies (and never disqualifies).
@@ -3023,15 +4351,6 @@ async def create_org_assignment(
         None,
     )
     listing, _, version = eligible if eligible is not None else candidates[0]
-    locked = (
-        await db.execute(
-            select(SkillPackageVersion)
-            .where(SkillPackageVersion.id == version.id)
-            .with_for_update()  # lock order step 1: serialize with version delete
-        )
-    ).scalar_one_or_none()
-    if locked is None:
-        raise HTTPException(404, "Marketplace package not found")
     version = locked
     if listing.visibility == "user" or (
         listing.visibility == "org" and listing.org_id != org.id
@@ -3075,6 +4394,40 @@ async def create_org_assignment(
         ).scalar_one_or_none()
         if membership is None:
             raise HTTPException(422, "Target user is not a member of this organization")
+    # Marketplace v2 D2: moving a target to another version of the same
+    # package is an update and goes through /advance (which re-checks D2 and
+    # supersedes the old assignment). The database enforces one active
+    # assignment per (org, package, target).
+    previous = await skill_disclosure.previous_assignment_version(
+        db,
+        org_id=org.id,
+        package_id=version.package_id,
+        version_id=version.id,
+        target_type=body.target_type,
+        target_id=target_id,
+        target_user_id=target_user_id,
+    )
+    if previous is not None:
+        raise HTTPException(
+            409,
+            detail={
+                "code": "use_advance",
+                "message": "This target already has an active assignment of another version of "
+                "this package; advance that assignment instead.",
+                "assignment_id": previous[0].id,
+            },
+        )
+    store = _blob_store(request)
+    assignment_manifest = await skill_disclosure.require_manifest(db, store, version)
+    skill_disclosure.require_displayed_disclosure(
+        version,
+        body.capability_digest,
+        body.consent_rule_version,
+        disclosure_digest=body.disclosure_digest,
+        manifest=assignment_manifest,
+        tools=list(body.target_tools),
+        scope="user",  # assignments install device-wide (user scope)
+    )
     assignment = OrgSkillAssignment(
         id=f"osa_{secrets.token_hex(12)}",
         org_id=org.id,
@@ -3087,8 +4440,46 @@ async def create_org_assignment(
         target_tools=json.dumps(body.target_tools),
         policy_snapshot=json.dumps(body.policy, sort_keys=True),
         created_by_user_id=auth.user.id,
+        package_id=version.package_id,
+        capability_digest=version.capability_digest,
+        consent_rule_version=skill_disclosure.CONSENT_RULE_VERSION,
     )
-    db.add(assignment)
+    # Concurrent creates for different versions of one package and target:
+    # the one-active-per-(org, package, target) index decides; the loser gets
+    # use_advance pointing at the winner, never a generic duplicate error.
+    package_id_snapshot = version.package_id
+    version_id_snapshot = version.id
+    try:
+        async with db.begin_nested():
+            db.add(assignment)
+            await db.flush()
+    except IntegrityError:
+        winner = await skill_disclosure.previous_assignment_version(
+            db,
+            org_id=org.id,
+            package_id=package_id_snapshot,
+            version_id=version_id_snapshot,
+            target_type=body.target_type,
+            target_id=target_id,
+            target_user_id=target_user_id,
+        )
+        if winner is not None:
+            raise HTTPException(
+                409,
+                detail={
+                    "code": "use_advance",
+                    "message": "This target already has an active assignment of another version of "
+                    "this package; advance that assignment instead.",
+                    "assignment_id": winner[0].id,
+                },
+            ) from None
+        raise HTTPException(
+            409,
+            detail={
+                "code": "assignment_exists",
+                "message": "This target already has an assignment for this version.",
+            },
+        ) from None
     _audit(
         db,
         org=org,
@@ -3105,9 +4496,24 @@ async def create_org_assignment(
             "target_user_id": target_user_id,
         },
     )
+    await bump_grant_generations(db, "org", [org.id])
     await db.commit()
     await db.refresh(assignment)
     return _assignment_response(assignment)
+
+
+async def _assignment_for_delete(
+    db: AsyncSession, org_id: str, assignment_id: str
+) -> OrgSkillAssignment | None:
+    """The assignment, row-locked (PostgreSQL) so an in-flight /advance or
+    block is serialized with the delete."""
+    return (
+        await db.execute(
+            select(OrgSkillAssignment)
+            .where(OrgSkillAssignment.id == assignment_id, OrgSkillAssignment.org_id == org_id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
 
 
 @router.delete("/orgs/{org_id}/skills/assignments/{assignment_id}", status_code=204)
@@ -3118,17 +4524,46 @@ async def delete_org_assignment(
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     org, role = await _org_access(db, auth, org_id, admin=True)
-    assignment = (
-        await db.execute(
-            select(OrgSkillAssignment).where(
-                OrgSkillAssignment.id == assignment_id,
-                OrgSkillAssignment.org_id == org.id,
-            )
-        )
-    ).scalar_one_or_none()
+    assignment = await _assignment_for_delete(db, org.id, assignment_id)
     if assignment is None:
         raise HTTPException(404, "Skill assignment not found")
-    await db.delete(assignment)
+    if assignment.superseded_at is not None:
+        raise HTTPException(
+            409,
+            detail={
+                "code": "assignment_superseded",
+                "message": "This assignment was advanced to a newer version and is kept as history.",
+            },
+        )
+    if assignment.revoked_at is not None:
+        # Revoked by a block: audit history, never hard-deleted.
+        raise HTTPException(
+            409,
+            detail={
+                "code": "assignment_revoked",
+                "message": "This assignment was revoked by moderation and is kept as history.",
+            },
+        )
+    # Conditional delete: an /advance or a block that superseded / revoked the
+    # row after it was read must win (that row is history and is kept).
+    result = await db.execute(
+        delete(OrgSkillAssignment)
+        .where(
+            OrgSkillAssignment.id == assignment.id,
+            OrgSkillAssignment.superseded_at.is_(None),
+            OrgSkillAssignment.revoked_at.is_(None),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        await db.rollback()
+        raise HTTPException(
+            409,
+            detail={
+                "code": "assignment_changed",
+                "message": "This assignment was superseded or revoked concurrently and is kept as history.",
+            },
+        )
     _audit(
         db,
         org=org,
@@ -3139,6 +4574,7 @@ async def delete_org_assignment(
         target_id=assignment.id,
         after={"version_id": assignment.version_id},
     )
+    await bump_grant_generations(db, "org", [org.id])
     await db.commit()
     return Response(status_code=204)
 
@@ -3147,6 +4583,8 @@ async def delete_org_assignment(
 async def list_effective_assignments(
     device_id: str | None = Query(None, max_length=100),
     tool: str | None = Query(None),
+    limit: int = Query(GRANT_PAGE_DEFAULT, ge=1, le=GRANT_PAGE_MAX),
+    cursor: str | None = Query(None, max_length=512),
     auth: AuthContext = Depends(require_scope("skills:read")),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -3160,23 +4598,20 @@ async def list_effective_assignments(
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
     org_ids = await _orgs_with_feature(db, await _org_ids(db, auth), "team_skill_library")
+    generation = await grant_generation_token(db, "org", org_ids)
+    after = _decode_grant_cursor(cursor)  # validate even when nothing matches
+    if after is not None and after[0] != generation:
+        raise _listing_changed()
     if not org_ids:
-        return {"items": []}
-    predicates = [OrgSkillAssignment.target_type == "org"]
-    predicates.append(
-        and_(
-            OrgSkillAssignment.target_type == "user",
-            OrgSkillAssignment.target_id == auth.user.id,
-        )
-    )
-    if device_id:
-        predicates.append(
-            and_(
-                OrgSkillAssignment.target_type == "device",
-                OrgSkillAssignment.target_user_id == auth.user.id,
-                OrgSkillAssignment.target_id == device_id,
-            )
-        )
+        return {
+            "items": [],
+            "incomplete": False,
+            "omitted_count": 0,
+            "has_more": False,
+            "next_cursor": None,
+            "generation": generation,
+        }
+    predicates = _assignment_target_predicates(auth, device_id)
     # Only versions that are actually deliverable (published, not yanked, not
     # blocked) - the same predicate every delivery path uses - so a client
     # never follows an assignment into a 404.
@@ -3186,15 +4621,32 @@ async def list_effective_assignments(
         .join(SkillPackage, SkillPackage.id == SkillPackageVersion.package_id)
         .where(*_deliverable_predicates())
     )
-    rows = (
-        await db.execute(
-            select(OrgSkillAssignment).where(
-                OrgSkillAssignment.org_id.in_(org_ids),
-                OrgSkillAssignment.version_id.in_(deliverable_versions),
-                or_(*predicates),
-            )
-        )
-    ).scalars().all()
+    rows, has_more, next_cursor = await _grant_page(
+        db,
+        select(OrgSkillAssignment).where(
+            OrgSkillAssignment.org_id.in_(org_ids),
+            OrgSkillAssignment.version_id.in_(deliverable_versions),
+            OrgSkillAssignment.revoked_at.is_(None),
+            or_(*predicates),
+        ),
+        OrgSkillAssignment,
+        cursor=cursor,
+        limit=limit,
+        generation=generation,
+        scope_type="org",
+        scope_ids=org_ids,
+    )
+    readable = [row for row in rows if _assignment_record_ok(row)]
+    omitted = len(rows) - len(readable)
     if tool:
-        rows = [row for row in rows if not (tools := _json(row.target_tools, [])) or tool in tools]
-    return {"items": [_assignment_response(row) for row in rows]}
+        # A page may hold fewer items than `limit` after this filter; keep
+        # following next_cursor while has_more is true.
+        readable = [row for row in readable if _grants_tool(row.target_tools, tool)]
+    return {
+        "items": [_assignment_response(row) for row in readable],
+        "incomplete": omitted > 0,
+        "omitted_count": omitted,
+        "has_more": has_more,
+        "next_cursor": next_cursor,
+        "generation": generation,
+    }

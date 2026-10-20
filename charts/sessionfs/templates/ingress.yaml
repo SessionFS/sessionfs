@@ -5,10 +5,18 @@ metadata:
   name: {{ include "sessionfs.fullname" . }}
   labels:
     {{- include "sessionfs.labels" . | nindent 4 }}
-  {{- with .Values.ingress.annotations }}
+  {{- /* ingress-nginx defaults to 60s and 1m bodies, which would cut off a
+         large sync push before the dashboard nginx (dashboard.apiProxyTimeout,
+         dashboard.clientMaxBodySize) does. Other controllers ignore these keys;
+         anything set in ingress.annotations wins. */}}
+  {{- $timeout := include "sessionfs.apiProxyTimeoutSeconds" . }}
+  {{- $defaults := dict
+        "nginx.ingress.kubernetes.io/proxy-read-timeout" $timeout
+        "nginx.ingress.kubernetes.io/proxy-send-timeout" $timeout
+        "nginx.ingress.kubernetes.io/proxy-body-size" (toString (.Values.dashboard.clientMaxBodySize | default "100m")) }}
+  {{- $annotations := merge (deepCopy (.Values.ingress.annotations | default dict)) $defaults }}
   annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
+    {{- toYaml $annotations | nindent 4 }}
 spec:
   {{- if .Values.ingress.className }}
   ingressClassName: {{ .Values.ingress.className }}

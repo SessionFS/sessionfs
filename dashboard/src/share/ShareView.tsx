@@ -97,6 +97,7 @@ function toolLabel(tool: string): string {
     cline: 'Cline',
     'roo-code': 'Roo Code',
     'roo-cline': 'Roo Code',
+    antigravity: 'Antigravity',
     chatgpt: 'ChatGPT',
   };
   return labels[tool] || tool;

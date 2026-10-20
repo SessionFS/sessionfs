@@ -48,6 +48,7 @@ See [Installation](docs/install.md) for alternative install methods (brew, curl,
 | Cline | Yes | Capture-only |
 | Roo Code | Yes | Capture-only |
 | Kilo Code | Yes | Capture-only |
+| Antigravity (desktop app, `agy` CLI, IDE) | Yes | Capture-only |
 
 ## How It Works
 
@@ -62,6 +63,8 @@ Each tool has its own watcher:
 - **Amp** — watches `~/.local/share/amp/threads/` JSON threads (capture-only)
 - **Cline** — watches VS Code globalStorage task directories (capture-only)
 - **Roo Code** — watches VS Code globalStorage task directories (capture-only)
+- **Kilo Code** — watches VS Code globalStorage task directories (capture-only)
+- **Antigravity** — watches `~/.gemini/antigravity*/brain/` plaintext transcripts for the desktop app, the `agy` CLI and the IDE build (capture-only)
 
 Sessions are indexed locally for fast browsing via the CLI. Cloud sync is opt-in; the daemon defaults to local-only.
 
@@ -95,11 +98,14 @@ SessionFS converts between native formats automatically — message roles, tool 
 | `sfs search "query"` | Full-text search across all sessions |
 | `sfs summary <id>` | Show session summary (files, tests, commands, packages) (or --today for daily overview) |
 | `sfs audit <id>` | Audit a session for hallucinations with LLM-as-a-Judge |
+| `sfs delete\|trash\|restore` | Delete sessions (cloud, local, or everywhere), browse the trash, restore |
+| `sfs recapture <id>` | Force re-capture a session from its native source |
 | `sfs push <id>` | Push a session to the cloud |
 | `sfs pull <id>` | Pull a session from the cloud |
 | `sfs pull-handoff <hnd_id>` | Pull a session from a handoff link |
 | `sfs list-remote` | List sessions on the cloud server |
 | `sfs handoff <id> --to EMAIL` | Hand off a session to a teammate with email notification |
+| `sfs handoffs inbox\|sent\|get\|revoke\|decline\|comment\|comments\|events` | View and act on handoffs you sent or received |
 | `sfs sync` | Bidirectional sync (push + pull) |
 | `sfs sync auto --mode MODE` | Set autosync mode: off, all, or selective |
 | `sfs sync watch\|unwatch <id>` | Add/remove sessions from autosync watchlist |
@@ -111,13 +117,19 @@ SessionFS converts between native formats automatically — message roles, tool 
 | `sfs project ask\|pages\|page\|regenerate\|set` | Query knowledge, manage wiki pages, configure project |
 | `sfs project link-repo\|unlink-repo\|repos` | Multi-repo projects — one project can own several git repos |
 | `sfs project merge` | Consolidate two projects into one (dry-run by default) |
+| `sfs project transfer\|transfers` | Move a project between personal and org scope |
+| `sfs project rebuild\|promote-eligible` | Rebuild compiled context from scratch; bulk-promote eligible notes to claims |
 | `sfs rules init\|edit\|show\|compile` | Manage canonical project rules — compile once, drive every tool |
-| `sfs rules push\|pull` | Sync canonical rules through the SessionFS API |
-| `sfs persona list\|show\|create\|edit\|delete\|assume\|forget` | Manage agent personas; `assume`/`forget` toggle a persona-only local provenance bundle (Pro+) |
-| `sfs ticket list\|show\|create\|start\|complete\|comment` | Manage agent tickets — start/complete writes a local provenance bundle so the daemon tags captured sessions (Team+) |
+| `sfs rules push\|pull\|emit` | Sync canonical rules through the SessionFS API; print compiled rules offline |
+| `sfs hooks install\|uninstall\|status` | Install and manage SessionFS hooks for native AI tools |
+| `sfs persona list\|show\|pull\|create\|edit\|delete\|assume\|forget` | Manage agent personas, project- or org-level (`--org`); `assume`/`forget` toggle a persona-only local provenance bundle (Pro+) |
+| `sfs ticket list\|show\|create\|update\|start\|complete\|comment\|comments\|watch\|review-state` | Manage agent tickets — start/complete writes a local provenance bundle so the daemon tags captured sessions (Team+) |
 | `sfs ticket assign\|resolve\|escalate` | Re-route, close out (review→done with dep enrichment), or bump priority |
-| `sfs ticket status\|block\|unblock\|reopen\|approve\|dismiss` | Ticket lifecycle transitions and active-bundle inspection |
-| `sfs doctor` | Run 8 health checks with auto-repair |
+| `sfs ticket status\|block\|unblock\|reopen\|approve\|close\|dismiss` | Ticket lifecycle transitions and active-bundle inspection |
+| `sfs agent run\|complete\|status\|list` | Record agent runs (e.g. CI reviews) with findings (Team+) |
+| `sfs agent feedback add\|list\|summary` | Record and summarize whether agent work was useful (Team+) |
+| `sfs resident run\|health` | Run an operator-hosted resident reviewer or implementer against a work queue |
+| `sfs doctor` | Run health checks with auto-repair |
 | `sfs storage` | Show local disk usage and retention policy |
 | `sfs storage prune` | Prune old sessions to free disk space |
 | `sfs daemon start\|stop\|restart\|status\|logs` | Manage the background daemon |
@@ -125,15 +137,25 @@ SessionFS converts between native formats automatically — message roles, tool 
 | `sfs daemon retry-sync [SESSION_ID]` | Retry sessions whose sync is backing off or paused after failed pushes |
 | `sfs watcher list\|enable\|disable` | Manage tool watchers |
 | `sfs auth login\|signup\|status` | Manage cloud authentication |
-| `sfs config show\|set` | Manage configuration |
-| `sfs mcp serve` | Start MCP server (36 tools) for AI tool integration |
-| `sfs mcp install --for TOOL` | Auto-configure MCP for all 8 supported tools |
+| `sfs auth use\|profiles\|whoami` | Switch between named account profiles |
+| `sfs auth keys list\|create\|revoke` | Manage your personal API keys |
+| `sfs config show\|set\|default-org` | Manage configuration and your default organization |
+| `sfs mcp serve` | Start MCP server (80 tools) for AI tool integration |
+| `sfs mcp install\|uninstall --for TOOL` | Add or remove the MCP registration for any of the 10 supported tools |
+| `sfs mcp index` | Rebuild the local full-text search index |
 | `sfs init` | Interactive setup wizard — auto-detects tools, optional sync |
 | `sfs security scan\|fix` | Audit config permissions, API key exposure, dependencies |
-| `sfs org create\|list\|show\|invite\|remove` | Manage organizations, members, and roles |
-| `sfs skill inspect\|add\|list\|sync\|update\|remove\|rollback\|doctor` | Install portable Agent Skills / Agent Plugins across tools (`sfs plugin` is an alias) |
+| `sfs dlp scan\|policy` | Scan sessions for secrets and PHI; view or set the org DLP policy |
+| `sfs org info\|create\|invite\|members\|set-role\|remove` | Manage organizations, members, and roles |
+| `sfs org auto-join list\|add\|remove` | Auto-join by verified email domain |
+| `sfs skill inspect\|add\|list\|show\|plan\|compile\|sync\|update\|diff\|remove\|rollback\|doctor` | Install portable Agent Skills / Agent Plugins across tools (`sfs plugin` is an alias) |
+| `sfs skill search\|pull\|validate\|publish` | Find, install and publish packages on the hosted SessionFS Marketplace |
+| `sfs skill marketplace add\|list\|refresh\|remove` | Manage local marketplace sources |
+| `sfs skill publisher claim\|list\|show\|verify\|check\|trust\|untrust` | Claim and verify a publisher namespace; set up trusted publishing from GitHub Actions |
 | `sfs admin reindex` | Re-extract metadata for all cloud sessions |
-| `sfs admin create-trial\|create-license\|list\|extend\|revoke` | Manage self-hosted licenses |
+| `sfs admin create-trial\|create-license\|list-licenses\|extend-trial\|revoke-license` | Manage self-hosted licenses |
+| `sfs admin service-keys list\|create\|rotate\|revoke\|scopes` | Manage scoped service API keys for an organization |
+| `sfs admin trusted-reviewers list\|add\|revoke` | Register reviewers whose verdicts work queues trust |
 
 See the full [CLI Reference](docs/cli-reference.md) for options and examples.
 
@@ -227,6 +249,8 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
+**v0.18.0 — Public Beta.** 6901 backend tests + 636 dashboard tests passing. Database migrations 001–075 (067 and 068 unused). 80 MCP tools. **A marketplace you can trust.** Before you install a skill, SessionFS shows exactly what it will do in each tool (files, scripts, hooks, MCP servers, network endpoints, shell commands, hidden Unicode); updates that only change text carry your consent forward, while updates that change code or ask for more access stop for re-approval, in the CLI, the daemon and an org admin's "Updates to review" queue. Every version is scanned for dangerous instructions and rescanned as rules improve, with automatic quarantine; moderators and org admins can yank or block packages, and blocks reach every device. Publishers can verify a namespace by DNS or GitHub and publish straight from GitHub Actions with trusted publishing. Also: **org-level personas** shared by every project in an org (GitHub #70), **Antigravity** session capture (desktop app, `agy` CLI, IDE), GitHub App linking that requires a verified GitHub sign-in (closing an installation-claim hijack; GitHub-verified repos reset to owner-attested), fail-closed GitHub webhooks, organization creators as owners, and more careful billing reconciliation. Migrations 065–075.
+
 **v0.17.1 — Public Beta.** 4020 backend tests + 492 dashboard tests passing. 64 database migrations (unchanged). 79 MCP tools. The daemon now backs off on sessions whose pushes keep failing (1 min, 5 min, 15 min, then hourly, pausing after a long failing streak) instead of retrying every cycle, with the state shown in `sfs daemon status` and `sfs doctor` and a new `sfs daemon retry-sync`. Local cleanup never removes changes that haven't been uploaded yet, and server error logs no longer include session content.
 
 **v0.17.0 — Public Beta.** 3996 backend tests + 492 dashboard tests passing. 64 database migrations. 79 MCP tools. **Agent feedback records** let teams record whether an agent's work was useful (routing, summaries, actionability, duplicates, outcomes) and see quality summaries per persona, through the API, 3 new MCP tools and `sfs agent feedback`. **Self-service org membership for enterprises:** auto-join by verified email domain, `sfs org set-role`, and `sfs org remove` by email or in bulk. **Self-hosted fixes:** DLP redaction keeps session files intact and also catches secrets in JSON keys and field pairs, NUL bytes no longer break sync, Codex sessions with `"info": null` are captured, migrations run in order under ArgoCD with a schema-aware readiness probe, and local-license installs start cleanly. Migration 064.
@@ -256,7 +280,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 **v0.11.0 — Public Beta.** 2415 backend tests + 388 dashboard tests passing. 52 database migrations. 62 MCP tools. **Licensing + organization-management redesign.** An organization's plan, seats, and storage now resolve from a single authoritative entitlements record instead of being scattered across user rows and license tables — which is what previously left enterprise admins unable to fully manage their own organizations. On that foundation: self-service license activation with **required email verification** (an org admin activates a key, then confirms a single-use, time-limited code sent to their address), two-step organization **ownership transfer** with an explicit owner role, and last-owner safety guards so an org can never be left without an owner. Existing orgs are backfilled deterministically, so no plan changes for anyone. Migrations 050–052 (entitlements foundation + ownership-transfer table + role/status integrity constraints). Backend + dashboard. Reviewed end-to-end across four phases — Codex + Sentinel design review, Codex code review, Shield-SR pre-release (all clean).
 
-**v0.10.32 — Public Beta.** 2279 backend tests + 388 dashboard tests passing. 49 database migrations. 62 MCP tools. **Hotfix:** the Stripe `customer.subscription.updated` webhook no longer downgrades a paying customer to free (or clears their subscription pointer) on transient billing-health statuses like `past_due` — only a terminal `subscription.deleted` downgrades, which also restores the payment-recovery path. Prior feature — **Multi-repo projects** — a project can now own more than one git repo, so personas / knowledge / tickets / rules are shared across a product's repos instead of duplicated across split projects (migration 049 + `project_repos`). Verified-ownership repo linking (GitHub App installation proof, owner-attested fallback, verified-beats-unverified reclaim), `sfs project link-repo` / `unlink-repo` / `repos`, and `sfs project merge` to consolidate split projects (dry-run by default, atomic, audited) with a dashboard Repos tab + Merge surface. Free for all tiers. Also clears freshly-published CVEs (starlette/python-multipart/cryptography + site vite/astro). Design Codex-CLEAN + Sentinel-approved; implementation Codex code-review CLEAN + Shield-SR approved.
+**v0.10.32 — Public Beta.** 2279 backend tests + 388 dashboard tests passing. 49 database migrations. 62 MCP tools. **Hotfix:** a paying customer whose payment temporarily fails (for example, a declined card that is still being retried) is no longer downgraded to free or disconnected from their subscription — only a cancelled subscription downgrades, so access continues and the account recovers automatically once payment succeeds. Prior feature — **Multi-repo projects** — a project can now own more than one git repo, so personas / knowledge / tickets / rules are shared across a product's repos instead of duplicated across split projects (migration 049 + `project_repos`). Verified-ownership repo linking (GitHub App installation proof, owner-attested fallback, verified-beats-unverified reclaim), `sfs project link-repo` / `unlink-repo` / `repos`, and `sfs project merge` to consolidate split projects (dry-run by default, atomic, audited) with a dashboard Repos tab + Merge surface. Free for all tiers. Also clears freshly-published CVEs (starlette/python-multipart/cryptography + site vite/astro). Design Codex-CLEAN + Sentinel-approved; implementation Codex code-review CLEAN + Shield-SR approved.
 
 **v0.10.30 — Public Beta.** 2179 backend tests + 369 dashboard tests passing. 48 database migrations. 62 MCP tools. Complete dashboard visual redesign — dark-first OKLCH design-token foundation, a `ui/` primitive library (incl. a custom anchored keyboard-accessible Select/Dropdown), a grouped left sidebar, Sessions/Projects list-grid toggles, and a fully rebuilt captured-session conversation surface (tool-aware rendering instead of raw JSON, a real transcript with speaker hierarchy and themed markdown). Brand tagline → "Memory Layer For AI Agents" (dashboard + site). Frontend/site only — no backend, schema, MCP-tool, or auth changes. Codex-reviewed to VERIFIED-CLEAN across consolidated rounds; Shield-SR CLEAN (0 CRITICAL/HIGH).
 
@@ -272,7 +296,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ### Session capture, resume, and search
 
-- **Eight-tool capture** — Claude Code, Codex, Gemini, Cursor, Copilot CLI, Amp, Cline, Roo Code
+- **Ten-tool capture** — Claude Code, Codex, Gemini, Cursor, Copilot CLI, Amp, Cline, Roo Code, Kilo Code, Antigravity
 - **Cross-tool resume** — start in Claude Code, resume in Codex (and vice-versa with Gemini / Copilot); auto-launches the native tool, full transcript via `--append-system-prompt-file` with 50-message trim, `sfs resume --model` to override the model
 - **Narrative session summaries** — LLM-powered `what_happened`, `key_decisions`, `outcome`, `open_issues`
 - **Full-text search** across all sessions (CLI, dashboard, API), tier-aware
@@ -289,6 +313,8 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ### Team and collaboration
 
+- **Skills and plugins marketplace** — install Agent Skills and Agent Plugins across every supported tool with `sfs skill`; the hosted SessionFS Marketplace shows exactly what each package can do before you install it, asks again when an update needs more access, scans every version for dangerous instructions, supports verified publishers and trusted publishing from GitHub Actions, quarantines versions a rescan flags, and lets moderators and organization admins yank or block packages, with blocks reaching every installed copy
+- **Org-level personas** — define a persona once for the whole organization and use it in every project; a project persona with the same name overrides it
 - **Team handoff** — email notification, status stepper, session context card, smart workspace resolution
 - **GitHub PR App** (signature enforcement) + **GitLab MR integration** (per-user webhook secrets, comment dedup) — auto-comment AI session context on pull requests and merge requests
 - **RBAC** with admin and member roles; seat enforcement on invite accept
@@ -299,7 +325,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 - **Connection pool optimization** — configurable via `SFS_DATABASE_POOL_SIZE`/`MAX_OVERFLOW`/`POOL_TIMEOUT`/`POOL_RECYCLE`; sync_push splits into 3 phases so DB connections are held ~70ms (not ~5s)
 - **Sync atomicity** — commit-then-promote blob invariant; temp blob preserved until second commit succeeds
 - **Self-healing SQLite index** with auto-rebuild from `.sfs` files
-- **`sfs doctor`** with 8 health checks and auto-repair
+- **`sfs doctor`** health checks with auto-repair (store, index, daemon, capture health, sync retries, API, auth, config permissions, install consistency)
 - **`handle_errors` decorator** on all CLI commands (no raw tracebacks)
 - **Multi-provider email** (Resend, SMTP, or disabled for air-gapped)
 
@@ -313,15 +339,15 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ### MCP and dashboard
 
-- **MCP server** (local, stdio) with 36 tools — sessions (search, context, recent, related, summary, audit, provenance), knowledge read (project context, context section, wiki page, search, list entries, get entry, health, ask), knowledge write (add_knowledge, update_wiki_page, list_wiki_pages, compile, dismiss_knowledge_entry), rules (get_rules, get_compiled_rules), **personas** (list_personas, get_persona, create_persona, assume_persona, forget_persona), and **tickets** (list_tickets, get_ticket, start_ticket, create_ticket, complete_ticket, resolve_ticket, assign_persona, escalate_ticket, add_ticket_comment)
-- **`sfs mcp install --for <tool>`** for all 9 tools (stale registration repair, malformed config handling)
+- **MCP server** (local, stdio) with 80 tools — sessions, knowledge read and write, rules, personas, tickets, agent runs and feedback, work queues, handoffs, and marketplace tools (search, inspect, diff versions, preview and load approved instruction-only skills, request installs) that never write files or enable executable content. The full list is in the [CLI Reference](docs/cli-reference.md#sfs-mcp-serve)
+- **`sfs mcp install --for <tool>`** for all 10 tools (stale registration repair, malformed config handling)
 - **Web dashboard** with light/dark mode, resume-first layout, date-grouped sessions, lineage grouping, command palette (Cmd+K), mobile nav, accessibility (focus trapping, ARIA live regions), product identity
-- **`/help` page** — MCP-first guidance, 9-tool installer with live terminal + copy button, agent prompt examples, curated CLI quick-reference
+- **`/help` page** — MCP-first guidance, 10-tool installer with live terminal + copy button, agent prompt examples, curated CLI quick-reference
 
 ### Security, compliance, and billing
 
 - **DLP / Secret Scrubbing** — 14 PHI patterns + 19 secret patterns, BLOCK/REDACT/WARN modes, server-side scan of all archive files, `sfs dlp scan/policy`, dashboard settings tab
-- **`sfs init` wizard** with auto-detection of 9 tools and optional sync setup
+- **`sfs init` wizard** with auto-detection of 10 tools and optional sync setup
 - **`sfs security scan/fix`** for config permissions, API key exposure, dependency audit
 - **Security pipeline** — pip-audit, Trivy (rendered Helm chart), Bandit, Dependabot, SECURITY.md; CRITICAL/HIGH blocks the pipeline
 - **FSL licensing** with open-source core and enterprise extensions

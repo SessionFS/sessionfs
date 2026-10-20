@@ -9,4 +9,5 @@ export const TOOL_COLORS: Record<string, string> = {
   amp: 'var(--tool-amp)',
   cline: 'var(--tool-cline)',
   'roo-code': 'var(--tool-roo)',
+  antigravity: 'var(--tool-antigravity)',
 };

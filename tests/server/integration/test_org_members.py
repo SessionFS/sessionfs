@@ -1155,7 +1155,7 @@ async def test_real_last_admin_demotion_blocked_via_new_route(
 
 @pytest.mark.asyncio
 async def test_last_admin_demotion_guard_predicate_fires(
-    db_session: AsyncSession,
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Codex Phase-3a round-6 MEDIUM (KB 264) regression — direct
     service-level test of the last-admin guard PREDICATE.
@@ -1185,6 +1185,16 @@ async def test_last_admin_demotion_guard_predicate_fires(
 
     # Attempt to demote admin → would leave 0 admins. The guard
     # MUST fire.
+    # GH #70 — the service now re-reads the actor's admin standing under
+    # the org scope lock. This test isolates the last-admin PREDICATE with
+    # a non-member actor, so stub that re-check out.
+    from sessionfs.server.routes import org_members as _om
+
+    async def _no_admin_check(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(_om, "_require_admin", _no_admin_check)
+
     try:
         await perform_role_change(
             db_session, bob, org.id, admin.id, "member"
@@ -1201,7 +1211,7 @@ async def test_last_admin_demotion_guard_predicate_fires(
 
 @pytest.mark.asyncio
 async def test_last_admin_removal_guard_predicate_fires(
-    db_session: AsyncSession,
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Codex Phase-3a round-8 MEDIUM (KB 266) regression — direct
     service-level test of the last-admin REMOVAL guard PREDICATE.
@@ -1233,6 +1243,16 @@ async def test_last_admin_removal_guard_predicate_fires(
     # there would be 2 admins. Skip that — directly test the
     # predicate by calling the service with a removing actor that's
     # NOT the target, against the sole admin.
+    # GH #70 — the service now re-reads the actor's admin standing under
+    # the org scope lock. This test isolates the last-admin PREDICATE with
+    # a non-member actor, so stub that re-check out.
+    from sessionfs.server.routes import org_members as _om
+
+    async def _no_admin_check(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(_om, "_require_admin", _no_admin_check)
+
     try:
         await perform_member_removal(db_session, bob, org.id, admin.id)
     except HTTPException as exc:

@@ -126,10 +126,10 @@ class TestToolDetection:
 class TestToolDefinitions:
     """Test the built-in tool definitions."""
 
-    def test_all_nine_tools_defined(self) -> None:
-        """All nine supported tools have definitions."""
+    def test_all_ten_tools_defined(self) -> None:
+        """All ten supported tools have definitions."""
         tools = _get_tool_definitions()
-        assert len(tools) == 9
+        assert len(tools) == 10
 
         names = {t.name for t in tools}
         assert names == {
@@ -142,6 +142,7 @@ class TestToolDefinitions:
             "Cline",
             "Roo Code",
             "Kilo Code",
+            "Antigravity",
         }
 
     def test_each_tool_has_detect_paths(self) -> None:

@@ -712,6 +712,14 @@ async def perform_role_change(
     of `org_id` (legacy via `check_role`, new via `_require_admin`).
     Service trusts that and runs the rest.
     """
+    # GH #70 — org scope lock first (before any row lock), then re-read the
+    # actor's standing under it: merges, transfers and org-persona writes
+    # read membership under the same lock.
+    from sessionfs.server.services.scope_locks import lock_scopes
+
+    await lock_scopes(db, org_ids=[org_id])
+    await _require_admin(db, actor, org_id)
+
     # P4: ownership changes ONLY via the dedicated transfer endpoint.
     if new_role == "owner":
         raise HTTPException(
@@ -926,6 +934,26 @@ async def perform_member_removal(
       - last-admin removal blocked (400) — counts owner+admin
       - non-member target (404)
     """
+    # GH #70 — removal auto-transfers the member's org projects, so take
+    # their project scope locks (sorted) and then the org lock, before any
+    # row lock; then re-read the actor's standing under the locks.
+    from sessionfs.server.services.scope_locks import lock_scopes
+
+    owned_project_ids = (
+        await db.execute(
+            select(Project.id).where(
+                Project.org_id == org_id, Project.owner_id == target_user_id
+            )
+        )
+    ).scalars().all()
+    await lock_scopes(
+        db,
+        project_ids=owned_project_ids,
+        user_ids=[target_user_id],
+        org_ids=[org_id],
+    )
+    await _require_admin(db, removing_admin, org_id)
+
     member = (
         await db.execute(
             select(OrgMember).where(
@@ -1366,6 +1394,13 @@ async def initiate_owner_transfer(
     expiry window starts at creation.
     """
     org = await _org_or_404(db, org_id)
+    # GH #70 — org scope lock before ANY membership read or FOR UPDATE:
+    # role changes, removals and the other owner-transfer steps take the
+    # same lock, so every role check below sees state that cannot change
+    # until this transaction commits.
+    from sessionfs.server.services.scope_locks import lock_scopes
+
+    await lock_scopes(db, org_ids=[org_id])
 
     # Caller must be the owner.
     actor_role = await _user_role_in_org(db, user.id, org_id)
@@ -1488,6 +1523,13 @@ async def accept_owner_transfer(
     partial unique index is the structural backstop.
     """
     org = await _org_or_404(db, org_id)
+    # GH #70 — org scope lock before ANY membership read or FOR UPDATE:
+    # role changes, removals and the other owner-transfer steps take the
+    # same lock, so every role check below sees state that cannot change
+    # until this transaction commits.
+    from sessionfs.server.services.scope_locks import lock_scopes
+
+    await lock_scopes(db, org_ids=[org_id])
 
     caller_role = await _user_role_in_org(db, user.id, org_id)
     if caller_role is None:
@@ -1659,6 +1701,13 @@ async def cancel_owner_transfer(
 ) -> dict:
     """Cancel a pending ownership transfer. Owner or target may cancel."""
     org = await _org_or_404(db, org_id)
+    # GH #70 — org scope lock before ANY membership read or FOR UPDATE:
+    # role changes, removals and the other owner-transfer steps take the
+    # same lock, so every role check below sees state that cannot change
+    # until this transaction commits.
+    from sessionfs.server.services.scope_locks import lock_scopes
+
+    await lock_scopes(db, org_ids=[org_id])
 
     caller_role = await _user_role_in_org(db, user.id, org_id)
     if caller_role is None:

@@ -17,13 +17,13 @@ import { useAuth } from '../auth/AuthContext';
 import { TOOL_COLORS } from '../utils/tools';
 import { Button, Card, Select } from '../components/ui';
 
-const CAPTURE_ONLY_TOOLS = new Set(['cursor', 'cline', 'roo-code', 'amp']);
+const CAPTURE_ONLY_TOOLS = new Set(['cursor', 'cline', 'roo-code', 'amp', 'antigravity']);
 
 interface SessionSummaryWithAudit extends SessionSummary {
   audit_trust_score?: number | null;
 }
 
-const TOOLS = ['all', 'claude-code', 'codex', 'gemini', 'copilot', 'cursor', 'amp', 'cline', 'roo-code'] as const;
+const TOOLS = ['all', 'claude-code', 'codex', 'gemini', 'copilot', 'cursor', 'amp', 'cline', 'roo-code', 'antigravity'] as const;
 const DATE_RANGES = [
   { label: 'All time', value: '' },
   { label: 'Last 24h', value: '24h' },

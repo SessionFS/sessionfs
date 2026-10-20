@@ -92,6 +92,31 @@ async def resolve_entitlement(
     )
 
 
+async def lock_active_entitlement(
+    db: AsyncSession, owner_type: str, owner_id: str
+) -> str | None:
+    """Lock the owner's active entitlement row FOR UPDATE and return its tier.
+
+    This is the serialization point against a concurrent ``apply_entitlement``
+    downgrade: apply_entitlement UPDATEs the entitlement row in place (then
+    mirrors the legacy tier column on Organization/User), so holding this row
+    FOR UPDATE until the fenced operation commits makes a downgrade wait for it
+    (or vice versa) and keeps ``resolve_entitlement``'s read stable inside the
+    tier re-check. Returns None when there is no active entitlement (the legacy
+    tier columns still apply)."""
+    return (
+        await db.execute(
+            select(Entitlement.tier)
+            .where(
+                Entitlement.owner_type == owner_type,
+                Entitlement.owner_id == owner_id,
+                Entitlement.status == "active",
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+
+
 async def apply_entitlement(
     owner_type: str,
     owner_id: str,
@@ -211,6 +236,231 @@ async def apply_entitlement(
         )
 
     return ent
+
+
+async def lock_stripe_customer(db: AsyncSession, customer_id: str | None) -> None:
+    """Serialize every billing mutation for one Stripe customer.
+
+    Lock order for anything that changes tier, seats or entitlements (org
+    creation adopting a subscription, admin tier/seat changes, and the
+    checkout / subscription.updated / subscription.deleted webhooks):
+
+        1. this customer lock
+        2. the user row, then the org row (SELECT ... FOR UPDATE)
+        3. the entitlement row(s)
+
+    lock_billing_rows() / lock_billing_owner() take 1 and 2 (and the org row).
+
+    Taking the customer lock first means a webhook can never interleave
+    with an org creation that is moving the same customer, and both sides
+    re-resolve ownership after acquiring it.
+
+    PostgreSQL: a transaction-scoped advisory lock (released at commit or
+    rollback). Other dialects (SQLite in tests and single-node dev) already
+    serialize writers, so this is a no-op there.
+    """
+    if not customer_id:
+        return
+    if db.get_bind().dialect.name != "postgresql":
+        return
+    from sqlalchemy import text
+
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"sessionfs:stripe_customer:{customer_id}"},
+    )
+
+
+class BillingLockRetry(Exception):
+    """A Stripe customer id changed between the unlocked read and the row
+    lock. Taking that customer's lock now would break the lock order, so
+    the transaction must roll back and start over (the webhook processor
+    restarts it; HTTP callers get 409 concurrent_update)."""
+
+
+async def lock_billing_rows(
+    db: AsyncSession,
+    *,
+    user_ids=(),
+    org_ids=(),
+    extra_customers=(),
+) -> dict:
+    """Take billing locks in the universal order and return the locked,
+    refreshed rows as {("user"|"org", id): row}.
+
+    Universal billing lock order — every path that changes tier, seats,
+    Stripe ids or entitlements (admin tier/seat changes, org creation,
+    checkout creation, and the Stripe checkout / subscription webhooks):
+
+        1. Stripe customer advisory locks (lock_stripe_customer), ALL of
+           them — the customers stored on every row about to be locked plus
+           any extra (e.g. an event's customer) — in sorted order
+        2. user rows (SELECT ... FOR UPDATE), sorted by id
+        3. organization rows, sorted by id
+        4. entitlement rows (apply_entitlement / the binding lookup)
+
+    No lock from an earlier step is ever taken after a later one. Customer
+    ids are read before locking; if a locked row's customer is not among
+    the locks taken (it changed in between), BillingLockRetry is raised
+    instead of locking it late.
+    """
+    user_ids = sorted({u for u in user_ids if u})
+    org_ids = sorted({o for o in org_ids if o})
+    customers = {c for c in extra_customers if c}
+    if user_ids:
+        customers.update(
+            c for c in (
+                await db.execute(select(User.stripe_customer_id).where(User.id.in_(user_ids)))
+            ).scalars() if c
+        )
+    if org_ids:
+        customers.update(
+            c for c in (
+                await db.execute(
+                    select(Organization.stripe_customer_id).where(Organization.id.in_(org_ids))
+                )
+            ).scalars() if c
+        )
+    for customer_id in sorted(customers):
+        await lock_stripe_customer(db, customer_id)
+
+    rows: dict = {}
+    for model, kind, ids in ((User, "user", user_ids), (Organization, "org", org_ids)):
+        for owner_id in ids:
+            row = (
+                await db.execute(
+                    select(model)
+                    .where(model.id == owner_id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
+            ).scalar_one_or_none()
+            if row is not None and row.stripe_customer_id and row.stripe_customer_id not in customers:
+                raise BillingLockRetry(f"{kind} {owner_id} customer changed during locking")
+            rows[(kind, owner_id)] = row
+    return rows
+
+
+async def lock_billing_owner(db: AsyncSession, owner_type: str, owner_id: str, *, extra_customers=()):
+    """lock_billing_rows for one owner; returns the locked row or None."""
+    rows = await lock_billing_rows(
+        db,
+        user_ids=[owner_id] if owner_type == "user" else [],
+        org_ids=[owner_id] if owner_type == "org" else [],
+        extra_customers=extra_customers,
+    )
+    return rows.get((owner_type, owner_id))
+
+
+class EntitlementBindingConflict(Exception):
+    """The external binding (source, source_ref) belongs to another owner."""
+
+
+async def adopt_user_entitlement_for_org(
+    *,
+    user_id: str,
+    org_id: str,
+    stripe_subscription_id: str | None,
+    db: AsyncSession,
+) -> Entitlement | None:
+    """Move the creator's paid entitlement onto the org they are creating.
+
+    Whatever funded the creator's personal paid tier now funds the org, so
+    the user must not keep an active entitlement of their own (they would
+    keep paid access after leaving the org), and the org must not get a
+    second row for the same external binding (``uq_entitlements_source_ref``
+    allows one row per binding, and the clash rolls back the org create).
+
+    Resolution, all under ``SELECT ... FOR UPDATE``:
+
+    1. If ``stripe_subscription_id`` is set and a row carries
+       ``(stripe, stripe_subscription_id)``, that row is moved. It must be
+       this user's active entitlement; anything else raises
+       EntitlementBindingConflict.
+    2. Otherwise the user's active entitlement, if any, is moved:
+       * a Stripe binding to a DIFFERENT subscription is a conflict
+         (EntitlementBindingConflict) — never silently rebound;
+       * the known migration-050 shape (source='manual', no source_ref) is
+         rebound to ``(stripe, stripe_subscription_id)`` when a
+         subscription id is known;
+       * any other provenance (admin_provisioned, helm_license, ...) moves
+         as it is — it is never converted to Stripe here; a later canonical
+         Stripe event for the org's subscription does that.
+
+    The row is re-owned in place (``created_at``/history preserved); the
+    caller then runs ``apply_entitlement('org', ...)`` with the moved row's
+    provenance, which finds it as the org's active entitlement and mirrors
+    the org cache. In every case the user's ``entitlement_id`` pointer is
+    cleared and the ``User.tier`` cache drops to 'free' (never touching the
+    platform 'admin' tier).
+
+    Returns the moved row, or None when the user had nothing to move.
+    """
+    row: Entitlement | None = None
+    if stripe_subscription_id:
+        row = (
+            await db.execute(
+                select(Entitlement)
+                .where(
+                    Entitlement.source == "stripe",
+                    Entitlement.source_ref == stripe_subscription_id,
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if row is not None and not (
+            row.owner_type == "user"
+            and row.owner_id == user_id
+            and row.status == "active"
+        ):
+            raise EntitlementBindingConflict(
+                f"stripe binding {stripe_subscription_id} is held by {row.owner_type} "
+                f"entitlement {row.id} (status={row.status})"
+            )
+
+    if row is None:
+        row = (
+            await db.execute(
+                select(Entitlement)
+                .where(
+                    Entitlement.owner_type == "user",
+                    Entitlement.owner_id == user_id,
+                    Entitlement.status == "active",
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if row is not None and row.source == "stripe" and row.source_ref and (
+            row.source_ref != stripe_subscription_id
+        ):
+            raise EntitlementBindingConflict(
+                f"user's active entitlement {row.id} is bound to Stripe subscription "
+                f"{row.source_ref}, not {stripe_subscription_id}"
+            )
+        if (
+            row is not None
+            and stripe_subscription_id
+            and row.source == "manual"
+            and row.source_ref is None
+        ):
+            row.source = "stripe"
+            row.source_ref = stripe_subscription_id
+
+    if row is not None:
+        row.owner_type = "org"
+        row.owner_id = org_id
+        row.updated_at = datetime.now(timezone.utc)
+        await db.flush()
+
+    await db.execute(
+        update(User).where(User.id == user_id).values(entitlement_id=None)
+    )
+    await db.execute(
+        update(User)
+        .where(User.id == user_id, User.tier != "admin")
+        .values(tier="free")
+    )
+    return row
 
 
 async def _mirror_org_cache_only(

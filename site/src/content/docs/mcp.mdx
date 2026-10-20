@@ -22,6 +22,7 @@ sfs mcp install --for amp           # ~/.amp/config.json
 sfs mcp install --for cline         # VS Code globalStorage
 sfs mcp install --for roo-code      # VS Code globalStorage
 sfs mcp install --for kilo-code     # VS Code globalStorage
+sfs mcp install --for antigravity   # ~/.gemini/config/mcp_config.json (+ legacy ~/.gemini/antigravity/mcp_config.json)
 ```
 
 To skip the instruction injection (server registration only):
@@ -32,7 +33,7 @@ sfs mcp install --for claude-code --skip-instructions
 
 ## Tools
 
-The MCP server exposes 79 tools in eleven categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Agent Feedback (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, and Skills Marketplace.
+The MCP server exposes 80 tools in eleven categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Agent Feedback (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, and Skills Marketplace.
 
 ### Session Tools
 
@@ -43,7 +44,7 @@ Search past AI coding sessions by keyword, error message, or file path.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `query` | string | yes | Keywords, error messages, or file paths to search for |
-| `tool_filter` | string | no | Filter by source tool (`claude-code`, `codex`, `gemini`, `cursor`, `copilot`, `amp`, `cline`, `roo-code`, `kilo-code`) |
+| `tool_filter` | string | no | Filter by source tool (`claude-code`, `codex`, `gemini`, `cursor`, `copilot`, `amp`, `cline`, `roo-code`, `kilo-code`, `antigravity`) |
 | `max_results` | number | no | Maximum results to return (default: 5) |
 
 #### `get_session_context`
@@ -271,14 +272,15 @@ Returns the compiled rule text for a requested tool, or for the current tool if 
 
 ### Personas (Pro+)
 
-Tier-gated by the `agent_personas` feature flag. Personas are portable AI roles per project — each persona has a name (`^[A-Za-z0-9_-]{1,50}$`), markdown content, and is project-scoped.
+Tier-gated by the `agent_personas` feature flag. Personas are portable AI roles — each persona has a name (`^[A-Za-z0-9_-]{1,50}$`) and markdown content, and belongs to one project **or** to one organization. Org-level personas are usable from every project in the org. Inside a project, a name resolves to the project's own persona first, then the org's, so a project persona with the same name overrides the org one. `get_persona`, `assign_persona`, `start_ticket`, and agent runs all resolve this way. Names match case-insensitively. Org personas are visible only to current members of the project's current org (and that org's service keys); other callers with project access see project personas only.
 
 #### `list_personas`
 
-List all personas defined for the current project.
+List the personas usable in the current project. Each row carries `scope` (`project` or `org`); an org persona overridden by a project persona of the same name is left out.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
+| `include_org` | boolean | no | Include the org's personas (default `true`) |
 | `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
 
 #### `get_persona`
@@ -293,12 +295,39 @@ Return a single persona's full content.
 
 #### `create_persona`
 
-Define a new persona for the project. Name must be unique within the project.
+Define a new persona for the project, or for an organization when `org_id` is passed. Names are case-insensitive-unique within the project (or within the org).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `name` | string | yes | ASCII identifier, 1-50 chars |
-| `content` | string | yes | Markdown body |
+| `role` | string | yes | Short role description (100 chars max) |
+| `content` | string | no | Markdown body |
+| `specializations` | string[] | no | Domain keywords |
+| `org_id` | string | no | Create an org-level persona in this org (org admin or owner) |
+| `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
+
+#### `update_persona`
+
+Update a persona's role, content, or specializations. Without `org_id` only the project's own personas are matched; pass `org_id` to edit an org-level persona (org admin or owner).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | yes | Persona name (case-insensitive) |
+| `role` | string | no | New role |
+| `content` | string | no | New markdown body |
+| `specializations` | string[] | no | Replacement list |
+| `org_id` | string | no | Target an org-level persona |
+| `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
+
+#### `delete_persona`
+
+Soft-delete a persona. Refuses (409) while non-terminal tickets still need it unless `force` is true. For an org persona (`org_id`), the check covers every project in the org that has no same-named project persona.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | yes | Persona name |
+| `force` | boolean | no | Delete even if tickets reference it |
+| `org_id` | string | no | Target an org-level persona |
 | `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
 
 #### `assume_persona`
@@ -368,7 +397,7 @@ Atomic claim (`UPDATE ... WHERE status='open' OR 'blocked'` with rowcount guard)
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `ticket_id` | string | yes | Ticket ID |
-| `tool` | string | no | `claude-code` (16k), `codex`/`gemini`/`copilot`/`amp`/`generic` (8k), `cursor`/`windsurf`/`cline`/`roo-code`/`kilo-code` (4k) |
+| `tool` | string | no | `claude-code` (16k), `codex`/`gemini`/`copilot`/`amp`/`antigravity`/`generic` (8k), `cursor`/`windsurf`/`cline`/`roo-code`/`kilo-code` (4k) |
 | `force` | boolean | no | Recover a blocked ticket; increments the lease epoch |
 
 #### `complete_ticket`
@@ -644,7 +673,8 @@ Marketplace tools separate discovery from authority. Search and preview return m
 | Tool | Purpose |
 |------|---------|
 | `search_skill_marketplace` | Search public, personal, and authorized organization listings; optionally filter by target tool |
-| `get_marketplace_package` | Inspect immutable hash, provenance, license, verification, risk, and compatibility metadata |
+| `get_marketplace_package` | Inspect immutable hash, provenance, license, verification, risk, compatibility, and the install disclosure (files per tool, hooks, scripts, MCP servers, network endpoints, shell commands, hidden characters). Display only |
+| `diff_marketplace_versions` | Compare two versions of one package: files, capability changes, and the update class (text, code, or widening). Read-only |
 | `preview_marketplace_skill` | Read a bounded, untrusted instruction preview without granting consent |
 | `load_marketplace_skill` | Load approved instruction-only context for one project/tool/device boundary |
 | `request_skill_install` | Request an exact hash for project, user, or device scope |

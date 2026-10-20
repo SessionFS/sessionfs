@@ -26,6 +26,10 @@ class SkillError(ValueError):
     """A safe, user-facing package/import/install error."""
 
 
+class PackageChangedConcurrently(SkillError):
+    """The installed row changed between the decision and the locked mutation."""
+
+
 MAX_DEVICE_ID_LENGTH = 100
 
 
@@ -132,6 +136,14 @@ class PackageRecord:
     # severity) - a CONSENT requirement (`dlp-findings`), never a block:
     # import is the consumer's risk decision; the hosted publish gate stays hard.
     dlp_findings: tuple[dict[str, Any], ...] = ()
+    # Safety provenance of a HOSTED install (listing_id, visibility,
+    # owner_org_id) as delivered for THIS install; written onto the installed
+    # state row atomically with it. None for non-hosted / cached loads.
+    provenance: dict[str, Any] | None = None
+    # Token of the pull operation installing this package: written onto the
+    # installed row in the same write, so an interrupted pull can be
+    # finished or rolled back. None outside a pull install.
+    pull_op: str | None = None
 
     @property
     def has_dlp_findings(self) -> bool:
@@ -183,6 +195,10 @@ class PackageRecord:
             ],
             "dlp_findings": [dict(item) for item in self.dlp_findings],
         }
+        if self.provenance is not None:
+            result["provenance"] = dict(self.provenance)
+        if self.pull_op is not None:
+            result["pull_op"] = self.pull_op
         if include_path:
             result["package_root"] = str(self.package_root)
         return result

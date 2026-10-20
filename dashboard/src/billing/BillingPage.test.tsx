@@ -167,6 +167,27 @@ describe('BillingPage', () => {
     expect(screen.queryByText(/personal subscription that is still active/i)).not.toBeInTheDocument();
   });
 
+  it('team org owner can manage the subscription (owner ranks above admin)', async () => {
+    stubFetch({
+      tier: 'team',
+      storage_used_bytes: 5_000_000_000,
+      storage_limit_bytes: 10_000_000_000,
+      stripe_customer_id: 'cus_org',
+      has_subscription: true,
+      has_personal_subscription: false,
+      is_org_member: true,
+      org_role: 'owner',
+      is_beta: false,
+    });
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /manage subscription/i })).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/managed by your organization admin/i)).not.toBeInTheDocument();
+  });
+
   it('team org non-admin sees the managed-by-admin notice', async () => {
     stubFetch({
       tier: 'team',

@@ -12,6 +12,7 @@ export default function CopyButton({ text, label }: { text: string; label?: stri
 
   return (
     <button
+      type="button"
       onClick={handleCopy}
       className="inline-flex items-center gap-1 px-2 py-1 text-sm bg-bg-tertiary border border-border rounded hover:border-text-muted transition-colors"
       title={`Copy: ${text}`}

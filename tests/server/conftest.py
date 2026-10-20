@@ -30,6 +30,11 @@ async def db_engine():
         "sqlite+aiosqlite://",
         connect_args={"check_same_thread": False},
     )
+    # GH #70 — register Unicode-aware lower() so the org-persona
+    # (org_id, lower(name)) UNIQUE index folds non-ASCII case correctly.
+    from sessionfs.server.db.engine import install_sqlite_unicode_lower
+
+    install_sqlite_unicode_lower(engine)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield engine
@@ -48,6 +53,19 @@ async def db_session(db_engine):
 def blob_store(tmp_path: Path):
     """LocalBlobStore in a temp directory."""
     return LocalBlobStore(tmp_path / "blobs")
+
+
+@pytest.fixture
+def stripe_fake(monkeypatch):
+    """Patch the billing routes' Stripe SDK with an in-memory fake whose
+    Subscription.retrieve returns the canonical state tests set via
+    ``stripe_fake.subscription(...)``."""
+    from sessionfs.server.routes import billing
+    from tests.server.stripe_fake import FakeStripe
+
+    fake = FakeStripe()
+    monkeypatch.setattr(billing, "_get_stripe", lambda: fake)
+    return fake
 
 
 @pytest.fixture
@@ -243,3 +261,14 @@ async def uploaded_session(
     await db_session.commit()
     await db_session.refresh(session)
     return session
+
+
+@pytest.fixture(autouse=True)
+def _no_opportunistic_webhook_retries(monkeypatch):
+    """The shared in-memory test engine runs every session on ONE connection,
+    so a background webhook-retry task interleaving there can roll back a
+    test's own writes. Tests of opportunistic retries opt back in on a
+    file-backed engine."""
+    from sessionfs.server.routes import webhooks
+
+    monkeypatch.setattr(webhooks, "_OPPORTUNISTIC_RETRY_LIMIT", 0)

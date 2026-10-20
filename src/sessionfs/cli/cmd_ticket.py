@@ -305,7 +305,8 @@ def start_ticket(
     ticket = body.get("ticket", {})
     bundle_ok = write_bundle(
         ticket_id=ticket_id,
-        persona_name=ticket.get("assigned_to"),
+        # GH #70 — canonical persona name from the server when available.
+        persona_name=body.get("persona_name") or ticket.get("assigned_to"),
         project_id=project_id,
         lease_epoch=ticket.get("lease_epoch") if isinstance(ticket.get("lease_epoch"), int) else None,
         retrieval_audit_id=(

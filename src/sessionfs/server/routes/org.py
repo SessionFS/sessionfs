@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import secrets
@@ -14,8 +15,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.db.engine import get_db
-from sessionfs.server.db.models import OrgInvite, OrgMember, Organization, User
-from sessionfs.server.services.entitlements import apply_entitlement
+from sessionfs.server.db.models import (
+    BillingCheckoutIntent,
+    BillingReconciliation,
+    Entitlement,
+    OrgInvite,
+    OrgMember,
+    Organization,
+    User,
+)
+from sessionfs.server.roles import OrgRole
+from sessionfs.server.services.entitlements import (
+    BillingLockRetry,
+    EntitlementBindingConflict,
+    adopt_user_entitlement_for_org,
+    apply_entitlement,
+    lock_billing_rows,
+)
 from sessionfs.server.tier_gate import UserContext, check_role, get_user_context
 
 logger = logging.getLogger("sessionfs.api")
@@ -82,9 +98,189 @@ async def create_organization(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create an organization. The creator becomes admin."""
-    # Check user has a Team+ subscription
-    if user.tier not in ("team", "enterprise", "admin"):
+    """Create an organization. The creator becomes its owner."""
+    from sqlalchemy import and_, or_
+
+    from sessionfs.server.routes import billing as _billing
+
+    # A pointer-only adoption (no entitlement row anywhere for the creator
+    # or the subscription) must not trust the cached pointer + tier cache:
+    # confirm the subscription's canonical state with Stripe BEFORE opening
+    # the locked transaction (no Stripe I/O inside one). When any
+    # entitlement evidence exists, adoption handles provenance instead and
+    # no fetch is needed. Snapshot the creator id first: the rollback below
+    # expires the user object, and reading it afterwards would be lazy IO.
+    creator_id = user.id
+    prefetched = None
+    auth_sub_pointer = user.stripe_subscription_id
+    if auth_sub_pointer:
+        has_evidence = (
+            await db.execute(
+                select(Entitlement.id)
+                .where(
+                    or_(
+                        and_(
+                            Entitlement.source == "stripe",
+                            Entitlement.source_ref == auth_sub_pointer,
+                        ),
+                        and_(
+                            Entitlement.owner_type == "user",
+                            Entitlement.owner_id == creator_id,
+                            Entitlement.status == "active",
+                        ),
+                    )
+                )
+                .limit(1)
+            )
+        ).first()
+        if has_evidence is None:
+            await db.rollback()  # no transaction across the Stripe call
+            try:
+                prefetched = await _billing._fetch_subscription_state(db, auth_sub_pointer)
+            except HTTPException:
+                raise
+            except Exception:
+                logger.warning(
+                    "Stripe unreachable confirming subscription %s during org creation",
+                    auth_sub_pointer, exc_info=True,
+                )
+                raise HTTPException(
+                    503,
+                    {"error": "billing_unavailable",
+                     "message": "Could not confirm your subscription with Stripe. Try again shortly."},
+                )
+
+    # Universal billing lock order (services/entitlements.lock_billing_rows):
+    # Stripe customer -> user row -> org row -> entitlement, shared with the
+    # checkout and subscription webhooks, so a webhook for this customer
+    # can't interleave with the adoption below. The user row lock also
+    # serializes with invite acceptance and domain auto-join (user -> org).
+    # The locked row is refreshed (populate_existing), so the tier, Stripe
+    # ids and active flag below come from it, not the auth-time snapshot.
+    # If the customer changes between read and lock, BillingLockRetry
+    # answers 409 so the client retries (never a late customer lock).
+    # creator_id, not user.id: the prefetch branch's rollback expired the
+    # user object, and reading it here would be lazy IO outside a greenlet.
+    # Lock every current/pending claimant of the creator's subscription
+    # pointer too, not just the creator: an ambiguous pointer (two owners
+    # carrying the same sub id — migration 075 leaves those unbound) must be
+    # caught under the same lock set the webhooks take, never granted to
+    # whichever claimant happens to sort first.
+    prelock_claimants = (
+        await _billing._subscription_claimants(db, auth_sub_pointer)
+        if auth_sub_pointer
+        else []
+    )
+    # GH #70 — membership add: the user's SCOPE lock comes before every
+    # billing lock and row lock (scope_locks.py global order), so creating
+    # an org serializes with user delete, member removal and other joins.
+    # Retaken on every attempt (a rollback releases it).
+    from sessionfs.server.services.scope_locks import lock_scopes
+
+    await lock_scopes(db, user_ids=[creator_id], org_ids=[])
+    locked = await lock_billing_rows(
+        db,
+        user_ids=[creator_id] + [cid for k, cid in prelock_claimants if k == "user"],
+        org_ids=[cid for k, cid in prelock_claimants if k == "org"],
+    )
+    locked_user = locked.get(("user", creator_id))
+    if locked_user is None or not locked_user.is_active:
+        raise HTTPException(403, "Account is inactive")
+    user_id = locked_user.id
+    user_tier = locked_user.tier
+    stripe_sub_snapshot = locked_user.stripe_subscription_id
+    stripe_customer_snapshot = locked_user.stripe_customer_id
+    pending_sub_snapshot = locked_user.stripe_pending_subscription_id
+
+    # The pointer must still match the state prefetched above (if any): a
+    # cancellation webhook (or a competing adoption) can clear or move it
+    # between the prefetch and this lock. Retry rather than carry on — the
+    # pointer-only branch below would otherwise skip its Stripe confirmation
+    # and keep a stale paid tier as a permanent manual grant.
+    if prefetched is not None and stripe_sub_snapshot != prefetched.subscription_id:
+        await db.rollback()
+        raise BillingLockRetry("subscription pointer changed during org creation")
+
+    # Refuse an ambiguous subscription pointer before adoption can rebind the
+    # creator's manual entitlement to Stripe and steal a subscription two
+    # owners share — the exact "first claimant wins" outcome the webhook path
+    # prevents. Mirror _handle_subscription_event: an existing (stripe,
+    # sub_id) binding is authoritative, otherwise more than one claimant is
+    # ambiguous unless the legacy org-plus-member duplicate provably resolves
+    # to a single org.
+    if stripe_sub_snapshot:
+        binding = await _billing._subscription_binding(stripe_sub_snapshot, db)
+        if binding is None:
+            claimants = await _billing._subscription_claimants(db, stripe_sub_snapshot)
+            if len(claimants) > 1 and await _billing._legacy_org_claimant(db, claimants) is None:
+                await db.rollback()
+                db.add(
+                    BillingReconciliation(
+                        id=f"brc_{secrets.token_hex(12)}",
+                        kind="ambiguous_subscription_pointer",
+                        status="open",
+                        stripe_customer_id=stripe_customer_snapshot,
+                        stripe_subscription_id=stripe_sub_snapshot,
+                        owner_type="user",
+                        owner_id=user_id,
+                        details=json.dumps({
+                            "reason": "more than one owner claims this subscription at org creation",
+                            "claimants": [f"{k}:{i}" for k, i in claimants],
+                            "action": "nothing adopted; assign the subscription manually",
+                        }),
+                    )
+                )
+                await db.commit()
+                logger.error(
+                    "Org creation refused for user %s: ambiguous subscription pointer %s "
+                    "claimed by %s",
+                    user_id, stripe_sub_snapshot,
+                    [f"{k}:{i}" for k, i in claimants],
+                )
+                raise HTTPException(
+                    409,
+                    {
+                        "error": "ambiguous_subscription_pointer",
+                        "message": "More than one billing record claims your subscription. "
+                        "Contact support to assign it before creating an organization.",
+                    },
+                )
+
+    # A pointer-only adoption is confirmed only when Stripe's canonical state
+    # (prefetched before the locks) is an org-capable, granting subscription
+    # on this user's customer — the cached tier/pointer are never trusted on
+    # their own. Used for the tier gate, the tier/seat derivation and the
+    # entitlement below.
+    pointer_confirmed = (
+        prefetched is not None
+        and prefetched.subscription_id == stripe_sub_snapshot
+        and not prefetched.problem
+        and prefetched.canonical is not None
+        and prefetched.canonical.status in _billing._GRANTING_STATUSES
+        and prefetched.tier in ("team", "enterprise")
+        and prefetched.canonical.customer_id in (None, stripe_customer_snapshot)
+    )
+
+    # Check user isn't already in an org. This runs before the tier check:
+    # creating an org moves the creator's paid entitlement to the org and
+    # drops their personal tier cache to 'free', so an existing member must
+    # get the accurate 409 rather than an "upgrade to Team" 403.
+    existing_member = await db.execute(
+        select(OrgMember).where(OrgMember.user_id == user_id).limit(1)
+    )
+    if existing_member.scalar_one_or_none():
+        raise HTTPException(409, "You are already a member of an organization")
+
+    # Check user has a Team+ subscription. A confirmed pointer-only adoption
+    # gates on Stripe's own tier (not the cache): the cache may lag a
+    # just-completed Team checkout, or carry a stale paid tier a cancellation
+    # webhook already cleared.
+    if pointer_confirmed:
+        assert prefetched is not None
+        effective_tier = prefetched.tier or user_tier
+    else:
+        effective_tier = user_tier
+    if effective_tier not in ("team", "enterprise", "admin"):
         raise HTTPException(403, "Organizations require Team tier or above. Upgrade at https://sessionfs.dev/pricing")
 
     # Check slug uniqueness
@@ -94,51 +290,76 @@ async def create_organization(
     if existing.scalar_one_or_none():
         raise HTTPException(409, f"Organization slug '{data.slug}' is already taken")
 
-    # Lock the user row first (the user -> org order shared with invite
-    # acceptance and domain auto-join) so a concurrent membership insert for
-    # this user elsewhere can't slip in between the check and the insert.
-    await db.execute(select(User).where(User.id == user.id).with_for_update())
-
-    # Check user isn't already in an org
-    existing_member = await db.execute(
-        select(OrgMember).where(OrgMember.user_id == user.id).limit(1)
-    )
-    if existing_member.scalar_one_or_none():
-        raise HTTPException(409, "You are already a member of an organization")
+    # An open personal-plan checkout (Starter/Pro) can't move to an org:
+    # it would complete into a subscription that can't fund one. Make the
+    # user finish or abandon it first.
+    personal_open = (
+        await db.execute(
+            select(BillingCheckoutIntent.id).where(
+                BillingCheckoutIntent.owner_type == "user",
+                BillingCheckoutIntent.owner_id == user_id,
+                BillingCheckoutIntent.status.in_(("pending", "unresolved")),
+                BillingCheckoutIntent.tier.notin_(("team", "enterprise")),
+            ).limit(1)
+        )
+    ).first()
+    if personal_open is not None:
+        raise HTTPException(
+            409,
+            {
+                "error": "personal_checkout_open",
+                "message": "You have an open checkout for a personal plan. Finish it or let it "
+                "expire before creating an organization.",
+            },
+        )
 
     org_id = f"org_{secrets.token_hex(8)}"
-    tier = user.tier if user.tier in ("team", "enterprise") else "team"
-
-    # Derive seats from Stripe subscription quantity if available
-    seats = 5  # default
-    if user.stripe_subscription_id:
-        try:
-            import os
-            stripe_key = os.environ.get("SFS_STRIPE_SECRET_KEY", "")
-            if stripe_key:
-                import stripe
-                stripe.api_key = stripe_key
-                sub = stripe.Subscription.retrieve(user.stripe_subscription_id)
-                if sub.get("items", {}).get("data"):
-                    seats = sub["items"]["data"][0].get("quantity", 5)
-        except Exception:
-            pass  # Fall back to default seats on any Stripe error
-
-    # Enterprise gets unlimited storage (0 = unlimited in check_storage)
-    if tier == "enterprise":
-        storage = 0  # unlimited
-        if seats == 5:
-            seats = 25  # enterprise default
+    if pointer_confirmed:
+        # Tier and seat quantity come from Stripe's canonical state — never
+        # the cached User.tier or the plan defaults — so a pointer-only
+        # adoption matches what Stripe actually sells.
+        assert prefetched is not None and prefetched.canonical is not None
+        assert prefetched.tier is not None
+        tier = prefetched.tier
+        quantity = prefetched.canonical.quantity
+        seats = quantity if quantity and quantity > 0 else (25 if tier == "enterprise" else 5)
+        storage = 0 if tier == "enterprise" else seats * 1024 * 1024 * 1024
     else:
-        storage = seats * 1024 * 1024 * 1024  # 1GB per seat for team
+        tier = user_tier if user_tier in ("team", "enterprise") else "team"
+
+        # Seats: carried over from the creator's current paid entitlement when
+        # it records them, else the plan default. No Stripe call here — this
+        # runs under the billing locks; the next subscription webhook applies
+        # Stripe's canonical quantity anyway.
+        seats = 5  # default
+        carried_seats = (
+            await db.execute(
+                select(Entitlement.seats_limit).where(
+                    Entitlement.owner_type == "user",
+                    Entitlement.owner_id == user_id,
+                    Entitlement.status == "active",
+                )
+            )
+        ).scalar_one_or_none()
+        if carried_seats and carried_seats > 0:
+            seats = carried_seats
+
+        # Enterprise gets unlimited storage (0 = unlimited in check_storage)
+        if tier == "enterprise":
+            storage = 0  # unlimited
+            if seats == 5:
+                seats = 25  # enterprise default
+        else:
+            storage = seats * 1024 * 1024 * 1024  # 1GB per seat for team
 
     org = Organization(
         id=org_id,
         name=data.name,
         slug=data.slug,
         tier=tier,
-        stripe_customer_id=user.stripe_customer_id,
-        stripe_subscription_id=user.stripe_subscription_id,
+        stripe_customer_id=stripe_customer_snapshot,
+        stripe_subscription_id=stripe_sub_snapshot,
+        stripe_pending_subscription_id=pending_sub_snapshot,
         seats_limit=seats,
         storage_limit_bytes=storage,
     )
@@ -155,39 +376,219 @@ async def create_organization(
     # was the first such customer to surface it.
     await db.flush()
 
-    # Codex R1 MEDIUM: snapshot the Stripe IDs BEFORE clearing them.
-    # The bulk update(User) below synchronizes the in-memory `user`
-    # object, nulling user.stripe_subscription_id — so deriving the
-    # entitlement source/source_ref afterward would lose the provenance
-    # (writing source='manual'/None for a genuinely Stripe-funded org).
-    stripe_sub_snapshot = user.stripe_subscription_id
+    # The Stripe ids were snapshotted from the locked row above, before the
+    # bulk update(User) below nulls them on the in-memory object (Codex R1
+    # MEDIUM: deriving source/source_ref afterward would lose provenance).
 
     # Transfer subscription ownership: clear user-level Stripe fields
     # so they can't be confused with a personal subscription later.
-    if user.stripe_customer_id or user.stripe_subscription_id:
+    if stripe_customer_snapshot or stripe_sub_snapshot or pending_sub_snapshot:
         await db.execute(
             update(User)
-            .where(User.id == user.id)
-            .values(stripe_customer_id=None, stripe_subscription_id=None)
+            .where(User.id == user_id)
+            .values(
+                stripe_customer_id=None,
+                stripe_subscription_id=None,
+                stripe_pending_subscription_id=None,
+            )
         )
 
+    # The creator's open checkout (pending or unresolved) moves with the
+    # customer: otherwise the org would see no open checkout and start a
+    # second session that could become a second subscription.
+    await db.execute(
+        update(BillingCheckoutIntent)
+        .where(
+            BillingCheckoutIntent.owner_type == "user",
+            BillingCheckoutIntent.owner_id == user_id,
+            BillingCheckoutIntent.status.in_(("pending", "unresolved")),
+        )
+        .values(owner_type="org", owner_id=org_id)
+    )
+
+    # Move whatever funded the creator's personal paid tier onto the org:
+    # the (stripe, sub_id) row a checkout created, or the legacy active
+    # user entitlement migration 050 backfilled as manual. Inserting a
+    # second (stripe, sub_id) row would violate uq_entitlements_source_ref,
+    # and leaving the user's row active would keep paid access after they
+    # leave the org.
+    try:
+        adopted = await adopt_user_entitlement_for_org(
+            user_id=user_id,
+            org_id=org_id,
+            stripe_subscription_id=stripe_sub_snapshot,
+            db=db,
+        )
+    except EntitlementBindingConflict as exc:
+        await db.rollback()
+        # Durable record for support (its own transaction; the org create
+        # was rolled back).
+        db.add(
+            BillingReconciliation(
+                id=f"brc_{secrets.token_hex(12)}",
+                kind="subscription_binding_conflict",
+                status="open",
+                stripe_customer_id=stripe_customer_snapshot,
+                stripe_subscription_id=stripe_sub_snapshot,
+                owner_type="user",
+                owner_id=user_id,
+                details=json.dumps({"reason": str(exc), "action": "org creation refused"}),
+            )
+        )
+        await db.commit()
+        logger.error("Org creation refused for user %s: %s", user_id, exc)
+        raise HTTPException(
+            409,
+            {
+                "error": "subscription_binding_conflict",
+                "message": "Your subscription is attached to a different billing record. "
+                "Contact support to move it before creating an organization.",
+            },
+        )
+
+    if adopted is not None:
+        # Keep the moved row's provenance: a Stripe binding stays Stripe
+        # (including the migration-050 manual shape just rebound), and
+        # admin_provisioned / helm_license / manual stay as they are — they
+        # are never converted to Stripe without Stripe's own confirmation.
+        ent_source, ent_source_ref = adopted.source, adopted.source_ref
+        # A webhook can grant between the prefetch above and these billing
+        # locks (the prefetch only runs while there is no entitlement
+        # evidence). When the adopted row already carries NEWER Stripe state
+        # than the prefetch, keep its plan/seats instead of overwriting them
+        # with the stale prefetched state below — and leave its generation
+        # watermark intact.
+        if (
+            prefetched is not None
+            and adopted.stripe_synced_generation is not None
+            and adopted.stripe_synced_generation > prefetched.generation
+        ):
+            tier = adopted.tier
+            if adopted.seats_limit is not None and adopted.seats_limit > 0:
+                seats = adopted.seats_limit
+            else:
+                seats = 25 if tier == "enterprise" else 5
+            storage = adopted.storage_limit_bytes
+            if storage is None:
+                storage = 0 if tier == "enterprise" else seats * 1024 * 1024 * 1024
+    elif stripe_sub_snapshot:
+        # No entitlement row at all, only the creator's Stripe subscription
+        # pointer. Adopt ONLY on Stripe's own confirmation — prefetched
+        # above, before the locks: canonical state must be a granting,
+        # org-capable (Team/Enterprise) subscription on the same customer.
+        # Anything else is refused with a durable reconciliation row instead
+        # of synthesizing an active Stripe entitlement from a bare pointer
+        # and a cached tier.
+        if not pointer_confirmed:
+            await db.rollback()
+            db.add(
+                BillingReconciliation(
+                    id=f"brc_{secrets.token_hex(12)}",
+                    kind="unconfirmed_subscription_adoption",
+                    status="open",
+                    stripe_customer_id=stripe_customer_snapshot,
+                    stripe_subscription_id=stripe_sub_snapshot,
+                    owner_type="user",
+                    owner_id=user_id,
+                    details=json.dumps({
+                        "reason": "Stripe did not confirm a granting Team/Enterprise "
+                        "subscription for the pointer-only adoption",
+                        "problem": prefetched.problem if prefetched else "no prefetch",
+                        "status": (
+                            prefetched.canonical.status
+                            if prefetched and prefetched.canonical else None
+                        ),
+                        "tier": prefetched.tier if prefetched else None,
+                        "action": "org creation refused; confirm the subscription and retry",
+                    }, default=str),
+                )
+            )
+            await db.commit()
+            logger.error(
+                "Org creation refused for user %s: unconfirmed subscription %s",
+                user_id, stripe_sub_snapshot,
+            )
+            raise HTTPException(
+                409,
+                {
+                    "error": "unconfirmed_subscription_adoption",
+                    "message": "Your subscription could not be confirmed with Stripe as an "
+                    "active Team/Enterprise subscription. Contact support.",
+                },
+            )
+
+        # Reconcile the prefetched state against the observation row (under
+        # the billing locks). A terminal state observed at an equal-or-higher
+        # fetch generation supersedes this granting fetch, so the adoption is
+        # refused rather than synthesizing a grant a cancellation already
+        # superseded.
+        assert prefetched is not None and prefetched.canonical is not None
+        prev = await _billing._observe(db, prefetched)
+        prev_terminal_gen = prev[1] if prev else None
+        if prev_terminal_gen is not None and prefetched.generation <= prev_terminal_gen:
+            await db.rollback()
+            db.add(
+                BillingReconciliation(
+                    id=f"brc_{secrets.token_hex(12)}",
+                    kind="unconfirmed_subscription_adoption",
+                    status="open",
+                    stripe_customer_id=stripe_customer_snapshot,
+                    stripe_subscription_id=stripe_sub_snapshot,
+                    owner_type="user",
+                    owner_id=user_id,
+                    details=json.dumps({
+                        "reason": "a terminal observation supersedes this granting fetch",
+                        "generation": prefetched.generation,
+                        "terminal_generation": prev_terminal_gen,
+                        "action": "org creation refused; the subscription is over",
+                    }, default=str),
+                )
+            )
+            await db.commit()
+            logger.error(
+                "Org creation refused for user %s: subscription %s superseded by a terminal "
+                "observation (generation %s <= %s)",
+                user_id, stripe_sub_snapshot, prefetched.generation, prev_terminal_gen,
+            )
+            raise HTTPException(
+                409,
+                {
+                    "error": "unconfirmed_subscription_adoption",
+                    "message": "Your subscription could not be confirmed with Stripe as an "
+                    "active Team/Enterprise subscription. Contact support.",
+                },
+            )
+        ent_source, ent_source_ref = "stripe", stripe_sub_snapshot
+    else:
+        ent_source, ent_source_ref = "manual", None
+
     # P2: write-through — create the entitlement so resolution is authoritative.
-    await apply_entitlement(
+    ent = await apply_entitlement(
         "org",
         org_id,
         tier=tier,
         seats=seats,
         storage=storage,
-        source="stripe" if stripe_sub_snapshot else "manual",
-        source_ref=stripe_sub_snapshot or None,
+        source=ent_source,
+        source_ref=ent_source_ref,
         db=db,
     )
+    if pointer_confirmed and prefetched is not None:
+        # Record the fetch generation of the Stripe state this adoption
+        # applied, so a later webhook carrying an older state can't roll it
+        # back (the same guard _apply_canonical uses). Never lower a newer
+        # generation a webhook already recorded on the adopted row.
+        if ent.stripe_synced_generation is None or prefetched.generation > ent.stripe_synced_generation:
+            ent.stripe_synced_generation = prefetched.generation
 
-    # Creator is admin
+    # Creator is the owner. Every org has exactly one owner (v0.11.0
+    # entitlements model; uq_org_members_one_owner_per_org), matching
+    # license activation. Inserting the creator as "admin" left these orgs
+    # ownerless (tk_d311dcf71be74a97; repaired by migration 074).
     member = OrgMember(
         org_id=org_id,
-        user_id=user.id,
-        role="admin",
+        user_id=user_id,
+        role=OrgRole.OWNER.value,
     )
     db.add(member)
     await db.commit()
@@ -412,6 +813,25 @@ async def accept_invite(
         raise HTTPException(400, "Invite has expired")
     if (invite.email or "").strip().lower() != (user.email or "").strip().lower():
         raise HTTPException(403, "This invite is for a different email address")
+
+    # GH #70 — membership add/remove: the user's scope lock (then the
+    # org's), before any row lock, so it serializes with user delete,
+    # member removal and other joins (scope_locks.py global order).
+    from sessionfs.server.services.scope_locks import lock_scopes
+
+    await lock_scopes(db, user_ids=[user.id], org_ids=[invite.org_id])
+
+    # GH #70 — re-read the user under the user lock: a concurrent delete may
+    # have deactivated them while we waited. Never add an inactive user.
+    _locked_user = (
+        await db.execute(
+            select(User)
+            .where(User.id == user.id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if _locked_user is None or not _locked_user.is_active:
+        raise HTTPException(403, "Account is inactive")
 
     # Lock the user row first (same user -> org order as domain auto-join),
     # then check membership, so a concurrent auto-join into another org and

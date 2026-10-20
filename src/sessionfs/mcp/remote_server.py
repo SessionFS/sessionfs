@@ -74,7 +74,7 @@ _TOOLS = [
                 },
                 "tool_filter": {
                     "type": "string",
-                    "description": "Filter by tool (claude-code, codex, gemini, copilot, cursor, amp, cline, roo-code)",
+                    "description": "Filter by tool (claude-code, codex, gemini, copilot, cursor, amp, cline, roo-code, kilo-code, antigravity)",
                 },
                 "max_results": {
                     "type": "number",

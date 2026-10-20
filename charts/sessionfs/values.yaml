@@ -72,6 +72,36 @@ api:
     dashboardUrl: ""
     # Optional comma-separated allowlist for post-login redirect_after origins.
     redirectOrigins: ""
+
+  # GitHub App installation linking (optional). Users link the SessionFS
+  # GitHub App installation to their account through GitHub OAuth; the link
+  # is accepted only when GitHub confirms the signed-in GitHub user can access
+  # that installation. Disabled (linking refused) unless enabled here with a
+  # client ID, a client secret from existingSecret, and a dashboard URL.
+  github:
+    enabled: false
+    # The App's numeric App ID (installation tokens, PR comments). Required.
+    appId: ""
+    # The App's Client ID (Settings -> Developer settings -> GitHub Apps).
+    clientId: ""
+    # Optional App slug (github.com/apps/<slug>) for the install-and-link flow.
+    appSlug: ""
+    # REQUIRED when enabled: this API's public URL +
+    # /api/v1/settings/github/oauth/callback. On the App, register TWO
+    # callback URLs in this order: .../github/oauth/install-return, then this
+    # one. Set the Setup URL to .../github/oauth/install-return and keep
+    # "Request user authorization during installation" OFF.
+    callbackUrl: ""
+    # Dashboard origin the callback returns to (SFS_DASHBOARD_URL). Leave
+    # empty to reuse sso.dashboardUrl.
+    dashboardUrl: ""
+    # Kubernetes Secret holding the App's client secret, private key and
+    # webhook secret under the three keys below. Required when enabled;
+    # rendering fails if the secret name or any key name is empty.
+    existingSecret: ""
+    clientSecretKey: "github-client-secret"
+    privateKeyKey: "github-private-key"      # App private key (PEM)
+    webhookSecretKey: "github-webhook-secret"  # webhook HMAC secret
   rateLimitPerMinute: 120  # Requests per minute per API key. Set to 0 to disable.
 
 ## MCP Server
@@ -161,6 +191,11 @@ dashboard:
       cpu: 100m
       memory: 128Mi
   clientMaxBodySize: "100m"  # nginx client_max_body_size for sync uploads
+  # How long nginx waits on the API for /api/ requests. A large session push
+  # waits for the server's DLP scan + unpack; keep this >= the CLI's upload
+  # timeout (SFS_UPLOAD_TIMEOUT, default 300s) or nginx answers 504 first.
+  # Whole seconds only ("300s" or "300"); also applied to ingress-nginx.
+  apiProxyTimeout: "300s"
   nodeSelector: {}
   tolerations: []
   affinity: {}

@@ -85,7 +85,7 @@ sfs resume ses_g3h4i5j6 --in codex
 sfs resume ses_e5f6a7b8 --in gemini
 ```
 
-Four tools support resume: Claude Code, Codex, Gemini CLI, and Copilot CLI. Sessions from capture-only tools (Cursor, Amp, Cline, Roo Code) can be resumed in any of the four bidirectional tools. See [Compatibility](compatibility.md) for details.
+Four tools support resume: Claude Code, Codex, Gemini CLI, and Copilot CLI. Sessions from capture-only tools (Cursor, Amp, Cline, Roo Code, Kilo Code, Antigravity) can be resumed in any of the four bidirectional tools. See [Compatibility](compatibility.md) for details.
 
 ---
 

@@ -1,0 +1,7 @@
+File Path: `file://__WORKSPACE__/README.md`
+Total Lines: 3
+Total Bytes: 30
+Showing lines 1 to 3
+1: # Demo
+2:
+3: Synthetic fixture.

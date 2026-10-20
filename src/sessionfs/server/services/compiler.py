@@ -231,69 +231,70 @@ async def _auto_supersede(project_id: str, db: AsyncSession) -> int:
     return superseded_count
 
 
-async def compile_project_context(
-    project_id: str,
-    user_id: str,
-    db: AsyncSession,
-    api_key: str | None = None,
-    model: str = "claude-sonnet-4",
-    provider: str | None = None,
-    base_url: str | None = None,
-    force_rebuild: bool = False,
-) -> ContextCompilation | None:
-    """Compile pending knowledge entries into project context via LLM.
+# How many times compile_project_context will run the LLM merge and find the
+# inputs changed under it before giving up on the LLM output and falling back
+# to the deterministic merge (GH #70 plan-then-revalidate).
+_MAX_LLM_COMPILE_ATTEMPTS = 2
 
-    Phases (tk_bc3c02a63e994717, v0.10.13 fail-closed refactor):
 
-    Phase 1 — Reads (no writes): SELECT project FOR UPDATE; SELECT pending
-        claims; SELECT all active claims for source_manifest; SELECT
-        sessions for persona lookup.
+class _CompileInputs:
+    """Inputs of one compile pass, gathered under the project scope lock."""
 
-    Phase 2 — Compute in memory (no DB writes, no DB lock contention beyond
-        the project row lock acquired in Phase 1): build the LLM prompt,
-        call the LLM (or simple_compile fallback), enforce the word
-        budget, group entries by type, compute section page contents.
+    def __init__(
+        self,
+        *,
+        project: Project,
+        pending: list[KnowledgeEntry],
+        grouped: dict[str, list[str]],
+        previous_context: str,
+        compile_base_context: str,
+        max_context_words: int,
+        freshness_updated: int,
+    ) -> None:
+        self.project = project
+        self.pending = pending
+        self.grouped = grouped
+        self.previous_context = previous_context
+        self.compile_base_context = compile_base_context
+        self.max_context_words = max_context_words
+        self.freshness_updated = freshness_updated
 
-    Phase 3 — Single atomic commit: apply freshness / decay /
-        auto-promote UPDATEs; apply the destructive reset (NULL
-        compiled_at + clear context_document on ALL active claims) iff
-        `force_rebuild=True`; UPDATE project.context_document;
-        UPDATE compiled_at on the pending batch; INSERT ContextCompilation
-        (flush to populate the id); UPSERT section pages; commit ONCE.
-        Any exception before commit rolls back the entire phase, so the
-        prior good projection survives a crash.
 
-    `force_rebuild=True` is the /rebuild semantics — equivalent to "treat
-    every active claim as pending and regenerate from scratch". The
-    destructive part now lives INSIDE the atomic phase, so the
-    Bug B data-loss vector that hit proj_c0242b0fccbd48b4 on 2026-05-20
-    cannot recur: if the recompile fails mid-flight, the wipe never
-    commits either.
+def _expire_kb_objects(db: AsyncSession) -> None:
+    """Expire knowledge rows held in the identity map.
+
+    After a discarded planning pass (savepoint rolled back) the identity map
+    can still carry attribute values that pass computed — e.g. entries the
+    housekeeping loaded after a bulk UPDATE. Expiring them makes the next
+    pass re-read the committed state instead of trusting those values.
     """
-    # 1. Get current project context under a row lock so concurrent
-    # compile callers serialize. Without this, two callers can read the
-    # same pending claims, both mark them compiled, both write a new
-    # context_document, and both insert a ContextCompilation row —
-    # last-writer-wins on the document with double LLM cost. The lock
-    # is released on the single final commit at the end. SQLite ignores
-    # FOR UPDATE (single-writer semantics already serialise writes there).
-    result = await db.execute(
-        select(Project).where(Project.id == project_id).with_for_update()
-    )
-    project = result.scalar_one_or_none()
-    if not project:
-        logger.warning("Project %s not found for compilation", project_id)
-        return None
+    for obj in list(db.identity_map.values()):
+        if isinstance(obj, (KnowledgeEntry, KnowledgeLink, KnowledgePage)):
+            db.expire(obj)
 
+
+async def _run_compile_housekeeping(
+    db: AsyncSession,
+    project: Project,
+    project_id: str,
+    force_rebuild: bool,
+) -> _CompileInputs:
+    """Housekeeping writes + pending-claim read for one compile pass.
+
+    Freshness refresh, auto-supersession, decay, retention, auto-promotion
+    and (force_rebuild) the compiled_at reset, then the pending-claim query.
+    Writes are NOT committed here — the caller either discards them (a
+    planning pass) or commits them with the projection (the final pass).
+    """
     # Phase 1 + Phase 2 housekeeping passes: freshness refresh,
     # auto-supersession, decay, retention, and auto-promotion of
     # evidence-class entries. These run inside the same transaction as
-    # the projection write below (no intermediate commit). If anything
+    # the projection write (no intermediate commit). If anything
     # downstream fails (LLM call, atomic swap), the entire phase rolls
     # back along with the projection — that's what tk_bc3c02a63e994717
     # fixes.
     from sessionfs.server.services.freshness import refresh_freshness_classes
-    await refresh_freshness_classes(project_id, db)
+    freshness_updated = await refresh_freshness_classes(project_id, db)
 
     # Auto-supersession: same entity_ref + same entry_type + newer + high confidence + high overlap
     await _auto_supersede(project_id, db)
@@ -353,12 +354,9 @@ async def compile_project_context(
     )
 
     # tk_bc3c02a63e994717 — when force_rebuild=True, NULL compiled_at on
-    # all active claims AND clear project.context_document so the pending
-    # query below picks up everything. Previously this happened in the
-    # /rebuild route as TWO separate commits BEFORE calling this function,
-    # which made any subsequent crash data-destructive. Folding it in here
-    # means it joins the single final commit — if the LLM call or any
-    # other downstream step fails, the wipe rolls back too.
+    # all active claims so the pending query below picks up everything.
+    # This joins the single final commit — if the LLM call or any other
+    # downstream step fails, the wipe rolls back too.
     if force_rebuild:
         await db.execute(
             update(KnowledgeEntry)
@@ -371,16 +369,13 @@ async def compile_project_context(
             .values(compiled_at=None)
             .execution_options(synchronize_session=False)
         )
-        # NB: project.context_document is cleared in the session-mapped
-        # object below at the same point we set the new value, so the
-        # reset and the replacement happen in a single attribute write.
-        # We mark it cleared here for clarity in the pending-query that
-        # follows — but the SQL-level write is deferred to the projection
-        # block below.
 
-    # 2b. Get pending entries — only active claims
+    # 2b. Get pending entries — only active claims. populate_existing: the
+    # bulk UPDATEs above don't synchronize the identity map, so re-read the
+    # rows this pass actually sees.
     result = await db.execute(
-        select(KnowledgeEntry).where(
+        select(KnowledgeEntry)
+        .where(
             KnowledgeEntry.project_id == project_id,
             KnowledgeEntry.compiled_at.is_(None),
             KnowledgeEntry.dismissed == False,  # noqa: E712
@@ -388,12 +383,241 @@ async def compile_project_context(
             KnowledgeEntry.freshness_class.in_(["current", "aging"]),
             KnowledgeEntry.superseded_by.is_(None),
         )
+        .execution_options(populate_existing=True)
     )
     pending = list(result.scalars().all())
 
-    if not pending:
-        logger.info("No pending entries for project %s", project_id)
+    # Budget priority: confidence DESC, last_relevant_at DESC (recent first),
+    # entity_ref IS NOT NULL (prefer entity-bound), then trim lowest-priority.
+    def _priority_key(e: KnowledgeEntry) -> tuple:
+        rel_ts = (e.last_relevant_at or e.created_at).timestamp()
+        has_entity = 1 if getattr(e, "entity_ref", None) else 0
+        return (e.confidence, rel_ts, has_entity, e.id)
+
+    pending.sort(key=_priority_key, reverse=True)
+
+    # 3. Group by type
+    grouped: dict[str, list[str]] = defaultdict(list)
+    for entry in pending:
+        grouped[entry.entry_type].append(entry.content)
+
+    # Codex R1 HIGH on tk_879dbd5a5a034d0e — force_rebuild MUST compile
+    # from an empty base, otherwise stale/dismissed/superseded text from
+    # the prior context_document can survive a "rebuild" forever. We
+    # preserve previous_context for the audit trail (ContextCompilation.
+    # context_before) but feed the compile pipeline the empty string
+    # when force_rebuild is set.
+    previous_context = project.context_document or ""
+    return _CompileInputs(
+        project=project,
+        pending=pending,
+        grouped=dict(grouped),
+        previous_context=previous_context,
+        compile_base_context="" if force_rebuild else previous_context,
+        max_context_words=getattr(project, "kb_max_context_words", 2000) or 2000,
+        freshness_updated=freshness_updated,
+    )
+
+
+async def _llm_merge(
+    prompt: str,
+    *,
+    api_key: str,
+    model: str,
+    provider: str | None,
+    base_url: str | None,
+) -> str | None:
+    """Run the LLM merge. Returns None when the call fails (the caller then
+    uses the deterministic merge). Runs with NO transaction or lock held."""
+    from sessionfs.judge.providers import call_llm
+
+    try:
+        out = await call_llm(
+            model=model,
+            system=_COMPILE_SYSTEM_PROMPT,
+            prompt=prompt,
+            api_key=api_key,
+            provider=provider,
+            base_url=base_url,
+        )
+        return out.strip()
+    except Exception:
+        logger.warning("LLM compilation failed, falling back to simple compile", exc_info=True)
         return None
+
+
+def _enforce_budget(context_after: str, max_context_words: int) -> str:
+    """The LLM may ignore the budget hint in the prompt and return an
+    over-budget document. Enforce the hard cap with the same trim logic
+    _simple_compile uses."""
+    if len(context_after.split()) > max_context_words:
+        context_after = "\n".join(_trim_to_budget(context_after.splitlines(), max_context_words))
+        if not context_after.endswith("\n"):
+            context_after += "\n"
+    return context_after
+
+
+async def compile_project_context(
+    project_id: str,
+    user_id: str,
+    db: AsyncSession,
+    api_key: str | None = None,
+    model: str = "claude-sonnet-4",
+    provider: str | None = None,
+    base_url: str | None = None,
+    force_rebuild: bool = False,
+    stats: dict | None = None,
+) -> ContextCompilation | None:
+    """Compile pending knowledge entries into project context via LLM.
+
+    Phases (tk_bc3c02a63e994717, v0.10.13 fail-closed refactor; GH #70
+    plan-then-revalidate):
+
+    Plan (only with an LLM key) — under the project scope lock, run the
+        housekeeping and read the pending claims inside a SAVEPOINT, build
+        the LLM prompt, then roll the savepoint back and COMMIT the (now
+        write-free) transaction. That releases the scope + row locks, so
+        the LLM round-trip below blocks no other project writer (on SQLite
+        the scope lock is the database-wide writer lock).
+
+    LLM — call the LLM with no transaction or lock held.
+
+    Apply — take the scope lock again, redo the housekeeping, rebuild the
+        prompt and compare it with the one the LLM saw. Equal: use the LLM
+        output. Different (a writer changed the pending claims or the
+        context document meanwhile): discard and re-plan, at most
+        _MAX_LLM_COMPILE_ATTEMPTS LLM calls, then fall back to the
+        deterministic merge on the current inputs under the lock.
+
+    Single atomic commit — housekeeping UPDATEs, the force_rebuild
+        compiled_at reset, project.context_document, compiled_at on the
+        pending batch, the ContextCompilation row and the section pages
+        all commit ONCE. Any exception before that commit rolls back the
+        entire pass, so the prior good projection survives a crash. A
+        discarded planning pass writes nothing.
+
+    No pending claims: the housekeeping writes commit on their own and the
+    function returns None with the lock released, so a caller that goes on
+    to concept generation (LLM) holds nothing.
+
+    `force_rebuild=True` is the /rebuild semantics — "treat every active
+    claim as pending and regenerate from scratch"; the destructive reset
+    lives INSIDE the atomic pass, so the 2026-05-20 data-loss vector
+    (proj_c0242b0fccbd48b4) cannot recur.
+
+    `stats` (optional dict) receives `freshness_updated` from the pass
+    that committed.
+    """
+    from sessionfs.server.services.scope_locks import (
+        lock_project_scope_authorized,
+    )
+
+    project = await db.get(Project, project_id)
+    if not project:
+        logger.warning("Project %s not found for compilation", project_id)
+        return None
+
+    llm_plan: tuple[str, str | None] | None = None  # (prompt, LLM output)
+    llm_calls = 0
+    while True:
+        # GH #70 — the project SCOPE lock comes first (global order: scope
+        # locks, then row locks). It serializes this compile with project
+        # merge / transfer and every other project-scoped writer,
+        # re-authorizes the caller against the re-read project (a transfer
+        # may have landed while we waited) and refuses (409 project_merged)
+        # a merged-away project. On SQLite its UPDATE also opens the real
+        # transaction, so the SAVEPOINT below is never the outermost one.
+        await lock_project_scope_authorized(db, project, user_id=user_id)
+        # Row lock so concurrent compile callers serialize (SQLite ignores
+        # FOR UPDATE; its writer lock already serializes). Taken outside the
+        # savepoint: a row lock taken inside a rolled-back savepoint is lost.
+        result = await db.execute(
+            select(Project)
+            .where(Project.id == project_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        locked_project = result.scalar_one_or_none()
+        if locked_project is None:
+            logger.warning("Project %s not found for compilation", project_id)
+            await db.rollback()
+            return None
+        project = locked_project
+
+        savepoint = await db.begin_nested()
+        try:
+            inputs = await _run_compile_housekeeping(
+                db, project, project_id, force_rebuild
+            )
+        except BaseException:
+            await savepoint.rollback()
+            raise
+
+        if not inputs.pending:
+            logger.info("No pending entries for project %s", project_id)
+            # Persist the housekeeping and release the scope + row locks
+            # now — the caller may go on to LLM concept generation.
+            await savepoint.commit()
+            await db.commit()
+            if stats is not None:
+                stats["freshness_updated"] = inputs.freshness_updated
+            return None
+
+        if not api_key:
+            # Without an API key, do a simple append-based compilation.
+            context_after = _simple_compile(
+                inputs.compile_base_context, inputs.grouped,
+                entries=inputs.pending, max_context_words=inputs.max_context_words,
+            )
+            break
+
+        prompt = _build_compile_prompt(inputs.compile_base_context, inputs.grouped)
+        if llm_plan is not None and llm_plan[0] == prompt:
+            # Inputs unchanged since the LLM saw them — apply its output.
+            raw = llm_plan[1]
+            if raw is None:
+                context_after = _simple_compile(
+                    inputs.compile_base_context, inputs.grouped,
+                    entries=inputs.pending, max_context_words=inputs.max_context_words,
+                )
+            else:
+                context_after = _enforce_budget(raw, inputs.max_context_words)
+            break
+
+        if llm_calls >= _MAX_LLM_COMPILE_ATTEMPTS:
+            logger.warning(
+                "Project %s knowledge changed during %d LLM compile attempts; "
+                "using the deterministic merge",
+                project_id, llm_calls,
+            )
+            context_after = _simple_compile(
+                inputs.compile_base_context, inputs.grouped,
+                entries=inputs.pending, max_context_words=inputs.max_context_words,
+            )
+            break
+
+        # Planning pass: discard its writes and release every lock before
+        # the LLM round-trip.
+        await savepoint.rollback()
+        _expire_kb_objects(db)
+        await db.commit()
+        llm_calls += 1
+        llm_plan = (
+            prompt,
+            await _llm_merge(
+                prompt, api_key=api_key, model=model,
+                provider=provider, base_url=base_url,
+            ),
+        )
+
+    # Applying this pass: fold the savepoint into the outer transaction (the
+    # scope + row locks stay held until the single commit below).
+    await savepoint.commit()
+
+    pending = inputs.pending
+    context_before = inputs.previous_context
+    if stats is not None:
+        stats["freshness_updated"] = inputs.freshness_updated
 
     # Snapshot the active-claim inputs that feed the compiled context. This
     # is intentionally recorded with the compilation row so SoD/audit callers
@@ -434,67 +658,6 @@ async def compile_project_context(
     source_manifest = _build_source_manifest(
         source_entries_list, persona_by_session=persona_by_session
     )
-
-    # Budget priority: confidence DESC, last_relevant_at DESC (recent first),
-    # entity_ref IS NOT NULL (prefer entity-bound), then trim lowest-priority.
-    def _priority_key(e: KnowledgeEntry) -> tuple:
-        rel_ts = (e.last_relevant_at or e.created_at).timestamp()
-        has_entity = 1 if getattr(e, "entity_ref", None) else 0
-        return (e.confidence, rel_ts, has_entity)
-
-    pending.sort(key=_priority_key, reverse=True)
-
-    # 3. Group by type
-    grouped: dict[str, list[str]] = defaultdict(list)
-    for entry in pending:
-        grouped[entry.entry_type].append(entry.content)
-
-    # 4. Call LLM to merge
-    # Codex R1 HIGH on tk_879dbd5a5a034d0e — force_rebuild MUST compile
-    # from an empty base, otherwise stale/dismissed/superseded text from
-    # the prior context_document can survive a "rebuild" forever. The
-    # compiled_at reset alone wasn't enough — _simple_compile and the
-    # LLM prompt both merge new claims INTO the base context. We
-    # preserve previous_context for the audit trail (ContextCompilation.
-    # context_before) but feed the compile pipeline the empty string
-    # when force_rebuild is set.
-    previous_context = project.context_document or ""
-    context_before = previous_context
-    compile_base_context = "" if force_rebuild else previous_context
-
-    max_context_words = getattr(project, "kb_max_context_words", 2000) or 2000
-
-    if not api_key:
-        # Without an API key, do a simple append-based compilation
-        context_after = _simple_compile(compile_base_context, grouped, entries=pending, max_context_words=max_context_words)
-    else:
-        from sessionfs.judge.providers import call_llm
-
-        prompt = _build_compile_prompt(compile_base_context, grouped)
-        try:
-            context_after = await call_llm(
-                model=model,
-                system=_COMPILE_SYSTEM_PROMPT,
-                prompt=prompt,
-                api_key=api_key,
-                provider=provider,
-                base_url=base_url,
-            )
-            context_after = context_after.strip()
-            # LLM may ignore the budget hint in the prompt and return an
-            # over-budget document. Enforce the hard cap here so the word
-            # budget matches what _simple_compile guarantees — reuse the
-            # same trim logic for consistency.
-            if len(context_after.split()) > max_context_words:
-                trimmed_lines = _trim_to_budget(
-                    context_after.splitlines(), max_context_words
-                )
-                context_after = "\n".join(trimmed_lines)
-                if not context_after.endswith("\n"):
-                    context_after += "\n"
-        except Exception:
-            logger.warning("LLM compilation failed, falling back to simple compile", exc_info=True)
-            context_after = _simple_compile(compile_base_context, grouped, entries=pending, max_context_words=max_context_words)
 
     # 5. Save updated context
     now = datetime.now(timezone.utc)
@@ -1120,6 +1283,10 @@ async def _prune_dead_concept_pages(project_id: str, db: AsyncSession) -> int:
     auto_generate_concepts() so dead pages are cleaned up even when no new
     concept candidates exist (e.g., project dropped below the 15-entry
     clustering threshold).
+
+    GH #70 — does NOT commit. A commit here released the project scope
+    and row locks halfway through auto_generate_concepts(); the deletes
+    are now part of the caller's single final commit.
     """
     result = await db.execute(
         select(KnowledgePage).where(
@@ -1168,7 +1335,7 @@ async def _prune_dead_concept_pages(project_id: str, db: AsyncSession) -> int:
             logger.info("Pruned concept page %s (all %d linked entries dismissed)", page.slug, dismissed_count)
 
     if deleted:
-        await db.commit()
+        await db.flush()
     return deleted
 
 
@@ -1185,37 +1352,26 @@ async def auto_generate_concepts(
 
     Called after compilation. Returns list of created/refreshed concept summaries.
     """
-    # Acquire a row-level lock on the project for the duration of this
-    # function. Without this, two route callers can pass through
-    # compile_project_context() (which releases its own lock at commit)
-    # and then race on the read-then-create pattern below — two concept
-    # pages with the same slug, two sets of links, etc. SQLite ignores
-    # FOR UPDATE; PG serialises overlapping callers. The lock is
-    # released when this function's eventual commit (in the caller or
-    # at flush) runs, since SQLAlchemy's row lock is transaction-scoped.
-    locked = await db.execute(
-        select(Project).where(Project.id == project_id).with_for_update()
-    )
-    if locked.scalar_one_or_none() is None:
+    # GH #70 — compute candidates and generate articles BEFORE taking the
+    # project scope lock. On SQLite the scope lock IS the database-wide
+    # writer lock (UPDATE projects SET id = id), and check_concept_candidates
+    # / generate_concept_article round-trip to the LLM (network latency ×
+    # number of candidates). Holding the writer lock across those calls would
+    # block every write in the database for minutes (see services/
+    # scope_locks.py). So the reads below are pre-lock snapshots; only the
+    # prune + writes + single commit run under the lock, and the plan built
+    # here is re-validated under it before anything is written.
+
+    current = await db.get(Project, project_id)
+    if current is None:
         # Project was deleted between compile and concept refresh — bail
         # gracefully rather than throwing.
         return []
-
-    # Always prune dead concept pages regardless of whether new candidates
-    # exist. A concept page whose linked entries have ALL been dismissed
-    # should be deleted even when the project drops below the 15-entry
-    # candidacy threshold. Without this, dead concept pages linger forever
-    # after the last candidate check returns empty.
-    await _prune_dead_concept_pages(project_id, db)
-
     candidates = await check_concept_candidates(
         project_id, user_id, db, api_key, model, provider, base_url,
     )
-    if not candidates:
-        return []
 
-    created = []
-    now = datetime.now(timezone.utc)
+    plans: list[dict] = []
 
     # ── Bulk prefetch (perf-1: candidates × active_claims → 1 + 1 + 1) ──
     # Fetch the active-claim set ONCE before the loop. Each candidate
@@ -1289,7 +1445,9 @@ async def auto_generate_concepts(
 
         if existing_page:
             # Use the prefetched links + dismissed-id set to decide whether
-            # the page should be deleted (all linked entries dismissed).
+            # the page should be deleted (all linked entries dismissed). The
+            # deletion itself happens under the lock in _prune_dead_concept_pages;
+            # here we only skip article generation for a page that is going away.
             linked = links_by_page.get(existing_page.id, [])
             if linked:
                 linked_entry_ids = _safe_entry_link_ids(linked, page_slug=concept_slug)
@@ -1298,12 +1456,9 @@ async def auto_generate_concepts(
                         1 for eid in linked_entry_ids if eid in dismissed_entry_ids
                     )
                     if dismissed_count == len(linked_entry_ids):
-                        # All linked entries dismissed — delete page and links
-                        for lk in linked:
-                            await db.delete(lk)
-                        await db.delete(existing_page)
                         logger.info(
-                            "Deleted concept page %s (all entries dismissed)",
+                            "Skipping concept page %s (all entries dismissed; "
+                            "prune will delete it)",
                             concept_slug,
                         )
                         continue
@@ -1313,7 +1468,9 @@ async def auto_generate_concepts(
             if old_count > 0 and len(matched_entries) <= old_count * 1.5:
                 continue  # Not enough growth to regenerate
 
-        # Generate article
+        # Generate the article BEFORE the scope lock: the LLM round-trip must
+        # not hold the SQLite DB-wide writer lock. The plan is re-validated
+        # under the lock (source entries may have changed meanwhile).
         article = await generate_concept_article(
             topic=candidate["topic"],
             summary=candidate["summary"],
@@ -1325,66 +1482,174 @@ async def auto_generate_concepts(
             base_url=base_url,
         )
 
-        if existing_page:
-            # Update existing page
-            existing_page.content = article
-            existing_page.word_count = len(article.split())
-            existing_page.entry_count = len(matched_entries)
+        plans.append({
+            "action": "update" if existing_page else "create",
+            "slug": concept_slug,
+            "topic": candidate["topic"],
+            "article": article,
+            "page_id": existing_page.id if existing_page else None,
+            # (id, content) snapshot for the under-lock re-validation.
+            "matched": [(e.id, e.content) for e in matched_entries],
+        })
+
+    # GH #70 — take the project scope lock for the mutate phase only (prune
+    # + writes + single commit). The LLM work above ran pre-lock because on
+    # SQLite the scope lock IS the database-wide writer lock.
+    from sessionfs.server.services.scope_locks import (
+        lock_project_scope_authorized,
+    )
+
+    await lock_project_scope_authorized(db, current, user_id=user_id)
+
+    # Re-check the project still exists under the lock (row lock on PG; the
+    # scope lock already serialises SQLite).
+    locked = await db.execute(
+        select(Project)
+        .where(Project.id == project_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if locked.scalar_one_or_none() is None:
+        return []
+
+    # Always prune dead concept pages regardless of whether new candidates
+    # exist (a page whose linked entries were ALL dismissed must go even when
+    # the project dropped below the candidacy threshold).
+    await _prune_dead_concept_pages(project_id, db)
+
+    if not plans:
+        await db.commit()
+        return []
+
+    # Re-validate each plan's source entries under the lock: an entry that was
+    # dismissed, superseded, or edited since the pre-lock snapshot makes the
+    # generated article stale, so drop that plan rather than write stale text.
+    all_matched_ids = {eid for plan in plans for eid, _ in plan["matched"]}
+    fresh: dict[int, str] = {}
+    if all_matched_ids:
+        fresh_rows = await db.execute(
+            select(KnowledgeEntry.id, KnowledgeEntry.content).where(
+                KnowledgeEntry.id.in_(all_matched_ids),
+                KnowledgeEntry.dismissed == False,  # noqa: E712
+                KnowledgeEntry.claim_class == "claim",
+                KnowledgeEntry.freshness_class.in_(["current", "aging"]),
+                KnowledgeEntry.superseded_by.is_(None),
+            )
+        )
+        fresh = {row[0]: row[1] for row in fresh_rows.all()}
+
+    now = datetime.now(timezone.utc)
+    created: list[dict] = []
+
+    for plan in plans:
+        if not all(fresh.get(eid) == content for eid, content in plan["matched"]):
+            logger.info(
+                "Skipping concept page %s (source entries changed under lock)",
+                plan["slug"],
+            )
+            continue
+
+        if plan["action"] == "update":
+            existing_page = (
+                await db.execute(
+                    select(KnowledgePage).where(
+                        KnowledgePage.id == plan["page_id"]
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing_page is None:
+                # Pruned under the lock (all links dismissed) — skip.
+                continue
+            existing_page.content = plan["article"]
+            existing_page.word_count = len(plan["article"].split())
+            existing_page.entry_count = len(plan["matched"])
             existing_page.updated_at = now
             page_id = existing_page.id
 
-            # Remove old links using the prefetched list — no extra round-trip.
-            for old_link in links_by_page.get(page_id, []):
-                await db.delete(old_link)
-            links_by_page[page_id] = []
-            # tk_09d8bdf4f6374a13 R2 follow-up — flush the DELETEs before the
-            # next loop adds new links for the SAME (entry_id → page_id) pairs.
-            # Without this, SQLAlchemy UnitOfWork orders INSERTs ahead of
-            # DELETEs by default, so the INSERT for entry1→page1 fires while
-            # the old entry1→page1 row is still in the DB, violating uq_kl_link.
-            # An explicit flush serialises the DELETEs to the open transaction
-            # (still rollbackable) so the INSERTs that follow see a clean slate.
-            await db.flush()
+            # Re-read the page's CURRENT links under the lock. The pre-lock
+            # prefetch (links_by_page) is stale if another /compile committed
+            # between the prefetch and the lock: it deleted the old links and
+            # re-added the same (entry → page) pairs. Deleting the stale
+            # prefetch would be a no-op and re-adding would then hit
+            # uq_kl_link. Diff against the live set instead: drop links to
+            # entries that left the contributor set, keep (and skip re-adding)
+            # the ones already present so a concurrent writer's identical
+            # links aren't churned into a unique-violation.
+            current_links = (
+                await db.execute(
+                    select(KnowledgeLink).where(
+                        KnowledgeLink.project_id == project_id,
+                        KnowledgeLink.target_type == "page",
+                        KnowledgeLink.target_id == page_id,
+                    )
+                )
+            ).scalars().all()
+            desired = {str(eid) for eid, _ in plan["matched"]}
+            live_sources: set[str] = set()
+            for lk in current_links:
+                if lk.source_id in desired:
+                    live_sources.add(lk.source_id)
+                else:
+                    await db.delete(lk)
         else:
+            # Another caller may have created this page between our pre-lock
+            # prefetch and the lock (the scope lock serialises writers, but
+            # the read ran pre-lock). Skip rather than violate uq_kp_project_slug.
+            dupe = (
+                await db.execute(
+                    select(KnowledgePage.id).where(
+                        KnowledgePage.project_id == project_id,
+                        KnowledgePage.slug == plan["slug"],
+                    )
+                )
+            ).scalar_one_or_none()
+            if dupe is not None:
+                continue
+
             # Create knowledge page
             page_id = f"page_{uuid.uuid4().hex[:16]}"
             page = KnowledgePage(
                 id=page_id,
                 project_id=project_id,
-                slug=concept_slug,
-                title=candidate["topic"],
+                slug=plan["slug"],
+                title=plan["topic"],
                 page_type="concept",
-                content=article,
-                word_count=len(article.split()),
-                entry_count=len(matched_entries),
+                content=plan["article"],
+                word_count=len(plan["article"].split()),
+                entry_count=len(plan["matched"]),
                 auto_generated=True,
                 created_at=now,
                 updated_at=now,
             )
             db.add(page)
+            live_sources = set()
 
-        # Create knowledge links from entries to concept page
-        for entry in matched_entries:
-            link = KnowledgeLink(
+        # Create knowledge links from entries to concept page, skipping any
+        # already present (the update branch diffs against the live set).
+        for eid, _ in plan["matched"]:
+            if str(eid) in live_sources:
+                continue
+            db.add(KnowledgeLink(
                 project_id=project_id,
                 source_type="entry",
-                source_id=str(entry.id),
+                source_id=str(eid),
                 target_type="page",
                 target_id=page_id,
                 link_type="contributes",
                 confidence=1.0,
-            )
-            db.add(link)
+            ))
 
         created.append({
-            "slug": concept_slug,
-            "topic": candidate["topic"],
-            "word_count": len(article.split()),
-            "entry_count": len(matched_entries),
+            "slug": plan["slug"],
+            "topic": plan["topic"],
+            "word_count": len(plan["article"].split()),
+            "entry_count": len(plan["matched"]),
         })
 
+    # One commit for the whole phase (pruning, deletions, creations) — the
+    # project scope and row locks are held until here.
+    await db.commit()
     if created:
-        await db.commit()
         logger.info(
             "Auto-generated %d concept pages for project %s",
             len(created), project_id,

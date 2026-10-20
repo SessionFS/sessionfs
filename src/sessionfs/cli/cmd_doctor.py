@@ -264,6 +264,8 @@ def _check_capture_health(table: Table, store_dir: Path) -> None:
         )
         return
 
+    _report_skipped_sessions(table, watchers)
+
     degraded = [w for w in watchers if w.get("health") == "degraded"]
     if not degraded:
         healthy_count = sum(
@@ -288,6 +290,31 @@ def _check_capture_health(table: Table, store_dir: Path) -> None:
             _check_mark(False),
             f"degraded since {since}: {error}",
         )
+
+
+_SKIP_REASONS = {
+    "encrypted": "encrypted at rest (not readable offline)",
+    "no_plaintext_transcript": "no plaintext transcript",
+}
+
+
+def _report_skipped_sessions(table: Table, watchers: list[dict]) -> None:
+    """Informational row per watcher that deliberately skipped native sessions
+    (e.g. Antigravity conversations stored only in encrypted form)."""
+    for w in watchers:
+        skipped = w.get("sessions_skipped")
+        if not isinstance(skipped, dict) or not skipped:
+            continue
+        parts = []
+        for reason, count in sorted(skipped.items()):
+            if isinstance(count, int) and count > 0:
+                parts.append(f"{count} {_SKIP_REASONS.get(reason, reason)}")
+        if parts:
+            table.add_row(
+                f"Skipped [{w.get('name', 'unknown')}]",
+                _check_mark(True),
+                "not captured: " + "; ".join(parts),
+            )
 
 
 def _vtuple(v: str) -> tuple:

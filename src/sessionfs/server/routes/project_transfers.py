@@ -38,7 +38,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
@@ -53,6 +53,9 @@ from sessionfs.server.db.models import (
     ProjectTransfer,
     User,
 )
+from sessionfs.server.roles import ADMIN_ROLES
+from sessionfs.server.services.personas import personas_stranded_by_scope_change
+from sessionfs.server.services.scope_locks import lock_project_scope
 
 router = APIRouter(tags=["project-transfers"])
 
@@ -61,9 +64,15 @@ router = APIRouter(tags=["project-transfers"])
 
 
 class InitiateTransferRequest(BaseModel):
-    """`to`: either the literal "personal" or an org_id."""
+    """`to`: either the literal "personal" or an org_id.
+
+    `force` (GH #70): when the transfer auto-accepts, apply it even if
+    non-terminal tickets are assigned to org personas that will not exist
+    in the destination.
+    """
 
     to: str
+    force: bool = False
 
 
 class TransferResponse(BaseModel):
@@ -113,7 +122,8 @@ async def _user_is_org_admin(
     stmt = select(OrgMember).where(
         OrgMember.org_id == org_id,
         OrgMember.user_id == user_id,
-        OrgMember.role == "admin",
+        # Owners rank above admins and carry admin standing.
+        OrgMember.role.in_(ADMIN_ROLES),
     )
     return (await db.execute(stmt)).scalar_one_or_none() is not None
 
@@ -204,16 +214,67 @@ async def _resolve_target_user_id(
         # is the only party with standing — auto-accept.
         return initiator.id
 
-    # org → org. Find an admin of the destination org.
+    # org → org. Find an admin-level member (admin or owner) of the
+    # destination org; an org whose only admin-level member is its owner
+    # must still be a valid target. Longest-tenured first so the pick is
+    # deterministic.
     stmt = (
         select(OrgMember)
-        .where(OrgMember.org_id == to_scope, OrgMember.role == "admin")
+        .where(OrgMember.org_id == to_scope, OrgMember.role.in_(ADMIN_ROLES))
+        .order_by(OrgMember.joined_at.asc(), OrgMember.user_id.asc())
         .limit(1)
     )
     admin = (await db.execute(stmt)).scalar_one_or_none()
     if admin is None:
         raise HTTPException(400, "Destination org has no admin to accept the transfer")
     return admin.user_id
+
+
+async def _assert_no_stranded_personas(
+    db: AsyncSession,
+    project: Project,
+    to_scope: str,
+    force: bool,
+) -> None:
+    """GH #70 — refuse (409) a move that would leave non-terminal tickets
+    assigned to org personas the destination does not have. Nothing is
+    copied automatically: the caller reassigns the tickets, creates the
+    personas in the destination (or as project personas), or passes
+    force."""
+    if force:
+        return
+    dest_org = None if to_scope == "personal" else to_scope
+    stranded = await personas_stranded_by_scope_change(
+        db, project.id, current_org_id=project.org_id, dest_org_id=dest_org
+    )
+    if not stranded:
+        return
+    summary = "; ".join(
+        f"{s.persona}: {', '.join([*s.ticket_ids, *s.run_ids, *s.handoff_ids])}"
+        for s in stranded
+    )
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "code": "personas_stranded",
+            "message": (
+                "Non-terminal tickets, queued/running agent runs or pending "
+                "handoffs use org "
+                "personas that will not exist after this transfer "
+                f"({summary}). Reassign them, create the personas in the "
+                "destination or as project personas, or retry with force."
+            ),
+            "personas": [
+                {
+                    "persona": s.persona,
+                    "ticket_ids": s.ticket_ids,
+                    "run_ids": s.run_ids,
+                    "handoff_ids": s.handoff_ids,
+                }
+                for s in stranded
+            ],
+        },
+    )
 
 
 def _now() -> datetime:
@@ -247,9 +308,19 @@ async def initiate_transfer(
     if project is None:
         raise HTTPException(404, "Project not found")
 
+    to_scope = body.to
+    # GH #70 — take the project scope lock (plus the current and the
+    # destination org locks) on EVERY initiation, before any check: all of
+    # source scope, authorization, destination standing, the pending check
+    # and the stranded-persona guard then run against state no concurrent
+    # transfer, merge, ticket or persona write can change until we commit.
+    # lock_project_scope re-reads the project after locking.
+    await lock_project_scope(
+        db, project, extra_org_ids=[None if to_scope == "personal" else to_scope]
+    )
+
     # Source scope.
     from_scope = project.org_id if project.org_id is not None else "personal"
-    to_scope = body.to
 
     if to_scope == from_scope:
         raise HTTPException(400, "Transfer source and destination are the same")
@@ -312,6 +383,9 @@ async def initiate_transfer(
 
     # Auto-accept when initiator IS the target.
     auto_accept = target_user_id == user.id
+    if auto_accept:
+        # Guard + move + commit all under the locks taken above.
+        await _assert_no_stranded_personas(db, project, to_scope, body.force)
 
     # P2 (§3.3 E1): resolve primary remote from project_repos
     # (source of truth), falling back to the denormalized column.
@@ -362,6 +436,10 @@ async def initiate_transfer(
 @router.post("/api/v1/transfers/{transfer_id}/accept", response_model=TransferResponse)
 async def accept_transfer(
     transfer_id: str,
+    force: bool = Query(False, description=(
+        "Accept even if non-terminal tickets are assigned to org personas "
+        "that will not exist in the destination (GH #70)."
+    )),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> TransferResponse:
@@ -385,18 +463,48 @@ async def accept_transfer(
     if transfer.state != "pending":
         raise HTTPException(409, f"Transfer is {transfer.state!r}, not pending")
 
-    # Revalidate CURRENT standing — target_user_id can go stale if
-    # the user was removed from the destination org between initiate
-    # and accept. Codex Phase-2 round-2 catch (KB entry 248).
     current_project = (
         await db.execute(
             select(Project).where(Project.id == transfer.project_id)
         )
     ).scalar_one_or_none() if transfer.project_id is not None else None
+    if current_project is not None:
+        # GH #70 — lock first (project, then current + destination orgs);
+        # every check below and the move + commit run under the locks.
+        await lock_project_scope(
+            db,
+            current_project,
+            extra_org_ids=[None if transfer.to_scope == "personal" else transfer.to_scope],
+        )
+        # The project must still be where this transfer said it was. A
+        # concurrent transfer (e.g. a racing auto-accepted move) may have
+        # moved it since; accepting would then move it out of an org the
+        # initiator never had standing in.
+        current_scope = current_project.org_id or "personal"
+        if current_scope != transfer.from_scope:
+            raise HTTPException(
+                409,
+                {
+                    "code": "transfer_scope_changed",
+                    "message": (
+                        f"The project is no longer in {transfer.from_scope!r} "
+                        "(it moved after this transfer was initiated). Cancel "
+                        "or reject this transfer and start a new one."
+                    ),
+                },
+            )
+
+    # Revalidate CURRENT standing (under the lock) — target_user_id can go
+    # stale if the user was removed from the destination org between
+    # initiate and accept. Codex Phase-2 round-2 catch (KB entry 248).
     if not await _user_has_acceptor_standing(db, user, transfer, current_project):
         raise HTTPException(
             403,
             "You no longer have standing to accept this transfer",
+        )
+    if current_project is not None:
+        await _assert_no_stranded_personas(
+            db, current_project, transfer.to_scope, force
         )
 
     now = _now()

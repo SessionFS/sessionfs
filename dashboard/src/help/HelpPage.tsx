@@ -17,6 +17,7 @@ const TOOLS: Tool[] = [
   { id: 'amp', label: 'Amp', command: 'sfs mcp install --for amp' },
   { id: 'cline', label: 'Cline', command: 'sfs mcp install --for cline' },
   { id: 'roo-code', label: 'Roo Code', command: 'sfs mcp install --for roo-code' },
+  { id: 'antigravity', label: 'Antigravity', command: 'sfs mcp install --for antigravity' },
 ];
 
 type UseCase = {

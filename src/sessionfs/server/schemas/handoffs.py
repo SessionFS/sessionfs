@@ -189,6 +189,9 @@ class HandoffResponse(BaseModel):
     snapshot_persona_name: str | None = None
     snapshot_ticket_title: str | None = None
     sender_tier_snapshot: str | None = None
+    # GH #70 — durable project anchor for the handoff's provenance (set
+    # at create; moves to the merge target when the source is merged).
+    source_project_id: str | None = None
     # v0.10.9 — populated on GET /handoffs/{id} detail; omitted on list
     # endpoints to keep payload size sane.
     attachments: list[HandoffAttachmentResponse] = []

@@ -3,6 +3,29 @@
 from __future__ import annotations
 
 
+def _escape_md_cell(value: str) -> str:
+    """Escape a value rendered inside a markdown table cell so it cannot
+    inject a row/column boundary or a line break."""
+    return (
+        value.replace("\\", "\\\\")
+        .replace("|", "\\|")
+        .replace("\n", " ")
+        .replace("\r", " ")
+    )
+
+
+def _escape_md_link_label(value: str) -> str:
+    """Escape a value used as a markdown link label so it cannot break out
+    of the link with brackets/parens (on top of cell escaping)."""
+    return (
+        _escape_md_cell(value)
+        .replace("[", "\\[")
+        .replace("]", "\\]")
+        .replace("(", "\\(")
+        .replace(")", "\\)")
+    )
+
+
 def build_pr_comment(
     sessions: list[dict],
     include_trust: bool = True,
@@ -31,15 +54,18 @@ def _build_single_session(
     sep = "| " + " | ".join(["---"] * len(cols)) + " |"
 
     # Row
-    title = s.get("title", "Untitled")
+    title = str(s.get("title") or "Untitled")
     session_id = s["session_id"]
     if include_links:
-        title_cell = f"[{title}](https://app.sessionfs.dev/sessions/{session_id})"
+        title_cell = (
+            f"[{_escape_md_link_label(title)}]"
+            f"(https://app.sessionfs.dev/sessions/{session_id})"
+        )
     else:
-        title_cell = title
+        title_cell = _escape_md_cell(title)
 
-    tool = s.get("source_tool", "unknown")
-    model = s.get("model_id", "")
+    tool = _escape_md_cell(str(s.get("source_tool") or "unknown"))
+    model = _escape_md_cell(str(s.get("model_id") or ""))
     if model:
         tool = f"{tool} ({model})"
     msgs = str(s.get("message_count", 0))
@@ -60,9 +86,9 @@ def _build_single_session(
         lines.append("| Severity | Claim | Reality |")
         lines.append("| --- | --- | --- |")
         for c in contradictions[:5]:
-            sev = c.get("severity", "low").upper()
-            claim = c.get("claim", "")[:80]
-            evidence = c.get("evidence", "")[:80]
+            sev = _escape_md_cell(str(c.get("severity", "low")).upper())
+            claim = _escape_md_cell(str(c.get("claim", ""))[:80])
+            evidence = _escape_md_cell(str(c.get("evidence", ""))[:80])
             lines.append(f"| {sev} | {claim} | {evidence} |")
         if len(contradictions) > 5:
             lines.append(f"\n*...and {len(contradictions) - 5} more. See full audit.*")
@@ -100,16 +126,17 @@ def _build_multi_session(
 
     total_msgs = 0
     for s in sessions:
-        title = s.get("title", "Untitled")
+        title = str(s.get("title") or "Untitled")
         session_id = s["session_id"]
         if include_links:
             title_cell = (
-                f"[{title}](https://app.sessionfs.dev/sessions/{session_id})"
+                f"[{_escape_md_link_label(title)}]"
+                f"(https://app.sessionfs.dev/sessions/{session_id})"
             )
         else:
-            title_cell = title
+            title_cell = _escape_md_cell(title)
 
-        tool = s.get("source_tool", "unknown")
+        tool = _escape_md_cell(str(s.get("source_tool") or "unknown"))
         msgs = s.get("message_count", 0)
         total_msgs += msgs
 
@@ -121,7 +148,7 @@ def _build_multi_session(
                 emoji = "pass" if score >= 90 else "warn" if score >= 70 else "fail"
                 row_vals.append(f"{score}% {emoji}")
             else:
-                row_vals.append("\u2014")
+                row_vals.append("—")
 
         lines.append("| " + " | ".join(row_vals) + " |")
 

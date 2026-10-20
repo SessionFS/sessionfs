@@ -68,7 +68,7 @@ from sessionfs.server.db.models import (
 )
 from sessionfs.server.routes.knowledge import _get_project_for_auth
 from sessionfs.server.routes.wiki import _get_project_or_404
-from sessionfs.server.tier_gate import UserContext, check_feature, get_user_context
+from sessionfs.server.tier_gate import UserContext, check_project_feature, get_user_context
 
 router = APIRouter(prefix="/api/v1/projects", tags=["tickets"])
 
@@ -115,7 +115,7 @@ _AGENT_TICKET_PER_SESSION_CAP = 3
 
 
 async def _resolve_persona_name(
-    db: AsyncSession, project_id: str, name: str
+    db: AsyncSession, project_id: str, name: str, *, org_id: str | None
 ) -> str | None:
     """Normalize a persona name to the canonical DB-side casing.
 
@@ -135,18 +135,13 @@ async def _resolve_persona_name(
     duplicates as a separate guard so this defensive `.first()` only
     matters for legacy rows.
     """
-    row = (
-        await db.execute(
-            select(AgentPersona.name)
-            .where(
-                AgentPersona.project_id == project_id,
-                func.lower(AgentPersona.name) == name.lower(),
-                AgentPersona.is_active.is_(True),
-            )
-            .order_by(AgentPersona.id)
-        )
-    ).scalars().first()
-    return row
+    # GH #70 — project persona first, then the project's org persona.
+    from sessionfs.server.services.personas import resolve_persona
+
+    row = await resolve_persona(
+        db, project_id, name, org_id=org_id, active_only=True, case_insensitive=True
+    )
+    return row.name if row is not None else None
 
 
 async def _maybe_capture_route_feedback(
@@ -416,6 +411,10 @@ class StartTicketResponse(BaseModel):
     ticket: TicketResponse
     compiled_context: str
     retrieval_audit_id: str | None = None
+    # GH #70 — canonical name of the persona the ticket resolved to (may
+    # differ in case from ticket.assigned_to). Clients write THIS into the
+    # local provenance bundle.
+    persona_name: str | None = None
 
 
 class CommentCreate(BaseModel):
@@ -589,7 +588,12 @@ _TOOL_TOKEN_LIMITS: dict[str, int] = {
     "windsurf": 4000,
     "cline": 4000,
     "roo-code": 4000,
+    # The docs already promised kilo-code the Cline-family 4k budget; it
+    # was missing here and silently fell back to generic (8k).
+    "kilo-code": 4000,
     "amp": 8000,
+    # Antigravity (desktop app, agy CLI, IDE) fronts Gemini-class models.
+    "antigravity": 8000,
     # v0.10.1 cloud-agent aliases — Bedrock typically fronts Claude/Titan
     # (Claude-class budget); Vertex fronts Gemini (Gemini-class budget).
     # Documented in docs/integrations/bedrock-action-group.yaml and the
@@ -893,12 +897,12 @@ async def list_tickets(
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> list[TicketResponse]:
-    check_feature(ctx, "agent_tickets")
     project = await _get_project_for_auth(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
     await assert_service_key_can_access_project(db, auth, project)
+    await check_project_feature(ctx, "agent_tickets", project, db)
 
     if kind is not None and kind not in _VALID_KINDS:
         raise HTTPException(
@@ -979,12 +983,12 @@ async def get_ticket(
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> TicketResponse:
-    check_feature(ctx, "agent_tickets")
     project = await _get_project_for_auth(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
     await assert_service_key_can_access_project(db, auth, project)
+    await check_project_feature(ctx, "agent_tickets", project, db)
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
     deps = await _ticket_dependencies(db, ticket.id)
     child_ticket_ids: list[str] = []
@@ -1028,12 +1032,12 @@ async def get_ticket_review_state(
     """
     from sessionfs.server.services.review_state import compute_review_state
 
-    check_feature(ctx, "agent_tickets")
     project = await _get_project_for_auth(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
     await assert_service_key_can_access_project(db, auth, project)
+    await check_project_feature(ctx, "agent_tickets", project, db)
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
 
     # tk_33a25a12a5cf4dc3 — Shield-SR LOW follow-up from v0.10.11.
@@ -1100,12 +1104,22 @@ async def create_ticket(
       - No self-parent (the new ticket has no id yet so this is implicit).
     """
     user = auth.user
-    check_feature(ctx, "agent_tickets")
     project = await _get_project_for_auth(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
     await assert_service_key_can_access_project(db, auth, project)
+    await check_project_feature(ctx, "agent_tickets", project, db)
+    # GH #70 — every ticket create (assigned or not) takes the project
+    # scope lock before any read or write: serializes with project merge
+    # (which relocates tickets), transfers and the persona-delete guards,
+    # and refuses a merged-away project.
+    from sessionfs.server.services.scope_locks import (
+        lock_project_scope_authorized,
+    )
+
+    # GH #70 — lock, then re-authorize against the re-read project.
+    await lock_project_scope_authorized(db, project, auth=auth, ctx=ctx, feature="agent_tickets")
 
     # v0.10.24 — Issue authorization. Only the project owner or a
     # project admin (org-scoped projects: OrgMember.role=='admin') may
@@ -1207,8 +1221,16 @@ async def create_ticket(
     # path for legacy rows.
     normalized_assigned_to = body.assigned_to
     if body.assigned_to is not None:
+        from sessionfs.server.services.personas import (
+            visible_persona_org_id_for_auth,
+        )
+
+        # (project scope lock taken at the top of this route)
         canonical = await _resolve_persona_name(
-            db, project_id, body.assigned_to
+            db,
+            project_id,
+            body.assigned_to,
+            org_id=await visible_persona_org_id_for_auth(db, project, auth),
         )
         if canonical is not None:
             normalized_assigned_to = canonical
@@ -1288,8 +1310,8 @@ async def update_ticket(
       4. Auto-posts a `system`-authored TicketComment with the diff
          summary so a human reader sees what changed.
     """
-    check_feature(ctx, "agent_tickets")
     project = await _get_project_or_404(project_id, db, user.id)
+    await check_project_feature(ctx, "agent_tickets", project, db)
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
 
     # Reject lease_epoch-only payloads BEFORE touching the epoch.
@@ -1323,15 +1345,41 @@ async def update_ticket(
     # is not durably reflected on the Ticket row — so server-side we
     # admit ticket creator + project admin. Future work could persist
     # a current-lease-holder column and admit that too.
-    if ticket.created_by_user_id != user.id:
-        from sessionfs.server.auth.project_access import user_is_project_admin
+    async def _authorize_ticket_edit() -> None:
+        if ticket.created_by_user_id != user.id:
+            from sessionfs.server.auth.project_access import user_is_project_admin
 
-        if not await user_is_project_admin(db, user.id, project):
-            raise HTTPException(
-                403,
-                "Only the ticket creator or a project admin may update "
-                "this ticket. Persona name does not grant edit rights.",
-            )
+            if not await user_is_project_admin(db, user.id, project):
+                raise HTTPException(
+                    403,
+                    "Only the ticket creator or a project admin may update "
+                    "this ticket. Persona name does not grant edit rights.",
+                )
+
+    await _authorize_ticket_edit()
+
+    # GH #70 — EVERY mutation needs the project scope lock (serializes with
+    # transfers, merges and org-persona deletes), not just reassignment. A
+    # title/description/priority/… edit that passed its pre-lock check can
+    # still flush onto a ticket a concurrent merge relocated to another
+    # project — the flush UPDATE is PK-scoped, so the project boundary must
+    # be re-checked under the lock. Take the lock NOW, before the lease-epoch
+    # UPDATE row-locks the ticket and before any pending attribute change can
+    # autoflush: global lock order is scope locks first, row locks after
+    # (services/scope_locks.py).
+    from sessionfs.server.services.scope_locks import (
+        lock_project_scope_authorized,
+    )
+
+    # GH #70 — lock, then re-authorize against the re-read project.
+    await lock_project_scope_authorized(db, project, user_id=user.id, ctx=ctx, feature="agent_tickets")
+    # Re-load the ticket and re-run the creator/project-admin check against
+    # state read under the lock (a transfer or role change may have committed
+    # while we waited).
+    await db.refresh(ticket)
+    if ticket.project_id != project_id:
+        raise HTTPException(404, "Ticket not found")
+    await _authorize_ticket_edit()
 
     # Optimistic concurrency: fence on lease_epoch when caller passes
     # it. Atomic UPDATE WHERE lease_epoch=... so a concurrent writer
@@ -1343,7 +1391,11 @@ async def update_ticket(
         # writer for this epoch; on miss we 409.
         bumped = await db.execute(
             update(Ticket)
-            .where(Ticket.id == ticket.id, Ticket.lease_epoch == body.lease_epoch)
+            .where(
+                Ticket.id == ticket.id,
+                Ticket.project_id == project_id,
+                Ticket.lease_epoch == body.lease_epoch,
+            )
             .values(lease_epoch=body.lease_epoch + 1)
             .execution_options(synchronize_session="fetch")
         )
@@ -1391,8 +1443,15 @@ async def update_ticket(
         # v0.10.23 tk_884b2321fdb74170 — same best-effort normalize as
         # create. Matches assign_persona MCP path that routes through
         # this PUT.
+        from sessionfs.server.services.personas import visible_persona_org_id
+
+        # GH #70 — the project scope lock was taken above, before the
+        # lease fence; it is held until commit.
         canonical = await _resolve_persona_name(
-            db, project_id, body.assigned_to
+            db,
+            project_id,
+            body.assigned_to,
+            org_id=await visible_persona_org_id(db, project, user_id=user.id),
         )
         new_assigned = canonical if canonical is not None else body.assigned_to
         old_assigned = ticket.assigned_to
@@ -1567,12 +1626,22 @@ async def start_ticket(
     to the target tool's token budget (claude-code=16k, codex=8k, etc).
     """
     user = auth.user
-    check_feature(ctx, "agent_tickets")
     project = await _get_project_for_auth(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
     await assert_service_key_can_access_project(db, auth, project)
+    await check_project_feature(ctx, "agent_tickets", project, db)
+    # GH #70 — scope lock BEFORE reading the project's org, the ticket and
+    # the persona, held through the in_progress transition and the
+    # retrieval-audit insert (one transaction), so the persona cannot be
+    # resolved against an org the project is concurrently leaving.
+    from sessionfs.server.services.scope_locks import (
+        lock_project_scope_authorized,
+    )
+
+    # GH #70 — lock, then re-authorize against the re-read project.
+    await lock_project_scope_authorized(db, project, auth=auth, ctx=ctx, feature="agent_tickets")
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
 
     # Validate that the assigned persona exists at start time
@@ -1585,21 +1654,28 @@ async def start_ticket(
     # for rows already in the wild.
     persona: AgentPersona | None = None
     if ticket.assigned_to is not None:
-        persona = (
-            await db.execute(
-                select(AgentPersona).where(
-                    AgentPersona.project_id == project_id,
-                    func.lower(AgentPersona.name) == ticket.assigned_to.lower(),
-                    AgentPersona.is_active.is_(True),
-                )
-            )
-        ).scalar_one_or_none()
+        # GH #70 — resolves project first, then the project's org (only
+        # when the caller is a current member of it).
+        from sessionfs.server.services.personas import (
+            resolve_persona,
+            visible_persona_org_id_for_auth,
+        )
+
+        persona = await resolve_persona(
+            db,
+            project_id,
+            ticket.assigned_to,
+            org_id=await visible_persona_org_id_for_auth(db, project, auth),
+            active_only=True,
+            case_insensitive=True,
+        )
         if persona is None:
             raise HTTPException(
                 400,
                 (
                     f"Ticket is assigned to persona {ticket.assigned_to!r} "
-                    "but no active persona by that name exists in this project"
+                    "but no active persona by that name exists in this "
+                    "project or its org"
                 ),
             )
 
@@ -1632,24 +1708,29 @@ async def start_ticket(
             f"Pass force=true to recover from 'blocked'.",
         )
 
-    await db.commit()
+    # Same transaction as the transition (GH #70): the scope lock makes a
+    # concurrent start wait and then trip the rowcount guard, so the
+    # transition no longer needs its own early commit.
     await db.refresh(ticket)
     audit_context = RetrievalAuditContext(
         id=f"ra_{uuid.uuid4().hex[:24]}",
         project_id=project_id,
         ticket_id=ticket_id,
-        persona_name=ticket.assigned_to,
+        # GH #70 — the resolved persona's canonical name, not the raw
+        # assignment string.
+        persona_name=persona.name if persona is not None else None,
         lease_epoch=ticket.lease_epoch,
         created_by_user_id=user.id,
     )
     db.add(audit_context)
-    await db.commit()
     deps = await _ticket_dependencies(db, ticket.id)
     compiled = await _compile_persona_context(db, persona, ticket, tool=tool)
+    await db.commit()
     return StartTicketResponse(
         ticket=_to_response(ticket, deps),
         compiled_context=compiled,
         retrieval_audit_id=audit_context.id,
+        persona_name=persona.name if persona is not None else None,
     )
 
 
@@ -1667,12 +1748,12 @@ async def complete_ticket(
 ) -> TicketResponse:
     """Move ticket from in_progress → review."""
     user = auth.user
-    check_feature(ctx, "agent_tickets")
     project = await _get_project_for_auth(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
     await assert_service_key_can_access_project(db, auth, project)
+    await check_project_feature(ctx, "agent_tickets", project, db)
     await _assert_lease_required_mode(project_id, db, body.lease_epoch, auth=auth)
     now = datetime.now(timezone.utc)
     result = await db.execute(
@@ -1818,8 +1899,8 @@ async def accept_ticket(
     merges. The atomic UPDATE serializes the transition; only the
     request that owns the row mutation runs enrichment.
     """
-    check_feature(ctx, "agent_tickets")
-    await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_or_404(project_id, db, user.id)
+    await check_project_feature(ctx, "agent_tickets", project, db)
     await _assert_lease_required_mode(project_id, db, lease_epoch)
 
     now = datetime.now(timezone.utc)
@@ -1891,8 +1972,8 @@ async def reopen_ticket(
     db: AsyncSession = Depends(get_db),
 ) -> TicketResponse:
     """Move ticket from review → open (reporter requests changes)."""
-    check_feature(ctx, "agent_tickets")
-    await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_or_404(project_id, db, user.id)
+    await check_project_feature(ctx, "agent_tickets", project, db)
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
     _assert_transition(ticket.status, "open", ticket.kind)
 
@@ -1916,8 +1997,8 @@ async def block_ticket(
     db: AsyncSession = Depends(get_db),
 ) -> TicketResponse:
     """Move ticket from in_progress → blocked."""
-    check_feature(ctx, "agent_tickets")
-    await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_or_404(project_id, db, user.id)
+    await check_project_feature(ctx, "agent_tickets", project, db)
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
     _assert_transition(ticket.status, "blocked", ticket.kind)
 
@@ -1941,8 +2022,8 @@ async def unblock_ticket(
     db: AsyncSession = Depends(get_db),
 ) -> TicketResponse:
     """Move ticket from blocked → in_progress."""
-    check_feature(ctx, "agent_tickets")
-    await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_or_404(project_id, db, user.id)
+    await check_project_feature(ctx, "agent_tickets", project, db)
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
     _assert_transition(ticket.status, "in_progress", ticket.kind)
 
@@ -1966,8 +2047,8 @@ async def approve_ticket(
     db: AsyncSession = Depends(get_db),
 ) -> TicketResponse:
     """Move suggested → open (human reviews an agent-created ticket)."""
-    check_feature(ctx, "agent_tickets")
-    await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_or_404(project_id, db, user.id)
+    await check_project_feature(ctx, "agent_tickets", project, db)
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
     _assert_transition(ticket.status, "open", ticket.kind)
 
@@ -1993,8 +2074,8 @@ async def dismiss_ticket(
     """Move suggested/open → cancelled. Issues can also dismiss from
     in_progress. Both kinds use the Task FSM's 'cancelled' terminal
     state; the Issue FSM allows cancelled from open AND in_progress."""
-    check_feature(ctx, "agent_tickets")
-    await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_or_404(project_id, db, user.id)
+    await check_project_feature(ctx, "agent_tickets", project, db)
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
     _assert_transition(ticket.status, "cancelled", ticket.kind)
 
@@ -2032,8 +2113,8 @@ async def close_issue(
     """
     from sessionfs.server.auth.project_access import user_is_project_admin
 
-    check_feature(ctx, "agent_tickets")
     project = await _get_project_or_404(project_id, db, user.id)
+    await check_project_feature(ctx, "agent_tickets", project, db)
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
     if ticket.kind != "issue":
         raise HTTPException(
@@ -2103,12 +2184,12 @@ async def list_ticket_comments(
     a created_at (Codex review #1 fix — without the id tiebreaker, a
     same-timestamp poll could permanently skip one of two siblings).
     """
-    check_feature(ctx, "agent_tickets")
     project = await _get_project_for_auth(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
     await assert_service_key_can_access_project(db, auth, project)
+    await check_project_feature(ctx, "agent_tickets", project, db)
     await _get_ticket_or_404(project_id, ticket_id, db)  # validates ticket
     query = (
         select(TicketComment)
@@ -2224,12 +2305,12 @@ async def create_ticket_comment(
     db: AsyncSession = Depends(get_db),
 ) -> CommentResponse:
     user = auth.user
-    check_feature(ctx, "agent_tickets")
     project = await _get_project_for_auth(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
     await assert_service_key_can_access_project(db, auth, project)
+    await check_project_feature(ctx, "agent_tickets", project, db)
     await _assert_lease_required_mode(project_id, db, body.lease_epoch, auth=auth)
 
     # tk_d42170b4670f4448 — server-stamp the verdict trust decision from

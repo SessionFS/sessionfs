@@ -86,6 +86,51 @@ def test_atomic_write_preserves_data(tmp_path: Path):
     assert len(entries) == 10
 
 
+# ── mark_merged: retire a standalone capture without leaving stale entries ──
+
+def test_mark_merged_writes_when_absent(tmp_path: Path):
+    from sessionfs.store.deleted import get_entry, mark_merged
+
+    assert mark_merged("ses_child", "merged_into_parent:ses_parent", base_dir=tmp_path) is True
+    entry = get_entry("ses_child", base_dir=tmp_path)
+    assert entry["scope"] == "local" and entry["reason"] == "merged_into_parent:ses_parent"
+
+
+def test_mark_merged_replaces_cloud_entry(tmp_path: Path):
+    from sessionfs.store.deleted import get_entry, mark_deleted, mark_merged
+
+    mark_deleted("ses_child", "cloud", base_dir=tmp_path)  # local copy kept
+    mark_merged("ses_child", "merged_into_parent:ses_parent", base_dir=tmp_path)
+    entry = get_entry("ses_child", base_dir=tmp_path)
+    assert entry["scope"] == "local" and entry["reason"] == "merged_into_parent:ses_parent"
+
+
+def test_mark_merged_replaces_transient_entry(tmp_path: Path):
+    from sessionfs.store.deleted import get_entry, mark_deleted, mark_merged
+
+    mark_deleted("ses_child", "cloud", base_dir=tmp_path, reason="too_large")
+    mark_merged("ses_child", "merged_into_parent:ses_parent", base_dir=tmp_path)
+    entry = get_entry("ses_child", base_dir=tmp_path)
+    assert entry["reason"] == "merged_into_parent:ses_parent"
+
+
+def test_mark_merged_preserves_hard_local_deletion(tmp_path: Path):
+    from sessionfs.store.deleted import get_entry, mark_deleted, mark_merged
+
+    mark_deleted("ses_child", "everywhere", base_dir=tmp_path)  # user deleted it
+    assert mark_merged("ses_child", "merged_into_parent:ses_parent", base_dir=tmp_path) is False
+    entry = get_entry("ses_child", base_dir=tmp_path)
+    assert entry["scope"] == "everywhere" and "reason" not in entry
+
+
+def test_mark_merged_preserves_existing_merge_record(tmp_path: Path):
+    from sessionfs.store.deleted import get_entry, mark_merged
+
+    mark_merged("ses_child", "merged_into_parent:ses_a", base_dir=tmp_path)
+    assert mark_merged("ses_child", "merged_into_parent:ses_b", base_dir=tmp_path) is False
+    assert get_entry("ses_child", base_dir=tmp_path)["reason"] == "merged_into_parent:ses_a"
+
+
 # ── Test 17: sfs delete without scope flag prints error ──
 
 def test_delete_no_scope_prints_error():

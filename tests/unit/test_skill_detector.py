@@ -107,3 +107,13 @@ class TestSkillsToToolsJson:
     def test_empty_skills(self):
         result = skills_to_tools_json([])
         assert result == []
+
+
+def test_skills_to_tools_json_matches_tools_schema():
+    """Every converter writes this shape into tools.json; it must validate."""
+    from sessionfs.spec.validate import load_schema, make_validator
+
+    skills = [DetectedSkill(name="commit", message_index=0, source="claude-code", raw_text="/commit")]
+    validator = make_validator(load_schema("tools"))
+    errors = list(validator.iter_errors({"custom_tools": skills_to_tools_json(skills)}))
+    assert errors == []

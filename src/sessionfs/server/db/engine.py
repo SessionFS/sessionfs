@@ -6,6 +6,7 @@ import ssl as ssl_mod
 from collections.abc import AsyncGenerator
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 _engine: AsyncEngine | None = None
@@ -56,6 +57,37 @@ def _prepare_url(database_url: str) -> tuple[str, dict]:
     return clean_url, connect_args
 
 
+def _lower(s: str | None) -> str | None:
+    """Unicode-aware `str.lower` that is NULL-safe.
+
+    SQLite's built-in `lower()` returns NULL for NULL input, but
+    `str.lower(None)` raises TypeError, which sqlite3 surfaces as
+    ``OperationalError: user-defined function raised exception``. This
+    override replaces the built-in app-wide, so folding any nullable
+    column (e.g. ``Ticket.assigned_to``, ``Handoff.recipient_email``,
+    ``Session.title``) would 500 as soon as a scanned row held NULL.
+    Pass NULL through to keep the built-in's NULL semantics.
+    """
+    return None if s is None else s.lower()
+
+
+def _register_unicode_lower(dbapi_connection, connection_record) -> None:
+    """Register Python's Unicode-aware `str.lower` as SQLite's `lower()`.
+
+    SQLite's built-in `lower()` folds ASCII only, so `Álex` and `álex`
+    keep their distinct non-ASCII letters and the (org_id, lower(name))
+    org-persona UNIQUE index treats them as different names — letting both
+    through, violating its case-insensitive-unique contract. Python's
+    `str.lower` is full-Unicode and matches the app's `.lower()` checks.
+    """
+    dbapi_connection.create_function("lower", 1, _lower, deterministic=True)
+
+
+def install_sqlite_unicode_lower(engine: AsyncEngine) -> None:
+    """Install the Unicode-aware `lower()` on every SQLite connection of `engine`."""
+    event.listen(engine.sync_engine, "connect", _register_unicode_lower)
+
+
 def init_engine(
     database_url: str,
     echo: bool = False,
@@ -90,6 +122,10 @@ def init_engine(
         hide_parameters=True,
         **pool_kwargs,
     )
+    if database_url.startswith("sqlite"):
+        # SQLite's lower() is ASCII-only; the org-persona unique index
+        # (org_id, lower(name)) needs Unicode-aware folding (GH #70).
+        install_sqlite_unicode_lower(_engine)
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
     return _engine
 

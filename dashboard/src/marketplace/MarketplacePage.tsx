@@ -1,4 +1,5 @@
 import { useDeferredValue, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { ApiError } from '../api/client';
 import type { MarketplacePackage } from '../api/client';
@@ -13,11 +14,21 @@ import {
   useMarketplacePackages,
   useMarketplacePreview,
   useOrgSkillControl,
+  useRevocationIndex,
 } from '../hooks/useMarketplace';
+import { useMarketplaceDisclosure } from '../hooks/useMarketplaceDisclosure';
 import { useMe } from '../hooks/useMe';
 import { useProjects } from '../hooks/useProjects';
 import { useToast } from '../hooks/useToast';
+import { useMyOrgs } from '../transfers/useTransfers';
 import { formatBytes } from '../utils/format';
+import { STATE_COPY, adminOrgs, canModerate, canPublishPersonal, listingState, type ModerationState } from './moderationState';
+import { ModerationStateBadge, RevocationIncompleteNotice } from './parts';
+import { DisclosureCard } from './DisclosureCard';
+import { HeldUpdateQueues } from './HeldUpdates';
+import PublishDialog from './PublishDialog';
+import { ListingReviewBadge, ProvenancePanel, PublisherBadge } from './publisherParts';
+import ReportDialog from './ReportDialog';
 
 const TOOL_OPTIONS = [
   { value: '', label: 'All tools' },
@@ -42,7 +53,7 @@ function shortHash(value: string) {
   return value.length > 24 ? `${value.slice(0, 19)}…` : value;
 }
 
-function PackageCard({ item, onOpen }: { item: MarketplacePackage; onOpen: () => void }) {
+function PackageCard({ item, state, onOpen }: { item: MarketplacePackage; state: ModerationState; onOpen: () => void }) {
   const riskCount = [item.risk.scripts, item.risk.mcp, item.risk.executable_extensions, item.risk.hooks, (item.risk.allowed_tools || []).length > 0].filter(Boolean).length;
   return (
     <button
@@ -60,7 +71,11 @@ function PackageCard({ item, onOpen }: { item: MarketplacePackage; onOpen: () =>
             {item.display_name}
           </h2>
         </div>
-        <Badge variant={statusVariant(item.verification_state)} label={item.verification_state} tint />
+        <div className="flex shrink-0 flex-wrap justify-end gap-1">
+          <PublisherBadge item={item} compact />
+          <ListingReviewBadge item={item} />
+          <ModerationStateBadge state={state} />
+        </div>
       </div>
       <p className="mt-3 line-clamp-2 min-h-10 text-sm leading-5 text-text-secondary">
         {item.description || 'No package description provided.'}
@@ -123,8 +138,20 @@ function TrustDossier({ item }: { item: MarketplacePackage }) {
   );
 }
 
-function PackageDialog({ item, onClose }: { item: MarketplacePackage; onClose: () => void }) {
+/** The install disclosure card for the version (marketplace v2 §3.3). */
+function PackageDisclosure({ versionId, enabled }: { versionId: string; enabled: boolean }) {
+  const disclosure = useMarketplaceDisclosure(versionId, [], 'project', enabled);
+  if (!enabled) return null;
+  if (disclosure.isLoading) return <p className="mt-4 text-sm text-text-tertiary">Loading install disclosure…</p>;
+  if (disclosure.error) return <p role="alert" className="mt-4 text-sm text-warning">Install disclosure unavailable: {String(disclosure.error)}</p>;
+  if (!disclosure.data) return null;
+  return <div className="mt-4"><DisclosureCard disclosure={disclosure.data} /></div>;
+}
+
+function PackageDialog({ item, state, onClose }: { item: MarketplacePackage; state: ModerationState; onClose: () => void }) {
   const [showPreview, setShowPreview] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
+  const deliverable = state === 'active';
   const [requestOpen, setRequestOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [downloading, setDownloading] = useState(false);
@@ -148,6 +175,7 @@ function PackageDialog({ item, onClose }: { item: MarketplacePackage; onClose: (
   }
 
   async function download() {
+    if (!deliverable) return;
     setDownloading(true);
     try {
       const blob = await auth!.client.downloadMarketplaceVersion(item.version_id);
@@ -174,14 +202,24 @@ function PackageDialog({ item, onClose }: { item: MarketplacePackage; onClose: (
             <DialogHeader titleId="marketplace-package-title">{item.display_name}</DialogHeader>
           </div>
           <div className="flex gap-2">
-            <Badge variant={statusVariant(item.verification_state)} label={item.verification_state} />
+            <PublisherBadge item={item} />
+            <ListingReviewBadge item={item} />
+            <ModerationStateBadge state={state} tint={false} />
             <Badge label={item.visibility} />
           </div>
         </div>
         <p className="-mt-2 mb-5 max-w-2xl text-sm leading-6 text-text-secondary">{item.description}</p>
+        {state !== 'active' && (
+          <div role="status" className={`mb-5 rounded-lg border p-3 text-sm ${state === 'blocked' ? 'border-danger/40 bg-[rgba(240,64,96,0.06)] text-danger' : 'border-warning/40 bg-[rgba(240,192,64,0.06)] text-warning'}`}>
+            <p className="font-semibold">This version is {STATE_COPY[state].label}.</p>
+            <p className="mt-1 text-xs text-text-secondary">{STATE_COPY[state].help}</p>
+          </div>
+        )}
 
         <TrustDossier item={item} />
         <DeclaredBehavior item={item} />
+        <ProvenancePanel item={item} />
+        <PackageDisclosure versionId={item.version_id} enabled={deliverable} />
 
         <dl className="mt-5 grid gap-x-6 gap-y-3 rounded-xl border border-border bg-bg-sunken p-4 text-sm sm:grid-cols-2">
           <div><dt className="text-xs text-text-tertiary">Immutable version</dt><dd className="mt-1 font-mono text-text-primary">{item.version || 'unversioned'} · {item.version_id}</dd></div>
@@ -243,12 +281,14 @@ function PackageDialog({ item, onClose }: { item: MarketplacePackage; onClose: (
           {ownsVersion && !confirmDelete && (
             <Button variant="ghost" onClick={() => setConfirmDelete(true)}>Delete version…</Button>
           )}
-          <Button variant="ghost" onClick={() => setShowPreview((value) => !value)}>{showPreview ? 'Hide preview' : 'Preview instructions'}</Button>
-          <Button variant="secondary" onClick={download} loading={downloading}>Download archive</Button>
-          <Button onClick={() => setRequestOpen(true)}>Request for project</Button>
+          <Button variant="ghost" onClick={() => setReportOpen(true)}>Report…</Button>
+          <Button variant="ghost" onClick={() => setShowPreview((value) => !value)} disabled={!deliverable}>{showPreview ? 'Hide preview' : 'Preview instructions'}</Button>
+          <Button variant="secondary" onClick={download} loading={downloading} disabled={!deliverable}>Download archive</Button>
+          <Button onClick={() => setRequestOpen(true)} disabled={!deliverable}>Request for project</Button>
         </DialogFooter>
       </Dialog>
-      {requestOpen && <InstallRequestDialog item={item} onClose={() => setRequestOpen(false)} />}
+      {requestOpen && deliverable && <InstallRequestDialog item={item} onClose={() => setRequestOpen(false)} />}
+      {reportOpen && <ReportDialog item={item} onClose={() => setReportOpen(false)} />}
     </>
   );
 }
@@ -320,7 +360,18 @@ function ManagedLibrary() {
   const me = useMe();
   const org = useOrgSkillControl(me.data?.org_id);
   const effective = useEffectiveSkillAssignments();
-  if (!me.data?.org_id) return null;
+  const myOrgs = useMyOrgs();
+  // Every org the viewer owns or administers, not only the primary one.
+  const managed = adminOrgs(myOrgs.data, me.data);
+  if (!me.data?.org_id) {
+    if (managed.length === 0) return null;
+    return (
+      <Card level="elevated" className="mt-8 rounded-xl p-5">
+        <p className="text-2xs font-semibold uppercase tracking-[0.16em] text-brand">Managed library</p>
+        <HeldUpdateQueues orgs={managed} />
+      </Card>
+    );
+  }
   const assignments = effective.data?.items || [];
   const registries = org.registries.data?.items || [];
   return (
@@ -368,6 +419,7 @@ function ManagedLibrary() {
           )}
         </section>
       </div>
+      {managed.length > 0 && <HeldUpdateQueues orgs={managed} />}
     </Card>
   );
 }
@@ -377,7 +429,13 @@ export default function MarketplacePage() {
   const deferredQuery = useDeferredValue(query);
   const [tool, setTool] = useState('');
   const [selected, setSelected] = useState<MarketplacePackage | null>(null);
+  const [publishOpen, setPublishOpen] = useState(false);
   const packages = useMarketplacePackages(deferredQuery, tool);
+  const revocations = useRevocationIndex();
+  const me = useMe();
+  const myOrgs = useMyOrgs();
+  const canPublish = canPublishPersonal(me.data) || adminOrgs(myOrgs.data, me.data).length > 0;
+  const moderator = canModerate(me.data, myOrgs.data);
   const items = packages.data?.pages.flatMap((page) => page.items) ?? [];
   const loadedCount = items.length;
 
@@ -388,11 +446,33 @@ export default function MarketplacePage() {
         <p className="text-2xs font-semibold uppercase tracking-[0.2em] text-brand">SessionFS Marketplace</p>
         <h1 className="mt-2 max-w-3xl text-2xl font-semibold tracking-tight text-text-primary sm:text-3xl">Portable agent capabilities, governed before they run.</h1>
         <p className="mt-3 max-w-2xl text-sm leading-6 text-text-secondary">Discover immutable skills and plugins, inspect provenance and degradation, then download locally or request an instruction-only MCP grant.</p>
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          {canPublish ? (
+            <Button size="sm" onClick={() => setPublishOpen(true)}>Publish package</Button>
+          ) : me.data ? (
+            <p className="text-xs text-text-tertiary">
+              Publishing needs the Starter plan or above, or an owner/admin role in an organization with the team skill library.{' '}
+              <Link to="/settings/billing" className="font-semibold text-brand hover:underline">View plans</Link>
+            </p>
+          ) : null}
+          {canPublish && (
+            <Link to="/marketplace/publishers" className="rounded-lg border border-border px-3 py-1.5 text-xs text-text-secondary hover:border-border-strong hover:text-text-primary">
+              Publishers and trusted publishing
+            </Link>
+          )}
+          {moderator && (
+            <Link to="/marketplace/moderation" className="rounded-lg border border-border px-3 py-1.5 text-xs text-text-secondary hover:border-border-strong hover:text-text-primary">
+              Moderation queue
+            </Link>
+          )}
+        </div>
         <div className="mt-6 grid gap-3 sm:grid-cols-[1fr_220px]">
           <Input aria-label="Search marketplace" placeholder="Search by package, namespace, or capability" value={query} onChange={(event) => setQuery(event.target.value)} />
           <Select aria-label="Filter marketplace by tool" value={tool} onValueChange={setTool} options={TOOL_OPTIONS} />
         </div>
       </header>
+
+      <RevocationIncompleteNotice error={revocations.error} hasPrevious={!!revocations.data} className="mt-4" />
 
       <div className="mt-6 flex items-baseline justify-between">
         <h2 className="text-lg font-semibold text-text-primary">Available to your identity</h2>
@@ -411,7 +491,9 @@ export default function MarketplacePage() {
       )}
       {loadedCount > 0 && (
         <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {items.map((item) => <PackageCard key={item.listing_id} item={item} onOpen={() => setSelected(item)} />)}
+          {items.map((item) => (
+            <PackageCard key={item.listing_id} item={item} state={listingState(item, revocations.data)} onOpen={() => setSelected(item)} />
+          ))}
         </div>
       )}
       {packages.hasNextPage && (
@@ -428,7 +510,8 @@ export default function MarketplacePage() {
       )}
 
       <ManagedLibrary />
-      {selected && <PackageDialog item={selected} onClose={() => setSelected(null)} />}
+      {selected && <PackageDialog item={selected} state={listingState(selected, revocations.data)} onClose={() => setSelected(null)} />}
+      {publishOpen && <PublishDialog onClose={() => setPublishOpen(false)} />}
     </main>
   );
 }

@@ -129,7 +129,19 @@
         "source": {
           "type": ["string", "null"],
           "description": "Where this tool definition came from.",
-          "examples": ["mcp:filesystem", "builtin", "skill:openai-docs"],
+          "examples": ["mcp:filesystem", "builtin", "skill:openai-docs", "claude-code"],
+          "default": null
+        },
+        "type": {
+          "type": ["string", "null"],
+          "description": "Kind of tool. Converters write \"slash_command\" for slash commands / skills detected in user messages.",
+          "examples": ["slash_command"],
+          "default": null
+        },
+        "invocation_count": {
+          "type": ["integer", "null"],
+          "description": "How many times the tool was invoked in the session (set for detected slash commands).",
+          "minimum": 0,
           "default": null
         }
       }

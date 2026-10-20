@@ -1712,7 +1712,11 @@ async def test_version_delete_and_reference_creation_are_serialized(
     import inspect
 
     source = inspect.getsource(marketplace_routes)
-    assert source.count("with_for_update()  # lock order step 1") == 4  # +r10 P2-3 version reuse
+    # Version delete, version reuse at publish, and the shared grant-path helper
+    # (_lock_version_for_grant: version row, then the content-hash lock) that
+    # install-request create, approve, revoke and org assignment all go through.
+    assert source.count("with_for_update()  # lock order step 1") == 3
+    assert source.count("await _lock_version_for_grant(db, ") == 4
     assert "Lock order" in source
 
 

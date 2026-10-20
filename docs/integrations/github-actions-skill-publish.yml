@@ -1,0 +1,86 @@
+# EXAMPLE GitHub Actions workflow: publish a skill or plugin to the SessionFS
+# marketplace with TRUSTED PUBLISHING (GitHub OIDC, no stored API key).
+#
+# This is reference documentation, not an active workflow in this repository.
+# Copy it to `.github/workflows/release.yml` in the repository that holds your
+# package and adapt the namespace.
+#
+# One-time setup (as the publisher's owner or an org owner/admin):
+#
+#   sfs skill publisher claim acme                     # or --org <org_id>
+#   sfs skill publisher trust <publisher_id> \
+#       --repo acme/skills --workflow release.yml \
+#       --environment release --ref-pattern 'refs/tags/v*'
+#
+# Then create a GitHub environment named `release` (Settings > Environments)
+# with required reviewers and/or a tag rule. The trusted publisher only
+# accepts tokens from that environment, so a pull request or a branch push
+# cannot publish even though it runs the same workflow file.
+#
+# How it works:
+#   1. The CLI reads this server's OIDC audience from
+#      GET /api/v1/marketplace/trusted-publishing/config (the deployment's
+#      public API origin, e.g. https://api.sessionfs.dev) and asks GitHub for
+#      a token with that audience (needs `permissions: id-token: write`).
+#   2. `sfs skill publish --trusted-publishing` sends it to SessionFS, which
+#      verifies GitHub's signature and checks the NUMERIC repository id and
+#      owner id, this workflow file as the CALLER (`workflow_ref`), the event
+#      (push, release or workflow_dispatch only; pull_request and
+#      pull_request_target never publish), the environment and the ref. It
+#      returns a publish token that expires in 15 minutes, works once, and only
+#      for this namespace / package.
+#   3. The package is uploaded with that token. The listing shows
+#      "Published from": the repository, workflow, ref, run and the run's
+#      commit. That says WHERE it was published from, not how it was built
+#      (no build attestation yet); your declared source commit is unchanged.
+#
+# Reusable workflows: if this file calls a shared publishing workflow
+# (`uses: acme/ci/.github/workflows/publish.yml@main`), the trust still names
+# THIS file with --workflow; add --reusable-workflow
+# acme/ci/.github/workflows/publish.yml to also pin the called workflow.
+#
+# Nothing here is a secret: there is no SESSIONFS_API_KEY in the repository.
+# Self-hosted SessionFS: set SESSIONFS_API_URL below; the audience is read
+# from your server (its SFS_PUBLIC_API_URL / SFS_TRUSTED_PUBLISHING_AUDIENCE).
+
+name: Publish skill
+
+on:
+  push:
+    tags: ['v*']
+
+# Least privilege for every job by default.
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # Must match the trusted publisher's --environment.
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      SESSIONFS_API_URL: https://api.sessionfs.dev
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install SessionFS CLI
+        # Needs a release that includes `sfs skill publish --trusted-publishing`;
+        # pin the exact version you tested with.
+        run: python -m pip install --upgrade sessionfs
+
+      - name: Validate
+        run: sfs skill validate . --visibility org
+
+      - name: Publish with trusted publishing
+        # Add `--visibility public` once SessionFS has enabled public
+        # publishing for your verified publisher.
+        run: sfs skill publish . --trusted-publishing --namespace acme

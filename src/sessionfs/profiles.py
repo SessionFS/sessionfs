@@ -41,6 +41,9 @@ sensitivity as the config.toml ``[sync]`` block. No key is ever logged.
 
 from __future__ import annotations
 
+import datetime
+import json
+import math
 import os
 import re
 import stat
@@ -261,6 +264,157 @@ def set_active_profile(name: str) -> None:
     _write_private_file(apath, name + "\n")
 
 
+# [sync] keys a login sets. Every other [sync] setting the user has
+# (push_interval, upload_timeout, auto, debounce, ...) is carried over.
+_LOGIN_MANAGED_SYNC_KEYS = frozenset({"enabled", "api_url", "api_key"})
+# Written on login only when the file doesn't already set them.
+_LOGIN_SYNC_DEFAULTS = (("push_interval", "30"), ("retry_max", "5"))
+
+
+class ConfigRewriteError(ValueError):
+    """A login could not update a config file without losing settings."""
+
+
+def _toml_string(value: str) -> str:
+    # JSON string syntax is TOML basic-string syntax once non-BMP characters
+    # stay literal (no surrogate-pair escapes) and DEL, which TOML forbids
+    # raw, is escaped.
+    return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
+
+
+def _toml_key(key: str) -> str:
+    if re.fullmatch(r"[A-Za-z0-9_-]+", key):
+        return key
+    return _toml_string(key)
+
+
+def _toml_value(value: object) -> str | None:
+    """TOML text for any value tomllib produces, or None if unexpected."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if math.isnan(value):
+            return "nan"
+        if math.isinf(value):
+            return "inf" if value > 0 else "-inf"
+        return repr(value)
+    if isinstance(value, str):
+        return _toml_string(value)
+    if isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
+        return value.isoformat()
+    if isinstance(value, list):
+        items = [_toml_value(v) for v in value]
+        if any(i is None for i in items):
+            return None
+        return "[" + ", ".join(items) + "]"  # type: ignore[arg-type]
+    if isinstance(value, dict):
+        pairs = [(k, _toml_value(v)) for k, v in value.items()]
+        if any(v is None for _, v in pairs):
+            return None
+        return "{" + ", ".join(f"{_toml_key(k)} = {v}" for k, v in pairs) + "}"
+    return None
+
+
+def _parse_existing_config(path: Path, text: str) -> dict:
+    """The parsed config a login is about to update ({} for a new file)."""
+    if not text.strip():
+        return {}
+    if re.search(r"\d{2}:\d{2}:\d{2}\.\d{7,}", text):
+        # Python datetimes hold microseconds; re-serializing would drop the rest.
+        raise ConfigRewriteError(
+            f"{path} has a time with more than 6 decimal places, which a login "
+            "can't rewrite exactly. Shorten it, then log in again."
+        )
+    try:
+        return tomllib.loads(text)
+    except (tomllib.TOMLDecodeError, ValueError) as exc:
+        raise ConfigRewriteError(
+            f"{path} is not valid TOML ({exc}). Fix it, then log in again."
+        ) from exc
+
+
+def login_sync_lines(path: Path, text: str, api_url: str, api_key: str) -> list[str]:
+    """Body of the [sync] table a login writes: new credentials plus every
+    setting the existing file already had, re-serialized as TOML."""
+    sync = _parse_existing_config(path, text).get("sync", {})
+    if not isinstance(sync, dict):
+        sync = {}
+    lines = [
+        "enabled = true",
+        f"api_url = {_toml_string(api_url)}",
+        f"api_key = {_toml_string(api_key)}",
+    ]
+    lines += [f"{k} = {v}" for k, v in _LOGIN_SYNC_DEFAULTS if k not in sync]
+    for key, value in sync.items():
+        if key in _LOGIN_MANAGED_SYNC_KEYS:
+            continue
+        rendered = _toml_value(value)
+        if rendered is None:
+            raise ConfigRewriteError(
+                f"Can't carry over [sync] {key} in {path}; set the credentials by hand."
+            )
+        lines.append(f"{_toml_key(key)} = {rendered}")
+    return lines
+
+
+def _rendered(doc: dict, *, sync: bool) -> dict[str, str | None]:
+    """Top-level tables (sync=False) or unmanaged [sync] settings (sync=True)
+    in rendered TOML form, so NaN compares equal to NaN."""
+    if sync:
+        table = doc.get("sync", {})
+        items = table.items() if isinstance(table, dict) else []
+        return {k: _toml_value(v) for k, v in items if k not in _LOGIN_MANAGED_SYNC_KEYS}
+    return {k: _toml_value(v) for k, v in doc.items() if k != "sync"}
+
+
+def verify_login_rewrite(path: Path, old_text: str, new_text: str, api_key: str) -> None:
+    """Raise ConfigRewriteError unless new_text is the old config with only
+    the login's credentials changed."""
+    old = _parse_existing_config(path, old_text)
+    try:
+        new = tomllib.loads(new_text)
+    except (tomllib.TOMLDecodeError, ValueError) as exc:
+        raise ConfigRewriteError(
+            f"Could not update {path} safely; set api_url, api_key and "
+            "enabled = true under [sync] by hand."
+        ) from exc
+    def _kept(before: dict[str, str | None], after: dict[str, str | None]) -> bool:
+        # Everything the old file had is still there, unchanged. (A login may
+        # add things: a new profile's store_dir, default push_interval.)
+        return all(k in after and after[k] == v for k, v in before.items())
+
+    sync = new.get("sync")
+    if (
+        not isinstance(sync, dict)
+        or sync.get("api_key") != api_key
+        or not _kept(_rendered(old, sync=False), _rendered(new, sync=False))
+        or not _kept(_rendered(old, sync=True), _rendered(new, sync=True))
+    ):
+        raise ConfigRewriteError(
+            f"Could not update {path} safely; set api_url, api_key and "
+            "enabled = true under [sync] by hand."
+        )
+
+
+def preserved_sync_lines(text: str) -> list[str]:
+    """Unmanaged [sync] settings of a config, re-serialized as TOML."""
+    try:
+        return [
+            line for line in login_sync_lines(Path("config"), text, "", "")
+            if line.split(" = ", 1)[0] not in _LOGIN_MANAGED_SYNC_KEYS
+            and line not in {f"{k} = {v}" for k, v in _LOGIN_SYNC_DEFAULTS}
+        ]
+    except ConfigRewriteError:
+        return []
+
+
+def unmanaged_sync_settings(doc: dict) -> dict[str, str | None]:
+    """The [sync] settings of a parsed config that a login must keep."""
+    return _rendered(doc, sync=True)
+
+
 def write_named_profile(name: str, api_url: str, api_key: str) -> Path:
     """Write a named-profile TOML file (NOT the default config.toml).
 
@@ -277,18 +431,34 @@ def write_named_profile(name: str, api_url: str, api_key: str) -> Path:
     pdir.mkdir(parents=True, exist_ok=True)
     store_dir = pdir / name / "store"
     path = profile_config_path(name)
+    try:
+        existing = path.read_text() if path.exists() else ""
+    except OSError as exc:
+        # Unreadable is not empty: writing now would wipe its settings.
+        raise ConfigRewriteError(f"Could not read {path} ({exc}).") from exc
+    sync_lines = login_sync_lines(path, existing, api_url, api_key)
+    # Carry over everything else the profile file holds (a customised
+    # store_dir, other tables), re-serialized; [sync] is rebuilt above.
+    others = {
+        k: v for k, v in _parse_existing_config(path, existing).items() if k != "sync"
+    }
+    others.setdefault("store_dir", str(store_dir))
+    top = [(k, v) for k, v in others.items() if not isinstance(v, dict)]
+    tables = [(k, v) for k, v in others.items() if isinstance(v, dict)]
+    body = [f"{_toml_key(k)} = {_toml_value(v)}" for k, v in top]
+    for key, table in tables:
+        body += ["", f"[{_toml_key(key)}]"]
+        body += [f"{_toml_key(k)} = {_toml_value(v)}" for k, v in table.items()]
     content = (
         f"# SessionFS profile: {name}\n"
         f"# Written by `sfs auth login --profile {name}`.\n"
-        f'store_dir = "{store_dir}"\n'
-        "\n"
-        "[sync]\n"
-        "enabled = true\n"
-        f'api_url = "{api_url}"\n'
-        f'api_key = "{api_key}"\n'
-        "push_interval = 30\n"
-        "retry_max = 5\n"
+        + "".join(f"{line}\n" for line in body)
+        + "\n[sync]\n"
+        + "".join(f"{line}\n" for line in sync_lines)
     )
+    # Never write a profile that doesn't parse back with the new key and
+    # every setting the old file had (raises ConfigRewriteError).
+    verify_login_rewrite(path, existing, content, api_key)
     # 0o600 enforced at creation — holds a raw key (Shield-SR v0.10.29:
     # write_text + chmod left a umask-default window; see _write_private_file).
     _write_private_file(path, content)

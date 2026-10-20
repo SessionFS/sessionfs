@@ -57,6 +57,9 @@ PROJECT_RULES_FILES: dict[str, list[str]] = {
     "cursor": [".cursorrules"],
     "copilot": [".github/copilot-instructions.md"],
     "gemini": ["GEMINI.md"],
+    # Antigravity reads both; they are shared with Gemini CLI / Codex, so the
+    # all-tools pass below records each path once.
+    "antigravity": ["GEMINI.md", "AGENTS.md"],
 }
 
 # Global artifact candidates (home-directory files). Hash-only, no content.
@@ -471,7 +474,11 @@ def discover(
     if tool and tool in PROJECT_RULES_FILES:
         primary_files = PROJECT_RULES_FILES[tool]
 
+    recorded_rules: set[str] = set()
     for rel in primary_files:
+        if rel in recorded_rules:
+            continue
+        recorded_rules.add(rel)
         p = root / rel
         art, managed, version = _inspect_rules_file(p)
         if art is None:
@@ -496,6 +503,9 @@ def discover(
         if other_tool == tool:
             continue
         for rel in files:
+            if rel in recorded_rules:
+                continue
+            recorded_rules.add(rel)
             p = root / rel
             art, managed, _ = _inspect_rules_file(p)
             if art is None:

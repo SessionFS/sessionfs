@@ -20,6 +20,43 @@ Every Marketplace detail response and dashboard dossier includes:
 
 Previewed instructions are **untrusted text**. Previewing does not install, approve, or execute anything.
 
+## Install Disclosure
+
+Before anything is installed, every surface shows the same **disclosure card**, computed from the package bytes (never from what the package claims about itself):
+
+- **Per tool**: the exact files that land on disk (for example `.claude/skills/deploy/SKILL.md` or `~/.codex/skills/...` for user scope), and what is not installed for that tool.
+- **What can run**: scripts (with their interpreter), `SKILL.md` frontmatter hooks (event and matcher), executable extensions, and MCP servers (local command or remote origin, plus the environment variable names they read).
+- **Tool pre-approvals**: `allowed-tools` grants the skill gives itself.
+- **Network endpoints** referenced anywhere in the package.
+- **Shell commands** the instructions tell the agent to run (from fenced shell blocks), with file and line.
+- **Scanner findings**, and **hidden or bidirectional Unicode and control characters**, shown visibly as `⟦U+202E⟧` with file, line and column.
+
+The card appears in `sfs skill inspect` and `sfs skill add`, in the dashboard package view and on the project **Marketplace** tab next to every pending approval, in MCP `get_marketplace_package` (display only; MCP never grants consent), and at `GET /api/v1/marketplace/versions/{id}/disclosure?tools=codex,claude-code&scope=project`.
+
+A local install of a package that contains the hidden-character classes the publish gate refuses (bidirectional overrides or zero-width characters in `SKILL.md` or scripts, Unicode tag characters, raw control characters) needs `--allow-hidden-unicode`.
+
+## Updates and Re-Consent
+
+Each version has a **capability digest**: two versions with the same digest grant the same access. An update is classified by comparing the version you consented to with the new one:
+
+| Update | What changed | Personal `sfs skill update` | Org assignment / daemon |
+|---|---|---|---|
+| **Text** | Instructions or assets only | One confirmation (`--yes` works); the consent you gave carries forward | Applied by the daemon |
+| **Code** | Script, hook, MCP-config or executable-extension bytes, with no new access | The changed capability's flag again (`--allow-scripts` / `--allow-hooks` / ...); `--yes` alone is refused | Held until approved |
+| **Widening** | Any new access: a new capability, hook event or matcher, MCP server or changed MCP command, remote origin, `allowed-tools` grant, network endpoint, environment variable, persistence target, or a lost publisher verification | Always stops: `--approve-widening` (or an interactive yes to the widening prompt), plus the capability flags; `--yes` never approves it | **Never** auto-applied |
+
+`sfs skill rollback` and `sfs skill sync --locked` apply the same rules to the version they replace (and a locked sync is all-or-nothing). Any change to MCP configuration counts as widening.
+
+`sfs skill diff <name>` and `GET /api/v1/marketplace/versions/{from}/diff/{to}` show the files added, removed and changed (with bounded text diffs), the capability changes, new scanner and hidden-character findings, and the update class.
+
+Devices never apply a widening or code update on their own: `sfs skill pull` and the daemon keep the installed version and report the update as **held**. A held org update is applied once an organization admin approves it: `POST /api/v1/orgs/{org}/skills/assignments/{id}/advance` with `approve_widening` (or `approve_code_change`) records the approved capability digest on the assignment, and devices apply only a version whose digest matches. `GET /api/v1/orgs/{org}/skills/assignments/updates` lists every assignment with a newer version and its update class (paginated: pass the returned `next_cursor` as `cursor`). Assigning another version of a package to a target that already has one is refused with `409 use_advance` (the server keeps one active assignment per package and target), and approving a project install request for a newer version of a package already approved in that project is refused with `409 reapproval_required` unless the request explicitly approves the widening or code change.
+
+Approvals bind the approved capability digest to the install request (or assignment) at approval time; approvals made before this release never count as approving a specific digest, and an update from such a grant is treated as widening. A grant is refused with `503` while the package's manifest cannot be computed. A device applies a widening update only for the tools of the grant that bound that exact digest. Re-approving a text update in the dashboard carries the capabilities confirmed for the previous version forward; a code update asks only for the changed capability. Advancing an assignment keeps the old one as superseded history.
+
+Consent receipts record the capability digest and the access that was consented to. When consent carries forward to a text update, the new receipt names the receipt it was carried from, so the audit trail shows which bytes a person actually reviewed.
+
+An Enterprise exception, letting an org auto-apply code updates from a publisher whose signed release workflow it trusts, is reserved for verified publishers and trusted publishing and is not active yet.
+
 ## Four Consumption Modes
 
 ### 1. Local Device Installation
@@ -72,19 +109,19 @@ Assignments are desired state. Clients still perform local preflight and install
 
 ## Dashboard Workflow
 
-Open **Marketplace** in the dashboard to search everything visible to your identity. Package detail shows the trust dossier and compatibility matrix. Choose **Request for project** to create an instruction-only request. Project owners/admins decide pending requests from the project's **Marketplace** tab.
+Open **Marketplace** in the dashboard to search everything visible to your identity. Package detail shows the trust dossier, the install disclosure card and the compatibility matrix. Choose **Request for project** to create an instruction-only request. Project owners/admins decide pending requests from the project's **Marketplace** tab, which shows the disclosure for the requested tools and, when the request updates a version already approved there, the changes to approve.
 
-Organization members also see registry policy and effective assignments. Private packages remain hidden from users outside the owning organization; unauthorized detail and download requests return `404` rather than disclosing existence.
+Organization members also see registry policy and effective assignments. Organization owners and admins also get **Updates to review**: every assigned package with a newer version, its update diff and the full disclosure of the new version, with an acknowledgement (bound to the disclosure shown) and an **Advance** button. Private packages remain hidden from users outside the owning organization; unauthorized detail and download requests return `404` rather than disclosing existence.
 
 ## Publishing Boundary
 
-The v0.16 public UI does not offer open self-service marketplace publishing. The authenticated API supports private user uploads, organization-admin uploads, and platform-admin curated public uploads. Uploads are bounded, path-safe, DLP-scanned, normalized, and stored as immutable canonical archives.
+Publish with `sfs skill publish`, the authenticated API, or the publish dialog on the dashboard **Marketplace** page (for pre-built archives). Uploads are bounded, path-safe, DLP-scanned, instruction-scanned, normalized, and stored as immutable canonical archives.
 
 | Who can publish | Visibility | Requirement |
 | --- | --- | --- |
 | Any signed-in user on Starter or above | Personal (only you) | None beyond the upload checks |
-| Organization admins on Team or Enterprise | Organization | The package's `plugin.json` must declare a `license` |
-| Platform administrators | Public (curated catalog) | The package's `plugin.json` must declare a `license` |
+| Organization owners and admins on Team or Enterprise | Organization | The package's `plugin.json` must declare a `license` |
+| [Verified publishers](#verified-publishers) enabled for public publishing by SessionFS | Public | A declared `license`; a publisher's first public version, and any update that widens access, waits for review |
 
 Browsing, downloading, and loading approved instructions are available to every signed-in user, including the Free tier. Any declared license value is accepted for organization packages, including `UNLICENSED` or `proprietary` for internal work; packages without one are rejected with `license_required`.
 
@@ -97,7 +134,80 @@ Hosted publishing limits:
 
 Uploads must be plain ustar/GNU `tar.gz` archives **without** PAX or GNU extended headers (no `x`/`g`/`L`/`K` records): member paths must fit the ustar name/prefix fields, and archives created with `tar --format=ustar` or Python's `tarfile` `USTAR_FORMAT`/`GNU_FORMAT` with short paths qualify. Extended-header archives are rejected outright because their metadata records are read with whatever size they declare.
 
+### Publishing from the CLI
+
+Validate a package before you publish it. `sfs skill validate` runs the server's publish checks locally: archive format, path safety, size caps, the `plugin.json` schema, `SKILL.md` frontmatter, MCP credential literals, and the secret/PHI scan. The server and the CLI share one validator, so they give the same answers:
+
+```bash
+sfs skill validate ./review-helper                    # personal publishing
+sfs skill validate ./review-helper --visibility org   # also requires a declared license
+```
+
+Each problem shows the file and line (when known), why it fails, and how to fix it. Secret and PHI findings are listed by file and line, never by the matched text. Validation exits with code `1` on errors, so it can gate CI. On success it prints the content hash and the risk summary (scripts, hooks, allowed tools, MCP, executable extensions).
+
+`sfs skill publish` validates the same way, shows a summary (name, version, license, risk flags, size, target), asks for confirmation, then uploads:
+
+```bash
+sfs skill publish ./review-helper                     # your personal library
+sfs skill publish ./review-helper --org org_123 --yes # an organization, no prompt
+```
+
+A directory is packed into a deterministic ustar `tar.gz`, and `.git` and OS metadata files are left out. Those exact bytes are validated and uploaded, so the content hash shown before upload is the one the server stores. The upload is named after the package, so a new version lands under the same package.
+
+Some limits need server state, so only the server checks them: your plan, your org role, storage quota, version caps, concurrency (`503 publish_busy`), upload time (`408 publish_timeout`), and an organization's own DLP policy. When the server refuses an upload for one of these reasons, the CLI explains what happened and what to do next.
+
+Secret and PHI findings block a personal publish locally. When you publish to an organization, they appear as warnings instead, because the organization's DLP allowlist may permit the flagged values. The server applies that policy, and it rejects the upload if the policy does not allow them.
+
 Registry URLs are recorded as pinned references. SessionFS does not fetch arbitrary registry URLs on the server, avoiding an SSRF or credential-forwarding path.
+
+## Instruction Scanning
+
+Every published version is scanned for dangerous instructions and scripts: fetch-and-run, encoded execution, credential harvesting, exfiltration endpoints, permission bypass and hook auto-approval, persistence, concealment, defense evasion, and hidden or bidirectional Unicode. Critical findings refuse the publish; other findings are shown on the listing and in the install disclosure.
+
+Live versions are rescanned weekly and whenever the ruleset changes. A new critical finding quarantines the version: no new installs, downloads, approvals or MCP loads until a moderator blocks or restores it. Existing installs are warned, never removed by a quarantine alone.
+
+## Reports, Takedown and Revocations
+
+Anyone signed in can report a listing. SessionFS moderators, and an organization's owners and admins for their own listings, review reports in the dashboard moderation queue and can act on a version or a whole package with a required reason and an audit record:
+
+- **Yank** keeps installed copies but refuses new installs. `sfs skill list` and `sfs skill doctor` show a warning.
+- **Block** removes the package from every device. `sfs skill pull` and the daemon follow the revocations feed and move blocked packages into `~/.sessionfs/skills/quarantine/`, keeping any local edits there.
+
+Blocked content is refused by content hash, so deleting and re-publishing the same bytes does not bring it back.
+
+## Verified Publishers
+
+A publisher owns a globally unique marketplace namespace, personal or organization-owned. Verification proves who the publisher is and shows as a badge on its listings, such as `verified: acme.com` or `verified: github.com/acme`.
+
+```bash
+sfs skill publisher claim acme --org org_123        # claim a namespace
+sfs skill publisher verify pub_abc --dns acme.com   # prints a TXT record to add
+sfs skill publisher verify pub_abc --github-org INSTALLATION_ID
+sfs skill publisher check pub_abc VERIFICATION_ID   # re-check now
+```
+
+DNS verification uses a `sessionfs-verification=...` TXT record; a domain your organization already verified for SSO is reused. GitHub verification goes through one of your own linked SessionFS GitHub App installations and needs a recent proof that you own or administer it. If a DNS record goes missing for seven days, the badge is dropped until it is back.
+
+Names that imitate a reserved brand or a verified publisher (lookalike letters from any script, digit swaps, typos, `-official` suffixes) are refused, and display names never carry a badge.
+
+## Trusted Publishing from GitHub Actions
+
+Trusted publishing lets a GitHub Actions workflow publish without a SessionFS API key stored in the repository.
+
+1. Allow a specific repository and workflow, ideally with a protected GitHub environment and a ref pattern:
+
+   ```bash
+   sfs skill publisher trust pub_abc --repo acme/review-helper \
+     --workflow publish.yml --environment release --ref-pattern 'refs/tags/v*'
+   ```
+
+2. In the workflow, give the job `permissions: id-token: write` and run:
+
+   ```bash
+   sfs skill publish . --trusted-publishing --namespace acme
+   ```
+
+The CLI exchanges the job's OIDC token for a single-use publish token that expires after 15 minutes. Pull-request events never publish. Each listing shows where the version was **published from**: repository, workflow, ref, environment and run. Remove a trust with `sfs skill publisher untrust`; tokens already issued under it stop working.
 
 ## Launch Catalog
 

@@ -20,9 +20,9 @@ from sessionfs.security.secrets import (
     DLPFinding,
     PHI_PATTERNS,
     SECRET_PATTERNS,
-    SEVERITY_MAP,
     ALLOWLIST,
     scan_dlp as scan_dlp_full,
+    scan_dlp_builtin,
 )
 
 logger = logging.getLogger("sessionfs.api")
@@ -82,50 +82,11 @@ def scan_dlp(
 
     Returns:
         List of DLPFinding objects with match details.
+
+    The rules live in ``security.secrets.scan_dlp_builtin`` so client-side
+    validators (``sfs skill validate``) run exactly the same scan.
     """
-    if categories is None:
-        categories = ["secrets"]
-
-    findings: list[DLPFinding] = []
-    lines = text.splitlines()
-
-    for line_idx, line in enumerate(lines, start=1):
-        if "secrets" in categories:
-            for pattern_name, pattern in SECRET_PATTERNS.items():
-                for match in pattern.finditer(line):
-                    matched_text = match.group(0)
-                    if _is_allowlisted(matched_text):
-                        continue
-                    # Build masked context
-                    start = max(0, match.start() - 25)
-                    end = min(len(line), match.end() + 25)
-                    context = line[start:end]
-                    findings.append(DLPFinding(
-                        pattern_name=pattern_name,
-                        category="secret",
-                        severity=SEVERITY_MAP.get(pattern_name, "medium"),
-                        line_number=line_idx,
-                        match_text=matched_text,
-                        context=context,
-                    ))
-
-        if "phi" in categories:
-            for pattern_name, (pattern, severity) in PHI_PATTERNS.items():
-                for match in pattern.finditer(line):
-                    matched_text = match.group(0)
-                    start = max(0, match.start() - 25)
-                    end = min(len(line), match.end() + 25)
-                    context = line[start:end]
-                    findings.append(DLPFinding(
-                        pattern_name=pattern_name,
-                        category="phi",
-                        severity=severity,
-                        line_number=line_idx,
-                        match_text=matched_text,
-                        context=context,
-                    ))
-
-    return findings
+    return scan_dlp_builtin(text, categories)
 
 
 # ---------------------------------------------------------------------------

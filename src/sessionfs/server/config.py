@@ -52,6 +52,15 @@ class ServerConfig(BaseSettings):
     # App URL for billing redirects (configurable for staging/self-hosted)
     app_url: str = "https://app.sessionfs.dev"
 
+    # Deployment environment ("development"/"test" relax production-only
+    # checks; unset = development when the database is SQLite).
+    environment: str = ""
+    # Canonical public API origin, e.g. https://api.sessionfs.dev. Default
+    # OIDC audience for marketplace trusted publishing.
+    public_api_url: str = ""
+    # Overrides the trusted-publishing OIDC audience (must be deployment-unique).
+    trusted_publishing_audience: str = ""
+
     # Stripe billing
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""

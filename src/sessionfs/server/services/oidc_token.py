@@ -85,36 +85,27 @@ def _parse_jwks(jwks: PyJWKSet | str | dict) -> PyJWKSet:
 # ---------------------------------------------------------------------------
 
 
-def validate_id_token(
-    id_token: str,
+def _decode_verified(
+    token: str,
     jwks: PyJWKSet | str | dict,
     *,
-    client_id: str,
-    expected_issuer: str,
-    expected_nonce: str,
-    max_skew: int = 60,
+    require: tuple[str, ...] = ("exp", "iat"),
 ) -> dict:
-    """Validate an OIDC id_token against ALL security checks.
-
-    Returns the decoded claims dict on success.
-    Raises TokenValidationError with a specific ``reason`` on any failure.
-
-    The caller MUST pass:
-      - *expected_issuer* resolved from the OidcLoginAttempt →
-        OrgIdentityProvider row, NEVER from the token
-      - *expected_nonce* from the same attempt row
-    """
+    """Steps shared by every JWT this server accepts from an external
+    issuer: pinned asymmetric alg (alg:none and HS* refused), kid-resolved
+    JWKS key, signature, exp/iat verification and required-claim presence.
+    iss/aud and issuer-specific claims are checked by the caller."""
     # ---- 1. alg check (MUST run before decode so we never verify with
     #        the wrong algorithm) -----------------------------------------
     try:
-        unverified_header = jwt.get_unverified_header(id_token)
+        unverified_header = jwt.get_unverified_header(token)
     except Exception as exc:
         raise TokenValidationError(
             "token_parse_error", f"Could not parse id_token header: {exc}"
         ) from exc
 
     alg = unverified_header.get("alg")
-    if not alg:
+    if not isinstance(alg, str) or not alg:
         raise TokenValidationError("alg_missing", "id_token header missing alg")
     if alg == "none":
         raise TokenValidationError("alg_not_allowed", "alg:none is forbidden")
@@ -137,7 +128,7 @@ def validate_id_token(
     # layer of alg-confusion defense.
     key_set = _parse_jwks(jwks)
     kid = unverified_header.get("kid")
-    if not kid:
+    if not isinstance(kid, str) or not kid:
         raise TokenValidationError(
             "kid_missing", "id_token header missing kid"
         )
@@ -154,7 +145,7 @@ def validate_id_token(
     # stricter Sentinel rules (iss from attempt row, multi-aud azp).
     try:
         claims = jwt.decode(
-            id_token,
+            token,
             key=signing_key,
             algorithms=[alg],
             options={
@@ -166,7 +157,7 @@ def validate_id_token(
                 # OIDC mandates exp; PyJWT only *verifies* exp if present, so
                 # REQUIRE exp + iat presence — a token without exp must never
                 # be treated as non-expiring.
-                "require": ["exp", "iat"],
+                "require": list(require),
             },
         )
     except jwt.ExpiredSignatureError as exc:
@@ -180,6 +171,29 @@ def validate_id_token(
         raise TokenValidationError(
             "id_token_verification_failed", str(exc)
         ) from exc
+    return claims
+
+
+def validate_id_token(
+    id_token: str,
+    jwks: PyJWKSet | str | dict,
+    *,
+    client_id: str,
+    expected_issuer: str,
+    expected_nonce: str,
+    max_skew: int = 60,
+) -> dict:
+    """Validate an OIDC id_token against ALL security checks.
+
+    Returns the decoded claims dict on success.
+    Raises TokenValidationError with a specific ``reason`` on any failure.
+
+    The caller MUST pass:
+      - *expected_issuer* resolved from the OidcLoginAttempt →
+        OrgIdentityProvider row, NEVER from the token
+      - *expected_nonce* from the same attempt row
+    """
+    claims = _decode_verified(id_token, jwks)
 
     # ---- 3. iss — MUST equal expected issuer from attempt row -----------
     token_iss = claims.get("iss", "")
@@ -254,4 +268,107 @@ def validate_id_token(
             "sub_missing", "id_token missing required sub claim"
         )
 
+    return claims
+
+
+# ---------------------------------------------------------------------------
+# GitHub Actions workload identity tokens (marketplace trusted publishing)
+# ---------------------------------------------------------------------------
+
+GITHUB_ACTIONS_ISSUER = "https://token.actions.githubusercontent.com"
+
+# Claims trusted publishing binds to. Numeric ids arrive as JSON strings.
+_GITHUB_REQUIRED_STRING_CLAIMS = (
+    "jti",
+    "sub",
+    "repository",
+    "repository_id",
+    "repository_owner",
+    "repository_owner_id",
+    # The workflow file the run was STARTED from (the caller). For a job in
+    # a reusable workflow, job_workflow_ref names the callee instead; it is
+    # optional and validated below when present.
+    "workflow_ref",
+    "event_name",
+    "ref",
+    "sha",
+    "run_id",
+)
+_GITHUB_NUMERIC_CLAIMS = ("repository_id", "repository_owner_id", "run_id")
+_MAX_CLAIM_LENGTH = 512
+
+
+def validate_github_actions_token(
+    token: str,
+    jwks: PyJWKSet | str | dict,
+    *,
+    audience: str,
+    max_age_seconds: int = 300,
+    max_lifetime_seconds: int = 3600,
+    max_skew: int = 60,
+) -> dict:
+    """Validate a GitHub Actions OIDC token for trusted publishing.
+
+    Shares the signature path with id_token validation (pinned asymmetric
+    algs, kid-resolved key, exp + iat required), then:
+
+    - iss EXACTLY ``https://token.actions.githubusercontent.com`` (the issuer
+      is a constant, never taken from the token);
+    - aud a single value equal to *audience* (a list must be exactly one
+      element, so a token minted for several relying parties is refused);
+    - acceptance window: iat no older than *max_age_seconds* (+ skew) and the
+      token's own lifetime no longer than *max_lifetime_seconds*;
+    - the repository / caller workflow (``workflow_ref``) / event / ref /
+      commit / run claims present, strings, bounded, and the numeric ids all
+      digits; ``job_workflow_ref`` (the callee of a reusable workflow) is
+      optional but must be well formed when present;
+    - ``sha`` a full 40-hex commit.
+
+    Returns the claims. Raises TokenValidationError with a reason code."""
+    if not isinstance(token, str) or not token or len(token) > 16384:
+        raise TokenValidationError("token_parse_error", "token missing or too large")
+    claims = _decode_verified(token, jwks, require=("exp", "iat", "jti"))
+
+    if claims.get("iss") != GITHUB_ACTIONS_ISSUER:
+        raise TokenValidationError("issuer_mismatch", "token was not issued by GitHub Actions")
+
+    token_aud = claims.get("aud")
+    if isinstance(token_aud, list):
+        if len(token_aud) != 1:
+            raise TokenValidationError("invalid_aud", "token must carry exactly one audience")
+        token_aud = token_aud[0]
+    if not isinstance(token_aud, str) or token_aud != audience:
+        raise TokenValidationError("invalid_aud", "token audience is not this server")
+
+    now_ts = datetime.now(timezone.utc).timestamp()
+    iat = claims.get("iat")
+    exp = claims.get("exp")
+    if not isinstance(iat, (int, float)) or not isinstance(exp, (int, float)):
+        raise TokenValidationError("claim_missing", "iat and exp must be numeric")
+    if iat > now_ts + max_skew:
+        raise TokenValidationError("invalid_iat", "token iat is in the future")
+    if now_ts - iat > max_age_seconds + max_skew:
+        raise TokenValidationError("token_too_old", "token is outside the acceptance window")
+    if exp - iat > max_lifetime_seconds:
+        raise TokenValidationError("token_lifetime", "token lifetime exceeds the allowed maximum")
+
+    for name in _GITHUB_REQUIRED_STRING_CLAIMS:
+        value = claims.get(name)
+        if not isinstance(value, str) or not value or len(value) > _MAX_CLAIM_LENGTH:
+            raise TokenValidationError("claim_missing", f"required claim {name!r} missing")
+    for name in _GITHUB_NUMERIC_CLAIMS:
+        if not claims[name].isascii() or not claims[name].isdigit():
+            raise TokenValidationError("claim_invalid", f"claim {name!r} must be numeric")
+    sha = claims["sha"]
+    if len(sha) != 40 or any(char not in "0123456789abcdef" for char in sha):
+        raise TokenValidationError("claim_invalid", "claim 'sha' must be a 40-hex commit")
+    for name in ("job_workflow_ref", "ref_type", "run_attempt", "runner_environment"):
+        value = claims.get(name)
+        if value is not None and (not isinstance(value, str) or len(value) > _MAX_CLAIM_LENGTH):
+            raise TokenValidationError("claim_invalid", f"claim {name!r} is malformed")
+    environment = claims.get("environment")
+    if environment is not None and (
+        not isinstance(environment, str) or len(environment) > _MAX_CLAIM_LENGTH
+    ):
+        raise TokenValidationError("claim_invalid", "claim 'environment' is malformed")
     return claims

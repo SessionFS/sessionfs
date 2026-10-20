@@ -146,6 +146,24 @@ spec:
                   name: {{ include "sessionfs.secretsName" . }}
                   key: encryption-key
             {{- end }}
+            {{- if .Values.api.github.enabled }}
+            {{- $ghSecret := required "api.github.existingSecret is required when api.github.enabled" .Values.api.github.existingSecret }}
+            - name: SFS_GITHUB_APP_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $ghSecret }}
+                  key: {{ required "api.github.clientSecretKey is required when api.github.enabled" .Values.api.github.clientSecretKey }}
+            - name: SFS_GITHUB_APP_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $ghSecret }}
+                  key: {{ required "api.github.privateKeyKey is required when api.github.enabled" .Values.api.github.privateKeyKey }}
+            - name: SFS_GITHUB_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $ghSecret }}
+                  key: {{ required "api.github.webhookSecretKey is required when api.github.enabled" .Values.api.github.webhookSecretKey }}
+            {{- end }}
             - name: SFS_EMAIL_PROVIDER
               value: {{ .Values.email.provider | quote }}
             - name: SFS_EMAIL_FROM

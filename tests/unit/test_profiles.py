@@ -358,3 +358,274 @@ def test_daemon_reload_does_not_switch_profile_mid_run(sfs_home, monkeypatch):
     assert daemon.config.sync.api_key == "key_default", (
         "daemon reload must not switch identity mid-run"
     )
+
+
+# ── login keeps [sync] settings it doesn't manage (GitHub #68) ──
+
+
+def test_preserved_sync_lines_keeps_only_unmanaged_sync_keys(sfs_home):
+    from sessionfs.profiles import preserved_sync_lines
+
+    text = (
+        "[storage]\nupload_timeout = 1\n\n"
+        "[sync]\nenabled = true\napi_key = \"old\"\n# note\n"
+        "upload_timeout = 600\nauto = \"all\"\n\n[telemetry]\nenabled = false\n"
+    )
+    assert preserved_sync_lines(text) == ["upload_timeout = 600", 'auto = "all"']
+
+
+def test_named_profile_relogin_keeps_upload_timeout(sfs_home):
+    from sessionfs.daemon.config import load_config
+    from sessionfs.profiles import profile_config_path, write_named_profile
+
+    path = write_named_profile("work", "https://api.sessionfs.dev", "key_1")
+    path.write_text(path.read_text() + "upload_timeout = 900\n")
+    write_named_profile("work", "https://api.sessionfs.dev", "key_2")
+
+    cfg = load_config(profile_config_path("work"))
+    assert cfg.sync.api_key == "key_2"
+    assert cfg.sync.upload_timeout == 900
+
+
+def test_default_relogin_keeps_upload_timeout(sfs_home, monkeypatch):
+    import sessionfs.daemon.config as daemon_config
+    from sessionfs.cli import cmd_cloud
+
+    path = sfs_home / "config.toml"
+    path.write_text(
+        "[sync]\nenabled = true\napi_key = \"old\"\nupload_timeout = 900\n"
+        "auto = \"all\"\n\n[telemetry]\nenabled = false\n"
+    )
+    monkeypatch.setattr(daemon_config, "DEFAULT_CONFIG_PATH", path)
+    monkeypatch.setattr(daemon_config, "ensure_config", lambda *a, **k: None)
+
+    cmd_cloud._save_sync_config("https://api.sessionfs.dev", "new")
+
+    cfg = daemon_config.load_config(path)
+    assert cfg.sync.api_key == "new"
+    assert cfg.sync.upload_timeout == 900
+    assert cfg.sync.auto == "all"
+    assert "[telemetry]" in path.read_text()
+
+
+def test_daemon_reload_applies_new_upload_timeout(sfs_home, monkeypatch):
+    from sessionfs.daemon.config import DaemonConfig
+    from sessionfs.daemon.main import Daemon
+    from sessionfs.sync.client import SyncClient
+
+    monkeypatch.delenv("SFS_UPLOAD_TIMEOUT", raising=False)
+    (sfs_home / "config.toml").write_text(
+        "[sync]\nenabled = true\napi_url = \"https://api.sessionfs.dev\"\n"
+        "api_key = \"key_default\"\nupload_timeout = 120\n"
+    )
+    daemon = Daemon(DaemonConfig(sync={"enabled": True, "api_key": "key_default",
+                                       "api_url": "https://api.sessionfs.dev"}))
+    daemon._syncer._sync_client = SyncClient(
+        "https://api.sessionfs.dev", "key_default", transfer_timeout=300
+    )
+    daemon._reload_config()
+    assert daemon._syncer._sync_client.transfer_timeout == 120
+
+
+@pytest.mark.parametrize(
+    "sync_block",
+    [
+        '[sync]\nenabled = true\napi_key = "old"\nauto = """all\nmode"""\nupload_timeout = 900\n',
+        '[sync]\n"api_key" = "old"\n"upload_timeout" = 900\n',
+        '[sync] # cloud\napi_key = "old"\nupload_timeout = 900\n',
+    ],
+    ids=["multiline-string", "quoted-keys", "header-comment"],
+)
+def test_default_relogin_keeps_toml_valid(sfs_home, monkeypatch, sync_block):
+    import sessionfs.daemon.config as daemon_config
+    from sessionfs.cli import cmd_cloud
+    from sessionfs.profiles import tomllib
+
+    path = sfs_home / "config.toml"
+    path.write_text("[storage]\nmax_local_storage = \"2GB\"\n\n" + sync_block + "\n[telemetry]\nenabled = false\n")
+    monkeypatch.setattr(daemon_config, "DEFAULT_CONFIG_PATH", path)
+    monkeypatch.setattr(daemon_config, "ensure_config", lambda *a, **k: None)
+
+    cmd_cloud._save_sync_config("https://api.sessionfs.dev", "new")
+
+    data = tomllib.loads(path.read_text())
+    assert data["sync"]["api_key"] == "new"
+    assert data["sync"]["upload_timeout"] == 900
+    assert data["telemetry"] == {"enabled": False}
+    if "multiline" in sync_block or '"""' in sync_block:
+        assert data["sync"]["auto"] == "all\nmode"
+
+
+def test_default_relogin_refuses_to_write_broken_toml(sfs_home, monkeypatch):
+    import sessionfs.daemon.config as daemon_config
+    from sessionfs.cli import cmd_cloud
+
+    path = sfs_home / "config.toml"
+    # A multi-line string in another table whose line looks like [sync]:
+    # the line-based rewrite can't handle it, so it must not write at all.
+    original = 'note = """\n[sync]\n"""\n'
+    path.write_text(original)
+    monkeypatch.setattr(daemon_config, "DEFAULT_CONFIG_PATH", path)
+    monkeypatch.setattr(daemon_config, "ensure_config", lambda *a, **k: None)
+
+    with pytest.raises(SystemExit):
+        cmd_cloud._save_sync_config("https://api.sessionfs.dev", "new")
+    assert path.read_text() == original
+
+
+def test_default_relogin_refuses_to_drop_an_oddly_named_table(sfs_home, monkeypatch):
+    import sessionfs.daemon.config as daemon_config
+    from sessionfs.cli import cmd_cloud
+
+    path = sfs_home / "config.toml"
+    original = '[sync]\napi_key = "old"\n\n["other]table"]\nkeep = 1\n'
+    path.write_text(original)
+    monkeypatch.setattr(daemon_config, "DEFAULT_CONFIG_PATH", path)
+    monkeypatch.setattr(daemon_config, "ensure_config", lambda *a, **k: None)
+
+    with pytest.raises(SystemExit):
+        cmd_cloud._save_sync_config("https://api.sessionfs.dev", "new")
+    assert path.read_text() == original
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        'note = "😀 é \\u007f"',
+        "expires = 2026-10-15",
+        "at = 2026-10-15T10:30:00Z",
+        "when = 07:30:00",
+        'tags = ["a", 1, 2.5]',
+        'opts = { mode = "x", n = [1, 2] }',
+        "weird = nan",
+    ],
+    ids=["unicode", "date", "datetime", "time", "array", "inline-table", "nan"],
+)
+def test_relogin_keeps_every_kind_of_sync_value(sfs_home, monkeypatch, extra):
+    import sessionfs.daemon.config as daemon_config
+    from sessionfs.cli import cmd_cloud
+    from sessionfs.profiles import (
+        profile_config_path,
+        tomllib,
+        unmanaged_sync_settings,
+        write_named_profile,
+    )
+
+    original = f'[sync]\napi_key = "old"\n{extra}\n'
+    before = unmanaged_sync_settings(tomllib.loads(original))
+
+    path = sfs_home / "config.toml"
+    path.write_text(original)
+    monkeypatch.setattr(daemon_config, "DEFAULT_CONFIG_PATH", path)
+    monkeypatch.setattr(daemon_config, "ensure_config", lambda *a, **k: None)
+    cmd_cloud._save_sync_config("https://api.sessionfs.dev", "new")
+    after = tomllib.loads(path.read_text())
+    assert after["sync"]["api_key"] == "new"
+    kept = unmanaged_sync_settings(after)
+    assert {k: kept[k] for k in before} == before
+
+    named = write_named_profile("work", "https://api.sessionfs.dev", "k1")
+    named.write_text(named.read_text() + extra + "\n")
+    write_named_profile("work", "https://api.sessionfs.dev", "k2")
+    after = tomllib.loads(profile_config_path("work").read_text())
+    assert after["sync"]["api_key"] == "k2"
+    kept = unmanaged_sync_settings(after)
+    assert {k: kept[k] for k in before} == before
+
+
+def test_relogin_keeps_push_interval_and_retry_max(sfs_home, monkeypatch):
+    import sessionfs.daemon.config as daemon_config
+    from sessionfs.cli import cmd_cloud
+    from sessionfs.profiles import tomllib
+
+    path = sfs_home / "config.toml"
+    path.write_text('[sync]\napi_key = "old"\npush_interval = 120\nretry_max = 9\n')
+    monkeypatch.setattr(daemon_config, "DEFAULT_CONFIG_PATH", path)
+    monkeypatch.setattr(daemon_config, "ensure_config", lambda *a, **k: None)
+    cmd_cloud._save_sync_config("https://api.sessionfs.dev", "new")
+    sync = tomllib.loads(path.read_text())["sync"]
+    assert (sync["push_interval"], sync["retry_max"], sync["api_key"]) == (120, 9, "new")
+
+
+def test_relogin_refuses_an_unparseable_config(sfs_home, monkeypatch):
+    import sessionfs.daemon.config as daemon_config
+    from sessionfs.cli import cmd_cloud
+    from sessionfs.profiles import ConfigRewriteError, write_named_profile
+
+    path = sfs_home / "config.toml"
+    original = '[sync]\napi_key = "old"\nupload_timeout = 900\nbroken = \n'
+    path.write_text(original)
+    monkeypatch.setattr(daemon_config, "DEFAULT_CONFIG_PATH", path)
+    monkeypatch.setattr(daemon_config, "ensure_config", lambda *a, **k: None)
+    with pytest.raises(SystemExit):
+        cmd_cloud._save_sync_config("https://api.sessionfs.dev", "new")
+    assert path.read_text() == original
+
+    named = write_named_profile("work", "https://api.sessionfs.dev", "k1")
+    named.write_text(named.read_text() + "broken = \n")
+    before = named.read_text()
+    with pytest.raises(ConfigRewriteError):
+        write_named_profile("work", "https://api.sessionfs.dev", "k2")
+    assert named.read_text() == before
+
+
+def test_relogin_handles_emoji_keys_and_nan_elsewhere(sfs_home, monkeypatch):
+    import sessionfs.daemon.config as daemon_config
+    from sessionfs.cli import cmd_cloud
+    from sessionfs.profiles import tomllib
+
+    path = sfs_home / "config.toml"
+    path.write_text('[other]\nratio = nan\n\n[sync]\napi_key = "old"\n"😀" = 1\n')
+    monkeypatch.setattr(daemon_config, "DEFAULT_CONFIG_PATH", path)
+    monkeypatch.setattr(daemon_config, "ensure_config", lambda *a, **k: None)
+    cmd_cloud._save_sync_config("https://api.sessionfs.dev", "new")
+    doc = tomllib.loads(path.read_text())
+    assert doc["sync"]["😀"] == 1 and doc["sync"]["api_key"] == "new"
+
+
+def test_named_profile_relogin_keeps_custom_store_dir(sfs_home):
+    from sessionfs.profiles import profile_config_path, tomllib, write_named_profile
+
+    path = write_named_profile("work", "https://api.sessionfs.dev", "k1")
+    text = path.read_text().replace(
+        tomllib.loads(path.read_text())["store_dir"].replace("\\", "\\\\"), "/custom/store"
+    )
+    path.write_text(text)
+    write_named_profile("work", "https://api.sessionfs.dev", "k2")
+    doc = tomllib.loads(profile_config_path("work").read_text())
+    assert doc["store_dir"] == "/custom/store" and doc["sync"]["api_key"] == "k2"
+
+
+def test_named_profile_relogin_refuses_an_unreadable_file(sfs_home, monkeypatch):
+    from pathlib import Path
+
+    from sessionfs.profiles import ConfigRewriteError, write_named_profile
+
+    path = write_named_profile("work", "https://api.sessionfs.dev", "k1")
+    before = path.read_bytes()
+    real_read_text = Path.read_text
+
+    def _fail(self, *a, **k):
+        if self == path:
+            raise PermissionError("denied")
+        return real_read_text(self, *a, **k)
+
+    monkeypatch.setattr(Path, "read_text", _fail)
+    with pytest.raises(ConfigRewriteError):
+        write_named_profile("work", "https://api.sessionfs.dev", "k2")
+    monkeypatch.undo()
+    assert path.read_bytes() == before
+
+
+def test_relogin_refuses_to_truncate_sub_microsecond_times(sfs_home, monkeypatch):
+    import sessionfs.daemon.config as daemon_config
+    from sessionfs.cli import cmd_cloud
+
+    path = sfs_home / "config.toml"
+    original = '[sync]\napi_key = "old"\nat = 1979-05-27T07:32:00.999999999Z\n'
+    path.write_text(original)
+    monkeypatch.setattr(daemon_config, "DEFAULT_CONFIG_PATH", path)
+    monkeypatch.setattr(daemon_config, "ensure_config", lambda *a, **k: None)
+    with pytest.raises(SystemExit):
+        cmd_cloud._save_sync_config("https://api.sessionfs.dev", "new")
+    assert path.read_text() == original

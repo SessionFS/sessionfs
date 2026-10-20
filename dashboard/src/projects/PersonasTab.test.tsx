@@ -117,4 +117,29 @@ describe('PersonasTab', () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(mockAddToast).toHaveBeenCalledWith('error', expect.stringContaining('409'));
   });
+
+  it('labels org personas and keeps them read-only (GH #70)', () => {
+    hooks.usePersonas.mockReturnValue({
+      data: [
+        persona(),
+        persona({
+          id: 'p_org',
+          project_id: null,
+          org_id: 'org_1',
+          scope: 'org',
+          name: 'gcp-infra',
+          role: 'Terraform engineer',
+        }),
+      ],
+      isLoading: false,
+      error: null,
+    });
+    render(<PersonasTab projectId="proj_1" />);
+    expect(screen.getByText('gcp-infra')).toBeInTheDocument();
+    expect(screen.getByText('Org')).toBeInTheDocument();
+    expect(screen.getByText(/Managed by org/i)).toBeInTheDocument();
+    // Only the project persona row has Edit/Delete.
+    expect(screen.getAllByRole('button', { name: /^Edit$/i })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: /^Delete$/i })).toHaveLength(1);
+  });
 });

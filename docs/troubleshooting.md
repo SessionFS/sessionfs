@@ -129,6 +129,15 @@ Cursor sessions captured before v0.9.3 may be missing tool calls. The Cursor con
 
 If the audit still returns 0 claims, the session may genuinely have no tool calls (e.g., a question-answer chat without code operations).
 
+### Antigravity conversations are missing
+
+SessionFS captures Antigravity (desktop app, `agy` CLI and IDE build) from the plaintext transcript at `~/.gemini/<app>/brain/<id>/.system_generated/logs/transcript_full.jsonl`.
+
+1. Check the watcher is on: `sfs watcher enable antigravity` (it restarts the daemon).
+2. Run `sfs doctor`. A `Skipped [antigravity]` row means some conversations exist only as encrypted `.pb` files (older builds) or protobuf `.db` files with no transcript. SessionFS cannot read those and skips them rather than capturing part of a conversation. Conversations started in a current build are captured.
+3. Subagent conversations are not listed on their own: they appear inside their parent session as sidechain messages.
+4. A conversation opened outside a project has no recorded workspace. SessionFS then uses the repository its tools touched (file paths, working directories, `@`-mentions); if none is found the session has no workspace.
+
 ### Rebuild local index
 
 If sessions appear missing or the index is corrupted:

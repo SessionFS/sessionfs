@@ -11,6 +11,7 @@ const TOOL_MAP: Record<string, { color: string; label: string }> = {
   cline: { color: 'var(--tool-cline)', label: 'Cline' },
   roo: { color: 'var(--tool-roo)', label: 'Roo Code' },
   'roo-code': { color: 'var(--tool-roo)', label: 'Roo Code' },
+  antigravity: { color: 'var(--tool-antigravity)', label: 'Antigravity' },
 };
 
 const SIZES = {

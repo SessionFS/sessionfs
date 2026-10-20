@@ -54,21 +54,20 @@ def cleanup_deleted_session(
             shutil.rmtree(session_dir)
             logger.info("Removed local dir %s", session_dir)
         except OSError as exc:
+            # Keep the index rows so the session stays visible and the
+            # removal can be retried.
             logger.warning("Failed to remove %s: %s", session_dir, exc)
+            return
 
     # 3. Remove from SQLite index (sessions + tracked_sessions)
     if store is not None:
         try:
             conn = getattr(getattr(store, "index", None), "_conn", None)
             if conn is not None:
-                conn.execute(
-                    "DELETE FROM sessions WHERE session_id = ?", (session_id,)
-                )
-                # tracked_sessions maps native tool sessions → .sfs IDs
-                conn.execute(
-                    "DELETE FROM tracked_sessions WHERE sfs_session_id = ?",
-                    (session_id,),
-                )
-                conn.commit()
+                from sessionfs.store.index import delete_session_rows
+
+                # tracked_sessions (native tool session -> .sfs id) first:
+                # it references sessions and foreign keys are enforced.
+                delete_session_rows(conn, session_id)
         except Exception as exc:
             logger.warning("Failed to clean index for %s: %s", session_id, exc)

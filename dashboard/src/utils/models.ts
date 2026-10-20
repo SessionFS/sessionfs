@@ -45,6 +45,7 @@ const TOOL_FULL_NAMES: Record<string, string> = {
   amp: 'Amp',
   cline: 'Cline',
   'roo-code': 'Roo Code',
+  antigravity: 'Antigravity',
   aider: 'Aider',
 };
 

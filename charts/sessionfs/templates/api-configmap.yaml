@@ -23,3 +23,22 @@ data:
   SFS_SSO_REDIRECT_ORIGINS: {{ .Values.api.sso.redirectOrigins | quote }}
   {{- end }}
   {{- end }}
+  {{- if .Values.api.github.enabled }}
+  {{- if and .Values.api.github.dashboardUrl .Values.api.sso.enabled .Values.api.sso.dashboardUrl (ne .Values.api.github.dashboardUrl .Values.api.sso.dashboardUrl) }}
+  {{- fail "api.github.dashboardUrl and api.sso.dashboardUrl differ; both set SFS_DASHBOARD_URL, so use one value (or leave api.github.dashboardUrl empty to reuse the SSO one)" }}
+  {{- end }}
+  {{- if not (or .Values.api.github.dashboardUrl (and .Values.api.sso.enabled .Values.api.sso.dashboardUrl)) }}
+  {{- fail "api.github.enabled requires a dashboard URL: set api.github.dashboardUrl (or api.sso.enabled with api.sso.dashboardUrl)" }}
+  {{- end }}
+  # GitHub App installation linking. The client secret comes from
+  # api.github.existingSecret, never from values.
+  SFS_GITHUB_APP_ID: {{ required "api.github.appId is required when api.github.enabled" .Values.api.github.appId | toString | quote }}
+  SFS_GITHUB_APP_CLIENT_ID: {{ required "api.github.clientId is required when api.github.enabled" .Values.api.github.clientId | quote }}
+  {{- if .Values.api.github.appSlug }}
+  SFS_GITHUB_APP_SLUG: {{ .Values.api.github.appSlug | quote }}
+  {{- end }}
+  SFS_GITHUB_OAUTH_CALLBACK_URL: {{ required "api.github.callbackUrl is required when api.github.enabled" .Values.api.github.callbackUrl | quote }}
+  {{- if and .Values.api.github.dashboardUrl (not (and .Values.api.sso.enabled .Values.api.sso.dashboardUrl)) }}
+  SFS_DASHBOARD_URL: {{ .Values.api.github.dashboardUrl | quote }}
+  {{- end }}
+  {{- end }}

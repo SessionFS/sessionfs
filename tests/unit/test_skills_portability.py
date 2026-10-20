@@ -30,6 +30,11 @@ def _plain_rich_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     import typer.rich_utils
 
     monkeypatch.setattr(typer.rich_utils, "FORCE_TERMINAL", False)
+    # `sfs skill search` also queries the hosted marketplace; never let a
+    # developer's real credentials reach a live API from these tests.
+    from sessionfs.skills import hosted
+
+    monkeypatch.setattr(hosted, "client_from_auth", lambda **_: None)
 
 
 def _write_skill(root: Path, name: str = "review-loop", *, scripts: bool = False) -> bytes:
@@ -438,10 +443,14 @@ def test_rollback_rechecks_script_consent_for_selected_bytes(tmp_path: Path):
         "---\nname: review-loop\ndescription: New version.\n---\nnew\n",
         encoding="utf-8",
     )
+    # The script bytes differ between the versions: rolling back is a CODE
+    # change (D2), so script consent is required again for the old bytes.
+    (source / "scripts" / "check.py").write_text("print('v2')\n", encoding="utf-8")
     manager.update("review-loop", scope="project", allow_scripts=True)
 
     with pytest.raises(SkillError, match="--allow-scripts"):
         manager.rollback("review-loop", original.content_hash, scope="project")
+    manager.rollback("review-loop", original.content_hash, scope="project", allow_scripts=True)
 
 
 def test_transaction_recovery_restores_files_and_state(tmp_path: Path):
@@ -732,8 +741,13 @@ def test_non_inert_skill_assets_require_consent(
     plans = manager.plan(package, targets=["codex"], scope="project")
     assert requirement in plans[0].consent_requirements
     assert package.risky
+    if b"\x00" in payload:
+        # A binary-looking member where it would run is scanned as text, so
+        # its NUL is a critical hidden character: refused on that first.
+        with pytest.raises(SkillError, match="--allow-hidden-unicode"):
+            manager.add(str(source), targets=["codex"], scope="project")
     with pytest.raises(SkillError, match="capability consent"):
-        manager.add(str(source), targets=["codex"], scope="project")
+        manager.add(str(source), targets=["codex"], scope="project", allow_hidden_unicode=True)
 
 
 def test_hooks_directory_inside_skill_requires_executable_extension_consent(tmp_path: Path):
@@ -1048,8 +1062,12 @@ def test_inert_document_names_require_exact_names(tmp_path: Path, filename: str)
     (source / filename).write_bytes(b"MZ\x90\x00binary")
     package = manager.import_source(str(source), scope="project")
     assert package.skills[0].has_scripts is True
-    with pytest.raises(SkillError, match="--allow-scripts"):
+    # The NUL in a member classified as a script is a critical hidden
+    # character (refused first); past that, script consent is still needed.
+    with pytest.raises(SkillError, match="--allow-hidden-unicode"):
         manager.add(str(source), targets=["codex"], scope="project")
+    with pytest.raises(SkillError, match="--allow-scripts"):
+        manager.add(str(source), targets=["codex"], scope="project", allow_hidden_unicode=True)
 
 
 @pytest.mark.parametrize("filename", ["README", "README.md", "LICENSE.txt", "notice", "NOTICE.md"])
@@ -1086,9 +1104,15 @@ def test_registry_sourced_update_forwards_hooks_consent(
 
     fake.entries[1] = ("plugins/helper/SKILL.md", len(hooky), hooky)
     fake.commit = "d" * 40
+    # Hooks + tool pre-approval are new access: the update WIDENS (D2), so it
+    # stops for explicit re-consent before any capability flag is considered.
+    with pytest.raises(SkillError, match="--approve-widening"):
+        manager.update("helper", scope="project", allow_hooks=True)
     with pytest.raises(SkillError, match="--allow-hooks"):
-        manager.update("helper", scope="project")
-    updated, _, _ = manager.update("helper", scope="project", allow_hooks=True)
+        manager.update("helper", scope="project", approve_widening=True)
+    updated, _, _ = manager.update(
+        "helper", scope="project", allow_hooks=True, approve_widening=True
+    )
     assert updated.has_hooks is True
     receipts = manager.find_installed("helper", scope="project")["consent_receipts"]
     assert "skill-hooks" in {item["capability"] for item in receipts}
@@ -3106,8 +3130,20 @@ def test_skill_cli_update_previews_and_requires_confirmation(
     new_hash = SkillManager(project_root=project, home_dir=home, store_root=home / ".sessionfs" / "skills").import_source(str(source), scope="project").content_hash
     assert new_hash != old_hash
 
+    # The first script is NEW ACCESS: the update widens, so neither capability
+    # flags nor --yes approve it - only --approve-widening (or an interactive
+    # yes to the widening prompt) does.
+    widening = runner.invoke(skill_app, ["update", "review-loop", "--allow-scripts", "--yes"])
+    assert widening.exit_code == 2, widening.output
+    assert "--approve-widening" in widening.output
+    assert "Update class: widening" in widening.output
+    assert "new_capability: scripts" in widening.output
+    assert "v2" not in output.read_text()
+
     # Capability flags alone are NOT confirmation for new, unseen content.
-    refused = runner.invoke(skill_app, ["update", "review-loop", "--allow-scripts"])
+    refused = runner.invoke(
+        skill_app, ["update", "review-loop", "--allow-scripts", "--approve-widening"]
+    )
     assert refused.exit_code == 2, refused.output
     assert "--yes" in refused.output
     assert old_hash in refused.output and new_hash in refused.output  # preview shown
@@ -3120,13 +3156,15 @@ def test_skill_cli_update_previews_and_requires_confirmation(
     assert (project / ".sessionfs" / "skills.lock.json").read_bytes() == lock_before
     assert not (project / ".codex" / "skills" / "review-loop" / "scripts").exists()
 
-    # Without consent the update is refused even before the preview.
-    no_consent = runner.invoke(skill_app, ["update", "review-loop", "--yes"])
+    # Approving the widening is not script consent.
+    no_consent = runner.invoke(skill_app, ["update", "review-loop", "--yes", "--approve-widening"])
     assert no_consent.exit_code != 0
     assert "--allow-scripts" in no_consent.output
     assert "v2" not in output.read_text()
 
-    applied = runner.invoke(skill_app, ["update", "review-loop", "--allow-scripts", "--yes"])
+    applied = runner.invoke(
+        skill_app, ["update", "review-loop", "--allow-scripts", "--yes", "--approve-widening"]
+    )
     assert applied.exit_code == 0, applied.output
     assert old_hash in applied.output and new_hash in applied.output
     assert "Updated review-loop" in applied.output and new_hash in applied.output
@@ -5247,12 +5285,16 @@ def test_backups_are_fsynced_before_the_journal_and_renames_sync_the_directory(
     _write_skill(source)
     manager.add(str(source), targets=["codex"], scope="project")
     copied.clear()
-    manager.add(str(source), targets=["codex"], scope="project")  # re-apply: output + state + lock backed up
+    # Re-apply of identical bytes leaves the output in place; outputs are never
+    # copied (replaced ones are moved rename-first), only state + lock.
+    manager.add(str(source), targets=["codex"], scope="project")
     names = sorted(item.name for item in copied)
-    assert names == ["0", "skills.lock.json", "skills.state.json"], names
+    assert names == ["skills.lock.json", "skills.state.json"], names
     copied.clear()
     manager.remove("review-loop", scope="project")
-    assert sorted(item.name for item in copied) == ["0", "skills.lock.json", "skills.state.json"]
+    # Removal RENAMES each output into the transaction dir (the rename is its
+    # backup and is hashed after the move), so only state + lock are copied.
+    assert sorted(item.name for item in copied) == ["skills.lock.json", "skills.state.json"]
     assert "shutil.copyfile(destination, backup)" not in Path(state_module.__file__).read_text()
 
 

@@ -305,6 +305,41 @@ class TestIdTokenValidation:
                 expected_nonce="test-nonce",
             )
 
+    def test_non_string_alg_rejected(self, rsa_key):
+        """A non-string alg in the header is rejected as alg_missing rather
+        than crashing an unauthenticated request with a 500."""
+        from sessionfs.server.services.oidc_token import (
+            TokenValidationError,
+            validate_id_token,
+        )
+        import base64
+
+        jwks = _make_jwks_response(rsa_key)
+        claims = {
+            "iss": "https://example.okta.com",
+            "aud": "test-client-id",
+            "sub": "user-123",
+            "email": "alice@example.com",
+            "email_verified": True,
+            "nonce": "test-nonce",
+            "iat": int(datetime.now(timezone.utc).timestamp()),
+            "exp": int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp()),
+        }
+        def b64(payload: bytes) -> str:
+            return base64.urlsafe_b64encode(payload).rstrip(b"=").decode()
+
+        header = b64(json.dumps({"alg": 123, "kid": "test-key-1", "typ": "JWT"}).encode())
+        payload = b64(json.dumps(claims).encode())
+        token = f"{header}.{payload}."
+
+        with pytest.raises(TokenValidationError, match="alg_missing"):
+            validate_id_token(
+                token, jwks=jwks,
+                client_id="test-client-id",
+                expected_issuer="https://example.okta.com",
+                expected_nonce="test-nonce",
+            )
+
     def test_hs256_rejected(self, rsa_key):
         """HMAC-signed token (HS256) rejected — alg-confusion defense."""
         from sessionfs.server.services.oidc_token import (

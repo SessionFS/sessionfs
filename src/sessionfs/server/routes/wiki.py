@@ -14,7 +14,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import (
-    AgentPersona,
     KnowledgeLink,
     KnowledgePage,
     Project,
@@ -23,7 +22,11 @@ from sessionfs.server.db.models import (
     User,
     WikiPageRevision,
 )
-from sessionfs.server.tier_gate import UserContext, check_feature, get_user_context
+from sessionfs.server.services.personas import (
+    resolve_persona,
+    visible_persona_org_id,
+)
+from sessionfs.server.tier_gate import UserContext, check_project_feature, get_user_context
 
 logger = logging.getLogger("sessionfs.api")
 
@@ -300,8 +303,12 @@ async def _validate_revision_provenance(
     persona_name: str | None,
     ticket_id: str | None,
     db: AsyncSession,
-) -> None:
+    *,
+    persona_org_id: str | None = None,
+) -> str | None:
     """v0.10.7 — guard against forged provenance on wiki revisions.
+
+    Returns the canonical persona name (GH #70) or None.
 
     persona_name (if supplied) must exist in this project. ticket_id
     (if supplied) must belong to this project AND the writing user
@@ -327,20 +334,18 @@ async def _validate_revision_provenance(
     use case. Mirrors the v0.10.4 retrieval-audit context-create
     validation + cb8a9da cross-project leak defense.
     """
+    canonical_persona: str | None = None
     if persona_name:
-        persona = (
-            await db.execute(
-                select(AgentPersona.id).where(
-                    AgentPersona.project_id == project_id,
-                    AgentPersona.name == persona_name,
-                )
-            )
-        ).scalar_one_or_none()
+        # GH #70 — project persona first, then the project's org.
+        persona = await resolve_persona(
+            db, project_id, persona_name, org_id=persona_org_id, active_only=False
+        )
         if persona is None:
             raise HTTPException(
                 422,
                 f"persona_name {persona_name!r} not found in this project",
             )
+        canonical_persona = persona.name
     if ticket_id:
         ticket_row = (
             await db.execute(
@@ -399,6 +404,7 @@ async def _validate_revision_provenance(
                     "a wiki revision to it)"
                 ),
             )
+    return canonical_persona
 
 
 @router.put("/{project_id}/pages/{slug:path}", response_model=PageDetail)
@@ -411,10 +417,24 @@ async def create_or_update_page(
     db: AsyncSession = Depends(get_db),
 ) -> PageDetail:
     """Create or update a wiki page."""
-    check_feature(ctx, "project_context")
-    await _get_project_or_404(project_id, db, user.id)
-    await _validate_revision_provenance(
-        project_id, user.id, body.persona_name, body.ticket_id, db
+    project = await _get_project_or_404(project_id, db, user.id)
+    await check_project_feature(ctx, "project_context", project, db)
+    # GH #70 — merge relocates pages under the project scope lock; take it
+    # before the (project_id, slug) lookup so a page can't be created in a
+    # project that is being (or was) merged away.
+    from sessionfs.server.services.scope_locks import (
+        lock_project_scope_authorized,
+    )
+
+    # GH #70 — lock, then re-authorize against the re-read project.
+    await lock_project_scope_authorized(db, project, user_id=user.id, ctx=ctx, feature="project_context")
+    canonical_persona = await _validate_revision_provenance(
+        project_id,
+        user.id,
+        body.persona_name,
+        body.ticket_id,
+        db,
+        persona_org_id=await visible_persona_org_id(db, project, user_id=user.id),
     )
 
     result = await db.execute(
@@ -480,7 +500,7 @@ async def create_or_update_page(
         content_snapshot=body.content,
         word_count=word_count,
         user_id=user.id,
-        persona_name=body.persona_name,
+        persona_name=canonical_persona,
         ticket_id=body.ticket_id,
         revised_at=now,
     )
@@ -525,8 +545,16 @@ async def delete_page(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Delete a wiki page."""
-    check_feature(ctx, "project_context")
-    await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_or_404(project_id, db, user.id)
+    await check_project_feature(ctx, "project_context", project, db)
+    # GH #70 — project scope lock before reading/mutating the page
+    # (serializes with merge, refuses a merged-away project).
+    from sessionfs.server.services.scope_locks import (
+        lock_project_scope_authorized,
+    )
+
+    # GH #70 — lock, then re-authorize against the re-read project.
+    await lock_project_scope_authorized(db, project, user_id=user.id, ctx=ctx, feature="project_context")
 
     result = await db.execute(
         select(KnowledgePage).where(
@@ -561,8 +589,16 @@ async def regenerate_page(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Regenerate an auto-generated concept page from latest entries."""
-    check_feature(ctx, "project_context")
-    await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_or_404(project_id, db, user.id)
+    await check_project_feature(ctx, "project_context", project, db)
+    # GH #70 — project scope lock before reading/mutating the page
+    # (serializes with merge, refuses a merged-away project).
+    from sessionfs.server.services.scope_locks import (
+        lock_project_scope_authorized,
+    )
+
+    # GH #70 — lock, then re-authorize against the re-read project.
+    await lock_project_scope_authorized(db, project, user_id=user.id, ctx=ctx, feature="project_context")
 
     result = await db.execute(
         select(KnowledgePage).where(
@@ -710,8 +746,8 @@ async def update_project_settings(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Update project settings (auto_narrative, lifecycle settings)."""
-    check_feature(ctx, "project_context")
     project = await _get_project_or_404(project_id, db, user.id)
+    await check_project_feature(ctx, "project_context", project, db)
 
     project.auto_narrative = body.auto_narrative
     if body.kb_retention_days is not None:

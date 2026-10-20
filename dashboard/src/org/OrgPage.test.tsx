@@ -44,6 +44,14 @@ vi.mock('./SsoTab', () => ({
   ),
 }));
 
+// GH #70: OrgPersonasSection is mounted for admins/owners; it has its own
+// test file.
+vi.mock('./OrgPersonasSection', () => ({
+  default: ({ orgId }: { orgId: string }) => (
+    <div data-testid={`org-personas-stub-${orgId}`}>org personas</div>
+  ),
+}));
+
 function makeQueryClient() {
   return new QueryClient({
     defaultOptions: {
@@ -175,6 +183,8 @@ describe('OrgPage', () => {
     expect(screen.getByText('member@example.com')).toBeInTheDocument();
     // Admin sees the invite button
     expect(screen.getByRole('button', { name: /invite member/i })).toBeInTheDocument();
+    // GH #70 — admins get the org personas section.
+    expect(screen.getByTestId('org-personas-stub-org_x')).toBeInTheDocument();
   });
 
   it('non-admin view hides the invite button', async () => {
@@ -211,6 +221,7 @@ describe('OrgPage', () => {
       expect(screen.getByRole('heading', { name: /sessionfs/i })).toBeInTheDocument();
     });
     expect(screen.queryByRole('button', { name: /invite member/i })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('org-personas-stub-org_x')).not.toBeInTheDocument();
   });
 
   it('clicking Invite Member opens the invite form and submits the POST', async () => {

@@ -948,9 +948,14 @@ async def test_service_key_boundary_uses_session_project_id_anchor(
 async def test_service_key_revoke_denied_on_orphan_handoff(
     client: AsyncClient, db_session: AsyncSession, sample_sfs_tar: bytes
 ):
-    """R6 MEDIUM — revoke/decline/comment must deny service keys when
-    the source session is missing (orphan handoff). Helper denies on
-    None; this regression proves the route no longer short-circuits."""
+    """R6 MEDIUM — revoke/decline/comment must deny service keys on a
+    truly ANCHORLESS orphan handoff: both the durable
+    `source_project_id` anchor and the source session are gone, so the
+    boundary cannot be verified and the helper denies conservatively.
+    GH #70 (R6 HIGH) made the durable anchor authoritative, so a handoff
+    with `source_project_id` still set is authorized against the anchor
+    even when the session row is deleted — this test therefore NULLs the
+    anchor too to keep proving the conservative deny path."""
     from sessionfs.server.db.models import Handoff, Session as _Sess
     from sqlalchemy import select as _sel
 
@@ -994,10 +999,12 @@ async def test_service_key_revoke_denied_on_orphan_handoff(
     assert create.status_code == 201, create.text
     handoff_id = create.json()["id"]
 
-    # Now hard-delete the source session — handoff is orphaned.
+    # Now NULL the durable anchor AND hard-delete the source session so
+    # the handoff is anchorless — the boundary cannot be verified.
     handoff_row = (
         await db_session.execute(_sel(Handoff).where(Handoff.id == handoff_id))
     ).scalar_one()
+    handoff_row.source_project_id = None
     await db_session.delete(sess)
     await db_session.commit()
 
@@ -1016,6 +1023,105 @@ async def test_service_key_revoke_denied_on_orphan_handoff(
 
     # Handoff status must be unchanged (still pending) — boundary denied
     # BEFORE the UPDATE.
+    await db_session.refresh(handoff_row)
+    assert handoff_row.status == "pending"
+    assert handoff_row.revoked_at is None
+
+
+@pytest.mark.asyncio
+async def test_service_key_boundary_authorizes_durable_anchor_over_session(
+    client: AsyncClient, db_session: AsyncSession, sample_sfs_tar: bytes
+):
+    """R6 HIGH — a service key restricted to project A must NOT mutate a
+    handoff anchored to project B, even after the sender re-syncs its
+    session from B to A. Authorizing the mutable session.project_id alone
+    is the exact hole: the key passes against A while claim would load the
+    ticket/persona from the durable anchor B.
+
+    The helper must authorize the DURABLE anchor (`Handoff.source_project_id`,
+    = project B) even though the session now points at A, so the allowlist
+    bound to [A] is denied with project_not_in_allowlist."""
+    from sessionfs.server.db.models import Handoff, Project, Session as _Sess
+    from sqlalchemy import select as _sel
+
+    org, admin, admin_raw = await _make_org_with_admin(db_session)
+
+    # Push a session as admin, then anchor it to project_b.
+    sid = f"ses_{uuid.uuid4().hex[:12]}"
+    push = await client.put(
+        f"/api/v1/sessions/{sid}/sync",
+        headers=_hdrs(admin_raw),
+        files={"file": ("s.tar.gz", io.BytesIO(sample_sfs_tar), "application/gzip")},
+    )
+    assert push.status_code == 201
+    sess = (
+        await db_session.execute(_sel(_Sess).where(_Sess.id == sid))
+    ).scalar_one()
+
+    project_b = Project(
+        id=f"proj_b_{uuid.uuid4().hex[:8]}",
+        name="anchor-b",
+        git_remote_normalized=f"github.com/sessionfs/{uuid.uuid4().hex[:8]}",
+        owner_id=admin.id,
+        org_id=org.id,
+        context_document="",
+        created_at=datetime.now(timezone.utc),
+    )
+    db_session.add(project_b)
+    sess.project_id = project_b.id
+    await db_session.commit()
+
+    # Create the handoff with a user key so it succeeds; the create path
+    # records the durable anchor = project_b.
+    create = await client.post(
+        "/api/v1/handoffs",
+        headers=_hdrs(admin_raw),
+        json={"session_id": sid, "recipient_email": "r@x.com"},
+    )
+    assert create.status_code == 201, create.text
+    handoff_id = create.json()["id"]
+    anchor = (
+        await db_session.execute(
+            _sel(Handoff.source_project_id).where(Handoff.id == handoff_id)
+        )
+    ).scalar_one()
+    assert anchor == project_b.id
+
+    # Re-sync the session to project_a (the sender moved repos). The
+    # durable anchor stays project_b.
+    project_a = Project(
+        id=f"proj_a_{uuid.uuid4().hex[:8]}",
+        name="session-a",
+        git_remote_normalized=f"github.com/sessionfs/{uuid.uuid4().hex[:8]}",
+        owner_id=admin.id,
+        org_id=org.id,
+        context_document="",
+        created_at=datetime.now(timezone.utc),
+    )
+    db_session.add(project_a)
+    sess.project_id = project_a.id
+    await db_session.commit()
+
+    # Service key restricted to project A only.
+    _row, svc_key = await _create_service_key(
+        db_session, org.id, admin, scopes=["handoffs:write"],
+        project_ids=[project_a.id],
+    )
+
+    resp = await client.post(
+        f"/api/v1/handoffs/{handoff_id}/revoke",
+        headers=_hdrs(svc_key),
+        json={"reason": "cloud agent cleanup"},
+    )
+    assert resp.status_code == 403, resp.text
+    structured = _structured_error(resp.json())
+    assert structured.get("error") == "project_not_in_allowlist", resp.json()
+    assert structured.get("requested_project_id") == project_b.id, resp.json()
+
+    # Boundary denied BEFORE any mutation.
+    handoff_row = (
+        await db_session.execute(_sel(Handoff).where(Handoff.id == handoff_id))
+    ).scalar_one()
     await db_session.refresh(handoff_row)
     assert handoff_row.status == "pending"
     assert handoff_row.revoked_at is None

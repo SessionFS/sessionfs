@@ -3,13 +3,15 @@ import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { useHandoffInbox } from '../hooks/useHandoffs';
 import { useMe } from '../hooks/useMe';
-import { useTransfers } from '../transfers/useTransfers';
+import { useMyOrgs, useTransfers } from '../transfers/useTransfers';
 import { useMyInvites } from '../invites/useInvites';
+import { canModerate } from '../marketplace/moderationState';
 import SearchBar from './SearchBar';
 import ThemeToggle from './ThemeToggle';
 import { Badge } from './Badge';
 import { Dropdown, Tooltip } from './ui';
 import Wordmark from './Wordmark';
+import { displayTier } from '../utils/tier';
 
 // ── Icon factory ──
 const iconProps = {
@@ -53,6 +55,9 @@ const settingsIcon = mkIcon(
 const helpIcon = mkIcon(
   <><circle cx="12" cy="12" r="9" /><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.8.4-1 .9-1 1.7" /><line x1="12" y1="17" x2="12" y2="17.01" /></>
 );
+const moderationIcon = mkIcon(
+  <><path d="M4 21V4" /><path d="M4 4h12l-2 4 2 4H4" /></>
+);
 const adminIcon = mkIcon(
   <><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></>
 );
@@ -71,6 +76,8 @@ interface NavItem {
   match: (p: string) => boolean;
   orgOnly?: boolean;
   adminOnly?: boolean;
+  /** Platform admins and org owners/admins (marketplace moderation). */
+  moderatorOnly?: boolean;
   badgeKey?: 'pending' | 'transfers' | 'invites';
 }
 
@@ -84,7 +91,8 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: '/', label: 'Sessions', icon: sessionsIcon, match: (p: string) => p === '/' },
       { to: '/projects', label: 'Projects', icon: projectsIcon, match: (p: string) => p.startsWith('/projects') },
-      { to: '/marketplace', label: 'Marketplace', icon: marketplaceIcon, match: (p: string) => p.startsWith('/marketplace') },
+      { to: '/marketplace', label: 'Marketplace', icon: marketplaceIcon, match: (p: string) => p.startsWith('/marketplace') && !p.startsWith('/marketplace/moderation') },
+      { to: '/marketplace/moderation', label: 'Moderation', icon: moderationIcon, match: (p: string) => p.startsWith('/marketplace/moderation'), moderatorOnly: true },
       { to: '/handoffs', label: 'Handoffs', icon: handoffsIcon, match: (p: string) => p.startsWith('/handoffs'), badgeKey: 'pending' },
     ],
   },
@@ -177,6 +185,8 @@ export default function Layout() {
   const me = useMe();
   const isAdmin = me.data?.tier === 'admin';
   const hasOrg = !!me.data?.org_id;
+  const myOrgs = useMyOrgs();
+  const isModerator = canModerate(me.data, myOrgs.data);
   const pendingCount = inbox.data?.handoffs.filter((h) => h.status === 'pending').length ?? 0;
   const incomingTransfers = useTransfers('incoming', 'pending');
   const transfersPendingCount = incomingTransfers.data?.transfers.length ?? 0;
@@ -241,6 +251,7 @@ export default function Layout() {
   function isItemVisible(item: NavItem): boolean {
     if (item.orgOnly && !hasOrg) return false;
     if (item.adminOnly && !isAdmin) return false;
+    if (item.moderatorOnly && !isModerator) return false;
     return true;
   }
 
@@ -252,7 +263,7 @@ export default function Layout() {
   const filteredBottom = BOTTOM_ITEMS.filter(isItemVisible);
 
   // ── Account menu items ──
-  const tierLabel = me.data?.effective_tier || me.data?.tier || 'free';
+  const tierLabel = displayTier(me.data);
   const tierVariant = tierLabel === 'admin' ? 'info' : tierLabel === 'team' ? 'success' : 'default';
   const userInitial = (me.data?.email?.[0] || 'U').toUpperCase();
 

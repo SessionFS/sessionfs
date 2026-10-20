@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, Float, Index, Integer, String, Text, ForeignKey, UniqueConstraint, func, text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, Float, Index, Integer, SmallInteger, String, Text, ForeignKey, UniqueConstraint, func, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -26,6 +26,10 @@ class User(Base):
     tier: Mapped[str] = mapped_column(String(20), default="free")
     stripe_customer_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     stripe_subscription_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # A Stripe subscription created but not yet paid ('incomplete'): it
+    # routes later events and blocks a second checkout, but grants nothing
+    # and never revokes anything (migration 075).
+    stripe_pending_subscription_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     tier_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     storage_used_bytes: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
     beta_pro_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -248,6 +252,10 @@ class Handoff(Base):
         # inbox queries hit it directly. See migration 032.
         Index("idx_handoffs_recipient_email_normalized", "recipient_email_normalized"),
         Index("idx_handoffs_status", "status"),
+        # GH #70 — pending-handoff attribution by durable project anchor
+        # (stranding guards, merge rewrite, claim resolution). Name must
+        # match migration 072's create_index.
+        Index("idx_handoffs_source_project_id", "source_project_id"),
     )
 
     id: Mapped[str] = mapped_column(String(20), primary_key=True)
@@ -328,6 +336,26 @@ class Handoff(Base):
     # current tier (per Codex I.4); only recipient access matters at
     # claim. Audit can compare snapshot vs current for forensic purposes.
     sender_tier_snapshot: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # GH #70 — durable project anchor for the handoff's provenance
+    # (ticket/persona). Set at create time from the source session's
+    # project (session.project_id, else git-remote resolution) and
+    # backfilled by migration 072, so the stranding guards and the merge
+    # persona-reference rewrite can attribute PENDING handoffs to a
+    # project without re-resolving the session's remote — including
+    # legacy sessions whose project_id is NULL. ON DELETE SET NULL
+    # mirrors sessions.project_id.
+    source_project_id: Mapped[str | None] = mapped_column(
+        String(64),
+        # Name must match migration 072's create_foreign_key — the
+        # downgrade drops it by name and the migration tests build the
+        # pre/post schema from this metadata.
+        ForeignKey(
+            "projects.id",
+            ondelete="SET NULL",
+            name="fk_handoffs_source_project_id",
+        ),
+        nullable=True,
+    )
     # v0.15.0 — sha256-at-rest token for the P1 pre-signup landing page.
     # Raw token goes ONLY into the recipient email link (generated at
     # handoff creation); the hash gates the unauthenticated /preview
@@ -571,6 +599,16 @@ class ShareLink(Base):
 
 class GitHubInstallation(Base):
     __tablename__ = "github_installations"
+    __table_args__ = (
+        # One linked installation per user (migration 073).
+        Index(
+            "uq_github_installations_user",
+            "user_id",
+            unique=True,
+            postgresql_where=text("user_id IS NOT NULL"),
+            sqlite_where=text("user_id IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)  # GitHub's installation ID
     user_id: Mapped[str | None] = mapped_column(
@@ -584,6 +622,127 @@ class GitHubInstallation(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    # GitHub numeric id of the installation's account (user or org). Logins
+    # can be renamed; the id cannot.
+    account_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # GitHub user id of the `sender` on the signed installation.created
+    # webhook, i.e. who installed the App. Recorded only when webhook
+    # signatures are verified. For an organization installation the installer
+    # is an org owner (or app manager) at install time; used as the admin
+    # signal when the App lacks the Members permission.
+    installer_github_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # Ownership proof (migration 073). Set ONLY by the OAuth claim callback
+    # after GitHub's GET /user/installations listed this installation for the
+    # claiming GitHub user. NULL = a legacy claim made through the old
+    # unauthenticated installation_id path; such claims are never trusted for
+    # repo verification or publisher verification until re-verified.
+    claim_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    claim_verified_github_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    claim_verified_github_login: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 'account_owner' (user installation and the claimant IS that account),
+    # 'org_admin' (claimant is an active admin of the installation's org), or
+    # 'member' (GitHub lists the installation for the claimant, but admin
+    # rights could not be confirmed).
+    claim_role: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
+
+class GitHubClaimAttempt(Base):
+    """Single-use state for the GitHub App OAuth claim flow (migration 073).
+
+    Committed before the redirect to GitHub and consumed with an atomic
+    UPDATE ... WHERE status='pending' (rowcount-1). Only hashes are stored:
+    the raw state, browser nonce and PKCE verifier live in the browser
+    (state in the URL, nonce + verifier in an HttpOnly cookie).
+
+    Lifecycle: pending -> processing (consumed by a callback; the callback
+    may still be talking to GitHub, so cleanup keeps processing rows for a
+    grace period) -> choosing (multi-installation chooser parked) ->
+    consumed (terminal; chooser closed or flow otherwise finished).
+    """
+
+    __tablename__ = "github_claim_attempts"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'consumed', 'choosing')",
+            name="ck_github_claim_attempt_status",
+        ),
+        CheckConstraint(
+            "flow IN ('install', 'authorize')",
+            name="ck_github_claim_attempt_flow",
+        ),
+        Index("idx_github_claim_attempt_user", "user_id"),
+        Index("idx_github_claim_attempt_expires", "expires_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    state_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    nonce_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    pkce_verifier_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    flow: Mapped[str] = mapped_column(String(20), nullable=False)
+    target_installation_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # status='choosing': GitHub proved the user can link several
+    # installations; this holds the proven GitHub user and the eligible
+    # installations (with their live roles) until the user picks one or
+    # expires_at passes. Never holds a GitHub token.
+    choices_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class GitHubWebhookDelivery(Base):
+    """One row per distinct signed GitHub webhook payload (migration 073).
+
+    Retention: the stored payload is dropped after 30 days, but the row
+    itself (a compact fingerprint tombstone) is kept for 400 days so a
+    captured, validly signed body cannot be replayed once its payload is
+    gone. Rotating the webhook secret invalidates every older signature.
+
+    Keyed by sha256(event header + raw body). The body is what the HMAC
+    signature authenticates, so an attacker cannot mint a fresh key by
+    changing unsigned headers (X-GitHub-Delivery is kept for logs only). A
+    legitimate GitHub redelivery carries the same body and maps to the same
+    row. Lifecycle: processing -> completed | failed. Only completed rows
+    are permanent no-ops; failed rows, and processing rows whose worker went
+    stale, are retried by a redelivery. Pruned after the retention window.
+    """
+
+    __tablename__ = "github_webhook_deliveries"
+    __table_args__ = (
+        Index("idx_github_webhook_delivery_received", "received_at"),
+        CheckConstraint(
+            "status IN ('processing', 'completed', 'failed')",
+            name="ck_github_webhook_delivery_status",
+        ),
+    )
+
+    fingerprint: Mapped[str] = mapped_column(String(64), primary_key=True)
+    delivery_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    event: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="processing")
+    # Retry counter (backoff, attempt limit); an admin may reset it.
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # Fencing token: increases on EVERY claim/takeover and is never reset,
+    # so a stale worker can never record an outcome for a newer attempt.
+    lease_generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Earliest automatic retry of a failed delivery (backoff).
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # The verified raw body, kept so failed work can be retried without
+    # GitHub; cleared on completion and purged with the row after 30 days.
+    payload: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class SessionSummaryRecord(Base):
@@ -665,8 +824,14 @@ class Project(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    git_remote_normalized: Mapped[str] = mapped_column(
-        String(255), nullable=False, unique=True, index=True
+    # Nullable (migration 073): a repo-reclaimed project is represented by
+    # NULL plus repo_reclaimed_at, NOT by a synthetic "reclaimed:<id>"
+    # remote string — a user-reachable placeholder made the namespace
+    # attacker-claimable. NULL never matches a remote equality lookup, so
+    # reclaimed projects are unreachable by any remote. Multiple NULLs are
+    # allowed by the unique constraint on both PostgreSQL and SQLite.
+    git_remote_normalized: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, unique=True, index=True
     )
     context_document: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     owner_id: Mapped[str] = mapped_column(
@@ -714,6 +879,16 @@ class Project(Base):
 
 class PRComment(Base):
     __tablename__ = "pr_comments"
+    __table_args__ = (
+        # Created by migration 026; declared here so create_all-built schemas
+        # (tests, fresh installs) enforce it too. Webhook PR-comment creation
+        # relies on it to serialize per (installation, repo, PR).
+        Index(
+            "idx_pr_comments_installation_repo_pr",
+            "installation_id", "repo_full_name", "pr_number",
+            unique=True,
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     installation_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -727,6 +902,26 @@ class PRComment(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    # Latest desired comment content (migration 073). Every event writes it
+    # and bumps body_version; whoever creates/edits the comment publishes
+    # the newest version, so an event arriving mid-creation is not lost.
+    desired_body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    body_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    published_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    # Publishing lease: one publisher at a time edits the comment, without
+    # holding a database lock across the GitHub call (claim, commit, call,
+    # conditionally finalize). Expired leases can be taken over.
+    publish_lease: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    publish_lease_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Installation owner desired_body was built for (migration 073). A
+    # publisher refuses to post it once the installation has a new owner.
+    owner_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
 
 class Organization(Base):
@@ -738,6 +933,8 @@ class Organization(Base):
     tier: Mapped[str] = mapped_column(String(20), nullable=False, server_default="team")
     stripe_customer_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     stripe_subscription_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # See User.stripe_pending_subscription_id (migration 075).
+    stripe_pending_subscription_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     storage_limit_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
     storage_used_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
     seats_limit: Mapped[int] = mapped_column(Integer, nullable=False, server_default="5")
@@ -989,6 +1186,181 @@ class StripeEvent(Base):
     processed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    # 'processed' — the handler applied (or deliberately ignored) the event.
+    # 'dead_letter' — the event is permanently unusable; a matching
+    # billing_reconciliations row carries the reason (migration 075).
+    outcome: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="processed"
+    )
+
+
+class BillingCheckoutIntent(Base):
+    """A Stripe Checkout session started for a billing owner (migration 075).
+
+    At most one open intent (pending or unresolved) per billing owner and per
+    Stripe customer: a second checkout request while one is live reuses it
+    (same plan) or is refused, so concurrent clicks can't open two
+    subscriptions. 'unresolved' marks a checkout Stripe completed that we
+    could not apply (dead letter, duplicate, or a session that completed
+    without its webhook); it blocks new checkouts until ops resolves it. The Stripe session is created with
+    an idempotency key derived from the owner, scope, plan and a short time
+    window, and expires with the intent.
+    """
+
+    __tablename__ = "billing_checkout_intents"
+    __table_args__ = (
+        Index(
+            "uq_billing_checkout_intents_one_pending",
+            "owner_type",
+            "owner_id",
+            unique=True,
+            postgresql_where=text("status IN ('pending', 'unresolved')"),
+            sqlite_where=text("status IN ('pending', 'unresolved')"),
+        ),
+        Index(
+            "uq_billing_checkout_intents_one_pending_per_customer",
+            "stripe_customer_id",
+            unique=True,
+            postgresql_where=text(
+                "status IN ('pending', 'unresolved') AND stripe_customer_id IS NOT NULL"
+            ),
+            sqlite_where=text(
+                "status IN ('pending', 'unresolved') AND stripe_customer_id IS NOT NULL"
+            ),
+        ),
+        Index("idx_billing_checkout_intents_session", "stripe_session_id"),
+        CheckConstraint(
+            "status IN ('pending', 'completed', 'expired', 'unresolved')",
+            name="ck_billing_checkout_intents_status",
+        ),
+        CheckConstraint(
+            "owner_type IN ('user', 'org')",
+            name="ck_billing_checkout_intents_owner_type",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_type: Mapped[str] = mapped_column(String(10), nullable=False)
+    owner_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    scope: Mapped[str] = mapped_column(String(20), nullable=False)
+    tier: Mapped[str] = mapped_column(String(20), nullable=False)
+    seats: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    stripe_customer_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    stripe_session_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    stripe_subscription_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    checkout_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="pending"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class StripeFetchGeneration(Base):
+    """Monotonic, DB-issued ordering for Stripe fetches (migration 075).
+
+    A row is inserted (and committed) BEFORE every Stripe retrieve/list, and
+    its id is that fetch's generation. Generations order fetches by when they
+    STARTED, using the database as the clock — webhooks fetch outside any
+    transaction, so comparing wall-clock timestamps across machines cannot
+    order them. A fetch with a lower generation than the state already
+    applied (or than a terminal observation) is stale and is not applied.
+    """
+
+    __tablename__ = "stripe_fetch_generations"
+
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class StripeSubscriptionObservation(Base):
+    """Latest canonical Stripe state seen for a subscription (migration 075).
+
+    Keyed by subscription id, independent of who (if anyone) owns its
+    entitlement, so an observation recorded while the subscription was not
+    yet routable — e.g. a deletion delivered before its checkout — still
+    governs later events. Written under the Stripe customer lock whenever a
+    webhook applies or records a fetched state; a grant whose fetch
+    generation is older than the latest terminal observation's generation is
+    refused.
+    """
+
+    __tablename__ = "stripe_subscription_observations"
+
+    subscription_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    status: Mapped[str] = mapped_column(String(40), nullable=False)
+    customer_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    terminal_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # DB-issued fetch generations (stripe_fetch_generations.id) backing
+    # observed_at / terminal_at — the authoritative ordering, not the
+    # wall-clock timestamps they sit beside.
+    generation: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    terminal_generation: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class BillingReconciliation(Base):
+    """Durable record of a billing event ops must resolve (migration 075).
+
+    Written instead of guessing: a duplicate subscription for an owner that
+    already has one (never auto-canceled, never rebound), a subscription
+    event that doesn't match the owner's current subscription, an event no
+    owner claims, or a permanently malformed event (dead letter).
+    """
+
+    __tablename__ = "billing_reconciliations"
+    __table_args__ = (
+        Index("idx_billing_reconciliations_status", "status", "created_at"),
+        Index("idx_billing_reconciliations_event", "stripe_event_id"),
+        Index("idx_billing_reconciliations_subscription", "stripe_subscription_id"),
+        CheckConstraint(
+            "status IN ('open', 'resolved')",
+            name="ck_billing_reconciliations_status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    kind: Mapped[str] = mapped_column(
+        String(40),
+        nullable=False,
+        comment="duplicate_subscription | stale_subscription_event | "
+        "unroutable_subscription_event | malformed_event | plan_owner_mismatch | "
+        "subscription_binding_conflict | ambiguous_subscription_pointer",
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="open"
+    )
+    stripe_event_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    stripe_event_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    stripe_customer_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    stripe_subscription_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    owner_type: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    owner_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    details: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class HelmLicense(Base):
@@ -1166,6 +1538,10 @@ class KnowledgePage(Base):
     __tablename__ = "knowledge_pages"
     __table_args__ = (
         Index("idx_kp_project", "project_id"),
+        # Created by migration 019 but never declared here, so create_all
+        # schemas (tests, fresh SQLite) lacked it. GH #70: declared so every
+        # schema enforces one page per (project_id, slug).
+        UniqueConstraint("project_id", "slug", name="uq_kp_project_slug"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -1361,13 +1737,18 @@ class KnowledgeLink(Base):
 
 
 class AgentPersona(Base):
-    """A portable AI role scoped to one project.
+    """A portable AI role scoped to one project OR to one organization.
 
-    Multiple personas per project; the same persona name is unique
-    within a project (uq_persona_project_name). `content` is opaque
-    markdown injected into the context window as-is. `specializations`
-    is a JSON array of domain keywords used for routing suggestions in
-    a future version — v0.10.1 does NOT auto-filter the KB by them.
+    Exactly one of `project_id` / `org_id` is set (ck_agent_personas_scope,
+    migration 072). Project personas: the same name is unique within a
+    project (uq_persona_project_name; case-insensitive uniqueness is
+    enforced at create time). Org personas: case-insensitive unique per
+    org (uq_persona_org_lower_name) and usable from every project in the
+    org; a project persona with the same name overrides the org one (see
+    services/personas.resolve_persona). `content` is opaque markdown
+    injected into the context window as-is. `specializations` is a JSON
+    array of domain keywords used for routing suggestions in a future
+    version — v0.10.1 does NOT auto-filter the KB by them.
     Soft-delete via `is_active = false`.
     """
 
@@ -1375,13 +1756,37 @@ class AgentPersona(Base):
     __table_args__ = (
         UniqueConstraint("project_id", "name", name="uq_persona_project_name"),
         Index("idx_persona_project_active", "project_id", "is_active"),
+        Index("idx_persona_org_active", "org_id", "is_active"),
+        Index(
+            "uq_persona_org_lower_name",
+            "org_id",
+            text("lower(name)"),
+            unique=True,
+            postgresql_where=text("org_id IS NOT NULL"),
+            sqlite_where=text("org_id IS NOT NULL"),
+        ),
+        CheckConstraint(
+            "(project_id IS NOT NULL AND org_id IS NULL) "
+            "OR (project_id IS NULL AND org_id IS NOT NULL)",
+            name="ck_agent_personas_scope",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    project_id: Mapped[str] = mapped_column(
+    project_id: Mapped[str | None] = mapped_column(
         String(64),
         ForeignKey("projects.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
+    )
+    # v0.17.x (GH #70) — org-level persona scope. NULL for project personas.
+    org_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey(
+            "organizations.id",
+            ondelete="CASCADE",
+            name="fk_agent_personas_org_id",
+        ),
+        nullable=True,
     )
     name: Mapped[str] = mapped_column(String(50), nullable=False)
     role: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -2568,6 +2973,13 @@ class Entitlement(Base):
         DateTime(timezone=True), nullable=True,
         comment="Stripe=renewal date, HelmLicense=expiry date, NULL=perpetual"
     )
+    # Fetch generation (stripe_fetch_generations.id) of the Stripe state last
+    # applied to this row (migration 075). Webhooks fetch outside any
+    # transaction, so a fetch with a lower generation is stale and is not
+    # applied — the DB-issued generation orders fetches, not wall clocks.
+    stripe_synced_generation: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -2684,6 +3096,19 @@ class SkillPackage(Base):
     is_yanked: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
     )
+    # Owner (org / personal) moderation of the whole package (migration 066):
+    # NULL | 'yanked' | 'blocked'. Hides only the package's NON-PUBLIC
+    # listings, including ones published later; is_yanked is the platform flag.
+    owner_state: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Platform moderation of the whole package (migration 066): NULL |
+    # 'yanked' | 'blocked'. is_yanked mirrors it (True for both) and is what
+    # delivery filters on; 'blocked' also refuses publishes and deletions.
+    platform_state: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Publisher that owns this package's namespace (migration 071, §4.2).
+    # NULL for legacy per-owner namespaces nobody has claimed.
+    publisher_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("skill_publishers.id", ondelete="SET NULL"), nullable=True
+    )
     created_by_user_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -2702,8 +3127,10 @@ class SkillPackageVersion(Base):
     __table_args__ = (
         UniqueConstraint("package_id", "content_hash", name="uq_skill_version_hash"),
         Index("idx_skill_versions_package_created", "package_id", "created_at"),
+        Index("idx_skill_versions_publication_seq", "package_id", "publication_seq"),
         Index("idx_skill_versions_content_hash", "content_hash"),
         Index("idx_skill_versions_created_by", "created_by_user_id"),
+        Index("idx_skill_versions_capability_digest", "package_id", "capability_digest"),
         CheckConstraint(
             "dlp_status IN ('passed', 'blocked')",
             name="ck_skill_version_dlp_status",
@@ -2732,6 +3159,27 @@ class SkillPackageVersion(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    # Monotonic, package-scoped publication order (migration 070). Allocated
+    # under the publisher lock so two publishes in the same second never tie
+    # on created_at + random id; NULL only on rows a failed migration left
+    # behind (treated as "never newer", fail closed).
+    publication_seq: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Instruction scanning (migration 069): bounded summary of the LATEST scan
+    # (ruleset, max severity, counts, value-free findings), and the automated
+    # quarantine a rescan sets on a new critical finding. Quarantine stops new
+    # delivery only; it never revokes grants (a human block does that).
+    scan_summary: Mapped[str] = mapped_column(Text, nullable=False, server_default="{}")
+    quarantined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    quarantine_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Install disclosure (migration 070, marketplace v2 §3.6): the byte-derived
+    # capability manifest (skills/disclosure.py), the digest of its access
+    # part, and its derivation version (0 = not computed yet; computed lazily
+    # from the blob, and until then an update from it is treated as widening).
+    capability_manifest: Mapped[str] = mapped_column(Text, nullable=False, server_default="{}")
+    capability_digest: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    manifest_version: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, default=0, server_default="0"
     )
 
 
@@ -2780,6 +3228,11 @@ class SkillMarketplaceListing(Base):
             "verification_state IN ('verified', 'unverified', 'blocked')",
             name="ck_skill_listing_verification_state",
         ),
+        CheckConstraint(
+            "moderation_state IN ('approved', 'pending_review', 'quarantined', 'blocked', 'rejected')",
+            name="ck_skill_listing_moderation_state",
+        ),
+        Index("idx_skill_listing_moderation", "moderation_state", "visibility"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -2807,9 +3260,26 @@ class SkillMarketplaceListing(Base):
     is_yanked: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
     )
+    # Owner (org / personal) moderation of THIS listing (migration 066):
+    # NULL | 'yanked' | 'blocked'. Never set on a public listing; the
+    # version-wide is_yanked / verification_state flags are platform state.
+    owner_state: Mapped[str | None] = mapped_column(String(20), nullable=True)
     verification_state: Mapped[str] = mapped_column(
         String(20), nullable=False, default="verified", server_default="verified"
     )
+    # Listing moderation, split from publisher identity (migration 071, §4.3):
+    # 'approved' is deliverable; 'pending_review' (a verified publisher's first
+    # public version, or an update that widens access) and 'rejected' are not.
+    # verification_state is kept read-only-ish for one release (blocks still
+    # write it); delivery requires BOTH to allow the listing.
+    moderation_state: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="approved", server_default="approved"
+    )
+    moderation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewed_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     search_text: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     published_by_user_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
@@ -2817,6 +3287,13 @@ class SkillMarketplaceListing(Base):
     published_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    # Publication provenance for THIS listing event (JSON object). Unlike the
+    # deduplicated version's signature_metadata — which records the provenance
+    # of the run that FIRST minted the immutable version — this is the
+    # provenance of the publish that created the listing, so a reused version
+    # re-published via a different path keeps its own (e.g. trusted-publishing)
+    # provenance for responses and moderation comparisons.
+    signature_metadata: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class SkillConsentReceipt(Base):
@@ -2864,6 +3341,16 @@ class SkillConsentReceipt(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    # What was consented to (migration 070): the version's capability digest
+    # and access manifest at consent time; the receipt a non-widening update
+    # inherited consent from (plain string: audit references survive
+    # archival); the re-consent rule in force (1 = v0.16 §7.3, 2 = D2).
+    capability_digest: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    consented_manifest: Mapped[str | None] = mapped_column(Text, nullable=True)
+    carried_forward_from_receipt_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    consent_rule_version: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, default=1, server_default="1"
     )
 
 
@@ -2936,6 +3423,23 @@ class SkillInstallRequest(Base):
             "requested_via IN ('api', 'mcp')",
             name="ck_skill_request_requested_via",
         ),
+        # One ACTIVE approved version per (project, package, grant scope)
+        # (migration 070): approving a replacement supersedes the old one.
+        Index(
+            "uq_skill_request_active_grant",
+            "project_id",
+            "package_id",
+            "grant_scope_key",
+            unique=True,
+            postgresql_where=text(
+                "status IN ('approved', 'applied') AND package_id IS NOT NULL "
+                "AND grant_scope_key IS NOT NULL AND deleted_at IS NULL"
+            ),
+            sqlite_where=text(
+                "status IN ('approved', 'applied') AND package_id IS NOT NULL "
+                "AND grant_scope_key IS NOT NULL AND deleted_at IS NULL"
+            ),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -2995,6 +3499,20 @@ class SkillInstallRequest(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    # The capability digest the approver confirmed, bound immutably at
+    # approval (migration 070) under that consent rule version. NULL for
+    # approvals made before 070: devices never treat them as approving a
+    # widening update (fail closed).
+    approved_capability_digest: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    approved_consent_rule_version: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    # The requested version's package and the normalized grant scope
+    # ('project' | 'user:<id>' | 'device:<id>:<device>') - the key of the
+    # one-active-approval invariant - and the approval that superseded this
+    # one (migration 070; plain strings, audit rows outlive their targets).
+    package_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    grant_scope_key: Mapped[str | None] = mapped_column(String(250), nullable=True)
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    superseded_by_request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class OrgSkillAssignment(Base):
@@ -3007,8 +3525,9 @@ class OrgSkillAssignment(Base):
             "target_type",
             "target_id",
             unique=True,
-            postgresql_where=text("target_type != 'device'"),
-            sqlite_where=text("target_type != 'device'"),
+            # Revoked rows (migration 066) never block a fresh assignment.
+            postgresql_where=text("target_type != 'device' AND revoked_at IS NULL"),
+            sqlite_where=text("target_type != 'device' AND revoked_at IS NULL"),
         ),
         Index(
             "uq_org_skill_assignment_device",
@@ -3017,8 +3536,39 @@ class OrgSkillAssignment(Base):
             "target_user_id",
             "target_id",
             unique=True,
-            postgresql_where=text("target_type = 'device'"),
-            sqlite_where=text("target_type = 'device'"),
+            postgresql_where=text("target_type = 'device' AND revoked_at IS NULL"),
+            sqlite_where=text("target_type = 'device' AND revoked_at IS NULL"),
+        ),
+        # One ACTIVE assignment per (org, package, target) (migration 070):
+        # moving a target to another version goes through /advance, which
+        # supersedes (revokes) the old row first.
+        Index(
+            "uq_org_skill_assignment_package_target",
+            "org_id",
+            "package_id",
+            "target_type",
+            "target_id",
+            unique=True,
+            postgresql_where=text(
+                "target_type != 'device' AND revoked_at IS NULL AND package_id IS NOT NULL"
+            ),
+            sqlite_where=text(
+                "target_type != 'device' AND revoked_at IS NULL AND package_id IS NOT NULL"
+            ),
+        ),
+        Index(
+            "uq_org_skill_assignment_package_device",
+            "org_id",
+            "package_id",
+            "target_user_id",
+            "target_id",
+            unique=True,
+            postgresql_where=text(
+                "target_type = 'device' AND revoked_at IS NULL AND package_id IS NOT NULL"
+            ),
+            sqlite_where=text(
+                "target_type = 'device' AND revoked_at IS NULL AND package_id IS NOT NULL"
+            ),
         ),
         Index("idx_org_skill_assignment_target", "org_id", "target_type", "target_id"),
         Index("idx_org_skill_assignment_version", "version_id"),
@@ -3045,9 +3595,11 @@ class OrgSkillAssignment(Base):
     org_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
     )
-    version_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("skill_package_versions.id", ondelete="CASCADE"), nullable=False
-    )
+    # Plain string, deliberately NOT a ForeignKey (migration 066): a revoked
+    # assignment is audit history and must outlive its version, like install
+    # requests and consent receipts. Active assignments still block version
+    # deletion (routes/marketplace.py _delete_version).
+    version_id: Mapped[str] = mapped_column(String(64), nullable=False)
     content_hash: Mapped[str] = mapped_column(String(80), nullable=False)
     target_type: Mapped[str] = mapped_column(String(20), nullable=False)
     target_id: Mapped[str] = mapped_column(String(100), nullable=False, server_default="*")
@@ -3063,6 +3615,25 @@ class OrgSkillAssignment(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    # Set when the assigned version is blocked (migration 066). A revoked
+    # assignment never grants again, even after the version is restored.
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # The capability digest the admin approved for this exact version
+    # (migration 070), bound at creation under consent_rule_version (NULL on
+    # assignments made before 070: never treated as a digest approval). An
+    # assignment never authorizes another version: moving it to an update
+    # goes through /advance, which re-checks D2 and SUPERSEDES this row
+    # (kept as history; revoked_at is set too, so it never grants again).
+    capability_digest: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    consent_rule_version: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    # The assigned version's package (migration 070, backfilled): the key of
+    # the one-active-assignment-per-target invariant. Plain string like
+    # version_id (audit rows outlive their package).
+    package_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    superseded_by_assignment_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class ActivationAttempt(Base):
@@ -3531,4 +4102,591 @@ class SsoExchangeCode(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+
+
+class ProjectFeatureGrandfather(Base):
+    """A project that keeps a feature through the caller's own plan.
+
+    Project-scoped features are gated on the plan of the project's owner
+    (the owning org, or the owner's own plan for personal projects).
+    Before v0.17.2 they were gated on the CALLER's plan, so members on a
+    paid plan could use paid features inside a free org's project. To
+    avoid taking that away, migration 065 recorded every project that
+    already used each feature; for those projects a caller whose own plan
+    includes the feature keeps access. The set is written once by the
+    migration (and carried along by project merges), never grown at
+    request time.
+    """
+
+    __tablename__ = "project_feature_grandfathers"
+
+    project_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True,
+    )
+    feature: Mapped[str] = mapped_column(String(64), primary_key=True)
+    granted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+
+
+# Marketplace takedown (migration 066).
+
+SKILL_REPORT_REASONS = (
+    "malicious",
+    "secrets",
+    "impersonation",
+    "broken",
+    "license",
+    "spam",
+    "other",
+)
+
+
+class SkillPackageReport(Base):
+    """A signed-in user's report against a marketplace package or version.
+
+    package_id / version_id are plain strings (no FK) so the moderation record
+    survives package deletion, like the other marketplace audit rows.
+    """
+
+    __tablename__ = "skill_package_reports"
+    __table_args__ = (
+        Index(
+            "uq_skill_report_open_reporter_package",
+            "reporter_user_id",
+            "package_id",
+            unique=True,
+            postgresql_where=text("status = 'open'"),
+            sqlite_where=text("status = 'open'"),
+        ),
+        Index("idx_skill_report_package_status", "package_id", "status"),
+        Index("idx_skill_report_status_created", "status", "created_at"),
+        Index("idx_skill_report_reporter_created", "reporter_user_id", "created_at"),
+        Index("idx_skill_report_resolved_by", "resolved_by_user_id"),
+        Index("idx_skill_report_scope", "scope_kind", "scope_org_id", "status", "created_at"),
+        CheckConstraint(
+            "(scope_kind = 'platform' AND scope_org_id IS NULL) OR "
+            "(scope_kind = 'org' AND scope_org_id IS NOT NULL)",
+            name="ck_skill_report_scope",
+        ),
+        CheckConstraint(
+            "reason IN ('malicious', 'secrets', 'impersonation', 'broken', "
+            "'license', 'spam', 'other')",
+            name="ck_skill_report_reason",
+        ),
+        CheckConstraint(
+            "status IN ('open', 'actioned', 'dismissed')", name="ck_skill_report_status"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    package_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    version_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    reporter_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    reason: Mapped[str] = mapped_column(String(20), nullable=False)
+    details: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="open", server_default="open"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    resolution_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Bound at creation to the listings the reporter could see: 'platform'
+    # (a public or personal listing) or 'org' (only that org's listings).
+    scope_kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    scope_org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class SkillRevocationEvent(Base):
+    """Append-only yank / block / restore history feeding the revocations feed.
+
+    `id` is monotonic and `changed_at` is strictly increasing (written under a
+    writer lock; the unique index is the backstop), so the feed pages on
+    changed_at alone. kind 'version' / 'package' target one version or a whole
+    package; kind 'content' carries only a blocked (or unblocked) content
+    hash. The visibility / org_id / owner_user_id snapshot scopes who may
+    read the row.
+    """
+
+    __tablename__ = "skill_revocation_events"
+    __table_args__ = (
+        Index("uq_skill_revocation_changed_at", "changed_at", unique=True),
+        Index("idx_skill_revocation_package", "package_id", "version_id", "id"),
+        Index("idx_skill_revocation_org", "org_id", "changed_at"),
+        Index("idx_skill_revocation_owner", "owner_user_id", "changed_at"),
+        Index("idx_skill_revocation_actor", "actor_user_id"),
+        CheckConstraint(
+            "state IN ('yanked', 'blocked', 'restored', 'quarantined')",
+            name="ck_skill_revocation_state"
+        ),
+        CheckConstraint(
+            "kind IN ('version', 'package', 'content')", name="ck_skill_revocation_kind"
+        ),
+        CheckConstraint(
+            "block_scope IS NULL OR block_scope IN ('global', 'org', 'owner')",
+            name="ck_skill_revocation_block_scope",
+        ),
+        CheckConstraint(
+            "(COALESCE(block_scope, '') = 'org' AND scope_org_id IS NOT NULL) OR "
+            "(COALESCE(block_scope, '') = 'owner') OR "
+            "(COALESCE(block_scope, '') NOT IN ('org', 'owner') AND scope_org_id IS NULL)",
+            name="ck_skill_revocation_block_scope_org",
+        ),
+        CheckConstraint(
+            "(kind = 'version' AND package_id IS NOT NULL AND version_id IS NOT NULL) OR "
+            "(kind = 'package' AND package_id IS NOT NULL AND version_id IS NULL) OR "
+            "(kind = 'content' AND package_id IS NULL AND version_id IS NULL "
+            "AND content_hash IS NOT NULL)",
+            name="ck_skill_revocation_kind_target",
+        ),
+        CheckConstraint(
+            "visibility IN ('public', 'user', 'org')", name="ck_skill_revocation_visibility"
+        ),
+        CheckConstraint(
+            "(visibility = 'public') OR "
+            "(visibility = 'org' AND org_id IS NOT NULL) OR "
+            "(visibility = 'user' AND owner_user_id IS NOT NULL)",
+            name="ck_skill_revocation_scope",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True
+    )
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    package_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    version_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    content_hash: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    state: Mapped[str] = mapped_column(String(20), nullable=False)
+    block_scope: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Set exactly when block_scope == 'org': the org the block is confined to.
+    scope_org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Internal provenance of 'content' events; never served by the feed.
+    source_package_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_version_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    actor_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    actor_role: Mapped[str] = mapped_column(String(20), nullable=False)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    owner_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    visibility: Mapped[str] = mapped_column(String(20), nullable=False)
+    changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class SkillBlockedContentHash(Base):
+    """Durable content-hash blocklist (migration 066).
+
+    Independent of package / version / listing rows: deleting a blocked
+    version and re-publishing identical bytes stays blocked. scope_org_id
+    NULL = global block (platform admin); otherwise it applies only to
+    packages owned by that org. A block is active while lifted_at IS NULL;
+    rows are lifted on restore, never deleted.
+    """
+
+    __tablename__ = "skill_blocked_content_hashes"
+    __table_args__ = (
+        Index("idx_skill_blocked_hash_active", "content_hash", "lifted_at"),
+        Index("idx_skill_blocked_hash_source", "source_package_id", "source_version_id"),
+        Index("idx_skill_blocked_hash_actor", "actor_user_id"),
+        Index("idx_skill_blocked_hash_lifted_by", "lifted_by_user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True
+    )
+    content_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+    scope_org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_package_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_version_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    actor_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    actor_role: Mapped[str] = mapped_column(String(20), nullable=False)
+    blocked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    lifted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lifted_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+
+class SkillGrantGeneration(Base):
+    """Per-collection change counter for the paginated grant lists
+    (migration 066): scope_type 'project' (its install requests) or 'org'
+    (its assignments). Bumped in the same transaction as any write to the
+    collection, so a cursor issued before a change is refused (409
+    listing_changed) instead of silently missing a row. A dedicated table, so
+    bumping it never contends with the locks publishes take on project/org
+    rows."""
+
+    __tablename__ = "skill_grant_generations"
+
+    scope_type: Mapped[str] = mapped_column(String(20), primary_key=True)
+    scope_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    generation: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+
+
+class SkillScanRuleset(Base):
+    """One row per instruction-scanner ruleset version that has been used."""
+
+    __tablename__ = "skill_scan_rulesets"
+
+    version: Mapped[str] = mapped_column(String(20), primary_key=True)
+    released_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+    rule_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    notes: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+
+
+SKILL_SCAN_SEVERITIES = ("none", "low", "medium", "high", "critical")
+
+
+class SkillVersionScan(Base):
+    """One instruction scan of one package version under one ruleset.
+
+    Re-running the same ruleset (weekly cadence) updates the row in place;
+    a new ruleset adds a row. Findings are diffed against the previous scan
+    so only NEW findings trigger action (quarantine)."""
+
+    __tablename__ = "skill_version_scans"
+    __table_args__ = (
+        UniqueConstraint("version_id", "ruleset_version", name="uq_skill_version_scan_ruleset"),
+        Index("idx_skill_version_scans_version_scanned", "version_id", "scanned_at"),
+        Index("idx_skill_version_scans_ruleset_scanned", "ruleset_version", "scanned_at"),
+        CheckConstraint(
+            "max_severity IN ('none', 'low', 'medium', 'high', 'critical')",
+            name="ck_skill_version_scan_severity",
+        ),
+        CheckConstraint(
+            "trigger IN ('publish', 'rescan', 'manual')", name="ck_skill_version_scan_trigger"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    version_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("skill_package_versions.id", ondelete="CASCADE"), nullable=False
+    )
+    ruleset_version: Mapped[str] = mapped_column(
+        String(20), ForeignKey("skill_scan_rulesets.version"), nullable=False
+    )
+    scanned_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+    max_severity: Mapped[str] = mapped_column(String(10), nullable=False)
+    finding_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    new_finding_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    truncated: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    trigger: Mapped[str] = mapped_column(String(10), nullable=False)
+
+
+class SkillScanFinding(Base):
+    """One finding of one scan. Never stores matched text: the rule id, the
+    location, the rule's fixed explanation and a hash of the flagged line."""
+
+    __tablename__ = "skill_scan_findings"
+    __table_args__ = (
+        Index("idx_skill_scan_findings_scan", "scan_id"),
+        CheckConstraint(
+            "severity IN ('low', 'medium', 'high', 'critical')",
+            name="ck_skill_scan_finding_severity",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True
+    )
+    scan_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("skill_version_scans.id", ondelete="CASCADE"), nullable=False
+    )
+    rule_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    family: Mapped[str] = mapped_column(String(40), nullable=False)
+    severity: Mapped[str] = mapped_column(String(10), nullable=False)
+    file_path: Mapped[str] = mapped_column(String(500), nullable=False)
+    line: Mapped[int] = mapped_column(Integer, nullable=False)
+    col: Mapped[int] = mapped_column(Integer, nullable=False)
+    message: Mapped[str] = mapped_column(String(300), nullable=False)
+    line_sha: Mapped[str] = mapped_column(String(64), nullable=False)
+    suppressed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    suppression_justification: Mapped[str | None] = mapped_column(Text, nullable=True)
+    first_seen_scan_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+# ---------------------------------------------------------------------------
+# Marketplace v2 §4: verified publishers, namespaces, trusted publishing
+# (migration 071)
+# ---------------------------------------------------------------------------
+
+
+class SkillPublisher(Base):
+    """A first-class owner of a globally unique public namespace.
+
+    Namespaces are never released: deleting a publisher tombstones the row so
+    the namespace (and its confusable skeleton) cannot be re-registered by
+    someone else (resurrection defence). ``org_id`` / ``user_id`` are plain
+    columns, deliberately without a foreign key, so deleting the owning org
+    or user cannot cascade the row away and free the namespace."""
+
+    __tablename__ = "skill_publishers"
+    __table_args__ = (
+        UniqueConstraint("namespace", name="uq_skill_publishers_namespace"),
+        UniqueConstraint("namespace_normalized", name="uq_skill_publishers_namespace_normalized"),
+        Index("idx_skill_publishers_org", "org_id"),
+        Index("idx_skill_publishers_user", "user_id"),
+        CheckConstraint(
+            "owner_type IN ('org', 'user', 'system')", name="ck_skill_publisher_owner_type"
+        ),
+        CheckConstraint(
+            "(owner_type = 'system' AND org_id IS NULL AND user_id IS NULL) OR "
+            "(owner_type = 'org' AND org_id IS NOT NULL AND user_id IS NULL) OR "
+            "(owner_type = 'user' AND user_id IS NOT NULL AND org_id IS NULL)",
+            name="ck_skill_publisher_owner_scope",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'suspended', 'tombstoned')", name="ck_skill_publisher_status"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    namespace: Mapped[str] = mapped_column(String(39), nullable=False)
+    namespace_normalized: Mapped[str] = mapped_column(String(39), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(200), nullable=False, server_default="")
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="active", server_default="active"
+    )
+    suspended_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Public listings a suspension moved into review (restored on un-suspend).
+    suspended_listing_ids: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    # D1 invited cohort: a platform admin opts a verified publisher into
+    # public publishing. Verification alone is necessary, not sufficient.
+    public_publishing: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    # Distance-2 lookalike flags raised at claim time, for moderators.
+    review_flags: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    # Domains whose proof unlocked a reserved (or affixed reserved) namespace
+    # at claim time (JSON list). Public publishing requires a CURRENT DNS
+    # verification of each one on this publisher; other verifications do not
+    # substitute.
+    required_domains: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    # Authorization generation: bumped on suspension, tombstoning and trust
+    # revocation. Publish tokens carry the generation they were minted under
+    # and are refused once it moves on (a restore never revives them).
+    auth_generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(),
+        onupdate=_utcnow,
+    )
+
+
+class SkillPublisherVerification(Base):
+    """Proof of WHO a publisher is: a DNS TXT domain or a GitHub account
+    (numeric id). Separate from listing moderation. At most one publisher
+    holds a verified (method, subject) at a time."""
+
+    __tablename__ = "skill_publisher_verifications"
+    __table_args__ = (
+        Index("idx_skill_publisher_verifications_publisher", "publisher_id"),
+        Index("idx_skill_publisher_verifications_installation", "github_installation_id"),
+        Index(
+            "uq_skill_publisher_verification_subject",
+            "method",
+            "subject",
+            unique=True,
+            postgresql_where=text("status = 'verified'"),
+            sqlite_where=text("status = 'verified'"),
+        ),
+        CheckConstraint(
+            "method IN ('dns_txt', 'github_org', 'github_user')",
+            name="ck_skill_publisher_verification_method",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'verified', 'lapsed', 'revoked')",
+            name="ck_skill_publisher_verification_status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    publisher_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("skill_publishers.id", ondelete="CASCADE"), nullable=False
+    )
+    method: Mapped[str] = mapped_column(String(20), nullable=False)
+    # Domain (lowercase) or GitHub numeric account id as text.
+    subject: Mapped[str] = mapped_column(String(255), nullable=False)
+    subject_display: Mapped[str] = mapped_column(String(255), nullable=False)
+    verification_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    org_domain_verification_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("org_domain_verifications.id", ondelete="SET NULL"), nullable=True
+    )
+    github_installation_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    status_reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    first_failure_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    consecutive_failures: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+
+class SkillReservedName(Base):
+    """Admin-managed reserved namespace skeletons (brand, popular, tombstone),
+    on top of the vendored BRAND_RESERVED list in skills/confusables.py."""
+
+    __tablename__ = "skill_reserved_names"
+    __table_args__ = (
+        CheckConstraint(
+            "reason IN ('brand', 'popular', 'tombstone')", name="ck_skill_reserved_name_reason"
+        ),
+    )
+
+    normalized: Mapped[str] = mapped_column(String(39), primary_key=True)
+    name: Mapped[str] = mapped_column(String(39), nullable=False)
+    reason: Mapped[str] = mapped_column(String(20), nullable=False)
+    # Domain whose verification unlocks the claim; NULL = platform admin only.
+    required_subject: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+
+class SkillTrustedPublisher(Base):
+    """A GitHub Actions workflow allowed to publish for a publisher.
+
+    Bound to the NUMERIC repository id and owner id (immutable across renames
+    and never reused by a re-registered name), the workflow file, and
+    optionally a deployment environment and a ref pattern."""
+
+    __tablename__ = "skill_trusted_publishers"
+    __table_args__ = (
+        Index("idx_skill_trusted_publishers_repo", "provider", "repository_id"),
+        Index("idx_skill_trusted_publishers_publisher", "publisher_id"),
+        CheckConstraint("provider IN ('github')", name="ck_skill_trusted_publisher_provider"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    publisher_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("skill_publishers.id", ondelete="CASCADE"), nullable=False
+    )
+    # NULL = any package in the publisher's namespace.
+    package_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    provider: Mapped[str] = mapped_column(String(20), nullable=False, server_default="github")
+    repository_owner_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    repository_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    # Display only ("owner/repo" when configured); matching uses the ids.
+    repository: Mapped[str] = mapped_column(String(200), nullable=False)
+    # The CALLER workflow file (matched against the token's workflow_ref).
+    workflow_path: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Optional reusable (callee) workflow, "owner/repo/.github/workflows/x.yml",
+    # matched independently against job_workflow_ref.
+    reusable_workflow: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    # workflow_run-triggered publishes are refused unless explicitly allowed.
+    allow_workflow_run: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    environment: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    ref_pattern: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+
+class SkillPublishToken(Base):
+    """Short-lived, single-use publish token minted from a verified GitHub
+    Actions OIDC token. Only the SHA-256 of the raw token is stored. The
+    (issuer, jti) unique constraint is the OIDC replay guard."""
+
+    __tablename__ = "skill_publish_tokens"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_skill_publish_tokens_hash"),
+        UniqueConstraint("oidc_issuer", "oidc_jti", name="uq_skill_publish_tokens_jti"),
+        Index("idx_skill_publish_tokens_expires", "expires_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    trusted_publisher_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("skill_trusted_publishers.id", ondelete="CASCADE"), nullable=False
+    )
+    publisher_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("skill_publishers.id", ondelete="CASCADE"), nullable=False
+    )
+    package_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    oidc_issuer: Mapped[str] = mapped_column(String(255), nullable=False)
+    oidc_jti: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Bounded, allow-listed subset of the verified claims (JSON).
+    claims: Mapped[str] = mapped_column(Text, nullable=False, server_default="{}")
+    # SkillPublisher.auth_generation when minted; must still match to publish.
+    auth_generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    used_for_version_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+
+class SkillGithubInstallationState(Base):
+    """Durable GitHub App installation lifecycle seen by signed webhooks
+    (suspend / unsuspend / delete), for marketplace publisher verification.
+
+    Kept here (migration 071) rather than on github_installations, whose
+    claim flow is being reworked separately (tk_b6c5e184ba8d4aa1, migration
+    073); verification creation re-checks it under the installation lock."""
+
+    __tablename__ = "skill_github_installation_states"
+
+    installation_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    suspended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
     )

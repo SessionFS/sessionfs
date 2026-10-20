@@ -52,10 +52,15 @@ from sessionfs.server.auth.dependencies import (
 )
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import AgentPersona, AgentRun, Ticket, User
+from sessionfs.server.services.personas import (
+    resolve_persona,
+    visible_persona_org_id,
+    visible_persona_org_id_for_auth,
+)
 from sessionfs.server.routes.knowledge import _get_project_for_auth
 from sessionfs.server.routes.tickets import _compile_persona_context
 from sessionfs.server.routes.wiki import _get_project_or_404
-from sessionfs.server.tier_gate import UserContext, check_feature, get_user_context
+from sessionfs.server.tier_gate import UserContext, check_project_feature, get_user_context
 
 router = APIRouter(prefix="/api/v1/projects", tags=["agent-runs"])
 
@@ -298,18 +303,14 @@ async def _validate_same_project_ticket(
 
 
 async def _validate_active_persona(
-    project_id: str, persona_name: str, db: AsyncSession
+    project_id: str, persona_name: str, db: AsyncSession, *, org_id: str | None
 ) -> AgentPersona:
-    """Persona must exist and be active in this project."""
-    persona = (
-        await db.execute(
-            select(AgentPersona).where(
-                AgentPersona.project_id == project_id,
-                AgentPersona.name == persona_name,
-                AgentPersona.is_active.is_(True),
-            )
-        )
-    ).scalar_one_or_none()
+    """Persona must exist and be active in this project or, when the caller
+    may see it (`org_id` from visible_persona_org_id), the project's org
+    (GH #70 — project persona first, then org)."""
+    persona = await resolve_persona(
+        db, project_id, persona_name, org_id=org_id, active_only=True
+    )
     if persona is None:
         raise HTTPException(
             422,
@@ -368,7 +369,6 @@ async def create_agent_run(
     run, separate from triggered_by_user_id (the human who minted the key).
     """
     user = auth.user
-    check_feature(ctx, "agent_runs")
     project = await _get_project_or_404(project_id, db, user.id)
     # Codex R5 HIGH 1 — service-key org/project boundary BEFORE side
     # effects. A key minted for org_A cannot create runs in org_B even
@@ -377,9 +377,22 @@ async def create_agent_run(
         assert_service_key_can_access_project,
     )
     await assert_service_key_can_access_project(db, auth, project)
+    await check_project_feature(ctx, "agent_runs", project, db)
+    # GH #70 — serialize with merge / transfer / persona-delete guards.
+    from sessionfs.server.services.scope_locks import (
+        lock_project_scope_authorized,
+    )
+
+    # GH #70 — lock, then re-authorize against the re-read project.
+    await lock_project_scope_authorized(db, project, auth=auth, ctx=ctx, feature="agent_runs")
 
     # Validate persona exists + is active in this project.
-    await _validate_active_persona(project_id, body.persona_name, db)
+    persona = await _validate_active_persona(
+        project_id,
+        body.persona_name,
+        db,
+        org_id=await visible_persona_org_id_for_auth(db, project, auth),
+    )
 
     # Validate ticket (if provided) is in this project.
     if body.ticket_id:
@@ -389,7 +402,9 @@ async def create_agent_run(
     row = AgentRun(
         id=_new_run_id(),
         project_id=project_id,
-        persona_name=body.persona_name,
+        # GH #70 — canonical stored spelling, so the run re-resolves to
+        # the same persona at start time.
+        persona_name=persona.name,
         tool=body.tool,
         trigger_source=body.trigger_source,
         status="queued",
@@ -432,13 +447,13 @@ async def list_agent_runs(
     Sentinel-watch / Ledger-monitor, dashboard surfaces) inspect run
     state without using a human user key.
     """
-    check_feature(ctx, "agent_runs")
     project = await _get_project_for_auth(project_id, db, auth)
     # Cross-org / cross-project boundary BEFORE returning any rows.
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
     await assert_service_key_can_access_project(db, auth, project)
+    await check_project_feature(ctx, "agent_runs", project, db)
 
     stmt = select(AgentRun).where(AgentRun.project_id == project_id)
     if persona_name:
@@ -467,12 +482,12 @@ async def get_agent_run(
     db: AsyncSession = Depends(get_db),
 ) -> AgentRunResponse:
     """v0.10.21 (tk_31b87575d5534d00) — opted into agent_runs:read."""
-    check_feature(ctx, "agent_runs")
     project = await _get_project_for_auth(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
     await assert_service_key_can_access_project(db, auth, project)
+    await check_project_feature(ctx, "agent_runs", project, db)
     return _row_to_response(await _get_run_or_404(project_id, run_id, db))
 
 
@@ -488,7 +503,8 @@ async def start_agent_run(
         description=(
             "Token-budget hint for compiled_context. Same vocabulary as "
             "ticket start: claude-code/bedrock (16k), codex/gemini/vertex/"
-            "copilot/amp/generic (8k), cursor/windsurf/cline/roo-code (4k)."
+            "copilot/amp/antigravity/generic (8k), "
+            "cursor/windsurf/cline/roo-code/kilo-code (4k)."
         ),
     ),
     user: User = Depends(get_current_user),
@@ -504,8 +520,52 @@ async def start_agent_run(
     operations explicit avoids hiding 409 conflicts behind a single
     run-start call.
     """
-    check_feature(ctx, "agent_runs")
-    await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_or_404(project_id, db, user.id)
+    await check_project_feature(ctx, "agent_runs", project, db)
+
+    # GH #70 — resolve the persona and compile the context BEFORE the
+    # queued → running transition: a persona that no longer resolves
+    # (e.g. an org persona stranded by a transfer) must fail the start
+    # with the run still 'queued', not leave it stuck in 'running'.
+    # GH #70 — project scope lock before reading the project's org, the
+    # run and the persona; held through the queued → running transition.
+    from sessionfs.server.services.scope_locks import (
+        lock_project_scope_authorized,
+    )
+
+    # GH #70 — lock, then re-authorize against the re-read project.
+    await lock_project_scope_authorized(db, project, user_id=user.id, ctx=ctx, feature="agent_runs")
+    pre = await _get_run_or_404(project_id, run_id, db)
+    if pre.status != "queued":
+        raise HTTPException(
+            409,
+            f"Cannot start agent run: current status is {pre.status!r}, "
+            "expected 'queued'.",
+        )
+    persona = await _validate_active_persona(
+        project_id,
+        pre.persona_name,
+        db,
+        org_id=await visible_persona_org_id(db, project, user_id=user.id),
+    )
+    ticket = None
+    if pre.ticket_id:
+        # Best-effort — if the ticket was deleted since run creation,
+        # we don't fail the start; the persona context alone is still
+        # useful. The same-project guard at creation time + the FK
+        # CASCADE on tickets means the ticket either exists in this
+        # project or it doesn't exist at all.
+        ticket = (
+            await db.execute(
+                select(Ticket).where(
+                    Ticket.id == pre.ticket_id,
+                    Ticket.project_id == project_id,
+                )
+            )
+        ).scalar_one_or_none()
+    compiled = await _compile_persona_context(
+        db=db, persona=persona, ticket=ticket, tool=tool or pre.tool,
+    )
 
     now = datetime.now(timezone.utc)
     # Atomic queued → running with rowcount-1 guard.
@@ -527,43 +587,20 @@ async def start_agent_run(
             f"Cannot start agent run: current status is {existing.status!r}, "
             "expected 'queued'.",
         )
-    # Commit the transition immediately so a concurrent start sees
-    # status='running' and trips the rowcount guard. Without this commit
-    # both requests would observe 'queued' in their own transactions and
-    # the atomic UPDATE's rowcount would be 1 in both — duplicate
-    # transitions. (Same pattern as tickets.start.)
-    await db.commit()
-
-    run = await _get_run_or_404(project_id, run_id, db)
-
-    # Compile persona + ticket context. Reuse the ticket-side helper —
-    # the cross-project leak defenses + project_id + active-claim filters
-    # already live there.
-    persona = await _validate_active_persona(project_id, run.persona_name, db)
-    ticket = None
-    if run.ticket_id:
-        # Best-effort — if the ticket was deleted since run creation,
-        # we don't fail the start; the persona context alone is still
-        # useful. The same-project guard at creation time + the FK
-        # CASCADE on tickets means the ticket either exists in this
-        # project or it doesn't exist at all.
-        ticket = (
-            await db.execute(
-                select(Ticket).where(
-                    Ticket.id == run.ticket_id,
-                    Ticket.project_id == project_id,
-                )
-            )
-        ).scalar_one_or_none()
-
-    compiled = await _compile_persona_context(
-        db=db, persona=persona, ticket=ticket, tool=tool or run.tool,
-    )
-
-    return StartAgentRunResponse(
-        run=_row_to_response(run),
+    # Build the response from the run we already hold, re-read INSIDE the
+    # locked transaction (GH #70): after commit a concurrent merge may move
+    # the run to another project, and a re-query filtered by this project
+    # would then 404 a start that succeeded.
+    await db.refresh(pre)
+    response = StartAgentRunResponse(
+        run=_row_to_response(pre),
         compiled_context=compiled,
     )
+    # Commit the transition (and release the scope lock). A concurrent
+    # start waited on the scope lock and now sees status='running', so its
+    # rowcount guard trips.
+    await db.commit()
+    return response
 
 
 @router.post(
@@ -584,12 +621,12 @@ async def complete_agent_run(
     Codex R5 HIGH 1 — also enforces service-key org/project boundary.
     """
     user = auth.user
-    check_feature(ctx, "agent_runs")
     project = await _get_project_or_404(project_id, db, user.id)
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
     await assert_service_key_can_access_project(db, auth, project)
+    await check_project_feature(ctx, "agent_runs", project, db)
 
     now = datetime.now(timezone.utc)
     # Read the row first so we can compute duration_seconds and evaluate policy.
@@ -682,8 +719,8 @@ async def cancel_agent_run(
     db: AsyncSession = Depends(get_db),
 ) -> AgentRunResponse:
     """Atomic queued/running → cancelled."""
-    check_feature(ctx, "agent_runs")
-    await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_or_404(project_id, db, user.id)
+    await check_project_feature(ctx, "agent_runs", project, db)
 
     now = datetime.now(timezone.utc)
     result = await db.execute(

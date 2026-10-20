@@ -366,3 +366,52 @@ class TestDistinctSessionDegradation:
                      "gemini", "cursor"):
             src = Path(f"src/sessionfs/watchers/{name}.py").read_text()
             assert "session_key=native_id" in src, name
+
+
+class TestUnreadableSessionLatch:
+    """A permanently-unreadable session is a sticky per-session latch: a
+    single one degrades the watcher, and successes on OTHER sessions must not
+    clear it (round 25)."""
+
+    def test_unreadable_session_degrades_immediately(self):
+        from sessionfs.watchers.base import CaptureHealthTracker, WatcherHealth
+        t = CaptureHealthTracker(tool_name="antigravity")
+        t.record_unreadable_session("conversation 55555555 is unreadable", "55555555-eeee-4fff-8aaa-000000000005")
+        assert t.health == WatcherHealth.DEGRADED
+        assert "55555555" in (t.last_error or "")
+
+    def test_latch_survives_successes_elsewhere(self):
+        from sessionfs.watchers.base import CaptureHealthTracker, WatcherHealth
+        t = CaptureHealthTracker(tool_name="antigravity")
+        t.record_unreadable_session("unreadable", "broken")
+        assert t.health == WatcherHealth.DEGRADED
+        for _ in range(3):
+            t.record_success()  # clean captures on OTHER sessions
+        assert t.health == WatcherHealth.DEGRADED
+        assert "unreadable" in (t.last_error or "")
+
+    def test_latch_not_cleared_by_set_healthy(self):
+        from sessionfs.watchers.base import CaptureHealthTracker, WatcherHealth
+        t = CaptureHealthTracker(tool_name="antigravity")
+        t.record_unreadable_session("unreadable", "broken")
+        t.set_healthy()  # end-of-scan structural call must not wipe it
+        assert t.health == WatcherHealth.DEGRADED
+
+    def test_latch_releases_on_clear(self):
+        from sessionfs.watchers.base import CaptureHealthTracker, WatcherHealth
+        t = CaptureHealthTracker(tool_name="antigravity")
+        t.record_unreadable_session("unreadable", "broken")
+        t.clear_unreadable_session("broken")
+        assert t.health == WatcherHealth.HEALTHY
+        assert t.last_error is None
+
+    def test_latch_releases_only_when_all_unreadable_sessions_clear(self):
+        from sessionfs.watchers.base import CaptureHealthTracker, WatcherHealth
+        t = CaptureHealthTracker(tool_name="antigravity")
+        t.record_unreadable_session("first", "s1")
+        t.record_unreadable_session("second", "s2")
+        t.clear_unreadable_session("s1")
+        assert t.health == WatcherHealth.DEGRADED
+        assert "second" in (t.last_error or "")
+        t.clear_unreadable_session("s2")
+        assert t.health == WatcherHealth.HEALTHY

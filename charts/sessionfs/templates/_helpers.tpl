@@ -172,3 +172,17 @@ imagePullSecrets:
 {{- toYaml . | nindent 2 }}
 {{- end }}
 {{- end }}
+
+{{/*
+dashboard.apiProxyTimeout as whole seconds. It feeds both nginx (which takes
+"300s") and ingress-nginx annotations (which take "300"), so only plain
+seconds are accepted: "300" or "300s".
+*/}}
+{{- define "sessionfs.apiProxyTimeoutSeconds" -}}
+{{- $value := .Values.dashboard.apiProxyTimeout -}}
+{{- $raw := ternary "300s" (toString $value) (kindIs "invalid" $value) -}}
+{{- if not (regexMatch "^[1-9][0-9]*s?$" $raw) -}}
+{{- fail (printf "dashboard.apiProxyTimeout must be whole seconds such as \"300s\", got %q" $raw) -}}
+{{- end -}}
+{{- trimSuffix "s" $raw -}}
+{{- end -}}

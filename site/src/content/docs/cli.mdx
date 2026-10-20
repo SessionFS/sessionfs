@@ -109,7 +109,7 @@ sfs resume SESSION_ID [OPTIONS]
 | `--no-rules-sync` | flag | `false` | Skip preflight of the target tool's project rules file. Per-invocation only. |
 | `--force-rules` | flag | `false` | Overwrite an unmanaged target-tool rules file with SessionFS-managed content. One-time permission — the file becomes SessionFS-managed afterward and subsequent resumes refresh it normally. |
 
-Converts the session to the target tool's native format and injects it into that tool's session storage. Cursor, Cline, Roo Code, Kilo Code, and Amp are capture-only — `--in cursor` (and the others) is rejected with an error. Use `--in` with one of the four supported resume targets instead.
+Converts the session to the target tool's native format and injects it into that tool's session storage. Cursor, Cline, Roo Code, Kilo Code, Antigravity, and Amp are capture-only — `--in cursor` (and the others) is rejected with an error. Use `--in` with one of the four supported resume targets instead.
 
 Before launching the target tool, `sfs resume` preflights the tool's project rules file from the current canonical SessionFS rules. Missing files are written; SessionFS-managed files are refreshed; unmanaged files are left alone with a warning on stderr unless `--force-rules` is passed. Preflight failures are non-fatal — resume still exits `0`. See [Resume-Time Rules Sync](/docs/rules/#resume-time-rules-sync) for the full policy.
 
@@ -670,8 +670,15 @@ Session restored. Run 'sfs pull ses_abc123' to re-download locally.
 Push a session to the cloud.
 
 ```
-sfs push SESSION_ID
+sfs push SESSION_ID [--yes] [--timeout SECONDS]
 ```
+
+| Option | Description |
+|--------|-------------|
+| `--yes`, `-y` | Skip interactive confirmations (DLP findings, cloud-undelete). Findings are still shown. |
+| `--timeout SECONDS` | How long to wait for the server to accept the upload (1–3600). Defaults to `SFS_UPLOAD_TIMEOUT`, then `upload_timeout` under `[sync]` in `config.toml`, then 300. Raise it for very large sessions on servers that run DLP scans. |
+
+If the server doesn't answer in time, the push stops with a message saying so and how to raise the limit, instead of retrying the same upload.
 
 ---
 
@@ -1093,7 +1100,7 @@ Entry 38 dismissed.
 Initiate, accept, reject, or cancel a project transfer between scopes (personal &harr; org, or org &harr; org). Available starting v0.10.0.
 
 ```
-sfs project transfer (--to TARGET | --accept ID | --reject ID | --cancel ID)
+sfs project transfer (--to TARGET | --accept ID | --reject ID | --cancel ID) [--force]
 ```
 
 | Option | Type | Description |
@@ -1102,8 +1109,11 @@ sfs project transfer (--to TARGET | --accept ID | --reject ID | --cancel ID)
 | `--accept` | string | Accept an incoming pending transfer by ID. |
 | `--reject` | string | Reject an incoming pending transfer by ID. |
 | `--cancel` | string | Cancel an outgoing pending transfer you initiated. |
+| `--force` | flag | With `--to` (auto-accepted) or `--accept`: transfer even if open tickets rely on org personas the destination lacks. |
 
 The transfer is auto-accepted when the initiator and target are the same user/org (e.g. moving a personal project into your own org). Standing is re-validated on accept/reject, so a member demoted between initiate and accept loses the right to act on the transfer.
+
+**Org personas and transfers (GH #70):** moving a project into a different org or out of one is refused (409 `personas_stranded`) when open tickets are assigned to org personas that will not exist in the destination; the error lists each persona and its ticket ids. Project personas move with the project, so a same-named project persona avoids the refusal. Nothing is copied automatically: reassign the tickets, create the personas in the destination, or pass `--force` (on `--to` when the transfer auto-accepts, or on `--accept`).
 
 **Example:**
 
@@ -1468,7 +1478,7 @@ sfs mcp install --for TOOL [OPTIONS]
 
 | Option | Type | Description |
 |--------|------|-------------|
-| `--for` | string | Target tool: `claude-code`, `codex`, `gemini`, `cursor`, `copilot`, `amp`, `cline`, `roo-code`, `kilo-code` |
+| `--for` | string | Target tool: `claude-code`, `codex`, `gemini`, `cursor`, `copilot`, `amp`, `cline`, `roo-code`, `kilo-code`, `antigravity` |
 | `--skip-instructions` | flag | Skip injecting knowledge-contribution instructions into project config |
 
 **Example:**
@@ -1499,7 +1509,7 @@ sfs mcp uninstall --for TOOL
 
 | Option | Type | Description |
 |--------|------|-------------|
-| `--for` | string | Target tool: `claude-code`, `codex`, `gemini`, `cursor`, `copilot`, `amp`, `cline`, `roo-code`, `kilo-code` |
+| `--for` | string | Target tool: `claude-code`, `codex`, `gemini`, `cursor`, `copilot`, `amp`, `cline`, `roo-code`, `kilo-code`, `antigravity` |
 
 **Example:**
 
@@ -1539,7 +1549,7 @@ Interactive setup wizard for SessionFS. Detects installed AI coding tools, write
 sfs init
 ```
 
-Detects: Claude Code, Cursor, Codex, Gemini CLI, Copilot, Amp, Cline, Roo Code, Kilo Code.
+Detects: Claude Code, Cursor, Codex, Gemini CLI, Copilot, Amp, Cline, Roo Code, Kilo Code, Antigravity.
 
 **Example:**
 
@@ -1730,13 +1740,16 @@ Manage portable AI personas per project. Each persona has an ASCII name (`^[A-Za
 
 | Command | Description |
 |---------|-------------|
-| `sfs persona list` | List personas defined for the current project |
-| `sfs persona show <name> [--raw]` | Show a persona's full content (`--raw` skips markdown render) |
-| `sfs persona create <name> [--content TEXT \| --file PATH]` | Create a persona inline, from a file, or via `$EDITOR` |
-| `sfs persona edit <name>` | Open the persona content in `$EDITOR` |
-| `sfs persona delete <name> [--force]` | Delete a persona; refuses 409 if non-terminal tickets reference it (use `--force` to override) |
+| `sfs persona list [--no-org \| --org ORG_ID]` | List personas usable in the current project (project + org, with a Scope column), or one org's personas |
+| `sfs persona show <name> [--raw] [--org ORG_ID]` | Show a persona's full content (`--raw` skips markdown render) |
+| `sfs persona create <name> [--content TEXT \| --file PATH] [--org ORG_ID]` | Create a persona inline, from a file, or via `$EDITOR`; `--org` creates an org-level persona |
+| `sfs persona edit <name> [--org ORG_ID]` | Open the persona content in `$EDITOR` |
+| `sfs persona delete <name> [--force] [--org ORG_ID]` | Delete a persona; refuses 409 if non-terminal tickets reference it (use `--force` to override) |
+| `sfs persona pull [<name> \| --all] [--no-org]` | Write personas to `.agents/*.md`; `--all` includes the org's personas unless `--no-org` |
 | `sfs persona assume <name>` | Tag subsequent captured sessions with this persona (persona-only bundle) |
 | `sfs persona forget` | Clear the active persona bundle (refuses while a ticket bundle is in effect) |
+
+**Org-level personas** (`--org`): define a persona once for an organization and use it from every project in that org. Writes need the org admin or owner role; members can read. Inside a project, names resolve to the project's own persona first, then the org's — a project persona with the same name overrides the org one. Ticket assignment, `sfs ticket start`, agent runs, and the MCP tools all follow this rule.
 
 ---
 
@@ -1762,7 +1775,7 @@ Manage tickets with a server-enforced FSM (`suggested → open → in_progress �
 | `sfs ticket resolve <id>` | Move from `review` to `done` (atomic with rowcount guard) |
 | `sfs ticket escalate <id> --reason "..."` | Raise priority + append audit comment |
 
-The active-ticket bundle is stored locally and read by all 9 daemon watchers (claude_code, codex, copilot, cursor, gemini, amp, cline, roo_code, kilo_code). Captured sessions carry the bundle in their `manifest.json` and the server populates `sessions.persona_name` + `sessions.ticket_id` on upload.
+The active-ticket bundle is stored locally and read by all 10 daemon watchers (claude_code, codex, copilot, cursor, gemini, amp, cline, roo_code, kilo_code, antigravity). Captured sessions carry the bundle in their `manifest.json` and the server populates `sessions.persona_name` + `sessions.ticket_id` on upload.
 
 ---
 
@@ -1772,16 +1785,32 @@ Import, inspect, and install portable Agent Skills and Agent Plugins locally. Se
 
 | Command | Description |
 |---------|-------------|
-| `sfs skill inspect SOURCE [--pin REF] [--subdir PATH]` | Validate and inspect a local path, Git source, or named local marketplace package without installing |
+| `sfs skill inspect SOURCE [--pin REF] [--subdir PATH] [--for TOOL] [--json]` | Validate and inspect a local path, Git source, hosted package, or named local marketplace package without installing, and print its install disclosure (see [Skills Marketplace](/skills-marketplace/)) |
 | `sfs skill add SOURCE [--for TOOL] [--scope project\|user]` | Plan and transactionally install across one or more tools |
 | `sfs skill list` / `sfs skill show ID` | Inspect installed state, provenance, hashes, targets, and omissions |
-| `sfs skill plan ID` / `sfs skill compile ID [--for TOOL] [--drop TOOL] [--yes]` | Compute a side-effect-free plan or re-apply the pinned package. `--for` is additive (installed targets are always kept); only `--drop TOOL` removes a tool, after listing the managed files to be unlinked and confirming (`--yes` in non-interactive mode) |
-| `sfs skill sync --locked` | Reproduce exact project lockfile state without upgrading |
-| `sfs skill remove ID` / `sfs skill update ID` | Remove or update a package while preserving unmanaged (dirty) files; `update` previews old → new hash, commit, plan and capability diff and requires `--yes` |
-| `sfs skill rollback ID --to HASH` | Re-apply a cached immutable version; `--to` is required and must be an exact `sha256:<64 hex>` (or bare 64-hex) digest |
-| `sfs skill doctor` | Detect drift, missing files, unsafe paths, and state mismatches |
+| `sfs skill plan ID` / `sfs skill compile ID [--for TOOL] [--drop TOOL] [--yes] [--allow-hidden-unicode]` | Compute a side-effect-free plan or re-apply the pinned package. `--for` is additive (installed targets are always kept); only `--drop TOOL` removes a tool, after listing the managed files to be unlinked and confirming (`--yes` in non-interactive mode) |
+| `sfs skill sync --locked [--approve-widening] [--allow-hidden-unicode]` | Reproduce exact project lockfile state without upgrading. Every installed version the lockfile replaces is classified like an update before anything changes; one refused transition refuses the whole sync |
+| `sfs skill remove ID` / `sfs skill update ID [--approve-widening] [--allow-hidden-unicode]` | Remove or update a package while preserving unmanaged (dirty) files; `update` previews old → new hash, commit, plan, the update diff and its class, then applies the re-consent rules below |
+| `sfs skill diff ID [--to VERSION] [--json]` | Show what an update would change without applying it: files added/removed/changed with bounded text diffs, capability changes, new scanner and hidden-character findings, and the update class (`text`, `code`, `widening`) |
+| `sfs skill rollback ID --to HASH [--approve-widening] [--allow-hidden-unicode]` | Re-apply a cached immutable version; `--to` is required and must be an exact `sha256:<64 hex>` (or bare 64-hex) digest. The transition is classified and consented like an update |
+| `sfs skill doctor` | Detect drift, missing files, unsafe paths, and state mismatches; also shows the size of the removal trash |
 | `sfs skill marketplace add URL --name NAME --pin SHA` | Register one pinned local marketplace source |
 | `sfs skill marketplace list\|refresh\|remove` | Manage multiple user/project registry aliases explicitly |
-| `sfs skill search QUERY` | Search metadata across registered local marketplaces |
+| `sfs skill search QUERY [--tool TOOL] [--limit N] [--local-only] [--json]` | Search registered local marketplaces **and** the hosted SessionFS Marketplace. Each row is labelled `local:<scope>` or `hosted` and shows the reference to install it with. Signed out or offline, the hosted part is skipped with a note. `--tool` filters hosted results by tool compatibility; `--marketplace ALIAS` and `--local-only` search local registries only |
+| `sfs skill add sessionfs:NAMESPACE/NAME[@VERSION]` | Install a package from the hosted SessionFS Marketplace (requires `sfs auth login`). `sessionfs:spk_<id>` also works and is required when a namespace/name pair is ambiguous. Without `@VERSION` the package's current version is used; `--pin VERSION` is equivalent to `@VERSION` |
+| `sfs skill pull [--for TOOL] [--device-id ID] [--yes] [--allow-* ...] [--approve-widening] [--allow-hidden-unicode] [--json]` | Apply your org's skill assignments and your approved install requests to this device (see [Skills Marketplace](/skills-marketplace/)) |
+| `sfs skill validate SOURCE [--visibility personal\|org\|public] [--json]` | Validate a package directory or `.tar.gz` exactly as the server would. Prints each problem with its file and line (when known), why it fails, and how to fix it, then exits 1. On success it prints the content hash, risk flags, sizes, and the checks that only the server can make |
+| `sfs skill publish SOURCE [--org ORG_ID] [--visibility personal\|org\|public] [--namespace NS] [--collection NAME] [--yes] [--json]` | Validate locally, show a summary (name, version, license, risk flags, size, target), confirm, then upload. Prints the listing, package, and version IDs and the package URL |
+| `sfs skill publish SOURCE --trusted-publishing --namespace NS [--package NAME] [--visibility public] [--audience AUD]` | Publish from a GitHub Actions job without an API key: reads the server's OIDC audience, requests the job's OIDC token, exchanges it for a single-use publish token, and uploads. See [Trusted publishing](/skills-marketplace/#trusted-publishing-from-github-actions) |
+| `sfs skill publisher claim NAMESPACE [--org ORG_ID] [--display-name NAME] [--json]` | Claim a namespace: 3-39 lowercase letters, digits or single hyphens. Personal publishers need Starter or above; org publishers need an org owner/admin and the team skill library. Names that imitate a reserved brand or a verified publisher are refused with `409 namespace_confusable`: lookalike letters from any script (the full Unicode UTS #39 confusables table, so Cyrillic, Greek or Cherokee spellings), leetspeak digits (`0 1 2 3 4 5 6 7 8 9`), `rn`/`m`, one or two typos, and added `-official`, `-team`, `-ai` and similar. A namespace another owner already publishes packages in is refused with `409 namespace_in_use` (ask SessionFS to review the claim). An owner can hold 5 publishers and claim 10 namespaces in total (retired ones count). Namespaces are never released, even after deletion |
+| `sfs skill publisher list [--json]` | Publishers you manage, personal and org |
+| `sfs skill publisher show PUBLISHER_ID [--json]` | Publisher details; managers also see verifications and trusted publishers |
+| `sfs skill publisher verify PUBLISHER_ID --dns DOMAIN` | Start DNS verification. Prints a `sessionfs-verification=...` TXT record to add at the domain. If your organization already verified the domain for SSO, it is reused (and re-checked) immediately |
+| `sfs skill publisher verify PUBLISHER_ID --github-org INSTALLATION_ID` / `--github-user INSTALLATION_ID` | Verify a GitHub organization or account through one of **your own** SessionFS GitHub App installations. The installation must be linked to your account through the verified GitHub sign-in flow; an installation linked only by its id is refused with `409 installation_claim_unverified`. The badge is bound to GitHub's numeric account id, so a renamed or re-registered login does not inherit it |
+| `sfs skill publisher check PUBLISHER_ID VERIFICATION_ID` | Re-check a verification now |
+| `sfs skill publisher trust PUBLISHER_ID --repo OWNER/REPO --workflow FILE [--environment ENV] [--ref-pattern REF] [--package NAME] [--reusable-workflow OWNER/REPO/.github/workflows/FILE] [--allow-workflow-run]` | Allow a GitHub Actions workflow to publish for this publisher (see [Skills Marketplace](/skills-marketplace/)) |
+| `sfs skill publisher untrust PUBLISHER_ID TRUSTED_ID` | Remove a trusted publisher. Publish tokens already issued under it stop working |
 
 Risky capabilities require explicit flags bound to the exact package hash: `--allow-scripts` for any non-inert skill asset (the policy is an inert allowlist, so `.rb`, `.bat`, `.exe`, `Makefile`, and suffix-less files all count), `--allow-hooks` for `SKILL.md` frontmatter `hooks:` / `allowed-tools:` grants, and `--allow-executable-extensions` for a `hooks.json` or `hooks/` directory shipped inside a skill. `--yes` alone is refused for these and the error names the hook or tool grant. Local MCP activation remains reserved: SessionFS does not silently enable it.
+
+Every update, rollback and `sync --locked` transition is classified as `text` (consent carries forward after one confirmation), `code` (the changed capability's flag again) or `widening` (always stops until `--approve-widening` or an org admin approves that exact version). `sfs skill pull` and the daemon apply text updates and list the rest as `held: <name> needs approval`. Blocked packages are moved into `~/.sessionfs/skills/quarantine/`; yanked ones are flagged by `sfs skill list` and `sfs skill doctor`. See [Skills Marketplace](/skills-marketplace/) for install disclosure, verified publishers and trusted publishing.

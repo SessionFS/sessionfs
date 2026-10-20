@@ -30,6 +30,7 @@ _TOOL_HANDLERS = {
     "cline": "_recapture_cline",
     "roo-code": "_recapture_cline",
     "kilo-code": "_recapture_cline",
+    "antigravity": "_recapture_antigravity",
 }
 
 
@@ -172,6 +173,45 @@ def _recapture_cline(
     convert_cline_to_sfs(cline_session, session_dir, session_id=sfs_id)
 
     _update_index_and_ref(store, sfs_id, session_dir, ref, native_path)
+
+
+def _recapture_antigravity(
+    store: object, sfs_id: str, ref: NativeSessionRef, native_path: Path,
+) -> None:
+    """Recapture through the watcher's ownership-aware pipeline.
+
+    Subagents are folded into their owning session, detached subagents'
+    sessions are captured first, and a capture with a subagent still being
+    written is refused rather than written incomplete. Only the compression
+    guard is bypassed, as for every other tool.
+    """
+    from sessionfs.daemon.config import AntigravityWatcherConfig
+    from sessionfs.watchers.antigravity import AntigravityWatcher, CaptureOutcome
+
+    # native_path is <gemini>/<root>/brain/<cid>.
+    gemini_dir = native_path.parent.parent.parent
+    watcher = AntigravityWatcher(AntigravityWatcherConfig(enabled=True, gemini_dir=gemini_dir), store)
+    outcome = watcher.capture_now(ref.native_session_id, ignore_compression=True)
+    if outcome is CaptureOutcome.STORED:
+        return
+    cid = ref.native_session_id[:12]
+    if outcome is CaptureOutcome.EXCLUDED:
+        err_console.print(
+            f"[red]Antigravity conversation {cid} was deleted; run `sfs restore` first.[/red]"
+        )
+    elif outcome is CaptureOutcome.DEFERRED:
+        err_console.print(
+            f"[yellow]Not recaptured: Antigravity conversation {cid} is not ready "
+            f"({watcher.last_defer_reason or 'it is still being written'}). "
+            "The daemon captures it automatically once it is; or try again shortly.[/yellow]"
+        )
+    else:
+        err_console.print(
+            f"[red]Could not recapture Antigravity conversation {cid}"
+            f"{': ' + watcher.last_defer_reason if watcher.last_defer_reason else ''}. "
+            "See the daemon log for details.[/red]"
+        )
+    raise SystemExit(1)
 
 
 def _update_index_and_ref(

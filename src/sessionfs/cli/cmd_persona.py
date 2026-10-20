@@ -9,15 +9,23 @@ Commands:
 
 Personas are portable AI roles (atlas/prism/scribe/...). Tier-gated to
 Pro+ (`agent_personas` feature flag).
+
+Org-level personas (GH #70): pass `--org <org_id>` to list/show/create/
+edit/delete personas of an organization instead of the current project.
+They are usable from every project in the org; a project persona with the
+same name overrides the org one. `sfs persona list` and `sfs persona pull`
+include the project's org personas by default (`--no-org` to exclude).
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
+from urllib.parse import quote
 
 import typer
 from rich.markdown import Markdown
@@ -57,6 +65,52 @@ def _resolve_project() -> tuple[str, str, str]:
     return api_url, api_key, project_id
 
 
+_ORG_OPTION_HELP = (
+    "Target the org-level personas of this organization id instead of the "
+    "current project (writes need org admin or owner)."
+)
+
+
+def _persona_collection(org: str | None) -> tuple[str, str, str]:
+    """Return (api_url, api_key, collection_path) for project or org scope."""
+    if org:
+        api_url, api_key = _get_api_config()
+        return api_url, api_key, f"/api/v1/orgs/{quote(org, safe='')}/personas"
+    api_url, api_key, project_id = _resolve_project()
+    return api_url, api_key, f"/api/v1/projects/{project_id}/personas"
+
+
+def _server_detail(body: object) -> str | None:
+    """Pull the human message out of an API error body: the global
+    envelope `{"error": {"message": ...}}` or a bare `{"detail": ...}`."""
+    if isinstance(body, dict):
+        err = body.get("error")
+        if isinstance(err, dict) and isinstance(err.get("message"), str):
+            return err["message"]
+        if isinstance(body.get("detail"), str):
+            return body["detail"]
+    if isinstance(body, str) and body.strip():
+        return body.strip()
+    return None
+
+
+def _print_not_found(name: str, body: object) -> None:
+    """404 output that keeps the server's explanation — e.g. that the name
+    is an org-level persona and which route/flag manages it (GH #70)."""
+    detail = _server_detail(body)
+    if detail and detail.lower() not in {"persona not found", "not found"}:
+        err_console.print(f"[red]{detail}[/red]")
+        if "org-level persona" in detail:
+            match = re.search(r"/api/v1/orgs/([^/\s]+)/personas", detail)
+            if match:
+                err_console.print(
+                    f"[dim]Use[/dim] [bold]--org {match.group(1)}[/bold] "
+                    "[dim]to manage it from the CLI.[/dim]"
+                )
+        return
+    err_console.print(f"[red]Persona '{name}' not found.[/red]")
+
+
 def _edit_in_editor(initial: str = "") -> str:
     """Open $EDITOR (or $VISUAL or vi) on a tmp file seeded with `initial`."""
     editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
@@ -77,26 +131,34 @@ def _edit_in_editor(initial: str = "") -> str:
 
 @persona_app.command("list")
 @handle_errors
-def list_personas() -> None:
-    """List active personas in the current project."""
-    api_url, api_key, project_id = _resolve_project()
-    status, body, _ = asyncio.run(
-        _api_request("GET", f"/api/v1/projects/{project_id}/personas", api_url, api_key)
-    )
+def list_personas(
+    org: str | None = typer.Option(None, "--org", help=_ORG_OPTION_HELP),
+    no_org: bool = typer.Option(
+        False, "--no-org",
+        help="Project list only: leave out the org's personas.",
+    ),
+) -> None:
+    """List active personas usable in the current project (project + org)."""
+    api_url, api_key, collection = _persona_collection(org)
+    path = collection + ("?include_org=false" if no_org and not org else "")
+    status, body, _ = asyncio.run(_api_request("GET", path, api_url, api_key))
     if status >= 400:
         err_console.print(f"[red]API error ({status}): {body}[/red]")
         raise typer.Exit(1)
     if not isinstance(body, list) or not body:
-        console.print("[dim]No personas in this project. Create one with[/dim] "
+        where = "this org" if org else "this project"
+        console.print(f"[dim]No personas in {where}. Create one with[/dim] "
                       "[bold]sfs persona create <name>[/bold].")
         return
-    table = Table(title="Personas")
+    table = Table(title="Org personas" if org else "Personas")
     table.add_column("Name", style="cyan")
+    table.add_column("Scope")
     table.add_column("Role")
     table.add_column("Specializations", style="dim")
     for p in body:
         specs = ", ".join(p.get("specializations") or [])
-        table.add_row(p.get("name", ""), p.get("role", ""), specs)
+        scope = "Org" if p.get("scope") == "org" else "Project"
+        table.add_row(p.get("name", ""), scope, p.get("role", ""), specs)
     console.print(table)
 
 
@@ -105,22 +167,22 @@ def list_personas() -> None:
 def show_persona(
     name: str = typer.Argument(..., help="Persona name (e.g. 'atlas')"),
     raw: bool = typer.Option(False, "--raw", help="Print raw markdown without rendering"),
+    org: str | None = typer.Option(None, "--org", help=_ORG_OPTION_HELP),
 ) -> None:
     """Show a persona's role, specializations, and full content."""
-    api_url, api_key, project_id = _resolve_project()
+    api_url, api_key, collection = _persona_collection(org)
     status, body, _ = asyncio.run(
-        _api_request(
-            "GET", f"/api/v1/projects/{project_id}/personas/{name}", api_url, api_key
-        )
+        _api_request("GET", f"{collection}/{name}", api_url, api_key)
     )
     if status == 404:
-        err_console.print(f"[red]Persona '{name}' not found.[/red]")
+        _print_not_found(name, body)
         raise typer.Exit(1)
     if status >= 400 or not isinstance(body, dict):
         err_console.print(f"[red]API error ({status}): {body}[/red]")
         raise typer.Exit(1)
 
-    console.print(f"[bold cyan]{body['name']}[/bold cyan] — {body['role']}")
+    scope_tag = " [dim](org persona)[/dim]" if body.get("scope") == "org" else ""
+    console.print(f"[bold cyan]{body['name']}[/bold cyan] — {body['role']}{scope_tag}")
     specs = body.get("specializations") or []
     if specs:
         console.print(f"[dim]Specializations:[/dim] {', '.join(specs)}")
@@ -182,6 +244,11 @@ def _format_persona_markdown(persona: dict) -> str:
     ]
     if specs:
         preamble.append(f"<!-- Specializations: {', '.join(specs)} -->")
+    if persona.get("scope") == "org":
+        preamble.append(
+            f"<!-- Scope: org persona ({persona.get('org_id', '?')}); a project "
+            "persona with the same name overrides it. -->"
+        )
     preamble.append("")
     return "\n".join(preamble) + body
 
@@ -207,6 +274,10 @@ def pull_personas(
     path: Path | None = typer.Option(
         None, "--path", help="Explicit output path (single-persona only).",
     ),
+    no_org: bool = typer.Option(
+        False, "--no-org",
+        help="With --all: skip the org's personas (project personas only).",
+    ),
 ) -> None:
     """Pull server-side personas to local `.agents/*.md` files.
 
@@ -217,6 +288,10 @@ def pull_personas(
     Default target: `.agents/<name>-<role-fragment>.md`. Preserves
     existing filenames on re-pull so the established convention is
     stable.
+
+    `--all` also writes the project's org-level personas (same naming).
+    When a project persona and an org persona share a name, only the
+    project one is returned by the server, so the project override wins.
     """
     if not name and not all_:
         err_console.print(
@@ -236,7 +311,10 @@ def pull_personas(
     if all_:
         status, body, _ = asyncio.run(
             _api_request(
-                "GET", f"/api/v1/projects/{project_id}/personas", api_url, api_key,
+                "GET",
+                f"/api/v1/projects/{project_id}/personas"
+                + ("?include_org=false" if no_org else ""),
+                api_url, api_key,
             )
         )
         if status >= 400 or not isinstance(body, list):
@@ -252,7 +330,7 @@ def pull_personas(
             )
         )
         if status == 404:
-            err_console.print(f"[red]Persona '{name}' not found.[/red]")
+            _print_not_found(name, body)
             raise typer.Exit(1)
         if status >= 400 or not isinstance(body, dict):
             err_console.print(f"[red]API error ({status}): {body}[/red]")
@@ -300,6 +378,7 @@ def create_persona(
     specialization: list[str] = typer.Option(
         [], "--spec", help="Specialization tag (repeatable)"
     ),
+    org: str | None = typer.Option(None, "--org", help=_ORG_OPTION_HELP),
 ) -> None:
     """Create a new persona. Opens $EDITOR if --content/--file are absent."""
     if content_file and content:
@@ -316,7 +395,7 @@ def create_persona(
             err_console.print("[yellow]Empty content — aborting.[/yellow]")
             raise typer.Exit(1)
 
-    api_url, api_key, project_id = _resolve_project()
+    api_url, api_key, collection = _persona_collection(org)
     payload = {
         "name": name,
         "role": role,
@@ -324,10 +403,7 @@ def create_persona(
         "specializations": list(specialization),
     }
     status, body, _ = asyncio.run(
-        _api_request(
-            "POST", f"/api/v1/projects/{project_id}/personas", api_url, api_key,
-            json_data=payload,
-        )
+        _api_request("POST", collection, api_url, api_key, json_data=payload)
     )
     if status == 409:
         err_console.print(f"[red]Persona '{name}' already exists.[/red]")
@@ -335,26 +411,34 @@ def create_persona(
     if status >= 400:
         err_console.print(f"[red]API error ({status}): {body}[/red]")
         raise typer.Exit(1)
-    console.print(f"[green]Created persona '{name}'.[/green]")
+    scope = f"org persona in {org}" if org else "persona"
+    console.print(f"[green]Created {scope} '{name}'.[/green]")
 
 
 @persona_app.command("edit")
 @handle_errors
 def edit_persona(
     name: str = typer.Argument(..., help="Persona name"),
+    org: str | None = typer.Option(None, "--org", help=_ORG_OPTION_HELP),
 ) -> None:
     """Open the persona's content in $EDITOR and update on save."""
-    api_url, api_key, project_id = _resolve_project()
+    api_url, api_key, collection = _persona_collection(org)
     status, body, _ = asyncio.run(
-        _api_request(
-            "GET", f"/api/v1/projects/{project_id}/personas/{name}", api_url, api_key
-        )
+        _api_request("GET", f"{collection}/{name}", api_url, api_key)
     )
     if status == 404:
-        err_console.print(f"[red]Persona '{name}' not found.[/red]")
+        _print_not_found(name, body)
         raise typer.Exit(1)
     if status >= 400 or not isinstance(body, dict):
         err_console.print(f"[red]API error ({status}): {body}[/red]")
+        raise typer.Exit(1)
+    if not org and body.get("scope") == "org":
+        err_console.print(
+            f"[red]'{name}' is an org-level persona.[/red] Edit it with "
+            f"[bold]sfs persona edit {name} --org {body.get('org_id')}[/bold] "
+            "(org admins), or create a project persona with the same name "
+            "to override it here."
+        )
         raise typer.Exit(1)
 
     original = body.get("content") or ""
@@ -365,7 +449,7 @@ def edit_persona(
 
     status, body, _ = asyncio.run(
         _api_request(
-            "PUT", f"/api/v1/projects/{project_id}/personas/{name}", api_url, api_key,
+            "PUT", f"{collection}/{name}", api_url, api_key,
             json_data={"content": updated},
         )
     )
@@ -385,6 +469,7 @@ def delete_persona(
         help="Delete even if non-terminal tickets reference this persona "
              "(they will be left stranded until reassigned).",
     ),
+    org: str | None = typer.Option(None, "--org", help=_ORG_OPTION_HELP),
 ) -> None:
     """Soft-delete a persona (sets is_active=false; name stays reserved)."""
     if not yes:
@@ -392,17 +477,15 @@ def delete_persona(
             f"Soft-delete persona '{name}'? Past tickets keep their reference.",
             abort=True,
         )
-    api_url, api_key, project_id = _resolve_project()
+    api_url, api_key, collection = _persona_collection(org)
     suffix = "?force=true" if force else ""
     status, body, _ = asyncio.run(
         _api_request(
-            "DELETE",
-            f"/api/v1/projects/{project_id}/personas/{name}{suffix}",
-            api_url, api_key,
+            "DELETE", f"{collection}/{name}{suffix}", api_url, api_key,
         )
     )
     if status == 404:
-        err_console.print(f"[red]Persona '{name}' not found.[/red]")
+        _print_not_found(name, body)
         raise typer.Exit(1)
     if status == 409:
         # Server-side stranded-ticket guard (KB 339 MEDIUM).
@@ -449,11 +532,15 @@ def assume_persona(
         )
     )
     if status == 404:
-        err_console.print(f"[red]Persona '{name}' not found.[/red]")
+        _print_not_found(name, body)
         raise typer.Exit(1)
     if status >= 400:
         err_console.print(f"[red]API error ({status}): {body}[/red]")
         raise typer.Exit(1)
+
+    # GH #70 — store the canonical stored name the server resolved to.
+    if isinstance(body, dict) and isinstance(body.get("name"), str):
+        name = body["name"]
 
     from sessionfs.active_ticket import bundle_path, write_bundle
     ok = write_bundle(

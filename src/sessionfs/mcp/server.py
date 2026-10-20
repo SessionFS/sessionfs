@@ -78,7 +78,7 @@ _TOOLS = [
                 },
                 "tool_filter": {
                     "type": "string",
-                    "description": "Filter by tool (claude-code, codex, gemini, cursor, copilot, amp, cline, roo-code)",
+                    "description": "Filter by tool (claude-code, codex, gemini, cursor, copilot, amp, cline, roo-code, kilo-code, antigravity)",
                 },
                 "max_results": {
                     "type": "number",
@@ -805,16 +805,29 @@ _TOOLS = [
         name="list_personas",
         description=(
             "List active agent personas for this project. Returns each "
-            "persona's id, name, role, and specializations.\n\n"
+            "persona's id, name, role, specializations, and `scope` "
+            "('project' or 'org').\n\n"
             "Use this to discover which agents exist in this project — "
             "personas are portable AI roles (atlas/prism/scribe/etc.) "
-            "shared by humans and AI agents.\n\n"
+            "shared by humans and AI agents. By default the list also "
+            "includes the org-level personas of the project's org; a "
+            "project persona with the same name overrides the org one "
+            "and is the only one listed.\n\n"
             "IMPORTANT: Always use this MCP tool instead of running "
             "`sfs persona list` or any other sfs CLI command."
         ),
         inputSchema={
             "type": "object",
             "properties": {
+                "include_org": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Include the org's personas (scope='org'). Default true.",
+                },
+                "org_id": {
+                    "type": "string",
+                    "description": "List only this org's own personas (org members) instead of the project's.",
+                },
                 "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
             },
         },
@@ -834,6 +847,10 @@ _TOOLS = [
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "Persona name (e.g. 'atlas')"},
+                "org_id": {
+                    "type": "string",
+                    "description": "Load this org's persona directly (org members) instead of resolving from the project.",
+                },
                 "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
                 "audit_session_id": {
                     "type": "string",
@@ -1126,6 +1143,10 @@ _TOOLS = [
             "tk_884b2321fdb74170) — creating 'Atlas' when 'atlas' exists "
             "returns 409. Use this when an agent decides a new role is "
             "needed (e.g. after recognizing a gap in the team's expertise).\n\n"
+            "Pass `org_id` to create an ORG-level persona instead, usable "
+            "from every project in that org (requires org admin or owner; "
+            "names are case-insensitive-unique per org). A project persona "
+            "with the same name overrides the org one inside its project.\n\n"
             "IMPORTANT: Always use this MCP tool instead of running "
             "`sfs persona create` or any other sfs CLI command."
         ),
@@ -1136,6 +1157,10 @@ _TOOLS = [
                 "role": {"type": "string", "description": "Short role description (≤100 chars)"},
                 "content": {"type": "string", "description": "Full persona content (markdown)", "default": ""},
                 "specializations": {"type": "array", "items": {"type": "string"}, "default": []},
+                "org_id": {
+                    "type": "string",
+                    "description": "Target an org-level persona in this org instead of the project (org admins/owners).",
+                },
                 "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
             },
             "required": ["name", "role"],
@@ -1154,22 +1179,28 @@ _TOOLS = [
             "needs to edit it via MCP' gap. Previously agents had to "
             "drop out of MCP and ask a human to run `sfs persona edit`. "
             "Names are case-insensitive-unique per project (v0.10.23 "
-            "tk_884b2321fdb74170) — lookup uses the exact stored case.\n\n"
+            "tk_884b2321fdb74170) — lookup is case-insensitive.\n\n"
             "Authorization: same as create_persona (project owner / org "
             "admin / case-insensitive name match).\n\n"
+            "Org-level personas are edited by passing `org_id` (org "
+            "admins/owners); without it only project personas are matched.\n\n"
             "IMPORTANT: Always use this MCP tool instead of running "
             "`sfs persona edit` or any other sfs CLI command."
         ),
         inputSchema={
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Persona name to update (exact case as stored)"},
+                "name": {"type": "string", "description": "Persona name to update (case-insensitive)"},
                 "role": {"type": "string", "description": "New role description (omit to leave unchanged)"},
                 "content": {"type": "string", "description": "New persona body markdown (omit to leave unchanged)"},
                 "specializations": {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Replace the specializations list (omit to leave unchanged)",
+                },
+                "org_id": {
+                    "type": "string",
+                    "description": "Target an org-level persona in this org instead of the project (org admins/owners).",
                 },
                 "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
             },
@@ -1198,6 +1229,9 @@ _TOOLS = [
             "v0.10.24 (GH #50): closes the 'retire a persona that was "
             "filed by mistake or has been replaced' gap that previously "
             "required dropping out of MCP for `sfs persona delete`.\n\n"
+            "Pass `org_id` to soft-delete an org-level persona (org "
+            "admins/owners); the ticket guard then covers every project "
+            "in the org that has no same-named project persona.\n\n"
             "IMPORTANT: Always use this MCP tool instead of running "
             "`sfs persona delete` or any other sfs CLI command."
         ),
@@ -1213,6 +1247,10 @@ _TOOLS = [
                         "only when the operator has reassigned or "
                         "cancelled stranded tickets manually."
                     ),
+                },
+                "org_id": {
+                    "type": "string",
+                    "description": "Target an org-level persona in this org instead of the project (org admins/owners).",
                 },
                 "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
             },
@@ -2242,11 +2280,36 @@ _TOOLS = [
     ),
     Tool(
         name="get_marketplace_package",
-        description="Inspect marketplace package metadata, immutable hash, risk, and compatibility.",
+        description=(
+            "Inspect marketplace package metadata, immutable hash, risk, compatibility and "
+            "the install disclosure (per tool: files written, hooks, scripts, MCP servers, "
+            "pre-approved tools, network endpoints, shell commands, scanner and hidden-Unicode "
+            "findings). Display only: it never grants consent."
+        ),
         inputSchema={
             "type": "object",
             "properties": {"package_id": {"type": "string"}},
             "required": ["package_id"],
+        },
+    ),
+    Tool(
+        name="diff_marketplace_versions",
+        description=(
+            "Compare two versions of the same marketplace package: files added, removed and "
+            "changed (bounded text diffs), capability changes, and the update class (text, "
+            "code, or widening = asks for more access). Read-only; never applies or approves."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "from_version_id": {"type": "string"},
+                "to_version_id": {"type": "string"},
+                "include_text": {
+                    "type": "boolean",
+                    "description": "Include bounded unified text diffs (default true)",
+                },
+            },
+            "required": ["from_version_id", "to_version_id"],
         },
     ),
     Tool(
@@ -2525,6 +2588,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_search_skill_marketplace(arguments)
         elif name == "get_marketplace_package":
             result = await _handle_get_marketplace_package(arguments)
+        elif name == "diff_marketplace_versions":
+            result = await _handle_diff_marketplace_versions(arguments)
         elif name == "preview_marketplace_skill":
             result = await _handle_preview_marketplace_skill(arguments)
         elif name == "load_marketplace_skill":
@@ -4056,19 +4121,74 @@ async def _handle_compile_knowledge_base(args: dict) -> dict:
     return payload
 
 
+def _strict_bool(raw: Any, default: bool) -> bool:
+    """`bool("false")` is True in Python; accept real booleans and a narrow
+    set of case-insensitive strings only."""
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        val = raw.strip().lower()
+        if val in {"true", "1", "yes"}:
+            return True
+        if val in {"false", "0", "no"}:
+            return False
+    return default
+
+
+def _org_id_arg(args: dict) -> str | None:
+    raw = args.get("org_id")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return None
+
+
+async def _org_persona_api_config(org_id: str) -> tuple[str, str, str]:
+    """(api_url, api_key, collection_url) for /api/v1/orgs/{org_id}/personas."""
+    config = load_config()
+    if not config.sync.api_key:
+        raise Exception("Not authenticated. Run 'sfs auth login' first.")
+    api_url = config.sync.api_url.rstrip("/")
+    return (
+        api_url,
+        config.sync.api_key,
+        f"{api_url}/api/v1/orgs/{_path_segment(org_id)}/personas",
+    )
+
+
 async def _handle_list_personas(args: dict) -> dict:
-    """Wrap GET /api/v1/projects/{project_id}/personas."""
+    """Wrap GET /api/v1/projects/{project_id}/personas[?include_org=false],
+    or GET /api/v1/orgs/{org_id}/personas when `org_id` is passed."""
+    org_id = _org_id_arg(args)
+    if org_id:
+        try:
+            _url, org_key, collection = await _org_persona_api_config(org_id)
+        except Exception as exc:
+            return {"error": str(exc)}
+        import httpx
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                collection, headers={"Authorization": f"Bearer {org_key}"}
+            )
+        if resp.status_code >= 400:
+            return {"error": f"API error {resp.status_code}: {resp.text}"}
+        return {"personas": resp.json()}
+
     git_remote = args.get("git_remote", "")
     try:
         api_url, api_key, project_id = await _resolve_project_id(git_remote)
     except Exception as exc:
         return {"error": str(exc)}
 
+    params: dict[str, str] = {}
+    if not _strict_bool(args.get("include_org", True), True):
+        params["include_org"] = "false"
+
     import httpx
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/projects/{project_id}/personas",
             headers={"Authorization": f"Bearer {api_key}"},
+            params=params,
         )
     if resp.status_code >= 400:
         return {"error": f"API error {resp.status_code}: {resp.text}"}
@@ -4076,21 +4196,28 @@ async def _handle_list_personas(args: dict) -> dict:
 
 
 async def _handle_get_persona(args: dict) -> dict:
-    """Wrap GET /api/v1/projects/{project_id}/personas/{name}."""
+    """Wrap GET /api/v1/projects/{project_id}/personas/{name}, or
+    GET /api/v1/orgs/{org_id}/personas/{name} when `org_id` is passed."""
     name = args.get("name", "")
     if not name:
         return {"error": "name is required"}
 
-    git_remote = args.get("git_remote", "")
+    org_id = _org_id_arg(args)
     try:
-        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+        if org_id:
+            api_url, api_key, collection = await _org_persona_api_config(org_id)
+        else:
+            api_url, api_key, project_id = await _resolve_project_id(
+                args.get("git_remote", "")
+            )
+            collection = f"{api_url}/api/v1/projects/{project_id}/personas"
     except Exception as exc:
         return {"error": str(exc)}
 
     import httpx
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(
-            f"{api_url}/api/v1/projects/{project_id}/personas/{_path_segment(name)}",
+            f"{collection}/{_path_segment(name)}",
             headers={"Authorization": f"Bearer {api_key}"},
         )
     if resp.status_code == 404:
@@ -4276,7 +4403,11 @@ async def _handle_start_ticket(args: dict) -> dict:
 
     payload = resp.json()
     ticket = payload.get("ticket", {}) if isinstance(payload, dict) else {}
-    persona_name = ticket.get("assigned_to")
+    # GH #70 — the server's canonical persona name (newer servers), else
+    # the raw assignment for older servers.
+    persona_name = (
+        payload.get("persona_name") if isinstance(payload, dict) else None
+    ) or ticket.get("assigned_to")
     lease_epoch = ticket.get("lease_epoch")
     retrieval_audit_id = payload.get("retrieval_audit_id") if isinstance(payload, dict) else None
 
@@ -4690,9 +4821,15 @@ async def _handle_create_persona(args: dict) -> dict:
     if not role:
         return {"error": "role is required"}
 
-    git_remote = args.get("git_remote", "")
+    org_id = _org_id_arg(args)
     try:
-        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+        if org_id:
+            api_url, api_key, collection = await _org_persona_api_config(org_id)
+        else:
+            api_url, api_key, project_id = await _resolve_project_id(
+                args.get("git_remote", "")
+            )
+            collection = f"{api_url}/api/v1/projects/{project_id}/personas"
     except Exception as exc:
         return {"error": str(exc)}
 
@@ -4706,7 +4843,7 @@ async def _handle_create_persona(args: dict) -> dict:
     import httpx
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(
-            f"{api_url}/api/v1/projects/{project_id}/personas",
+            collection,
             headers={"Authorization": f"Bearer {api_key}"},
             json=body,
         )
@@ -4729,11 +4866,18 @@ async def _handle_update_persona(args: dict) -> dict:
     if not name:
         return {"error": "name is required"}
 
-    git_remote = args.get("git_remote", "")
+    org_id = _org_id_arg(args)
     try:
-        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+        if org_id:
+            api_url, api_key, collection = await _org_persona_api_config(org_id)
+        else:
+            api_url, api_key, project_id = await _resolve_project_id(
+                args.get("git_remote", "")
+            )
+            collection = f"{api_url}/api/v1/projects/{project_id}/personas"
     except Exception as exc:
         return {"error": str(exc)}
+    scope_label = "this org" if org_id else "this project"
 
     # Build the PUT body with only the fields the caller passed. Server
     # treats omitted fields as no-op (preserves existing value), so we
@@ -4759,12 +4903,12 @@ async def _handle_update_persona(args: dict) -> dict:
     import httpx
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.put(
-            f"{api_url}/api/v1/projects/{project_id}/personas/{_path_segment(name)}",
+            f"{collection}/{_path_segment(name)}",
             headers={"Authorization": f"Bearer {api_key}"},
             json=body,
         )
     if resp.status_code == 404:
-        return {"error": f"Persona '{name}' not found in this project"}
+        return {"error": f"Persona '{name}' not found in {scope_label}", "detail": resp.text}
     if resp.status_code >= 400:
         return {"error": f"API error {resp.status_code}: {resp.text}"}
     return resp.json()
@@ -4794,11 +4938,18 @@ async def _handle_delete_persona(args: dict) -> dict:
     else:
         force = False
 
-    git_remote = args.get("git_remote", "")
+    org_id = _org_id_arg(args)
     try:
-        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+        if org_id:
+            api_url, api_key, collection = await _org_persona_api_config(org_id)
+        else:
+            api_url, api_key, project_id = await _resolve_project_id(
+                args.get("git_remote", "")
+            )
+            collection = f"{api_url}/api/v1/projects/{project_id}/personas"
     except Exception as exc:
         return {"error": str(exc)}
+    scope_label = "this org" if org_id else "this project"
 
     import httpx
     params: dict[str, str] = {}
@@ -4806,14 +4957,14 @@ async def _handle_delete_persona(args: dict) -> dict:
         params["force"] = "true"
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.delete(
-            f"{api_url}/api/v1/projects/{project_id}/personas/{_path_segment(name)}",
+            f"{collection}/{_path_segment(name)}",
             headers={"Authorization": f"Bearer {api_key}"},
             params=params,
         )
     if resp.status_code == 204:
         return {"ok": True, "name": name, "soft_deleted": True}
     if resp.status_code == 404:
-        return {"error": f"Persona '{name}' not found in this project"}
+        return {"error": f"Persona '{name}' not found in {scope_label}", "detail": resp.text}
     if resp.status_code == 409:
         # Surface the structured envelope so the caller can decide
         # whether to retry with force=true.
@@ -4881,6 +5032,14 @@ async def _handle_assume_persona(args: dict) -> dict:
         return {"error": f"Persona '{persona_name}' not found"}
     if resp.status_code >= 400:
         return {"error": f"API error {resp.status_code}: {resp.text}"}
+    # GH #70 — record the persona's canonical stored name, not the
+    # caller's spelling (resolution is case-insensitive).
+    try:
+        resolved = resp.json()
+    except Exception:
+        resolved = None
+    if isinstance(resolved, dict) and isinstance(resolved.get("name"), str):
+        persona_name = resolved["name"]
 
     from sessionfs.active_ticket import bundle_path, write_bundle
     bundle_ok = write_bundle(
@@ -5970,7 +6129,57 @@ async def _handle_get_marketplace_package(args: dict) -> dict:
             f"{api_url}/api/v1/marketplace/packages/{package_id}",
             headers={"Authorization": f"Bearer {api_key}"},
         )
-    return _marketplace_response(resp)
+        result = _marketplace_response(resp)
+        version_id = result.get("version_id") if isinstance(result, dict) else None
+        if "error" not in result and isinstance(version_id, str) and _MARKETPLACE_VERSION_ID_RE.fullmatch(version_id):
+            # Install disclosure for the current version (marketplace v2 §3.7).
+            # Display only: consent is never granted over MCP.
+            disclosure_resp = await client.get(
+                f"{api_url}/api/v1/marketplace/versions/{quote(version_id, safe='')}/disclosure",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            disclosure = _marketplace_response(disclosure_resp)
+            result["disclosure"] = None if "error" in disclosure else disclosure
+        if "error" not in result:
+            # Package metadata and the disclosure card carry publisher-
+            # controlled text (shell commands, hook values, MCP commands):
+            # stamp the trust boundary like preview / diff / load do.
+            result["untrusted"] = True
+            result.setdefault("untrusted_preamble", _MCP_UNTRUSTED_PREAMBLE)
+    return result
+
+
+async def _handle_diff_marketplace_versions(args: dict) -> dict:
+    try:
+        from_id = _marketplace_path_segment(
+            args.get("from_version_id", ""), _MARKETPLACE_VERSION_ID_RE, "from_version_id"
+        )
+        to_id = _marketplace_path_segment(
+            args.get("to_version_id", ""), _MARKETPLACE_VERSION_ID_RE, "to_version_id"
+        )
+    except ValueError as exc:
+        return {"error": str(exc)}
+    include_text = args.get("include_text", True)
+    if not isinstance(include_text, bool):
+        return {"error": "include_text must be a boolean"}
+    conf = _marketplace_api_config()
+    if isinstance(conf, dict):
+        return conf
+    api_url, api_key = conf
+    import httpx
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/marketplace/versions/{from_id}/diff/{to_id}",
+            headers={"Authorization": f"Bearer {api_key}"},
+            params={"text": "true" if include_text else "false"},
+        )
+    result = _marketplace_response(resp)
+    if "error" not in result:
+        # Diff text is third-party package content.
+        result["untrusted"] = True
+        result.setdefault("untrusted_preamble", _MCP_UNTRUSTED_PREAMBLE)
+    return result
 
 
 async def _handle_preview_marketplace_skill(args: dict) -> dict:

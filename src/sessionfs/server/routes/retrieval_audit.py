@@ -20,7 +20,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import (
-    AgentPersona,
     OrgMember,
     Project,
     RetrievalAuditContext,
@@ -28,6 +27,10 @@ from sessionfs.server.db.models import (
     Session,
     Ticket,
     User,
+)
+from sessionfs.server.services.personas import (
+    resolve_persona,
+    visible_persona_org_id,
 )
 from sessionfs.server.routes.wiki import _get_project_or_404
 
@@ -199,7 +202,9 @@ async def _assert_audit_context_links(
     ticket_id: str | None,
     persona_name: str | None,
     db: AsyncSession,
-) -> None:
+    *,
+    persona_org_id: str | None = None,
+) -> str | None:
     """Reject context-create when supplied ticket_id / persona_name don't
     belong to this project. Retrieval audit is SoD/enterprise evidence;
     forged or non-existent provenance links weaken the chain. Caller
@@ -223,15 +228,10 @@ async def _assert_audit_context_links(
                 f"ticket_id {ticket_id!r} does not exist in project {project_id!r}",
             )
     if persona_name is not None:
-        persona = (
-            await db.execute(
-                select(AgentPersona.id).where(
-                    AgentPersona.name == persona_name,
-                    AgentPersona.project_id == project_id,
-                    AgentPersona.is_active == True,  # noqa: E712
-                )
-            )
-        ).scalar_one_or_none()
+        # GH #70 — project persona first, then the project's org.
+        persona = await resolve_persona(
+            db, project_id, persona_name, org_id=persona_org_id, active_only=True
+        )
         if persona is None:
             raise HTTPException(
                 422,
@@ -240,6 +240,9 @@ async def _assert_audit_context_links(
                     f"in project {project_id!r}"
                 ),
             )
+        # GH #70 — store the canonical stored spelling.
+        return persona.name
+    return None
 
 
 @router.post(
@@ -253,15 +256,27 @@ async def create_retrieval_audit_context(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> RetrievalAuditContextResponse:
-    await _get_project_or_404(project_id, db, user.id)
-    await _assert_audit_context_links(
-        project_id, body.ticket_id, body.persona_name, db
+    project = await _get_project_or_404(project_id, db, user.id)
+    # GH #70 — scope lock before validating links / inserting (merge
+    # relocates audit contexts; refuses a merged-away project).
+    from sessionfs.server.services.scope_locks import (
+        lock_project_scope_authorized,
+    )
+
+    # GH #70 — lock, then re-authorize against the re-read project.
+    await lock_project_scope_authorized(db, project, user_id=user.id)
+    canonical_persona = await _assert_audit_context_links(
+        project_id,
+        body.ticket_id,
+        body.persona_name,
+        db,
+        persona_org_id=await visible_persona_org_id(db, project, user_id=user.id),
     )
     ctx = RetrievalAuditContext(
         id=f"ra_{uuid.uuid4().hex[:24]}",
         project_id=project_id,
         ticket_id=body.ticket_id,
-        persona_name=body.persona_name,
+        persona_name=canonical_persona,
         lease_epoch=body.lease_epoch,
         created_by_user_id=user.id,
     )
@@ -282,7 +297,14 @@ async def create_retrieval_audit_event(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> RetrievalAuditEventResponse:
-    await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_or_404(project_id, db, user.id)
+    # GH #70 — scope lock before the insert (merge relocates events).
+    from sessionfs.server.services.scope_locks import (
+        lock_project_scope_authorized,
+    )
+
+    # GH #70 — lock, then re-authorize against the re-read project.
+    await lock_project_scope_authorized(db, project, user_id=user.id)
     ctx = await _get_context_or_404(body.context_id, project_id, db)
     await _assert_context_owner(ctx, user)
     event = RetrievalAuditEvent(

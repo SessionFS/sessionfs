@@ -16,7 +16,7 @@ export interface OrgMemberInfo {
   user_id: string;
   email: string;
   display_name: string | null;
-  role: 'admin' | 'member';
+  role: 'owner' | 'admin' | 'member';
   joined_at: string | null;
 }
 
@@ -25,7 +25,7 @@ export interface OrgMembersListResponse {
   members: OrgMemberInfo[];
   seats_used: number;
   seats_limit: number;
-  current_user_role: 'admin' | 'member' | null;
+  current_user_role: 'owner' | 'admin' | 'member' | null;
 }
 
 export interface RemoveMemberResponse {

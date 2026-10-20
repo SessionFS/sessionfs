@@ -1,3 +1,14 @@
+import type {
+  AddTrustedPublisherInput,
+  ClaimPublisherInput,
+  PublisherBlock,
+  PublisherDetail,
+  PublisherList,
+  PublisherVerification,
+  StartVerificationInput,
+  TrustedPublisher,
+} from './publisherTypes';
+
 export interface SessionSummary {
   id: string;
   title: string | null;
@@ -173,11 +184,34 @@ export interface AdminActionLog {
 }
 
 export interface GitHubInstallationResponse {
+  installation_id?: number | null;
   account_login: string | null;
   account_type: string | null;
   auto_comment: boolean;
   include_trust_score: boolean;
   include_session_links: boolean;
+  /** True once GitHub confirmed (via OAuth) that this user controls the installation. */
+  ownership_verified?: boolean;
+  /** Linked before ownership checks existed; re-verify to restore trust. */
+  needs_reverification?: boolean;
+  claim_verified_github_login?: string | null;
+  claim_role?: string | null;
+  /** The link currently grants repository verification (fresh owner/admin proof). */
+  repo_verification_active?: boolean;
+  /** An owner/admin proof that has aged out; re-verify to restore repository verification. */
+  proof_stale?: boolean;
+  /** The server can run the GitHub OAuth link flow. */
+  claim_available?: boolean;
+  /** The server can run the one-step install-and-link flow. */
+  install_available?: boolean;
+}
+
+export type GitHubClaimFlow = 'install' | 'authorize';
+
+export interface GitHubClaimChoice {
+  installation_id: number;
+  account_login: string | null;
+  account_type: string | null;
 }
 
 export interface FolderResponse {
@@ -494,7 +528,12 @@ export interface RestoreResponse extends SessionDetail {
 
 export interface Persona {
   id: string;
-  project_id: string;
+  /** Null for org-level personas (GH #70). */
+  project_id: string | null;
+  /** Set for org-level personas. Absent on older servers. */
+  org_id?: string | null;
+  /** 'project' | 'org'. Absent on older servers (treat as 'project'). */
+  scope?: 'project' | 'org';
   name: string;
   role: string;
   content: string;
@@ -647,7 +686,17 @@ export interface MarketplacePackage {
   /** Set for user-private listings; the owner may delete their own versions. */
   owner_user_id?: string | null;
   org_id?: string | null;
+  /** Org that owns the package (null: personal/public). Absent on older servers. */
+  owner_org_id?: string | null;
   verification_state: 'verified' | 'unverified' | 'blocked';
+  /** Present when the server exposes moderation state on a listing. */
+  is_yanked?: boolean;
+  /** Listing moderation (marketplace v2 §4.3): 'approved' is deliverable;
+   *  'pending_review' / 'rejected' are shown only to the publisher. */
+  moderation_state?: 'active' | 'yanked' | 'blocked' | 'approved' | 'pending_review' | 'quarantined' | 'rejected';
+  /** Publisher owning the namespace (null for unclaimed per-owner namespaces). */
+  publisher_id?: string | null;
+  publisher?: PublisherBlock | null;
   package_id: string;
   namespace: string;
   name: string;
@@ -682,6 +731,146 @@ export interface MarketplacePackage {
   untrusted_preamble?: string;
   untrusted_preview?: boolean;
   instruction_preview?: { path: string; content: string }[];
+  /** Capability digest (marketplace v2 §3.2); null until computed. */
+  capability_digest?: string | null;
+  /** Install disclosure card (preview responses). */
+  disclosure?: MarketplaceDisclosure | null;
+}
+
+// Install disclosure + update diff (marketplace v2 §3). Every string is
+// untrusted package text: render as text, never as markup.
+export interface MarketplaceToolDisclosure {
+  delivery: string;
+  scope: 'project' | 'user';
+  summary: string;
+  writes: string[];
+  writes_total: number;
+  runs: { scripts: number; hooks: { skill: string; event: string; matcher: string }[]; mcp_local: number };
+  connects_to: string[];
+  auto_allowed: string[];
+  omitted: { component: string; reason: string }[];
+  consent_required: string[];
+}
+
+export interface UnicodeFinding {
+  path: string;
+  line: number;
+  column: number;
+  rule_id: string;
+  class: string;
+  severity: string;
+  code_point: string | null;
+  visible: string | null;
+}
+
+export interface ShellCommandDisclosure {
+  path: string;
+  line: number;
+  command: string;
+  commands: string[];
+  text: string;
+}
+
+export interface MarketplaceDisclosure {
+  version_id: string | null;
+  content_hash: string | null;
+  capability_digest: string | null;
+  capabilities: string[];
+  provenance: { publisher_verified: boolean; attested: boolean };
+  scan: { ruleset?: string; max_severity?: string; finding_count?: number; counts?: Record<string, number>; truncated?: boolean };
+  unicode: { flagged_files: number; findings: UnicodeFinding[]; counts?: Record<string, number>; truncated?: boolean };
+  incomplete?: string[];
+  shell_commands: ShellCommandDisclosure[];
+  network_endpoints: string[];
+  /** Full count (the list above is the first MAX shown). */
+  network_endpoints_total?: number;
+  env_names: string[];
+  mcp_servers: {
+    local: { name: string; command: string; env_names: string[] }[];
+    remote: { name: string; origin: string; transport?: string }[];
+    declared: boolean;
+  };
+  allowed_tools: string[];
+  persistence_targets: string[];
+  executable_extensions: { path: string; kind: string }[];
+  tools: Record<string, MarketplaceToolDisclosure>;
+  consent_required: string[];
+  consent_rule_version?: number;
+  card_version?: number;
+  scope?: 'project' | 'user';
+  /** Digest of this whole card; approvals bind to it. */
+  disclosure_digest?: string;
+}
+
+/** Re-approval acknowledgements plus the disclosure the approver saw. */
+export interface ApprovalBinding {
+  widening?: boolean;
+  codeChange?: boolean;
+  capabilityDigest?: string | null;
+  consentRuleVersion?: number | null;
+  /** Digest of the whole card shown (scanner, hidden characters, provenance, tools, scope). */
+  disclosureDigest?: string | null;
+  /** Digest of the update reviewed (prior grant, baseline, target, full diff); from the 409. */
+  updateDigest?: string | null;
+}
+
+export interface CapabilityChange {
+  kind: string;
+  item: string;
+}
+
+export interface UpdateTextDiffs {
+  entries: {
+    path: string;
+    change: string;
+    binary: boolean;
+    diff: string | null;
+    truncated?: boolean;
+    /** Per-file hashes from the two manifests (null for the side without the file). */
+    old_sha256?: string | null;
+    new_sha256?: string | null;
+  }[];
+  truncated: boolean;
+  unavailable?: boolean;
+}
+
+/**
+ * The exact build_diff() object the update_digest hashes — returned as ONE
+ * nested `diff` field by the reapproval 409 and the held-updates queue. An
+ * acknowledgement is valid only for the diff that was rendered, so every
+ * leaf of this object must reach the screen.
+ */
+export interface UpdateDiffDetail {
+  update_class: 'unchanged' | 'text' | 'code' | 'widening';
+  baseline_known: boolean;
+  /** Digest of the consented baseline (known baselines only). */
+  baseline_digest?: string;
+  widens: CapabilityChange[];
+  narrows: CapabilityChange[];
+  code_changes: { kind: string; change: string; path: string }[];
+  changed_requirements: string[];
+  capability_digest_changed: boolean;
+  files: { added: string[]; removed: string[]; changed: string[]; unknown?: boolean };
+  scan_delta: {
+    old_max_severity?: string | null;
+    new_max_severity?: string | null;
+    old_finding_count?: number | null;
+    new_finding_count?: number | null;
+    old_ruleset?: string | null;
+    new_ruleset?: string | null;
+  };
+  unicode_delta: { new_findings: UnicodeFinding[] };
+  provenance_delta: { old: Record<string, boolean>; new: Record<string, boolean> };
+  consent: { personal: string; org_required: string; description: string };
+  text_diffs?: UpdateTextDiffs;
+}
+
+export interface MarketplaceVersionDiff extends UpdateDiffDetail {
+  package_id: string;
+  from_version_id: string;
+  to_version_id: string;
+  from_content_hash?: string;
+  to_content_hash?: string;
 }
 
 export interface MarketplaceSearchResponse {
@@ -718,6 +907,8 @@ export interface SkillInstallRequest {
   approved_by_user_id: string | null;
   decided_at: string | null;
   created_at: string;
+  /** The version's capability digest (marketplace v2 §3.2). */
+  capability_digest?: string | null;
 }
 
 export interface SkillAssignment {
@@ -734,6 +925,49 @@ export interface SkillAssignment {
   created_at: string;
 }
 
+/** One assignment whose package has a newer version (held-updates queue). */
+export interface HeldUpdate {
+  assignment: SkillAssignment;
+  package_id: string;
+  name: string;
+  from_version_id: string;
+  from_version: string | null;
+  to_version_id: string;
+  to_version: string | null;
+  to_content_hash: string;
+  update_class: 'unchanged' | 'text' | 'code' | 'widening';
+  widens: CapabilityChange[];
+  narrows?: CapabilityChange[];
+  baseline_known?: boolean;
+  code_changes: { kind: string; change: string; path: string }[];
+  /** The exact diff the update_digest binds (same object as the reapproval 409's details.diff). */
+  diff?: UpdateDiffDetail | null;
+  /** Binds an acknowledged advance to exactly this baseline, target and diff. */
+  update_digest?: string | null;
+  /** True when the target's manifest could not be computed: no diff, no digest, never advanceable. */
+  diff_unavailable?: boolean;
+  held: boolean;
+  requires: 'approve_widening' | 'approve_code_change' | null;
+}
+
+export interface HeldUpdatesPage {
+  items: HeldUpdate[];
+  count: number;
+  has_more: boolean;
+  next_cursor: string | null;
+}
+
+export interface AdvanceAssignmentInput {
+  to_version_id: string;
+  content_hash: string;
+  approve_widening?: boolean;
+  approve_code_change?: boolean;
+  capability_digest?: string | null;
+  consent_rule_version?: number | null;
+  disclosure_digest?: string | null;
+  update_digest?: string | null;
+}
+
 export interface SkillRegistry {
   id: string;
   owner_type: 'user' | 'project' | 'org';
@@ -746,6 +980,113 @@ export interface SkillRegistry {
   server_fetch_enabled: false;
   created_at: string;
   updated_at: string;
+}
+
+// ------------------------------------------------------------------
+// Marketplace publishing + moderation (marketplace v2)
+// Thin shapes over routes/marketplace.py and routes/marketplace_moderation.py.
+// Optional fields are tolerated so server additions don't break rendering.
+// ------------------------------------------------------------------
+
+export const REPORT_REASONS = [
+  'malicious',
+  'secrets',
+  'impersonation',
+  'broken',
+  'license',
+  'spam',
+  'other',
+] as const;
+export type ReportReason = (typeof REPORT_REASONS)[number];
+
+export type PublishTarget =
+  | { kind: 'personal' }
+  | { kind: 'org'; orgId: string; visibility: 'org' | 'public' };
+
+export interface PublishPackageInput {
+  target: PublishTarget;
+  file: File | Blob;
+  filename?: string;
+  /** Blank/undefined = server default (`personal` or `org`). */
+  namespace?: string;
+  collection?: string;
+}
+
+export interface MarketplaceReport {
+  id: string;
+  package_id: string;
+  version_id: string | null;
+  reason: string;
+  details: string;
+  status: string;
+  created_at: string;
+  resolved_at: string | null;
+  reporter_user_id?: string | null;
+  resolved_by_user_id?: string | null;
+  resolution_note?: string | null;
+  /**
+   * Scope the report was bound to when filed ('platform' | 'org'), when the
+   * server exposes it (report scoping is being tightened server-side).
+   */
+  scope_kind?: string | null;
+  scope_org_id?: string | null;
+}
+
+export interface MarketplaceReportList {
+  items: MarketplaceReport[];
+  count: number;
+  has_more: boolean;
+  next_cursor: string | null;
+}
+
+export type ModerationAction = 'yank' | 'block' | 'restore';
+
+/** One critical instruction-scan finding a quarantine restore clears as a false positive. */
+export interface ScanFindingKey {
+  rule_id: string;
+  path: string;
+  line_sha: string;
+}
+
+/** Listed by the 409 `findings_required` answer to a quarantine restore. */
+export interface QuarantineFinding extends ScanFindingKey {
+  line: number;
+}
+export type ModerationTargetKind = 'versions' | 'packages';
+
+export interface ModerationResult {
+  package_id: string;
+  version_id: string | null;
+  content_hash: string | null;
+  state: 'yanked' | 'blocked' | 'restored';
+  previous_state: string;
+  reason: string;
+  revocation_event_ids: number[];
+  reports_resolved: number;
+  grants_revoked: Record<string, number>;
+}
+
+export interface RevocationEvent {
+  /** Null for `kind: "content"` (hash-wide) events. */
+  package_id: string | null;
+  version_id: string | null;
+  content_hash: string | null;
+  /** "quarantined": an automated scan stopped new installs (warn only). Unknown future states are ignored. */
+  state: 'yanked' | 'blocked' | 'restored' | 'quarantined' | (string & {});
+  reason: string;
+  changed_at: string;
+  /** Absent on older servers. */
+  kind?: 'version' | 'package' | 'content' | (string & {});
+  block_scope?: 'global' | 'org' | 'owner' | null;
+  /** The org for "org" scope, and for "owner" scope on org-owned packages (null: personal). Absent on older servers. */
+  scope_org_id?: string | null;
+}
+
+export interface RevocationFeed {
+  revocations: RevocationEvent[];
+  next_since: string;
+  /** Absent on older servers: page until an empty page instead. */
+  has_more?: boolean;
 }
 
 export class ApiError extends Error {
@@ -1273,11 +1614,48 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       auto_comment?: boolean;
       include_trust_score?: boolean;
       include_session_links?: boolean;
-      installation_id?: number;
     }) =>
       request<GitHubInstallationResponse>('/api/v1/settings/github', {
         method: 'PUT',
         body: JSON.stringify(updates),
+      }),
+
+    /**
+     * Start linking a GitHub App installation through GitHub OAuth. Sent with
+     * credentials so the browser stores the HttpOnly claim cookie that binds
+     * the GitHub callback to this browser. Returns the GitHub URL to visit.
+     */
+    startGitHubClaim: async (flow: GitHubClaimFlow, installationId?: number): Promise<string> => {
+      const resp = await fetch(`${baseUrl}/api/v1/settings/github/oauth/start`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(
+          installationId ? { flow, installation_id: installationId } : { flow },
+        ),
+      });
+      if (!resp.ok) {
+        throw new ApiError(resp.status, await resp.text());
+      }
+      const data = (await resp.json()) as { redirect_url?: string };
+      if (!data.redirect_url || !data.redirect_url.startsWith('https://github.com/')) {
+        throw new Error('Unexpected response from the server.');
+      }
+      return data.redirect_url;
+    },
+
+    /** Installations the latest GitHub sign-in proved the user can link. */
+    getGitHubClaimChoices: () =>
+      request<{ choices: GitHubClaimChoice[] }>('/api/v1/settings/github/oauth/choices'),
+
+    /** Link the one installation picked from the chooser. */
+    chooseGitHubInstallation: (installationId: number) =>
+      request<GitHubInstallationResponse>('/api/v1/settings/github/oauth/choose', {
+        method: 'POST',
+        body: JSON.stringify({ installation_id: installationId }),
       }),
 
     // Project context endpoints
@@ -1494,6 +1872,28 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         { method: 'DELETE' },
       ),
 
+    // ── GH #70 Org-level personas (org admins write; members read) ──
+    listOrgPersonas: (orgId: string) =>
+      request<Persona[]>(`/api/v1/orgs/${encodeURIComponent(orgId)}/personas`),
+
+    createOrgPersona: (orgId: string, body: PersonaCreate) =>
+      request<Persona>(`/api/v1/orgs/${encodeURIComponent(orgId)}/personas`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+
+    updateOrgPersona: (orgId: string, name: string, body: PersonaUpdate) =>
+      request<Persona>(
+        `/api/v1/orgs/${encodeURIComponent(orgId)}/personas/${encodeURIComponent(name)}`,
+        { method: 'PUT', body: JSON.stringify(body) },
+      ),
+
+    deleteOrgPersona: (orgId: string, name: string, force = false) =>
+      request<{ status: string }>(
+        `/api/v1/orgs/${encodeURIComponent(orgId)}/personas/${encodeURIComponent(name)}${force ? '?force=true' : ''}`,
+        { method: 'DELETE' },
+      ),
+
     // ── v0.10.1 Tickets (Team+) ──
     listTickets: (
       projectId: string,
@@ -1600,6 +2000,35 @@ export function createApiClient(baseUrl: string, apiKey: string) {
     previewMarketplaceVersion: (versionId: string) =>
       request<MarketplacePackage>(`/api/v1/marketplace/versions/${versionId}/preview`),
 
+    getMarketplaceDisclosure: (versionId: string, tools: string[] = [], scope: 'project' | 'user' = 'project') => {
+      const params = new URLSearchParams({ scope });
+      if (tools.length) params.set('tools', tools.join(','));
+      return request<MarketplaceDisclosure>(
+        `/api/v1/marketplace/versions/${encodeURIComponent(versionId)}/disclosure?${params.toString()}`,
+      );
+    },
+
+    listHeldUpdates: (orgId: string, params: { cursor?: string; limit?: number } = {}) => {
+      const query = new URLSearchParams();
+      if (params.cursor) query.set('cursor', params.cursor);
+      if (params.limit) query.set('limit', String(params.limit));
+      const qs = query.toString();
+      return request<HeldUpdatesPage>(
+        `/api/v1/orgs/${encodeURIComponent(orgId)}/skills/assignments/updates${qs ? `?${qs}` : ''}`,
+      );
+    },
+
+    advanceAssignment: (orgId: string, assignmentId: string, input: AdvanceAssignmentInput) =>
+      request<SkillAssignment & { update_class: string; previous_assignment_id: string }>(
+        `/api/v1/orgs/${encodeURIComponent(orgId)}/skills/assignments/${encodeURIComponent(assignmentId)}/advance`,
+        { method: 'POST', body: JSON.stringify(input) },
+      ),
+
+    getMarketplaceVersionDiff: (fromVersionId: string, toVersionId: string) =>
+      request<MarketplaceVersionDiff>(
+        `/api/v1/marketplace/versions/${encodeURIComponent(fromVersionId)}/diff/${encodeURIComponent(toVersionId)}`,
+      ),
+
     downloadMarketplaceVersion: async (versionId: string): Promise<Blob> => {
       const resp = await fetch(
         `${baseUrl}/api/v1/marketplace/versions/${encodeURIComponent(versionId)}/download`,
@@ -1636,6 +2065,7 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       requestId: string,
       approvedCapabilities: string[],
       confirmationCode?: string,
+      acknowledgements?: ApprovalBinding,
     ) =>
       request<SkillInstallRequest>(
         `/api/v1/projects/${projectId}/skill-install-requests/${requestId}/approve`,
@@ -1644,6 +2074,20 @@ export function createApiClient(baseUrl: string, apiKey: string) {
           body: JSON.stringify({
             approved_capabilities: approvedCapabilities,
             ...(confirmationCode ? { confirmation_code: confirmationCode } : {}),
+            // Marketplace v2 D2: explicit re-approval of an update that widens
+            // access or changes executable content. Never sent implicitly.
+            ...(acknowledgements?.widening ? { acknowledge_widening: true } : {}),
+            ...(acknowledgements?.codeChange ? { acknowledge_code_change: true } : {}),
+            // The disclosure the approver saw: the server refuses with
+            // 409 disclosure_changed when it is no longer current.
+            ...(acknowledgements?.capabilityDigest
+              ? {
+                  capability_digest: acknowledgements.capabilityDigest,
+                  consent_rule_version: acknowledgements.consentRuleVersion ?? 2,
+                }
+              : {}),
+            ...(acknowledgements?.disclosureDigest ? { disclosure_digest: acknowledgements.disclosureDigest } : {}),
+            ...(acknowledgements?.updateDigest ? { update_digest: acknowledgements.updateDigest } : {}),
           }),
         },
       ),
@@ -1691,6 +2135,86 @@ export function createApiClient(baseUrl: string, apiKey: string) {
     listOrgSkillRegistries: (orgId: string) =>
       request<{ items: SkillRegistry[] }>(`/api/v1/orgs/${orgId}/skills/registries`),
 
+    // ── Marketplace v2: publishing + moderation ──
+    /**
+     * Multipart upload of a pre-built .tar.gz. Goes around `request()` because
+     * that helper forces a JSON Content-Type; the browser must set the
+     * multipart boundary itself.
+     */
+    publishSkillPackage: async (input: PublishPackageInput): Promise<MarketplacePackage> => {
+      const form = new FormData();
+      const filename = input.filename || (input.file instanceof File ? input.file.name : 'package.tar.gz');
+      form.append('package', input.file, filename);
+      if (input.namespace) form.append('namespace', input.namespace);
+      if (input.collection) form.append('collection', input.collection);
+      if (input.target.kind === 'org') form.append('visibility', input.target.visibility);
+      const path = input.target.kind === 'personal'
+        ? '/api/v1/users/me/skills/packages'
+        : `/api/v1/orgs/${encodeURIComponent(input.target.orgId)}/skills/packages`;
+      const resp = await fetch(`${baseUrl}${path}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}` },
+        body: form,
+      });
+      if (!resp.ok) {
+        const error = new ApiError(resp.status, await resp.text());
+        const retryAfter = resp.headers?.get?.('retry-after');
+        if (retryAfter && !(error.details && 'retry_after' in error.details)) {
+          error.details = { ...(error.details || {}), retry_after: retryAfter };
+        }
+        throw error;
+      }
+      return resp.json();
+    },
+
+    reportMarketplacePackage: (
+      packageId: string,
+      body: { reason: ReportReason; details?: string; version_id?: string },
+    ) => request<MarketplaceReport>(
+      `/api/v1/marketplace/packages/${encodeURIComponent(packageId)}/reports`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+
+    listMarketplaceReports: (params: { status?: string; limit?: number; cursor?: string } = {}) => {
+      const sp = new URLSearchParams();
+      if (params.status) sp.set('status', params.status);
+      if (params.limit) sp.set('limit', String(params.limit));
+      if (params.cursor) sp.set('cursor', params.cursor);
+      const qs = sp.toString();
+      return request<MarketplaceReportList>(`/api/v1/marketplace/reports${qs ? `?${qs}` : ''}`);
+    },
+
+    dismissMarketplaceReport: (reportId: string, note: string) =>
+      request<MarketplaceReport>(
+        `/api/v1/marketplace/reports/${encodeURIComponent(reportId)}/dismiss`,
+        { method: 'POST', body: JSON.stringify({ note }) },
+      ),
+
+    /**
+     * Restoring a QUARANTINED version clears its critical scan findings as false
+     * positives: with more than one, `findings` must list every one (the server
+     * answers 409 `findings_required` with the list otherwise).
+     */
+    moderateMarketplace: (
+      kind: ModerationTargetKind,
+      targetId: string,
+      action: ModerationAction,
+      reason: string,
+      findings?: ScanFindingKey[],
+    ) =>
+      request<ModerationResult>(
+        `/api/v1/marketplace/${kind}/${encodeURIComponent(targetId)}/${action}`,
+        { method: 'POST', body: JSON.stringify(findings ? { reason, findings } : { reason }) },
+      ),
+
+    listMarketplaceRevocations: (params: { since?: string; limit?: number } = {}) => {
+      const sp = new URLSearchParams();
+      if (params.since) sp.set('since', params.since);
+      if (params.limit) sp.set('limit', String(params.limit));
+      const qs = sp.toString();
+      return request<RevocationFeed>(`/api/v1/marketplace/revocations${qs ? `?${qs}` : ''}`);
+    },
+
     // ── Multi-Repo Projects (v0.11) ──
     listProjectRepos: (projectId: string) =>
       request<ProjectRepoResponse[]>(`/api/v1/projects/${projectId}/repos`),
@@ -1721,6 +2245,50 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         method: 'PUT',
         body: JSON.stringify(body),
       }),
+
+    // ── Marketplace publishers + trusted publishing (marketplace v2 §4) ──
+    listMyPublishers: () => request<PublisherList>('/api/v1/publishers'),
+
+    getPublisher: (publisherId: string) =>
+      request<PublisherDetail>(`/api/v1/publishers/${encodeURIComponent(publisherId)}`),
+
+    claimPublisher: (body: ClaimPublisherInput) =>
+      request<PublisherDetail>('/api/v1/publishers', { method: 'POST', body: JSON.stringify(body) }),
+
+    startPublisherVerification: (publisherId: string, body: StartVerificationInput) =>
+      request<PublisherVerification>(
+        `/api/v1/publishers/${encodeURIComponent(publisherId)}/verifications`,
+        { method: 'POST', body: JSON.stringify(body) },
+      ),
+
+    checkPublisherVerification: (publisherId: string, verificationId: string) =>
+      request<PublisherVerification>(
+        `/api/v1/publishers/${encodeURIComponent(publisherId)}/verifications/${encodeURIComponent(verificationId)}/check`,
+        { method: 'POST' },
+      ),
+
+    revokePublisherVerification: (publisherId: string, verificationId: string) =>
+      request<PublisherVerification>(
+        `/api/v1/publishers/${encodeURIComponent(publisherId)}/verifications/${encodeURIComponent(verificationId)}`,
+        { method: 'DELETE' },
+      ),
+
+    addTrustedPublisher: (publisherId: string, body: AddTrustedPublisherInput) =>
+      request<TrustedPublisher>(
+        `/api/v1/publishers/${encodeURIComponent(publisherId)}/trusted-publishers`,
+        { method: 'POST', body: JSON.stringify(body) },
+      ),
+
+    removeTrustedPublisher: (publisherId: string, trustedId: string) =>
+      request<TrustedPublisher>(
+        `/api/v1/publishers/${encodeURIComponent(publisherId)}/trusted-publishers/${encodeURIComponent(trustedId)}`,
+        { method: 'DELETE' },
+      ),
+
+    listPublisherListings: (publisherId: string) =>
+      request<{ items: (MarketplacePackage & { moderation_reason?: string | null })[]; count: number }>(
+        `/api/v1/publishers/${encodeURIComponent(publisherId)}/listings`,
+      ),
 
     // ── Share Links (v0.14.0) ──
     createShareLink: (sessionId: string, body: { expires_in_hours?: number; password?: string }) =>

@@ -150,12 +150,12 @@ async def test_create_org_enterprise_user_no_stripe(
         )
     ).one_or_none()
     assert member_row is not None
-    assert member_row[1] == "admin"
+    assert member_row[1] == "owner"
 
 
 @pytest.mark.asyncio
 async def test_create_org_from_stripe_user_preserves_provenance(
-    client: AsyncClient, db_session: AsyncSession
+    client: AsyncClient, db_session: AsyncSession, stripe_fake
 ):
     """Codex R1 MEDIUM regression — when a Stripe-paying user creates an org,
     the route clears User.stripe_* (transfer of ownership) via a bulk
@@ -163,6 +163,10 @@ async def test_create_org_from_stripe_user_preserves_provenance(
     source/source_ref must be derived from a SNAPSHOT taken before the clear,
     or the org's entitlement is written as source='manual'/source_ref=None
     despite being genuinely Stripe-funded.
+
+    The user below has no entitlement row, so adoption is pointer-only and
+    the route confirms the subscription with Stripe first (round 8) — the
+    fake returns an active team subscription on the same customer.
     """
     from sqlalchemy import text
 
@@ -170,6 +174,7 @@ async def test_create_org_from_stripe_user_preserves_provenance(
     from sessionfs.server.db.models import ApiKey
 
     sub_id = "sub_provenance_123"
+    stripe_fake.subscription(sub_id, tier="team", quantity=3, customer="cus_provenance_123")
     user = User(
         id=str(uuid.uuid4()),
         email="stripe-payer@example.com",
@@ -265,7 +270,7 @@ async def test_org_lifecycle(client: AsyncClient, team_headers: dict):
     data = resp.json()
     assert data["org"]["name"] == "Lifecycle Org"
     assert data["org"]["tier"] == "team"
-    assert data["current_user_role"] == "admin"
+    assert data["current_user_role"] == "owner"
     assert len(data["members"]) == 1
 
     # Invite member

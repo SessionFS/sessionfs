@@ -1,4 +1,6 @@
-import { render, screen } from '@testing-library/react';
+import { render as rtlRender, screen } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { MemoryRouter } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import MarketplacePage, { isTierGate } from './MarketplacePage';
@@ -14,9 +16,18 @@ const { hooks } = vi.hoisted(() => ({
     useOrgSkillControl: vi.fn(),
     useMe: vi.fn(),
     useProjects: vi.fn(),
+    useRevocationIndex: vi.fn(),
+    useMyOrgs: vi.fn(),
+    usePublishSkillPackage: vi.fn(),
+    useReportMarketplacePackage: vi.fn(),
     addToast: vi.fn(),
+    useMarketplaceDisclosure: vi.fn((_versionId?: string, _tools?: string[]) => ({ data: undefined as unknown, isLoading: false, error: null })),
   },
 }));
+
+function render(ui: ReactElement) {
+  return rtlRender(<MemoryRouter>{ui}</MemoryRouter>);
+}
 
 vi.mock('../hooks/useMarketplace', () => ({
   MARKETPLACE_TOOLS: ['claude-code', 'codex', 'gemini'],
@@ -26,9 +37,21 @@ vi.mock('../hooks/useMarketplace', () => ({
   useDeletePersonalSkillVersion: hooks.useDeletePersonalSkillVersion,
   useEffectiveSkillAssignments: hooks.useEffectiveSkillAssignments,
   useOrgSkillControl: hooks.useOrgSkillControl,
+  useRevocationIndex: hooks.useRevocationIndex,
+  usePublishSkillPackage: hooks.usePublishSkillPackage,
+  useReportMarketplacePackage: hooks.useReportMarketplacePackage,
 }));
+vi.mock('../transfers/useTransfers', () => ({ useMyOrgs: hooks.useMyOrgs }));
 vi.mock('../hooks/useMe', () => ({ useMe: hooks.useMe }));
+vi.mock('../hooks/useMarketplaceDisclosure', () => ({
+  useMarketplaceDisclosure: (versionId?: string, tools?: string[]) => hooks.useMarketplaceDisclosure(versionId, tools),
+}));
 vi.mock('../hooks/useProjects', () => ({ useProjects: hooks.useProjects }));
+vi.mock('./HeldUpdates', () => ({
+  HeldUpdateQueues: ({ orgs }: { orgs: { org_id: string }[] }) => (
+    <div data-testid="held-queues">{orgs.map((org) => org.org_id).join(',')}</div>
+  ),
+}));
 vi.mock('../hooks/useToast', () => ({ useToast: () => ({ addToast: hooks.addToast }) }));
 vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({
@@ -41,6 +64,12 @@ const packageRow = {
   collection: 'curated',
   visibility: 'public',
   verification_state: 'verified',
+  moderation_state: 'approved',
+  publisher_id: 'pub_sessionfs',
+  publisher: {
+    id: 'pub_sessionfs', namespace: 'sessionfs', display_name: 'SessionFS', owner_type: 'system',
+    status: 'active', verified: true, badges: ['verified: SessionFS platform'],
+  },
   package_id: 'spk_1',
   namespace: 'sessionfs',
   name: 'review-helper',
@@ -88,6 +117,10 @@ beforeEach(() => {
   });
   hooks.useMe.mockReturnValue({ data: { org_id: null, user_id: 'user_1' } });
   hooks.useProjects.mockReturnValue({ data: [], isLoading: false });
+  hooks.useRevocationIndex.mockReturnValue({ data: undefined });
+  hooks.useMyOrgs.mockReturnValue({ data: [], isLoading: false });
+  hooks.usePublishSkillPackage.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+  hooks.useReportMarketplacePackage.mockReturnValue({ mutateAsync: vi.fn().mockResolvedValue({ id: 'spr_1' }), isPending: false });
 });
 
 describe('MarketplacePage', () => {
@@ -95,7 +128,9 @@ describe('MarketplacePage', () => {
     render(<MarketplacePage />);
     expect(screen.getByRole('heading', { name: /Portable agent capabilities/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Inspect Review Helper' })).toBeInTheDocument();
-    expect(screen.getByText('verified')).toBeInTheDocument();
+    // Publisher identity, not "a platform admin published it" (marketplace v2 §4.3).
+    expect(screen.getByText('verified publisher')).toBeInTheDocument();
+    expect(screen.queryByText('verified')).toBeNull();
     expect(screen.getByText(/1 elevated capability flag/)).toBeInTheDocument();
   });
 
@@ -207,5 +242,174 @@ describe('MarketplacePage', () => {
     render(<MarketplacePage />);
     expect(screen.getByRole('heading', { name: 'No packages match' })).toBeInTheDocument();
     expect(screen.getByText(/Private organization packages/)).toBeInTheDocument();
+  });
+});
+
+function apiError(status: number, error: Record<string, unknown>) {
+  return new ApiError(status, JSON.stringify({ error }));
+}
+
+describe('MarketplacePage publishing and moderation entry points', () => {
+  it('hides Publish for a free user with no administered org and explains the upgrade', () => {
+    hooks.useMe.mockReturnValue({ data: { user_id: 'user_1', tier: 'free', effective_tier: 'free', org_id: null } });
+    render(<MarketplacePage />);
+    expect(screen.queryByRole('button', { name: 'Publish package' })).not.toBeInTheDocument();
+    expect(screen.getByText(/Publishing needs the Starter plan/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'View plans' })).toHaveAttribute('href', '/settings/billing');
+  });
+
+  it('offers Publish to a Starter+ user and to a free user who owns an org', () => {
+    hooks.useMe.mockReturnValue({ data: { user_id: 'user_1', tier: 'pro', effective_tier: 'pro' } });
+    const first = render(<MarketplacePage />);
+    expect(screen.getByRole('button', { name: 'Publish package' })).toBeInTheDocument();
+    first.unmount();
+
+    hooks.useMe.mockReturnValue({ data: { user_id: 'user_1', tier: 'free', effective_tier: 'free' } });
+    hooks.useMyOrgs.mockReturnValue({ data: [{ org_id: 'org_1', name: 'Acme', role: 'owner' }], isLoading: false });
+    render(<MarketplacePage />);
+    expect(screen.getByRole('button', { name: 'Publish package' })).toBeInTheDocument();
+  });
+
+  it('shows held-update queues for every org the viewer owns or administers', () => {
+    hooks.useMe.mockReturnValue({ data: { user_id: 'user_1', tier: 'team', org_id: 'org_1', org_role: 'member' } });
+    hooks.useOrgSkillControl.mockReturnValue({ registries: { data: { items: [] }, isLoading: false, error: null } });
+    hooks.useMyOrgs.mockReturnValue({
+      data: [
+        { org_id: 'org_1', name: 'Primary', role: 'member' },
+        { org_id: 'org_2', name: 'Second', role: 'admin' },
+        { org_id: 'org_3', name: 'Third', role: 'owner' },
+      ],
+      isLoading: false,
+    });
+    const first = render(<MarketplacePage />);
+    // Not the primary org (member there), but both administered orgs.
+    expect(screen.getByTestId('held-queues')).toHaveTextContent('org_2,org_3');
+    first.unmount();
+
+    // Administering an org is enough even without a primary org.
+    hooks.useMe.mockReturnValue({ data: { user_id: 'user_1', tier: 'free' } });
+    hooks.useMyOrgs.mockReturnValue({ data: [{ org_id: 'org_9', name: 'Other', role: 'admin' }], isLoading: false });
+    render(<MarketplacePage />);
+    expect(screen.getByTestId('held-queues')).toHaveTextContent('org_9');
+  });
+
+  it('links the moderation queue for org owners (owners count as admins) but not members', () => {
+    hooks.useMyOrgs.mockReturnValue({ data: [{ org_id: 'org_1', name: 'Acme', role: 'owner' }], isLoading: false });
+    const first = render(<MarketplacePage />);
+    expect(screen.getByRole('link', { name: 'Moderation queue' })).toHaveAttribute('href', '/marketplace/moderation');
+    first.unmount();
+
+    hooks.useMyOrgs.mockReturnValue({ data: [{ org_id: 'org_1', name: 'Acme', role: 'member' }], isLoading: false });
+    render(<MarketplacePage />);
+    expect(screen.queryByRole('link', { name: 'Moderation queue' })).not.toBeInTheDocument();
+  });
+
+  it('badges a yanked version from the revocations feed and blocks download and requests', async () => {
+    const user = userEvent.setup();
+    hooks.useRevocationIndex.mockReturnValue({
+      data: { packages: new Map(), versions: new Map([['skv_1', 'yanked']]) },
+    });
+    render(<MarketplacePage />);
+    expect(screen.getByText('yanked')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Inspect Review Helper' }));
+    expect(screen.getByText('This version is yanked.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Download archive' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Request for project' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Preview instructions' })).toBeDisabled();
+  });
+
+  it('treats a package-wide block as blocking every version', async () => {
+    const user = userEvent.setup();
+    hooks.useRevocationIndex.mockReturnValue({
+      data: { packages: new Map([['spk_1', 'blocked']]), versions: new Map() },
+    });
+    render(<MarketplacePage />);
+    expect(screen.getByText('blocked')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Inspect Review Helper' }));
+    expect(screen.getByText('This version is blocked.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Download archive' })).toBeDisabled();
+  });
+
+  it('badges a listing the server marks blocked even without feed data', () => {
+    hooks.useMarketplacePackages.mockReturnValue(pages([{ ...packageRow, verification_state: 'blocked' }]));
+    render(<MarketplacePage />);
+    expect(screen.getByText('blocked')).toBeInTheDocument();
+  });
+});
+
+describe('Report dialog', () => {
+  async function openReport() {
+    const user = userEvent.setup();
+    render(<MarketplacePage />);
+    await user.click(screen.getByRole('button', { name: 'Inspect Review Helper' }));
+    await user.click(screen.getByRole('button', { name: 'Report…' }));
+    return user;
+  }
+
+  it('files a version-scoped report with a reason and details', async () => {
+    const mutateAsync = vi.fn().mockResolvedValue({ id: 'spr_1' });
+    hooks.useReportMarketplacePackage.mockReturnValue({ mutateAsync, isPending: false });
+    const user = await openReport();
+    const submit = screen.getByRole('button', { name: 'Submit report' });
+    expect(submit).toBeDisabled();
+    await user.click(screen.getByRole('combobox', { name: /Reason/ }));
+    await user.click(screen.getByRole('option', { name: /Leaks secrets/ }));
+    await user.type(screen.getByLabelText('Details (optional)'), 'API key in skills/x/SKILL.md');
+    await user.click(submit);
+    expect(mutateAsync).toHaveBeenCalledWith({
+      packageId: 'spk_1',
+      reason: 'secrets',
+      details: 'API key in skills/x/SKILL.md',
+      version_id: 'skv_1',
+    });
+    expect(hooks.addToast).toHaveBeenCalledWith('success', expect.stringMatching(/Report filed/));
+  });
+
+  it('reports the whole package when the version box is unchecked', async () => {
+    const mutateAsync = vi.fn().mockResolvedValue({ id: 'spr_1' });
+    hooks.useReportMarketplacePackage.mockReturnValue({ mutateAsync, isPending: false });
+    const user = await openReport();
+    await user.click(screen.getByRole('combobox', { name: /Reason/ }));
+    await user.click(screen.getByRole('option', { name: /Spam/ }));
+    await user.click(screen.getByRole('checkbox'));
+    await user.click(screen.getByRole('button', { name: 'Submit report' }));
+    expect(mutateAsync).toHaveBeenCalledWith({ packageId: 'spk_1', reason: 'spam', details: undefined });
+  });
+
+  it('caps details at 2000 characters', async () => {
+    const user = await openReport();
+    const box = screen.getByLabelText('Details (optional)');
+    expect(box).toHaveAttribute('maxLength', '2000');
+    await user.click(box);
+    await user.paste('x'.repeat(2100));
+    expect((box as HTMLTextAreaElement).value).toHaveLength(2000);
+    expect(screen.getByText('2000 / 2000')).toBeInTheDocument();
+  });
+
+  it('explains 409 report_already_open in plain language', async () => {
+    hooks.useReportMarketplacePackage.mockReturnValue({
+      mutateAsync: vi.fn().mockRejectedValue(apiError(409, { code: 'report_already_open', message: 'You already have an open report for this package.', details: { report_id: 'spr_9' } })),
+      isPending: false,
+    });
+    const user = await openReport();
+    await user.click(screen.getByRole('combobox', { name: /Reason/ }));
+    await user.click(screen.getByRole('option', { name: /Broken/ }));
+    await user.click(screen.getByRole('button', { name: 'Submit report' }));
+    expect(screen.getByText('You already have an open report for this package.')).toBeInTheDocument();
+    expect(screen.getByText(/Moderators will review it/)).toBeInTheDocument();
+    expect(screen.queryByText(/"error"/)).not.toBeInTheDocument();
+  });
+
+  it('explains 429 rate limiting', async () => {
+    hooks.useReportMarketplacePackage.mockReturnValue({
+      mutateAsync: vi.fn().mockRejectedValue(apiError(429, { code: 'report_rate_limited', message: 'Too many reports. Try again later.', details: {} })),
+      isPending: false,
+    });
+    const user = await openReport();
+    await user.click(screen.getByRole('combobox', { name: /Reason/ }));
+    await user.click(screen.getByRole('option', { name: /Something else/ }));
+    await user.click(screen.getByRole('button', { name: 'Submit report' }));
+    expect(screen.getByText('Too many reports right now.')).toBeInTheDocument();
+    expect(screen.getByText(/20 a day/)).toBeInTheDocument();
   });
 });

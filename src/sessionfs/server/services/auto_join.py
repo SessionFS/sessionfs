@@ -164,6 +164,11 @@ async def _auto_join_impl(user_id: str, db: AsyncSession) -> None:
     # with concurrent changes and decide again on fresh rows: lock the user
     # (deactivation updates it) and then the org (settings changes and other
     # seat-consuming joins lock it), re-reading both.
+    #
+    # GH #70 — scope locks first (user, then org), before those row locks.
+    from sessionfs.server.services.scope_locks import lock_scopes
+
+    await lock_scopes(db, user_ids=[user_id], org_ids=[candidate_org_id])
     user = (
         await db.execute(
             select(User)

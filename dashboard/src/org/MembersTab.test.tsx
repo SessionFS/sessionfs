@@ -358,6 +358,40 @@ describe('MembersTab', () => {
     );
   });
 
+  it('an owner gets the admin surface; the owner row is immutable and counts as admin', async () => {
+    hooks.useOrgMembers.mockReturnValue({
+      data: {
+        ...defaultMembers(),
+        members: [
+          {
+            user_id: 'u_olive',
+            email: 'olive@example.com',
+            display_name: 'Olive',
+            role: 'owner',
+            joined_at: '2026-04-09T12:00:00Z',
+          },
+          ...defaultMembers().members,
+        ],
+        current_user_role: 'owner',
+      },
+      isLoading: false,
+      error: null,
+    });
+    meHook.useMe.mockReturnValue({
+      data: { user_id: 'u_olive', email: 'olive@example.com' },
+    });
+
+    render(<MembersTab orgId="org_test" />);
+
+    expect(screen.getByRole('form', { name: /invite member/i })).toBeInTheDocument();
+    // Owner row has no demote/remove controls.
+    expect(screen.queryByRole('button', { name: /demote olive@example.com/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /remove olive@example.com/i })).toBeNull();
+    // Alice is the only admin, but the owner also has admin standing, so
+    // demoting Alice is not "the last admin".
+    expect(screen.getByRole('button', { name: /demote alice@example.com/i })).toBeEnabled();
+  });
+
   it('shows a success toast when invite mutation succeeds', async () => {
     const invite = makeMutation();
     invite.mutate.mockImplementation((_body, opts) => opts?.onSuccess?.());

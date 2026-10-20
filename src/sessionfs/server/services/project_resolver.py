@@ -88,10 +88,14 @@ async def resolve_project_by_remote(
     result = await db.execute(stmt)
     project = result.scalar_one_or_none()
 
-    # Fallback: legacy projects.git_remote_normalized column
+    # Fallback: legacy projects.git_remote_normalized column. A
+    # repo-reclaimed project lost its repository: its legacy column is NULL
+    # (never matches) and the explicit guard below keeps any pre-migration
+    # row unreachable by its former remote.
     if project is None:
         stmt = select(Project).where(
-            Project.git_remote_normalized == git_remote_normalized
+            Project.git_remote_normalized == git_remote_normalized,
+            Project.repo_reclaimed_at.is_(None),
         )
         if for_update:
             stmt = stmt.with_for_update()

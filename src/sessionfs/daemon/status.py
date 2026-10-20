@@ -27,6 +27,9 @@ class WatcherStatus(BaseModel):
     last_error: str | None = None
     degraded_since: str | None = None
     watch_paths: list[str] = Field(default_factory=list)
+    # Native sessions deliberately not captured, counted by reason (e.g.
+    # Antigravity conversations stored only in encrypted form).
+    sessions_skipped: dict[str, int] = Field(default_factory=dict)
 
 
 class DaemonStatus(BaseModel):

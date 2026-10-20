@@ -60,7 +60,7 @@ describe('HelpPage', () => {
     );
   });
 
-  it('exposes all 8 supported AI tool pills', () => {
+  it('exposes all 9 supported AI tool pills', () => {
     renderPage();
     const expected = [
       'Claude Code',
@@ -71,6 +71,7 @@ describe('HelpPage', () => {
       'Amp',
       'Cline',
       'Roo Code',
+      'Antigravity',
     ];
     for (const label of expected) {
       expect(screen.getByRole('tab', { name: label })).toBeInTheDocument();

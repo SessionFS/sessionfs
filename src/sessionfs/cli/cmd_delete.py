@@ -133,16 +133,15 @@ def delete(
                 shutil.rmtree(session_dir)
                 console.print(f"[green]Removed local directory: {session_dir}[/green]")
 
-            # Remove from SQLite index
+            # Remove from SQLite index (native refs first — foreign key).
             try:
                 conn = store.index._conn
                 if conn is not None:
-                    conn.execute(
-                        "DELETE FROM sessions WHERE session_id = ?", (full_id,)
-                    )
-                    conn.commit()
-            except Exception:
-                pass  # Index entry may not exist
+                    from sessionfs.store.index import delete_session_rows
+
+                    delete_session_rows(conn, full_id)
+            except Exception as exc:
+                err_console.print(f"[yellow]Could not update the local index: {exc}[/yellow]")
 
         # Add to local exclusion list — scoped to the active profile's
         # store so two accounts don't share one deleted.json

@@ -857,6 +857,11 @@ async def sso_callback(
     # serialize on the seat count — mirrors the invite-accept path. Without
     # this, N parallel logins each read count<limit and all provision, over-
     # running the paid seat cap. (SQLite ignores FOR UPDATE — single-writer.)
+    # GH #70 — org scope lock before the org row lock (the JIT user is new,
+    # so no other path can hold its user lock yet).
+    from sessionfs.server.services.scope_locks import lock_scopes
+
+    await lock_scopes(db, org_ids=[org_id])
     org_row = (
         await db.execute(
             select(Organization).where(Organization.id == org_id).with_for_update()

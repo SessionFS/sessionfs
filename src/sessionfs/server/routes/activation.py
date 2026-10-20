@@ -183,6 +183,25 @@ async def _phase_b_commit(
     # may ALREADY hold duplicate memberships (the very state this guard
     # defends against). scalar_one_or_none() would raise MultipleResultsFound
     # and turn the intended 409 into a 500. (Codex R1 on tk_29b3e43f1ee94130.)
+    # GH #70 — membership add/remove: the user's scope lock (then the
+    # org's), before any row lock, so it serializes with user delete,
+    # member removal and other joins (scope_locks.py global order).
+    from sessionfs.server.services.scope_locks import lock_scopes
+
+    await lock_scopes(db, user_ids=[user.id], org_ids=[])
+
+    # GH #70 — re-read the user under the user lock: a concurrent delete may
+    # have deactivated them while we waited. Never add an inactive user.
+    _locked_user = (
+        await db.execute(
+            select(User)
+            .where(User.id == user.id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if _locked_user is None or not _locked_user.is_active:
+        raise HTTPException(403, "Account is inactive")
+
     # Lock the user row first (the user -> org order shared with invite
     # acceptance and domain auto-join) so a concurrent membership insert for
     # this user elsewhere can't slip in between the check and the insert.

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.db.models import (
@@ -2424,6 +2424,247 @@ async def test_auto_generate_concepts_flushes_delete_before_insert(
         )
 
 
+@pytest.mark.asyncio
+async def test_auto_generate_concepts_update_re_reads_links_under_lock(
+    db_session: AsyncSession, test_user: User, test_project: Project, monkeypatch
+):
+    """GH #70 — the update branch re-validates entry freshness under the lock,
+    but must also re-read the page's CURRENT links. A concurrent /compile
+    that commits between the pre-lock prefetch and the lock can delete and
+    re-add the same (entry → page) links; deleting the stale prefetched
+    objects is then a no-op and re-adding hits uq_kl_link. The fix diffs
+    against the live set and skips links already present.
+
+    Simulated in-process: the scope lock is monkeypatched to delete and
+    re-add the (entry_a → page) link before taking the real lock — the same
+    staleness the prefetch would see after a real concurrent commit."""
+    from sqlalchemy import delete as sa_delete
+
+    from sessionfs.server.db.models import KnowledgeLink, KnowledgePage
+    from sessionfs.server.services import compiler as compiler_mod
+    from sessionfs.server.services import scope_locks
+    from sessionfs.server.services.compiler import auto_generate_concepts
+
+    # Two active claims so the growth guard (len(matched) <= old_count * 1.5)
+    # doesn't `continue` before the regenerate branch runs (old_count = 1).
+    entry_a = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_concept_reread_a",
+        user_id=test_user.id,
+        entry_type="pattern",
+        content=(
+            "All converters follow the pattern: parse native format then "
+            "translate to canonical .sfs then write. Workspace-relative paths only."
+        ),
+        confidence=0.9,
+        claim_class="claim",
+        dismissed=False,
+        freshness_class="current",
+    )
+    entry_b = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_concept_reread_b",
+        user_id=test_user.id,
+        entry_type="pattern",
+        content=(
+            "Each converter normalises its native session format into the "
+            "canonical .sfs converter pipeline before disk write."
+        ),
+        confidence=0.9,
+        claim_class="claim",
+        dismissed=False,
+        freshness_class="current",
+    )
+    db_session.add(entry_a)
+    db_session.add(entry_b)
+    await db_session.commit()
+    await db_session.refresh(entry_a)
+    await db_session.refresh(entry_b)
+
+    page = KnowledgePage(
+        id=f"kp_{uuid.uuid4().hex[:16]}",
+        project_id=test_project.id,
+        slug="concept/converter-pattern",
+        title="Converter Pattern",
+        page_type="concept",
+        content="# Converter Pattern\n\n- placeholder",
+        word_count=3,
+        entry_count=1,
+        auto_generated=True,
+    )
+    db_session.add(page)
+    await db_session.commit()
+    await db_session.refresh(page)
+
+    db_session.add(KnowledgeLink(
+        project_id=test_project.id,
+        source_type="entry",
+        source_id=str(entry_a.id),
+        target_type="page",
+        target_id=page.id,
+        link_type="contributes",
+        confidence=1.0,
+    ))
+    # A second, unrelated link keeps the table non-empty so the simulated
+    # concurrent re-add of (entry_a → page) gets a FRESH id rather than
+    # SQLite reusing the just-deleted row's id (which would let the stale
+    # prefetch delete actually remove the re-added row and mask the bug).
+    db_session.add(KnowledgeLink(
+        project_id=test_project.id,
+        source_type="entry",
+        source_id="0",
+        target_type="page",
+        target_id="page_unrelated_placeholder",
+        link_type="related",
+        confidence=1.0,
+    ))
+    await db_session.commit()
+    project_id = test_project.id
+    entry_a_id = entry_a.id
+    entry_b_id = entry_b.id
+    page_id = page.id
+
+    async def _fake_candidates(*args, **kwargs):
+        return [{
+            "slug": "converter-pattern",
+            "topic": "converter pattern",
+            "entry_count": 5,
+            "summary": "Pattern across converters",
+        }]
+    monkeypatch.setattr(compiler_mod, "check_concept_candidates", _fake_candidates)
+
+    async def _fake_article(*args, **kwargs):
+        return "# Converter Pattern\n\n- Updated content"
+    monkeypatch.setattr(compiler_mod, "generate_concept_article", _fake_article)
+
+    real_lock = scope_locks.lock_project_scope_authorized
+
+    async def _concurrent_writer_lock(db, *args, **kwargs):
+        # Between the pre-lock prefetch and the lock: delete the page's
+        # (entry_a → page) link and re-add an identical one, as a committed
+        # concurrent /compile would. The prefetched links_by_page objects are
+        # now stale (their PKs are gone); re-adding blindly would violate
+        # uq_kl_link against the freshly re-added row.
+        await db.execute(sa_delete(KnowledgeLink).where(
+            KnowledgeLink.project_id == project_id,
+            KnowledgeLink.target_type == "page",
+            KnowledgeLink.target_id == page_id,
+        ))
+        await db.flush()
+        db.add(KnowledgeLink(
+            project_id=project_id,
+            source_type="entry",
+            source_id=str(entry_a_id),
+            target_type="page",
+            target_id=page_id,
+            link_type="contributes",
+            confidence=1.0,
+        ))
+        await db.flush()
+        await real_lock(db, *args, **kwargs)
+
+    monkeypatch.setattr(scope_locks, "lock_project_scope_authorized", _concurrent_writer_lock)
+
+    # Pre-fix this raised IntegrityError (uq_kl_link) on the final commit:
+    # the stale (entry_a, page) prefetch delete was a no-op and the re-add
+    # collided with the re-added row. Post-fix it completes cleanly.
+    result = await auto_generate_concepts(project_id, test_user.id, db_session)
+
+    assert any(c["slug"] == "concept/converter-pattern" for c in result), (
+        f"regenerate branch did not run — concept/converter-pattern not in "
+        f"result: {result}"
+    )
+
+    # Exactly one (entry_a, page) link survives (the re-added row, not a
+    # duplicate) and entry_b's new link is present.
+    links_a = (
+        await db_session.execute(
+            select(KnowledgeLink).where(
+                KnowledgeLink.project_id == project_id,
+                KnowledgeLink.target_id == page_id,
+                KnowledgeLink.source_id == str(entry_a_id),
+            )
+        )
+    ).scalars().all()
+    assert len(links_a) == 1, (
+        f"expected exactly 1 (entry_a, page) link, got {len(links_a)}"
+    )
+    links_b = (
+        await db_session.execute(
+            select(KnowledgeLink).where(
+                KnowledgeLink.project_id == project_id,
+                KnowledgeLink.target_id == page_id,
+                KnowledgeLink.source_id == str(entry_b_id),
+            )
+        )
+    ).scalars().all()
+    assert len(links_b) == 1, (
+        f"expected exactly 1 (entry_b, page) new link, got {len(links_b)}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_auto_generate_concepts_generates_articles_before_scope_lock(
+    db_session: AsyncSession, test_user: User, test_project: Project, monkeypatch
+):
+    """GH #70 — auto_generate_concepts must do its LLM work (candidate
+    clustering + article generation) BEFORE taking the project scope lock:
+    on SQLite that lock is the DB-wide writer lock, and holding it across
+    call_llm would block every write in the database for minutes."""
+    from sessionfs.server.services import compiler as compiler_mod
+    from sessionfs.server.services import scope_locks
+    from sessionfs.server.services.compiler import auto_generate_concepts
+
+    entry = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_concept_lock",
+        user_id=test_user.id,
+        entry_type="pattern",
+        content="Converters translate native formats into canonical .sfs before write",
+        confidence=0.9,
+        claim_class="claim",
+        dismissed=False,
+        freshness_class="current",
+    )
+    db_session.add(entry)
+    await db_session.commit()
+
+    order: list[str] = []
+
+    async def _fake_candidates(*args, **kwargs):
+        return [{
+            "slug": "converter-lock",
+            "topic": "converter",
+            "entry_count": 1,
+            "summary": "converters",
+        }]
+
+    monkeypatch.setattr(compiler_mod, "check_concept_candidates", _fake_candidates)
+
+    async def _fake_article(*args, **kwargs):
+        order.append("article")
+        return "# Converter\n\n- generated"
+
+    monkeypatch.setattr(compiler_mod, "generate_concept_article", _fake_article)
+
+    real_lock = scope_locks.lock_project_scope_authorized
+
+    async def _tracking_lock(*args, **kwargs):
+        order.append("lock")
+        await real_lock(*args, **kwargs)
+
+    monkeypatch.setattr(scope_locks, "lock_project_scope_authorized", _tracking_lock)
+
+    await auto_generate_concepts(test_project.id, test_user.id, db_session)
+
+    assert "article" in order, f"article generation never ran: {order}"
+    assert "lock" in order, f"scope lock never taken: {order}"
+    assert order.index("article") < order.index("lock"), (
+        f"article generation ran under the scope lock (SQLite writer lock): "
+        f"{order}"
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────
 # v0.10.23 tk_49db8d2b6c424d35 — entity_ref upsert semantics
 # ─────────────────────────────────────────────────────────────────────
@@ -2828,3 +3069,210 @@ async def test_extraction_drops_entries_that_were_only_nul_bytes(
     assert all(e.content and e.content.strip() for e in entries)
     decisions = [e.content for e in entries if e.entry_type == "decision"]
     assert decisions == ["Use FastAPI instead of Flask"]
+
+
+# ── GH #70 — compile releases the project scope lock around its LLM call ──
+#
+# File-backed SQLite (separate connections): there the project scope lock
+# IS the database writer lock, so "another writer can commit" is exactly
+# "compile does not hold the scope lock".
+
+
+async def _file_kb_db(tmp_path, with_pending: bool):
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from sessionfs.server.db.engine import install_sqlite_unicode_lower
+    from sessionfs.server.db.models import Base
+
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'kb.db'}", connect_args={"timeout": 0.5}
+    )
+    install_sqlite_unicode_lower(engine)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    user_id = str(uuid.uuid4())
+    project_id = f"proj_{uuid.uuid4().hex[:16]}"
+    async with factory() as db:
+        db.add(User(
+            id=user_id, email="kb@example.com", display_name="KB", tier="pro",
+            created_at=datetime.now(timezone.utc), email_verified=True,
+        ))
+        db.add(Project(
+            id=project_id, name="KB", git_remote_normalized="github.com/example/kb",
+            context_document="# Prior\n", owner_id=user_id,
+        ))
+        await db.flush()
+        db.add(KnowledgeEntry(
+            project_id=project_id, session_id="ses_seed", user_id=user_id,
+            entry_type="decision", content="Seed decision about the storage layer format",
+            confidence=0.9, claim_class="claim",
+            compiled_at=None if with_pending else datetime.now(timezone.utc),
+        ))
+        # Eligible for auto-promotion — shows whether housekeeping committed.
+        db.add(KnowledgeEntry(
+            project_id=project_id, session_id="ses_seed", user_id=user_id,
+            entry_type="pattern", content="Evidence row long enough to be auto promoted",
+            confidence=0.9, claim_class="evidence",
+        ))
+        await db.commit()
+    return engine, factory, user_id, project_id
+
+
+async def _concurrent_write(factory, project_id, user_id, content):
+    """A project-scoped writer (scope lock + insert + commit), like add_entry."""
+    from sessionfs.server.services.scope_locks import lock_scopes
+
+    async with factory() as other:
+        await lock_scopes(other, project_ids=[project_id])
+        other.add(KnowledgeEntry(
+            project_id=project_id, session_id="ses_other", user_id=user_id,
+            entry_type="bug", content=content, confidence=0.9, claim_class="claim",
+        ))
+        await other.commit()
+
+
+@pytest.mark.asyncio
+async def test_compile_noop_releases_scope_lock_before_returning(tmp_path):
+    from sessionfs.server.services import compiler
+
+    engine, factory, user_id, project_id = await _file_kb_db(tmp_path, with_pending=False)
+    try:
+        async with factory() as db:
+            # The seed claim is compiled, but the evidence row is promoted
+            # and then pending — compile the first time to drain it.
+            await compiler.compile_project_context(project_id, user_id, db)
+            result = await compiler.compile_project_context(project_id, user_id, db)
+            assert result is None
+            # The caller (/compile) goes on to LLM concept generation here;
+            # another writer must not be blocked while it does.
+            await _concurrent_write(factory, project_id, user_id, "Writer after noop compile")
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_compile_llm_call_does_not_block_writers_and_sees_their_changes(
+    tmp_path, monkeypatch,
+):
+    from sessionfs.judge import providers
+    from sessionfs.server.services import compiler
+
+    engine, factory, user_id, project_id = await _file_kb_db(tmp_path, with_pending=True)
+    calls: list[str] = []
+
+    async def fake_llm(*, prompt, **kwargs):
+        calls.append(prompt)
+        if len(calls) == 1:
+            # Raises 'database is locked' if compile held the scope lock.
+            await _concurrent_write(
+                factory, project_id, user_id, "Concurrent bug filed during the LLM call"
+            )
+        return f"# LLM output {len(calls)}\n"
+
+    monkeypatch.setattr(providers, "call_llm", fake_llm)
+    try:
+        async with factory() as db:
+            compilation = await compiler.compile_project_context(
+                project_id, user_id, db, api_key="k"
+            )
+            assert compilation is not None
+        assert len(calls) == 2
+        assert "Concurrent bug filed" not in calls[0]
+        assert "Concurrent bug filed" in calls[1]
+        async with factory() as check:
+            doc = (await check.execute(
+                select(Project.context_document).where(Project.id == project_id)
+            )).scalar_one()
+            assert doc.strip() == "# LLM output 2"
+            uncompiled = (await check.execute(
+                select(KnowledgeEntry.id).where(
+                    KnowledgeEntry.project_id == project_id,
+                    KnowledgeEntry.claim_class == "claim",
+                    KnowledgeEntry.compiled_at.is_(None),
+                )
+            )).scalars().all()
+            assert uncompiled == []
+            assert (await check.execute(
+                select(func.count(ContextCompilation.id))
+            )).scalar_one() == 1
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_compile_falls_back_to_deterministic_merge_when_inputs_keep_changing(
+    tmp_path, monkeypatch,
+):
+    from sessionfs.judge import providers
+    from sessionfs.server.services import compiler
+
+    engine, factory, user_id, project_id = await _file_kb_db(tmp_path, with_pending=True)
+    calls: list[str] = []
+
+    async def fake_llm(*, prompt, **kwargs):
+        calls.append(prompt)
+        await _concurrent_write(
+            factory, project_id, user_id, f"Concurrent bug number {len(calls)} filed now"
+        )
+        return "# stale LLM output\n"
+
+    monkeypatch.setattr(providers, "call_llm", fake_llm)
+    try:
+        async with factory() as db:
+            compilation = await compiler.compile_project_context(
+                project_id, user_id, db, api_key="k"
+            )
+            assert compilation is not None
+        assert len(calls) == compiler._MAX_LLM_COMPILE_ATTEMPTS
+        async with factory() as check:
+            doc = (await check.execute(
+                select(Project.context_document).where(Project.id == project_id)
+            )).scalar_one()
+            assert "stale LLM output" not in doc
+            assert "Concurrent bug number 2 filed now" in doc
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_compile_crash_after_llm_preserves_prior_state(tmp_path, monkeypatch):
+    """A crash in the apply pass (after the LLM call, under the re-taken
+    lock) rolls back everything — projection, mark-compiled AND the
+    housekeeping — and the discarded planning pass wrote nothing."""
+    from sessionfs.judge import providers
+    from sessionfs.server.services import compiler
+
+    engine, factory, user_id, project_id = await _file_kb_db(tmp_path, with_pending=True)
+
+    async def fake_llm(*, prompt, **kwargs):
+        return "# new context\n"
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("simulated crash in the apply pass")
+
+    monkeypatch.setattr(providers, "call_llm", fake_llm)
+    monkeypatch.setattr(compiler, "_build_source_manifest", boom)
+    try:
+        async with factory() as db:
+            with pytest.raises(RuntimeError, match="simulated crash"):
+                await compiler.compile_project_context(
+                    project_id, user_id, db, api_key="k", force_rebuild=True
+                )
+        async with factory() as check:
+            doc = (await check.execute(
+                select(Project.context_document).where(Project.id == project_id)
+            )).scalar_one()
+            assert doc == "# Prior\n"
+            rows = (await check.execute(
+                select(KnowledgeEntry.claim_class, KnowledgeEntry.compiled_at)
+                .where(KnowledgeEntry.project_id == project_id)
+                .order_by(KnowledgeEntry.id)
+            )).all()
+            assert [r[0] for r in rows] == ["claim", "evidence"]
+            assert all(r[1] is None for r in rows)
+            assert (await check.execute(
+                select(func.count(ContextCompilation.id))
+            )).scalar_one() == 0
+    finally:
+        await engine.dispose()

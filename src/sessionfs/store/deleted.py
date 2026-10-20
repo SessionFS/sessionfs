@@ -151,6 +151,105 @@ def remove_exclusion(session_id: str, base_dir: Path | None = None) -> None:
     logger.info("Removed exclusion for session %s", session_id)
 
 
+def mark_deleted_if_absent(
+    session_id: str,
+    scope: str,
+    reason: str,
+    base_dir: Path | None = None,
+) -> bool:
+    """Add an exclusion entry only if the session has none (locked).
+
+    Returns True when this call wrote the entry, False when any entry —
+    a user deletion or anything else — was already present; an existing
+    entry is never overwritten. Used for system-generated exclusions.
+    """
+    path = _deleted_path(base_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(_lock_path(path), "a") as lf:
+        fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+        try:
+            data = _read_deleted(path)
+            if session_id in data:
+                return False
+            data[session_id] = {
+                "deleted_at": datetime.now(timezone.utc).isoformat(),
+                "scope": scope,
+                "reason": reason,
+            }
+            _write_deleted(path, data)
+        finally:
+            fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+    logger.info("Marked session %s as excluded (scope=%s, reason=%s)", session_id, scope, reason)
+    return True
+
+
+def mark_merged(
+    session_id: str,
+    reason: str,
+    base_dir: Path | None = None,
+) -> bool:
+    """Record a merge: ``session_id``'s standalone capture is folded into its
+    parent and its local copy is deleted (``reason`` is the merge note).
+
+    Unlike ``mark_deleted_if_absent`` this does not blindly keep any existing
+    entry. A cloud-only deletion or a transient auto-exclusion (``too_large``)
+    kept the local copy, so once that copy is gone the entry is stale and is
+    replaced by the merge record. A hard user deletion of the local copy, or
+    an earlier merge record, is preserved (both carry a local/everywhere scope
+    with no transient reason). Returns True when this call wrote the record.
+    """
+    path = _deleted_path(base_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(_lock_path(path), "a") as lf:
+        fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+        try:
+            data = _read_deleted(path)
+            existing = data.get(session_id)
+            if isinstance(existing, dict) and existing.get("scope") in ("local", "everywhere") \
+                    and existing.get("reason") not in TRANSIENT_REASONS:
+                return False  # a hard local deletion or an earlier merge record
+            data[session_id] = {
+                "deleted_at": datetime.now(timezone.utc).isoformat(),
+                "scope": "local",
+                "reason": reason,
+            }
+            _write_deleted(path, data)
+        finally:
+            fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+    logger.info("Marked session %s as merged (reason=%s)", session_id, reason)
+    return True
+
+
+def remove_exclusion_if_reason(
+    session_id: str,
+    reason_prefix: str,
+    base_dir: Path | None = None,
+) -> bool:
+    """Remove an exclusion only while its reason still starts with
+    ``reason_prefix`` (locked compare-and-delete).
+
+    Returns True when the entry was removed. An entry whose reason differs
+    — e.g. a user deletion that replaced a system entry — is left alone.
+    """
+    if not reason_prefix:
+        raise ValueError("reason_prefix must not be empty")
+    path = _deleted_path(base_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(_lock_path(path), "a") as lf:
+        fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+        try:
+            data = _read_deleted(path)
+            entry = data.get(session_id)
+            if not isinstance(entry, dict) or not str(entry.get("reason") or "").startswith(reason_prefix):
+                return False
+            del data[session_id]
+            _write_deleted(path, data)
+        finally:
+            fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+    logger.info("Removed exclusion for session %s (reason %s*)", session_id, reason_prefix)
+    return True
+
+
 def list_deleted(base_dir: Path | None = None) -> dict[str, Any]:
     """Return all entries from the local exclusion list.
 

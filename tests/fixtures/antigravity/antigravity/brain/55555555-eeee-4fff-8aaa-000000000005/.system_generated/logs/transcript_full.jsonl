@@ -1,0 +1,2 @@
+{"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "created_at": "2026-10-18T04:10:40Z", "content": "Summarize README.md for the parent agent."}
+{"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "created_at": "2026-10-18T04:10:41Z", "input_tokens": 500, "cache_read_tokens": 0, "output_tokens": 20, "content": "README.md is a one-line demo heading."}

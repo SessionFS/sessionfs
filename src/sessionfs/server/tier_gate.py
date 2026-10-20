@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.db.engine import get_db
-from sessionfs.server.db.models import OrgMember, Organization, User
+from sessionfs.server.db.models import OrgMember, Organization, Project, ProjectFeatureGrandfather, User
 from sessionfs.server.roles import has_minimum_role
 from sessionfs.server.services.entitlements import resolve_entitlement
 from sessionfs.server.tiers import Tier, format_bytes, get_features_for_tier, get_minimum_tier_for_feature, get_storage_limit
@@ -251,6 +251,101 @@ def check_feature(ctx: UserContext, feature: str) -> None:
                 "message": f"This feature requires {get_minimum_tier_for_feature(feature)} or above.",
             },
         )
+
+
+# Features that belong to a project rather than to the caller. Inside a
+# project they are paid for by the project's owner (tk_a90e4015ad984cde).
+PROJECT_SCOPED_FEATURES = frozenset(
+    {"project_context", "agent_personas", "agent_tickets", "agent_runs"}
+)
+
+
+async def resolve_org_plan_tier(org_id: str, db: AsyncSession) -> Tier:
+    """An org's plan: its active entitlement, else the legacy org.tier.
+
+    An unrecognised value maps to TEAM, as in get_user_context.
+    """
+    ent = await resolve_entitlement("org", org_id, db)
+    if ent is not None:
+        try:
+            return Tier(ent.tier)
+        except ValueError:
+            return Tier.TEAM
+    org = await _get_org(org_id, db)
+    if org is not None:
+        try:
+            return Tier(org.tier)
+        except ValueError:
+            return Tier.TEAM
+    return Tier.FREE
+
+
+def raise_project_upgrade_required(feature: str, plan: Tier, project_id: str | None) -> None:
+    required = get_minimum_tier_for_feature(feature)
+    detail: dict = {
+        "error": "upgrade_required",
+        "feature": feature,
+        "plan_scope": "project",
+        "current_tier": plan.value,
+        "required_tier": required,
+        "upgrade_url": "https://sessionfs.dev/pricing",
+        "message": (
+            f"This feature requires the project's plan to be {required} or above."
+        ),
+    }
+    if project_id is not None:
+        detail["project_id"] = project_id
+    raise HTTPException(status_code=403, detail=detail)
+
+
+async def resolve_project_plan_tier(project: Project, db: AsyncSession) -> Tier:
+    """The plan that pays for a project: its org's, or its owner's.
+
+    Org projects resolve the org entitlement first, then the legacy
+    org.tier column (an unrecognised value maps to TEAM, as in
+    get_user_context). Personal projects use the owner's effective tier,
+    the same tier the owner gets everywhere else.
+    """
+    if project.org_id:
+        return await resolve_org_plan_tier(project.org_id, db)
+    owner = await db.get(User, project.owner_id)
+    if owner is None:
+        return Tier.FREE
+    return await get_effective_tier(owner, db)
+
+
+async def _is_grandfathered(project_id: str, feature: str, db: AsyncSession) -> bool:
+    result = await db.execute(
+        select(ProjectFeatureGrandfather.project_id).where(
+            ProjectFeatureGrandfather.project_id == project_id,
+            ProjectFeatureGrandfather.feature == feature,
+        )
+    )
+    return result.first() is not None
+
+
+async def check_project_feature(
+    ctx: UserContext, feature: str, project: Project, db: AsyncSession
+) -> None:
+    """Raise 403 unless the feature is available inside this project.
+
+    Call AFTER the caller is authorized for the project (and after the
+    service-key boundary check), so the plan lookup never leaks anything
+    about a project the caller cannot see.
+
+    Allowed when the project's own plan includes the feature, or when the
+    project already used the feature before v0.17.2 (recorded by migration
+    065) and the caller's own plan includes it — that keeps the old
+    caller-plan behaviour for existing usage only.
+    """
+    plan = await resolve_project_plan_tier(project, db)
+    if feature in get_features_for_tier(plan):
+        return
+    if feature in get_features_for_tier(ctx.effective_tier) and await _is_grandfathered(
+        project.id, feature, db
+    ):
+        return
+    raise_project_upgrade_required(feature, plan, project.id)
 
 
 def check_role(ctx: UserContext, min_role: str) -> None:

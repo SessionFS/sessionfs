@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import re
 import shutil
 from pathlib import Path
 
 import typer
 
+from sessionfs.cli import mcp_config_io as _cfg
 from sessionfs.cli.common import console, err_console
 
 mcp_app = typer.Typer(name="mcp", help="MCP server for AI tool integration.")
@@ -59,6 +59,10 @@ TOOL_INSTRUCTION_FILES: dict[str, str | None] = {
     "cline": None,
     "roo-code": None,
     "kilo-code": None,
+    # Antigravity reads GEMINI.md / AGENTS.md, which Gemini CLI and Codex
+    # share; writing (and on uninstall, removing) a block there on
+    # Antigravity's behalf would touch other tools' files. Served via MCP.
+    "antigravity": None,
 }
 
 
@@ -126,7 +130,7 @@ def serve() -> None:
 def install(
     tool: str = typer.Option(
         ..., "--for",
-        help="Tool to configure: claude-code, codex, gemini, cursor, copilot, amp, cline, roo-code, kilo-code",
+        help="Tool to configure: claude-code, codex, gemini, cursor, copilot, amp, cline, roo-code, kilo-code, antigravity",
     ),
     skip_instructions: bool = typer.Option(
         False, "--skip-instructions",
@@ -166,6 +170,7 @@ def _install_mcp_for_tool(tool: str) -> None:
         "cline": _install_vscode_extension,
         "roo-code": _install_vscode_extension,
         "kilo-code": _install_vscode_extension,
+        "antigravity": _install_antigravity,
     }
 
     if tool in ("cline", "roo-code", "kilo-code"):
@@ -182,7 +187,7 @@ def _install_mcp_for_tool(tool: str) -> None:
 def uninstall(
     tool: str = typer.Option(
         ..., "--for",
-        help="Tool to unconfigure: claude-code, codex, gemini, cursor, copilot, amp, cline, roo-code, kilo-code",
+        help="Tool to unconfigure: claude-code, codex, gemini, cursor, copilot, amp, cline, roo-code, kilo-code, antigravity",
     ),
 ) -> None:
     """Remove SessionFS MCP server registration from an AI tool."""
@@ -196,6 +201,7 @@ def uninstall(
         "cline": _uninstall_vscode_extension,
         "roo-code": _uninstall_vscode_extension,
         "kilo-code": _uninstall_vscode_extension,
+        "antigravity": _uninstall_antigravity,
     }
 
     uninstall_ok = True
@@ -226,34 +232,50 @@ def uninstall(
 # ---------------------------------------------------------------------------
 
 
-def _uninstall_json_config(config_path: Path, display_name: str) -> None:
-    """Remove sessionfs from a JSON config file's mcpServers."""
-    if not config_path.exists():
-        console.print(f"[dim]No config found at {config_path}. Nothing to remove.[/dim]")
-        return
+def _report_uninstall(plan: _cfg.ConfigPlan, display_name: str) -> None:
+    if plan.action == "missing":
+        console.print(f"[dim]No config found at {plan.path}. Nothing to remove.[/dim]")
+    elif plan.action == "absent":
+        console.print(f"[dim]SessionFS not found in {display_name} config. Nothing to remove.[/dim]")
+    else:
+        console.print(f"[green]Removed SessionFS MCP server from {display_name}.[/green]")
+        console.print(f"  Restart {display_name} to apply.")
+
+
+def _uninstall_json_configs(paths: list[Path], display_name: str, allow_empty: bool = False) -> None:
+    """Remove sessionfs from the mcpServers of every file in *paths*.
+
+    All files are preflighted first (nothing changes unless every one can be
+    edited safely); each is then written on its own, atomically, with a
+    timestamped backup, and each result is reported; see cli/mcp_config_io.
+    ``allow_empty`` treats a zero-byte / whitespace-only file as an empty
+    config (Antigravity ships ``mcp_config.json`` as an empty file).
+    """
+
+    def _plan(p: Path) -> _cfg.ConfigPlan:
+        return _cfg.plan_uninstall(p, "sessionfs", display_name, allow_empty=allow_empty)
 
     try:
-        data = json.loads(config_path.read_text())
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
-        console.print(f"[yellow]Could not parse {config_path}: {e}. Skipping.[/yellow]")
-        raise RuntimeError(f"Cannot parse {config_path}") from e
+        plans = [_plan(p) for p in paths]
+    except (_cfg.ConfigFileError, OSError) as e:
+        console.print(f"[yellow]{e} Skipping.[/yellow]")
+        raise RuntimeError(str(e)) from e
+    results = _cfg.apply_plans(plans, lambda plan: _plan(plan.path))
+    for result in results:
+        if result.ok:
+            _report_uninstall(result.plan, display_name)
+        else:
+            console.print(f"[yellow]Not changed: {result.error}[/yellow]")
+    failed = [r for r in results if not r.ok]
+    if failed:
+        raise RuntimeError("; ".join(str(r.error) for r in failed))
 
-    if not isinstance(data, dict):
-        console.print(f"[yellow]{config_path} is not a JSON object. Skipping.[/yellow]")
-        raise RuntimeError(f"{config_path} is not a JSON object")
 
-    servers = data.get("mcpServers")
-    if servers is not None and not isinstance(servers, dict):
-        console.print(f"[yellow]{config_path}: mcpServers is not a JSON object. Cannot safely uninstall.[/yellow]")
-        raise RuntimeError(f"{config_path}: mcpServers is not a dict")
-    if not isinstance(servers, dict) or "sessionfs" not in servers:
-        console.print(f"[dim]SessionFS not found in {display_name} config. Nothing to remove.[/dim]")
-        return
-
-    del servers["sessionfs"]
-    config_path.write_text(json.dumps(data, indent=2))
-    console.print(f"[green]Removed SessionFS MCP server from {display_name}.[/green]")
-    console.print(f"  Restart {display_name} to apply.")
+def _uninstall_json_config(
+    config_path: Path, display_name: str, allow_empty: bool = False,
+) -> None:
+    """Remove sessionfs from a JSON config file's mcpServers (atomic, preflighted)."""
+    _uninstall_json_configs([config_path], display_name, allow_empty=allow_empty)
 
 
 def _uninstall_claude_code() -> None:
@@ -342,50 +364,58 @@ def _uninstall_vscode_extension(tool: str = "cline") -> None:
 # ---------------------------------------------------------------------------
 
 
+def _install_json_configs(
+    paths: list[Path], mcp_config: dict, display_name: str, allow_empty: bool = False,
+) -> None:
+    """Add sessionfs to the mcpServers of every file in *paths*.
+
+    Every file is preflighted (parsed, permission- and symlink-checked)
+    before any is changed; each is then written on its own — atomically,
+    permissions kept, the previous version kept as a timestamped backup —
+    and every target's result is reported. See cli/mcp_config_io.
+    Handles malformed JSON, non-dict roots, null mcpServers and stale
+    registrations; ``allow_empty`` treats a zero-byte file as ``{}``.
+    """
+
+    def _plan(p: Path) -> _cfg.ConfigPlan:
+        return _cfg.plan_install(p, "sessionfs", mcp_config, display_name, allow_empty=allow_empty)
+
+    try:
+        plans = [_plan(p) for p in paths]
+    except _cfg.ConfigFileError as e:
+        err_console.print(f"[red]{e}[/red]")
+        raise SystemExit(1)
+    except OSError as e:
+        err_console.print(f"[red]Cannot read the {display_name} MCP config: {e}[/red]")
+        raise SystemExit(1)
+
+    results = _cfg.apply_plans(plans, lambda plan: _plan(plan.path))
+    for result in results:
+        plan = result.plan
+        if not result.ok:
+            err_console.print(f"[red]Not changed: {result.error}[/red]")
+            continue
+        if plan.action == "unchanged":
+            console.print(f"[dim]SessionFS MCP server already configured in {display_name}.[/dim]")
+            continue
+        verb = "Updated" if plan.action == "updated" else "Added"
+        console.print(f"[green]{verb} SessionFS MCP server in {display_name}.[/green]")
+        console.print(f"  Config: {plan.path}")
+        if result.backup is not None:
+            console.print(f"  Previous version saved as {result.backup}")
+        console.print(f"  Restart {display_name} to activate.")
+    if any(not r.ok for r in results):
+        if any(r.ok for r in results):
+            err_console.print("[yellow]Some config files were updated and some were not (see above).[/yellow]")
+        raise SystemExit(1)
+
+
 def _install_json_config(
     config_path: Path, mcp_config: dict, display_name: str,
+    allow_empty: bool = False,
 ) -> None:
-    """Shared installer for JSON-based MCP configs.
-
-    Handles: malformed JSON, non-dict root, null mcpServers, stale registrations.
-    """
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-
-    data: dict = {}
-    if config_path.exists():
-        try:
-            data = json.loads(config_path.read_text())
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            err_console.print(f"[red]Cannot parse {config_path} — fix the file manually before installing.[/red]")
-            raise SystemExit(1)
-        except OSError as e:
-            err_console.print(f"[red]Cannot read {config_path}: {e}[/red]")
-            raise SystemExit(1)
-
-    if not isinstance(data, dict):
-        err_console.print(f"[red]{config_path} is not a JSON object — fix it manually before installing.[/red]")
-        raise SystemExit(1)
-
-    servers = data.get("mcpServers")
-    if servers is None:
-        data["mcpServers"] = {}
-        servers = data["mcpServers"]
-    elif not isinstance(servers, dict):
-        err_console.print(f"[red]{config_path}: mcpServers is not a JSON object — fix it manually before installing.[/red]")
-        raise SystemExit(1)
-
-    existing = servers.get("sessionfs")
-    if existing == mcp_config:
-        console.print(f"[dim]SessionFS MCP server already configured in {display_name}.[/dim]")
-        return
-
-    action = "Updated" if existing else "Added"
-    servers["sessionfs"] = mcp_config
-    config_path.write_text(json.dumps(data, indent=2))
-
-    console.print(f"[green]{action} SessionFS MCP server in {display_name}.[/green]")
-    console.print(f"  Config: {config_path}")
-    console.print(f"  Restart {display_name} to activate.")
+    """Shared installer for JSON-based MCP configs (atomic, preflighted)."""
+    _install_json_configs([config_path], mcp_config, display_name, allow_empty=allow_empty)
 
 
 def _install_claude_code(mcp_config: dict) -> None:
@@ -573,6 +603,50 @@ def _install_vscode_extension(mcp_config: dict, tool: str = "cline") -> None:
         raise SystemExit(1)
 
     _install_json_config(config_path, mcp_config, display)
+
+
+def _antigravity_mcp_config_paths() -> list[Path]:
+    """Antigravity MCP config files, newest layout first.
+
+    ``~/.gemini/config/mcp_config.json`` is read by the agy CLI and current
+    desktop builds; ``~/.gemini/antigravity/mcp_config.json`` by older
+    desktop builds.
+    """
+    gemini = Path.home() / ".gemini"
+    return [gemini / "config" / "mcp_config.json", gemini / "antigravity" / "mcp_config.json"]
+
+
+def _antigravity_installed() -> bool:
+    gemini = Path.home() / ".gemini"
+    return any(
+        (gemini / name).is_dir()
+        for name in ("antigravity", "antigravity-cli", "antigravity-ide")
+    )
+
+
+def _install_antigravity(mcp_config: dict) -> None:
+    """Add SessionFS to Antigravity's MCP config (desktop app, agy CLI, IDE).
+
+    Always writes the current config (``~/.gemini/config/mcp_config.json``,
+    read by the agy CLI and current desktop builds — created if missing),
+    plus every legacy config that already exists. Other servers in the file
+    are preserved; an unparseable file is refused, never overwritten.
+    """
+    if not _antigravity_installed():
+        err_console.print("[red]Antigravity not found (no ~/.gemini/antigravity*).[/red]")
+        err_console.print("Install and open Antigravity or the agy CLI first.")
+        raise SystemExit(1)
+    current, *legacy = _antigravity_mcp_config_paths()
+    targets = [current] + [p for p in legacy if p.exists() or p.is_symlink()]
+    # Every file is preflighted before any is written.
+    _install_json_configs(targets, mcp_config, "Antigravity", allow_empty=True)
+
+
+def _uninstall_antigravity() -> None:
+    """Remove SessionFS from every Antigravity MCP config file."""
+    targets = [p for p in _antigravity_mcp_config_paths() if p.exists() or p.is_symlink()]
+    if targets:
+        _uninstall_json_configs(targets, "Antigravity", allow_empty=True)
 
 
 @mcp_app.command("index")

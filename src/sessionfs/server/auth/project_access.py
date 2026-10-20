@@ -33,6 +33,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.db.models import OrgMember, Project, ProjectRepo, Session
+from sessionfs.server.roles import ADMIN_ROLES
 
 
 async def user_can_access_project(
@@ -61,21 +62,26 @@ async def user_can_access_project(
     # have access.  The primary remote may not have a ProjectRepo
     # row yet, so Project.git_remote_normalized is included as a
     # direct fallback alongside the multi-repo join table.
+    # A repo-reclaimed project lost its repository to a verified owner:
+    # sessions on that remote no longer grant access to it (only sessions
+    # explicitly attributed to it do). Its legacy column is also NULL —
+    # the equality predicate must never be added for a NULL remote, where
+    # SQLAlchemy would render it as `IS NULL` and match every session with
+    # a NULL remote.
+    predicates = [Session.project_id == project.id]
+    if project.repo_reclaimed_at is None and project.git_remote_normalized is not None:
+        predicates += [
+            Session.git_remote_normalized == project.git_remote_normalized,
+            Session.git_remote_normalized.in_(
+                select(ProjectRepo.git_remote_normalized).where(
+                    ProjectRepo.project_id == project.id,
+                )
+            ),
+        ]
     captured = (
         await db.execute(
             select(Session.id)
-            .where(
-                Session.user_id == user_id,
-                or_(
-                    Session.project_id == project.id,
-                    Session.git_remote_normalized == project.git_remote_normalized,
-                    Session.git_remote_normalized.in_(
-                        select(ProjectRepo.git_remote_normalized).where(
-                            ProjectRepo.project_id == project.id,
-                        )
-                    ),
-                ),
-            )
+            .where(Session.user_id == user_id, or_(*predicates))
             .limit(1)
         )
     ).scalar_one_or_none()
@@ -89,7 +95,8 @@ async def user_is_project_admin(
 
     Trusted-actor signal (v0.10.24 tk_dbccde26ed604b3c, Codex R1 MED #1):
     admin standing is the project owner OR — when the project is
-    org-scoped — an `OrgMember.role == 'admin'` of that org. This is
+    org-scoped — an org member at admin level or above (admin or owner;
+    owners rank above admins since v0.11.0) of that org. This is
     the actor-side check; do NOT authorize on mutable request input
     like `assigned_to`.
 
@@ -104,7 +111,7 @@ async def user_is_project_admin(
                 select(OrgMember.user_id).where(
                     OrgMember.org_id == project.org_id,
                     OrgMember.user_id == user_id,
-                    OrgMember.role == "admin",
+                    OrgMember.role.in_(ADMIN_ROLES),
                 )
             )
         ).scalar_one_or_none()

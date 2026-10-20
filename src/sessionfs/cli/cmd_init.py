@@ -112,6 +112,16 @@ def _get_tool_definitions() -> list[ToolInfo]:
                 vscode_global / "kilocode.kilo-code",
             ],
         ),
+        ToolInfo(
+            name="Antigravity",
+            config_key="antigravity",
+            detect_paths=[
+                # Desktop app, agy CLI and IDE build — one watcher covers all.
+                home / ".gemini" / "antigravity",
+                home / ".gemini" / "antigravity-cli",
+                home / ".gemini" / "antigravity-ide",
+            ],
+        ),
     ]
 
 
@@ -348,6 +358,7 @@ def init_cmd() -> None:
             "cline": "cline",
             "roo_code": "roo-code",
             "kilo_code": "kilo-code",
+            "antigravity": "antigravity",
         }
         for tool in detected:
             if tool.info.config_key in enabled_keys:
@@ -491,6 +502,17 @@ def _discover_all_native_sessions(enabled_keys: set[str]) -> list[dict]:
     # -- Kilo Code --
     if "kilo_code" in enabled_keys:
         _discover_cline_variants(all_sessions, is_mac, "kilo-code")
+
+    # -- Antigravity (desktop app, agy CLI, IDE) --
+    if "antigravity" in enabled_keys:
+        try:
+            from sessionfs.converters.antigravity_to_sfs import discover_antigravity_sessions
+
+            for s in discover_antigravity_sessions(home / ".gemini"):
+                s["tool"] = "antigravity"
+                all_sessions.append(s)
+        except Exception:
+            pass
 
     all_sessions.sort(key=lambda s: s.get("mtime", 0), reverse=True)
     return all_sessions
@@ -637,6 +659,44 @@ def _capture_one_session(
 
             cline_session = parse_cline_session(native_path, tool=tool)
             convert_cline_to_sfs(cline_session, session_dir, session_id=sfs_id)
+
+        elif tool == "antigravity":
+            from sessionfs.converters.antigravity_to_sfs import (
+                SummaryIndex,
+                UnsafePath,
+                convert_antigravity_to_sfs,
+                parse_antigravity_conversation,
+                split_conversation_dir,
+                top_level_conversation,
+            )
+
+            try:
+                ag_root, ag_cid = split_conversation_dir(Path(native_path))
+            except UnsafePath:
+                return None
+            # One snapshot for ownership and parsing; only a current one.
+            ag_summaries, ag_status = SummaryIndex().load_with_status(ag_root.parent, force=True)
+            if not SummaryIndex.is_current(ag_status):
+                console.print(
+                    "[dim]Antigravity's conversation summaries are busy; "
+                    "the daemon will capture the conversation.[/dim]"
+                )
+                return None
+            owner = top_level_conversation(ag_cid, ag_root.name, ag_summaries, ag_root.parent)
+            if owner is None or owner[0] != ag_cid:
+                return None  # a subagent: it is captured inside its owner
+            ag_session = parse_antigravity_conversation(Path(native_path), ag_summaries)
+            if ag_session.message_count == 0:
+                return None  # refuse empty captures
+            if ag_session.pending_subagents:
+                # A subagent is still being written: an incomplete capture is
+                # never stored; the daemon captures it once it is readable.
+                console.print(
+                    "[dim]Most recent Antigravity conversation is still being written; "
+                    "the daemon will capture it.[/dim]"
+                )
+                return None
+            convert_antigravity_to_sfs(ag_session, session_dir, session_id=sfs_id)
 
         else:
             return None

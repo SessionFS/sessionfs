@@ -383,19 +383,17 @@ class SessionPruner:
         """Delete a session from disk and SQLite index."""
         sfs_dir = self._sessions_dir / f"{session_id}.sfs"
 
-        # Remove from index
-        self._conn.execute(
-            "DELETE FROM sessions WHERE session_id = ?", (session_id,)
-        )
-        self._conn.execute(
-            "DELETE FROM tracked_sessions WHERE sfs_session_id = ?",
-            (session_id,),
-        )
-        self._conn.commit()
-
-        # Remove from disk
+        # Remove from disk first: if that fails the error propagates and the
+        # index rows stay, so the session is still listed and pruned later.
         if sfs_dir.is_dir():
             shutil.rmtree(sfs_dir)
+
+        # Remove the session row but keep its native tracking fingerprint, so
+        # the watcher does not treat the still-present source as new and
+        # recapture it on the next scan.
+        from sessionfs.store.index import prune_session_rows
+
+        prune_session_rows(self._conn, session_id)
 
         logger.info("Deleted session %s", session_id)
 

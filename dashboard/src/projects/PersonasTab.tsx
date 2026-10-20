@@ -7,6 +7,12 @@
  *
  * Phase 3 restyle: migrated onto ui/ primitives (Table, Dialog, Button,
  * Input, Textarea).
+ *
+ * GH #70: the list also carries the project's org-level personas
+ * (scope === 'org'). They are labelled "Org" and read-only here — org
+ * admins manage them on the Organization page. A project persona with the
+ * same name overrides the org one (the server then returns only the
+ * project row).
  */
 
 import { useState } from 'react';
@@ -25,7 +31,11 @@ interface PersonasTabProps {
   projectId: string;
 }
 
-interface EditState {
+function isOrgPersona(p: Persona): boolean {
+  return p.scope === 'org';
+}
+
+export interface EditState {
   mode: 'create' | 'edit';
   persona?: Persona;
 }
@@ -75,7 +85,23 @@ export default function PersonasTab({ projectId }: PersonasTabProps) {
           data={data}
           rowKey={(p) => p.id}
           columns={[
-            { key: 'name', header: 'Name', render: (p) => <span className="font-mono text-text-primary">{p.name}</span> },
+            {
+              key: 'name',
+              header: 'Name',
+              render: (p) => (
+                <span className="inline-flex items-center gap-2">
+                  <span className="font-mono text-text-primary">{p.name}</span>
+                  {isOrgPersona(p) && (
+                    <span
+                      className="rounded px-1.5 py-0.5 text-2xs font-medium uppercase tracking-wide bg-bg-tertiary text-text-secondary border border-border"
+                      title="Org-level persona — shared by every project in the organization"
+                    >
+                      Org
+                    </span>
+                  )}
+                </span>
+              ),
+            },
             { key: 'role', header: 'Role', render: (p) => <>{p.role}</> },
             {
               key: 'specs',
@@ -102,7 +128,15 @@ export default function PersonasTab({ projectId }: PersonasTabProps) {
               key: 'actions',
               header: '',
               width: 'w-0',
-              render: (p) => (
+              render: (p) =>
+                isOrgPersona(p) ? (
+                  <span
+                    className="block text-right text-xs text-text-tertiary whitespace-nowrap"
+                    title="Org admins manage org personas on the Organization page. Create a project persona with the same name to override it here."
+                  >
+                    Managed by org
+                  </span>
+                ) : (
                 <div className="flex items-center gap-1 justify-end whitespace-nowrap">
                   <Button
                     variant="secondary"
@@ -125,7 +159,7 @@ export default function PersonasTab({ projectId }: PersonasTabProps) {
                     Delete
                   </Button>
                 </div>
-              ),
+                ),
             },
           ]}
         />
@@ -184,6 +218,8 @@ export default function PersonasTab({ projectId }: PersonasTabProps) {
 
 interface EditModalProps {
   state: EditState;
+  /** Noun used in the create heading, e.g. "org persona". */
+  noun?: string;
   onClose: () => void;
   onSubmit: (body: {
     name: string;
@@ -193,7 +229,7 @@ interface EditModalProps {
   }) => void | Promise<void>;
 }
 
-function PersonaEditModal({ state, onClose, onSubmit }: EditModalProps) {
+export function PersonaEditModal({ state, onClose, onSubmit, noun = 'persona' }: EditModalProps) {
   const [name, setName] = useState(state.persona?.name ?? '');
   const [role, setRole] = useState(state.persona?.role ?? '');
   const [content, setContent] = useState(state.persona?.content ?? '');
@@ -204,7 +240,7 @@ function PersonaEditModal({ state, onClose, onSubmit }: EditModalProps) {
 
   const titleId = state.mode === 'create' ? 'persona-new-title' : 'persona-edit-title';
   const heading =
-    state.mode === 'create' ? 'New persona' : `Edit "${state.persona?.name}"`;
+    state.mode === 'create' ? `New ${noun}` : `Edit "${state.persona?.name}"`;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -290,7 +326,7 @@ interface DeleteModalProps {
   onConfirm: (force: boolean) => void | Promise<void>;
 }
 
-function DeleteConfirmModal({ persona, onClose, onConfirm }: DeleteModalProps) {
+export function DeleteConfirmModal({ persona, onClose, onConfirm }: DeleteModalProps) {
   const [force, setForce] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 

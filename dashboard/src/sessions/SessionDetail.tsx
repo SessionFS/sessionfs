@@ -119,7 +119,7 @@ export default function SessionDetail() {
   // unconditionally on every render (Rules of Hooks). session may be
   // undefined during loading/error — keep these null-safe; the values
   // are only consumed after the guards below.
-  const captureOnly = !!session && ['cursor', 'cline', 'roo-code', 'amp'].includes(session.source_tool);
+  const captureOnly = !!session && ['cursor', 'cline', 'roo-code', 'amp', 'antigravity'].includes(session.source_tool);
   const resumeTool = captureOnly ? 'claude-code' : (session?.source_tool ?? 'claude-code');
   const moreMenuItems = useMemo(() => [
     { key: 'resume', label: `Resume in ${fullToolName(resumeTool)}` },

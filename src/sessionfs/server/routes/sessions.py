@@ -813,7 +813,7 @@ async def upload_session(
     git_branch = ""
     git_commit = ""
     if workspace_data:
-        from sessionfs.server.github_app import normalize_git_remote
+        from sessionfs.git_remote import normalize_git_remote
         git_remote_normalized = normalize_git_remote(workspace_data.get("git_remote", ""))
         git_branch = workspace_data.get("git_branch", "")
         git_commit = workspace_data.get("git_commit", "")
@@ -1715,7 +1715,7 @@ async def sync_push(
         git_branch = ""
         git_commit = ""
         if workspace_data:
-            from sessionfs.server.github_app import normalize_git_remote
+            from sessionfs.git_remote import normalize_git_remote
             git_remote_normalized = normalize_git_remote(workspace_data.get("git_remote", ""))
             git_branch = workspace_data.get("git_branch", "")
             git_commit = workspace_data.get("git_commit", "")
@@ -2336,7 +2336,7 @@ async def reindex_sessions(
             # Update git metadata for PR matching
             ws = _extract_workspace_from_archive(data)
             if ws:
-                from sessionfs.server.github_app import normalize_git_remote
+                from sessionfs.git_remote import normalize_git_remote
                 session.git_remote_normalized, n = strip_nul(normalize_git_remote(ws.get("git_remote", "")))
                 nul_count += n
                 session.git_branch, n = strip_nul(ws.get("git_branch", ""))

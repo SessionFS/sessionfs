@@ -543,6 +543,21 @@ dashboard:
   clientMaxBodySize: "200m"
 ```
 
+### Upload time limit
+
+Pushing a large session waits for the server to DLP-scan and store it. The dashboard nginx waits up to `apiProxyTimeout` (default `300s`) for the API, and the CLI and daemon wait up to `SFS_UPLOAD_TIMEOUT` seconds (default 300). If very large sessions time out, raise both together and keep any load balancer idle timeout in front of the chart at least as long:
+
+```yaml
+dashboard:
+  apiProxyTimeout: "600s"
+```
+
+```bash
+export SFS_UPLOAD_TIMEOUT=600   # or upload_timeout = 600 under [sync] in ~/.sessionfs/config.toml
+```
+
+The chart's Ingress passes matching timeout and body-size annotations to ingress-nginx by default; anything you set under `ingress.annotations` takes precedence. Other ingress controllers need their own timeout set.
+
 ## GitLab Integration
 
 SessionFS supports GitLab merge request comments (cloud and self-hosted instances).

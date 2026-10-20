@@ -23,6 +23,11 @@ one yet, then enrolls them in the org at the chosen role.
 * **Role: admin** — everything `member` can do, plus invite/remove other
   members, change roles, initiate org → org project transfers, and edit org
   settings.
+* **Role: owner** — everything `admin` can do, plus owner-only actions
+  (ownership transfer, SSO break-glass). Every org has exactly one owner: the
+  user who created it (`sfs org create`, the dashboard, or license activation)
+  or, for platform-provisioned orgs, the named `owner_user_id`. Ownership moves
+  only through an explicit transfer.
 
 Seats are enforced on accept: if the org has hit its seat limit (per its tier
 plan) the invite acceptance fails with a clear error.

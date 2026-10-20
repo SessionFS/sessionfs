@@ -578,6 +578,70 @@ async def test_verified_displaces_unverified_holder_has_other_repos(
 
 
 @pytest.mark.asyncio
+async def test_link_repo_does_not_mark_merge_tombstone_reclaimed(
+    client: AsyncClient,
+    auth_headers: dict,
+    test_user: User,
+    db_session: AsyncSession,
+):
+    """A merge tombstone holding a remote only in its stale legacy column
+    is never marked repo_reclaimed when a verified owner links that remote.
+    """
+    other = User(
+        id=str(uuid.uuid4()),
+        email="tombstone-owner@example.com",
+        display_name="Tombstone Owner",
+        tier="pro",
+        email_verified=True,
+        created_at=_now(),
+    )
+    db_session.add(other)
+    await db_session.commit()
+
+    # Target of a past merge and its tombstone: zero repos, a stale legacy
+    # remote left pointing at the reassigned primary (the pre-fix state that
+    # merge.py's legacy-null now prevents).
+    target = await _make_project(
+        db_session, owner=other, remote="github.com/acme/target",
+    )
+    tombstone = await _make_project(
+        db_session, owner=other, remote="github.com/acme/squatted",
+    )
+    tombstone.merged_into_project_id = target.id
+    await db_session.commit()
+
+    # Claimant already has a primary, so the disputed remote is linked as a
+    # secondary row and the claimant's own legacy column is not rewritten
+    # (which would otherwise conflict with the tombstone's unique value).
+    claimant = await _make_project(
+        db_session, owner=test_user, remote="github.com/test/claimant",
+    )
+    await _add_repo(
+        db_session,
+        project=claimant,
+        remote="github.com/test/claimant",
+        is_primary=True,
+    )
+
+    with patch(
+        "sessionfs.server.github_app.verify_repo_ownership",
+        new=AsyncMock(return_value=(True, "github_app", "github", "77777")),
+    ):
+        resp = await client.post(
+            f"/api/v1/projects/{claimant.id}/repos",
+            json={"git_remote": "github.com/acme/squatted"},
+            headers=auth_headers,
+        )
+
+    assert resp.status_code == 201, resp.text
+
+    # The tombstone must stay a tombstone — never repo_reclaimed.
+    await db_session.refresh(tombstone)
+    assert tombstone.merged_into_project_id == target.id
+    assert tombstone.repo_reclaimed_at is None
+
+
+@pytest.mark.asyncio
 async def test_verified_vs_verified_409(
     client: AsyncClient,
     auth_headers: dict,
@@ -627,6 +691,71 @@ async def test_verified_vs_verified_409(
     assert resp.status_code == 409, resp.text
     err = resp.json().get("error", {})
     assert "verified" in err.get("message", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_rename_reverify_verified_old_name_displaces_unverified_new_name(
+    client: AsyncClient,
+    auth_headers: dict,
+    test_user: User,
+    db_session: AsyncSession,
+):
+    """Same-project rename + re-verify: a verified old-name row and an
+    unverified new-name row for the same provider+repo_id must not 500 on
+    the partial-unique provider index — the old row is renamed in place and
+    the duplicate new-name row is displaced."""
+    project = await _make_project(
+        db_session, owner=test_user, remote="github.com/owner/repo-old",
+    )
+
+    # R_old: verified under the OLD name, holding the provider id.
+    old = await _add_repo(
+        db_session,
+        project=project,
+        remote="github.com/owner/repo-old",
+        is_primary=True,
+        verified=True,
+        verification_method="github_app",
+    )
+    old.provider = "github"
+    old.provider_repo_id = "12345"
+    await db_session.commit()
+
+    # R_new: unverified under the NEW name (linked while verification was
+    # unavailable), no provider id.
+    new = await _add_repo(
+        db_session,
+        project=project,
+        remote="github.com/owner/repo-new",
+        is_primary=False,
+        verified=False,
+        verification_method="owner_attested",
+    )
+    assert new.provider_repo_id is None
+
+    with patch(
+        "sessionfs.server.github_app.verify_repo_ownership",
+        new=AsyncMock(return_value=(True, "github_app", "github", "12345")),
+    ):
+        resp = await client.post(
+            f"/api/v1/projects/{project.id}/repos",
+            json={"git_remote": "github.com/owner/repo-new"},
+            headers=auth_headers,
+        )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["id"] == old.id  # old row renamed in place, not replaced
+    assert body["git_remote_normalized"] == "github.com/owner/repo-new"
+    assert body["verified"] is True
+    assert body["provider"] == "github"
+    assert body["provider_repo_id"] == "12345"
+
+    rows = (
+        await db_session.execute(
+            select(ProjectRepo).where(ProjectRepo.project_id == project.id)
+        )
+    ).scalars().all()
+    assert {r.id for r in rows} == {old.id}  # duplicate new-name row displaced
 
 
 # ── is_primary swap ───────────────────────────────────────────────────

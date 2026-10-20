@@ -16,6 +16,9 @@ spec:
       {{- include "sessionfs.componentSelectorLabels" (list . "dashboard") | nindent 6 }}
   template:
     metadata:
+      annotations:
+        # Restart nginx when its config (proxy timeout, body size) changes.
+        checksum/nginx-config: {{ include (print $.Template.BasePath "/dashboard-nginx-configmap.yaml") . | sha256sum }}
       labels:
         {{- include "sessionfs.componentSelectorLabels" (list . "dashboard") | nindent 8 }}
     spec:

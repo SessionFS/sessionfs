@@ -102,7 +102,7 @@ sfs resume SESSION_ID [OPTIONS]
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `--project` | path | — | Target project path (overrides workspace) |
-| `--in` | string | `claude-code` | Target tool: `claude-code`, `codex`, `copilot`, or `gemini` |
+| `--in` | string | `claude-code` | Target tool: `claude-code`, `codex`, `copilot`, or `gemini`. Capture-only tools (`cursor`, `amp`, `cline`, `roo-code`, `kilo-code`, `antigravity`) are rejected with a pointer to a bidirectional tool. |
 | `--no-rules-sync` | flag | `false` | Skip preflight of the target tool's project rules file. Per-invocation only. |
 | `--force-rules` | flag | `false` | Overwrite an unmanaged target-tool rules file with SessionFS-managed content. One-time permission — the file becomes SessionFS-managed afterward and subsequent resumes refresh it normally. |
 
@@ -673,8 +673,15 @@ Session restored. Run 'sfs pull ses_abc123' to re-download locally.
 Push a session to the cloud.
 
 ```
-sfs push SESSION_ID
+sfs push SESSION_ID [--yes] [--timeout SECONDS]
 ```
+
+| Option | Description |
+|--------|-------------|
+| `--yes`, `-y` | Skip interactive confirmations (DLP findings, cloud-undelete). Findings are still shown. |
+| `--timeout SECONDS` | How long to wait for the server to accept the upload (1–3600). Defaults to `SFS_UPLOAD_TIMEOUT`, then `upload_timeout` under `[sync]` in `config.toml`, then 300. Raise it for very large sessions on servers that run DLP scans. |
+
+If the server doesn't answer in time, the push stops with a message saying so instead of retrying the same upload.
 
 ---
 
@@ -742,10 +749,35 @@ Hand off a session to a teammate with email notification.
 sfs handoff SESSION_ID --to EMAIL [OPTIONS]
 ```
 
+Name exactly one recipient: `--to`, `--to-user-id` or `--to-team-id`.
+
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `--to` | string | required | Recipient email |
-| `--message` | string | — | Message to include in the email |
+| `--to` | string | — | Recipient email |
+| `--to-user-id` | string | — | Recipient user ID (direct account match) |
+| `--to-team-id` | string | — | Recipient team ID (Team and Enterprise) |
+| `--message`, `-m` | string | — | Message to include in the email |
+| `--ticket` | string | — | Carry an active ticket through to the recipient |
+| `--persona` | string | — | Carry a persona name through to the recipient |
+| `--expires-hours` | int | `168` | Expiry in hours (capped by plan at 30 or 90 days) |
+| `--attach` | string | — | Attach a project reference, repeatable. Format `kind:ref_id`, where kind is `kb_entry`, `wiki_page` or `ticket` (e.g. `--attach kb_entry:42`) |
+
+---
+
+## `sfs handoffs`
+
+View and act on handoffs you sent or received.
+
+| Command | Description |
+|---------|-------------|
+| `sfs handoffs inbox` | List handoffs sent to you |
+| `sfs handoffs sent` | List handoffs you sent |
+| `sfs handoffs get HANDOFF_ID` | Show full detail: status, attachments, comments and events |
+| `sfs handoffs revoke HANDOFF_ID --reason TEXT` | Sender revokes a pending handoff (reason required, 1–500 characters); the recipient is notified |
+| `sfs handoffs decline HANDOFF_ID [--reason TEXT]` | Recipient declines a pending handoff (optional reason, up to 500 characters); the sender is notified |
+| `sfs handoffs comment HANDOFF_ID --message TEXT` | Post a comment on the handoff thread (1–10,000 characters); the other party is notified |
+| `sfs handoffs comments HANDOFF_ID [--limit N]` | List comments, oldest first (`--limit` 1–200, default 200) |
+| `sfs handoffs events HANDOFF_ID [--limit N]` | Show the handoff's audit log, oldest first (`--limit` 1–200, default 200) |
 
 ---
 
@@ -922,7 +954,7 @@ merges are refused. Free on all tiers.
 `--accept`, `--reject`, or `--cancel` must be passed.
 
 ```
-sfs project transfer (--to DEST | --accept ID | --reject ID | --cancel ID)
+sfs project transfer (--to DEST | --accept ID | --reject ID | --cancel ID) [--force]
 ```
 
 | Option | Description |
@@ -931,10 +963,13 @@ sfs project transfer (--to DEST | --accept ID | --reject ID | --cancel ID)
 | `--accept ID` | Target user accepts a pending incoming transfer. |
 | `--reject ID` | Target user rejects a pending incoming transfer. |
 | `--cancel ID` | Initiator cancels a pending outgoing transfer. |
+| `--force` | With `--to` (auto-accepted) or `--accept`: move the project even if open tickets rely on org personas the destination lacks. |
 
 State machine: pending → accepted | rejected | cancelled. Audit row survives
 the transition for compliance. When the initiator IS the target (personal →
 own org you belong to), the server auto-accepts at create time.
+
+**Org personas and transfers (GH #70):** moving a project into a different org or out of one is refused (409 `personas_stranded`) when open tickets are assigned to org personas that will not exist in the destination; the error lists each persona and its ticket ids. Project personas move with the project, so a same-named project persona avoids the refusal. Nothing is copied automatically: reassign the tickets, create the personas in the destination, or pass `--force` (on `--to` when the transfer auto-accepts, or on `--accept`).
 
 **Examples:**
 
@@ -1023,6 +1058,22 @@ Force a full rebuild of the project's compiled context document from all active 
 ```
 sfs project rebuild
 ```
+
+### `sfs project promote-eligible`
+
+Promote eligible knowledge-base notes to claims in bulk. Dry-run by default: it lists what would be promoted and writes nothing until you pass `--confirm`. A note is eligible when it is not dismissed or superseded, meets the length and confidence thresholds, and is not a near-duplicate of an active claim (or of another note promoted in the same run).
+
+```
+sfs project promote-eligible [OPTIONS]
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--min-length` | int | `50` | Skip entries shorter than this |
+| `--min-confidence` | float | `0.8` | Skip entries below this confidence (ignored when `--confidence` is set) |
+| `--confidence` | float | — | Set each candidate's confidence to this value before the duplicate check |
+| `--entry-type` | string | — | Only promote this entry type (`decision`, `pattern`, …) |
+| `--confirm` | flag | off | Apply the promotions |
 
 ---
 
@@ -1310,6 +1361,8 @@ Enable a tool watcher.
 sfs watcher enable TOOL
 ```
 
+`TOOL` is one of `claude-code`, `codex`, `gemini`, `copilot`, `cursor`, `amp`, `cline`, `roo-code`, `kilo-code`, `antigravity`. The `antigravity` watcher covers the desktop app (`~/.gemini/antigravity`), the `agy` CLI (`~/.gemini/antigravity-cli`) and the IDE build (`~/.gemini/antigravity-ide`); each captured session records which app it came from.
+
 ### `sfs watcher disable`
 
 Disable a tool watcher.
@@ -1473,7 +1526,7 @@ Organization: Acme Corp
 
 ### `sfs org create`
 
-Create a new organization (you become admin). Requires Team tier.
+Create a new organization (you become its owner). Requires Team tier.
 
 ```
 sfs org create NAME SLUG
@@ -1643,12 +1696,18 @@ Start the MCP server on stdio transport.
 sfs mcp serve
 ```
 
-Tools exposed (21):
+Tools exposed (80):
 
-- **Sessions:** `search_sessions`, `get_session_context`, `list_recent_sessions`, `find_related_sessions`, `get_session_summary`, `get_audit_report`, `get_session_provenance`
-- **Knowledge (read):** `get_project_context`, `get_context_section`, `get_wiki_page`, `search_project_knowledge`, `list_knowledge_entries`, `get_knowledge_entry`, `get_knowledge_health`, `ask_project`
-- **Knowledge (write):** `add_knowledge`, `update_wiki_page`, `list_wiki_pages`, `compile_knowledge_base`
+- **Sessions:** `search_sessions`, `get_session_context`, `list_recent_sessions`, `find_related_sessions`, `get_session_summary`, `get_audit_report`, `get_session_provenance`, `get_session_retrieval_log`, `rename_session`, `checkpoint_session`, `list_checkpoints`, `fork_session`
+- **Knowledge (read):** `get_project_context`, `get_context_section`, `get_wiki_page`, `get_wiki_page_history`, `search_project_knowledge`, `list_knowledge_entries`, `get_knowledge_entry`, `get_knowledge_health`, `ask_project`
+- **Knowledge (write):** `add_knowledge`, `update_wiki_page`, `list_wiki_pages`, `compile_knowledge_base`, `dismiss_knowledge_entry`, `update_entry_confidence`, `promote_entry`, `promote_eligible_entries`
 - **Rules (read-only):** `get_rules`, `get_compiled_rules`
+- **Personas:** `list_personas`, `get_persona`, `create_persona`, `update_persona`, `delete_persona`, `assume_persona`, `forget_persona`
+- **Tickets:** `list_tickets`, `get_ticket`, `create_ticket`, `update_ticket`, `start_ticket`, `complete_ticket`, `resolve_ticket`, `approve_ticket`, `assign_persona`, `escalate_ticket`, `add_ticket_comment`, `list_ticket_comments`, `get_ticket_review_state`
+- **Agent runs and feedback:** `create_agent_run`, `complete_agent_run`, `list_agent_runs`, `record_agent_feedback`, `list_agent_feedback`, `get_agent_feedback_summary`
+- **Work queues:** `create_work_queue`, `list_work_queues`, `get_work_queue`, `set_work_queue_status`, `run_work_queue_step`, `complete_work_queue_step`
+- **Handoffs:** `create_handoff`, `get_handoff`, `list_inbox_handoffs`, `list_sent_handoffs`, `claim_handoff`, `decline_handoff`, `revoke_handoff`, `add_handoff_comment`
+- **Marketplace (never writes files or enables executable content):** `search_skill_marketplace`, `get_marketplace_package`, `diff_marketplace_versions`, `preview_marketplace_skill`, `load_marketplace_skill`, `request_skill_install`, `list_skill_install_requests`, `get_skill_install_request`, `cancel_skill_install_request`
 
 If you are an agent or have the MCP server installed, prefer the MCP tools over the CLI equivalents listed in this reference — they are faster, run in-process, and avoid hitting API rate limits.
 
@@ -1664,7 +1723,35 @@ sfs mcp install --for TOOL
 
 | Option | Type | Description |
 |--------|------|-------------|
-| `--for` | string | Target tool: `claude-code`, `codex`, `gemini`, `copilot`, `cursor`, `amp`, `cline`, `roo-code` |
+| `--for` | string | Target tool: `claude-code`, `codex`, `gemini`, `copilot`, `cursor`, `amp`, `cline`, `roo-code`, `kilo-code`, `antigravity` |
+
+For `antigravity`, SessionFS always writes the current config, `~/.gemini/config/mcp_config.json` (agy CLI and current desktop builds; created if missing), and also updates `~/.gemini/antigravity/mcp_config.json` (older desktop builds) when that file exists. Other servers in those files are kept, and a file that is not valid JSON is left untouched.
+
+For every tool that uses a JSON config file, `sfs mcp install` and `uninstall` check all target files first (valid JSON, writable, not a symlink to something you don't own) and change nothing unless every check passes. Each file is then written on its own: the previous version is saved next to it as `<file>.sessionfs-backup-<UTC time>` (the three newest are kept), and the new content replaces the file atomically with its permissions kept, so the config is never missing or half-written. A symlinked config is edited at its target, so the link stays in place. If another program changes the file at the same moment, SessionFS re-reads it and tries again. Each file's result is reported; if one file could not be changed, the others keep their update and the command says which one failed.
+
+---
+
+## `sfs mcp uninstall`
+
+Remove the SessionFS MCP server registration from an AI tool. Other servers in the tool's config are kept.
+
+```
+sfs mcp uninstall --for TOOL
+```
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `--for` | string | Target tool: `claude-code`, `codex`, `gemini`, `copilot`, `cursor`, `amp`, `cline`, `roo-code`, `kilo-code`, `antigravity` |
+
+---
+
+## `sfs mcp index`
+
+Rebuild the local full-text search index from all local sessions.
+
+```
+sfs mcp index
+```
 
 ---
 
@@ -1680,79 +1767,83 @@ sfs admin reindex
 
 ## `sfs admin create-trial`
 
-Create a trial license for self-hosted deployments (admin only).
+Create a trial license key for a self-hosted deployment (admin only).
 
 ```
-sfs admin create-trial [OPTIONS]
+sfs admin create-trial ORG EMAIL [OPTIONS]
 ```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `ORG` | yes | Organization name |
+| `EMAIL` | yes | Contact email |
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `--org` | string | — | Organization slug |
 | `--days` | int | `14` | Trial duration in days |
+| `--seats` | int | `25` | Seat limit |
 
 ---
 
 ## `sfs admin create-license`
 
-Create a full license for self-hosted deployments (admin only).
+Create a paid license key with no expiry for a self-hosted deployment (admin only).
 
 ```
-sfs admin create-license [OPTIONS]
-```
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `--org` | string | required | Organization slug |
-| `--tier` | string | required | License tier (team, enterprise) |
-| `--seats` | int | — | Seat limit |
-| `--expires` | string | — | Expiry date (ISO format) |
-
----
-
-## `sfs admin list`
-
-List all self-hosted licenses (admin only).
-
-```
-sfs admin list [OPTIONS]
-```
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `--status` | string | — | Filter by status: active, expired, revoked |
-
----
-
-## `sfs admin extend`
-
-Extend an existing license expiry (admin only).
-
-```
-sfs admin extend LICENSE_ID --days DAYS
+sfs admin create-license ORG EMAIL [OPTIONS]
 ```
 
 | Argument | Required | Description |
 |----------|----------|-------------|
-| `LICENSE_ID` | yes | License ID |
+| `ORG` | yes | Organization name |
+| `EMAIL` | yes | Contact email |
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `--days` | int | required | Number of days to extend |
+| `--tier` | string | `enterprise` | License tier |
+| `--seats` | int | `25` | Seat limit |
 
 ---
 
-## `sfs admin revoke`
+## `sfs admin list-licenses`
 
-Revoke a self-hosted license (admin only).
+List license keys (admin only).
 
 ```
-sfs admin revoke LICENSE_ID
+sfs admin list-licenses [--status STATUS]
 ```
 
-| Argument | Required | Description |
-|----------|----------|-------------|
-| `LICENSE_ID` | yes | License ID to revoke |
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--status` | string | `all` | Filter: `all`, `active`, `trial`, `expired`, `revoked` |
+
+---
+
+## `sfs admin extend-trial`
+
+Extend a trial license by N days from now (admin only).
+
+```
+sfs admin extend-trial KEY [--days N]
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--days` | int | `14` | Days to extend from now |
+
+---
+
+## `sfs admin revoke-license`
+
+Revoke a license key (admin only). The next license validation is refused with 403.
+
+```
+sfs admin revoke-license KEY [--reason TEXT]
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--reason` | string | — | Reason for revocation |
 
 ---
 
@@ -2165,16 +2256,18 @@ sfs security fix
 
 ## `sfs persona` (v0.10.1)
 
-Manage agent personas for the current project. Personas are portable AI roles (e.g. `atlas`, `prism`, `scribe`) shared by humans and AI agents working on the same codebase.
+Manage agent personas for the current project. Personas are portable AI roles (e.g. `atlas`, `prism`, `scribe`) shared by humans and AI agents working on the same codebase. Personas can also be defined at the org level and shared by every project in the org — see [Org-level personas](#org-level-personas).
 
 **Tier:** Pro+. Persona names must be ASCII (1–50 chars: letters, digits, `_`, `-`).
 
 ### `sfs persona list`
 
-List active personas in the current project.
+List active personas usable in the current project: the project's own personas plus its org's personas (shown with `Org` in the Scope column).
 
 ```bash
 sfs persona list
+sfs persona list --no-org            # project personas only
+sfs persona list --org org_abc123    # one org's personas
 ```
 
 ### `sfs persona show`
@@ -2234,6 +2327,28 @@ Clear the local persona bundle written by `sfs persona assume`.
 ```bash
 sfs persona forget
 ```
+
+### Org-level personas
+
+A persona can also be defined once for a whole organization and used from every project in that org (GitHub #70). Pass `--org <org_id>` to `list`, `show`, `create`, `edit`, and `delete` to work on the org's personas instead of the current project's. Writes need the org **admin** or **owner** role; any org member can read them.
+
+```bash
+sfs persona create gcp-infra --role "Terraform engineer" --file ./gcp-infra.md --org org_abc123
+sfs persona list --org org_abc123          # the org's own personas
+sfs persona edit gcp-infra --org org_abc123
+sfs persona delete gcp-infra --org org_abc123 --yes
+```
+
+How names resolve inside a project: the project's own persona wins, then the org's. A project persona with the same name as an org persona **overrides** it for that project (repo-specific tuning); deleting the override brings the org persona back. This applies everywhere a persona is looked up by name — `sfs ticket assign`, `sfs ticket start`, `sfs persona show/assume`, agent runs, and the MCP tools.
+
+- `sfs persona list` shows project and org personas together, with a **Scope** column. `--no-org` lists project personas only.
+- `sfs persona pull --all` also writes the org's personas to `.agents/` (same `<name>-<role-fragment>.md` naming; the file notes it is an org persona). When a project persona overrides an org one, only the project version is written. `--no-org` skips org personas.
+- `sfs persona edit <name>` without `--org` refuses an org persona and prints the `--org` command to use.
+- Org names are case-insensitive-unique per org. An org persona and a project persona may share a name. Name lookups are case-insensitive everywhere, and stored references (ticket assignment, agent runs, provenance, the local active-ticket bundle) use the persona's stored spelling.
+- Org personas are only visible to current members of the project's current org (and to that org's service keys). Someone who can reach the project another way — its owner, or someone with an earlier captured session — sees only the project's own personas, for example after the project moves to an org they don't belong to.
+- Deleting an org persona refuses (409) while non-terminal tickets in the org's projects are assigned to it and the project has no same-named project persona to fall back to; `--force` overrides.
+- Service keys use the same `personas:read` / `personas:write` scopes and only reach their own org. A service key limited to specific projects can read org personas but not write them.
+- Tier: the org's own plan must include personas (Team and Enterprise do).
 
 ---
 
@@ -2302,6 +2417,33 @@ Mark a ticket complete. Moves to `review`. Clears the active-ticket bundle only 
 sfs ticket complete tk_abc123 --notes "Implemented per-user rate limit; tests added." \
   --file src/sessionfs/server/middleware.py \
   --kb-entry 142
+```
+
+### `sfs ticket update`
+
+Change a ticket's editable fields. Every change is recorded in the ticket's edit history and posted as a system comment showing the diff; an update that changes nothing posts nothing. Status changes go through the lifecycle commands, and persona reassignment through `sfs ticket assign`.
+
+```bash
+sfs ticket update tk_abc123 --title "Rate-limit the export endpoint" --priority high
+sfs ticket update tk_abc123 --description-file notes.md --acceptance-criteria-file ac.txt
+```
+
+| Option | Description |
+|--------|-------------|
+| `--title` | New title |
+| `--description` / `--description-file` | New description, inline or read from a file |
+| `--priority` | `low`, `medium`, `high` or `critical` |
+| `--acceptance-criteria-file` | File with one acceptance criterion per line; replaces the whole list |
+| `--lease-epoch` | The lease epoch from `sfs ticket show`; the update is refused (409) if another worker has since started the ticket |
+
+Only the ticket's creator or a project admin can update it.
+
+### `sfs ticket review-state`
+
+Summarize a review ticket's findings — open and closed findings, severity counts and the last verdict — derived from its comment thread. Prints "no review state" for tickets without reviewer comments.
+
+```bash
+sfs ticket review-state tk_abc123
 ```
 
 ### `sfs ticket comment`
@@ -2408,7 +2550,7 @@ sfs agent run <persona> [--ticket TK_ID]
 | `--trigger-source` | Where the run originated. CI runners pass `ci`. |
 | `--trigger-ref` | Free-form ref (PR commit SHA, branch, cron expr). |
 | `--ci-provider`, `--ci-run-url` | Deep-link the run back to your CI UI. |
-| `--tool` | Token budget hint when compiling persona + ticket context. `claude-code`=16k, `codex/gemini/copilot/amp/generic`=8k, `cursor/windsurf/cline/roo-code`=4k, `bedrock`=16k, `vertex`=8k. |
+| `--tool` | Token budget hint when compiling persona + ticket context. `claude-code`=16k, `codex/gemini/copilot/amp/antigravity/generic`=8k, `cursor/windsurf/cline/roo-code/kilo-code`=4k, `bedrock`=16k, `vertex`=8k. |
 | `--fail-on` | Severity threshold for `policy_result = "fail"` at complete time. |
 | `--context-file` | Write the compiled context to this file instead of stdout (use this with `--output-id`). |
 | `--timeout` | Block and poll until the run reaches a terminal status or `SECONDS` elapse. |
@@ -2515,19 +2657,195 @@ Import, inspect, and install portable Agent Skills and Agent Plugins locally. Se
 
 | Command | Description |
 |---------|-------------|
-| `sfs skill inspect SOURCE [--pin REF] [--subdir PATH]` | Validate and inspect a local path, Git source, or named local marketplace package without installing |
+| `sfs skill inspect SOURCE [--pin REF] [--subdir PATH] [--for TOOL] [--json]` | Validate and inspect a local path, Git source, hosted package, or named local marketplace package without installing, and print its install disclosure (see below) |
 | `sfs skill add SOURCE [--for TOOL] [--scope project\|user]` | Plan and transactionally install across one or more tools |
 | `sfs skill list` / `sfs skill show ID` | Inspect installed state, provenance, hashes, targets, and omissions |
-| `sfs skill plan ID` / `sfs skill compile ID [--for TOOL] [--drop TOOL] [--yes]` | Compute a side-effect-free plan or re-apply the pinned package. `--for` is additive (installed targets are always kept); only `--drop TOOL` removes a tool, after listing the managed files to be unlinked and confirming (`--yes` in non-interactive mode) |
-| `sfs skill sync --locked` | Reproduce exact project lockfile state without upgrading |
-| `sfs skill remove ID` / `sfs skill update ID` | Remove or update a package while preserving unmanaged (dirty) files; `update` previews old → new hash, commit, plan and capability diff and requires `--yes` |
-| `sfs skill rollback ID --to HASH` | Re-apply a cached immutable version; `--to` is required and must be an exact `sha256:<64 hex>` (or bare 64-hex) digest |
-| `sfs skill doctor` | Detect drift, missing files, unsafe paths, and state mismatches |
+| `sfs skill plan ID` / `sfs skill compile ID [--for TOOL] [--drop TOOL] [--yes] [--allow-hidden-unicode]` | Compute a side-effect-free plan or re-apply the pinned package. `--for` is additive (installed targets are always kept); only `--drop TOOL` removes a tool, after listing the managed files to be unlinked and confirming (`--yes` in non-interactive mode) |
+| `sfs skill sync --locked [--approve-widening] [--allow-hidden-unicode]` | Reproduce exact project lockfile state without upgrading. Every installed version the lockfile replaces is classified like an update before anything changes; one refused transition refuses the whole sync |
+| `sfs skill remove ID` / `sfs skill update ID [--approve-widening] [--allow-hidden-unicode]` | Remove or update a package while preserving unmanaged (dirty) files; `update` previews old → new hash, commit, plan, the update diff and its class, then applies the re-consent rules below |
+| `sfs skill diff ID [--to VERSION] [--json]` | Show what an update would change without applying it: files added/removed/changed with bounded text diffs, capability changes, new scanner and hidden-character findings, and the update class (`text`, `code`, `widening`) |
+| `sfs skill rollback ID --to HASH [--approve-widening] [--allow-hidden-unicode]` | Re-apply a cached immutable version; `--to` is required and must be an exact `sha256:<64 hex>` (or bare 64-hex) digest. The transition is classified and consented like an update |
+| `sfs skill doctor` | Detect drift, missing files, unsafe paths, and state mismatches; also shows the size of the removal trash |
 | `sfs skill marketplace add URL --name NAME --pin SHA` | Register one pinned local marketplace source |
 | `sfs skill marketplace list\|refresh\|remove` | Manage multiple user/project registry aliases explicitly |
-| `sfs skill search QUERY` | Search metadata across registered local marketplaces |
+| `sfs skill search QUERY [--tool TOOL] [--limit N] [--local-only] [--json]` | Search registered local marketplaces **and** the hosted SessionFS Marketplace. Each row is labelled `local:<scope>` or `hosted` and shows the reference to install it with. Signed out or offline, the hosted part is skipped with a note. `--tool` filters hosted results by tool compatibility; `--marketplace ALIAS` and `--local-only` search local registries only |
+| `sfs skill add sessionfs:NAMESPACE/NAME[@VERSION]` | Install a package from the hosted SessionFS Marketplace (requires `sfs auth login`). `sessionfs:spk_<id>` also works and is required when a namespace/name pair is ambiguous. Without `@VERSION` the package's current version is used; `--pin VERSION` is equivalent to `@VERSION` |
+| `sfs skill pull [--for TOOL] [--device-id ID] [--yes] [--allow-* ...] [--approve-widening] [--allow-hidden-unicode] [--json]` | Apply your org's skill assignments and your approved install requests to this device (see below) |
+
+### Install disclosure
+
+`sfs skill inspect` and `sfs skill add` print the install disclosure before any consent decision, from the package bytes: per target tool the files written (`.claude/skills/<name>/...`, or `~/...` in user scope) and what is not installed; scripts and their interpreter; frontmatter hooks (event and matcher) and `allowed-tools` pre-approvals; MCP servers (local command, remote origin, environment variable names); network endpoints referenced; shell commands the instructions tell the agent to run (from fenced shell blocks); instruction-scanner findings; and hidden or bidirectional Unicode and control characters, shown as `⟦U+202E⟧` with file, line and column. `inspect --json` includes it as `disclosure`, the same JSON as `GET /api/v1/marketplace/versions/{id}/disclosure` and MCP `get_marketplace_package`. A local package containing the hidden-character classes the publish gate refuses needs `--allow-hidden-unicode` on `add` / `update`.
+
+### Update re-consent
+
+Each installed package records the capability set you consented to (its digest and access manifest). `sfs skill update`, `sfs skill pull` and the daemon classify an update against it:
+
+| Class | Meaning | `sfs skill update` | `sfs skill pull` / daemon |
+|---|---|---|---|
+| `text` | Only instructions or assets changed | One confirmation; `--yes` works. Capabilities you consented to carry forward (no need to repeat `--allow-scripts`), recorded as carried-forward receipts | Applied |
+| `code` | Script, hook, MCP-config or executable-extension bytes changed, no new access | The changed capability's flag again; `--yes` alone is refused | Held unless the changed capability's flag is given; the daemon holds it |
+| `widening` | New access: a capability, hook event/matcher, MCP server or command, remote origin, `allowed-tools` grant, network endpoint, environment variable, persistence target, or a lost publisher verification | Always stops: `--approve-widening` (or yes to the interactive widening prompt) plus the capability flags; nothing carries forward | Held, and the installed version stays, until `--approve-widening` or an org admin approves that exact version (`/advance`, which records its capability digest on the assignment) |
+
+The same rules apply to `sfs skill rollback` and `sfs skill sync --locked`. Any change to MCP configuration (portable `mcp.json`, vendor MCP files, `mcpServers` in manifests) is widening; a remote MCP server is identified by name, origin and transport. `hooks.json` hooks are compared by event and matcher like frontmatter hooks; a malformed `hooks.json` changes as a whole and counts as widening. Network endpoints come from every text file in the package, including single-label names and IP addresses. Security sets (scripts, hooks, MCP servers, tool grants, endpoints, environment variables, executable extensions) are compared in full; when one is too large to store it is compared by digest and any change is widening, and a package that could not be analyzed completely (for example a truncated scan) is widening as well. Critical hidden characters are decided on complete counts, and a truncated scan requires `--allow-hidden-unicode`.
+
+Only consent receipts bound to the installed content hash, its capability digest and the current consent rule carry forward, and only for the same tool and scope (an unrestricted receipt covers any tool). Receipts written before this release never carry: give the capability flag once (for example `sfs skill compile <name> --allow-scripts`) to record current consent. Adding a tool to an installed version (`sfs skill compile --for`, `sfs skill sync --locked`, or a pull) goes through the hidden-character gate (`--allow-hidden-unicode`). `sfs skill pull --approve-widening` also permanently lifts a digest restriction recorded for an installed version.
+
+An installed version whose consented access is unknown (installed before this release, with its cached copy gone) is treated as `widening`. Held items are listed by `sfs skill pull` as `held: <name> needs approval` and logged by the daemon. A widening update is applied without `--approve-widening` only for the tools of an assignment or approved request that bound exactly the new version's capability digest; approvals made before this release, or under an older consent rule, never count. `pull` and the daemon also hold any package with critical hidden characters (`sfs skill pull --allow-hidden-unicode` installs it).
 
 Risky capabilities require explicit flags bound to the exact package hash: `--allow-scripts` for any non-inert skill asset (the policy is an inert allowlist, so `.rb`, `.bat`, `.exe`, `Makefile`, and suffix-less files all count), `--allow-hooks` for `SKILL.md` frontmatter `hooks:` / `allowed-tools:` grants, and `--allow-executable-extensions` for a `hooks.json` or `hooks/` directory shipped inside a skill. `--yes` alone is refused for these and the error names the hook or tool grant. Local MCP activation remains reserved: SessionFS does not silently enable it.
+
+### Publishing to the hosted marketplace
+
+`sfs skill validate` runs the hosted marketplace's own publish checks on your machine, and `sfs skill publish` validates the same way, then uploads. The server and the CLI share one validator, so a package that passes locally passes the server's package checks.
+
+| Command | Description |
+|---------|-------------|
+| `sfs skill validate SOURCE [--visibility personal\|org\|public] [--json]` | Validate a package directory or `.tar.gz` exactly as the server would. Prints each problem with its file and line (when known), why it fails, and how to fix it, then exits 1. On success it prints the content hash, risk flags, sizes, and the checks that only the server can make |
+| `sfs skill publish SOURCE [--org ORG_ID] [--visibility personal\|org\|public] [--namespace NS] [--collection NAME] [--yes] [--json]` | Validate locally, show a summary (name, version, license, risk flags, size, target), confirm, then upload. Prints the listing, package, and version IDs and the package URL |
+| `sfs skill publish SOURCE --trusted-publishing --namespace NS [--package NAME] [--visibility public] [--audience AUD]` | Publish from a GitHub Actions job without an API key: reads the server's OIDC audience, requests the job's OIDC token, exchanges it for a single-use publish token, and uploads. See [Trusted publishing](#trusted-publishing-from-github-actions) |
+
+How it works:
+
+- A directory is packed into a deterministic ustar `tar.gz`: sorted entries, zeroed timestamps and owners, files `0644`. `.git`, `.hg`, `.svn`, `.DS_Store`, and `Thumbs.db` are left out. Validation runs on those exact bytes, and the same bytes are uploaded. An archive is validated and uploaded as it is.
+- The checks are the server's: ustar/GNU archive format only, path safety, collisions by case or Unicode normalization, member/file/size caps, the Agent Plugin `plugin.json` schema, hardened `SKILL.md` frontmatter, MCP credential literals, instruction text limits, and the built-in secret/PHI DLP scan. With `--visibility org` or `public`, a declared `license` in `plugin.json` is also required. DLP problems list every finding by file and line, never the matched text. For a personal target, DLP findings block locally, since no organization policy applies. For an org or public target they are shown as warnings instead: the organization's DLP policy (its allowlist and custom patterns) runs on the server, which accepts or rejects the upload. Every other check blocks for every target.
+- Validation stops at the first structural problem, as the server does. Fix it and run again.
+- With no `--org`, `publish` uploads to your personal library (`POST /api/v1/users/me/skills/packages`). With `--org`, it uploads to that organization (`POST /api/v1/orgs/{org_id}/skills/packages`, visibility `org` by default). `--visibility public` is accepted from platform administrators, and from a verified publisher that SessionFS has enabled for public publishing, under that publisher's own namespace (personal, or with `--org` for an org publisher). A publisher's first public version, and any update that asks for more access, waits for review before it appears. Namespace and collection default to `personal` or `org`, as on the server.
+- A namespace claimed by another publisher (or one indistinguishable from it) takes no new packages from you (`409 namespace_claimed`); packages you already had there keep receiving versions.
+- The upload is named `<package-name>.tar.gz`. Publishing a new version of the same package therefore adds a version to the existing package instead of creating a new one. Re-publishing an identical version reuses it.
+- `--yes` skips the confirmation. Without a terminal, `publish` exits with code 2 unless `--yes` is given.
+
+Some checks need server state, so only the server makes them. The CLI explains each one when the server returns it:
+
+| Server answer | Meaning |
+|---------------|---------|
+| `401` | The API key was rejected. Run `sfs auth login` or set `SESSIONFS_API_KEY` |
+| `403 upgrade_required` (`marketplace_access`) | Personal publishing needs Starter or above |
+| `403 upgrade_required` (`team_skill_library`) | The organization's plan does not include the team skill library |
+| `403` (role or scope) | You must be an org owner or admin. The key needs `marketplace:write` (personal) or `skills:admin` (org) |
+| `409 visibility_mismatch` | This exact version is already listed in that collection with another visibility. Use `--collection` |
+| `413 storage_limit` / `package_too_large` | Over the storage quota or the upload size cap |
+| `429` version limits | 50 stored personal versions, or 100 per package. Delete older versions |
+| `422 invalid_skill_package` | Package rejected. The 422 body's `details.reason` matches the local reason code. If it is `dlp_findings` on an org publish, the organization's DLP policy did not allow content the CLI flagged as a warning, or one of its custom patterns matched |
+| `408 publish_timeout` | The upload must arrive within two minutes. Retry on a faster connection |
+| `503 publish_busy` | The server is busy, or you already have a publish in flight. Nothing was published. Retry after the `Retry-After` seconds |
+| `409 namespace_claimed` | Another publisher owns that namespace. Choose another `--namespace` |
+| `403 public_publishing_not_allowed` / `publisher_not_verified` / `public_publishing_not_enabled` | Public listings need your own verified publisher namespace, opted into public publishing by SessionFS |
+| `409 package_name_confusable` | A new public package name imitates a reserved brand or a verified publisher |
+| `403 publisher_suspended` | The publisher is suspended; nothing can be published under it |
+
+### Publishers and verification
+
+A publisher owns a globally unique marketplace namespace. Verification proves who the publisher is and shows as a badge on its listings, such as `verified: acme.com` or `verified: github.com/acme (org #1234567)`. Display names never carry a badge.
+
+| Command | Description |
+|---------|-------------|
+| `sfs skill publisher claim NAMESPACE [--org ORG_ID] [--display-name NAME] [--json]` | Claim a namespace: 3-39 lowercase letters, digits or single hyphens. Personal publishers need Starter or above; org publishers need an org owner/admin and the team skill library. Names that imitate a reserved brand or a verified publisher are refused with `409 namespace_confusable`: lookalike letters from any script (the full Unicode UTS #39 confusables table, so Cyrillic, Greek or Cherokee spellings), leetspeak digits (`0 1 2 3 4 5 6 7 8 9`), `rn`/`m`, one or two typos, and added `-official`, `-team`, `-ai` and similar. A namespace another owner already publishes packages in is refused with `409 namespace_in_use` (ask SessionFS to review the claim). An owner can hold 5 publishers and claim 10 namespaces in total (retired ones count). Namespaces are never released, even after deletion |
+| `sfs skill publisher list [--json]` | Publishers you manage, personal and org |
+| `sfs skill publisher show PUBLISHER_ID [--json]` | Publisher details; managers also see verifications and trusted publishers |
+| `sfs skill publisher verify PUBLISHER_ID --dns DOMAIN` | Start DNS verification. Prints a `sessionfs-verification=...` TXT record to add at the domain. If your organization already verified the domain for SSO, it is reused (and re-checked) immediately |
+| `sfs skill publisher verify PUBLISHER_ID --github-org INSTALLATION_ID` / `--github-user INSTALLATION_ID` | Verify a GitHub organization or account through one of **your own** SessionFS GitHub App installations. The installation must be linked to your account through the verified GitHub sign-in flow; an installation linked only by its id is refused with `409 installation_claim_unverified`. The badge is bound to GitHub's numeric account id, so a renamed or re-registered login does not inherit it |
+| `sfs skill publisher check PUBLISHER_ID VERIFICATION_ID` | Re-check a verification now |
+| `sfs skill publisher trust PUBLISHER_ID --repo OWNER/REPO --workflow FILE [--environment ENV] [--ref-pattern REF] [--package NAME] [--reusable-workflow OWNER/REPO/.github/workflows/FILE] [--allow-workflow-run]` | Allow a GitHub Actions workflow to publish for this publisher (see below) |
+| `sfs skill publisher untrust PUBLISHER_ID TRUSTED_ID` | Remove a trusted publisher. Publish tokens already issued under it stop working |
+
+SessionFS re-checks verifications daily. A DNS record missing for seven consecutive days drops the badge (status `lapsed`) until the record is back. Uninstalling or suspending the GitHub App revokes a GitHub verification immediately.
+
+### Trusted publishing from GitHub Actions
+
+Trusted publishing lets a GitHub Actions workflow publish without a SessionFS API key stored in the repository.
+
+1. Claim a publisher and run `sfs skill publisher trust` with the repository, the workflow file, and ideally a GitHub `--environment` with protection rules plus a `--ref-pattern` such as `refs/tags/v*`. The trust is bound to the repository's numeric id and owner id.
+2. In the workflow, give the job `permissions: id-token: write` and run `sfs skill publish . --trusted-publishing --namespace NS`. A complete example is in [`docs/integrations/github-actions-skill-publish.yml`](integrations/github-actions-skill-publish.yml).
+3. The CLI reads the server's audience from `GET /api/v1/marketplace/trusted-publishing/config` (the deployment's public API origin), requests an OIDC token for it and posts it to `POST /api/v1/marketplace/trusted-publishing/token`. The server verifies GitHub's signature and checks:
+   - the repository id and owner id;
+   - the workflow file as the **caller** (`workflow_ref`, the file the run started from). If that file calls a shared reusable workflow, the trust still names the caller; add `--reusable-workflow` to also pin the called file (`job_workflow_ref`);
+   - the event: `push`, `release` or `workflow_dispatch` only (`workflow_run` only with `--allow-workflow-run`). `pull_request`, `pull_request_target` and other pull-request events never publish, whatever their ref;
+   - the environment and the ref (branches and tags only).
+   It returns a publish token that expires after 15 minutes, can be used once, and only for that namespace (and package, when the trust or `--package` names one). Each OIDC token can be exchanged once.
+4. The upload (`POST /api/v1/marketplace/trusted-publishing/publish`) records where the version was **published from**: repository, workflow, event, ref, environment, run and the run's commit. The listing shows it under "Published from". This is publication provenance, not build provenance: nothing yet binds the archive to that commit, and your declared `source_commit` is left as you set it.
+
+The audience defaults to the server's `SFS_PUBLIC_API_URL`; `SFS_TRUSTED_PUBLISHING_AUDIENCE` overrides it. Outside development a server without either has trusted publishing disabled, and one configured with a generic audience such as `sessionfs` refuses to start, so a token minted for one deployment cannot be replayed against another.
+
+Build provenance (a Sigstore / PEP 740 attestation that binds the archive digest, verified against a transparency log) is not implemented yet.
+
+### Hosted marketplace packages
+
+`sfs skill add sessionfs:acme/review-loop` downloads the version's archive and checks its content hash three ways before installing anything: the catalog's `content_hash`, the download's `X-SessionFS-Content-Hash` header, and the hash recomputed locally from the extracted files must all match. It then uses the same plan, consent and journaled install as any other source. The lockfile records the source as `source_type: hosted`, with `locator: sessionfs:<package id>#<server origin>` (bound to the server it came from), `commit: <version id>` and `listing_name: <namespace>/<name>`. This means:
+
+- `sfs skill sync --locked` re-downloads exactly the locked version and hash, even if the server's current version has moved on.
+- `sfs skill update ID` moves to the package's current hosted version. `--pin VERSION` selects a specific version label or version id instead.
+- **Bound to its server:** update, `sync --locked` and re-downloads only ever talk to the server recorded in the locator. If that is not the active profile, SessionFS uses another signed-in profile for that server, or refuses with instructions to sign in to it. A different server can never supply a package id it did not publish.
+- **Older installs:** packages installed before the server was recorded are refused until you run `sfs skill update ID --rebind-origin`. Only do this when the active server is the one you installed the package from.
+- `sfs skill rollback ID --to HASH` re-applies a cached earlier version.
+
+### `sfs skill pull`
+
+Reconciles two server-side lists to this device:
+
+- **Org assignments** (`GET /api/v1/users/me/skills/assignments`, including device assignments when `--device-id` or `SESSIONFS_DEVICE_ID` is set). These install into **user** scope.
+- **Your approved install requests** for the current project, matched by the repository's `origin` remote. These install into project scope, or into user scope for `user`/`device` requests.
+
+What pull does with them:
+
+- **Required** assignments and approved requests are installed.
+- **Optional** assignments are listed. They are installed only with `--yes` or when you answer yes to a prompt. A yes covers exactly that version, its content and the tools it named; if the assignment later points at other content or names more tools, you are asked again. If you `sfs skill remove` an optional package that pull installed, that version is opted out: neither `pull --yes` nor the daemon reinstalls it (it is reported as `opted-out`) until you answer yes interactively or `sfs skill add` the package again. The opt-out belongs to the account, scope, origin kind and version, so deleting and recreating an identical assignment does not undo it. It is recorded before the package is removed, so an interrupted removal never loses it. Required assignments still reinstall. When several assignments name the same version, the package is downloaded once, but each assignment keeps its own mode and tools. Only the tools of required assignments are installed automatically. Each optional assignment's extra tools are offered on their own, and added only if you accept that assignment. The daemon never adds them.
+- **Same version assigned more than once:** when several assignments or requests (for example from two orgs) name the same version, they become one install. Their target tools are combined, and every one of them is tracked.
+- **Pull never removes skills or tools:** even when the right version is already installed, `pull` adds tools an assignment now asks for. It never removes one. When an assignment or request stops asking for a tool (its tool list shrinks, or the origin disappears), `pull` reports the tool as no longer assigned, prints the `sfs skill compile <id> --scope <scope> --drop <tool>` command that removes it, and leaves it installed; the daemon logs the same. The report lists these under `unassigned_tools`, and they are reported until you drop the tool or it is assigned again. Tools you added by hand are never reported. An assignment with no tool list means every default tool (`--for`, otherwise all supported tools). Additions go through the normal compile, so consent is checked again.
+- **Version updates need approval for every installed tool:** a new version is installed only if every tool the package is currently installed for is approved for it (an assignment or request covering that tool, with its capabilities, plus your `--allow-*` consent). Otherwise nothing is updated and the reason is reported, for example "2.0.0 is approved only for codex; claude-code still has 1.0.0 - request approval for claude-code or remove it with `sfs skill compile <id> --scope user --drop claude-code`". A tool never gets a version it was not approved for.
+- **Service keys:** a service key can run `pull`. It gets project-scoped install requests (`--project ID` if the server cannot resolve the project from the git remote for a service key); user- and device-scoped requests belong to a person and are skipped. For users, `target_user_id` is only checked on user- and device-scoped requests.
+- **Failed listings are not empty listings:** if assignments or install requests cannot be read (an HTTP error, network problem, or unresolvable project), that source is left alone. Nothing it installed is reported as no longer assigned. The note is printed before any prompt. The same applies when any row in a listing cannot be interpreted safely, for example a row that is not an object, a missing or null tool list, an assignment without a `required` or `optional` mode, or a request that is not `approved` or has no capability list. It also applies when the server reports that it left out records it could not read (`"incomplete": true` on the listing). It also applies when a paged listing cannot be read to its last page, and when an older, unpaged server returns exactly its 100-row limit, since rows may have been cut off. If the listing changes while it is being paged (a new `generation`, or the server's `listing_changed`), it is read again from the first page, at most twice. A pull's time limit or a cancel also stops the paging, which leaves that source incomplete. The valid rows still apply.
+- **Tools this sfs doesn't support:** an assignment or request whose tool list names only tools this version of sfs doesn't support is skipped with a note, and its source counts as incomplete. It is never widened to all tools. If only some of its tools are unsupported, the supported ones are installed. An empty tool list still means every default tool.
+- **Removed assignments:** `pull` and the daemon never uninstall a package because its assignment or approval disappeared. When a package that pull installed is no longer referenced by any assignment or request in a complete listing, `pull` lists it as no longer assigned and prints the `sfs skill remove <id> --scope <scope>` command that removes it. `sfs skill doctor` lists it too. If it is assigned again, it is no longer listed. Packages you installed yourself are never listed and never replaced. Pull ownership belongs to one server and account, and to one exact installation, identified by an immutable install id. If you remove a pulled package and add it again, or explicitly `sfs skill add` or `sfs skill remove` a package pull manages, pull no longer updates it or changes its tools. Every current assignment or request for an installed version is recorded, including optional ones and ones for packages you installed yourself. If a package is removed while pull is recording it, pull installs it again (or defers it with a note) rather than recording a reference to a missing package. Blocked packages are still quarantined automatically. A cancelled or timed-out pull stops before starting another quarantine move.
+- **Interrupted installs:** an install that a crash or kill interrupted is settled at the start of the next `pull` (or daemon run), before any network work. If settling it would need a capability nobody durably consented to, it is left as it is and reported instead, for example: "An interrupted install of pkg_x (ver_y) could not be settled because consent for skill-scripts is missing; run `sfs skill pull --allow-scripts` to settle it". The daemon logs the same line. Running `pull` with the named flag settles it. The report lists these under `recovery`. The line is shown as soon as it is found, so it still appears (on stderr with `--json`) when the rest of the pull then fails, for example offline. Recovery only acts on an installation the interrupted pull itself last changed, undoes only what that interrupted pull itself changed (an origin counts as recorded only when that pull recorded it), puts back the exact earlier version (source, version and provenance, not just the same bytes) when it rolls an update back, and never removes an installation another account has recorded meanwhile; in a project it acts only in that project.
+- **Elevated capabilities** (scripts, hooks, executable extensions, DLP findings) still need the usual `--allow-*` flags. They are also authorized **per tool**: a tool is installed only if an assignment or request covering that tool authorizes every capability it needs. An assignment authorizes its own tools; an install request authorizes only the capabilities approved on it, for its own tools. Approvals are never combined across requests. Excluded tools are listed with the reason.
+- Running `pull` again is idempotent: content already installed is left alone. "Installed" means this version of this package from this server. Identical content installed from another package, server or source is reported as a conflict and not installed a second time.
+
+### Revocations
+
+`pull` (and the daemon) read `GET /api/v1/marketplace/revocations?since=<cursor>`. Servers without the feed (HTTP 404) are skipped quietly.
+
+The feed only shows revocations the signed-in account can see, so `~/.sessionfs/skills/hosted.json` keeps a separate cursor and separate flags for each account (API URL + user id, or the key's fingerprint for a service key):
+
+- **Switching accounts or profiles** starts the new account from its own cursor, never from another account's.
+- **Full replay:** an account's first sync, and one sync every 24 hours, replays the whole feed and rebuilds that account's flags. This picks up older revocations that became visible after you joined an org, and drops ones you can no longer see. The feed is downloaded without holding the local state lock; the result is merged afterwards, and the sync starts again if another sync updated the same account in between.
+- **Other accounts' blocks:** only another account's **global** blocks **on the same server** apply (owners and revocations are never mixed between servers). They are matched by content hash alone and shown without that account's version ids or reasons.
+- **Reading to the end:** the feed is read until the server reports `has_more: false` (older servers: until an empty page). If a safety limit or the daemon's time limit is reached first, nothing is saved; the previous cursor and flags stay as they were.
+- **Content blocks:** a block on a content hash (`kind: "content"`) is stored separately from version and package flags, per hash, block scope and org. Restoring the hash clears only that block, not a version-specific one. Unknown states and kinds from newer servers are ignored.
+- **Org-scoped blocks:** an org-scoped entry (`block_scope: "org"` with `scope_org_id`), whether for a version, a package or content, applies only to installed copies that org owns **and** that were installed from a non-public listing. An org block never reaches a public copy. SessionFS records the listing, `owner_org_id` and listing `visibility` on each installed copy, written together with the install. The same version installed in two scopes from two listings (say, an org's private listing and the public one) is judged per copy, and downloading or failing to install another copy never changes how an existing one is judged. For older installs that have no such record, `pull` looks the values up from that version's metadata. Global blocks apply everywhere. When the owner or visibility is unknown (older server or install), blocks apply as before. An org or owner-scoped **content** block (by content hash) is kept on the device until an explicit `restored` event arrives, even after you leave the org and can no longer see its events; `sfs skill doctor` and `pull` keep reporting and enforcing it. Org or owner-scoped **version and package** events stay with the account that can see them: they are rebuilt on each full replay and are never imported by another profile on the device.
+- **Owner-layer yanks:** a yank or restore by the publisher itself arrives as `block_scope: "owner"` (`scope_org_id` is the owning org, or null for a personal package). It applies only to copies installed from a non-public listing of that package and version, and only to that org's copies when `scope_org_id` is set, so a copy installed from the public listing of the same version is not affected. It stays with the account that can see it. After you leave the org, the next full replay drops it. Platform yanks (no scope) and global blocks are unchanged.
+- **Layers:** a version or package has independent platform (global or no scope) and owner (org or owner scope, per org) states. A restore clears only its own layer, and the version counts as yanked or blocked while any layer is.
+- **Global restores:** global content blocks (by content hash) are shared by every account on the device. For each content hash and server the latest event is kept, including restores. A content block that any account on the device has seen restored is lifted for every account, and an older block replayed later cannot bring it back. Version and package events stay with the account that can see them and are rebuilt on each full replay. So after you leave an org, its platform block of a private package lapses once you can no longer see it, instead of staying stuck. An older server's blocks and restores that carry no `kind` are matched by content hash and are also shared by every account, whether their scope is absent or global. Its kindless yanks are not shared.
+- **Incomplete feed:** if the revocation feed cannot be read to its end, `pull` says so, keeps the previously known blocks and yanks, and still quarantines blocked packages.
+- **New or rotated keys:** version and package blocks and yanks are kept per account. A credential this device has not seen yet, such as a rotated API key, is matched to its account with one lookup on the server. This happens before any hosted install, rollback or `sfs skill sync`, and on `pull`. While offline, it cannot be matched, because user and service keys look the same, so SessionFS never guesses. Only the content blocks shared by every account on the device apply then. `sfs skill list` and `sfs skill doctor` warn "Identity unknown … run `sfs skill pull` while online". A fresh hosted download always goes through the server, which refuses a blocked version anyway.
+
+| State | What happens locally |
+|---|---|
+| `blocked` | Every file of the package, including ones you modified, is moved out of every tool directory into `~/.sessionfs/skills/quarantine/<package>/<timestamp>/`, so you can recover your edits. The notice includes the reason and the quarantine path. If a file cannot be moved, the package stays recorded as installed and stays in `skills.lock.json` marked as pending quarantine. It keeps being reported and retried. `sfs skill sync` leaves such a package alone, neither reinstalling nor removing it, and `sfs skill remove` refuses it. Only a later quarantine pass (`sfs skill pull` or the daemon) finishes it. A managed file swapped for a symlink is moved as the link itself (never followed), and its target is left untouched. It can never be installed again, even from the local cache. |
+| `yanked` | The installed copy is kept. `sfs skill list` and `sfs skill doctor` show a warning, and new installs or rollbacks to that version are refused. |
+| `restored` | The local flag is cleared. |
+
+`sfs skill doctor` exits non-zero while blocked content is still active:
+
+- A blocked package is still installed (for example, a project-scope install made before the block). Run `sfs skill pull` in that project.
+- A quarantined file is back in a tool directory. Delete it by hand.
+
+`sfs skill remove` also moves each file out of the tool directory before checking whether you modified it. An edit saved at the last moment is never deleted: modified files go back in place, and are reported as preserved.
+
+Removal never deletes a file directly, and neither does any other command that takes a file out of a tool directory: `sfs skill update`, `rollback`, `sync`, and a `compile` that drops a target. Each file is moved out first and only then checked. A file you modified is put back (an update that would replace it stops instead), and an unchanged one goes to the trash. A file whose content would not change is left in place. Unmodified files are moved into a trash folder, `~/.sessionfs/skills/trash/<package>/<timestamp>/`, laid out like the tool directories they came from. A later removal deletes trash entries older than 7 days. `sfs skill doctor` shows how many files the trash holds and its size. To get a removed file back within that window, copy it from the trash. Moves into the trash and the quarantine are renames, so the file itself is moved. Only when the destination is on another filesystem is the file copied, and the copy is synced to disk before the removal is recorded. An interrupted removal puts every file back, wherever it had got to.
+
+SessionFS never replaces a file it did not expect to find. Files are placed with an atomic rename that fails if the name is taken. On Linux and macOS this uses the system's no-replace rename; elsewhere it uses a hard link. If a file appeared at the destination meanwhile, a file being put back is saved beside it as `<name>.sfs-restored-<id>`, and an install stops without overwriting anything. On a filesystem that supports neither method, installs create the file exclusively. Moving a symlink there is refused, and the link is left where it is.
+
+Every change to a tool directory goes through directory handles, opened one level at a time from your home or project directory without following symlinks. If a folder inside a tool directory is replaced by a symlink while a command runs, the command stops, and nothing is created or moved outside the tool directories. On a platform that cannot open folders this way, such as Windows, installing and removing skills is refused.
+
+### Daemon
+
+When cloud sync is enabled, the daemon runs the same reconcile every 15 minutes, backing off to 2 hours after repeated failures. It does less than `pull`:
+
+- It quarantines blocked packages in user scope.
+- It installs **required** assignments into user scope.
+- It never prompts, never installs optional items, never uninstalls anything (it only quarantines blocked packages and logs packages that are no longer assigned), never grants an elevated capability (those items are logged as skipped), and has no project context.
+- It runs in its own background thread, one run at a time, with a 10-minute time limit, so it never holds up session capture. Unfinished work is picked up on the next run.
+- It changes skill files through the same locks and journal as `sfs skill` commands, so it never overlaps a command you are running.
 
 ## Billing and Tier Enforcement
 

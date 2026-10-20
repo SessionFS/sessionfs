@@ -18,6 +18,7 @@ import { Select } from '../components/ui';
 
 import { useMe } from '../hooks/useMe';
 import { useToast } from '../hooks/useToast';
+import { isOrgAdminRole } from '../utils/roles';
 import {
   type OrgMemberInfo,
   useChangeMemberRole,
@@ -50,8 +51,10 @@ export default function MembersTab({ orgId }: MembersTabProps) {
   if (error) return <p role="alert">Failed to load members: {String(error)}</p>;
   if (!data) return null;
 
-  const isAdmin = data.current_user_role === 'admin';
-  const adminCount = data.members.filter((m) => m.role === 'admin').length;
+  // Owners rank above admins: they manage members too, and count toward
+  // the last-admin guard exactly as the backend counts them.
+  const isAdmin = isOrgAdminRole(data.current_user_role);
+  const adminCount = data.members.filter((m) => isOrgAdminRole(m.role)).length;
 
   const handleInvite = (e: React.FormEvent) => {
     e.preventDefault();
@@ -156,7 +159,12 @@ export default function MembersTab({ orgId }: MembersTabProps) {
                 <td>
                   <span aria-label={`Role: ${m.role}`}>{m.role}</span>
                 </td>
-                {isAdmin && (
+                {isAdmin && m.role === 'owner' && (
+                  // The owner row is immutable here; ownership changes go
+                  // through the two-step owner transfer.
+                  <td>—</td>
+                )}
+                {isAdmin && m.role !== 'owner' && (
                   <td>
                     {m.role === 'member' ? (
                       <button

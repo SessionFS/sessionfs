@@ -7,7 +7,10 @@ import { useToast } from '../hooks/useToast';
 import { judgeSettingsSchema, fieldErrorsFromZod, type FieldErrors } from '../utils/validation';
 import FieldError from '../components/FieldError';
 import { getItem as lsGet, setItem as lsSet, removeItem as lsRemove } from '../utils/storage';
+import { isOrgAdminRole } from '../utils/roles';
 import { Tabs, Card, Button, Input, Select } from '../components/ui';
+import type { GitHubClaimFlow, GitHubInstallationResponse } from '../api/client';
+import { displayTier } from '../utils/tier';
 
 const PROVIDERS = [
   { value: 'openrouter', label: 'OpenRouter' },
@@ -76,7 +79,11 @@ export default function SettingsPage() {
     enabled: !!auth,
   });
 
-  const [activeTab, setActiveTab] = useState<SettingsTab>('account');
+  // The GitHub link flow returns to /settings?github=<outcome>; its notices
+  // and the installation chooser live in the Connection tab.
+  const [activeTab, setActiveTab] = useState<SettingsTab>(() =>
+    new URLSearchParams(window.location.search).has('github') ? 'connection' : 'account',
+  );
 
   if (!auth) return null;
 
@@ -117,7 +124,7 @@ export default function SettingsPage() {
 /*  Account Tab                                                        */
 /* ------------------------------------------------------------------ */
 
-function AccountTab({ profile, logout }: { profile: any; logout: () => void }) {
+export function AccountTab({ profile, logout }: { profile: any; logout: () => void }) {
   return (
     <div className="space-y-5">
       {profile && (
@@ -129,7 +136,7 @@ function AccountTab({ profile, logout }: { profile: any; logout: () => void }) {
               <div className="text-sm text-text-primary">{profile.email}</div>
             </div>
             <div className="flex gap-4 text-sm text-text-secondary">
-              <span>Tier: <span className="text-text-primary font-medium capitalize">{profile.tier}</span></span>
+              <span>Tier: <span className="text-text-primary font-medium capitalize" data-testid="account-tier">{displayTier(profile)}</span></span>
               <span>Verified: {profile.email_verified
                 ? <span className="text-green-500">yes</span>
                 : <span className="text-yellow-500">no</span>
@@ -229,6 +236,7 @@ function CaptureHealthCard({ captureHealth }: { captureHealth: WatcherHealth[] |
     'kilo-code': 'Kilo Code',
     'amp': 'Amp',
     'roo-code': 'Roo Code',
+    'antigravity': 'Antigravity',
   };
 
   return (
@@ -697,10 +705,78 @@ function AutosyncSection() {
 }
 
 
+const GITHUB_LINK_CONFIRMED_MESSAGE = 'GitHub installation linked and ownership verified.';
+
+const GITHUB_LINK_FAILED_MESSAGE =
+  "Couldn't link the GitHub installation. Make sure you sign in to GitHub with an account that installed the app or administers the organization, then try again.";
+
+const GITHUB_LOGIN_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+
+/**
+ * GitHub's own settings page for an existing installation (repository
+ * access, suspend, uninstall). Opening it never starts an install, so it
+ * never lands on the state-bound install-return endpoint.
+ */
+function githubInstallationSettingsUrl(gh: GitHubInstallationResponse): string | null {
+  const id = gh.installation_id;
+  if (!id || !Number.isSafeInteger(id) || id <= 0) return null;
+  if (gh.account_type === 'Organization') {
+    if (!gh.account_login || !GITHUB_LOGIN_RE.test(gh.account_login)) return null;
+    return `https://github.com/organizations/${gh.account_login}/settings/installations/${id}`;
+  }
+  return `https://github.com/settings/installations/${id}`;
+}
+
+function reverifyCopy(gh: GitHubInstallationResponse): string {
+  const base = 'PR comments keep working, but repository verification is off.';
+  if (gh.needs_reverification) {
+    return `This installation was linked before SessionFS checked ownership with GitHub. ${base} Sign in to GitHub to confirm you control it.`;
+  }
+  if (gh.proof_stale) {
+    return `Your GitHub ownership check is more than 7 days old. ${base} Sign in to GitHub again to restore it.`;
+  }
+  return `GitHub did not confirm that you own this account or administer the organization when you linked it. ${base} Sign in to GitHub again and SessionFS will recheck your owner/admin status (for organizations this needs the app's Members permission to be approved).`;
+}
+
 export function GitHubIntegrationSection() {
   const { auth } = useAuth();
   const queryClient = useQueryClient();
-  const [claimError, setClaimError] = useState<string | null>(null);
+  // The server's GitHub OAuth callback lands the browser back here with
+  // ?github=connected, ?github=failed, or ?github=choose (several
+  // installations are linkable; the user picks exactly one). The old
+  // ?installation_id= auto-claim is gone: a bare id proves nothing.
+  const [returnOutcome] = useState(() =>
+    new URLSearchParams(window.location.search).get('github'),
+  );
+  const [claimError, setClaimError] = useState<string | null>(() =>
+    returnOutcome === 'failed' ? GITHUB_LINK_FAILED_MESSAGE : null,
+  );
+  // ?github=connected is only a hint to refetch: anyone can type it. The
+  // success notice is shown only once the authenticated settings response
+  // confirms a verified link (see confirmedByServer below).
+  const [claimNotice, setClaimNotice] = useState<string | null>(null);
+  const [choosing, setChoosing] = useState(() => returnOutcome === 'choose');
+  const [starting, setStarting] = useState(false);
+
+  const { data: choiceData, isLoading: choicesLoading } = useQuery({
+    queryKey: ['github-claim-choices'],
+    queryFn: () => auth!.client.getGitHubClaimChoices(),
+    enabled: !!auth && choosing,
+  });
+
+  const chooseInstallation = useMutation({
+    mutationFn: (installationId: number) => auth!.client.chooseGitHubInstallation(installationId),
+    onSuccess: () => {
+      setChoosing(false);
+      setClaimError(null);
+      setClaimNotice(GITHUB_LINK_CONFIRMED_MESSAGE);
+      queryClient.invalidateQueries({ queryKey: ['github-installation'] });
+    },
+    onError: () => {
+      setChoosing(false);
+      setClaimError(GITHUB_LINK_FAILED_MESSAGE);
+    },
+  });
 
   const { data: ghSettings, isLoading } = useQuery({
     queryKey: ['github-installation'],
@@ -709,47 +785,49 @@ export function GitHubIntegrationSection() {
   });
 
   const updateSettings = useMutation({
-    mutationFn: (updates: { auto_comment?: boolean; include_trust_score?: boolean; include_session_links?: boolean; installation_id?: number }) =>
+    mutationFn: (updates: { auto_comment?: boolean; include_trust_score?: boolean; include_session_links?: boolean }) =>
       auth!.client.updateGitHubInstallation(updates),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['github-installation'] }),
   });
 
-  // Auto-claim on GitHub App Setup URL callback. When the user installs the
-  // app, GitHub redirects them back to this dashboard with
-  // ?installation_id=X&setup_action=install. Parse those params and claim
-  // the installation bound to THIS authenticated user, then strip the query
-  // string so a browser refresh doesn't retry.
+  // Clean the URL so a refresh does not repeat the message.
   useEffect(() => {
-    if (!auth) return;
-    const params = new URLSearchParams(window.location.search);
-    const idRaw = params.get('installation_id');
-    const setupAction = params.get('setup_action');
-    if (!idRaw || setupAction !== 'install') return;
-    const installationId = Number.parseInt(idRaw, 10);
-    if (!Number.isFinite(installationId)) return;
+    if (!returnOutcome) return;
+    if (returnOutcome === 'connected') {
+      queryClient.invalidateQueries({ queryKey: ['github-installation'] });
+    }
+    const url = new URL(window.location.href);
+    url.searchParams.delete('github');
+    // Stale params from GitHub's old Setup URL redirect.
+    url.searchParams.delete('installation_id');
+    url.searchParams.delete('setup_action');
+    url.searchParams.delete('installation_target');
+    window.history.replaceState({}, '', url.pathname + url.search);
+  }, [returnOutcome, queryClient]);
 
-    auth.client
-      .updateGitHubInstallation({ installation_id: installationId })
-      .then(() => {
-        queryClient.invalidateQueries({ queryKey: ['github-installation'] });
-        setClaimError(null);
-      })
-      .catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        setClaimError(`Couldn't link the GitHub App installation: ${msg}`);
-      })
-      .finally(() => {
-        // Strip query params so refresh doesn't retry the claim (which
-        // would succeed idempotently but pollutes audit logs).
-        const url = new URL(window.location.href);
-        url.searchParams.delete('installation_id');
-        url.searchParams.delete('setup_action');
-        url.searchParams.delete('installation_target');
-        window.history.replaceState({}, '', url.pathname + url.search);
-      });
-  }, [auth, queryClient]);
+  async function startClaim(flow: GitHubClaimFlow, installationId?: number) {
+    if (!auth) return;
+    setStarting(true);
+    setClaimError(null);
+    try {
+      const redirectUrl =
+        installationId === undefined
+          ? await auth.client.startGitHubClaim(flow)
+          : await auth.client.startGitHubClaim(flow, installationId);
+      window.location.assign(redirectUrl);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setClaimError(`Couldn't start GitHub sign-in: ${msg}`);
+      setStarting(false);
+    }
+  }
 
   const connected = ghSettings && ghSettings.account_login;
+  const confirmedByServer =
+    returnOutcome === 'connected' && !!ghSettings?.account_login && !!ghSettings?.ownership_verified;
+  const notice = claimNotice ?? (confirmedByServer ? GITHUB_LINK_CONFIRMED_MESSAGE : null);
+  const claimAvailable = !!ghSettings?.claim_available;
+  const installAvailable = !!ghSettings?.install_available;
 
   return (
     <Card level="elevated" className="p-5">
@@ -759,8 +837,41 @@ export function GitHubIntegrationSection() {
       </p>
 
       {claimError && (
-        <div className="text-sm text-red-500 mb-3 bg-red-500/10 border border-red-500/30 rounded-md px-3 py-2">
+        <div role="alert" className="text-sm text-red-500 mb-3 bg-red-500/10 border border-red-500/30 rounded-md px-3 py-2">
           {claimError}
+        </div>
+      )}
+      {notice && !claimError && (
+        <div role="status" className="text-sm text-green-600 mb-3 bg-green-500/10 border border-green-500/30 rounded-md px-3 py-2">
+          {notice}
+        </div>
+      )}
+
+      {choosing && (
+        <div className="text-sm mb-4 border border-border rounded-md px-3 py-3">
+          <p className="text-text-secondary mb-2">
+            Your GitHub account can link more than one installation. Choose the one to link to SessionFS:
+          </p>
+          {choicesLoading ? (
+            <p className="text-text-tertiary">Loading…</p>
+          ) : choiceData && choiceData.choices.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {choiceData.choices.map((choice) => (
+                <Button
+                  key={choice.installation_id}
+                  size="sm"
+                  variant="secondary"
+                  disabled={chooseInstallation.isPending}
+                  onClick={() => chooseInstallation.mutate(choice.installation_id)}
+                >
+                  {choice.account_login ?? `Installation ${choice.installation_id}`}
+                  {choice.account_type ? ` (${choice.account_type})` : ''}
+                </Button>
+              ))}
+            </div>
+          ) : (
+            <p className="text-text-tertiary">This choice has expired. Start again from Connect GitHub.</p>
+          )}
         </div>
       )}
 
@@ -774,7 +885,30 @@ export function GitHubIntegrationSection() {
               Connected to <span className="font-medium">{ghSettings.account_login}</span>
               <span className="text-text-tertiary ml-1">({ghSettings.account_type})</span>
             </span>
+            {ghSettings.ownership_verified && ghSettings.claim_verified_github_login && (
+              <span className="text-xs text-text-tertiary">
+                verified as @{ghSettings.claim_verified_github_login}
+              </span>
+            )}
           </div>
+
+          {!ghSettings.repo_verification_active && (
+            <div className="text-sm mb-4 bg-amber-500/10 border border-amber-500/30 rounded-md px-3 py-2 text-text-secondary">
+              <p className="mb-2">{reverifyCopy(ghSettings)}</p>
+              {claimAvailable ? (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={starting}
+                  onClick={() => startClaim('authorize', ghSettings.installation_id ?? undefined)}
+                >
+                  {ghSettings.needs_reverification ? 'Verify ownership with GitHub' : 'Re-verify with GitHub'}
+                </Button>
+              ) : (
+                <p className="text-text-tertiary">GitHub sign-in is not configured on this server.</p>
+              )}
+            </div>
+          )}
 
           <div className="space-y-2 mb-4">
             <label className="flex items-center gap-2.5 text-sm text-text-secondary cursor-pointer">
@@ -810,26 +944,57 @@ export function GitHubIntegrationSection() {
             <div className="text-sm text-red-500 mb-2">Failed to update settings.</div>
           )}
 
-          <a
-            href="https://github.com/apps/sessionfs-ai-context/installations/new"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-sm text-brand hover:underline"
-          >
-            Manage installation
-          </a>
+          <div className="flex flex-wrap items-center gap-4">
+            {githubInstallationSettingsUrl(ghSettings) && (
+              <a
+                href={githubInstallationSettingsUrl(ghSettings)!}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sm text-brand hover:underline"
+              >
+                Configure on GitHub
+              </a>
+            )}
+            {installAvailable && (
+              <Button size="sm" variant="ghost" disabled={starting} onClick={() => startClaim('install')}>
+                Add installation
+              </Button>
+            )}
+          </div>
+          {installAvailable && (
+            <p className="text-xs text-text-tertiary mt-2">
+              SessionFS links one installation per account. Adding another replaces{' '}
+              {ghSettings.account_login}: it is unlinked and its PR comments stop.
+            </p>
+          )}
         </>
       ) : (
         <div>
           <p className="text-sm text-text-tertiary mb-3">Not connected</p>
-          <a
-            href="https://github.com/apps/sessionfs-ai-context/installations/new"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-block bg-brand text-white rounded-lg px-5 py-2.5 text-sm font-semibold hover:bg-[var(--brand-hover)] transition-colors"
-          >
-            Connect GitHub
-          </a>
+          {claimAvailable ? (
+            <div className="flex flex-wrap items-center gap-3">
+              {installAvailable && (
+                <Button disabled={starting} onClick={() => startClaim('install')}>
+                  Connect GitHub
+                </Button>
+              )}
+              <Button
+                variant={installAvailable ? 'secondary' : 'primary'}
+                disabled={starting}
+                onClick={() => startClaim('authorize')}
+              >
+                {installAvailable ? 'Link existing installation' : 'Connect GitHub'}
+              </Button>
+            </div>
+          ) : (
+            <p className="text-sm text-text-tertiary">
+              GitHub linking is not configured on this server. Ask your administrator to set up the GitHub App OAuth
+              credentials.
+            </p>
+          )}
+          <p className="text-xs text-text-tertiary mt-3">
+            You will sign in to GitHub so SessionFS can confirm you installed the app or administer the organization.
+          </p>
         </div>
       )}
     </Card>
@@ -870,7 +1035,7 @@ function DLPTab() {
   });
 
   const isOrgMember = billing?.is_org_member ?? false;
-  const isOrgAdmin = billing?.org_role === 'admin';
+  const isOrgAdmin = isOrgAdminRole(billing?.org_role);
 
   // Fetch DLP policy
   const { data: policy, isLoading } = useQuery({

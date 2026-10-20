@@ -2330,6 +2330,51 @@ async def test_merge_tombstone_resolver_redirect(db_session: AsyncSession):
     assert project.id == tgt.id
 
 
+@pytest.mark.anyio
+async def test_merge_nulls_source_legacy_remote(db_session: AsyncSession):
+    """Merging nulls the source's legacy remote so a tombstone never
+    recreates the pre-073 squatted state (zero repos + a stale legacy
+    column) that link_repo's displacement path could misread as reclaimable.
+    """
+    user = User(id="user-mnull", email="mnull@t.com", tier="pro",
+                created_at=_now())
+    db_session.add(user)
+    await db_session.commit()
+
+    src = await _create_project(db_session, project_id="proj_mnull_src",
+                                git_remote="github.com/a/mnull-src",
+                                owner_id=user.id)
+    tgt = await _create_project(db_session, project_id="proj_mnull_tgt",
+                                git_remote="github.com/a/mnull-tgt",
+                                owner_id=user.id)
+
+    await _create_project_repo(db_session, project_id=src.id,
+                               git_remote_normalized="github.com/a/mnull-src",
+                               is_primary=True)
+    await _create_project_repo(db_session, project_id=tgt.id,
+                               git_remote_normalized="github.com/a/mnull-tgt",
+                               is_primary=True)
+
+    result = await merge_projects(
+        db=db_session,
+        source_id=src.id,
+        target_id=tgt.id,
+        user_id=user.id,
+        dry_run=False,
+        persona_policy="rename",
+        session_factory=async_sessionmaker(db_session.bind, expire_on_commit=False),
+    )
+    assert result["dry_run"] is False
+
+    await db_session.refresh(src)
+    assert src.merged_into_project_id == tgt.id
+    assert src.repo_reclaimed_at is None
+    # The tombstone's legacy remote must be nulled: it is NOT reclaimed,
+    # and leaving it pointing at the reassigned primary would squat that
+    # remote's unique namespace for future links.
+    assert src.git_remote_normalized is None
+
+
 # ── Merge full pipeline (end-to-end) ────────────────────────────────
 
 @pytest.mark.anyio
@@ -2591,3 +2636,858 @@ async def test_merge_concurrent_same_source_one_wins(db_session: AsyncSession):
         sa.select(ProjectRepo).where(ProjectRepo.project_id == tgt.id)
     )).scalars().all()
     assert len(tgt_repos) == 2  # tgt's own + src's
+
+
+
+# ── GH #70 — case-insensitive persona collisions in merge ───────────
+
+async def _ci_merge_setup(db_session, tag: str):
+    user = User(id=f"user-{tag}", email=f"{tag}@t.com", tier="pro", created_at=_now())
+    db_session.add(user)
+    await db_session.commit()
+    src = await _create_project(db_session, project_id=f"proj_{tag}_src",
+                                git_remote=f"github.com/a/{tag}-src", owner_id=user.id)
+    tgt = await _create_project(db_session, project_id=f"proj_{tag}_tgt",
+                                git_remote=f"github.com/a/{tag}-tgt", owner_id=user.id)
+    await _create_project_repo(db_session, project_id=src.id,
+                               git_remote_normalized=f"github.com/a/{tag}-src", is_primary=True)
+    await _create_project_repo(db_session, project_id=tgt.id,
+                               git_remote_normalized=f"github.com/a/{tag}-tgt", is_primary=True)
+    return user, src, tgt
+
+
+async def _persona_names(db_session, project_id):
+    rows = (await db_session.execute(
+        sa.select(AgentPersona.name).where(AgentPersona.project_id == project_id)
+    )).scalars().all()
+    return sorted(rows)
+
+
+@pytest.mark.anyio
+async def test_merge_detects_case_insensitive_persona_collision(db_session: AsyncSession):
+    user, src, tgt = await _ci_merge_setup(db_session, "ci1")
+    await _create_persona(db_session, project_id=src.id, name="Atlas")
+    await _create_persona(db_session, project_id=tgt.id, name="atlas")
+    result = await merge_projects(
+        db=db_session, source_id=src.id, target_id=tgt.id, user_id=user.id,
+        dry_run=True, persona_policy="rename",
+        session_factory=async_sessionmaker(db_session.bind, expire_on_commit=False),
+    )
+    assert result["persona_collisions"] == [{"source_name": "Atlas"}]
+
+
+@pytest.mark.anyio
+async def test_merge_rename_keeps_names_case_insensitively_unique(db_session: AsyncSession):
+    user, src, tgt = await _ci_merge_setup(db_session, "ci2")
+    await _create_persona(db_session, project_id=src.id, name="Atlas")
+    await _create_persona(db_session, project_id=tgt.id, name="atlas")
+    await merge_projects(
+        db=db_session, source_id=src.id, target_id=tgt.id, user_id=user.id,
+        dry_run=False, persona_policy="rename",
+        session_factory=async_sessionmaker(db_session.bind, expire_on_commit=False),
+    )
+    names = await _persona_names(db_session, tgt.id)
+    assert len(names) == 2
+    assert len({n.lower() for n in names}) == 2, names
+    assert "atlas" in names
+
+
+@pytest.mark.anyio
+async def test_merge_content_finds_target_case_insensitively(db_session: AsyncSession):
+    user, src, tgt = await _ci_merge_setup(db_session, "ci3")
+    await _create_persona(db_session, project_id=src.id, name="ATLAS", content="from source")
+    target_p = await _create_persona(db_session, project_id=tgt.id, name="atlas", content="target")
+    await merge_projects(
+        db=db_session, source_id=src.id, target_id=tgt.id, user_id=user.id,
+        dry_run=False, persona_policy="merge_content",
+        session_factory=async_sessionmaker(db_session.bind, expire_on_commit=False),
+    )
+    await db_session.refresh(target_p)
+    assert "from source" in target_p.content
+    names = await _persona_names(db_session, tgt.id)
+    assert len({n.lower() for n in names}) == len(names), names
+
+
+def test_legal_rename_case_insensitive_seen():
+    seen = {"atlas-a1b2c3d4"}
+    assert _legal_rename("Atlas", "a1b2c3d4", seen, case_insensitive=True) != "Atlas-a1b2c3d4"
+    assert _legal_rename("Atlas", "a1b2c3d4", seen) == "Atlas-a1b2c3d4"
+
+
+
+# ── GH #70 R3 — a transfer landing before merge execute is caught ───
+
+async def _org_merge_setup(db_session, tag: str):
+    from sessionfs.server.db.models import OrgMember, Organization
+
+    owner = User(id=f"owner-{tag}", email=f"o-{tag}@t.com", tier="team", created_at=_now())
+    admin = User(id=f"admin-{tag}", email=f"a-{tag}@t.com", tier="team", created_at=_now())
+    db_session.add_all([owner, admin])
+    for oid in (f"orgA-{tag}", f"orgB-{tag}"):
+        db_session.add(Organization(id=oid, name=oid, slug=oid, tier="team", created_at=_now()))
+    await db_session.commit()
+    db_session.add(OrgMember(org_id=f"orgA-{tag}", user_id=admin.id, role="admin", joined_at=_now()))
+    await db_session.commit()
+    src = await _create_project(db_session, project_id=f"proj_{tag}_src",
+                                git_remote=f"github.com/a/{tag}-src", owner_id=owner.id)
+    tgt = await _create_project(db_session, project_id=f"proj_{tag}_tgt",
+                                git_remote=f"github.com/a/{tag}-tgt", owner_id=owner.id)
+    for p in (src, tgt):
+        p.org_id = f"orgA-{tag}"
+    await db_session.commit()
+    await _create_project_repo(db_session, project_id=src.id,
+                               git_remote_normalized=f"github.com/a/{tag}-src", is_primary=True)
+    await _create_project_repo(db_session, project_id=tgt.id,
+                               git_remote_normalized=f"github.com/a/{tag}-tgt", is_primary=True)
+    # Load both into the identity map — the merge's pre-lock checks see
+    # these (stale after the "transfer" below), as a request that read the
+    # projects before a concurrent transfer committed would.
+    await db_session.get(Project, src.id)
+    await db_session.get(Project, tgt.id)
+    return admin, src, tgt
+
+
+async def _land_transfer(db_session, project_ids, org_id):
+    await db_session.execute(
+        sa_update(Project)
+        .where(Project.id.in_(project_ids))
+        .values(org_id=org_id)
+        .execution_options(synchronize_session=False)
+    )
+    await db_session.commit()
+
+
+@pytest.mark.anyio
+async def test_merge_rejects_when_transfer_splits_scope_before_execute(db_session: AsyncSession):
+    from fastapi import HTTPException
+
+    admin, src, tgt = await _org_merge_setup(db_session, "xf1")
+    await _land_transfer(db_session, [src.id], "orgB-xf1")
+    assert src.org_id == "orgA-xf1"  # identity map is stale on purpose
+    with pytest.raises(HTTPException) as exc:
+        await merge_projects(
+            db=db_session, source_id=src.id, target_id=tgt.id, user_id=admin.id,
+            dry_run=False, persona_policy="rename",
+            session_factory=async_sessionmaker(db_session.bind, expire_on_commit=False),
+        )
+    assert exc.value.status_code == 409
+    await db_session.rollback()
+    fresh = (await db_session.execute(
+        sa.select(Project.merged_into_project_id).where(Project.id == "proj_xf1_src")
+    )).scalar_one()
+    assert fresh is None
+
+
+@pytest.mark.anyio
+async def test_merge_rechecks_authorization_after_both_moved(db_session: AsyncSession):
+    """Both projects moved to org B, where the org-A admin has no standing:
+    the post-lock authorization re-check refuses."""
+    from fastapi import HTTPException
+
+    admin, src, tgt = await _org_merge_setup(db_session, "xf2")
+    await _land_transfer(db_session, [src.id, tgt.id], "orgB-xf2")
+    with pytest.raises(HTTPException) as exc:
+        await merge_projects(
+            db=db_session, source_id=src.id, target_id=tgt.id, user_id=admin.id,
+            dry_run=False, persona_policy="rename",
+            session_factory=async_sessionmaker(db_session.bind, expire_on_commit=False),
+        )
+    assert exc.value.status_code == 403
+
+
+def test_legal_rename_counter_never_exceeds_column():
+    base = "a" * 50
+    seen = {_legal_rename(base, "a1b2c3d4", set())}
+    for _ in range(120):
+        name = _legal_rename(base, "a1b2c3d4", seen)
+        assert len(name) <= 50, name
+        assert name not in seen
+        seen.add(name)
+    assert any(n.endswith("-100") for n in seen)
+    # Case-insensitive variant also stays within the column.
+    lowered = {n.lower() for n in seen}
+    name = _legal_rename(base.upper(), "a1b2c3d4", lowered, case_insensitive=True)
+    assert len(name) <= 50 and name.lower() not in lowered
+
+
+
+# ── GH #70 R4 — file-backed SQLite: scope lock is the writer lock ───
+
+async def _file_db(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'merge.db'}")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    return engine, async_sessionmaker(engine, expire_on_commit=False)
+
+
+@pytest.mark.anyio
+async def test_merge_execute_on_file_backed_sqlite_completes_audit(tmp_path):
+    """Separate connections (not the shared in-memory one): the started
+    audit row is written before the scope/writer lock, and the completed
+    update after the primary commit — no 'database is locked'."""
+    import asyncio
+
+    engine, factory = await _file_db(tmp_path)
+    try:
+        async with factory() as db:
+            user, src, tgt = await _ci_merge_setup(db, "fb1")
+            await _create_persona(db, project_id=src.id, name="atlas")
+            result = await asyncio.wait_for(
+                merge_projects(
+                    db=db, source_id=src.id, target_id=tgt.id, user_id=user.id,
+                    dry_run=False, persona_policy="rename", session_factory=factory,
+                ),
+                timeout=30,
+            )
+        async with factory() as check:
+            status = (await check.execute(
+                sa.select(ProjectMergeAudit.status).where(ProjectMergeAudit.id == result["audit_id"])
+            )).scalar_one()
+            merged = (await check.execute(
+                sa.select(Project.merged_into_project_id).where(Project.id == "proj_fb1_src")
+            )).scalar_one()
+        assert status == "completed"
+        assert merged == "proj_fb1_tgt"
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_merge_validation_failure_on_file_backed_sqlite_marks_audit_failed(tmp_path):
+    import asyncio
+
+    from fastapi import HTTPException
+
+    engine, factory = await _file_db(tmp_path)
+    try:
+        async with factory() as db:
+            admin, src, tgt = await _org_merge_setup(db, "fb2")
+            await _land_transfer(db, [src.id], "orgB-fb2")
+            with pytest.raises(HTTPException) as exc:
+                await asyncio.wait_for(
+                    merge_projects(
+                        db=db, source_id="proj_fb2_src", target_id="proj_fb2_tgt",
+                        user_id=admin.id, dry_run=False, persona_policy="rename",
+                        session_factory=factory,
+                    ),
+                    timeout=30,
+                )
+            assert exc.value.status_code == 409
+        async with factory() as check:
+            rows = (await check.execute(
+                sa.select(ProjectMergeAudit.status, ProjectMergeAudit.error_message)
+                .where(ProjectMergeAudit.source_project_id == "proj_fb2_src")
+            )).all()
+        assert [r[0] for r in rows] == ["failed"]
+        assert "HTTPException" in rows[0][1]
+    finally:
+        await engine.dispose()
+
+
+# ── GH #70 R4 — the slug collision set is recomputed under the locks ─
+
+@pytest.mark.anyio
+async def test_merge_recomputes_slug_collisions_under_lock(db_session: AsyncSession, monkeypatch):
+    """A target page with a colliding slug created after the pre-lock plan
+    (simulated inside the first lock call) is still renamed, so the
+    (project_id, slug) unique index never trips."""
+    import uuid as _uuid
+
+    from sessionfs.server.services import scope_locks
+
+    user, src, tgt = await _ci_merge_setup(db_session, "sl1")
+    db_session.add(KnowledgePage(
+        id=f"kp_{_uuid.uuid4().hex[:8]}", project_id=src.id, slug="arch",
+        title="Arch", page_type="concept", content="source",
+    ))
+    await db_session.commit()
+
+    real_lock = scope_locks.lock_scopes
+    calls = {"n": 0}
+
+    async def lock_and_race(db, *, project_ids=(), org_ids=()):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            db.add(KnowledgePage(
+                id=f"kp_{_uuid.uuid4().hex[:8]}", project_id=tgt.id, slug="arch",
+                title="Arch", page_type="concept", content="late target page",
+            ))
+            await db.flush()
+        await real_lock(db, project_ids=project_ids, org_ids=org_ids)
+
+    monkeypatch.setattr(scope_locks, "lock_scopes", lock_and_race)
+    result = await merge_projects(
+        db=db_session, source_id=src.id, target_id=tgt.id, user_id=user.id,
+        dry_run=False, persona_policy="rename",
+        session_factory=async_sessionmaker(db_session.bind, expire_on_commit=False),
+    )
+    assert result["slug_renames"], result
+    slugs = (await db_session.execute(
+        sa.select(KnowledgePage.slug).where(KnowledgePage.project_id == "proj_sl1_tgt")
+    )).scalars().all()
+    assert len(slugs) == len(set(slugs)) == 2
+
+
+
+@pytest.mark.anyio
+async def test_merge_rechecks_authorization_only_after_org_lock(db_session: AsyncSession):
+    """Codex R5 — standing is re-read after ALL scope locks (projects, then
+    org), so a concurrent role change (which takes the org lock) is seen."""
+    from sqlalchemy import event
+
+    admin, src, tgt = await _org_merge_setup(db_session, "ao1")
+    log: list[str] = []
+    engine = db_session.bind.sync_engine
+
+    def _before(conn, cursor, statement, params, context, executemany):
+        log.append(" ".join(statement.split()).lower())
+
+    event.listen(engine, "before_cursor_execute", _before)
+    try:
+        await merge_projects(
+            db=db_session, source_id=src.id, target_id=tgt.id, user_id=admin.id,
+            dry_run=False, persona_policy="rename",
+            session_factory=async_sessionmaker(db_session.bind, expire_on_commit=False),
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", _before)
+    org_lock = next(i for i, s in enumerate(log) if "update organizations set id = id" in s)
+    project_lock = next(i for i, s in enumerate(log) if "update projects set id = id" in s)
+    authz = [i for i, s in enumerate(log) if "from org_members" in s and i > project_lock]
+    assert project_lock < org_lock
+    assert authz and min(authz) > org_lock
+
+
+
+# ── GH #70 R7 — renamed personas keep their live references ─────────
+
+@pytest.mark.anyio
+async def test_merge_rename_rewrites_live_persona_references(db_session: AsyncSession):
+    import uuid as _uuid
+
+    from sessionfs.server.db.models import AgentRun
+    from sessionfs.server.services.personas import resolve_persona
+
+    user, src, tgt = await _ci_merge_setup(db_session, "rr1")
+    src_atlas = await _create_persona(db_session, project_id=src.id, name="Atlas")
+    tgt_atlas = await _create_persona(db_session, project_id=tgt.id, name="atlas")
+    ticket = await _create_ticket(db_session, project_id=src.id, title="Open work")
+    ticket.assigned_to = "Atlas"
+    ticket.created_by_persona = "Atlas"  # attribution — must stay as written
+    run = AgentRun(
+        id=f"run_{_uuid.uuid4().hex[:12]}", project_id=src.id, persona_name="Atlas",
+        status="queued", triggered_by_persona="Atlas",
+    )
+    db_session.add(run)
+    await db_session.commit()
+
+    result = await merge_projects(
+        db=db_session, source_id=src.id, target_id=tgt.id, user_id=user.id,
+        dry_run=False, persona_policy="rename",
+        session_factory=async_sessionmaker(db_session.bind, expire_on_commit=False),
+    )
+    new_name = next(r["new_name"] for r in result["persona_renames"] if r["old_name"] == "Atlas")
+    assert new_name != "Atlas"
+
+    await db_session.refresh(ticket)
+    await db_session.refresh(run)
+    assert ticket.project_id == tgt.id and ticket.assigned_to == new_name
+    assert ticket.created_by_persona == "Atlas"
+    assert run.project_id == tgt.id and run.persona_name == new_name
+    assert run.triggered_by_persona == "Atlas"
+
+    for ref in (ticket.assigned_to, run.persona_name):
+        hit = await resolve_persona(db_session, tgt.id, ref, org_id=None)
+        assert hit is not None and hit.id == src_atlas.id, ref
+    # The target's own persona is untouched and still resolves for 'atlas'.
+    hit = await resolve_persona(db_session, tgt.id, "atlas", org_id=None)
+    assert hit is not None and hit.id == tgt_atlas.id
+
+
+
+@pytest.mark.anyio
+async def test_merge_rename_mapping_is_immutable_and_case_insensitive(db_session: AsyncSession):
+    """Codex R9 — a generated rename must never equal another source
+    persona's ORIGINAL name (that made rewrites cascade), and references
+    resolve case-insensitively against the original names (exact case
+    first, then lowest id)."""
+    import uuid as _uuid
+
+    from sessionfs.server.db.models import AgentRun
+    from sessionfs.server.services.merge import _SOURCE_SUFFIX_LEN
+    from sessionfs.server.services.personas import resolve_persona
+
+    user, src, tgt = await _ci_merge_setup(db_session, "cas")
+    prefix = src.id[:_SOURCE_SUFFIX_LEN]
+    collider = f"Atlas-{prefix}"  # what the old code would generate for 'Atlas'
+    p_atlas = await _create_persona(db_session, project_id=src.id, name="Atlas")
+    p_collider = await _create_persona(db_session, project_id=src.id, name=collider)
+    await _create_persona(db_session, project_id=tgt.id, name="atlas")
+
+    t_exact = await _create_ticket(db_session, project_id=src.id, title="exact", assigned_to="Atlas")
+    t_upper = await _create_ticket(db_session, project_id=src.id, title="upper", assigned_to="ATLAS")
+    t_coll = await _create_ticket(db_session, project_id=src.id, title="coll", assigned_to=collider)
+    run = AgentRun(
+        id=f"run_{_uuid.uuid4().hex[:12]}", project_id=src.id, persona_name=collider,
+        status="queued",
+    )
+    db_session.add(run)
+    await db_session.commit()
+
+    result = await merge_projects(
+        db=db_session, source_id=src.id, target_id=tgt.id, user_id=user.id,
+        dry_run=False, persona_policy="rename",
+        session_factory=async_sessionmaker(db_session.bind, expire_on_commit=False),
+    )
+    renames = {r["old_name"]: r["new_name"] for r in result["persona_renames"]}
+    assert set(renames) == {"Atlas"}  # the collider kept its own name
+    new_atlas = renames["Atlas"]
+    assert new_atlas.lower() != collider.lower()
+
+    for t in (t_exact, t_upper, t_coll):
+        await db_session.refresh(t)
+    await db_session.refresh(run)
+    assert t_exact.assigned_to == new_atlas
+    assert t_upper.assigned_to == new_atlas  # case-insensitive reference
+    assert t_coll.assigned_to == collider    # NOT cascaded
+    assert run.persona_name == collider
+
+    hit = await resolve_persona(db_session, tgt.id, t_exact.assigned_to, org_id=None)
+    assert hit is not None and hit.id == p_atlas.id
+    hit = await resolve_persona(db_session, tgt.id, t_coll.assigned_to, org_id=None)
+    assert hit is not None and hit.id == p_collider.id
+
+
+# ── GH #70 R10 — pending handoffs survive the merge (durable anchor) ──
+
+from sessionfs.server.db.models import Handoff
+from sessionfs.server.services.merge import (
+    _capture_pending_handoff_ids,
+)
+
+
+async def _create_handoff(db, *, session_id, sender_id="user-1",
+                          status="pending", persona_name=None,
+                          source_project_id=None):
+    import uuid as _uuid
+    h = Handoff(
+        id=f"hnd_{_uuid.uuid4().hex[:12]}",
+        session_id=session_id,
+        sender_id=sender_id,
+        recipient_email="rcpt@t.com",
+        status=status,
+        persona_name=persona_name,
+        source_project_id=source_project_id,
+        created_at=_now(),
+        expires_at=_now(),
+    )
+    db.add(h)
+    await db.commit()
+    await db.refresh(h)
+    return h
+
+
+@pytest.mark.anyio
+async def test_capture_pending_handoff_ids_three_attribution_shapes(
+    db_session: AsyncSession,
+):
+    """GH #70 — the merge capture sees (1) anchored, (2) unanchored with
+    a direct session.project_id, and (3) unanchored legacy-remote
+    handoffs; it ignores other projects, other anchors, and non-pending
+    rows."""
+    user, src, tgt = await _ci_merge_setup(db_session, "cap")
+
+    sess_direct = await _create_session(
+        db_session, project_id=src.id, user_id=user.id,
+        git_remote_normalized="github.com/a/cap-src",
+    )
+    sess_legacy = await _create_session(
+        db_session, project_id=None, user_id=user.id,
+        git_remote_normalized="github.com/a/cap-src",
+    )
+    sess_other = await _create_session(
+        db_session, project_id=tgt.id, user_id=user.id,
+        git_remote_normalized="github.com/a/cap-tgt",
+    )
+
+    h_anchor = await _create_handoff(
+        db_session, session_id=sess_other.id, persona_name="atlas",
+        source_project_id=src.id,
+    )
+    h_direct = await _create_handoff(
+        db_session, session_id=sess_direct.id, persona_name="atlas",
+    )
+    h_legacy = await _create_handoff(
+        db_session, session_id=sess_legacy.id, persona_name="atlas",
+    )
+    # Negatives: claimed status, anchor pointing at the target,
+    # unanchored handoff on another project's session.
+    h_claimed = await _create_handoff(
+        db_session, session_id=sess_direct.id, persona_name="atlas",
+        status="claimed",
+    )
+    h_tgt_anchor = await _create_handoff(
+        db_session, session_id=sess_other.id, persona_name="atlas",
+        source_project_id=tgt.id,
+    )
+    h_other = await _create_handoff(
+        db_session, session_id=sess_other.id, persona_name="atlas",
+    )
+
+    captured = set(await _capture_pending_handoff_ids(db_session, src.id))
+    assert captured == {h_anchor.id, h_direct.id, h_legacy.id}
+    assert h_claimed.id not in captured
+    assert h_tgt_anchor.id not in captured
+    assert h_other.id not in captured
+
+
+@pytest.mark.anyio
+async def test_merge_moves_pending_handoff_anchor_to_target(
+    db_session: AsyncSession,
+):
+    """GH #70 — after the merge, every captured pending handoff's durable
+    anchor names the TARGET (the source is tombstoned), so the stranding
+    guards and the claim route keep attributing it to the live project."""
+    user, src, tgt = await _ci_merge_setup(db_session, "anc")
+    sess_legacy = await _create_session(
+        db_session, project_id=None, user_id=user.id,
+        git_remote_normalized="github.com/a/anc-src",
+    )
+    h = await _create_handoff(
+        db_session, session_id=sess_legacy.id, persona_name="atlas",
+    )
+
+    await merge_projects(
+        db=db_session, source_id=src.id, target_id=tgt.id, user_id=user.id,
+        dry_run=False, persona_policy="rename",
+        session_factory=async_sessionmaker(db_session.bind, expire_on_commit=False),
+    )
+
+    await db_session.refresh(h)
+    assert h.source_project_id == tgt.id
+
+
+@pytest.mark.anyio
+async def test_merge_rename_rewrites_legacy_handoff_persona_refs(
+    db_session: AsyncSession,
+):
+    """GH #70 R10 — a pending handoff on a LEGACY session (project_id
+    NULL, anchored only through the repo remote) must get the same
+    persona rename as direct-project handoffs. Before the capture set,
+    the rewrite's session.project_id match silently missed it."""
+    from sessionfs.server.services.personas import resolve_persona
+
+    user, src, tgt = await _ci_merge_setup(db_session, "lho")
+    src_atlas = await _create_persona(db_session, project_id=src.id, name="Atlas")
+    await _create_persona(db_session, project_id=tgt.id, name="atlas")
+
+    sess_legacy = await _create_session(
+        db_session, project_id=None, user_id=user.id,
+        git_remote_normalized="github.com/a/lho-src",
+    )
+    h = await _create_handoff(
+        db_session, session_id=sess_legacy.id, persona_name="Atlas",
+    )
+
+    result = await merge_projects(
+        db=db_session, source_id=src.id, target_id=tgt.id, user_id=user.id,
+        dry_run=False, persona_policy="rename",
+        session_factory=async_sessionmaker(db_session.bind, expire_on_commit=False),
+    )
+    new_name = next(
+        r["new_name"] for r in result["persona_renames"] if r["old_name"] == "Atlas"
+    )
+    assert new_name != "Atlas"
+
+    await db_session.refresh(h)
+    assert h.persona_name == new_name
+    assert h.source_project_id == tgt.id
+
+    hit = await resolve_persona(db_session, tgt.id, h.persona_name, org_id=None)
+    assert hit is not None and hit.id == src_atlas.id
+
+
+@pytest.mark.anyio
+async def test_merge_pending_guard_sees_legacy_handoffs(
+    db_session: AsyncSession,
+):
+    """GH #70 — the shared pending_handoffs_in_project filter (used by
+    the persona stranding guards) attributes a legacy handoff to the
+    source project via the capture-shape fallbacks."""
+    from sessionfs.server.services.personas import pending_handoffs_in_project
+
+    user, src, _tgt = await _ci_merge_setup(db_session, "grd")
+    sess_legacy = await _create_session(
+        db_session, project_id=None, user_id=user.id,
+        git_remote_normalized="github.com/a/grd-src",
+    )
+    # Legacy shape the guard itself sees pre-anchor: NULL anchor + a
+    # session whose project_id is the project. (The remote-only shape is
+    # the merge capture's job — covered above.)
+    sess_direct = await _create_session(
+        db_session, project_id=src.id, user_id=user.id,
+        git_remote_normalized="github.com/a/grd-src",
+    )
+    h_direct = await _create_handoff(
+        db_session, session_id=sess_direct.id, persona_name="atlas",
+    )
+    h_anchor = await _create_handoff(
+        db_session, session_id=sess_legacy.id, persona_name="atlas",
+        source_project_id=src.id,
+    )
+
+    rows = (await db_session.execute(
+        sa.select(Handoff.id).where(*pending_handoffs_in_project(src.id))
+    )).scalars().all()
+    assert set(rows) == {h_direct.id, h_anchor.id}
+
+
+@pytest.mark.anyio
+async def test_merge_rename_rewrites_against_active_persona_only(
+    db_session: AsyncSession,
+):
+    """GH #70 (Codex HIGH) — the live-reference resolver must be built from
+    ACTIVE source personas only. When an inactive persona (legacy
+    case-distinct duplicate, e.g. 'Atlas') sorts alongside the active
+    'atlas', an exact-case reference 'Atlas' must follow the ACTIVE
+    persona's rename, not the inactive duplicate's — otherwise the ticket
+    ends up bound to a persona that no longer resolves."""
+    from sessionfs.server.services.personas import resolve_persona
+
+    user, src, tgt = await _ci_merge_setup(db_session, "act")
+    inactive = await _create_persona(
+        db_session, project_id=src.id, name="Atlas", is_active=False,
+    )
+    active = await _create_persona(
+        db_session, project_id=src.id, name="atlas", is_active=True,
+    )
+    await _create_persona(db_session, project_id=tgt.id, name="atlas")
+    # A reference spelled exactly like the INACTIVE duplicate; at runtime
+    # it resolves (case-insensitively) to the active 'atlas'.
+    ticket = await _create_ticket(
+        db_session, project_id=src.id, title="live ref", assigned_to="Atlas",
+    )
+
+    result = await merge_projects(
+        db=db_session, source_id=src.id, target_id=tgt.id, user_id=user.id,
+        dry_run=False, persona_policy="rename",
+        session_factory=async_sessionmaker(db_session.bind, expire_on_commit=False),
+    )
+    renames = {r["old_name"]: r["new_name"] for r in result["persona_renames"]}
+    # Both case-distinct duplicates collide with the target 'atlas'.
+    assert set(renames) == {"Atlas", "atlas"}
+
+    await db_session.refresh(ticket)
+    # The reference follows the ACTIVE persona, not the inactive one.
+    assert ticket.assigned_to == renames["atlas"]
+    assert ticket.assigned_to != renames["Atlas"]
+
+    hit = await resolve_persona(db_session, tgt.id, ticket.assigned_to, org_id=None)
+    assert hit is not None and hit.id == active.id
+    assert hit.id != inactive.id
+
+
+@pytest.mark.anyio
+async def test_capture_pending_handoff_ids_via_project_column_remote(
+    db_session: AsyncSession,
+):
+    """GH #70 — the merge capture's legacy-remote fallback mirrors
+    `resolve_project_by_remote`: a NULL-project_id session whose remote
+    matches `projects.git_remote_normalized` (and has NO project_repos
+    row) still attributes the handoff to the project."""
+    user = User(id="user-col", email="col@t.com", tier="pro", created_at=_now())
+    db_session.add(user)
+    await db_session.commit()
+    proj = await _create_project(
+        db_session, project_id="proj_col_only",
+        git_remote="github.com/a/col-only", owner_id=user.id,
+    )
+    # Deliberately NO project_repos row — the projects column is the only
+    # resolvable match for the session remote.
+    sess = await _create_session(
+        db_session, project_id=None, user_id=user.id,
+        git_remote_normalized="github.com/a/col-only",
+    )
+    h = await _create_handoff(
+        db_session, session_id=sess.id, persona_name="atlas",
+    )
+
+    captured = set(await _capture_pending_handoff_ids(db_session, proj.id))
+    assert captured == {h.id}
+
+
+@pytest.mark.anyio
+async def test_merge_pending_guard_sees_project_column_remote(
+    db_session: AsyncSession,
+):
+    """GH #70 — the shared `pending_handoffs_in_project` filter attributes a
+    legacy handoff to the project via the projects.git_remote_normalized
+    fallback (not just project_repos)."""
+    from sessionfs.server.services.personas import pending_handoffs_in_project
+
+    user = User(id="user-grd2", email="grd2@t.com", tier="pro", created_at=_now())
+    db_session.add(user)
+    await db_session.commit()
+    proj = await _create_project(
+        db_session, project_id="proj_grd_col",
+        git_remote="github.com/a/grd-col", owner_id=user.id,
+    )
+    sess = await _create_session(
+        db_session, project_id=None, user_id=user.id,
+        git_remote_normalized="github.com/a/grd-col",
+    )
+    h = await _create_handoff(
+        db_session, session_id=sess.id, persona_name="atlas",
+    )
+
+    rows = (await db_session.execute(
+        sa.select(Handoff.id).where(*pending_handoffs_in_project(proj.id))
+    )).scalars().all()
+    assert rows == [h.id]
+
+
+# ── GH #70 — org persona shadowing across a merge ─────────────────────
+
+async def _create_org_persona(db, *, org_id, name, content=""):
+    import uuid as _uuid
+
+    p = AgentPersona(
+        id=str(_uuid.uuid4()), org_id=org_id, project_id=None, name=name,
+        role="org role", content=content, created_by="user-1",
+    )
+    db.add(p)
+    await db.commit()
+    await db.refresh(p)
+    return p
+
+
+@pytest.mark.anyio
+async def test_merge_source_override_does_not_capture_target_org_refs(
+    db_session: AsyncSession,
+):
+    """Source has a project 'atlas' overriding the org 'atlas'; the target
+    has none, so its references resolve to the org persona. After the merge
+    the target's references must still resolve to the org persona and the
+    source's to its override (renamed)."""
+    from sessionfs.server.services.personas import resolve_persona
+
+    admin, src, tgt = await _org_merge_setup(db_session, "osh1")
+    org_id = "orgA-osh1"
+    org_atlas = await _create_org_persona(db_session, org_id=org_id, name="atlas", content="org")
+    src_atlas = await _create_persona(db_session, project_id=src.id, name="atlas", content="src")
+    t_src = await _create_ticket(db_session, project_id=src.id, title="s", assigned_to="atlas")
+    t_tgt = await _create_ticket(db_session, project_id=tgt.id, title="t", assigned_to="atlas")
+    factory = async_sessionmaker(db_session.bind, expire_on_commit=False)
+
+    plan = await merge_projects(
+        db=db_session, source_id=src.id, target_id=tgt.id, user_id=admin.id,
+        dry_run=True, persona_policy="rename", session_factory=factory,
+    )
+    assert {"source_name": "atlas", "kind": "shadows_org_persona"} in plan["persona_collisions"]
+
+    result = await merge_projects(
+        db=db_session, source_id=src.id, target_id=tgt.id, user_id=admin.id,
+        dry_run=False, persona_policy="rename", session_factory=factory,
+    )
+    assert any(r.get("persona_id") == src_atlas.id for r in result["persona_renames"])
+    await db_session.refresh(t_src)
+    await db_session.refresh(t_tgt)
+    hit_tgt = await resolve_persona(db_session, tgt.id, t_tgt.assigned_to, org_id=org_id)
+    assert hit_tgt is not None and hit_tgt.id == org_atlas.id
+    hit_src = await resolve_persona(db_session, tgt.id, t_src.assigned_to, org_id=org_id)
+    assert hit_src is not None and hit_src.id == src_atlas.id
+
+
+@pytest.mark.anyio
+async def test_merge_target_override_does_not_capture_source_org_refs(
+    db_session: AsyncSession,
+):
+    """Source references resolve to the org 'atlas'; the target has its own
+    project 'atlas'. After the merge the source's references must still get
+    the org persona's content (pinned), the target's its override."""
+    import uuid as _uuid
+
+    from sessionfs.server.db.models import AgentRun
+    from sessionfs.server.services.personas import resolve_persona
+
+    admin, src, tgt = await _org_merge_setup(db_session, "osh2")
+    org_id = "orgA-osh2"
+    org_atlas = await _create_org_persona(db_session, org_id=org_id, name="Atlas", content="org body")
+    tgt_atlas = await _create_persona(db_session, project_id=tgt.id, name="atlas", content="tgt")
+    t_src = await _create_ticket(db_session, project_id=src.id, title="s", assigned_to="atlas")
+    t_tgt = await _create_ticket(db_session, project_id=tgt.id, title="t", assigned_to="atlas")
+    run = AgentRun(
+        id=f"run_{_uuid.uuid4().hex[:12]}", project_id=src.id, persona_name="ATLAS",
+        status="queued",
+    )
+    db_session.add(run)
+    await db_session.commit()
+    factory = async_sessionmaker(db_session.bind, expire_on_commit=False)
+
+    plan = await merge_projects(
+        db=db_session, source_id=src.id, target_id=tgt.id, user_id=admin.id,
+        dry_run=True, persona_policy="rename", session_factory=factory,
+    )
+    assert {
+        "source_name": "Atlas", "kind": "target_persona_shadows_org_persona",
+    } in plan["persona_collisions"]
+
+    result = await merge_projects(
+        db=db_session, source_id=src.id, target_id=tgt.id, user_id=admin.id,
+        dry_run=False, persona_policy="rename", session_factory=factory,
+    )
+    pin = next(
+        r for r in result["persona_renames"]
+        if r.get("pinned_from_org_persona_id") == org_atlas.id
+    )
+    await db_session.refresh(t_src)
+    await db_session.refresh(t_tgt)
+    await db_session.refresh(run)
+    assert t_src.assigned_to == pin["new_name"] and run.persona_name == pin["new_name"]
+    for ref in (t_src.assigned_to, run.persona_name):
+        hit = await resolve_persona(db_session, tgt.id, ref, org_id=org_id)
+        assert hit is not None and hit.content == org_atlas.content
+        assert hit.name.lower() != "atlas"
+    hit_tgt = await resolve_persona(db_session, tgt.id, t_tgt.assigned_to, org_id=org_id)
+    assert hit_tgt is not None and hit_tgt.id == tgt_atlas.id
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("policy", ["skip", "merge_content"])
+async def test_merge_refuses_org_shadowing_without_rename_policy(
+    db_session: AsyncSession, policy: str,
+):
+    from fastapi import HTTPException
+
+    admin, src, tgt = await _org_merge_setup(db_session, f"osh3{policy[:2]}")
+    org_id = f"orgA-osh3{policy[:2]}"
+    await _create_org_persona(db_session, org_id=org_id, name="atlas")
+    await _create_persona(db_session, project_id=src.id, name="atlas")
+    # The dry-run predicts the refusal instead of promising the merge.
+    plan = await merge_projects(
+        db=db_session, source_id=src.id, target_id=tgt.id, user_id=admin.id,
+        dry_run=True, persona_policy=policy,
+        session_factory=async_sessionmaker(db_session.bind, expire_on_commit=False),
+    )
+    assert plan["would_refuse"] is True
+    assert plan["blocking_reason"] == "persona_org_shadowing"
+    renamed = await merge_projects(
+        db=db_session, source_id=src.id, target_id=tgt.id, user_id=admin.id,
+        dry_run=True, persona_policy="rename",
+        session_factory=async_sessionmaker(db_session.bind, expire_on_commit=False),
+    )
+    assert renamed["would_refuse"] is False and renamed["blocking_reason"] is None
+    with pytest.raises(HTTPException) as exc:
+        await merge_projects(
+            db=db_session, source_id=src.id, target_id=tgt.id, user_id=admin.id,
+            dry_run=False, persona_policy=policy,
+            session_factory=async_sessionmaker(db_session.bind, expire_on_commit=False),
+        )
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "persona_org_shadowing"
+    src_id = f"proj_osh3{policy[:2]}_src"
+    await db_session.rollback()
+    merged = (await db_session.execute(
+        sa.select(Project.merged_into_project_id).where(Project.id == src_id)
+    )).scalar_one()
+    assert merged is None

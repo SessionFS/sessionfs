@@ -443,13 +443,18 @@ class TestPrune:
         config = StorageConfig(synced_retention_days=30)
         pruner.prune(config)
 
-        # Both tables should be clean
+        # The session row is gone, but the native tracking fingerprint stays
+        # (sfs_session_id cleared) so the still-present source is not treated
+        # as brand-new and recaptured on the next scan.
         assert conn.execute(
             "SELECT COUNT(*) FROM sessions WHERE session_id = 'ses_old'"
         ).fetchone()[0] == 0
-        assert conn.execute(
-            "SELECT COUNT(*) FROM tracked_sessions WHERE sfs_session_id = 'ses_old'"
-        ).fetchone()[0] == 0
+        row = conn.execute(
+            "SELECT sfs_session_id, last_mtime FROM tracked_sessions WHERE native_session_id = 'native_123'"
+        ).fetchone()
+        assert row is not None
+        assert row["sfs_session_id"] is None
+        assert row["last_mtime"] == 0.0
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 # Tool Compatibility
 
-SessionFS captures sessions from eight AI coding tools. Four support bidirectional sync (capture and resume); four are capture-only.
+SessionFS captures sessions from ten AI coding tools. Four support bidirectional sync (capture and resume); six are capture-only.
 
 ## Bidirectional Tools
 
@@ -24,12 +24,14 @@ These tools are captured by the daemon but do not support session injection (res
 | Cline | Yes | No | VS Code extension state is too fragile for automated injection |
 | Roo Code | Yes | No | VS Code extension state is too fragile for automated injection |
 | Kilo Code | Yes | No | VS Code extension state is too fragile for automated injection |
+| Antigravity | Yes | No | Conversation state lives in app-private protobuf stores |
 
 ### Why not just write the files?
 
 - **Cursor** stores sessions in a SQLite database (`state.vscdb`) that uses content-addressed hashing for integrity checks. Writing sessions directly would cause hash mismatches and corrupt the database.
 - **Amp** syncs sessions from its cloud service to local JSON files. These files are a read cache, not the source of truth. Writing to them would be overwritten on the next sync.
 - **Cline**, **Roo Code**, and **Kilo Code** store session state inside VS Code's `globalStorage` directory (Kilo Code is a fork of Roo Code, which is itself a Cline fork — same per-task UUID storage layout). This state is tightly coupled to the extension lifecycle -- modifying it while VS Code is running can cause data loss or extension crashes.
+- **Antigravity** (desktop app, `agy` CLI and IDE build) keeps each conversation's authoritative state in app-private protobuf files (`conversations/<id>.db`, or AES-GCM encrypted `.pb` files in older builds). SessionFS reads only the plaintext step transcript the app writes under `~/.gemini/<app>/brain/<id>/.system_generated/logs/` and never writes to Antigravity's storage. Conversations that exist only in encrypted form are skipped and counted in `sfs daemon status` / `sfs doctor` rather than half-captured.
 
 ## What You Can Still Do With Capture-Only Sessions
 
@@ -56,7 +58,7 @@ The only thing you cannot do is inject the session back into the original captur
 | Copilot | `.github/copilot-instructions.md` |
 | Gemini | `GEMINI.md` |
 
-**Resume-time rules sync** (`sfs resume` with preflight) is wired only for the four bidirectional tools: claude-code, codex, copilot, gemini. Cursor resume is out of scope — it stays capture-only. Amp, Cline, Roo Code, and Kilo Code do not have rules compilers yet (deferred to a future release).
+**Resume-time rules sync** (`sfs resume` with preflight) is wired only for the four bidirectional tools: claude-code, codex, copilot, gemini. Cursor resume is out of scope — it stays capture-only. Amp, Cline, Roo Code, Kilo Code, and Antigravity do not have rules compilers yet (deferred to a future release).
 
 ## Cross-Tool Resume Examples
 

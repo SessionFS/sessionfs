@@ -14,7 +14,7 @@ else:
     import tomli as tomllib
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 DEFAULT_CONFIG_DIR = Path.home() / ".sessionfs"
 DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.toml"
@@ -129,6 +129,18 @@ class KiloCodeWatcherConfig(BaseModel):
     storage_dir: Path = Field(default_factory=_default_kilo_code_storage)
 
 
+class AntigravityWatcherConfig(BaseModel):
+    """Google Antigravity watcher configuration.
+
+    One watcher covers every Antigravity app: the desktop app
+    (``<gemini_dir>/antigravity``), the agy CLI (``antigravity-cli``) and the
+    IDE build (``antigravity-ide``). The source app is recorded per session.
+    """
+
+    enabled: bool = False
+    gemini_dir: Path = Field(default_factory=lambda: Path.home() / ".gemini")
+
+
 class StoragePolicyConfig(BaseModel):
     """Local storage retention policy."""
 
@@ -149,6 +161,28 @@ class SyncConfig(BaseModel):
     retry_max: int = 5  # max consecutive failures before degraded
     auto: str = "off"  # "off", "all", "selective"
     debounce: int = 30  # seconds to wait after last change before syncing
+    # Seconds to wait on a session push/pull (server DLP scan + unpack can be
+    # slow on large sessions). SFS_UPLOAD_TIMEOUT and `sfs push --timeout`
+    # override it; invalid values fall back to the 300 s default.
+    upload_timeout: float | None = 300.0
+
+    @field_validator("upload_timeout", mode="before")
+    @classmethod
+    def _keep_bad_timeout_from_breaking_config(cls, value: object) -> object:
+        # A typo here must not stop the daemon from loading its config;
+        # resolve_transfer_timeout() warns and falls back to the default.
+        from sessionfs.sync.client import _valid_transfer_timeout
+
+        if value is None:
+            return None
+        if _valid_transfer_timeout(value) is None:
+            import logging
+
+            logging.getLogger("sessionfs.config").warning(
+                "Ignoring [sync] upload_timeout=%r: using the default", value
+            )
+            return None
+        return value
 
 
 class JudgeConfig(BaseModel):
@@ -172,6 +206,7 @@ class DaemonConfig(BaseModel):
     cline: ClineWatcherConfig = Field(default_factory=ClineWatcherConfig)
     roo_code: RooCodeWatcherConfig = Field(default_factory=RooCodeWatcherConfig)
     kilo_code: KiloCodeWatcherConfig = Field(default_factory=KiloCodeWatcherConfig)
+    antigravity: AntigravityWatcherConfig = Field(default_factory=AntigravityWatcherConfig)
     amp: AmpWatcherConfig = Field(default_factory=AmpWatcherConfig)
     storage: StoragePolicyConfig = Field(default_factory=StoragePolicyConfig)
     sync: SyncConfig = Field(default_factory=SyncConfig)
@@ -261,6 +296,10 @@ enabled = false
 enabled = false
 # storage_dir = "~/Library/Application Support/Code/User/globalStorage/kilocode.kilo-code"
 
+[antigravity]
+enabled = false
+# gemini_dir = "~/.gemini"   # watches antigravity/, antigravity-cli/, antigravity-ide/
+
 [amp]
 enabled = false
 # data_dir = "~/.local/share/amp"
@@ -278,6 +317,7 @@ api_url = "https://api.sessionfs.dev"    # Server URL
 api_key = ""                             # Set by `sfs auth login`
 push_interval = 30                       # Seconds between sync pushes (daemon)
 retry_max = 5                            # Max consecutive failures before degraded
+upload_timeout = 300                     # Seconds to wait on a session push/pull
 """
 
 

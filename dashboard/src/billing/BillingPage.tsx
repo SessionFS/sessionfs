@@ -1,6 +1,7 @@
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
 import { formatBytes } from '../utils/format';
+import { isOrgAdminRole } from '../utils/roles';
 import { Card, Button } from '../components/ui';
 
 const TIERS = [
@@ -125,7 +126,7 @@ export default function BillingPage() {
   const hasPersonalSub = billing?.has_personal_subscription ?? false;
   const isBeta = billing?.is_beta ?? isError; // Server determines if Stripe is configured
   const isOrgMember = billing?.is_org_member ?? false;
-  const isOrgAdmin = billing?.org_role === 'admin';
+  const isOrgAdmin = isOrgAdminRole(billing?.org_role);
   const storagePct = (billing?.storage_limit_bytes ?? 0) > 0
     ? Math.min(100, ((billing?.storage_used_bytes ?? 0) / (billing?.storage_limit_bytes ?? 1)) * 100)
     : 0;

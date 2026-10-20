@@ -406,7 +406,9 @@ Tool configurations available during the session.
 | `name` | `string` | Tool name. |
 | `description` | `string\|null` | Human-readable description. |
 | `parameters_schema` | `object\|null` | JSON Schema for input parameters. |
-| `source` | `string\|null` | Origin: `"mcp:filesystem"`, `"builtin"`, `"skill:openai-docs"`. |
+| `source` | `string\|null` | Origin: `"mcp:filesystem"`, `"builtin"`, `"skill:openai-docs"`, or the capturing tool (e.g. `"claude-code"`) for detected slash commands. |
+| `type` | `string\|null` | Kind of tool. Converters write `"slash_command"` for slash commands / skills detected in user messages. |
+| `invocation_count` | `integer\|null` | Times the tool was invoked in the session (set for detected slash commands). |
 
 ---
 

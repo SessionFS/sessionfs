@@ -124,7 +124,7 @@ def org_create(
     name: str = typer.Argument(help="Organization display name"),
     slug: str = typer.Argument(help="URL-safe slug (e.g. 'baptist-health')"),
 ) -> None:
-    """Create a new organization. You become the admin."""
+    """Create a new organization. You become its owner."""
     import httpx
     from sessionfs.cli.api_errors import handle_api_response
 

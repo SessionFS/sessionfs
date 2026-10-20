@@ -7,10 +7,11 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from sessionfs.server.schemas.errors import ErrorDetail, ErrorResponse
+from sessionfs.server.services.entitlements import BillingLockRetry
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,26 @@ _PG_UNIQUE_VIOLATION = "23505"
 _PG_FOREIGN_KEY_VIOLATION = "23503"
 _PG_NOT_NULL_VIOLATION = "23502"
 _PG_CHECK_VIOLATION = "23514"
+# Transaction aborted by a lost concurrency race: safe to retry.
+_PG_DEADLOCK_DETECTED = "40P01"
+_PG_SERIALIZATION_FAILURE = "40001"
+_PG_RETRYABLE_SQLSTATES = frozenset({_PG_DEADLOCK_DETECTED, _PG_SERIALIZATION_FAILURE})
+
+
+def db_sqlstate(exc: BaseException) -> str | None:
+    """SQLSTATE of a SQLAlchemy DBAPIError (asyncpg or psycopg), if any."""
+    orig = getattr(exc, "orig", None)
+    if orig is None:
+        return None
+    code = (
+        getattr(orig, "pgcode", None)
+        or getattr(getattr(orig, "sqlstate", None), "value", None)
+        or getattr(orig, "sqlstate", None)
+    )
+    if code is None:
+        cause = getattr(orig, "__cause__", None)
+        code = getattr(cause, "sqlstate", None)
+    return code if isinstance(code, str) else None
 
 
 def _integrity_error_summary(exc: IntegrityError, code: str) -> str:
@@ -113,6 +134,19 @@ def _classify_integrity_error(exc: IntegrityError) -> tuple[str, str, str, int]:
     )
 
 
+def _concurrent_update_response() -> JSONResponse:
+    """409 for a lost concurrency race: safe for the client to retry."""
+    body = ErrorResponse(
+        error=ErrorDetail(
+            code="concurrent_update",
+            message="Another request changed the same records at the same time. "
+            "Retry the request.",
+            details={"status": 409, "retryable": True},
+        )
+    )
+    return JSONResponse(status_code=409, content=body.model_dump(), headers={"Retry-After": "1"})
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """Register global exception handlers on the app."""
 
@@ -165,6 +199,34 @@ def register_exception_handlers(app: FastAPI) -> None:
             )
         )
         return JSONResponse(status_code=422, content=body.model_dump())
+
+    @app.exception_handler(BillingLockRetry)
+    async def billing_lock_retry_handler(request: Request, exc: BillingLockRetry):
+        """A billing row's Stripe customer changed while its locks were
+        being taken; the transaction was abandoned rather than lock out of
+        order. Same retry contract as a deadlock."""
+        logger.warning("Billing lock retry on %s %s: %s", request.method, request.url.path, exc)
+        return _concurrent_update_response()
+
+    @app.exception_handler(DBAPIError)
+    async def dbapi_error_handler(request: Request, exc: DBAPIError):
+        """A transaction aborted by PostgreSQL deadlock detection or a
+        serialization failure is a lost race, not a server bug: answer 409
+        with a retry hint (a Stripe webhook answered this way is retried by
+        Stripe). Every other database error is re-raised to the default
+        500 path unchanged. IntegrityError keeps its own handler (more
+        specific class)."""
+        sqlstate = db_sqlstate(exc)
+        if sqlstate not in _PG_RETRYABLE_SQLSTATES:
+            raise exc
+        logger.warning(
+            "Retryable database conflict on %s %s: %s (sqlstate=%s)",
+            request.method,
+            request.url.path,
+            type(getattr(exc, "orig", exc)).__name__,
+            sqlstate,
+        )
+        return _concurrent_update_response()
 
     @app.exception_handler(IntegrityError)
     async def integrity_error_handler(request: Request, exc: IntegrityError):

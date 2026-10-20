@@ -29,6 +29,7 @@ TOOLS = {
     "cline": {"config_key": "cline", "default_enabled": False},
     "roo-code": {"config_key": "roo_code", "default_enabled": False},
     "kilo-code": {"config_key": "kilo_code", "default_enabled": False},
+    "antigravity": {"config_key": "antigravity", "default_enabled": False},
 }
 
 
@@ -79,6 +80,12 @@ def _tool_is_installed(tool: str) -> bool:
             else home / ".config" / "Cursor"
         ),
     }
+    if tool == "antigravity":
+        # One watcher covers the desktop app, the agy CLI and the IDE build.
+        return any(
+            (home / ".gemini" / name).exists()
+            for name in ("antigravity", "antigravity-cli", "antigravity-ide")
+        )
     path = checks.get(tool)
     return path.exists() if path else False
 
@@ -158,7 +165,7 @@ def _restart_daemon() -> None:
 
 @watcher_app.command("enable")
 def enable_watcher(
-    tool: str = typer.Argument(..., help="Tool to enable (claude-code, codex, gemini, copilot, cursor, amp, cline, roo-code, kilo-code)"),
+    tool: str = typer.Argument(..., help="Tool to enable (claude-code, codex, gemini, copilot, cursor, amp, cline, roo-code, kilo-code, antigravity)"),
 ) -> None:
     """Enable a tool watcher and restart the daemon."""
     if tool not in TOOLS:

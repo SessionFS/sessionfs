@@ -168,6 +168,35 @@ class TestBuildPRComment:
         # Session 2 has no trust score
         assert "\u2014" in comment
 
+    def test_markdown_escaping_blocks_cell_and_link_injection(self):
+        sessions = [
+            {
+                "session_id": "ses_evil",
+                "title": "a|b[c](d)\nline2",
+                "source_tool": "tool|with|pipes",
+                "model_id": "m[1](2)",
+                "message_count": 1,
+                "trust_score": 0.9,
+                "contradictions": [
+                    {"severity": "high", "claim": "claim|pipe\nrow", "evidence": "evi|dence"},
+                ],
+            }
+        ]
+        comment = build_pr_comment(sessions, include_trust=True, include_links=True)
+        # A pipe inside a cell is escaped so it cannot add a column.
+        assert "a\\|b" in comment
+        assert "tool\\|with\\|pipes" in comment
+        # Brackets/parens in a link label are escaped so they cannot break
+        # out of the link (no raw `[c](d)` markdown link survives).
+        assert "[c](d)" not in comment
+        # A newline in a title collapses to a space, not a table row break.
+        assert "line2" in comment
+        assert "\nline2" not in comment
+        # Contradiction cells escape pipe/newline too.
+        assert "claim\\|pipe" in comment
+        assert "pipe\nrow" not in comment
+        assert "evi\\|dence" in comment
+
 
 # --- Webhook signature verification tests ---
 
@@ -195,18 +224,38 @@ class TestWebhookSignature:
             with pytest.raises(Exception):  # HTTPException
                 _verify_signature(body, bad_sig)
 
-    def test_no_secret_skips_verification(self):
+    def test_no_secret_fails_closed(self, monkeypatch):
+        from fastapi import HTTPException
+
         from sessionfs.server.routes.webhooks import _verify_signature
 
+        monkeypatch.delenv("SFS_GITHUB_WEBHOOK_ALLOW_UNSIGNED", raising=False)
         with patch("sessionfs.server.routes.webhooks.GITHUB_WEBHOOK_SECRET", ""):
-            # Should not raise even with no signature
+            with pytest.raises(HTTPException) as exc:
+                _verify_signature(b"body", None)
+        assert exc.value.status_code == 503
+
+    def test_no_secret_with_explicit_opt_in_allows_unsigned(self, monkeypatch):
+        from sessionfs.server.routes.webhooks import _verify_signature
+
+        monkeypatch.setenv("SFS_GITHUB_WEBHOOK_ALLOW_UNSIGNED", "1")
+        with patch("sessionfs.server.routes.webhooks.GITHUB_WEBHOOK_SECRET", ""):
             _verify_signature(b"body", None)
 
 
 # --- Webhook endpoint integration tests ---
 
 
+@pytest.fixture
+def _unsigned_dev_mode(monkeypatch):
+    """These endpoint tests exercise routing, not signatures: opt in
+    explicitly to unsigned deliveries the way a local developer would."""
+    monkeypatch.setattr("sessionfs.server.routes.webhooks.GITHUB_WEBHOOK_SECRET", "")
+    monkeypatch.setenv("SFS_GITHUB_WEBHOOK_ALLOW_UNSIGNED", "1")
+
+
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("_unsigned_dev_mode")
 async def test_webhook_returns_ok(client: AsyncClient):
     """Webhook endpoint returns ok for valid events."""
     payload = {"action": "opened", "pull_request": {}, "installation": {"id": 1}}
@@ -215,7 +264,7 @@ async def test_webhook_returns_ok(client: AsyncClient):
         content=json.dumps(payload),
         headers={
             "Content-Type": "application/json",
-            "X-GitHub-Event": "ping",
+            "X-GitHub-Event": "ping", "X-GitHub-Delivery": "test-delivery-1",
         },
     )
     assert resp.status_code == 200
@@ -223,13 +272,16 @@ async def test_webhook_returns_ok(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("_unsigned_dev_mode")
 async def test_webhook_installation_event(client: AsyncClient):
     """Installation events are accepted."""
     payload = {
         "action": "created",
         "installation": {
             "id": 12345,
-            "account": {"login": "test-org", "type": "Organization"},
+            "account": {"id": 7, "login": "test-org", "type": "Organization"},
+            "app_id": 1,
+            "target_type": "Organization",
         },
     }
     resp = await client.post(
@@ -237,7 +289,7 @@ async def test_webhook_installation_event(client: AsyncClient):
         content=json.dumps(payload),
         headers={
             "Content-Type": "application/json",
-            "X-GitHub-Event": "installation",
+            "X-GitHub-Event": "installation", "X-GitHub-Delivery": "test-delivery-2",
         },
     )
     assert resp.status_code == 200

@@ -15,7 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import AuthContext, get_current_user, require_scope
 from sessionfs.server.db.engine import get_db
-from sessionfs.server.db.models import AgentPersona, ContextCompilation, KnowledgeEntry, Project, User
+from sessionfs.server.db.models import ContextCompilation, KnowledgeEntry, Project, User
+from sessionfs.server.services.personas import (
+    resolve_persona,
+    visible_persona_org_id_for_auth,
+)
 from sessionfs.server.tier_gate import get_effective_tier
 
 logger = logging.getLogger("sessionfs.api")
@@ -630,6 +634,14 @@ async def add_entry(
         assert_service_key_can_access_project,
     )
     await assert_service_key_can_access_project(db, auth, project)
+    # GH #70 — serialize with project merge (which relocates entries under
+    # this lock) so no entry lands in a merged-away source project.
+    from sessionfs.server.services.scope_locks import (
+        lock_project_scope_authorized,
+    )
+
+    # GH #70 — lock, then re-authorize against the re-read project.
+    await lock_project_scope_authorized(db, project, auth=auth)
 
     valid_types = {"decision", "pattern", "discovery", "convention", "bug", "dependency"}
     if body.entry_type not in valid_types:
@@ -639,20 +651,22 @@ async def add_entry(
     if len(body.content) < 20:
         raise HTTPException(422, "Content too short — minimum 20 characters required")
 
+    canonical_persona: str | None = None
     if body.persona_name is not None:
-        persona = (
-            await db.execute(
-                select(AgentPersona.id).where(
-                    AgentPersona.project_id == project_id,
-                    AgentPersona.name == body.persona_name,
-                )
-            )
-        ).scalar_one_or_none()
+        # GH #70 — project persona first, then the project's org.
+        persona = await resolve_persona(
+            db,
+            project_id,
+            body.persona_name,
+            org_id=await visible_persona_org_id_for_auth(db, project, auth),
+            active_only=False,
+        )
         if persona is None:
             raise HTTPException(
                 422,
                 f"persona_name {body.persona_name!r} not found in this project",
             )
+        canonical_persona = persona.name
 
     # Codex review concern #2 — service keys cannot spoof author_class=human
     if auth.actor_type == "service_key":
@@ -851,7 +865,7 @@ async def add_entry(
         content=body.content,
         confidence=confidence,
         source_context=body.source_context,
-        persona_name=body.persona_name,
+        persona_name=canonical_persona,
         author_class=author_class,
         claim_class=claim_class,
         entity_ref=body.entity_ref,
@@ -950,6 +964,13 @@ async def dismiss_entry(
         assert_service_key_can_access_project,
     )
     await assert_service_key_can_access_project(db, auth, project)
+    # GH #70 — scope lock before the row update (global lock order).
+    from sessionfs.server.services.scope_locks import (
+        lock_project_scope_authorized,
+    )
+
+    # GH #70 — lock, then re-authorize against the re-read project.
+    await lock_project_scope_authorized(db, project, auth=auth)
 
     if body.reason is not None and len(body.reason) > _DISMISS_REASON_MAX:
         raise HTTPException(
@@ -1020,6 +1041,15 @@ async def refresh_entry(
         assert_service_key_can_access_project,
     )
     await assert_service_key_can_access_project(db, auth, project)
+    # GH #70 — project scope lock before any row lock or mutation:
+    # serializes with project merge (which relocates knowledge rows) and
+    # refuses writes to a merged-away project.
+    from sessionfs.server.services.scope_locks import (
+        lock_project_scope_authorized,
+    )
+
+    # GH #70 — lock, then re-authorize against the re-read project.
+    await lock_project_scope_authorized(db, project, auth=auth)
 
     result = await db.execute(
         select(KnowledgeEntry).where(
@@ -1058,7 +1088,16 @@ async def dismiss_stale_entries(
     Returns the count of entries dismissed so the dashboard can update its
     health banner without a full page refresh.
     """
-    await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_or_404(project_id, db, user.id)
+    # GH #70 — project scope lock before any row lock or mutation:
+    # serializes with project merge (which relocates knowledge rows) and
+    # refuses writes to a merged-away project.
+    from sessionfs.server.services.scope_locks import (
+        lock_project_scope_authorized,
+    )
+
+    # GH #70 — lock, then re-authorize against the re-read project.
+    await lock_project_scope_authorized(db, project, user_id=user.id)
 
     from sqlalchemy import or_
     ninety_days_ago = datetime.now(timezone.utc) - timedelta(days=90)
@@ -1680,6 +1719,15 @@ async def supersede_entry(
         assert_service_key_can_access_project,
     )
     await assert_service_key_can_access_project(db, auth, project)
+    # GH #70 — project scope lock before any row lock or mutation:
+    # serializes with project merge (which relocates knowledge rows) and
+    # refuses writes to a merged-away project.
+    from sessionfs.server.services.scope_locks import (
+        lock_project_scope_authorized,
+    )
+
+    # GH #70 — lock, then re-authorize against the re-read project.
+    await lock_project_scope_authorized(db, project, auth=auth)
 
     # Validate old entry
     old_result = await db.execute(
@@ -1753,6 +1801,15 @@ async def promote_entry(
         assert_service_key_can_access_project,
     )
     await assert_service_key_can_access_project(db, auth, project)
+    # GH #70 — project scope lock before any row lock or mutation:
+    # serializes with project merge (which relocates knowledge rows) and
+    # refuses writes to a merged-away project.
+    from sessionfs.server.services.scope_locks import (
+        lock_project_scope_authorized,
+    )
+
+    # GH #70 — lock, then re-authorize against the re-read project.
+    await lock_project_scope_authorized(db, project, auth=auth)
 
     result = await db.execute(
         select(KnowledgeEntry).where(
@@ -1838,7 +1895,16 @@ async def bulk_promote_entries(
     `dry_run=true` (default) computes the decision but writes nothing.
     Returns `{promoted, skipped, reasons, promoted_ids, dry_run}`.
     """
-    await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_or_404(project_id, db, user.id)
+    # GH #70 — project scope lock before any row lock or mutation:
+    # serializes with project merge (which relocates knowledge rows) and
+    # refuses writes to a merged-away project.
+    from sessionfs.server.services.scope_locks import (
+        lock_project_scope_authorized,
+    )
+
+    # GH #70 — lock, then re-authorize against the re-read project.
+    await lock_project_scope_authorized(db, project, user_id=user.id)
 
     from sessionfs.server.services.bulk_promote import promote_eligible_notes
 
@@ -1879,7 +1945,16 @@ async def update_entry_confidence(
     Does NOT auto-promote — keeps confidence orthogonal to claim_class
     transitions. Use /promote explicitly after updating confidence.
     """
-    await _get_project_or_404(project_id, db, user.id)
+    project = await _get_project_or_404(project_id, db, user.id)
+    # GH #70 — project scope lock before any row lock or mutation:
+    # serializes with project merge (which relocates knowledge rows) and
+    # refuses writes to a merged-away project.
+    from sessionfs.server.services.scope_locks import (
+        lock_project_scope_authorized,
+    )
+
+    # GH #70 — lock, then re-authorize against the re-read project.
+    await lock_project_scope_authorized(db, project, user_id=user.id)
     entry = (
         await db.execute(
             select(KnowledgeEntry).where(
@@ -1935,19 +2010,18 @@ async def rebuild_project(
     """
     await _get_project_or_404(project_id, db, user.id)
 
-    from sessionfs.server.services.freshness import refresh_freshness_classes
     from sessionfs.server.services.compiler import (
         auto_generate_concepts,
         compile_project_context,
     )
 
-    # Freshness counts are surfaced in the response shape — compute by
-    # calling the same refresh function compile uses, but the actual
-    # freshness UPDATE that lands in the DB is the one inside
-    # compile_project_context (single atomic commit). This call returns
-    # the projected count without committing.
-    freshness_updated = await refresh_freshness_classes(project_id, db)
-
+    # GH #70 — no scope lock or write here. compile_project_context takes
+    # the project scope lock itself (re-authorizing the caller and refusing
+    # a merged-away project) and releases it around its LLM round-trip; a
+    # lock or freshness UPDATE taken here would be held across that call.
+    # The freshness count reported below comes from the pass compile
+    # actually committed.
+    compile_stats: dict = {}
     body = body or CompileRequest()
     compilation = await compile_project_context(
         project_id=project_id,
@@ -1958,7 +2032,9 @@ async def rebuild_project(
         provider=body.provider,
         base_url=body.base_url,
         force_rebuild=True,
+        stats=compile_stats,
     )
+    freshness_updated = int(compile_stats.get("freshness_updated", 0))
 
     entries_compiled = compilation.entries_compiled if compilation else 0
 

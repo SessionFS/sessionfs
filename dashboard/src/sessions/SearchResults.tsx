@@ -17,6 +17,7 @@ const TOOLS = [
   { label: 'Amp', value: 'amp' },
   { label: 'Cline', value: 'cline' },
   { label: 'Roo Code', value: 'roo-code' },
+  { label: 'Antigravity', value: 'antigravity' },
 ] as const;
 
 const DATE_RANGES = [

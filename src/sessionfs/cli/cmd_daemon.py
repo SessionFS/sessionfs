@@ -170,9 +170,11 @@ def status() -> None:
         for w in daemon_status.watchers:
             health = w.health
             color = {"healthy": "green", "degraded": "yellow", "broken": "red"}.get(health, "white")
+            skipped = sum(v for v in w.sessions_skipped.values() if isinstance(v, int))
+            skipped_note = f", {skipped} skipped" if skipped else ""
             table.add_row(
                 f"Watcher: {w.name}",
-                f"[{color}]{health}[/{color}] ({w.sessions_tracked} sessions)",
+                f"[{color}]{health}[/{color}] ({w.sessions_tracked} sessions{skipped_note})",
             )
 
         backing_off = [b for b in daemon_status.sync_backoff if not b.get("paused")]

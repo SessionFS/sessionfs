@@ -81,6 +81,7 @@ _TOOL_ABBREVIATIONS: dict[str, str] = {
     "cline": "CLN",
     "roo-code": "ROO",
     "kilo-code": "KLO",
+    "antigravity": "AGY",
     "amp": "AMP",
     "aider": "AID",
     "windsurf": "WS",

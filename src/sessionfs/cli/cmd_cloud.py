@@ -190,50 +190,68 @@ def _save_sync_config(api_url: str, api_key: str) -> None:
     else:
         text = ""
 
-    # Simple TOML update: replace or append [sync] section
-    lines = text.split("\n")
-    new_lines = []
+    # Line-based update of the [sync] table so comments and the other
+    # sections stay as the user wrote them. The new [sync] body keeps every
+    # setting a login doesn't manage (upload_timeout, auto, push_interval...).
+    import re
+
+    from sessionfs.profiles import (
+        ConfigRewriteError,
+        login_sync_lines,
+        verify_login_rewrite,
+    )
+
+    try:
+        sync_body = login_sync_lines(config_path, text, api_url, api_key)
+    except ConfigRewriteError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise SystemExit(1)
+
+    table_header = re.compile(r"^\[\[?\s*([^\]]+?)\s*\]\]?\s*(#.*)?$")
+    new_lines: list[str] = []
     in_sync_section = False
     sync_written = False
-
-    for line in lines:
+    for line in text.split("\n"):
         stripped = line.strip()
-        if stripped == "[sync]":
+        header = table_header.match(stripped)
+        header_name = header.group(1).strip("\"'") if header else None
+        if header_name == "sync" and not stripped.startswith("[[") and not sync_written:
             in_sync_section = True
             sync_written = True
             new_lines.append("[sync]")
-            new_lines.append('enabled = true')
-            new_lines.append(f'api_url = "{api_url}"')
-            new_lines.append(f'api_key = "{api_key}"')
-            new_lines.append('push_interval = 30')
-            new_lines.append('retry_max = 5')
+            new_lines.extend(sync_body)
             continue
         if in_sync_section:
-            if stripped.startswith("[") and stripped != "[sync]":
+            if header is not None:
                 in_sync_section = False
                 new_lines.append(line)
-            # Skip old sync lines
-            continue
+            continue  # old [sync] lines are replaced by sync_body
         new_lines.append(line)
-
     if not sync_written:
-        new_lines.append("")
-        new_lines.append("[sync]")
-        new_lines.append('enabled = true')
-        new_lines.append(f'api_url = "{api_url}"')
-        new_lines.append(f'api_key = "{api_key}"')
-        new_lines.append('push_interval = 30')
-        new_lines.append('retry_max = 5')
+        new_lines += ["", "[sync]", *sync_body]
+    new_text = "\n".join(new_lines)
+
+    # Never write a config that doesn't parse back as the old one with only
+    # the credentials changed, whatever unusual TOML it held.
+    try:
+        verify_login_rewrite(config_path, text, new_text, api_key)
+    except ConfigRewriteError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise SystemExit(1)
 
     # 0o600 enforced at creation — holds a raw key (Shield-SR v0.10.29:
     # write_text + chmod left a umask-default window on first login).
     from sessionfs.profiles import _write_private_file
-    _write_private_file(config_path, "\n".join(new_lines))
+    _write_private_file(config_path, new_text)
 
 
-def _get_sync_client():
-    """Create a SyncClient from stored config."""
-    from sessionfs.sync.client import SyncClient
+def _get_sync_client(timeout: float | None = None):
+    """Create a SyncClient from stored config.
+
+    `timeout` (seconds, from a --timeout flag) wins over SFS_UPLOAD_TIMEOUT
+    and `[sync] upload_timeout` for session push/pull transfers.
+    """
+    from sessionfs.sync.client import SyncClient, resolve_transfer_timeout
 
     cfg = _load_sync_config()
     if not cfg["api_key"]:
@@ -241,7 +259,27 @@ def _get_sync_client():
             "[red]Not authenticated. Run 'sfs auth login' first.[/red]"
         )
         raise SystemExit(1)
-    return SyncClient(api_url=cfg["api_url"], api_key=cfg["api_key"])
+    return SyncClient(
+        api_url=cfg["api_url"],
+        api_key=cfg["api_key"],
+        transfer_timeout=resolve_transfer_timeout(
+            explicit=timeout, configured=_configured_upload_timeout()
+        ),
+    )
+
+
+def _configured_upload_timeout() -> float | None:
+    """`[sync] upload_timeout` from the active profile's config file.
+
+    load_config() already resolves the active profile, the same file the
+    daemon pins to. A config that can't be read just means the default.
+    """
+    from sessionfs.daemon.config import load_config
+
+    try:
+        return load_config().sync.upload_timeout
+    except Exception:
+        return None
 
 
 @auth_app.command("login")
@@ -319,7 +357,11 @@ def auth_login(
     # Save: named profile → its own file; default → config.toml (preserves
     # the watcher sections etc. via the surgical [sync]-block updater).
     if profile is not None:
-        write_named_profile(profile, api_url, api_key)
+        try:
+            write_named_profile(profile, api_url, api_key)
+        except ValueError as exc:  # ConfigRewriteError
+            err_console.print(f"[red]{exc}[/red]")
+            raise SystemExit(1)
         console.print(f"[green]Authenticated with {api_url}[/green] "
                       f"(profile: [bold]{profile}[/bold])")
         console.print(f"Server status: {result.get('status', 'unknown')}")
@@ -505,6 +547,15 @@ def auth_status() -> None:
     console.print(f"  Sync enabled: {cfg['enabled']}")
 
 
+def _finite_timeout(value: Optional[float]) -> Optional[float]:
+    # Click's range check lets NaN through (every comparison is False).
+    import math
+
+    if value is not None and not math.isfinite(value):
+        raise typer.BadParameter("must be a number of seconds between 1 and 3600")
+    return value
+
+
 def push(
     session_id: str = typer.Argument(help="Session ID or prefix."),
     yes: bool = typer.Option(
@@ -512,13 +563,29 @@ def push(
         "--yes", "-y",
         help="Skip interactive confirmations (DLP findings, cloud-undelete). Findings are still shown but don't block the push.",
     ),
+    timeout: Optional[float] = typer.Option(
+        None,
+        "--timeout",
+        min=1,
+        max=3600,
+        callback=_finite_timeout,
+        help=(
+            "Seconds to wait for the server to accept the upload (default 300, "
+            "or SFS_UPLOAD_TIMEOUT / [sync] upload_timeout)."
+        ),
+    ),
 ) -> None:
     """Push a local session to the server."""
     from sessionfs.sync.archive import pack_session
-    from sessionfs.sync.client import SyncConflictError, SyncDeletedError, SyncTooLargeError
+    from sessionfs.sync.client import (
+        SyncConflictError,
+        SyncDeletedError,
+        SyncTimeoutError,
+        SyncTooLargeError,
+    )
 
     store = open_store()
-    client = _get_sync_client()
+    client = _get_sync_client(timeout=timeout)
 
     try:
         full_id = resolve_session_id(store, session_id)
@@ -668,6 +735,9 @@ def push(
         raise SystemExit(1)
     except SyncTooLargeError as exc:
         err_console.print(f"[red]{exc}[/red]")
+        raise SystemExit(1)
+    except SyncTimeoutError as exc:
+        err_console.print(f"[red]Push timed out.[/red] {exc}")
         raise SystemExit(1)
     except SyncConflictError as exc:
         err_console.print(

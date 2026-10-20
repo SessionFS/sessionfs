@@ -23,6 +23,7 @@ from sessionfs.server.db.models import (
     HandoffAttachment,
     HandoffComment,
     HandoffEvent,
+    Project,
     Session,
     Team,
     TeamMember,
@@ -34,6 +35,7 @@ from sessionfs.server.services.handoff_helpers import (
     lazy_expire,
     parse_event_payload,
     persist_lazy_expire,
+    resolve_handoff_source_project,
     team_ids_for_user,
     validate_attachments_for_recipient,
     validate_attachments_for_sender,
@@ -166,6 +168,7 @@ def _handoff_to_response(
         snapshot_persona_name=getattr(handoff, "snapshot_persona_name", None),
         snapshot_ticket_title=getattr(handoff, "snapshot_ticket_title", None),
         sender_tier_snapshot=getattr(handoff, "sender_tier_snapshot", None),
+        source_project_id=getattr(handoff, "source_project_id", None),
         attachments=[
             HandoffAttachmentResponse(
                 kind=att.kind,
@@ -241,8 +244,9 @@ async def create_handoff(
     # Codex R5 HIGH 2 — service-key org/project boundary BEFORE any
     # state change. Resolves the source session's project and asserts
     # it belongs to the service key's org (+ project allowlist).
-    # User-key callers are unaffected.
-    await assert_service_key_handoff_boundary(db, auth, session)
+    # User-key callers are unaffected. No Handoff row exists yet, so the
+    # durable anchor is None and the session's project is authoritative.
+    await assert_service_key_handoff_boundary(db, auth, None, session)
 
     # If team handoff, validate the team exists and the sender belongs to it
     # (you can only hand off to teams you're a member of).
@@ -279,20 +283,69 @@ async def create_handoff(
         if target_user is None:
             raise HTTPException(status_code=404, detail="Recipient user not found")
 
+    # GH #70 — resolve the handoff's durable project anchor up front.
+    # It is stored on the row (source_project_id) so the persona
+    # stranding guards and the merge persona-reference rewrite can
+    # attribute PENDING handoffs to a project without re-resolving the
+    # session's remote (legacy sessions have project_id NULL).
+    source_project = await resolve_handoff_source_project(db, None, session)
+
+    # GH #70 (Codex R10) — a persona-bearing handoff validates the
+    # persona, then INSERTs: without the project scope lock the persona
+    # could be deleted, the project transferred, or a merge's rename
+    # could land between the check and the write. The delete/transfer
+    # guards count pending handoffs and merge rewrites persona references
+    # under the same lock, so take it (with re-authorization against the
+    # refreshed project), then re-read and revalidate everything before
+    # inserting. The lock is held until the commit at the end.
+    if body.persona_name and source_project is not None:
+        from sessionfs.server.services.scope_locks import (
+            lock_project_scope_authorized,
+        )
+
+        await lock_project_scope_authorized(db, source_project, auth=auth)
+        # Re-read the session under the lock — ownership/existence may
+        # have changed while we waited.
+        session = (
+            await db.execute(
+                select(Session)
+                .where(Session.id == body.session_id)
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if session is None or session.user_id != user.id:
+            raise HTTPException(status_code=404, detail="Session not found")
+        # The anchor must still resolve to the project we locked; a
+        # concurrent re-link would have changed it.
+        recheck_project = await resolve_handoff_source_project(db, None, session)
+        if recheck_project is None or recheck_project.id != source_project.id:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "handoff_project_changed",
+                    "message": (
+                        "The session's project changed concurrently; "
+                        "retry the handoff creation."
+                    ),
+                },
+            )
+
     # Validate provenance + attachments against the session's project scope.
     try:
         snap_ticket_title, snap_persona_name = await validate_provenance_for_sender(
             db,
-            sender_id=user.id,
+            auth=auth,
             session=session,
             ticket_id=body.ticket_id,
             persona_name=body.persona_name,
+            project=source_project if body.persona_name else None,
         )
         await validate_attachments_for_sender(
             db,
             sender_id=user.id,
             session=session,
             attachments=[a.model_dump() for a in body.attachments],
+            project=source_project if body.persona_name else None,
         )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -328,11 +381,15 @@ async def create_handoff(
         snapshot_total_tokens=total_tokens or None,
         # v0.10.9 provenance + display snapshots + tier snapshot
         ticket_id=body.ticket_id,
-        persona_name=body.persona_name,
+        # GH #70 — the validated canonical name when provenance resolved it.
+        persona_name=snap_persona_name or body.persona_name,
         handoff_kind=handoff_kind,
         snapshot_ticket_title=snap_ticket_title,
         snapshot_persona_name=snap_persona_name,
         sender_tier_snapshot=ctx.effective_tier.value,
+        # GH #70 — durable project anchor for the stranding guards,
+        # merge rewrite and claim-time resolution.
+        source_project_id=source_project.id if source_project else None,
     )
     # P1 pre-signup landing — generate a single-purpose preview token.
     # Only the sha256 hash is stored; the raw token goes into the
@@ -347,17 +404,9 @@ async def create_handoff(
     # Attachments — stored with project_id (R2 MEDIUM #3) so the
     # recipient-side validator can do unambiguous (project_id, kind,
     # ref_id) lookup at claim time without slug ambiguity.
-    # P2 (§3.3 A9): prefer session.project_id (authoritative FK) first,
-    # then fall back to remote resolution.
-    project_id_for_atts: str | None = session.project_id
-    if project_id_for_atts is None and body.attachments and session.git_remote_normalized:
-        from sessionfs.server.services.project_resolver import (
-            resolve_project_by_remote,
-        )
-        proj = await resolve_project_by_remote(
-            db, session.git_remote_normalized,
-        )
-        project_id_for_atts = proj.id if proj else None
+    # P2 (§3.3 A9) + GH #70: the durable anchor resolved above (prefers
+    # session.project_id, falls back to remote resolution).
+    project_id_for_atts: str | None = source_project.id if source_project else None
     for att in body.attachments:
         db.add(
             HandoffAttachment(
@@ -816,8 +865,101 @@ async def claim_handoff(
     # Codex R5 HIGH 2 — service-key boundary before atomic claim. A
     # cloud-agent key minted for org_A cannot claim a handoff whose
     # source session lives in org_B even if the backing user has
-    # eligibility on both.
-    await assert_service_key_handoff_boundary(db, auth, source_session)
+    # eligibility on both. GH #70 (R6 HIGH): authorize the DURABLE
+    # anchor (source_project_id) AND the session's current project.
+    await assert_service_key_handoff_boundary(db, auth, handoff, source_session)
+
+    # GH #70 (Codex R10) — a persona-bearing claim must serialize with
+    # merge's pending-handoff rename and with persona delete/transfer:
+    # without the project scope lock the atomic UPDATE below could mark
+    # the row claimed before merge rewrites its persona_name, returning
+    # the OLD persona/project in the recipient's bundle. Take the source
+    # project's scope lock (BEFORE the atomic UPDATE — a scope lock taken
+    # after a row lock would deadlock against merge), then re-read the
+    # handoff and re-run eligibility, status and the service-key boundary
+    # under it. The lock is held until commit.
+    #
+    # Note: lock_project_scope (not the _authorized variant) — the claim
+    # authorization is recipient eligibility + the service-key boundary,
+    # NOT project access: a recipient without project access legitimately
+    # claims and simply gets the persona dropped (see the visibility
+    # check when the bundle is built below).
+    if handoff.persona_name:
+        from sessionfs.server.services.scope_locks import lock_project_scope
+
+        claim_project = await resolve_handoff_source_project(
+            db, handoff, source_session
+        )
+        if claim_project is not None:
+            await lock_project_scope(db, claim_project)
+            # Re-read the handoff under the lock — a merge (which holds
+            # the same project locks) may have rewritten its persona and
+            # moved its anchor while we waited.
+            handoff = (
+                await db.execute(
+                    select(Handoff)
+                    .where(Handoff.id == handoff_id)
+                    .execution_options(populate_existing=True)
+                )
+            ).scalar_one()
+            if not await claim_inbox_match(db, user, handoff):
+                raise HTTPException(status_code=404, detail="Handoff not found")
+            if lazy_expire(handoff):
+                flipped = await persist_lazy_expire(
+                    db, handoff_id=handoff.id, current_status="pending"
+                )
+                if flipped:
+                    await write_event(
+                        db,
+                        handoff_id=handoff.id,
+                        event_type="expired",
+                        actor_user_id=None,
+                    )
+                    await db.commit()
+                else:
+                    await db.refresh(handoff)
+            if handoff.status == "expired":
+                raise HTTPException(status_code=410, detail="Handoff has expired")
+            if handoff.status == "claimed":
+                raise HTTPException(status_code=409, detail="Handoff already claimed")
+            if handoff.status in {"revoked", "declined"}:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Handoff is {handoff.status} and cannot be claimed",
+                )
+            # The anchor must still resolve to the project we locked; a
+            # merge committed while we waited moves it to the target.
+            recheck_project = await resolve_handoff_source_project(
+                db, handoff, source_session
+            )
+            if recheck_project is None or recheck_project.id != claim_project.id:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "handoff_project_changed",
+                        "message": (
+                            "The handoff's project changed concurrently "
+                            "(a merge landed); retry the claim."
+                        ),
+                    },
+                )
+            # Re-read the source session under the lock too — a merge may
+            # have reassigned its project while we waited, which changes the
+            # session-side boundary the claim blob copies from.
+            source_session = (
+                await db.execute(
+                    select(Session)
+                    .where(Session.id == handoff.session_id)
+                    .execution_options(populate_existing=True)
+                )
+            ).scalar_one_or_none()
+            if source_session is None:
+                raise HTTPException(
+                    status_code=404, detail="Source session no longer exists"
+                )
+            # Re-assert the service-key boundary against the locked state,
+            # using the re-read anchor (handoff) and session.
+            await assert_service_key_handoff_boundary(db, auth, handoff, source_session)
 
     # R3 MEDIUM 2 — win the atomic claim BEFORE doing any blob copy
     # side effect. Pre-allocate new_session_id so we can include it in
@@ -963,14 +1105,18 @@ async def claim_handoff(
                 if t_project_id in accessible:
                     proj_id = t_project_id
                     lease_epoch = t_lease
-        # R3 MEDIUM 1 — persona-only path: resolve project_id from the
-        # source session's git_remote so write_bundle has what it needs.
-        # Only used when we don't already have a project_id from ticket
-        # resolution above.
-        # P2 (§3.3 A10): prefer session.project_id first, then
-        # resolve_project_by_remote as fallback.
+        # R3 MEDIUM 1 — persona-only path: resolve project_id so
+        # write_bundle has what it needs. Only used when we don't
+        # already have a project_id from ticket resolution above.
+        # GH #70: the durable anchor (source_project_id, set at create)
+        # is authoritative — it survives a merge reassigning the
+        # session's project or its repo rows. Fall back to
+        # session.project_id, then remote resolution (legacy rows whose
+        # anchor stayed NULL).
         if proj_id is None and handoff.persona_name:
-            src_proj_id: str | None = source_session.project_id
+            src_proj_id: str | None = handoff.source_project_id
+            if src_proj_id is None:
+                src_proj_id = source_session.project_id
             if src_proj_id is None and source_session.git_remote_normalized:
                 from sessionfs.server.services.project_resolver import (
                     resolve_project_by_remote,
@@ -997,6 +1143,47 @@ async def claim_handoff(
                     reason="project_not_accessible",
                 )
             )
+        elif keep_persona and proj_id:
+            # GH #70 (Codex R10): resolve the persona with the
+            # RECIPIENT's AuthContext and current project scope. An org
+            # persona is only visible to a recipient who can see that
+            # org (member for user keys, own org for service keys); a
+            # soft-deleted or transferred persona no longer resolves.
+            # Drop it with the existing dropped-reference reporting so
+            # the recipient knows why their bundle lost the persona.
+            from sessionfs.server.services.personas import (
+                resolve_persona,
+                visible_persona_org_id_for_auth,
+            )
+
+            persona_project = (
+                await db.execute(
+                    select(Project).where(Project.id == proj_id)
+                )
+            ).scalar_one_or_none()
+            resolved_persona = None
+            if persona_project is not None:
+                resolved_persona = await resolve_persona(
+                    db,
+                    proj_id,
+                    keep_persona,
+                    org_id=await visible_persona_org_id_for_auth(
+                        db, persona_project, auth
+                    ),
+                    active_only=True,
+                )
+            if resolved_persona is None:
+                dropped.append(
+                    DroppedAttachment(
+                        kind="persona",
+                        ref_id=handoff.persona_name,
+                        reason="persona_not_visible",
+                    )
+                )
+                keep_persona = None
+            else:
+                # Store the canonical name, never the sender's spelling.
+                keep_persona = resolved_persona.name
         active_payload = ActiveTicketPayload(
             ticket_id=handoff.ticket_id if proj_id else None,
             persona_name=keep_persona,
@@ -1094,7 +1281,7 @@ async def revoke_handoff(
     src = (
         await db.execute(select(Session).where(Session.id == handoff.session_id))
     ).scalar_one_or_none()
-    await assert_service_key_handoff_boundary(db, auth, src)
+    await assert_service_key_handoff_boundary(db, auth, handoff, src)
 
     if handoff.status != "pending":
         raise HTTPException(
@@ -1190,7 +1377,7 @@ async def decline_handoff(
     src = (
         await db.execute(select(Session).where(Session.id == handoff.session_id))
     ).scalar_one_or_none()
-    await assert_service_key_handoff_boundary(db, auth, src)
+    await assert_service_key_handoff_boundary(db, auth, handoff, src)
 
     if handoff.status != "pending":
         raise HTTPException(
@@ -1276,7 +1463,7 @@ async def create_handoff_comment(
     src = (
         await db.execute(select(Session).where(Session.id == handoff.session_id))
     ).scalar_one_or_none()
-    await assert_service_key_handoff_boundary(db, auth, src)
+    await assert_service_key_handoff_boundary(db, auth, handoff, src)
 
     now = datetime.now(timezone.utc)
     comment = HandoffComment(

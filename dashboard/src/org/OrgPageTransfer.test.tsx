@@ -27,6 +27,7 @@ vi.mock('./SsoTab', () => ({
   default: ({ orgId }: { orgId: string }) => <div data-testid={`sso-stub-${orgId}`} />,
 }));
 vi.mock('./ActivateLicensePanel', () => ({ default: () => <div data-testid="activate-panel" /> }));
+vi.mock('./OrgPersonasSection', () => ({ default: () => <div data-testid="org-personas-stub" /> }));
 
 function makeQueryClient() {
   return new QueryClient({

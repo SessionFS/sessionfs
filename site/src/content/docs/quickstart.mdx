@@ -35,7 +35,7 @@ Because MCP was installed in the same wizard step, you can ask that question imm
 
 If you have no existing sessions yet, the wizard prints a graceful fallback and your first session will be captured automatically when you use your AI tool next.
 
-The daemon watches your AI tools in the background using filesystem events (not polling). Negligible CPU overhead. It automatically detects and captures sessions from all nine supported tools:
+The daemon watches your AI tools in the background using filesystem events (not polling). Negligible CPU overhead. It automatically detects and captures sessions from all ten supported tools:
 
 - Claude Code
 - Codex CLI
@@ -46,6 +46,7 @@ The daemon watches your AI tools in the background using filesystem events (not 
 - Cline
 - Roo Code
 - Kilo Code
+- Antigravity (desktop app, `agy` CLI, IDE)
 
 ## 3. Ask Your Agent
 
@@ -99,7 +100,7 @@ sfs resume ses_g3h4i5j6 --in codex
 sfs resume ses_e5f6a7b8 --in gemini
 ```
 
-Four tools support resume: Claude Code, Codex, Gemini CLI, and Copilot CLI. Sessions from capture-only tools (Cursor, Amp, Cline, Roo Code, Kilo Code) can be resumed in any of the four bidirectional tools. See [Installation](/installation/) for details on supported tools.
+Four tools support resume: Claude Code, Codex, Gemini CLI, and Copilot CLI. Sessions from capture-only tools (Cursor, Amp, Cline, Roo Code, Kilo Code, Antigravity) can be resumed in any of the four bidirectional tools. See [Installation](/installation/) for details on supported tools.
 
 ---
 
@@ -165,7 +166,7 @@ sfs audit ses_abc --model gpt-4o
 sfs project init
 sfs project edit
 
-# Install MCP server (79 tools) so AI agents
+# Install MCP server (80 tools) so AI agents
 # can search sessions, query the knowledge base, and read wiki pages
 sfs mcp install --for claude-code
 

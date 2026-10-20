@@ -36,6 +36,7 @@ from sessionfs.server.db.models import (
     SsoBreakGlassGrant,
     User,
 )
+from sessionfs.server.services import domain_verification
 from sessionfs.server.services.oidc_fetch import SsrfError, oidc_fetch_json
 from sessionfs.server.services.sso_domains import FREE_EMAIL_DENYLIST
 
@@ -66,34 +67,10 @@ async def _resolve_txt(domain: str) -> list[str]:
     Returns the list of decoded TXT strings, or [] on any resolution
     failure (NXDOMAIN, no TXT, timeout, or dnspython missing) — verification
     then fails closed. Tests inject a mock by patching this module-level
-    callable.
+    callable. The resolver itself is shared with marketplace publisher
+    verification (services/domain_verification.py).
     """
-    try:
-        import dns.asyncresolver
-    except ImportError:  # pragma: no cover - dnspython is a declared dep
-        logger.warning(
-            "dnspython not installed — DNS TXT resolution unavailable for %s",
-            domain,
-        )
-        return []
-
-    try:
-        answers = await dns.asyncresolver.resolve(domain, "TXT")
-    except Exception as exc:
-        # NXDOMAIN / NoAnswer / Timeout / etc. → fail closed (not verified).
-        logger.info("DNS TXT resolution failed for %s: %s", domain, exc)
-        return []
-
-    records: list[str] = []
-    for rdata in answers:
-        # A TXT rdata is a sequence of byte chunks; concatenate + decode.
-        try:
-            records.append(
-                "".join(chunk.decode("utf-8", "ignore") for chunk in rdata.strings)
-            )
-        except Exception:  # pragma: no cover - defensive
-            continue
-    return records
+    return await domain_verification.resolve_txt(domain)
 
 
 # ---------------------------------------------------------------------------
@@ -236,12 +213,10 @@ class CreateDomainRequest(BaseModel):
     @field_validator("domain")
     @classmethod
     def _normalize_domain(cls, v: str) -> str:
-        v = v.strip().lower()
-        if not v or len(v) > 255:
-            raise ValueError("domain must be 1–255 characters")
-        if "@" in v:
-            raise ValueError("domain must not contain '@' — provide just the domain part")
-        return v
+        # The shared strict canonical form (no trailing dot, lowercase, valid
+        # hostname): SSO and publisher verification must spell a domain the
+        # same way for uniqueness, locks and cross-checks to hold.
+        return domain_verification.canonical_domain(v)
 
 
 class DomainResponse(BaseModel):
@@ -339,6 +314,39 @@ async def _require_oidc_sso(db: AsyncSession, org_id: str, user: User) -> None:
                 "message": "OIDC SSO requires a paid plan.",
             },
         )
+
+
+async def _lock_org_for_domain_change(db: AsyncSession, org_id: str) -> None:
+    """Serialize domain changes on the org row with FOR NO KEY UPDATE: it
+    still conflicts with other FOR (NO KEY) UPDATE lockers (domain auto-join,
+    other domain changes), but not with the KEY SHARE locks that inserts
+    referencing the org take (audit rows from marketplace publisher
+    tombstoning, membership rows), which a plain FOR UPDATE would wait on
+    and could deadlock with."""
+    await db.execute(
+        select(Organization.id).where(Organization.id == org_id).with_for_update(key_share=True)
+    )
+
+
+async def _fence_domain_admin(db: AsyncSession, org_id: str, user: User) -> str:
+    """Re-authorize inside the mutation transaction (after any DNS wait):
+    lock the caller's membership row FOR SHARE (a removal or demotion
+    either committed first and is seen, or waits for this commit), then
+    re-check owner/admin and the oidc_sso entitlement."""
+    role = (
+        await db.execute(
+            select(OrgMember.role)
+            .where(OrgMember.org_id == org_id, OrgMember.user_id == user.id)
+            .with_for_update(read=True)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if role is None:
+        raise HTTPException(404, "Org not found")
+    if role not in ("admin", "owner"):
+        raise HTTPException(403, "Admin or owner role required")
+    await _require_oidc_sso(db, org_id, user)
+    return role
 
 
 async def _emit_audit(
@@ -879,13 +887,18 @@ async def verify_domain(
     # Resolve TXT records before taking any lock (DNS can be slow).
     txt_records = await _resolve_txt(dv.domain)
 
+    # The domain-keyed advisory lock comes first: it serializes this
+    # promotion with marketplace publisher DNS verification of the same
+    # domain (services/publishers.py lock order: domain -> rows).
+    from sessionfs.server.services import publishers as publisher_service
+
+    await publisher_service.lock_domain(db, dv.domain)
     # Lock in the same org -> domain order as domain deletion and domain
     # auto-join, then re-read the row: it may have been deleted or changed
     # while DNS resolved, and taking the row first would deadlock against a
     # concurrent delete holding the org.
-    await db.execute(
-        select(Organization.id).where(Organization.id == org_id).with_for_update()
-    )
+    await _lock_org_for_domain_change(db, org_id)
+    await _fence_domain_admin(db, org_id, user)
     dv = (
         await db.execute(
             select(OrgDomainVerification)
@@ -903,6 +916,11 @@ async def verify_domain(
         raise HTTPException(409, "Domain is already verified")
     expected = f"{_DOMAIN_VERIFICATION_PREFIX}{dv.verification_token}"
     found = any(expected in r for r in txt_records)
+    if found and await publisher_service.domain_verified_by_other_publisher(db, dv.domain, org_id):
+        raise HTTPException(
+            409,
+            f"Domain '{dv.domain}' is verified by a marketplace publisher of another owner.",
+        )
 
     now = _now()
     dv.last_checked_at = now
@@ -1018,9 +1036,8 @@ async def delete_domain(
     # Lock the org before the domain row: domain auto-join locks org then
     # domain, so taking them in the same order serializes the two instead of
     # deadlocking (the audit insert below needs a key-share lock on the org).
-    await db.execute(
-        select(Organization.id).where(Organization.id == org_id).with_for_update()
-    )
+    await _lock_org_for_domain_change(db, org_id)
+    await _fence_domain_admin(db, org_id, user)
 
     dv = (
         await db.execute(

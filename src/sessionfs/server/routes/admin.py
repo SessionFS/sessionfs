@@ -29,7 +29,9 @@ from sessionfs.server.db.models import (
     User,
 )
 from sessionfs.server.services.auto_join import maybe_auto_join
-from sessionfs.server.services.entitlements import apply_entitlement
+from sessionfs.server.roles import OrgRole
+from sessionfs.server.services.entitlements import apply_entitlement, lock_billing_owner
+from sessionfs.server.services.publishers import advisory_xact_lock
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 
@@ -183,8 +185,9 @@ async def change_user_tier(
     if user_id == admin.id and new_tier != "admin":
         raise HTTPException(status_code=400, detail="Cannot demote your own admin account")
 
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
+    # Billing lock order shared with the Stripe webhooks (Stripe customer ->
+    # user row -> entitlement): see services/entitlements.lock_billing_owner.
+    user = await lock_billing_owner(db, "user", user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
 
@@ -343,6 +346,23 @@ async def mint_api_key_on_behalf(
     )
 
 
+async def _lock_offboarding_memberships(db: AsyncSession, user_id: str) -> None:
+    """Lock every org_members row of a user being deactivated, FOR UPDATE in
+    stable org_id order, BEFORE the user row is written.
+
+    The marketplace publisher fences (claims, org/trusted publishes, SSO
+    domain changes) hold a membership row FOR SHARE and then wait for the
+    user row — membership before user. Taking the same order here means
+    offboarding waits for an in-flight fence (or vice versa) instead of
+    deadlocking with it."""
+    await db.execute(
+        select(OrgMember.id)
+        .where(OrgMember.user_id == user_id)
+        .order_by(OrgMember.org_id)
+        .with_for_update()
+    )
+
+
 @router.delete("/users/{user_id}", status_code=204)
 async def delete_user(
     user_id: str,
@@ -364,6 +384,42 @@ async def delete_user(
     if user.id == admin.id:
         raise HTTPException(status_code=400, detail="Cannot delete your own account")
 
+    # Serialize offboarding transactions against each other: two concurrent
+    # deletions of users whose successor memberships interleave (each locks
+    # the other's member row while scanning successors) can deadlock. A
+    # transaction-scoped advisory lock makes offboarding single-threaded per
+    # database so the successor scan below cannot interleave with another.
+    # Only offboarding takes it, and it is taken before any scope lock.
+    await advisory_xact_lock(db, "offboarding", "global")
+
+    # GH #70 — membership changes follow the scope-lock protocol (user lock,
+    # then the org locks of every org the user belongs to), before any row
+    # lock or mutation; state is re-read under the locks.
+    from sessionfs.server.services.scope_locks import lock_scopes
+
+    # 1. The USER scope lock: every membership add/remove for this user
+    #    takes it, so after this no membership of theirs can appear or
+    #    disappear until we commit.
+    await lock_scopes(db, user_ids=[user_id])
+    # 2. Snapshot the full org set ONCE (stable under the user lock) and
+    #    take all those org locks in one sorted call — never one at a time.
+    member_orgs = (
+        await db.execute(
+            select(OrgMember.org_id).where(OrgMember.user_id == user_id)
+        )
+    ).scalars().all()
+    await lock_scopes(db, org_ids=member_orgs)
+
+    # 3. Row locks (after every scope lock). Shared with the marketplace
+    #    publishers: every affected org_members row is locked FOR UPDATE, in
+    #    stable org_id order, BEFORE the user row is written. Marketplace
+    #    claim/publish fences hold a membership row FOR SHARE and then wait
+    #    for the user row; writing the user row first here (is_active) and
+    #    locking the memberships after (the delete below) would invert that
+    #    order and deadlock PostgreSQL.
+    await _lock_offboarding_memberships(db, user_id)
+    await db.refresh(user)
+
     # P4: deactivation-time last-owner check (Sentinel MEDIUM-4).
     # Runs BEFORE is_active=False in the same transaction.
     owner_orgs = (
@@ -383,6 +439,12 @@ async def delete_user(
         # change can't demote it between selection and promotion (Sentinel
         # L1 — consistent with the accept/force-transfer paths; the one-owner
         # index is the structural backstop).
+        #
+        # The literal role == "admin" is deliberate: the only owner of this
+        # org is the user being deactivated (uq_org_members_one_owner_per_org,
+        # and they are excluded below), so widening to admin-level roles
+        # could never match another owner. The successor must be an admin
+        # because it is promoted to owner — promoting an owner is meaningless.
         successor = (
             await db.execute(
                 select(OrgMember)
@@ -572,7 +634,7 @@ async def admin_create_org(
     Required body fields:
       - name: human-readable org name
       - slug: unique URL slug
-      - owner_user_id: user ID that becomes the org admin
+      - owner_user_id: active user ID that becomes the org owner
     Optional:
       - tier: one of free/starter/pro/team/enterprise (default: enterprise)
       - seats_limit: int (default: 100)
@@ -596,13 +658,6 @@ async def admin_create_org(
     if not owner_user_id:
         raise HTTPException(400, "owner_user_id is required")
 
-    # Verify owner exists
-    owner = (
-        await db.execute(select(User).where(User.id == owner_user_id))
-    ).scalar_one_or_none()
-    if owner is None:
-        raise HTTPException(404, f"User {owner_user_id} not found")
-
     # Slug uniqueness
     existing = (
         await db.execute(select(Organization).where(Organization.slug == slug))
@@ -610,10 +665,37 @@ async def admin_create_org(
     if existing is not None:
         raise HTTPException(409, f"Organization slug '{slug}' is already taken")
 
+    # GH #70 — membership add/remove: the user's scope lock (then the
+    # org's), before any row lock, so it serializes with user delete,
+    # member removal and other joins (scope_locks.py global order).
+    from sessionfs.server.services.scope_locks import lock_scopes
+
+    await lock_scopes(db, user_ids=[owner_user_id], org_ids=[])
+
+    # The owner row below is re-read under the scope lock (populate_existing),
+    # so a deactivation committed while we waited is seen (404 / 422).
+
     # Lock the user row first (the user -> org order shared with invite
     # acceptance and domain auto-join) so a concurrent membership insert for
     # this user elsewhere can't slip in between the check and the insert.
-    await db.execute(select(User).where(User.id == owner_user_id).with_for_update())
+    # The owner is read only here, locked, with populate_existing so a User
+    # already in the identity map is refreshed from the locked row: a
+    # deactivation committed earlier must not produce an org whose only
+    # owner is an inactive account.
+    locked_owner = (
+        await db.execute(
+            select(User)
+            .where(User.id == owner_user_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if locked_owner is None:
+        raise HTTPException(404, f"User {owner_user_id} not found")
+    if not locked_owner.is_active:
+        raise HTTPException(
+            422, f"User {owner_user_id} is inactive and cannot own an organization"
+        )
 
     # Owner can't already be in an org
     existing_member = (
@@ -641,7 +723,9 @@ async def admin_create_org(
     # organizations, triggering ForeignKeyViolationError on Postgres.
     await db.flush()
 
-    member = OrgMember(org_id=org_id, user_id=owner_user_id, role="admin")
+    # The named owner_user_id becomes the org's single owner (not admin) —
+    # every org has exactly one owner (tk_d311dcf71be74a97).
+    member = OrgMember(org_id=org_id, user_id=owner_user_id, role=OrgRole.OWNER.value)
     db.add(member)
 
     # P2: write-through — create entitlement for the admin-provisioned org.
@@ -760,9 +844,9 @@ async def admin_change_org_tier(
       - seats_limit: int
       - storage_limit_bytes: int (0 = unlimited)
     """
-    org = (
-        await db.execute(select(Organization).where(Organization.id == org_id))
-    ).scalar_one_or_none()
+    # Billing lock order shared with the Stripe webhooks (Stripe customer ->
+    # org row -> entitlement): see services/entitlements.lock_billing_owner.
+    org = await lock_billing_owner(db, "org", org_id)
     if org is None:
         raise HTTPException(404, "Organization not found")
 
@@ -831,6 +915,12 @@ async def force_transfer_owner(
     ).scalar_one_or_none()
     if org is None:
         raise HTTPException(404, "Org not found")
+
+    # GH #70 — org scope lock before any membership read, row lock or
+    # mutation; every check below re-reads state under it.
+    from sessionfs.server.services.scope_locks import lock_scopes
+
+    await lock_scopes(db, org_ids=[org_id])
 
     # Target must be an existing org member.
     target_member = (
@@ -1289,6 +1379,159 @@ async def purge_activation_attempts(
     await db.commit()
 
     return {"purged": purged, "expired_flipped": flipped.rowcount or 0}
+
+
+# Default retention window for accepted GitHub webhook delivery ids.
+_GITHUB_WEBHOOK_DELIVERY_RETENTION_DAYS = 30  # stored payloads
+_GITHUB_WEBHOOK_TOMBSTONE_RETENTION_DAYS = 400  # replay fingerprints
+
+
+@router.post("/github-webhook-deliveries/sweep")
+@router.post("/github-webhook-deliveries/purge")
+async def sweep_github_webhook_deliveries(
+    body: dict | None = None,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Process and purge GitHub webhook deliveries; reap dead claim attempts.
+
+    0. Retry due deliveries (failed with backoff elapsed, or stale
+       processing) from their stored payloads, up to body {"retry_limit": N}
+       (default 50). The server has no scheduler; webhook deliveries also
+       retry a couple opportunistically.
+    0b. Republish created PR comments that are behind their newest desired
+       version and have no live publishing lease (same limit).
+    1. Delete github_webhook_deliveries older than the retention window
+       (default 30 days; override with body {"retention_days": N}); stored
+       payloads go with them.
+    2. Delete github_claim_attempts that are expired or consumed (their
+       state/nonce/verifier hashes and any parked chooser go with them);
+       'processing' attempts survive a 10-minute grace so an in-flight
+       callback never loses its row mid-flight.
+    """
+    from sessionfs.server.db.models import GitHubClaimAttempt
+    from sessionfs.server.routes.webhooks import (
+        prune_deliveries,
+        republish_dirty_comments,
+        retry_due_deliveries,
+    )
+
+    retry_limit = 50
+    if body and isinstance(body.get("retry_limit"), int) and not isinstance(
+        body.get("retry_limit"), bool
+    ):
+        retry_limit = max(0, min(500, body["retry_limit"]))
+    # End the request session's transaction (opened by authentication)
+    # before any GitHub work: retries and republishing use their own short
+    # sessions, and pruning + audit below run in a fresh short transaction.
+    admin_id = admin.id
+    await db.rollback()
+    retry_stats = await retry_due_deliveries(retry_limit)
+    comment_stats = await republish_dirty_comments(retry_limit)
+
+    now = datetime.now(timezone.utc)
+    retention_days = _GITHUB_WEBHOOK_DELIVERY_RETENTION_DAYS
+    if body and isinstance(body.get("retention_days"), int) and not isinstance(
+        body.get("retention_days"), bool
+    ):
+        retention_days = max(0, body["retention_days"])
+    # Tombstones (replay fingerprints) are kept far longer than payloads and
+    # can never be configured below the payload window.
+    tombstone_days = _GITHUB_WEBHOOK_TOMBSTONE_RETENTION_DAYS
+    if body and isinstance(body.get("tombstone_retention_days"), int) and not isinstance(
+        body.get("tombstone_retention_days"), bool
+    ):
+        tombstone_days = body["tombstone_retention_days"]
+    # Always: a tombstone never expires before the payload it guards.
+    tombstone_days = max(tombstone_days, retention_days)
+
+    payloads_purged, tombstones_purged = await prune_deliveries(
+        db,
+        now=now,
+        payload_retention=timedelta(days=retention_days),
+        tombstone_retention=timedelta(days=tombstone_days),
+    )
+    # 'processing' attempts (consumed, callback still working) survive
+    # until their grace has passed — mirrors _create_attempt housekeeping
+    # in routes/settings.py.
+    from sessionfs.server.routes.settings import (
+        GITHUB_CLAIM_PROCESSING_GRACE_MINUTES,
+    )
+
+    processing_grace = now - timedelta(minutes=GITHUB_CLAIM_PROCESSING_GRACE_MINUTES)
+    attempts = await db.execute(
+        delete(GitHubClaimAttempt)
+        .where(
+            # A 'processing' attempt is single-use work in flight: its
+            # expiry alone must not delete it while it is inside its
+            # grace (the callback may still be finishing).
+            (
+                (GitHubClaimAttempt.status != "processing")
+                & (GitHubClaimAttempt.expires_at < now)
+            )
+            | (GitHubClaimAttempt.status == "consumed")
+            | (
+                (GitHubClaimAttempt.status == "processing")
+                & (
+                    func.coalesce(
+                        GitHubClaimAttempt.consumed_at,
+                        GitHubClaimAttempt.created_at,
+                    ) < processing_grace
+                )
+            )
+        )
+        .execution_options(synchronize_session=False)
+    )
+    result = {
+        "payloads_purged": payloads_purged,
+        "deliveries_purged": tombstones_purged,
+        "claim_attempts_purged": attempts.rowcount or 0,
+        "deliveries_retried": retry_stats["retried"],
+        "retries_succeeded": retry_stats["succeeded"],
+        "retries_failed": retry_stats["failed"],
+        **comment_stats,
+    }
+    await _log_action(
+        db,
+        admin_id,
+        "purge_github_webhook_deliveries",
+        "gh_webhook_delivery",  # admin_actions.target_type is VARCHAR(20)
+        "bulk",
+        {**result, "retention_days": retention_days, "tombstone_retention_days": tombstone_days},
+    )
+    await db.commit()
+    return result
+
+
+@router.post("/github-webhook-deliveries/{fingerprint}/retry")
+async def force_retry_github_webhook_delivery(
+    fingerprint: str,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin override: retry one delivery now, even past its attempt limit
+    or backoff (a plain GitHub redelivery cannot bypass either)."""
+    import re as _re
+
+    from sessionfs.server.routes.webhooks import force_retry_delivery
+
+    if not _re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+        raise HTTPException(400, "Invalid delivery fingerprint")
+    admin_id = admin.id
+    await db.rollback()  # no request transaction across the retry's GitHub work
+    outcome = await force_retry_delivery(fingerprint)
+    await _log_action(
+        db,
+        admin_id,
+        "force_retry_github_webhook_delivery",
+        "gh_webhook_delivery",
+        fingerprint[:64],
+        {"outcome": outcome},
+    )
+    await db.commit()
+    if outcome == "not_found":
+        raise HTTPException(404, "Delivery not found")
+    return {"fingerprint": fingerprint, "outcome": outcome}
 
 
 # Default retention window for terminal/expired OIDC SSO login attempts.

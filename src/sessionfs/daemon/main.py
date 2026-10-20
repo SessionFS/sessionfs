@@ -96,10 +96,13 @@ class DaemonSyncer:
     def _get_client(self):
         """Lazily create the sync client."""
         if self._sync_client is None:
-            from sessionfs.sync.client import SyncClient
+            from sessionfs.sync.client import SyncClient, resolve_transfer_timeout
             self._sync_client = SyncClient(
                 api_url=self.config.sync.api_url,
                 api_key=self.config.sync.api_key,
+                transfer_timeout=resolve_transfer_timeout(
+                    configured=self.config.sync.upload_timeout
+                ),
             )
         return self._sync_client
 
@@ -749,6 +752,9 @@ class Daemon:
         self._status_path = config.store_dir / "daemon.json"
         self._pid_path = config.store_dir / "sfsd.pid"
         self._syncer = DaemonSyncer(config, self.store)
+        from sessionfs.daemon.skill_reconcile import SkillReconciler
+
+        self._skill_reconciler = SkillReconciler()
         self._reload_requested = False
         self._last_prune_check = 0.0
         self._capture_paused = False
@@ -821,6 +827,15 @@ class Daemon:
             new_config = load_config(profile_config_path(self._pinned_profile))
             self.config.sync = new_config.sync
             self._syncer.config = self.config
+            client = getattr(self._syncer, "_sync_client", None)
+            if client is not None:
+                # The cached client outlives a reload; apply a changed
+                # [sync] upload_timeout to it (SFS_UPLOAD_TIMEOUT still wins).
+                from sessionfs.sync.client import resolve_transfer_timeout
+
+                client.transfer_timeout = resolve_transfer_timeout(
+                    configured=new_config.sync.upload_timeout
+                )
             self._syncer._observe_mode()
             logger.info("Config reloaded (sync.enabled=%s)", self.config.sync.enabled)
         except Exception:
@@ -899,6 +914,15 @@ class Daemon:
                 scan_interval=self.config.scan_interval_s,
             )
             self.watchers.append(kilo_watcher)
+
+        if self.config.antigravity.enabled:
+            from sessionfs.watchers.antigravity import AntigravityWatcher
+            antigravity_watcher = AntigravityWatcher(
+                config=self.config.antigravity,
+                store=self.store,
+                scan_interval=self.config.scan_interval_s,
+            )
+            self.watchers.append(antigravity_watcher)
 
         if self.config.amp.enabled:
             from sessionfs.watchers.amp import AmpWatcher
@@ -1106,12 +1130,25 @@ class Daemon:
                     # Sync any pending sessions
                     self._syncer.maybe_sync()
 
+                    # Hosted skills: revocations + required org assignments
+                    # (own cadence + failure backoff; never prompts).
+                    self._skill_reconciler.maybe_run(
+                        enabled=self._syncer.is_enabled,
+                        api_url=self.config.sync.api_url,
+                        api_key=self.config.sync.api_key,
+                    )
+
                     self._update_status()
                 except Exception as exc:
                     logger.error("Error in daemon loop (continuing): %s", exc)
                 time.sleep(1.0)
         finally:
             logger.info("sfsd shutting down...")
+            # Ask a running skill reconcile to stop between steps.
+            try:
+                self._skill_reconciler.stop(timeout=5.0)
+            except Exception:  # never block shutdown on it
+                pass
             for watcher in self.watchers:
                 watcher.stop_watching()
             self.store.close()

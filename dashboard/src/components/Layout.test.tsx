@@ -5,7 +5,8 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import Layout from './Layout';
 
 // ── Mutable mocks (hoisted so vi.mock can reference them) ──
-const { mockLogout, useMeMock } = vi.hoisted(() => ({
+const { mockLogout, useMeMock, useMyOrgsMock } = vi.hoisted(() => ({
+  useMyOrgsMock: vi.fn(() => ({ data: [] as { org_id: string; name: string; role: string }[], isLoading: false })),
   mockLogout: vi.fn(),
   useMeMock: vi.fn(),
 }));
@@ -33,6 +34,7 @@ vi.mock('../hooks/useMe', () => ({
 // suite stays focused on the layout shell.
 vi.mock('../transfers/useTransfers', () => ({
   useTransfers: () => ({ data: { transfers: [] }, isLoading: false, error: null }),
+  useMyOrgs: () => useMyOrgsMock(),
 }));
 
 // v0.10.22 — Invites nav link reads from useMyInvites; stub here so the
@@ -240,6 +242,25 @@ describe('Layout', () => {
       // The uppercase group label appears in the sidebar (text-micro, uppercase)
       const labels = screen.getAllByText('Organization');
       expect(labels.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('shows Moderation to platform admins and org owners/admins only', () => {
+      // Default mock: platform admin.
+      const first = renderLayout();
+      expect(screen.getAllByRole('link', { name: /Moderation/ })[0]).toHaveAttribute('href', '/marketplace/moderation');
+      first.unmount();
+
+      // Owner of a non-primary org counts as an admin.
+      useMeMock.mockReturnValue({ data: { tier: 'pro', email: 'o@x.dev', org_id: 'org_1', org_role: 'member' } });
+      useMyOrgsMock.mockReturnValue({ data: [{ org_id: 'org_2', name: 'Two', role: 'owner' }], isLoading: false });
+      const second = renderLayout();
+      expect(screen.getAllByRole('link', { name: /Moderation/ }).length).toBeGreaterThan(0);
+      second.unmount();
+
+      useMyOrgsMock.mockReturnValue({ data: [{ org_id: 'org_1', name: 'One', role: 'member' }], isLoading: false });
+      renderLayout();
+      expect(screen.queryAllByRole('link', { name: /Moderation/ })).toHaveLength(0);
+      useMyOrgsMock.mockReturnValue({ data: [], isLoading: false });
     });
 
     it('hides org-only Organization nav link for solo users', () => {

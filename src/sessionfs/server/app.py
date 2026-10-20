@@ -13,7 +13,7 @@ from sessionfs.server.config import ServerConfig
 from sessionfs.server.db.engine import close_engine, init_engine
 from sessionfs.server.errors import register_exception_handlers
 from sessionfs.server.middleware import RequestLoggingMiddleware
-from sessionfs.server.routes import activation, admin, admin_licenses, agent_feedback, agent_runs, api_keys, audit, auth, auth_sso, billing, bookmarks, dlp, handoffs, health, helm, knowledge, marketplace, org, org_members, personas, project_transfers, projects, residents, retrieval_audit, rules, sessions, settings, sso_admin, summaries, sync, teams, telemetry, tickets, trusted_reviewers, webhooks, wiki, work_queues
+from sessionfs.server.routes import activation, admin, admin_licenses, agent_feedback, agent_runs, api_keys, audit, auth, auth_sso, billing, bookmarks, dlp, handoffs, health, helm, knowledge, marketplace, marketplace_disclosure, marketplace_moderation, marketplace_publishers, marketplace_scanning, org, org_members, personas, project_transfers, projects, residents, retrieval_audit, rules, sessions, settings, sso_admin, summaries, sync, teams, telemetry, tickets, trusted_reviewers, webhooks, wiki, work_queues
 from sessionfs.server.storage.local import LocalBlobStore
 
 
@@ -33,6 +33,13 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
         config = ServerConfig()
 
     _configure_logging()
+
+    # Marketplace trusted publishing: resolve environment + OIDC audience ONCE
+    # (refusing to start outside development on a generic audience, whatever
+    # its source); the routes use exactly this value.
+    from sessionfs.server.services.github_oidc import resolve_trusted_publishing
+
+    trusted_publishing = resolve_trusted_publishing(config)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -93,6 +100,7 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
         version=__version__,
         lifespan=lifespan,
     )
+    app.state.trusted_publishing = trusted_publishing
 
     # M4: CORS — only add middleware when explicitly configured (default is empty)
     if config.cors_origins:
@@ -153,6 +161,8 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     # matched before projects' catch-all `/{git_remote_normalized:path}`
     # route (v0.10.1 Phase 2 — same precedence trick as rules/transfers).
     app.include_router(personas.router)
+    # GH #70 — org-level personas under /api/v1/orgs/{org_id}/personas.
+    app.include_router(personas.org_router)
     # Tickets same precedence (v0.10.1 Phase 3): `/tickets` subpath
     # under projects must beat the catch-all.
     app.include_router(tickets.router)
@@ -166,6 +176,10 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     app.include_router(work_queues.router)
     # Marketplace has project subpaths and must precede the project catch-all.
     app.include_router(marketplace.router)
+    app.include_router(marketplace_moderation.router)
+    app.include_router(marketplace_scanning.router)
+    app.include_router(marketplace_disclosure.router)
+    app.include_router(marketplace_publishers.router)
     app.include_router(projects.router)
     app.include_router(summaries.router)
     app.include_router(summaries.batch_router)

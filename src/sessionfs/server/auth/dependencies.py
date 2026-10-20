@@ -390,6 +390,9 @@ async def get_current_user(
         raise HTTPException(
             status_code=403,
             detail={
+                # `code` becomes the envelope's error.code; `error` stays in
+                # error.details for clients that matched on the older shape.
+                "code": "service_key_not_allowed",
                 "error": "service_key_not_allowed",
                 "message": (
                     "Service keys must call routes that opt in via "

@@ -327,3 +327,229 @@ async def test_retry_exhausted():
     with pytest.raises(SyncError, match="failed after"):
         await client.health_check()
     await client.close()
+
+
+# ---------------------------------------------------------------------------
+# Transfer timeout (GitHub #68)
+# ---------------------------------------------------------------------------
+
+
+from sessionfs.sync.client import (  # noqa: E402
+    DEFAULT_TRANSFER_TIMEOUT,
+    SyncTimeoutError,
+    resolve_transfer_timeout,
+)
+
+
+def test_transfer_timeout_default(monkeypatch):
+    monkeypatch.delenv("SFS_UPLOAD_TIMEOUT", raising=False)
+    assert resolve_transfer_timeout() == DEFAULT_TRANSFER_TIMEOUT == 300.0
+
+
+def test_transfer_timeout_precedence(monkeypatch):
+    monkeypatch.setenv("SFS_UPLOAD_TIMEOUT", "120")
+    assert resolve_transfer_timeout(explicit=45, configured=600) == 45
+    assert resolve_transfer_timeout(configured=600) == 120
+    monkeypatch.delenv("SFS_UPLOAD_TIMEOUT")
+    assert resolve_transfer_timeout(configured=600) == 600
+
+
+@pytest.mark.parametrize("bad", ["abc", "0", "-5", "nan", "inf", "99999"])
+def test_transfer_timeout_bad_env_falls_back(monkeypatch, bad):
+    monkeypatch.setenv("SFS_UPLOAD_TIMEOUT", bad)
+    assert resolve_transfer_timeout(configured=90) == 90
+    assert resolve_transfer_timeout() == DEFAULT_TRANSFER_TIMEOUT
+
+
+@pytest.mark.parametrize("bad", [0, -1, 5000, True])
+def test_transfer_timeout_bad_explicit_raises(bad):
+    with pytest.raises(ValueError):
+        resolve_transfer_timeout(explicit=bad)
+
+
+def test_client_honours_env_timeout(monkeypatch):
+    monkeypatch.setenv("SFS_UPLOAD_TIMEOUT", "150")
+    assert SyncClient("http://localhost:8000", "k").transfer_timeout == 150
+    assert SyncClient(
+        "http://localhost:8000", "k", transfer_timeout=20
+    ).transfer_timeout == 20
+
+
+@pytest.mark.asyncio
+async def test_push_uses_transfer_timeout_not_metadata_timeout():
+    seen = {}
+
+    def handler(request: httpx.Request):
+        seen.update(request.extensions["timeout"])
+        return httpx.Response(201, json={
+            "session_id": "ses_abc123", "etag": "e",
+            "blob_size_bytes": 1, "synced_at": "2024-01-01T00:00:00Z",
+        })
+
+    client = SyncClient("http://localhost:8000", "k", transfer_timeout=240)
+    client._client = httpx.AsyncClient(transport=MockTransport(handler))
+    await client.push_session("ses_abc123", _make_tar_bytes())
+    await client.close()
+    assert seen["read"] == 240 and seen["write"] == 240
+    assert seen["connect"] == 10.0
+
+
+@pytest.mark.asyncio
+async def test_push_read_timeout_is_not_retried_and_explains_fix():
+    calls = 0
+
+    def handler(request: httpx.Request):
+        nonlocal calls
+        calls += 1
+        raise httpx.ReadTimeout("", request=request)
+
+    archive = _make_tar_bytes()
+    client = SyncClient("http://localhost:8000", "k", transfer_timeout=42)
+    client._client = httpx.AsyncClient(transport=MockTransport(handler))
+    with pytest.raises(SyncTimeoutError) as info:
+        await client.push_session("ses_abc123", archive)
+    await client.close()
+
+    assert calls == 1
+    assert info.value.timeout_s == 42
+    msg = str(info.value)
+    assert "42s" in msg and f"{len(archive):,} bytes" in msg
+    assert "--timeout" in msg and "SFS_UPLOAD_TIMEOUT" in msg
+
+
+@pytest.mark.asyncio
+async def test_pull_read_timeout_still_retried(monkeypatch):
+    import asyncio as _asyncio
+
+    async def _no_sleep(_s):
+        return None
+
+    monkeypatch.setattr(_asyncio, "sleep", _no_sleep)
+    calls = 0
+
+    def handler(request: httpx.Request):
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise httpx.ReadTimeout("", request=request)
+        return httpx.Response(200, content=b"x", headers={"etag": '"e"'})
+
+    client = SyncClient("http://localhost:8000", "k")
+    client._client = httpx.AsyncClient(transport=MockTransport(handler))
+    result = await client.pull_session("ses_abc123")
+    await client.close()
+    assert calls == 3 and result.data == b"x"
+
+
+@pytest.mark.asyncio
+async def test_exhausted_retries_never_report_a_blank_error(monkeypatch):
+    import asyncio as _asyncio
+
+    async def _no_sleep(_s):
+        return None
+
+    monkeypatch.setattr(_asyncio, "sleep", _no_sleep)
+
+    def handler(request: httpx.Request):
+        raise httpx.ConnectTimeout("", request=request)
+
+    client = SyncClient("http://localhost:8000", "k")
+    client._client = httpx.AsyncClient(transport=MockTransport(handler))
+    with pytest.raises(SyncError) as info:
+        await client.health_check()
+    await client.close()
+    assert str(info.value).endswith("ConnectTimeout")
+
+
+def test_sync_config_bad_upload_timeout_does_not_break_config():
+    from sessionfs.daemon.config import SyncConfig
+
+    assert SyncConfig().upload_timeout == 300.0
+    assert SyncConfig(upload_timeout=600).upload_timeout == 600
+    assert SyncConfig(upload_timeout="soon").upload_timeout is None
+    assert SyncConfig(upload_timeout=-3).upload_timeout is None
+    assert resolve_transfer_timeout(configured=None) == DEFAULT_TRANSFER_TIMEOUT
+
+
+def test_cli_sync_client_timeout_precedence(monkeypatch):
+    from sessionfs.cli import cmd_cloud
+    from sessionfs.daemon.config import DaemonConfig, SyncConfig
+
+    monkeypatch.delenv("SFS_UPLOAD_TIMEOUT", raising=False)
+    monkeypatch.setattr(
+        cmd_cloud, "_load_sync_config",
+        lambda: {"api_url": "http://localhost:8000", "api_key": "k", "enabled": True},
+    )
+    monkeypatch.setattr(
+        "sessionfs.daemon.config.load_config",
+        lambda *a, **k: DaemonConfig(sync=SyncConfig(upload_timeout=600)),
+    )
+    assert cmd_cloud._get_sync_client().transfer_timeout == 600
+    assert cmd_cloud._get_sync_client(timeout=45).transfer_timeout == 45
+
+
+def test_push_help_lists_timeout_flag():
+    from typer.testing import CliRunner
+
+    from sessionfs.cli.main import app
+
+    result = CliRunner().invoke(app, ["push", "--help"])
+    assert result.exit_code == 0
+    assert "--timeout" in result.output
+
+
+@pytest.mark.asyncio
+async def test_push_gateway_504_is_not_resent():
+    calls = 0
+
+    def handler(request: httpx.Request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(504, text="Gateway Time-out")
+
+    client = SyncClient("http://localhost:8000", "k")
+    client._client = httpx.AsyncClient(transport=MockTransport(handler))
+    with pytest.raises(SyncTimeoutError) as info:
+        await client.push_session("ses_abc123", _make_tar_bytes())
+    await client.close()
+    assert calls == 1
+    assert info.value.gateway is True
+    assert "504" in str(info.value) and "apiProxyTimeout" in str(info.value)
+
+
+def test_transfer_timeout_huge_number_does_not_break_config():
+    from sessionfs.daemon.config import SyncConfig
+
+    assert SyncConfig(upload_timeout=10**400).upload_timeout is None
+
+
+def test_push_rejects_nan_timeout():
+    from typer.testing import CliRunner
+
+    from sessionfs.cli.main import app
+
+    result = CliRunner().invoke(app, ["push", "ses_x", "--timeout", "nan"])
+    assert result.exit_code == 2
+    assert "Unexpected error" not in result.output
+
+
+@pytest.mark.asyncio
+async def test_push_write_timeout_is_not_resent():
+    calls = 0
+
+    def handler(request: httpx.Request):
+        nonlocal calls
+        calls += 1
+        raise httpx.WriteTimeout("", request=request)
+
+    client = SyncClient("http://localhost:8000", "k", transfer_timeout=30)
+    client._client = httpx.AsyncClient(transport=MockTransport(handler))
+    with pytest.raises(SyncTimeoutError) as info:
+        await client.push_session("ses_abc123", _make_tar_bytes())
+    await client.close()
+    assert calls == 1 and "did not finish within 30s" in str(info.value)
+
+
+def test_transfer_timeout_below_one_second_is_ignored(monkeypatch):
+    monkeypatch.setenv("SFS_UPLOAD_TIMEOUT", "0.5")
+    assert resolve_transfer_timeout() == DEFAULT_TRANSFER_TIMEOUT

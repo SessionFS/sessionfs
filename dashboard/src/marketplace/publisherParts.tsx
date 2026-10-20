@@ -1,0 +1,99 @@
+import type { MarketplacePackage } from '../api/client';
+import type { GithubOidcProvenance } from '../api/publisherTypes';
+import { Badge } from '../components/Badge';
+
+const REPO_RE = /^github\.com\/[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/;
+const SHA_RE = /^[0-9a-f]{40}$/;
+const DIGITS_RE = /^[0-9]{1,20}$/;
+
+/**
+ * Publisher identity for a listing. The badge text is the verification
+ * method and subject the server derived from a live verification row
+ * ("verified: acme.com", "verified: github.com/acme (org #123)"); a display
+ * name never earns a badge on its own.
+ */
+export function PublisherBadge({ item, compact = false }: { item: MarketplacePackage; compact?: boolean }) {
+  const publisher = item.publisher;
+  if (!publisher) return null;
+  if (publisher.status !== 'active') {
+    return <Badge label={`publisher ${publisher.status}`} variant="danger" tint={compact} />;
+  }
+  if (!publisher.verified || publisher.badges.length === 0) {
+    return compact ? null : <Badge label="unverified publisher" variant="default" />;
+  }
+  const label = compact ? 'verified publisher' : publisher.badges[0];
+  return (
+    <span title={publisher.badges.join('\n')} className="inline-flex">
+      <Badge label={label} variant="success" tint={compact} />
+    </span>
+  );
+}
+
+/** "pending review" / "rejected" listing state (visible to the publisher). */
+export function ListingReviewBadge({ item }: { item: MarketplacePackage }) {
+  if (item.moderation_state === 'pending_review') return <Badge label="pending review" variant="warning" tint />;
+  if (item.moderation_state === 'rejected') return <Badge label="rejected" variant="danger" tint />;
+  return null;
+}
+
+function isProvenance(value: unknown): value is GithubOidcProvenance {
+  return !!value && typeof value === 'object' && (value as { kind?: unknown }).kind === 'github_oidc';
+}
+
+/**
+ * "Published from": which GitHub Actions run published a version through
+ * trusted publishing. This is publication provenance from GitHub's verified
+ * OIDC token, NOT build provenance: nothing binds the archive to the commit.
+ * Links are constructed only from validated fields (repository shape, 40-hex
+ * SHA, numeric run id), never from a server-supplied URL.
+ */
+export function ProvenancePanel({ item }: { item: MarketplacePackage }) {
+  const signature = item.signature;
+  if (!isProvenance(signature)) {
+    return (
+      <section className="mt-4 rounded-lg border border-border bg-bg-sunken px-3 py-2" aria-labelledby="provenance-heading">
+        <h3 id="provenance-heading" className="text-2xs uppercase tracking-wider text-text-tertiary">Published from</h3>
+        <p className="mt-1 text-xs text-text-secondary">
+          Uploaded with an API key. No CI publishing run is recorded for this version.
+        </p>
+      </section>
+    );
+  }
+  const repo = signature.published_from_repo && REPO_RE.test(signature.published_from_repo) ? signature.published_from_repo : null;
+  const commit = signature.publishing_run_sha && SHA_RE.test(signature.publishing_run_sha) ? signature.publishing_run_sha : null;
+  const runId = signature.publishing_run_id && DIGITS_RE.test(signature.publishing_run_id) ? signature.publishing_run_id : null;
+  const repoUrl = repo ? `https://${repo}` : null;
+  const rows: [string, React.ReactNode][] = [
+    ['Repository', repoUrl ? <a href={repoUrl} target="_blank" rel="noopener noreferrer" className="text-brand hover:underline">{repo}</a> : 'unknown'],
+    ['Repository id', signature.published_from_repo_id ?? 'unknown'],
+    ['Run commit', repoUrl && commit
+      ? <a href={`${repoUrl}/commit/${commit}`} target="_blank" rel="noopener noreferrer" className="font-mono text-brand hover:underline">{commit.slice(0, 12)}</a>
+      : 'unknown'],
+    ['Workflow', <span className="font-mono">{signature.publishing_workflow}</span>],
+    ['Event', signature.publishing_event || 'unknown'],
+    ['Ref', <span className="font-mono">{signature.publishing_ref || 'unknown'}</span>],
+    ['Environment', signature.publishing_environment || 'none'],
+    ['Publishing run', repoUrl && runId
+      ? <a href={`${repoUrl}/actions/runs/${runId}`} target="_blank" rel="noopener noreferrer" className="text-brand hover:underline">#{runId}</a>
+      : 'unknown'],
+    ['Runner', signature.runner_environment || 'unknown'],
+  ];
+  return (
+    <section className="mt-4 rounded-lg border border-accent/30 bg-bg-sunken px-3 py-2" aria-labelledby="provenance-heading">
+      <h3 id="provenance-heading" className="text-2xs uppercase tracking-wider text-text-tertiary">Published from</h3>
+      <p className="mt-1 text-xs text-text-secondary">
+        Published by a trusted GitHub Actions workflow run; SessionFS verified GitHub&apos;s signed OIDC token for it.
+        This shows where the version was published from, not how it was built: no build attestation binds this
+        archive to the commit yet.
+      </p>
+      <dl className="mt-2 grid gap-x-4 gap-y-1 text-xs sm:grid-cols-2">
+        {rows.map(([label, value]) => (
+          <div key={label} className="flex gap-2">
+            <dt className="text-text-tertiary">{label}</dt>
+            <dd className="break-all text-text-primary">{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </section>
+  );
+}

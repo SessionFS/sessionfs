@@ -10,9 +10,11 @@ SessionFS has a GitHub App that automatically comments on PRs with AI session co
 
 ### Setup
 
-1. Install the [SessionFS GitHub App](https://github.com/apps/sessionfs-ai-context/installations/new)
-2. Select the repositories you want to monitor
+1. Dashboard → Settings → GitHub Integration → **Connect GitHub**
+2. Install the SessionFS GitHub App, select the repositories you want to monitor, and sign in to GitHub when asked. SessionFS links the installation only after GitHub confirms your GitHub account can access it (for an organization install, sign in as an organization admin).
 3. Push sessions from those repos: `sfs push ses_xxx`
+
+If the app is already installed, use **Link existing installation**. Installations linked before ownership checks existed show **Verify ownership with GitHub**; PR comments keep working, but repository verification needs the re-check.
 
 When a PR is opened on a branch that has matching sessions, SessionFS posts a comment with:
 - Session title and tool info

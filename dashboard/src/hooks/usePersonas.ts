@@ -68,3 +68,59 @@ export function useDeletePersona(projectId: string | undefined) {
     },
   });
 }
+
+/**
+ * GH #70 — org-level personas.
+ *
+ *   GET    /api/v1/orgs/{orgId}/personas
+ *   POST   /api/v1/orgs/{orgId}/personas
+ *   PUT    /api/v1/orgs/{orgId}/personas/{name}
+ *   DELETE /api/v1/orgs/{orgId}/personas/{name}[?force=true]
+ *
+ * Org persona writes also change what every project in the org resolves,
+ * so mutations invalidate all project persona lists too.
+ */
+export function useOrgPersonas(orgId: string | undefined) {
+  const { auth } = useAuth();
+  return useQuery<Persona[]>({
+    queryKey: ['org-personas', orgId],
+    queryFn: () => auth!.client.listOrgPersonas(orgId!),
+    enabled: !!auth && !!orgId,
+    staleTime: 30_000,
+  });
+}
+
+function invalidateOrgPersonas(qc: ReturnType<typeof useQueryClient>, orgId: string | undefined) {
+  void qc.invalidateQueries({ queryKey: ['org-personas', orgId] });
+  void qc.invalidateQueries({ queryKey: ['personas'] });
+  void qc.invalidateQueries({ queryKey: ['persona'] });
+}
+
+export function useCreateOrgPersona(orgId: string | undefined) {
+  const { auth } = useAuth();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: PersonaCreate) => auth!.client.createOrgPersona(orgId!, body),
+    onSuccess: () => invalidateOrgPersonas(qc, orgId),
+  });
+}
+
+export function useUpdateOrgPersona(orgId: string | undefined) {
+  const { auth } = useAuth();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ name, body }: { name: string; body: PersonaUpdate }) =>
+      auth!.client.updateOrgPersona(orgId!, name, body),
+    onSuccess: () => invalidateOrgPersonas(qc, orgId),
+  });
+}
+
+export function useDeleteOrgPersona(orgId: string | undefined) {
+  const { auth } = useAuth();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ name, force }: { name: string; force?: boolean }) =>
+      auth!.client.deleteOrgPersona(orgId!, name, force),
+    onSuccess: () => invalidateOrgPersonas(qc, orgId),
+  });
+}

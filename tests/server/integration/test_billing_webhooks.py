@@ -17,7 +17,6 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 from sqlalchemy import select
@@ -119,19 +118,13 @@ async def _mk_org(db, *, owner_user_id, tier="team", stripe_customer_id=None, st
     return org
 
 
-class _FakeProduct:
-    """Mock for stripe.Product.retrieve responses."""
+async def _bind(db, owner_type, owner_id, sub, tier):
+    """The exact (stripe, subscription) entitlement a paid owner carries."""
+    from sessionfs.server.db.models import Entitlement
 
-    def __init__(self, tier: str):
-        self.metadata = {"tier": tier}
-
-
-def _patch_stripe_product(tier: str):
-    """Context manager: patch _get_stripe() so Product.retrieve returns tier."""
-    fake_stripe = SimpleNamespace(
-        Product=SimpleNamespace(retrieve=lambda _pid: _FakeProduct(tier)),
-    )
-    return patch("sessionfs.server.routes.billing._get_stripe", return_value=fake_stripe)
+    db.add(Entitlement(owner_type=owner_type, owner_id=owner_id, source="stripe",
+                       source_ref=sub, tier=tier, status="active"))
+    await db.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -141,8 +134,9 @@ def _patch_stripe_product(tier: str):
 
 class TestCheckoutCompleted:
     @pytest.mark.asyncio
-    async def test_personal_checkout_sets_user_tier(self, db_session: AsyncSession):
+    async def test_personal_checkout_sets_user_tier(self, db_session: AsyncSession, stripe_fake):
         user = await _mk_user(db_session, tier="free")
+        stripe_fake.subscription("sub_personal_001", tier="pro", customer="cus_personal_001")
         event = _checkout_session(
             user_id=user.id,
             tier="pro",
@@ -157,7 +151,7 @@ class TestCheckoutCompleted:
         assert refreshed.stripe_subscription_id == "sub_personal_001"
 
     @pytest.mark.asyncio
-    async def test_org_checkout_updates_org_not_user(self, db_session: AsyncSession):
+    async def test_org_checkout_updates_org_not_user(self, db_session: AsyncSession, stripe_fake):
         user = await _mk_user(db_session, tier="free")
         org = await _mk_org(
             db_session,
@@ -166,6 +160,7 @@ class TestCheckoutCompleted:
             stripe_customer_id=None,
         )
 
+        stripe_fake.subscription("sub_org_001", tier="team", quantity=10, customer="cus_org_001")
         event = _checkout_session(
             user_id=user.id,
             tier="team",
@@ -187,7 +182,7 @@ class TestCheckoutCompleted:
         assert refreshed_user.tier == "free"  # user.tier unchanged
 
     @pytest.mark.asyncio
-    async def test_missing_user_id_is_noop(self, db_session: AsyncSession):
+    async def test_missing_user_id_is_noop(self, db_session: AsyncSession, stripe_fake):
         """Handler must not crash when metadata is incomplete."""
         event = _checkout_session(
             user_id=None,
@@ -206,22 +201,22 @@ class TestCheckoutCompleted:
 
 class TestSubscriptionUpdated:
     @pytest.mark.asyncio
-    async def test_active_personal_subscription_sets_user_tier(self, db_session: AsyncSession):
+    async def test_active_personal_subscription_sets_user_tier(self, db_session: AsyncSession, stripe_fake):
         user = await _mk_user(
             db_session, tier="free",
             stripe_customer_id="cus_u_001",
             stripe_subscription_id="sub_u_001",
         )
+        stripe_fake.subscription("sub_u_001", tier="pro", customer="cus_u_001")
         event = _subscription("sub_u_001", "cus_u_001", status="active", tier="pro")
 
-        with _patch_stripe_product("pro"):
-            await _handle_subscription_updated(event, db_session)
+        await _handle_subscription_updated(event, db_session)
 
         refreshed = (await db_session.execute(select(User).where(User.id == user.id))).scalar_one()
         assert refreshed.tier == "pro"
 
     @pytest.mark.asyncio
-    async def test_active_org_subscription_updates_org_not_user(self, db_session: AsyncSession):
+    async def test_active_org_subscription_updates_org_not_user(self, db_session: AsyncSession, stripe_fake):
         user = await _mk_user(db_session, tier="free")
         org = await _mk_org(
             db_session,
@@ -231,10 +226,10 @@ class TestSubscriptionUpdated:
             stripe_subscription_id="sub_org_002",
         )
 
+        stripe_fake.subscription("sub_org_002", tier="team", quantity=8, customer="cus_org_002")
         event = _subscription("sub_org_002", "cus_org_002", status="active", tier="team", seats=8)
 
-        with _patch_stripe_product("team"):
-            await _handle_subscription_updated(event, db_session)
+        await _handle_subscription_updated(event, db_session)
 
         refreshed_org = (await db_session.execute(select(Organization).where(Organization.id == org.id))).scalar_one()
         assert refreshed_org.tier == "team"
@@ -244,7 +239,7 @@ class TestSubscriptionUpdated:
         assert refreshed_user.tier == "free"
 
     @pytest.mark.asyncio
-    async def test_past_due_keeps_user_access_and_pointer(self, db_session: AsyncSession):
+    async def test_past_due_keeps_user_access_and_pointer(self, db_session: AsyncSession, stripe_fake):
         """past_due is a transient billing-health state — Stripe owns the retry
         clock, so the paying customer must keep their tier AND subscription
         pointer. Only customer.subscription.deleted downgrades."""
@@ -253,6 +248,7 @@ class TestSubscriptionUpdated:
             stripe_customer_id="cus_u_002",
             stripe_subscription_id="sub_u_002",
         )
+        stripe_fake.subscription("sub_u_002", status="past_due", tier="pro", customer="cus_u_002")
         event = _subscription("sub_u_002", "cus_u_002", status="past_due")
 
         await _handle_subscription_updated(event, db_session)
@@ -263,7 +259,7 @@ class TestSubscriptionUpdated:
         assert refreshed.stripe_subscription_id == "sub_u_002"
 
     @pytest.mark.asyncio
-    async def test_unpaid_keeps_org_access_and_pointer(self, db_session: AsyncSession):
+    async def test_unpaid_keeps_org_access_and_pointer(self, db_session: AsyncSession, stripe_fake):
         user = await _mk_user(db_session, tier="free")
         org = await _mk_org(
             db_session,
@@ -273,6 +269,8 @@ class TestSubscriptionUpdated:
             stripe_subscription_id="sub_org_003",
             seats_limit=10,
         )
+        stripe_fake.subscription("sub_org_003", status="unpaid", tier="team", quantity=10,
+                                 customer="cus_org_003")
         event = _subscription("sub_org_003", "cus_org_003", status="unpaid")
 
         await _handle_subscription_updated(event, db_session)
@@ -284,7 +282,7 @@ class TestSubscriptionUpdated:
         assert refreshed_org.storage_limit_bytes == 10 * 1024 * 1024 * 1024
 
     @pytest.mark.asyncio
-    async def test_past_due_then_active_recovers_full_access(self, db_session: AsyncSession):
+    async def test_past_due_then_active_recovers_full_access(self, db_session: AsyncSession, stripe_fake):
         """The recovery path: a paying customer goes past_due (transient
         decline) then Stripe collects and fires subscription.updated(active).
         Because past_due never cleared the pointer, recovery restores the tier."""
@@ -294,6 +292,7 @@ class TestSubscriptionUpdated:
             stripe_subscription_id="sub_u_rec",
         )
         # 1) transient decline
+        stripe_fake.subscription("sub_u_rec", status="past_due", tier="pro", customer="cus_u_rec")
         await _handle_subscription_updated(
             _subscription("sub_u_rec", "cus_u_rec", status="past_due"), db_session
         )
@@ -301,11 +300,11 @@ class TestSubscriptionUpdated:
         assert mid.tier == "pro" and mid.stripe_subscription_id == "sub_u_rec"
 
         # 2) Stripe collects → active again
-        with _patch_stripe_product("pro"):
-            await _handle_subscription_updated(
-                _subscription("sub_u_rec", "cus_u_rec", status="active", tier="pro"),
-                db_session,
-            )
+        stripe_fake.subscription("sub_u_rec", status="active", tier="pro", customer="cus_u_rec")
+        await _handle_subscription_updated(
+            _subscription("sub_u_rec", "cus_u_rec", status="active", tier="pro"),
+            db_session,
+        )
 
         refreshed = (await db_session.execute(select(User).where(User.id == user.id))).scalar_one()
         assert refreshed.tier == "pro"
@@ -319,12 +318,15 @@ class TestSubscriptionUpdated:
 
 class TestSubscriptionDeleted:
     @pytest.mark.asyncio
-    async def test_personal_cancel_downgrades_user(self, db_session: AsyncSession):
+    async def test_personal_cancel_downgrades_user(self, db_session: AsyncSession, stripe_fake):
         user = await _mk_user(
             db_session, tier="pro",
             stripe_customer_id="cus_u_003",
             stripe_subscription_id="sub_u_003",
         )
+        # Post-migration-075 shape: the Stripe pointer has its exact binding.
+        await _bind(db_session, "user", user.id, "sub_u_003", "pro")
+        stripe_fake.subscription("sub_u_003", status="canceled", tier="pro", customer="cus_u_003")
         event = _subscription("sub_u_003", "cus_u_003", status="canceled")
 
         await _handle_subscription_deleted(event, db_session)
@@ -334,7 +336,7 @@ class TestSubscriptionDeleted:
         assert refreshed.stripe_subscription_id is None
 
     @pytest.mark.asyncio
-    async def test_org_cancel_downgrades_org_not_user(self, db_session: AsyncSession):
+    async def test_org_cancel_downgrades_org_not_user(self, db_session: AsyncSession, stripe_fake):
         user = await _mk_user(db_session, tier="free")
         org = await _mk_org(
             db_session,
@@ -345,6 +347,9 @@ class TestSubscriptionDeleted:
             seats_limit=50,
         )
 
+        await _bind(db_session, "org", org.id, "sub_org_004", "enterprise")
+        stripe_fake.subscription("sub_org_004", status="canceled", tier="enterprise",
+                                 customer="cus_org_004")
         event = _subscription("sub_org_004", "cus_org_004", status="canceled")
 
         await _handle_subscription_deleted(event, db_session)
@@ -358,6 +363,32 @@ class TestSubscriptionDeleted:
         assert refreshed_user.tier == "free"
 
 
+    @pytest.mark.asyncio
+    async def test_cancel_through_a_bare_pointer_clears_it_without_touching_access(
+        self, db_session: AsyncSession, stripe_fake
+    ):
+        """No exact Stripe binding (e.g. the access is an admin-provisioned
+        entitlement): the pointer is cleared, access is not revoked."""
+        from sessionfs.server.db.models import Entitlement
+
+        user = await _mk_user(db_session, tier="pro", stripe_customer_id="cus_bare",
+                              stripe_subscription_id="sub_bare")
+        db_session.add(Entitlement(owner_type="user", owner_id=user.id, source="admin_provisioned",
+                                   tier="pro", status="active"))
+        await db_session.commit()
+        stripe_fake.subscription("sub_bare", status="canceled", tier="pro", customer="cus_bare")
+
+        await _handle_subscription_deleted(
+            _subscription("sub_bare", "cus_bare", status="canceled"), db_session
+        )
+        refreshed = (await db_session.execute(select(User).where(User.id == user.id))).scalar_one()
+        assert refreshed.tier == "pro"
+        assert refreshed.stripe_subscription_id is None
+        ent = (await db_session.execute(select(Entitlement.status, Entitlement.source).where(
+            Entitlement.owner_id == user.id))).one()
+        assert tuple(ent) == ("active", "admin_provisioned")
+
+
 # ---------------------------------------------------------------------------
 # _find_user_or_org_by_customer — shared-customer disambiguation
 # ---------------------------------------------------------------------------
@@ -365,7 +396,7 @@ class TestSubscriptionDeleted:
 
 class TestFindUserOrOrg:
     @pytest.mark.asyncio
-    async def test_org_only_returns_org(self, db_session: AsyncSession):
+    async def test_org_only_returns_org(self, db_session: AsyncSession, stripe_fake):
         user = await _mk_user(db_session)
         org = await _mk_org(
             db_session,
@@ -380,7 +411,7 @@ class TestFindUserOrOrg:
         assert o.id == org.id
 
     @pytest.mark.asyncio
-    async def test_user_only_returns_user(self, db_session: AsyncSession):
+    async def test_user_only_returns_user(self, db_session: AsyncSession, stripe_fake):
         user = await _mk_user(
             db_session,
             stripe_customer_id="cus_only_user",
@@ -393,7 +424,7 @@ class TestFindUserOrOrg:
         assert o is None
 
     @pytest.mark.asyncio
-    async def test_same_customer_different_subs_disambiguates_by_subscription(self, db_session: AsyncSession):
+    async def test_same_customer_different_subs_disambiguates_by_subscription(self, db_session: AsyncSession, stripe_fake):
         """The legacy race where an org and a user share stripe_customer_id
         with DIFFERENT subscription IDs. The subscription_id parameter must
         route correctly — personal sub → user, org sub → org.

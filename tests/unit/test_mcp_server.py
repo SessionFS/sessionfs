@@ -299,11 +299,11 @@ class TestToolRegistryV0996:
     (create/claim/get/list_inbox/list_sent/revoke/decline/comment = 8).
     Total: 53."""
 
-    def test_tool_count_is_79(self):
+    def test_tool_count_is_80(self):
         from sessionfs.mcp.server import _TOOLS
-        assert len(_TOOLS) == 79, (
-            "Expected 79 MCP tools after the agent-feedback tools added three "
-            f"(record/list/summary), got {len(_TOOLS)}"
+        assert len(_TOOLS) == 80, (
+            "Expected 80 MCP tools after marketplace disclosure added "
+            f"diff_marketplace_versions, got {len(_TOOLS)}"
         )
 
     def test_new_tools_registered(self):
@@ -361,6 +361,7 @@ class TestToolRegistryV0996:
             # v0.16 hosted skill/plugin marketplace
             "search_skill_marketplace",
             "get_marketplace_package",
+            "diff_marketplace_versions",
             "preview_marketplace_skill",
             "load_marketplace_skill",
             "request_skill_install",
@@ -1376,6 +1377,87 @@ class TestNewToolDispatch:
         assert captured["json"]["role"] == "Backend Architect"
         assert captured["json"]["specializations"] == ["backend", "api"]
 
+    # ── GH #70 — org-level personas ──
+
+    @pytest.fixture
+    def fake_org_config(self, monkeypatch):
+        async def _fake(org_id: str):
+            return (
+                "https://api.test",
+                "test-key",
+                f"https://api.test/api/v1/orgs/{org_id}/personas",
+            )
+
+        monkeypatch.setattr(mcp_server, "_org_persona_api_config", _fake)
+
+    @pytest.mark.asyncio
+    async def test_list_personas_includes_org_by_default(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        await mcp_server._handle_list_personas({})
+        assert captured["url"] == "https://api.test/api/v1/projects/proj_test/personas"
+        assert captured["params"] == {}
+
+    @pytest.mark.asyncio
+    async def test_list_personas_include_org_false(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        for falsey in (False, "false", "0", "no"):
+            captured.clear()
+            await mcp_server._handle_list_personas({"include_org": falsey})
+            assert captured["params"] == {"include_org": "false"}, falsey
+        # Unknown junk keeps the default (include).
+        captured.clear()
+        await mcp_server._handle_list_personas({"include_org": "maybe"})
+        assert captured["params"] == {}
+
+    @pytest.mark.asyncio
+    async def test_create_persona_with_org_id_targets_org_route(
+        self, fake_org_config, fake_httpx, captured
+    ):
+        await mcp_server._handle_create_persona({
+            "name": "release-governance",
+            "role": "Security sign-off",
+            "org_id": "org_1",
+        })
+        assert captured["method"] == "POST"
+        assert captured["url"] == "https://api.test/api/v1/orgs/org_1/personas"
+        assert captured["json"]["name"] == "release-governance"
+
+    @pytest.mark.asyncio
+    async def test_update_and_delete_persona_with_org_id(
+        self, fake_org_config, fake_httpx, captured
+    ):
+        await mcp_server._handle_update_persona({
+            "name": "atlas", "content": "# v2", "org_id": "org_1",
+        })
+        assert captured["method"] == "PUT"
+        assert captured["url"] == "https://api.test/api/v1/orgs/org_1/personas/atlas"
+        captured.clear()
+        await mcp_server._handle_delete_persona({
+            "name": "atlas", "org_id": "org_1", "force": True,
+        })
+        assert captured["method"] == "DELETE"
+        assert captured["url"] == "https://api.test/api/v1/orgs/org_1/personas/atlas"
+        assert captured["params"] == {"force": "true"}
+
+    @pytest.mark.asyncio
+    async def test_list_and_get_persona_with_org_id_target_org_routes(
+        self, fake_org_config, fake_httpx, captured
+    ):
+        await mcp_server._handle_list_personas({"org_id": "org_1"})
+        assert captured["method"] == "GET"
+        assert captured["url"] == "https://api.test/api/v1/orgs/org_1/personas"
+        captured.clear()
+        await mcp_server._handle_get_persona({"name": "atlas", "org_id": "org_1"})
+        assert captured["url"] == "https://api.test/api/v1/orgs/org_1/personas/atlas"
+
+    def test_persona_tool_schemas_expose_org_args(self):
+        tools = {t.name: t for t in mcp_server._TOOLS}
+        for name in ("create_persona", "update_persona", "delete_persona", "list_personas", "get_persona"):
+            assert "org_id" in tools[name].inputSchema["properties"], name
+        assert "include_org" in tools["list_personas"].inputSchema["properties"]
+
     # ── tk_835a876529de4551 — update_ticket MCP dispatch ──
 
     @pytest.mark.asyncio
@@ -1690,6 +1772,56 @@ class TestNewToolDispatch:
         assert data["ticket_id"] is None
         assert data["persona_name"] == "atlas"
         assert data["project_id"] == "proj_test"
+
+    @pytest.mark.asyncio
+    async def test_assume_and_start_write_canonical_persona_name(
+        self, fake_resolver, monkeypatch, tmp_path
+    ):
+        """GH #70 — bundles record the server's canonical persona name, not
+        the caller's spelling or the raw ticket assignment."""
+        import httpx
+
+        bundle = tmp_path / "active.json"
+        from sessionfs import active_ticket as _at
+        monkeypatch.setattr(_at, "bundle_path", lambda: bundle)
+
+        class _Resp:
+            def __init__(self, body):
+                self.status_code = 200
+                self._body = body
+                self.text = json.dumps(body)
+
+            def json(self):
+                return self._body
+
+        class _FakeClient:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url, **kw):
+                return _Resp({"name": "Atlas", "scope": "project"})
+
+            async def post(self, url, **kw):
+                return _Resp({
+                    "ticket": {"id": "tk_1", "assigned_to": "atlas", "lease_epoch": 2},
+                    "compiled_context": "...",
+                    "retrieval_audit_id": "ra_1",
+                    "persona_name": "Atlas",
+                })
+
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+        await mcp_server._handle_assume_persona({"name": "ATLAS"})
+        assert json.loads(bundle.read_text())["persona_name"] == "Atlas"
+
+        await mcp_server._handle_start_ticket({"ticket_id": "tk_1"})
+        assert json.loads(bundle.read_text())["persona_name"] == "Atlas"
 
     def test_forget_persona_clears_bundle(self, monkeypatch, tmp_path):
         bundle = tmp_path / "active.json"

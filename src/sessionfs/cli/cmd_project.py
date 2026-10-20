@@ -30,7 +30,7 @@ def _get_git_remote() -> str | None:
 
 def _normalize_remote(url: str) -> str:
     """Normalize git remote URL to owner/repo format."""
-    from sessionfs.server.github_app import normalize_git_remote
+    from sessionfs.git_remote import normalize_git_remote
     return normalize_git_remote(url)
 
 
@@ -105,7 +105,10 @@ async def _api_request(method: str, path: str, api_url: str, api_key: str, json_
     if resp.status_code == 404:
         return {"_status": 404}
     if resp.status_code == 409:
-        return {"_status": 409}
+        out: dict = {"_status": 409}
+        if resp.headers.get("content-type", "").startswith("application/json"):
+            out["_body"] = resp.json()
+        return out
     if resp.status_code >= 400:
         from sessionfs.cli.common import format_api_error
 
@@ -1133,6 +1136,24 @@ def _resolve_project_id() -> tuple[str, str, str]:
     return result["id"], api_url, api_key
 
 
+def _print_stranded_personas(result: dict) -> bool:
+    """GH #70 — explain a personas_stranded 409. Returns True if handled."""
+    if result.get("_status") != 409:
+        return False
+    body = result.get("_body")
+    error = body.get("error") if isinstance(body, dict) else None
+    if not isinstance(error, dict) or error.get("code") != "personas_stranded":
+        return False
+    err_console.print(f"[red]{error.get('message', 'Transfer would strand tickets.')}[/red]")
+    details = error.get("details") or {}
+    for item in details.get("personas") or []:
+        err_console.print(
+            f"  [bold]{item.get('persona')}[/bold]: {', '.join(item.get('ticket_ids') or [])}"
+        )
+    err_console.print("[dim]Re-run with --force to transfer anyway.[/dim]")
+    return True
+
+
 def _print_transfer(t: dict) -> None:
     console.print(
         f"  [bold]{t['id']}[/bold]  "
@@ -1157,6 +1178,11 @@ def project_transfer(
     ),
     cancel: str | None = typer.Option(
         None, "--cancel", help="Transfer id to cancel (initiator only)."
+    ),
+    force: bool = typer.Option(
+        False, "--force",
+        help="With --to (auto-accepted) or --accept: move the project even if "
+             "open tickets are assigned to org personas the destination lacks.",
     ),
 ) -> None:
     """Initiate or act on a project transfer.
@@ -1184,10 +1210,12 @@ def project_transfer(
             f"/api/v1/projects/{project_id}/transfer",
             api_url,
             api_key,
-            json_data={"to": to},
+            json_data={"to": to, "force": force} if force else {"to": to},
         ))
         if result.get("_status") == 404:
             err_console.print("[red]Project not found on the server.[/red]")
+            raise typer.Exit(1)
+        if _print_stranded_personas(result):
             raise typer.Exit(1)
         if result.get("_status") == 409:
             err_console.print(
@@ -1208,7 +1236,7 @@ def project_transfer(
     # the transfer by id.
     api_url, api_key = _get_project_client()
     if accept is not None:
-        path = f"/api/v1/transfers/{accept}/accept"
+        path = f"/api/v1/transfers/{accept}/accept" + ("?force=true" if force else "")
         verb = "accepted"
     elif reject is not None:
         path = f"/api/v1/transfers/{reject}/reject"
@@ -1221,6 +1249,8 @@ def project_transfer(
     result = asyncio.run(_api_request("POST", path, api_url, api_key))
     if result.get("_status") == 404:
         err_console.print("[red]Transfer not found.[/red]")
+        raise typer.Exit(1)
+    if _print_stranded_personas(result):
         raise typer.Exit(1)
     if result.get("_status") == 409:
         err_console.print(
@@ -1381,7 +1411,7 @@ def project_unlink_repo(
 
     # If given a remote URL, look up the repo id first.
     repo_id: str
-    from sessionfs.server.github_app import normalize_git_remote
+    from sessionfs.git_remote import normalize_git_remote
     normalized = normalize_git_remote(remote)
     if "/" in normalized:
         # Looks like a remote — find its repo id.
@@ -1567,6 +1597,16 @@ def project_merge(
             },
         )
         collisions = plan.get("persona_collisions", [])
+        if plan.get("would_refuse"):
+            console.print(
+                "[red]This merge would be refused: an org persona and a project "
+                "persona share a name, so some references would switch "
+                "persona. Use --persona-policy rename.[/red]"
+            )
+            for c in collisions:
+                if c.get("kind"):
+                    console.print(f"  - {c['source_name']} ({c['kind']})")
+            raise typer.Exit(1)
         if collisions:
             console.print(
                 f"[bold yellow]{len(collisions)} persona name "

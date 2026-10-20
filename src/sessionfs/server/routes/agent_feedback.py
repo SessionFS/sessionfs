@@ -47,7 +47,7 @@ from sessionfs.server.schemas.agent_feedback import (
     VERDICTS,
     label_valid_for_type,
 )
-from sessionfs.server.tier_gate import UserContext, check_feature, get_user_context
+from sessionfs.server.tier_gate import UserContext, check_project_feature, get_user_context
 
 router = APIRouter(prefix="/api/v1/projects", tags=["agent-feedback"])
 
@@ -273,12 +273,12 @@ async def create_agent_feedback(
     """Create an append-only feedback record. Targets validated same-project."""
     _reject_nul(project_id)
     user = auth.user
-    check_feature(ctx, "agent_runs")
     project = await _get_project_for_auth(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
     await assert_service_key_can_access_project(db, auth, project)
+    await check_project_feature(ctx, "agent_runs", project, db)
 
     await _validate_targets(project_id, body, db)
 
@@ -333,12 +333,12 @@ async def list_agent_feedback(
 ) -> list[AgentFeedbackResponse]:
     """List feedback, oldest-first with a stable (created_at, id) cursor."""
     _reject_nul(project_id, agent_run_id, ticket_id, feedback_type, verdict, label, persona, since_id)
-    check_feature(ctx, "agent_runs")
     project = await _get_project_for_auth(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
     await assert_service_key_can_access_project(db, auth, project)
+    await check_project_feature(ctx, "agent_runs", project, db)
 
     stmt = select(AgentFeedback).where(AgentFeedback.project_id == project_id)
     if agent_run_id:
@@ -416,12 +416,12 @@ async def get_agent_feedback_summary(
 ) -> AgentFeedbackSummaryResponse:
     """Grouped counts by feedback_type × verdict × label (pure SQL, no LLM)."""
     _reject_nul(project_id, persona)
-    check_feature(ctx, "agent_runs")
     project = await _get_project_for_auth(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
     await assert_service_key_can_access_project(db, auth, project)
+    await check_project_feature(ctx, "agent_runs", project, db)
 
     stmt = (
         select(

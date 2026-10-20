@@ -439,3 +439,57 @@ def scan_dlp(
                 ))
 
     return findings
+
+
+def scan_dlp_builtin(
+    text: str,
+    categories: list[str] | None = None,
+) -> list[DLPFinding]:
+    """Scan *text* with the built-in secret/PHI rules only (no org policy).
+
+    This is the server's historical default scanner (``server.dlp.scan_dlp``),
+    kept here so client code - the local skill-publish validator - runs the
+    exact same rules without importing the server package. Unlike
+    :func:`scan_dlp`, the built-in allowlist applies to secret matches only and
+    the context is the raw 25-character window around the match.
+    """
+    if categories is None:
+        categories = ["secrets"]
+
+    findings: list[DLPFinding] = []
+    lines = text.splitlines()
+
+    for line_idx, line in enumerate(lines, start=1):
+        if "secrets" in categories:
+            for pattern_name, pattern in SECRET_PATTERNS.items():
+                for match in pattern.finditer(line):
+                    matched_text = match.group(0)
+                    if _is_allowlisted(matched_text):
+                        continue
+                    start = max(0, match.start() - 25)
+                    end = min(len(line), match.end() + 25)
+                    findings.append(DLPFinding(
+                        pattern_name=pattern_name,
+                        category="secret",
+                        severity=SEVERITY_MAP.get(pattern_name, "medium"),
+                        line_number=line_idx,
+                        match_text=matched_text,
+                        context=line[start:end],
+                    ))
+
+        if "phi" in categories:
+            for pattern_name, (pattern, severity) in PHI_PATTERNS.items():
+                for match in pattern.finditer(line):
+                    matched_text = match.group(0)
+                    start = max(0, match.start() - 25)
+                    end = min(len(line), match.end() + 25)
+                    findings.append(DLPFinding(
+                        pattern_name=pattern_name,
+                        category="phi",
+                        severity=severity,
+                        line_number=line_idx,
+                        match_text=matched_text,
+                        context=line[start:end],
+                    ))
+
+    return findings

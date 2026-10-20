@@ -50,6 +50,10 @@ class CaptureHealthTracker:
         self._health: WatcherHealth = WatcherHealth.HEALTHY
         self._last_error: str | None = None
         self._degraded_since: str | None = None
+        # Session keys whose transcript is permanently unreadable/malformed.
+        # A per-session latch: record_success() on OTHER sessions does not
+        # clear it (a healthy capture elsewhere does not fix a broken one).
+        self._unreadable_sessions: set[str] = set()
 
     # -- read-only properties ------------------------------------------------
 
@@ -92,6 +96,8 @@ class CaptureHealthTracker:
         """
         if self._consecutive_failures >= self.FAILURE_THRESHOLD:
             return  # capture-degraded — only a successful capture recovers
+        if self._unreadable_sessions:
+            return  # a stuck unreadable session keeps the watcher degraded
         self._health = WatcherHealth.HEALTHY
         self._last_error = None
         self._degraded_since = None
@@ -102,10 +108,16 @@ class CaptureHealthTracker:
         """Call after a successful parse + convert.
 
         Resets the failure counter.  If the watcher was degraded it recovers
-        to healthy and logs one INFO line.
+        to healthy and logs one INFO line — unless a session is latched as
+        permanently unreadable, which a success on another session does not
+        clear.
         """
         self._consecutive_failures = 0
         self._failing_keys.clear()
+        if self._unreadable_sessions:
+            # A stuck unreadable session keeps the watcher degraded (and its
+            # error in the status) regardless of successes elsewhere.
+            return
         # A success always clears the stale error string — not only on the
         # degraded→healthy transition (a sub-threshold failure would otherwise
         # leave its message in the status forever).
@@ -148,6 +160,52 @@ class CaptureHealthTracker:
                     error_msg,
                 )
                 self._emit_degraded()
+
+    def record_unreadable_session(self, error_msg: str, session_key: str) -> None:
+        """Degrade for a single permanently-unreadable or malformed session.
+
+        Unlike record_failure, this is a sticky per-session latch: one stuck
+        session is enough to degrade, and record_success() on OTHER sessions
+        must not clear it (a healthy capture elsewhere does not fix a broken
+        conversation). Release it with clear_unreadable_session() once that
+        session recovers or disappears.
+        """
+        self._unreadable_sessions.add(session_key)
+        self._last_error = error_msg
+        if self._health != WatcherHealth.DEGRADED:
+            self._health = WatcherHealth.DEGRADED
+            self._degraded_since = datetime.now(timezone.utc).isoformat()
+            logger.warning(
+                "Watcher %s degraded: session %s is unreadable or malformed: %s",
+                self._tool_name,
+                session_key,
+                error_msg,
+            )
+            self._emit_degraded()
+
+    def clear_unreadable_session(self, session_key: str) -> None:
+        """Release a per-session unreadable latch.
+
+        Recovery happens only once no unreadable session remains AND the
+        watcher is not degraded for another reason (consecutive failures).
+        """
+        self._unreadable_sessions.discard(session_key)
+        if self._unreadable_sessions:
+            return
+        if self._consecutive_failures >= self.FAILURE_THRESHOLD:
+            return
+        if self._health == WatcherHealth.DEGRADED:
+            self._health = WatcherHealth.HEALTHY
+            self._degraded_since = None
+            self._last_error = None
+            logger.info(
+                "Watcher %s recovered — no unreadable sessions remain",
+                self._tool_name,
+            )
+
+    def has_unreadable_session(self, session_key: str) -> bool:
+        """Whether ``session_key`` is latched as permanently unreadable."""
+        return session_key in self._unreadable_sessions
 
     # -- telemetry -----------------------------------------------------------
 

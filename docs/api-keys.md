@@ -42,8 +42,8 @@ The 17 capability scopes defined for service keys. The `*` wildcard is **reserve
 | `tickets:write` | ✅ live | `POST /api/v1/projects/{project_id}/tickets`, `POST /api/v1/projects/{project_id}/tickets/{ticket_id}/comments`, `POST /api/v1/projects/{project_id}/tickets/{ticket_id}/start`, `POST /api/v1/projects/{project_id}/tickets/{ticket_id}/complete` |
 | `knowledge:read` | ✅ live | `GET /api/v1/projects/{project_id}/entries`, `GET /api/v1/projects/{project_id}/entries/{entry_id}` |
 | `knowledge:write` | ✅ live | `POST /api/v1/projects/{project_id}/entries/add`, `PUT /api/v1/projects/{project_id}/entries/{entry_id}`, `PUT /api/v1/projects/{project_id}/entries/{entry_id}/refresh`, `PUT /api/v1/projects/{project_id}/entries/{entry_id}/promote`, `PUT /api/v1/projects/{project_id}/entries/{entry_id}/supersede` |
-| `personas:read` | ✅ live | `GET /api/v1/projects/{project_id}/personas`, `GET /api/v1/projects/{project_id}/personas/{name}` |
-| `personas:write` | ✅ live | `POST /api/v1/projects/{project_id}/personas`, `PUT /api/v1/projects/{project_id}/personas/{name}`, `DELETE /api/v1/projects/{project_id}/personas/{name}` |
+| `personas:read` | ✅ live | `GET /api/v1/projects/{project_id}/personas`, `GET /api/v1/projects/{project_id}/personas/{name}`, `GET /api/v1/orgs/{org_id}/personas`, `GET /api/v1/orgs/{org_id}/personas/{name}` (key's own org only) |
+| `personas:write` | ✅ live | `POST /api/v1/projects/{project_id}/personas`, `PUT /api/v1/projects/{project_id}/personas/{name}`, `DELETE /api/v1/projects/{project_id}/personas/{name}`, and the same three under `/api/v1/orgs/{org_id}/personas` (key's own org only; refused for keys limited to specific projects) |
 | `sessions:read` | reserved | — |
 | `handoffs:read` | reserved | — |
 | `rules:read` | reserved | — |

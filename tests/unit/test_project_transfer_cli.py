@@ -295,3 +295,65 @@ def test_transfer_initiate_404_project_not_found():
         result = runner.invoke(project_app, ["transfer", "--to", "org_acme"])
     assert result.exit_code == 1, result.output
     assert "project not found" in _combined(result).lower()
+
+
+# ── GH #70 — stranded org personas ──
+
+_STRANDED = {
+    "_status": 409,
+    "_body": {
+        "error": {
+            "code": "personas_stranded",
+            "message": "Non-terminal tickets are assigned to org personas that will not exist after this transfer (gcp-infra: tk_1).",
+            "details": {"personas": [{"persona": "gcp-infra", "ticket_ids": ["tk_1"]}]},
+        }
+    },
+}
+
+
+def test_transfer_initiate_stranded_personas_explained_and_force_sent():
+    with patch(
+        "sessionfs.cli.cmd_project._resolve_project_id",
+        return_value=("proj_x", "https://api.example.com", "k"),
+    ), patch(
+        "sessionfs.cli.cmd_project._api_request", return_value=_STRANDED,
+    ):
+        result = runner.invoke(project_app, ["transfer", "--to", "personal"])
+    out = _combined(result)
+    assert result.exit_code == 1
+    assert "gcp-infra" in out and "tk_1" in out and "--force" in out
+    assert "pending transfer already exists" not in out.lower()
+
+    with patch(
+        "sessionfs.cli.cmd_project._resolve_project_id",
+        return_value=("proj_x", "https://api.example.com", "k"),
+    ), patch(
+        "sessionfs.cli.cmd_project._api_request",
+        return_value=_ok_transfer(state="accepted", to_scope="personal"),
+    ) as mock_api:
+        result = runner.invoke(project_app, ["transfer", "--to", "personal", "--force"])
+    assert result.exit_code == 0, result.output
+    assert mock_api.call_args.kwargs["json_data"] == {"to": "personal", "force": True}
+
+
+def test_transfer_accept_stranded_then_force_query():
+    with patch(
+        "sessionfs.cli.cmd_project._get_project_client",
+        return_value=("https://api.example.com", "k"),
+    ), patch(
+        "sessionfs.cli.cmd_project._api_request", return_value=_STRANDED,
+    ):
+        result = runner.invoke(project_app, ["transfer", "--accept", "xfer_abc"])
+    assert result.exit_code == 1
+    assert "gcp-infra" in _combined(result)
+
+    with patch(
+        "sessionfs.cli.cmd_project._get_project_client",
+        return_value=("https://api.example.com", "k"),
+    ), patch(
+        "sessionfs.cli.cmd_project._api_request",
+        return_value=_ok_transfer(state="accepted"),
+    ) as mock_api:
+        result = runner.invoke(project_app, ["transfer", "--accept", "xfer_abc", "--force"])
+    assert result.exit_code == 0, result.output
+    assert mock_api.call_args.args[1] == "/api/v1/transfers/xfer_abc/accept?force=true"

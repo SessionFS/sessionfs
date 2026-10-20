@@ -7,6 +7,8 @@ to communicate with the server over HTTPS + ETags.
 from __future__ import annotations
 
 import logging
+import math
+import os
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
@@ -23,8 +25,73 @@ _BACKOFF_BASE = 1.0  # seconds
 _RETRYABLE_STATUS = {429, 502, 503, 504}
 
 # Timeouts
-_UPLOAD_TIMEOUT = 30.0
 _METADATA_TIMEOUT = 10.0
+_CONNECT_TIMEOUT = 10.0
+# Session push/pull. A push waits for the server to DLP-scan, unpack and
+# index the archive before it answers, which for a multi-MB session on a
+# self-hosted deployment can take well over a minute (GitHub #68 — the old
+# hardcoded 30 s made such sessions unpushable).
+DEFAULT_TRANSFER_TIMEOUT = 300.0
+MAX_TRANSFER_TIMEOUT = 3600.0
+TRANSFER_TIMEOUT_ENV = "SFS_UPLOAD_TIMEOUT"
+
+
+def _valid_transfer_timeout(value: object) -> float | None:
+    """Return value as seconds if it is a usable transfer timeout, else None."""
+    if isinstance(value, bool):
+        return None
+    try:
+        seconds = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(seconds) or seconds < 1 or seconds > MAX_TRANSFER_TIMEOUT:
+        return None
+    return seconds
+
+
+def resolve_transfer_timeout(
+    explicit: float | None = None, configured: float | None = None
+) -> float:
+    """Seconds to wait on a session push/pull.
+
+    Precedence: explicit (e.g. `sfs push --timeout`) > SFS_UPLOAD_TIMEOUT >
+    configured (`[sync] upload_timeout` in config.toml) > 300 s default.
+    An invalid env/config value is ignored with a warning rather than
+    breaking sync; an invalid explicit value is the caller's bug.
+    """
+    if explicit is not None:
+        seconds = _valid_transfer_timeout(explicit)
+        if seconds is None:
+            raise ValueError(
+                f"transfer timeout must be between 1 and {MAX_TRANSFER_TIMEOUT:.0f} seconds"
+            )
+        return seconds
+    raw_env = os.environ.get(TRANSFER_TIMEOUT_ENV, "").strip()
+    if raw_env:
+        seconds = _valid_transfer_timeout(raw_env)
+        if seconds is not None:
+            return seconds
+        logger.warning(
+            "Ignoring %s=%r: expected seconds between 1 and %.0f",
+            TRANSFER_TIMEOUT_ENV, raw_env, MAX_TRANSFER_TIMEOUT,
+        )
+    if configured is not None:
+        seconds = _valid_transfer_timeout(configured)
+        if seconds is not None:
+            return seconds
+        logger.warning(
+            "Ignoring [sync] upload_timeout=%r: expected seconds between 1 and %.0f",
+            configured, MAX_TRANSFER_TIMEOUT,
+        )
+    return DEFAULT_TRANSFER_TIMEOUT
+
+
+def _describe_exc(exc: BaseException | None) -> str:
+    """Exception text that is never blank (httpx timeouts stringify to '')."""
+    if exc is None:
+        return "unknown error"
+    text = str(exc)
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
 
 
 class SyncError(Exception):
@@ -49,6 +116,43 @@ class SyncDeletedError(SyncError):
 
 class SyncAuthError(SyncError):
     """Authentication failed."""
+
+
+class SyncTimeoutError(SyncError):
+    """A session upload ran out of time, at the client or at a proxy.
+
+    Not retried automatically: resending the same archive against the same
+    limits fails the same way (GitHub #68). ``gateway`` is True when a proxy
+    or load balancer in front of the server gave up first (HTTP 504).
+    """
+
+    def __init__(
+        self,
+        timeout_s: float,
+        size_bytes: int | None = None,
+        *,
+        gateway: bool = False,
+    ):
+        self.timeout_s = timeout_s
+        self.size_bytes = size_bytes
+        self.gateway = gateway
+        size = f" ({size_bytes:,} bytes)" if size_bytes is not None else ""
+        if gateway:
+            message = (
+                f"A proxy or load balancer in front of the server stopped waiting "
+                f"(HTTP 504) before the upload{size} was stored. Large sessions can "
+                f"take longer to scan and store: raise that proxy's timeout (Helm: "
+                f"dashboard.apiProxyTimeout plus your ingress or load balancer idle "
+                f"timeout) and keep {TRANSFER_TIMEOUT_ENV} at least as long."
+            )
+        else:
+            message = (
+                f"The upload{size} did not finish within {timeout_s:.0f}s. Large "
+                f"sessions can take longer to send, scan and store. Raise the "
+                f"limit with `sfs push --timeout <seconds>`, {TRANSFER_TIMEOUT_ENV}, "
+                f"or `upload_timeout` under [sync] in config.toml."
+            )
+        super().__init__(message)
 
 
 class SyncTooLargeError(SyncError):
@@ -123,11 +227,24 @@ def _validate_url(api_url: str) -> None:
 class SyncClient:
     """HTTP client for SessionFS API server."""
 
-    def __init__(self, api_url: str, api_key: str) -> None:
+    def __init__(
+        self, api_url: str, api_key: str, *, transfer_timeout: float | None = None
+    ) -> None:
         _validate_url(api_url)
         self.api_url = api_url.rstrip("/")
         self.api_key = api_key
+        # Callers that read config.toml resolve the full precedence chain and
+        # pass the result; everyone else still honours SFS_UPLOAD_TIMEOUT.
+        self.transfer_timeout = (
+            transfer_timeout
+            if transfer_timeout is not None
+            else resolve_transfer_timeout()
+        )
         self._client: httpx.AsyncClient | None = None
+
+    def _transfer_timeout(self) -> httpx.Timeout:
+        """Long read/write budget for archives; connecting stays fast-fail."""
+        return httpx.Timeout(self.transfer_timeout, connect=_CONNECT_TIMEOUT)
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -155,10 +272,15 @@ class SyncClient:
         method: str,
         url: str,
         *,
-        timeout: float | None = None,
+        timeout: float | httpx.Timeout | None = None,
+        retry_read_timeout: bool = True,
         **kwargs: Any,
     ) -> httpx.Response:
-        """Make an HTTP request with exponential backoff retry on transient failures."""
+        """Make an HTTP request with exponential backoff retry on transient failures.
+
+        With retry_read_timeout=False a read or write timeout, or a 504 from
+        a gateway, raises SyncTimeoutError at once instead of resending.
+        """
         import asyncio
 
         client = await self._get_client()
@@ -174,10 +296,28 @@ class SyncClient:
                 )
                 if resp.status_code not in _RETRYABLE_STATUS:
                     return resp
+                if resp.status_code == 504 and not retry_read_timeout:
+                    # A gateway gave up waiting on the server: same failure
+                    # as a read timeout, one hop further out.
+                    raise SyncTimeoutError(self.transfer_timeout, gateway=True)
                 last_exc = SyncError(f"Server returned {resp.status_code}")
                 # Respect Retry-After header from 429 responses
                 retry_after = resp.headers.get("retry-after")
             except (httpx.ConnectError, httpx.TimeoutException, httpx.ReadError) as exc:
+                if (
+                    isinstance(exc, (httpx.ReadTimeout, httpx.WriteTimeout))
+                    and not retry_read_timeout
+                ):
+                    # Sending the archive or waiting for the server to store
+                    # it ran out of time; a resend hits the same limit.
+                    read_s = (
+                        timeout.read
+                        if isinstance(timeout, httpx.Timeout)
+                        else timeout
+                    )
+                    raise SyncTimeoutError(
+                        read_s if read_s is not None else self.transfer_timeout
+                    ) from exc
                 last_exc = exc
                 retry_after = None
 
@@ -193,11 +333,13 @@ class SyncClient:
                     attempt + 1,
                     _MAX_RETRIES,
                     delay,
-                    last_exc,
+                    _describe_exc(last_exc),
                 )
                 await asyncio.sleep(delay)
 
-        raise SyncError(f"Request failed after {_MAX_RETRIES} attempts: {last_exc}")
+        raise SyncError(
+            f"Request failed after {_MAX_RETRIES} attempts: {_describe_exc(last_exc)}"
+        )
 
     def _check_auth(self, resp: httpx.Response) -> None:
         if resp.status_code in (401, 403):
@@ -225,13 +367,19 @@ class SyncClient:
         if extra_headers:
             headers.update(extra_headers)
 
-        resp = await self._request_with_retry(
-            "PUT",
-            f"{self.api_url}/api/v1/sessions/{session_id}/sync",
-            headers=headers,
-            files={"file": ("session.tar.gz", archive_data, "application/gzip")},
-            timeout=_UPLOAD_TIMEOUT,
-        )
+        try:
+            resp = await self._request_with_retry(
+                "PUT",
+                f"{self.api_url}/api/v1/sessions/{session_id}/sync",
+                headers=headers,
+                files={"file": ("session.tar.gz", archive_data, "application/gzip")},
+                timeout=self._transfer_timeout(),
+                retry_read_timeout=False,
+            )
+        except SyncTimeoutError as exc:
+            raise SyncTimeoutError(
+                exc.timeout_s, len(archive_data), gateway=exc.gateway
+            ) from exc
         self._check_auth(resp)
 
         if resp.status_code == 409:
@@ -306,7 +454,7 @@ class SyncClient:
             "GET",
             f"{self.api_url}/api/v1/sessions/{session_id}/sync",
             headers=headers,
-            timeout=_UPLOAD_TIMEOUT,
+            timeout=self._transfer_timeout(),
         )
         self._check_auth(resp)
 

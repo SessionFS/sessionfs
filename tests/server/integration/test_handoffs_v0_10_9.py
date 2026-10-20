@@ -974,3 +974,139 @@ async def test_outsider_decline_returns_404_not_409_on_non_pending(
         f"/api/v1/handoffs/{h['id']}/claim", headers=out_headers
     )
     assert r_claim.status_code == 404
+
+
+# ── GH #70 R10 — claim-time org persona visibility (finding 3) ──
+
+
+async def _org_persona_handoff_setup(client, auth_headers, sample_sfs_tar,
+                                     db_session, test_user, tag):
+    """Org + org-owned project + org persona 'atlas'; sender is an org
+    member. Returns (session_id, org, project)."""
+    import sqlalchemy as sa
+
+    from sessionfs.server.db.models import Session as SessionModel
+
+    sid = await _push_session(client, auth_headers, sample_sfs_tar)
+    sess = (
+        await db_session.execute(
+            sa.select(SessionModel).where(SessionModel.id == sid)
+        )
+    ).scalar_one()
+    git_remote = sess.git_remote_normalized or f"github.com/x/{tag}"
+    if not sess.git_remote_normalized:
+        sess.git_remote_normalized = git_remote
+    org = Organization(
+        id=f"org_{tag}",
+        name=tag,
+        slug=tag,
+        tier="team",
+        created_at=datetime.now(timezone.utc),
+    )
+    db_session.add(org)
+    db_session.add(
+        OrgMember(
+            org_id=org.id,
+            user_id=test_user.id,
+            role="admin",
+            joined_at=datetime.now(timezone.utc),
+        )
+    )
+    proj = Project(
+        id=f"proj_{tag}",
+        org_id=org.id,
+        git_remote_normalized=git_remote,
+        name="X",
+        owner_id=test_user.id,
+        created_at=datetime.now(timezone.utc),
+    )
+    db_session.add(proj)
+    db_session.add(
+        AgentPersona(
+            id=f"pers_{tag}",
+            org_id=org.id,
+            project_id=None,
+            name="atlas",
+            role="backend",
+            content="x",
+            is_active=True,
+            created_by=test_user.id,
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+    await db_session.commit()
+    return sid, org, proj
+
+
+@pytest.mark.asyncio
+async def test_claim_drops_org_persona_for_non_member_recipient(
+    client, auth_headers, sample_sfs_tar, db_session, test_user, second_user
+):
+    """GH #70 R10 — the recipient can reach the PROJECT (they captured a
+    session on the same repo) but is not a member of the project's org,
+    so the org persona must not be carried into their bundle."""
+    sid, org, proj = await _org_persona_handoff_setup(
+        client, auth_headers, sample_sfs_tar, db_session, test_user, "p3neg"
+    )
+    user, recipient_headers = second_user
+    # Recipient's own session on the same repo → project access without
+    # org membership (captured-session path).
+    await _push_session(client, recipient_headers, sample_sfs_tar)
+
+    h = await _create_handoff(
+        client, auth_headers, sid,
+        recipient_email=user.email,
+        persona_name="atlas",
+    )
+    claim = await client.post(
+        f"/api/v1/handoffs/{h['id']}/claim", headers=recipient_headers
+    )
+    assert claim.status_code == 200, claim.text
+    body = claim.json()
+    payload = body.get("active_ticket_payload")
+    assert payload is not None
+    assert payload["project_id"] == proj.id
+    assert payload["persona_name"] is None
+    dropped = body.get("dropped_attachments") or []
+    persona_drops = [d for d in dropped if d["kind"] == "persona"]
+    assert len(persona_drops) == 1
+    assert persona_drops[0]["ref_id"] == "atlas"
+    assert persona_drops[0]["reason"] == "persona_not_visible"
+
+
+@pytest.mark.asyncio
+async def test_claim_keeps_org_persona_for_member_recipient(
+    client, auth_headers, sample_sfs_tar, db_session, test_user, second_user
+):
+    """GH #70 R10 — an org member recipient sees the org persona; the
+    bundle carries the canonical name and no persona drop is reported."""
+    sid, org, proj = await _org_persona_handoff_setup(
+        client, auth_headers, sample_sfs_tar, db_session, test_user, "p3pos"
+    )
+    user, recipient_headers = second_user
+    db_session.add(
+        OrgMember(
+            org_id=org.id,
+            user_id=user.id,
+            role="member",
+            joined_at=datetime.now(timezone.utc),
+        )
+    )
+    await db_session.commit()
+
+    h = await _create_handoff(
+        client, auth_headers, sid,
+        recipient_email=user.email,
+        persona_name="atlas",
+    )
+    claim = await client.post(
+        f"/api/v1/handoffs/{h['id']}/claim", headers=recipient_headers
+    )
+    assert claim.status_code == 200, claim.text
+    body = claim.json()
+    payload = body.get("active_ticket_payload")
+    assert payload is not None
+    assert payload["project_id"] == proj.id
+    assert payload["persona_name"] == "atlas"
+    dropped = body.get("dropped_attachments") or []
+    assert [d for d in dropped if d["kind"] == "persona"] == []

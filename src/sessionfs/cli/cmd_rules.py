@@ -152,7 +152,7 @@ def _get_git_root() -> Path | None:
 
 
 def _normalize_remote(url: str) -> str:
-    from sessionfs.server.github_app import normalize_git_remote
+    from sessionfs.git_remote import normalize_git_remote
     return normalize_git_remote(url)
 
 

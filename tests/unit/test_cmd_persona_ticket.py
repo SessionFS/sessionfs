@@ -181,3 +181,124 @@ def test_ticket_start_warns_on_bundle_write_failure(monkeypatch):
     assert result.exit_code == 0
     assert "could not write" in result.output.lower()
     assert "Active ticket bundle written" not in result.output
+
+
+# ── GH #70 — org-level personas ──
+
+
+def _record_api(monkeypatch, responses):
+    """Patch the CLI API layer; returns the list of (method, path, json)."""
+    from sessionfs.cli import cmd_persona
+
+    calls: list[tuple[str, str, object]] = []
+    monkeypatch.setattr(
+        cmd_persona, "_resolve_project",
+        lambda: ("https://api.test", "test-key", "proj_a"),
+    )
+    monkeypatch.setattr(
+        cmd_persona, "_get_api_config", lambda: ("https://api.test", "test-key"),
+    )
+
+    async def _fake_api(method, path, api_url, api_key, json_data=None, extra_headers=None):
+        calls.append((method, path, json_data))
+        return responses(method, path)
+
+    monkeypatch.setattr(cmd_persona, "_api_request", _fake_api)
+    return calls
+
+
+def test_persona_list_shows_scope_column(monkeypatch):
+    calls = _record_api(monkeypatch, lambda m, p: (200, [
+        {"name": "atlas", "role": "Backend", "scope": "project", "specializations": []},
+        {"name": "gcp-infra", "role": "TF", "scope": "org", "specializations": []},
+    ], {}))
+    result = runner.invoke(persona_app, ["list"])
+    assert result.exit_code == 0, result.output
+    assert calls[0][1] == "/api/v1/projects/proj_a/personas"
+    assert "Org" in result.output and "Project" in result.output
+
+
+def test_persona_list_no_org_and_org_flags(monkeypatch):
+    calls = _record_api(monkeypatch, lambda m, p: (200, [], {}))
+    runner.invoke(persona_app, ["list", "--no-org"])
+    assert calls[-1][1] == "/api/v1/projects/proj_a/personas?include_org=false"
+    runner.invoke(persona_app, ["list", "--org", "org_1"])
+    assert calls[-1][1] == "/api/v1/orgs/org_1/personas"
+
+
+def test_persona_create_and_delete_with_org(monkeypatch):
+    def _resp(method, path):
+        if method == "POST":
+            return (201, {"name": "release", "scope": "org"}, {})
+        return (204, None, {})
+
+    calls = _record_api(monkeypatch, _resp)
+    result = runner.invoke(
+        persona_app, ["create", "release", "--role", "Gov", "--content", "# R", "--org", "org_1"],
+    )
+    assert result.exit_code == 0, result.output
+    assert calls[-1][0] == "POST" and calls[-1][1] == "/api/v1/orgs/org_1/personas"
+    assert calls[-1][2]["name"] == "release"
+
+    result = runner.invoke(persona_app, ["delete", "release", "--yes", "--force", "--org", "org_1"])
+    assert result.exit_code == 0, result.output
+    assert calls[-1] == ("DELETE", "/api/v1/orgs/org_1/personas/release?force=true", None)
+
+
+def test_persona_edit_refuses_org_persona_without_org_flag(monkeypatch):
+    _record_api(monkeypatch, lambda m, p: (200, {
+        "name": "gcp-infra", "role": "TF", "content": "x", "scope": "org", "org_id": "org_1",
+    }, {}))
+    result = runner.invoke(persona_app, ["edit", "gcp-infra"])
+    assert result.exit_code != 0
+    assert "--org org_1" in result.output
+
+
+def test_persona_404_keeps_server_detail_and_suggests_org_flag(monkeypatch):
+    detail = (
+        "Persona 'gcp-infra' is an org-level persona; manage it under "
+        "/api/v1/orgs/org_1/personas (org admins), or create a project persona "
+        "with the same name to override it."
+    )
+    _record_api(monkeypatch, lambda m, p: (404, {"error": {"code": "404", "message": detail}}, {}))
+    result = runner.invoke(persona_app, ["delete", "gcp-infra", "--yes"])
+    assert result.exit_code != 0
+    assert "org-level persona" in result.output
+    assert "--org org_1" in result.output
+
+
+def test_persona_assume_writes_canonical_name(monkeypatch, tmp_path):
+    from sessionfs import active_ticket as _at
+
+    bundle = tmp_path / "active.json"
+    monkeypatch.setattr(_at, "bundle_path", lambda: bundle)
+    _record_api(monkeypatch, lambda m, p: (200, {"name": "Atlas", "scope": "org"}, {}))
+    result = runner.invoke(persona_app, ["assume", "ATLAS"])
+    assert result.exit_code == 0, result.output
+    import json as _json
+    assert _json.loads(bundle.read_text())["persona_name"] == "Atlas"
+
+
+def test_persona_404_plain_falls_back_to_short_message(monkeypatch):
+    _record_api(monkeypatch, lambda m, p: (404, {"error": {"code": "404", "message": "Persona not found"}}, {}))
+    result = runner.invoke(persona_app, ["show", "ghost"])
+    assert result.exit_code != 0
+    assert "Persona 'ghost' not found." in result.output
+
+
+def test_persona_pull_all_writes_org_personas(monkeypatch, tmp_path):
+    calls = _record_api(monkeypatch, lambda m, p: (200, [
+        {"name": "atlas", "role": "Backend Architect", "scope": "project", "content": "# A\n", "version": 1},
+        {"name": "gcp-infra", "role": "Terraform engineer", "scope": "org", "org_id": "org_1",
+         "content": "# G\n", "version": 3},
+    ], {}))
+    result = runner.invoke(persona_app, ["pull", "--all", "--dir", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert calls[0][1] == "/api/v1/projects/proj_a/personas"
+    assert (tmp_path / "atlas-backend.md").exists()
+    org_file = tmp_path / "gcp-infra-terraform.md"
+    assert org_file.exists()
+    assert "Scope: org persona (org_1)" in org_file.read_text()
+
+    runner.invoke(persona_app, ["pull", "--all", "--no-org", "--dir", str(tmp_path), "--force"])
+    assert calls[-1][1] == "/api/v1/projects/proj_a/personas?include_org=false"
