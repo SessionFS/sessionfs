@@ -9,8 +9,11 @@ documentation ranges or known capture services; nothing here is runnable.
 
 from __future__ import annotations
 
+import json
 import random
 import re
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -562,6 +565,35 @@ def _best_of(count: int, run, clock=_CPU) -> float:
         run()
         best = min(best, clock() - started)
     return best
+
+
+_FRESH_SCAN_TIMER = """
+import json, sys, time
+from sessionfs.skills.instruction_scan import scan_files
+job = json.load(sys.stdin)
+def best(text):
+    files = [(job["script"], text), (job["skill"], text)]
+    scan_files(files)  # warm the regex cache
+    started = time.process_time()
+    scan_files(files)
+    return time.process_time() - started
+print(json.dumps([best(job["large"]), best(job["small"])]))
+"""
+
+
+def _scan_times_in_fresh_process(large: str, small: str) -> tuple[float, float]:
+    """CPU seconds to scan `large` and `small`, measured in a new interpreter.
+
+    Late in a full suite run the test process carries the state of thousands
+    of earlier tests, and on CI runners that alone skews a large scan by 2-3x
+    against a small one. A fresh process measures only the scanner.
+    """
+    job = json.dumps({"script": SCRIPT, "skill": SKILL, "large": large, "small": small})
+    done = subprocess.run(
+        [sys.executable, "-c", _FRESH_SCAN_TIMER], input=job, capture_output=True, text=True, timeout=600, check=True
+    )
+    elapsed, quarter = json.loads(done.stdout)
+    return elapsed, quarter
 
 
 def _typical_bundle() -> dict[str, str]:
@@ -3152,9 +3184,8 @@ def test_runs_of_fail_closed_wrappers_scan_quickly(text: str) -> None:
 def test_round_11_paths_scan_256_kib_in_linear_time(token: str) -> None:
     large = _FETCH + "\n" + _filled(token)
     small = large[: len(large) // 4]
-    elapsed = _best_of(1, lambda: scan_files([(SCRIPT, large), (SKILL, large)]))
+    elapsed, quarter = _scan_times_in_fresh_process(large, small)
     assert elapsed < 1.0 * _HEADROOM, (token, elapsed)  # typically ~1-2 s for both members
-    quarter = _best_of(1, lambda: scan_files([(SCRIPT, small), (SKILL, small)]))
     assert elapsed < quarter * 8 + 0.25, (token, quarter, elapsed)  # 4x the input: linear
 
 
@@ -3387,9 +3418,8 @@ def test_round_12_benign_shapes_stay_clean(text: str) -> None:
 def test_round_12_paths_scan_256_kib_in_linear_time(token: str) -> None:
     large = _FETCH + "\n" + _filled(token)
     small = large[: len(large) // 4]
-    elapsed = _best_of(1, lambda: scan_files([(SCRIPT, large), (SKILL, large)]))
+    elapsed, quarter = _scan_times_in_fresh_process(large, small)
     assert elapsed < 1.5 * _HEADROOM, (token, elapsed)  # typically 2-5 s for both members
-    quarter = _best_of(1, lambda: scan_files([(SCRIPT, small), (SKILL, small)]))
     assert elapsed < quarter * 8 + 0.25, (token, quarter, elapsed)  # 4x the input: linear
 
 
