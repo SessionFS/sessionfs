@@ -2548,7 +2548,9 @@ def test_registry_removal_waits_for_in_flight_add(tmp_path: Path, monkeypatch: p
     adder.join(10)
     remover_thread.join(10)
     assert errors == []
-    assert timeline == ["add-done", "remove-returned"]
+    # Both finish; their order after the add releases its locks is a thread
+    # race. "still referenced" proves the removal ran after the add's lock write.
+    assert sorted(timeline) == ["add-done", "remove-returned"]
     assert remove_outcome and "still referenced" in remove_outcome[0]
     assert [row.alias for row in manager.registries.list("user")] == ["acme"]
 
