@@ -304,6 +304,24 @@ async def test_scope_is_in_the_vocabulary_and_platform_mint_only() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _api_routes(routes, prefix: str = ""):
+    """(path, route) for every APIRoute. Newer FastAPI keeps included routers
+    as wrappers in ``app.routes`` (their prefix on ``include_context``), older
+    releases flatten them, so walk both shapes."""
+    from fastapi.routing import APIRoute
+
+    for route in routes:
+        if isinstance(route, APIRoute):
+            yield prefix + route.path, route
+        elif getattr(route, "original_router", None) is not None:
+            context = getattr(route, "include_context", None)
+            yield from _api_routes(
+                route.original_router.routes, prefix + (getattr(context, "prefix", "") or "")
+            )
+        elif hasattr(route, "routes"):
+            yield from _api_routes(route.routes, prefix + (getattr(route, "path", "") or ""))
+
+
 def _concrete(path: str) -> str:
     return re.sub(r"\{[^}:]+(?::path)?\}", "x0", path)
 
@@ -313,24 +331,20 @@ async def test_sweep_key_grants_nothing_beyond_the_sweeps(
 ) -> None:
     """Every other API route answers the narrow key exactly as it answers an
     unauthenticated request (or refuses it): the scope unlocks nothing else."""
-    from fastapi.routing import APIRoute
-
     _, _, _, headers = await _sweep_key(db_session)
     app = client._transport.app  # type: ignore[attr-defined]
     checked = 0
-    for route in app.routes:
-        if not isinstance(route, APIRoute) or not route.path.startswith("/api/"):
-            continue
-        if route.path in SWEEP_PATHS:
+    for path, route in _api_routes(app.routes):
+        if not path.startswith("/api/") or path in SWEEP_PATHS:
             continue
         for method in sorted(route.methods - {"HEAD", "OPTIONS"}):
-            url = _concrete(route.path)
+            url = _concrete(path)
             kwargs = {} if method in ("GET", "DELETE") else {"json": {}}
             keyed = await client.request(method, url, headers=headers, **kwargs)
             if keyed.status_code < 300:
                 anonymous = await client.request(method, url, **kwargs)
                 assert anonymous.status_code < 300, (
-                    f"{method} {route.path} answers the sweep key {keyed.status_code} "
+                    f"{method} {path} answers the sweep key {keyed.status_code} "
                     f"but anonymous {anonymous.status_code}"
                 )
             checked += 1

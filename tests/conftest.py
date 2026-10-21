@@ -25,6 +25,11 @@ from pathlib import Path
 _SESSION_HOME = tempfile.mkdtemp(prefix="sfs-test-home-")
 os.environ["HOME"] = _SESSION_HOME
 os.environ.pop("USERPROFILE", None)
+# Rich fixes a console's width at construction when COLUMNS is set (CI
+# runners export COLUMNS=80), so the CLI's module-level console would ignore
+# the per-invoke COLUMNS that table tests pass to CliRunner.
+os.environ.pop("COLUMNS", None)
+os.environ.pop("LINES", None)
 
 import pytest  # noqa: E402
 
