@@ -12,10 +12,14 @@ from __future__ import annotations
 import json
 import os
 import random
-import tomllib
 from pathlib import Path
 
 import pytest
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as tomllib
 
 from sessionfs.server.services.policy_compiler import (
     POLICY_FIELDS,
