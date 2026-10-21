@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import ipaddress
 import os
 import re
 import signal
@@ -10,7 +11,8 @@ import shutil
 # Git runs with a fixed argv, shell disabled, and an absolute executable path.
 import subprocess  # nosec B404
 import tempfile
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit, urlunsplit
@@ -20,6 +22,16 @@ from sessionfs.skills.package import USTAR_NAME_LIMIT, USTAR_PREFIX_LIMIT, fits_
 from sessionfs.skills.path_safety import CasefoldCollisionTracker, is_link_or_reparse
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+class GitTransportError(SkillError):
+    """git itself failed or did not finish: network, TLS, HTTP 5xx, auth,
+    timeouts, a ref that moved, a server lacking a required capability.
+    Transient or environmental, never a verdict on the fetched content (the
+    registry poller retries these with backoff; a plain SkillError from the
+    tree/package checks is a deterministic refusal of that content)."""
+
+
 # Blobs above this size are never fetched: the partial clone filter keeps them
 # out of the fetch, and the tree walk rejects them before any lazy fetch.
 PER_FILE_CAP_BYTES = 16 * 1024 * 1024
@@ -41,15 +53,65 @@ class MaterializedSource:
     identity: SourceIdentity
 
 
+_LDH_HOST_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$")
+# Characters an authority (userinfo@host:port) may contain at all. Anything
+# else - `%` (percent-encoding that a resolver and libcurl would read
+# differently), a backslash, unicode - is refused before parsing.
+_AUTHORITY_CHARS_RE = re.compile(r"^[A-Za-z0-9._~:@\[\]-]*$")
+
+
+def canonical_git_host(raw: str) -> str:
+    """The one canonical spelling of a Git host, or SkillError.
+
+    Accepts an LDH hostname (lower-cased; an internationalized name must
+    already be punycode ``xn--``; one trailing dot is dropped, so ``host.``
+    and ``host`` are the same host), a canonical dotted-quad IPv4 literal, or
+    an IPv6 literal (returned unbracketed, compressed). The result is the
+    exact name a URL built from it hands to libcurl, so a resolver pin keyed
+    on it always applies."""
+    host = raw.strip()
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    if ":" in host:
+        try:
+            parsed_ip = ipaddress.IPv6Address(host)
+        except ValueError as exc:
+            raise SkillError("Git source host is not a valid IPv6 literal") from exc
+        return str(parsed_ip)
+    host = host.lower()
+    if host.endswith("."):
+        host = host[:-1]
+    if not host or len(host) > 253 or not _LDH_HOST_RE.fullmatch(host):
+        raise SkillError("Git source host must be a plain DNS name or IP literal")
+    if any(len(label) > 63 for label in host.split(".")):
+        raise SkillError("Git source host must be a plain DNS name or IP literal")
+    if host.rsplit(".", 1)[-1].isdigit():
+        # Numeric last label: only a canonical dotted quad (no 0x7f.1,
+        # 2130706433 or 010.0.0.1 spellings that resolvers read differently).
+        try:
+            parsed_v4 = ipaddress.IPv4Address(host)
+        except ValueError as exc:
+            raise SkillError("Git source host must be a plain DNS name or IP literal") from exc
+        if str(parsed_v4) != host:
+            raise SkillError("Git source host must be a plain DNS name or IP literal")
+    return host
+
+
 def normalize_git_url(value: str) -> str:
     """Return a stable, credential-free HTTPS/SSH Git locator."""
     if (
         value.startswith("-")
         or value.startswith("ext::")
         or value.startswith("file:")
-        or any(ord(char) < 33 or ord(char) == 127 for char in value)
+        or "\\" in value
+        or any(ord(char) < 33 or ord(char) >= 127 for char in value)
     ):
         raise SkillError("Unsafe Git source URL")
+    scheme_end = value.find("://")
+    if scheme_end != -1:
+        authority = value[scheme_end + 3:].split("/", 1)[0]
+        if not _AUTHORITY_CHARS_RE.fullmatch(authority) or authority.count("@") > 1:
+            raise SkillError("Unsafe Git source URL")
     try:
         parsed = urlsplit(value)
         port = parsed.port
@@ -66,9 +128,9 @@ def normalize_git_url(value: str) -> str:
     username = parsed.username or ""
     if username and not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", username):
         raise SkillError("Git SSH usernames must be simple identifiers")
-    host = parsed.hostname.lower()
-    if not host.isascii():
+    if not parsed.hostname.isascii():
         raise SkillError("Git source hostnames must be ASCII")
+    host = canonical_git_host(parsed.hostname)
     if ":" in host:
         host = f"[{host}]"
     port_suffix = f":{port}" if port else ""
@@ -199,7 +261,7 @@ def _run_bounded(
     except subprocess.TimeoutExpired as exc:
         _kill_process_tree(process)
         process.communicate()
-        raise SkillError("Git source operation timed out") from exc
+        raise GitTransportError("Git source operation timed out") from exc
     finally:
         stop.set()
         watcher.join(timeout=2)
@@ -218,8 +280,9 @@ def _run_streaming(
     on_record: Callable[[bytes], None],
     timeout: float,
     max_record_bytes: int = MAX_GIT_TREE_RECORD_BYTES,
+    separator: bytes = b"\0",
 ) -> tuple[int, bytes]:
-    """Run a subprocess and hand each NUL-terminated stdout record to
+    """Run a subprocess and hand each `separator`-terminated (NUL by default) stdout record to
     `on_record` as it arrives, never buffering the whole output. If
     `on_record` raises (a limit was exceeded) the process is killed at once
     and the exception propagates. stderr goes to a temp file so a chatty
@@ -253,7 +316,7 @@ def _run_streaming(
                 if not chunk:
                     break
                 pending += chunk
-                *records, pending = pending.split(b"\0")
+                *records, pending = pending.split(separator)
                 for record in records:
                     if len(record) > max_record_bytes:
                         raise SkillError("Git tree contains an invalid entry")
@@ -271,7 +334,7 @@ def _run_streaming(
             timer.cancel()
             stdout.close()
         if timed_out.is_set():
-            raise SkillError("Git source operation timed out")
+            raise GitTransportError("Git source operation timed out")
         stderr_file.seek(0)
         return returncode, stderr_file.read(64 * 1024)
 
@@ -287,19 +350,34 @@ def _run_git(
     stderr_sink: list[str] | None = None,
     on_record: Callable[[bytes], None] | None = None,
     max_record_bytes: int = MAX_GIT_TREE_RECORD_BYTES,
+    record_separator: bytes = b"\0",
+    base_env: dict[str, str] | None = None,
+    extra_config: tuple[str, ...] = (),
 ) -> bytes:
     """Run git hardened (no hooks, fixed argv, no shell, 60 s timeout).
 
-    With `on_record`, stdout is streamed record by record (NUL-separated) into
-    the callback instead of being returned, so a hostile tree listing is
-    refused - and git killed - as soon as a limit trips; returns b""."""
+    With `on_record`, stdout is streamed record by record (NUL-separated, or
+    `record_separator`) into the callback instead of being returned, so a
+    hostile listing is refused - and git killed - as soon as a limit trips;
+    returns b"".
+
+    `base_env` REPLACES the inherited environment (the server-side registry
+    poller runs git with a minimal, fully controlled environment: no proxy,
+    trace, config or askpass variables from the API process). `extra_config`
+    holds ``key=value`` settings passed as ``-c`` options after the hooks
+    override."""
     git_path = shutil.which("git")
     if git_path is None:
-        raise SkillError("git is required to import remote skills")
+        raise GitTransportError("git is required to import remote skills")
     run_env = None
-    if env:
+    if base_env is not None:
+        run_env = {**base_env, **(env or {})}
+    elif env:
         run_env = {**os.environ, **env}
-    argv = [git_path, "-c", "core.hooksPath=/dev/null", *args]
+    config_args: list[str] = []
+    for item in extra_config:
+        config_args.extend(["-c", item])
+    argv = [git_path, "-c", "core.hooksPath=/dev/null", *config_args, *args]
     try:
         if on_record is not None:
             returncode, stderr = _run_streaming(
@@ -309,6 +387,7 @@ def _run_git(
                 on_record=on_record,
                 timeout=_GIT_TIMEOUT_SECONDS,
                 max_record_bytes=max_record_bytes,
+                separator=record_separator,
             )
             stdout = b""
         elif watch_dir is not None and disk_cap is not None:
@@ -333,14 +412,14 @@ def _run_git(
             )
             returncode, stdout, stderr = result.returncode, result.stdout, result.stderr
     except FileNotFoundError as exc:
-        raise SkillError("git is required to import remote skills") from exc
+        raise GitTransportError("git is required to import remote skills") from exc
     except subprocess.TimeoutExpired as exc:
-        raise SkillError("Git source operation timed out") from exc
+        raise GitTransportError("Git source operation timed out") from exc
     error_text = stderr.decode("utf-8", errors="replace").strip()
     if stderr_sink is not None:
         stderr_sink.append(error_text)
     if returncode != 0:
-        raise SkillError(f"Git source operation failed: {error_text[:500]}")
+        raise GitTransportError(f"Git source operation failed: {error_text[:500]}")
     return stdout
 
 
@@ -351,10 +430,10 @@ def _pack_bytes(repo: Path) -> int:
     return sum(item.stat().st_size for item in pack_dir.iterdir() if item.is_file())
 
 
-def _require_git_version(cwd: Path) -> None:
+def _require_git_version(cwd: Path, *, base_env: dict[str, str] | None = None) -> None:
     """Refuse to import remote sources on git < 2.44: without GIT_NO_LAZY_FETCH
     a hostile repo can force `ls-tree -l` to download every filtered blob."""
-    raw = _run_git(["--version"], cwd=cwd).decode("utf-8", errors="replace")
+    raw = _run_git(["--version"], cwd=cwd, base_env=base_env).decode("utf-8", errors="replace")
     match = _GIT_VERSION_RE.search(raw)
     if match is None:
         raise SkillError("Could not determine the git version")
@@ -440,13 +519,57 @@ def materialize_source(
         return
 
     locator = normalize_git_url(str(source))
-    ref = pin or "HEAD"
+    with materialize_git_tree(
+        locator,
+        pin or "HEAD",
+        subdir=clean_subdir,
+        paths=paths,
+        expect_commit=pin if pin and _SHA_RE.fullmatch(pin) else None,
+    ) as (output, commit):
+        identity = SourceIdentity(
+            source_type=source_type or "git",
+            locator=locator,
+            commit=commit,
+            subdir=clean_subdir,
+            registry_scope=registry_scope,
+            registry_id=registry_id,
+            registry_alias=registry_alias,
+            listing_name=listing_name,
+        )
+        yield MaterializedSource(output, identity)
+
+
+@contextlib.contextmanager
+def materialize_git_tree(
+    locator: str,
+    ref: str,
+    *,
+    subdir: str = "",
+    paths: tuple[str, ...] | None = None,
+    expect_commit: str | None = None,
+    git_env: dict[str, str] | None = None,
+    git_config: tuple[str, ...] = (),
+    deadline: float | None = None,
+) -> Iterator[tuple[Path, str]]:
+    """Fetch ``ref`` of the remote ``locator`` into a throwaway bare repository
+    and write the (validated) tree at ``subdir`` to a temporary directory.
+    Yields ``(directory, commit)``.
+
+    The caller validates ``locator``. ``git_env`` (a full replacement
+    environment) and ``git_config`` (extra ``-c`` settings) are applied to
+    EVERY git invocation; the registry poller uses them to pin the resolved
+    address, disable redirects and pass credentials without touching argv.
+    ``deadline`` (``time.monotonic()``) bounds the blob-reading phase on top
+    of the per-command timeout. No repository-controlled code ever runs: the
+    repository is bare (no checkout), hooks are disabled, and only blobs of
+    the validated tree are read."""
+    clean_subdir = _safe_subdir(subdir)
     with tempfile.TemporaryDirectory(prefix="sfs-skill-git-") as tmp:
         repo = Path(tmp) / "repo.git"
         output = Path(tmp) / "tree"
         repo.mkdir()
-        _require_git_version(repo)
-        _run_git(["init", "--bare", "--quiet"], cwd=repo)
+        _require_git_version(repo, base_env=git_env)
+        _run_git(["init", "--bare", "--quiet"], cwd=repo, base_env=git_env, extra_config=git_config)
         fetch_stderr: list[str] = []
         _run_git(
             [
@@ -462,14 +585,14 @@ def materialize_source(
                 locator,
                 ref,
             ],
-            cwd=repo,
+            cwd=repo, base_env=git_env, extra_config=git_config,
             watch_dir=repo,
             disk_cap=MAX_FETCH_BYTES,
             stderr_sink=fetch_stderr,
         )
         stderr_text = "\n".join(fetch_stderr).lower()
         if any(marker in stderr_text for marker in _FILTER_UNSUPPORTED_MARKERS):
-            raise SkillError(
+            raise GitTransportError(
                 "The Git server does not support partial-clone filters; remote skill "
                 "sources must be hosted on a server that honors --filter"
             )
@@ -477,13 +600,13 @@ def materialize_source(
             raise SkillError(
                 f"Git fetch exceeded the {MAX_FETCH_BYTES}-byte download limit"
             )
-        commit = _run_git(["rev-parse", "FETCH_HEAD^{commit}"], cwd=repo).decode().strip()
+        commit = _run_git(["rev-parse", "FETCH_HEAD^{commit}"], cwd=repo, base_env=git_env, extra_config=git_config).decode().strip()
         if not _SHA_RE.fullmatch(commit):
             raise SkillError("Git did not resolve the source to a full commit SHA")
-        if pin and _SHA_RE.fullmatch(pin) and commit != pin:
+        if expect_commit and commit != expect_commit:
             # A sha pin is exact: the server must have served that very commit.
-            raise SkillError(
-                f"Git source resolved to {commit} but the pinned commit is {pin}"
+            raise GitTransportError(
+                f"Git source resolved to {commit} but the pinned commit is {expect_commit}"
             )
         tree_args = ["ls-tree", "-lrz", "-r", "--full-tree", commit]
         pathspecs: list[str] = []
@@ -592,7 +715,7 @@ def materialize_source(
             # instead, which can only mean a blob above the per-file cap.
             _run_git(
                 tree_args,
-                cwd=repo,
+                cwd=repo, base_env=git_env, extra_config=git_config,
                 env={"GIT_NO_LAZY_FETCH": "1"},
                 on_record=_on_tree_record,
                 # The fixed record budget applies to the part after the
@@ -611,7 +734,9 @@ def materialize_source(
             raise
         # Pass 2: fetch only after the whole tree passed validation.
         for pure, object_id, size, repository_path in planned:
-            data = _run_git(["cat-file", "blob", object_id], cwd=repo)
+            if deadline is not None and time.monotonic() > deadline:
+                raise GitTransportError("Git source operation timed out")
+            data = _run_git(["cat-file", "blob", object_id], cwd=repo, base_env=git_env, extra_config=git_config)
             if len(data) != size:
                 raise SkillError(f"Git blob size changed while reading: {repository_path}")
             destination = output / pure.as_posix()
@@ -619,14 +744,4 @@ def materialize_source(
             destination.write_bytes(data)
         if not count:
             raise SkillError("Git source did not contain files at the selected subdirectory")
-        identity = SourceIdentity(
-            source_type=source_type or "git",
-            locator=locator,
-            commit=commit,
-            subdir=clean_subdir,
-            registry_scope=registry_scope,
-            registry_id=registry_id,
-            registry_alias=registry_alias,
-            listing_name=listing_name,
-        )
-        yield MaterializedSource(output, identity)
+        yield output, commit

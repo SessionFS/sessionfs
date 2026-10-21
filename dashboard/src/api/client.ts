@@ -733,8 +733,67 @@ export interface MarketplacePackage {
   instruction_preview?: { path: string; content: string }[];
   /** Capability digest (marketplace v2 §3.2); null until computed. */
   capability_digest?: string | null;
+  /** Discovery (marketplace v2 §9). Absent on older servers. */
+  categories?: string[];
+  deprecation?: MarketplaceDeprecation | null;
+  freshness?: MarketplaceFreshness;
+  installs?: MarketplaceInstalls;
   /** Install disclosure card (preview responses). */
   disclosure?: MarketplaceDisclosure | null;
+}
+
+// Native per-tool catalogs + works-in (marketplace v2 §7).
+export interface NativeCatalog {
+  scope: 'public' | 'org' | 'user';
+  scope_id: string | null;
+  marketplace: string;
+  clone_url: string;
+  current_commit: string | null;
+  generated_at: string | null;
+  plugin_count: number | null;
+  export_remote: string | null;
+  /** Keyless public GitHub mirror (public scope, when the deployment configures one). */
+  mirror?: NativeCatalogMirror | null;
+  /** tool -> { add?, cli?, install?, add_hosted? } command strings (tool's own syntax). */
+  tools: Record<string, Record<string, string>>;
+}
+
+export interface NativeCatalogMirror {
+  /** GitHub owner/repo, e.g. SessionFS/marketplace. */
+  repo: string;
+  url: string;
+  branch: string;
+}
+
+export interface NativeCatalogList {
+  items: NativeCatalog[];
+  credential_helper: string;
+  vendor_docs_checked: string;
+}
+
+export type WorksInBadge =
+  | 'verified'
+  | 'format-valid'
+  | 'regressed'
+  | 'failed'
+  | 'format-invalid'
+  | 'not-applicable'
+  | 'unverified';
+
+export interface WorksInLevel {
+  status: 'pass' | 'fail' | 'regressed' | 'skipped';
+  tool_version: string;
+  run_at: string | null;
+  reason: string;
+  projection_hash: string | null;
+}
+
+export interface WorksIn {
+  version_id: string;
+  content_hash: string;
+  vendor_docs_checked: string;
+  tools: Record<string, { badge: WorksInBadge; levels: Partial<Record<'L0' | 'L1' | 'L2', WorksInLevel>> }>;
+  expected_only: Record<string, { badge: 'expected'; omitted_components: string[] }>;
 }
 
 // Install disclosure + update diff (marketplace v2 §3). Every string is
@@ -880,6 +939,181 @@ export interface MarketplaceSearchResponse {
   has_more: boolean;
   /** Opaque keyset cursor for the next page; null when has_more is false. */
   next_cursor: string | null;
+  sort?: 'recent' | 'relevance';
+}
+
+/** A count under the display floor (10) has count=null and display "<10". */
+export interface FlooredCount {
+  count: number | null;
+  display: string;
+  /** Rounded down to a multiple of 10 ("40+") because a part of its breakdown is hidden. */
+  approximate?: boolean;
+}
+
+export interface MarketplaceDeprecation {
+  deprecated_at: string | null;
+  message: string | null;
+  /** Only present when the caller can see the successor package. */
+  successor: { package_id: string; namespace: string; name: string; display_name: string } | null;
+}
+
+export type VerifyStatus = 'unknown' | 'passing' | 'failing' | 'regressed';
+
+export interface MarketplaceToolFreshness {
+  last_updated_at: string | null;
+  last_verified_at: string | null;
+  /** The version that last passed; a status counts only for the current version. */
+  last_verified_version_id?: string | null;
+  /** 'unknown' whenever the result is not about the package's current version. */
+  verify_status: VerifyStatus;
+  stale: boolean;
+}
+
+export interface MarketplaceFreshness {
+  stale: boolean;
+  unmaintained: boolean;
+  deprecated: boolean;
+  last_updated_at: string | null;
+  computed_at: string | null;
+  tools: Record<string, MarketplaceToolFreshness>;
+}
+
+export interface MarketplaceInstalls {
+  window_days: number;
+  total: FlooredCount;
+  by_tool: Record<string, FlooredCount>;
+}
+
+export interface MarketplaceSearchFilters {
+  q?: string;
+  tool?: string;
+  category?: string;
+  publisher?: string;
+  verified?: boolean;
+  attested?: boolean;
+  license?: string;
+  max_severity?: 'none' | 'low' | 'medium' | 'high' | 'critical';
+  capability?: string;
+  works_in?: string;
+  updated_within?: number;
+  include_deprecated?: boolean;
+  sort?: 'recent' | 'relevance';
+  limit?: number;
+  cursor?: string;
+}
+
+export interface MarketplaceCategory {
+  slug: string;
+  display_name: string;
+}
+
+export interface MarketplaceReadme {
+  version_id: string;
+  package_id: string;
+  source: 'readme' | 'skill_md' | 'none';
+  path: string | null;
+  /** Untrusted markdown: hidden characters already replaced by ⟦U+XXXX⟧. */
+  content: string;
+  hidden_unicode: { line: number; column: number; code_point: string; kind: string }[];
+  truncated: boolean;
+  untrusted: boolean;
+  image_path_prefix: string;
+}
+
+export interface PublisherAnalyticsToolRow {
+  tool: string;
+  installs: FlooredCount;
+  active: FlooredCount;
+  uninstalls: FlooredCount;
+  uninstall_rate: number | null;
+  translation_failures: FlooredCount;
+}
+
+export interface PublisherAnalyticsPackage {
+  package_id: string;
+  namespace: string;
+  name: string;
+  display_name: string;
+  current_version_id: string | null;
+  current_version: string | null;
+  installs: FlooredCount;
+  active_installs: FlooredCount;
+  uninstalls: FlooredCount;
+  uninstall_rate: number | null;
+  translation_failures: FlooredCount;
+  installs_by_tool: Record<string, FlooredCount>;
+  translation_failures_by_tool: Record<string, FlooredCount>;
+  installs_by_version: { version_id: string; version: string | null; installs: FlooredCount }[];
+  works_in: { tool: string; verify_status: VerifyStatus; last_verified_at: string | null; last_updated_at: string | null; stale: boolean }[];
+  works_in_regressions: string[];
+  stale: boolean;
+  unmaintained: boolean;
+  deprecated: boolean;
+  categories: string[];
+  deprecation_message: string | null;
+  successor_package_id: string | null;
+  readme_path: string | null;
+  scan: { max_severity: string | null; counts: Record<string, number> };
+  open_reports: number;
+}
+
+export interface PublisherAnalytics {
+  publisher_id: string;
+  namespace: string;
+  window_days: number;
+  since: string;
+  k_floor: number;
+  totals: {
+    installs: FlooredCount;
+    active_installs: FlooredCount;
+    uninstalls: FlooredCount;
+    uninstall_rate: number | null;
+    translation_failures: FlooredCount;
+    service_installs: FlooredCount;
+  };
+  by_tool: PublisherAnalyticsToolRow[];
+  by_day: { day: string; installs: FlooredCount }[];
+  packages: PublisherAnalyticsPackage[];
+}
+
+export interface PackageSettingsInput {
+  categories?: string[];
+  deprecated?: boolean;
+  deprecation_message?: string | null;
+  successor_package_id?: string | null;
+  readme_path?: string | null;
+}
+
+export interface PackageSettings {
+  package_id: string;
+  namespace: string;
+  name: string;
+  categories: string[];
+  deprecated_at: string | null;
+  deprecation_message: string | null;
+  successor_package_id: string | null;
+  readme_path: string | null;
+}
+
+export interface OrgSkillUsage {
+  org_id: string;
+  window_days: number;
+  since: string;
+  items: {
+    package_id: string;
+    namespace: string;
+    name: string;
+    display_name: string;
+    installs: number;
+    active: number;
+    uninstalls: number;
+    translation_failures: number;
+    by_tool: { tool: string; installs: number; active: number; uninstalls: number; translation_failures: number }[];
+    stale: boolean;
+    unmaintained: boolean;
+    deprecated: boolean;
+  }[];
+  stale_or_deprecated: string[];
 }
 
 export interface SkillInstallRequest {
@@ -977,9 +1211,35 @@ export interface SkillRegistry {
   source_url: string;
   refresh_commit: string | null;
   policy_state: 'approved' | 'review' | 'blocked';
-  server_fetch_enabled: false;
+  /** True when the server polls this registry (GitHub #69). */
+  server_fetch_enabled: boolean;
   created_at: string;
   updated_at: string;
+  // Server-side polling (older servers omit these).
+  poll_interval_seconds?: number;
+  tag_pattern?: string;
+  branch_only_mode?: boolean;
+  branch?: string | null;
+  /** A reference (env:/k8s:), never a credential. */
+  credential_secret_ref?: string | null;
+  publish_namespace?: string | null;
+  last_poll_at?: string | null;
+  last_poll_status?: 'ok' | 'partial' | 'error' | null;
+  last_poll_error_summary?: string | null;
+  consecutive_failures?: number;
+  next_poll_at?: string | null;
+  poll_requested_at?: string | null;
+  backoff?: boolean;
+}
+
+export interface SkillRegistryUpdate {
+  policy_state?: 'approved' | 'review' | 'blocked';
+  poll_interval_seconds?: number;
+  tag_pattern?: string;
+  branch_only_mode?: boolean;
+  branch?: string;
+  credential_secret_ref?: string;
+  publish_namespace?: string;
 }
 
 // ------------------------------------------------------------------
@@ -1982,17 +2242,65 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       request<AgentRun>(`/api/v1/projects/${projectId}/agent-runs/${runId}`),
 
     // ── v0.16 Skills and plugins marketplace ──
-    searchMarketplace: (params: { q?: string; tool?: string; limit?: number; cursor?: string } = {}) => {
+    searchMarketplace: (params: MarketplaceSearchFilters = {}) => {
       const sp = new URLSearchParams();
       if (params.q) sp.set('q', params.q);
       if (params.tool) sp.set('tool', params.tool);
       if (params.limit) sp.set('limit', String(params.limit));
       if (params.cursor) sp.set('cursor', params.cursor);
+      // Discovery filters (marketplace v2 §9); booleans only when set.
+      for (const key of ['category', 'publisher', 'license', 'max_severity', 'capability', 'works_in', 'sort'] as const) {
+        const value = params[key];
+        if (value) sp.set(key, value);
+      }
+      for (const key of ['verified', 'attested', 'include_deprecated'] as const) {
+        const value = params[key];
+        if (value !== undefined) sp.set(key, value ? 'true' : 'false');
+      }
+      if (params.updated_within) sp.set('updated_within', String(params.updated_within));
       const qs = sp.toString();
       return request<MarketplaceSearchResponse>(
         `/api/v1/marketplace/packages${qs ? `?${qs}` : ''}`,
       );
     },
+
+    listMarketplaceCategories: () =>
+      request<{ items: MarketplaceCategory[]; count: number; max_per_package: number }>(
+        '/api/v1/marketplace/categories',
+      ),
+
+    getMarketplaceReadme: (packageId: string, versionId?: string) =>
+      request<MarketplaceReadme>(
+        `/api/v1/marketplace/packages/${encodeURIComponent(packageId)}/readme${
+          versionId ? `?version_id=${encodeURIComponent(versionId)}` : ''
+        }`,
+      ),
+
+    /** A raster image from inside a package (README images). Fetched with
+     *  the API key and returned as a Blob so it can be shown via an object
+     *  URL; remote images are never loaded. */
+    getMarketplaceAsset: async (versionId: string, path: string): Promise<Blob> => {
+      const resp = await fetch(
+        `${baseUrl}/api/v1/marketplace/versions/${encodeURIComponent(versionId)}/assets?path=${encodeURIComponent(path)}`,
+        { headers: { Authorization: `Bearer ${apiKey}` } },
+      );
+      if (!resp.ok) throw new ApiError(resp.status, await resp.text());
+      return resp.blob();
+    },
+
+    getPublisherAnalytics: (publisherId: string, days = 30) =>
+      request<PublisherAnalytics>(
+        `/api/v1/publishers/${encodeURIComponent(publisherId)}/analytics?days=${days}`,
+      ),
+
+    updatePackageSettings: (publisherId: string, packageId: string, body: PackageSettingsInput) =>
+      request<PackageSettings>(
+        `/api/v1/publishers/${encodeURIComponent(publisherId)}/packages/${encodeURIComponent(packageId)}`,
+        { method: 'PATCH', body: JSON.stringify(body) },
+      ),
+
+    getOrgSkillUsage: (orgId: string, days = 30) =>
+      request<OrgSkillUsage>(`/api/v1/orgs/${encodeURIComponent(orgId)}/skills/usage?days=${days}`),
 
     getMarketplacePackage: (packageId: string) =>
       request<MarketplacePackage>(`/api/v1/marketplace/packages/${packageId}`),
@@ -2028,6 +2336,11 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       request<MarketplaceVersionDiff>(
         `/api/v1/marketplace/versions/${encodeURIComponent(fromVersionId)}/diff/${encodeURIComponent(toVersionId)}`,
       ),
+
+    listNativeCatalogs: () => request<NativeCatalogList>('/api/v1/marketplace/catalogs'),
+
+    getWorksIn: (versionId: string) =>
+      request<WorksIn>(`/api/v1/marketplace/versions/${encodeURIComponent(versionId)}/works-in`),
 
     downloadMarketplaceVersion: async (versionId: string): Promise<Blob> => {
       const resp = await fetch(
@@ -2134,6 +2447,19 @@ export function createApiClient(baseUrl: string, apiKey: string) {
 
     listOrgSkillRegistries: (orgId: string) =>
       request<{ items: SkillRegistry[] }>(`/api/v1/orgs/${orgId}/skills/registries`),
+
+    updateOrgSkillRegistry: (orgId: string, registryId: string, body: SkillRegistryUpdate) =>
+      request<SkillRegistry>(
+        `/api/v1/orgs/${encodeURIComponent(orgId)}/skills/registries/${encodeURIComponent(registryId)}`,
+        { method: 'PATCH', body: JSON.stringify(body) },
+      ),
+
+    /** Schedules the registry for the next poller run; never fetches inline. */
+    requestOrgSkillRegistryPoll: (orgId: string, registryId: string) =>
+      request<SkillRegistry>(
+        `/api/v1/orgs/${encodeURIComponent(orgId)}/skills/registries/${encodeURIComponent(registryId)}/poll`,
+        { method: 'POST' },
+      ),
 
     // ── Marketplace v2: publishing + moderation ──
     /**

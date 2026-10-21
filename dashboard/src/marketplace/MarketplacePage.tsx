@@ -1,21 +1,27 @@
 import { useDeferredValue, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
-import { ApiError } from '../api/client';
-import type { MarketplacePackage } from '../api/client';
+import { isTierGate } from './tierGate';
+import type { MarketplaceCategory, MarketplacePackage } from '../api/client';
 import { Badge } from '../components/Badge';
 import EmptyState from '../components/EmptyState';
-import { Button, Card, Dialog, DialogFooter, DialogHeader, Input, Select } from '../components/ui';
+import { Button, Card, Dialog, DialogFooter, DialogHeader, Input, Select, Tabs } from '../components/ui';
 import {
   MARKETPLACE_TOOLS,
+  type MarketplaceFilterState,
   useCreateSkillInstallRequest,
   useDeletePersonalSkillVersion,
   useEffectiveSkillAssignments,
+  useMarketplaceCategories,
   useMarketplacePackages,
   useMarketplacePreview,
+  useMarketplaceReadme,
   useOrgSkillControl,
   useRevocationIndex,
 } from '../hooks/useMarketplace';
+import { DeprecationNotice, FreshnessBadges, ToolFreshnessTable } from './discoveryParts';
+import { installsLabel } from './discoveryUtils';
+import { SafeReadme } from './SafeReadme';
 import { useMarketplaceDisclosure } from '../hooks/useMarketplaceDisclosure';
 import { useMe } from '../hooks/useMe';
 import { useProjects } from '../hooks/useProjects';
@@ -25,7 +31,9 @@ import { formatBytes } from '../utils/format';
 import { STATE_COPY, adminOrgs, canModerate, canPublishPersonal, listingState, type ModerationState } from './moderationState';
 import { ModerationStateBadge, RevocationIncompleteNotice } from './parts';
 import { DisclosureCard } from './DisclosureCard';
+import { UseInYourTool, WorksInMatrix } from './NativeCatalogs';
 import { HeldUpdateQueues } from './HeldUpdates';
+import { RegistryList } from './RegistryList';
 import PublishDialog from './PublishDialog';
 import { ListingReviewBadge, ProvenancePanel, PublisherBadge } from './publisherParts';
 import ReportDialog from './ReportDialog';
@@ -35,19 +43,7 @@ const TOOL_OPTIONS = [
   ...MARKETPLACE_TOOLS.map((tool) => ({ value: tool, label: tool })),
 ];
 
-function statusVariant(value: string): 'default' | 'success' | 'warning' | 'danger' | 'info' {
-  if (value === 'verified' || value === 'approved') return 'success';
-  if (value === 'blocked') return 'danger';
-  if (value === 'review' || value === 'unverified') return 'warning';
-  return 'default';
-}
-
-/** A 403 tier gate (`upgrade_required` / `feature_not_available` / tier-scoped 403) — not "no data". */
-export function isTierGate(error: unknown): boolean {
-  if (!(error instanceof ApiError)) return false;
-  const code = (error.code || '').toLowerCase();
-  return code.includes('upgrade') || code.includes('tier') || code.includes('feature') || (error.status === 403 && /tier|upgrade|team/i.test(error.message));
-}
+export { isTierGate } from './tierGate';
 
 function shortHash(value: string) {
   return value.length > 24 ? `${value.slice(0, 19)}…` : value;
@@ -75,15 +71,23 @@ function PackageCard({ item, state, onOpen }: { item: MarketplacePackage; state:
           <PublisherBadge item={item} compact />
           <ListingReviewBadge item={item} />
           <ModerationStateBadge state={state} />
+          <FreshnessBadges item={item} />
         </div>
       </div>
       <p className="mt-3 line-clamp-2 min-h-10 text-sm leading-5 text-text-secondary">
         {item.description || 'No package description provided.'}
       </p>
+      {(item.categories || []).length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1">
+          {(item.categories || []).map((slug) => <Badge key={slug} label={slug} tint />)}
+        </div>
+      )}
       <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-text-tertiary">
         <span className="font-mono">{item.version || 'unversioned'}</span>
         <span aria-hidden="true">·</span>
         <span>{Object.keys(item.compatibility).length} targets</span>
+        <span aria-hidden="true">·</span>
+        <span title="Installs in the last 30 days">{installsLabel(item.installs?.total)} installs</span>
         <span aria-hidden="true">·</span>
         <span className={riskCount ? 'text-warning' : 'text-accent'}>
           {riskCount ? `${riskCount} elevated capability ${riskCount === 1 ? 'flag' : 'flags'}` : 'instruction-only'}
@@ -148,7 +152,16 @@ function PackageDisclosure({ versionId, enabled }: { versionId: string; enabled:
   return <div className="mt-4"><DisclosureCard disclosure={disclosure.data} /></div>;
 }
 
+function ReadmeTab({ item, enabled }: { item: MarketplacePackage; enabled: boolean }) {
+  const readme = useMarketplaceReadme(item.package_id, item.version_id, enabled);
+  if (readme.isLoading) return <p className="text-sm text-text-tertiary">Loading README…</p>;
+  if (readme.error) return <p role="alert" className="text-sm text-warning">README unavailable: {String(readme.error)}</p>;
+  if (!readme.data) return null;
+  return <SafeReadme readme={readme.data} versionId={item.version_id} />;
+}
+
 function PackageDialog({ item, state, onClose }: { item: MarketplacePackage; state: ModerationState; onClose: () => void }) {
+  const [tab, setTab] = useState<'overview' | 'readme'>('overview');
   const [showPreview, setShowPreview] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const deliverable = state === 'active';
@@ -216,10 +229,24 @@ function PackageDialog({ item, state, onClose }: { item: MarketplacePackage; sta
           </div>
         )}
 
+        <DeprecationNotice item={item} />
+        <div className="mb-4">
+          <Tabs
+            bare
+            tabs={[{ key: 'overview', label: 'Overview' }, { key: 'readme', label: 'README' }]}
+            activeKey={tab}
+            onChange={(key) => setTab(key as 'overview' | 'readme')}
+          />
+        </div>
+        {tab === 'readme' && (deliverable
+          ? <ReadmeTab item={item} enabled={deliverable} />
+          : <p className="text-sm text-text-tertiary">The README is shown only for deliverable versions.</p>)}
+        {tab === 'overview' && (<>
         <TrustDossier item={item} />
         <DeclaredBehavior item={item} />
         <ProvenancePanel item={item} />
         <PackageDisclosure versionId={item.version_id} enabled={deliverable} />
+        <WorksInMatrix versionId={item.version_id} enabled={deliverable} />
 
         <dl className="mt-5 grid gap-x-6 gap-y-3 rounded-xl border border-border bg-bg-sunken p-4 text-sm sm:grid-cols-2">
           <div><dt className="text-xs text-text-tertiary">Immutable version</dt><dd className="mt-1 font-mono text-text-primary">{item.version || 'unversioned'} · {item.version_id}</dd></div>
@@ -231,7 +258,7 @@ function PackageDialog({ item, state, onClose }: { item: MarketplacePackage; sta
         </dl>
 
         <section className="mt-6" aria-labelledby="compatibility-heading">
-          <h3 id="compatibility-heading" className="text-sm font-semibold text-text-primary">Target compatibility</h3>
+          <h3 id="compatibility-heading" className="text-sm font-semibold text-text-primary">Expected compatibility (via sfs skill)</h3>
           <div className="mt-2 overflow-x-auto rounded-lg border border-border">
             <table className="w-full min-w-[560px] text-left text-sm">
               <thead className="bg-bg-sunken text-xs uppercase tracking-wider text-text-tertiary">
@@ -249,6 +276,8 @@ function PackageDialog({ item, state, onClose }: { item: MarketplacePackage; sta
             </table>
           </div>
         </section>
+        <ToolFreshnessTable item={item} />
+        </>)}
 
         {showPreview && (
           <section className="mt-6 rounded-xl border border-warning/30 bg-[rgba(240,192,64,0.05)] p-4" aria-live="polite">
@@ -374,13 +403,14 @@ function ManagedLibrary() {
   }
   const assignments = effective.data?.items || [];
   const registries = org.registries.data?.items || [];
+  const canAdminPrimary = managed.some((item) => item.org_id === me.data?.org_id);
   return (
     <Card level="elevated" className="mt-8 rounded-xl p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-2xs font-semibold uppercase tracking-[0.16em] text-brand">Managed library</p>
           <h2 className="mt-1 text-lg font-semibold text-text-primary">Organization policy reaching you</h2>
-          <p className="mt-1 text-sm text-text-secondary">Registries are references only; server-side fetching and device writes remain disabled.</p>
+          <p className="mt-1 text-sm text-text-secondary">HTTPS registries can be polled by SessionFS: new matching tags are published to your organization through the normal publish checks. Device writes remain disabled.</p>
         </div>
         <Badge label={`${assignments.length} effective assignments`} variant={assignments.length ? 'info' : 'default'} />
       </div>
@@ -397,12 +427,7 @@ function ManagedLibrary() {
           ) : registries.length === 0 ? (
             <p className="mt-3 text-sm text-text-tertiary">No organization registries configured.</p>
           ) : (
-            <ul className="mt-3 space-y-2">{registries.map((registry) => (
-              <li key={registry.id} className="flex items-center justify-between gap-3 text-sm">
-                <span className="min-w-0 truncate font-mono text-text-secondary" title={registry.source_url}>{registry.alias}</span>
-                <Badge label={registry.policy_state} variant={statusVariant(registry.policy_state)} tint />
-              </li>
-            ))}</ul>
+            <RegistryList registries={registries} orgId={me.data.org_id} canAdmin={canAdminPrimary} />
           )}
         </section>
         <section aria-labelledby="assignments-heading" className="rounded-lg border border-border bg-bg-sunken p-4">
@@ -424,13 +449,112 @@ function ManagedLibrary() {
   );
 }
 
+function CategoryBrowse({
+  categories,
+  active,
+  onChange,
+}: {
+  categories: MarketplaceCategory[];
+  active: string | undefined;
+  onChange: (category: string | undefined) => void;
+}) {
+  if (categories.length === 0) return null;
+  const chip = (selected: boolean) =>
+    `rounded-full border px-3 py-1 text-xs transition-colors ${
+      selected ? 'border-brand bg-[var(--brand-glow)] text-text-primary' : 'border-border text-text-secondary hover:border-border-strong hover:text-text-primary'
+    }`;
+  return (
+    <nav aria-label="Browse by category" className="mt-4 flex flex-wrap gap-2">
+      <button type="button" className={chip(!active)} aria-pressed={!active} onClick={() => onChange(undefined)}>All</button>
+      {categories.map((category) => (
+        <button
+          key={category.slug}
+          type="button"
+          className={chip(active === category.slug)}
+          aria-pressed={active === category.slug}
+          onClick={() => onChange(active === category.slug ? undefined : category.slug)}
+        >
+          {category.display_name}
+        </button>
+      ))}
+    </nav>
+  );
+}
+
+const SEVERITY_OPTIONS = [
+  { value: '', label: 'Any scan result' },
+  { value: 'none', label: 'No open findings' },
+  { value: 'low', label: 'Low or better' },
+  { value: 'medium', label: 'Medium or better' },
+  { value: 'high', label: 'High or better' },
+];
+const CAPABILITY_OPTIONS = [
+  { value: '', label: 'Any capability' },
+  { value: 'instructions_only', label: 'Instructions only' },
+  { value: 'scripts', label: 'Ships scripts' },
+  { value: 'mcp', label: 'Ships MCP servers' },
+  { value: 'hooks', label: 'Frontmatter hooks' },
+  { value: 'executables', label: 'Executable extensions' },
+  { value: 'allowed_tools', label: 'Pre-approves tools' },
+];
+const UPDATED_OPTIONS = [
+  { value: '', label: 'Any time' },
+  { value: '7', label: 'Updated in 7 days' },
+  { value: '30', label: 'Updated in 30 days' },
+  { value: '90', label: 'Updated in 90 days' },
+  { value: '365', label: 'Updated in a year' },
+];
+const SORT_OPTIONS = [
+  { value: 'relevance', label: 'Best match' },
+  { value: 'recent', label: 'Newest' },
+];
+
+/** Discovery filters (marketplace v2 §9.2); every one is applied server-side
+ *  before the page is cut. */
+export function FilterRail({ filters, onChange }: { filters: MarketplaceFilterState; onChange: (next: MarketplaceFilterState) => void }) {
+  const [license, setLicense] = useState(filters.license || '');
+  const set = (patch: Partial<MarketplaceFilterState>) => onChange({ ...filters, ...patch });
+  const toggle = (key: 'verified' | 'attested') => set({ [key]: filters[key] ? undefined : true });
+  return (
+    <section aria-label="Marketplace filters" className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <Select aria-label="Sort" value={filters.sort || 'relevance'} onValueChange={(value) => set({ sort: value as 'recent' | 'relevance' })} options={SORT_OPTIONS} />
+      <Select aria-label="Maximum scan severity" value={filters.max_severity || ''} onValueChange={(value) => set({ max_severity: (value || undefined) as MarketplaceFilterState['max_severity'] })} options={SEVERITY_OPTIONS} />
+      <Select aria-label="Capability" value={filters.capability || ''} onValueChange={(value) => set({ capability: value || undefined })} options={CAPABILITY_OPTIONS} />
+      <Select aria-label="Works in" value={filters.works_in || ''} onValueChange={(value) => set({ works_in: value || undefined })} options={[{ value: '', label: 'Works in: any' }, ...MARKETPLACE_TOOLS.map((tool) => ({ value: tool, label: `Works in ${tool}` }))]} />
+      <Select aria-label="Updated" value={filters.updated_within ? String(filters.updated_within) : ''} onValueChange={(value) => set({ updated_within: value ? Number(value) : undefined })} options={UPDATED_OPTIONS} />
+      <form
+        className="flex gap-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          set({ license: license.trim() || undefined });
+        }}
+      >
+        <Input aria-label="License" placeholder="License (e.g. MIT)" value={license} onChange={(event) => setLicense(event.target.value)} onBlur={() => set({ license: license.trim() || undefined })} maxLength={100} />
+      </form>
+      <div className="flex flex-wrap items-center gap-3 text-xs text-text-secondary lg:col-span-2">
+        <label className="flex items-center gap-1.5">
+          <input type="checkbox" checked={!!filters.verified} onChange={() => toggle('verified')} /> Verified publishers
+        </label>
+        <label className="flex items-center gap-1.5">
+          <input type="checkbox" checked={!!filters.attested} onChange={() => toggle('attested')} /> Trusted-publishing provenance
+        </label>
+        <label className="flex items-center gap-1.5">
+          <input type="checkbox" checked={filters.include_deprecated === false} onChange={() => set({ include_deprecated: filters.include_deprecated === false ? undefined : false })} /> Hide deprecated
+        </label>
+      </div>
+    </section>
+  );
+}
+
 export default function MarketplacePage() {
   const [query, setQuery] = useState('');
   const deferredQuery = useDeferredValue(query);
   const [tool, setTool] = useState('');
   const [selected, setSelected] = useState<MarketplacePackage | null>(null);
   const [publishOpen, setPublishOpen] = useState(false);
-  const packages = useMarketplacePackages(deferredQuery, tool);
+  const [filters, setFilters] = useState<MarketplaceFilterState>({ sort: 'relevance' });
+  const packages = useMarketplacePackages(deferredQuery, tool, filters);
+  const categories = useMarketplaceCategories();
   const revocations = useRevocationIndex();
   const me = useMe();
   const myOrgs = useMyOrgs();
@@ -465,14 +589,26 @@ export default function MarketplacePage() {
               Moderation queue
             </Link>
           )}
+          {adminOrgs(myOrgs.data, me.data).length > 0 && (
+            <Link to="/marketplace/usage" className="rounded-lg border border-border px-3 py-1.5 text-xs text-text-secondary hover:border-border-strong hover:text-text-primary">
+              Organization usage
+            </Link>
+          )}
         </div>
         <div className="mt-6 grid gap-3 sm:grid-cols-[1fr_220px]">
           <Input aria-label="Search marketplace" placeholder="Search by package, namespace, or capability" value={query} onChange={(event) => setQuery(event.target.value)} />
           <Select aria-label="Filter marketplace by tool" value={tool} onValueChange={setTool} options={TOOL_OPTIONS} />
         </div>
+        <CategoryBrowse
+          categories={categories.data?.items || []}
+          active={filters.category}
+          onChange={(category) => setFilters((current) => ({ ...current, category }))}
+        />
+        <FilterRail filters={filters} onChange={setFilters} />
       </header>
 
       <RevocationIncompleteNotice error={revocations.error} hasPrevious={!!revocations.data} className="mt-4" />
+      <UseInYourTool />
 
       <div className="mt-6 flex items-baseline justify-between">
         <h2 className="text-lg font-semibold text-text-primary">Available to your identity</h2>

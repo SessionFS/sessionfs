@@ -19,6 +19,15 @@ import httpx
 
 logger = logging.getLogger("sessionfs.email")
 
+
+def mask_address(address: object) -> str:
+    """Hide the local part of a recipient address in logs (keep the domain)."""
+    text = str(address or "")
+    local, sep, domain = text.rpartition("@")
+    if not sep:
+        return "***"
+    return f"{local[:1]}***@{domain}"
+
 RESEND_API = "https://api.resend.com/emails"
 
 
@@ -260,7 +269,7 @@ class ResendProvider(EmailProvider):
                 resp.raise_for_status()
                 return True
         except Exception:
-            logger.exception("Resend send failed to %s", to)
+            logger.exception("Resend send failed to %s", mask_address(to))
             return False
 
 
@@ -326,10 +335,14 @@ class SMTPProvider(EmailProvider):
                     if self._username:
                         srv.login(self._username, self._password)
                     srv.send_message(msg)
-            logger.info("Email sent via SMTP to %s", msg["To"])
+            logger.info("Email sent via SMTP to %s", mask_address(msg["To"]))
             return True
-        except Exception:
-            logger.exception("SMTP send failed to %s", msg["To"])
+        except Exception as exc:
+            # No traceback: smtplib's refusal errors carry the cleartext
+            # sender / recipient addresses in their args.
+            logger.error(
+                "SMTP send failed to %s: %s", mask_address(msg["To"]), type(exc).__name__
+            )
             return False
 
 
@@ -342,7 +355,7 @@ class NullProvider(EmailProvider):
     """No-op email provider — logs instead of sending."""
 
     async def send(self, to: str, subject: str, html: str) -> bool:
-        logger.info("Email suppressed (no provider): to=%s subject=%s", to, subject)
+        logger.info("Email suppressed (no provider): to=%s", mask_address(to))
         return True
 
 

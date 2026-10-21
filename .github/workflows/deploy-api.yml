@@ -41,7 +41,7 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev]"
       - name: Run tests
-        run: pytest tests/ -v --tb=short
+        run: pytest tests/ -v --tb=short -n auto --dist loadgroup
 
   # ---- Build & Scan (no cloud credentials, no OIDC) ----
   # The scanned image is handed to the push job as an artifact, so what gets

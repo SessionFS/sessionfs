@@ -164,7 +164,10 @@ comment), the payload is kept and retried with backoff (1, 5, 15, 60
 minutes; at most 5 attempts). The server has no built-in scheduler: retries
 run a couple at a time whenever a new webhook arrives, and in bulk when an
 admin calls `POST /api/v1/admin/github-webhook-deliveries/sweep`. Calling the
-sweep endpoint every few minutes from a scheduler is recommended; it also
+sweep endpoint every few minutes from a scheduler is recommended (a scheduled
+job can use a `platform_sweeps:run` service key minted by a platform admin
+instead of an admin user key; that key cannot change the retention windows);
+it also
 republishes any PR comment left behind its newest content (for example after
 a GitHub error while it was being edited).
 

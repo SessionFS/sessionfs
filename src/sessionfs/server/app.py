@@ -13,12 +13,19 @@ from sessionfs.server.config import ServerConfig
 from sessionfs.server.db.engine import close_engine, init_engine
 from sessionfs.server.errors import register_exception_handlers
 from sessionfs.server.middleware import RequestLoggingMiddleware
-from sessionfs.server.routes import activation, admin, admin_licenses, agent_feedback, agent_runs, api_keys, audit, auth, auth_sso, billing, bookmarks, dlp, handoffs, health, helm, knowledge, marketplace, marketplace_disclosure, marketplace_moderation, marketplace_publishers, marketplace_scanning, org, org_members, personas, project_transfers, projects, residents, retrieval_audit, rules, sessions, settings, sso_admin, summaries, sync, teams, telemetry, tickets, trusted_reviewers, webhooks, wiki, work_queues
+from sessionfs.server.routes import activation, admin, admin_licenses, agent_feedback, agent_runs, api_keys, audit, auth, auth_sso, billing, bookmarks, dlp, handoffs, health, helm, knowledge, marketplace, marketplace_disclosure, marketplace_discovery, marketplace_moderation, marketplace_publishers, marketplace_scanning, native_catalogs, org, org_members, personas, project_transfers, projects, residents, retrieval_audit, rules, sessions, settings, skill_policy, sso_admin, summaries, sync, teams, telemetry, tickets, trusted_reviewers, webhooks, wiki, work_queues
 from sessionfs.server.storage.local import LocalBlobStore
 
 
-def _configure_logging() -> None:
-    """Ensure sessionfs loggers propagate to root so uvicorn shows them."""
+def _configure_logging(level: str = "INFO") -> None:
+    """Ensure sessionfs loggers propagate to root so uvicorn shows them.
+
+    Under plain uvicorn nothing handles the root logger, so only WARNING and
+    above reached stderr and INFO lines (e.g. the per-push timing line) were
+    dropped. In that case only, the ``sessionfs`` loggers get a stderr
+    handler at ``level`` (SFS_LOG_LEVEL); a deployment with its own logging
+    config (or pytest's capture) is left alone.
+    """
     import logging
 
     for name in ("sessionfs.api", "sessionfs.email", "sessionfs.judge.providers"):
@@ -26,13 +33,22 @@ def _configure_logging() -> None:
         if not logger.handlers:
             logger.propagate = True
 
+    package = logging.getLogger("sessionfs")
+    resolved = logging.getLevelName(str(level).upper())
+    if not logging.getLogger().handlers and not package.handlers and isinstance(resolved, int):
+        if package.level == logging.NOTSET:
+            package.setLevel(resolved)
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(levelname)s:     %(name)s: %(message)s"))
+        package.addHandler(handler)
+
 
 def create_app(config: ServerConfig | None = None) -> FastAPI:
     """Create and configure the FastAPI application."""
     if config is None:
         config = ServerConfig()
 
-    _configure_logging()
+    _configure_logging(config.log_level)
 
     # Marketplace trusted publishing: resolve environment + OIDC audience ONCE
     # (refusing to start outside development on a generic audience, whatever
@@ -180,6 +196,9 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     app.include_router(marketplace_scanning.router)
     app.include_router(marketplace_disclosure.router)
     app.include_router(marketplace_publishers.router)
+    app.include_router(native_catalogs.router)
+    app.include_router(skill_policy.router)
+    app.include_router(marketplace_discovery.router)
     app.include_router(projects.router)
     app.include_router(summaries.router)
     app.include_router(summaries.batch_router)

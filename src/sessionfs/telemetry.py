@@ -64,6 +64,36 @@ def mark_disclosure_shown() -> None:
         pass
 
 
+SKILL_USAGE_NOTICE = (
+    "SessionFS counts installs of SessionFS Marketplace skills on your signed-in "
+    "account (install, remove, translation failures, and a daily check that a "
+    "skill is still installed), per package and tool, to show publishers and "
+    "your org admins aggregate usage. Stop: SFS_SKILL_USAGE_REPORTING=0 or "
+    "SFS_NO_TELEMETRY=1. docs/telemetry.md"
+)
+_SKILL_USAGE_MARKER = "skill-usage-disclosure-shown"
+
+
+def skill_usage_disclosure_shown() -> bool:
+    """True once the marketplace install-count notice has been SHOWN.
+
+    Separate from the telemetry marker: users who saw the telemetry notice
+    before install counts existed must still be told before any count is
+    sent. Unsure → False (fail closed: nothing is sent)."""
+    try:
+        return (_MARKERS_DIR / _SKILL_USAGE_MARKER).exists()
+    except Exception:
+        return False
+
+
+def mark_skill_usage_disclosure_shown() -> None:
+    try:
+        _MARKERS_DIR.mkdir(parents=True, exist_ok=True)
+        (_MARKERS_DIR / _SKILL_USAGE_MARKER).touch()
+    except Exception:
+        pass
+
+
 def _print_first_run_disclosure() -> None:
     """One-line disclosure at the moment the install id is first created.
 
@@ -80,10 +110,15 @@ def _print_first_run_disclosure() -> None:
                 "SessionFS collects anonymous usage telemetry (random install "
                 "id, version, OS, event name — never paths or session "
                 "content). Disable: SFS_NO_TELEMETRY=1 or "
-                "`sfs config set telemetry.enabled false`. docs/telemetry.md",
+                "`sfs config set telemetry.enabled false`. When signed in, "
+                "SessionFS Marketplace skill installs, removals and reconcile "
+                "checks are also counted per package and tool on your account "
+                "(SFS_SKILL_USAGE_REPORTING=0 stops only those). docs/telemetry.md",
                 file=sys.stderr,
             )
             mark_disclosure_shown()
+            # This notice also describes the install counts.
+            mark_skill_usage_disclosure_shown()
     except Exception:
         pass
 

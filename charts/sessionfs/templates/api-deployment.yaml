@@ -280,18 +280,36 @@ spec:
           securityContext:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- if and (eq .Values.storage.type "local") .Values.storage.local.persistence.enabled }}
+          {{- $polling := .Values.api.registryPolling | default dict }}
           volumeMounts:
+            {{- if and (eq .Values.storage.type "local") .Values.storage.local.persistence.enabled }}
             - name: blob-storage
               mountPath: {{ .Values.storage.local.path }}
-          {{- end }}
-          {{- if and (eq .Values.storage.type "gcs") .Values.storage.gcs.existingSecret }}
-          volumeMounts:
+            {{- end }}
+            {{- if and (eq .Values.storage.type "gcs") .Values.storage.gcs.existingSecret }}
             - name: gcs-credentials
               mountPath: /var/secrets/gcs
               readOnly: true
-          {{- end }}
+            {{- end }}
+            # Writable scratch space (read-only root filesystem): the registry
+            # poller clones into throwaway directories under /tmp.
+            - name: tmp
+              mountPath: /tmp
+            {{- range $polling.credentialSecrets }}
+            - name: registry-cred-{{ . }}
+              mountPath: /var/run/secrets/sessionfs/registry-credentials/{{ . }}
+              readOnly: true
+            {{- end }}
       volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ $polling.tmpSizeLimit | default "1Gi" }}
+        {{- range $polling.credentialSecrets }}
+        - name: registry-cred-{{ . }}
+          secret:
+            secretName: {{ . }}
+            defaultMode: 0400
+        {{- end }}
         {{- if .Values.license.key }}
         - name: license-volume
           emptyDir: {}

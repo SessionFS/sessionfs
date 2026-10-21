@@ -54,11 +54,12 @@ The chart does not ship NetworkPolicies by default so the chart works on cluster
 
 ```yaml
 # values.yaml
-networkPolicy:
-  enabled: true  # Coming in a future chart release
+security:
+  networkPolicies:
+    enabled: true
 ```
 
-For now, enforce network isolation at the namespace level via your CNI (Cilium, Calico, or similar).
+The API policy allows egress to PostgreSQL, DNS and public addresses on 443 only. If you poll an internal Git server (see [Git Registry Polling](#git-registry-polling)), the ranges you list in `api.registryPolling.allowedPrivateCidrs` are added to it.
 
 ### Secrets
 
@@ -413,6 +414,59 @@ Key endpoints:
 | `GET /api/v1/sessions` | List sessions |
 | `POST /api/v1/sessions/{id}/audit` | Run LLM Judge |
 | `GET /health` | Health check |
+
+## Git Registry Polling
+
+Organization marketplace registries on `https://` can be polled by the API, which publishes each new matching tag through the normal publish checks (see [Skills Marketplace](/skills-marketplace/#polling-git-registries)). Polling only runs when the poller endpoint is called, never in user requests.
+
+**Schedule it.** Mint a service key with only the `skills_registry:poll` scope (a platform admin must mint it), store it in a Secret, and enable the CronJob:
+
+```bash
+sfs admin service-keys create --org <ORG_ID> --name registry-poller --scope skills_registry:poll --output-key > key.txt
+kubectl create secret generic sessionfs-registry-poll --from-file=registry-poll-api-key=key.txt -n sessionfs
+```
+
+```yaml
+api:
+  registryPolling:
+    enabled: true
+    cronJob:
+      enabled: true
+      schedule: "*/5 * * * *"
+      existingSecret: sessionfs-registry-poll
+```
+
+The CronJob only sends one request to the API service; the fetch happens in the API pods. Overlapping runs are safe (each registry is leased while it is polled, and the lease is renewed as it works). Timing: each registry gets a 300 s fetch budget (`timeoutSeconds`) plus 300 s for publishing; a run stops claiming registries once that would overrun `runBudgetSeconds` (1200 s), and the CronJob's curl and job deadlines are 1320 s and 1380 s. If you raise the budget, keep your own cron's timeout above budget + 120 s. `maxPerOrg` (10) caps polling-enabled registries per organization and `maxPerOrgPerRun` (2) keeps one organization from starving the others. Without the CronJob, run `sfs admin registries poll` from any cron with `SESSIONFS_API_KEY` set to that key.
+
+**Network egress.** The API pods need outbound HTTPS to your Git hosts. By default only globally routable addresses are fetched; private ranges, loopback, link-local and cloud metadata addresses are refused, every resolved address is checked, Git is pinned to the checked address (no DNS rebinding) and redirects are not followed. To poll an internal GitLab, opt in explicitly with its range (loopback, link-local and metadata stay refused):
+
+```yaml
+api:
+  registryPolling:
+    allowedPrivateCidrs:
+      - 10.20.0.0/16
+```
+
+This sets `SFS_REGISTRY_POLL_ALLOWED_PRIVATE_CIDRS` and, with `security.networkPolicies.enabled`, opens API egress to that range on 443. Outbound proxies are not used by the poller (its Git environment is replaced to keep the address pin effective).
+
+**Credentials for private repositories.** Create one Secret per credential with a `token`, the `org` id allowed to use it and the `hosts` it may be sent to (all three required), and optionally a `username` (GitLab deploy tokens need theirs), and list it:
+
+```bash
+kubectl create secret generic acme-gitlab -n sessionfs \
+  --from-literal=token=<deploy-token> --from-literal=org=<ORG_ID> \
+  --from-literal=username=gitlab+deploy-token-12 --from-literal=hosts=gitlab.internal.example
+```
+
+```yaml
+api:
+  registryPolling:
+    credentialSecrets:
+      - acme-gitlab
+```
+
+The org's admin then sets `credential_secret_ref` to `k8s:acme-gitlab`. Alternatively expose a credential as `SFS_REGISTRY_CRED_<NAME>` with `SFS_REGISTRY_CRED_<NAME>_ORG` and `SFS_REGISTRY_CRED_<NAME>_HOSTS` (via `api.env` from a Secret) and reference it as `env:SFS_REGISTRY_CRED_<NAME>`. A credential bound to another organization or host, or missing either binding, is refused; the organization only sees a generic message and the API log records the reason. The token reaches Git only as an HTTP header for that registry's origin; it is never put in a URL, an argument list, a response or a log.
+
+The API image includes `git` (2.44 or newer is required). Clones go to a `/tmp` emptyDir (`api.registryPolling.tmpSizeLimit`, default 1 GiB) because the root filesystem is read-only. Set `api.registryPolling.enabled: false` to turn polling off entirely.
 
 ## Email Configuration
 

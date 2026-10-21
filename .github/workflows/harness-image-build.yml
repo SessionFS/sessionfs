@@ -1,0 +1,199 @@
+name: Works-in Harness Image (build)
+
+# Reusable: build, smoke and scan ONE harness tool image, and push it to
+# Artifact Registry only when `publish` is true. Called by
+# harness-images.yml, which decides what may be published (a v* release
+# tag or a commit on main, resolved to a SHA) and grants `id-token: write`
+# only to the publishing call.
+#
+# The image bundles proprietary tool CLIs, so its bytes never leave this
+# job except to the private Artifact Registry repository: no `docker save`
+# artifact, no build-record artifact, no registry or GitHub Actions layer
+# cache (a pull_request run from a fork can restore caches written by the
+# base branch), no GHCR. That is why build and push share one job.
+#
+# GitHub scopes the OIDC token to the JOB, not to a step: any step of the
+# publishing job could request it. So (1) the caller only publishes
+# commits it has resolved to a release tag or main, (2) every third-party
+# action here is pinned to a full commit SHA, and (3) all repo code and
+# scanning run BEFORE credentials are obtained; auth and push come last.
+
+on:
+  workflow_call:
+    inputs:
+      tool:
+        type: string
+        required: true
+      sha:
+        description: "Commit SHA to build (resolved by the caller)"
+        type: string
+        required: true
+      publish:
+        type: boolean
+        required: true
+      tag_kind:
+        description: "release | weekly | manual | verify"
+        type: string
+        required: true
+      version:
+        description: "Release version (tag_kind=release only)"
+        type: string
+        required: false
+        default: ""
+
+# No `permissions:` here on purpose: the job inherits exactly what the
+# calling job grants (contents: read for verify; plus id-token: write for
+# publish). Declaring id-token here would make the verify call invalid,
+# and declaring less would break the publish call.
+
+env:
+  REGION: us-central1
+  REGISTRY_PATH: us-central1-docker.pkg.dev/sessionfs-prod/sessionfs-harness
+  WIF_PROVIDER: projects/391749893806/locations/global/workloadIdentityPools/github/providers/github-actions
+  SERVICE_ACCOUNT: deployer@sessionfs-prod.iam.gserviceaccount.com
+
+jobs:
+  image:
+    name: ${{ inputs.tool }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+
+      # The tag this build gets, from the commit actually checked out.
+      - name: Resolve revision and tag
+        id: meta
+        env:
+          WANT: ${{ inputs.sha }}
+          KIND: ${{ inputs.tag_kind }}
+          VERSION: ${{ inputs.version }}
+          TOOL: ${{ inputs.tool }}
+        run: |
+          REV="$(git rev-parse HEAD)"
+          if [ "$REV" != "$WANT" ]; then
+            echo "checked out $REV, expected $WANT" >&2
+            exit 1
+          fi
+          SHORT="$(git rev-parse --short=12 HEAD)"
+          DAY="$(date -u +%Y%m%d)"
+          case "$KIND" in
+            release)
+              if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+                echo "bad release version: $VERSION" >&2
+                exit 1
+              fi
+              TAG="$VERSION" ;;
+            weekly) TAG="weekly-${DAY}-${SHORT}" ;;
+            manual) TAG="manual-${DAY}-${SHORT}" ;;
+            verify) TAG="verify-${SHORT}" ;;
+            *) echo "unknown tag kind: $KIND" >&2; exit 1 ;;
+          esac
+          {
+            echo "revision=${REV}"
+            echo "tag=${TAG}"
+            echo "image=${REGISTRY_PATH}/sfs-harness-${TOOL}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        env:
+          # The build record is uploaded as an Actions artifact by default.
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
+          DOCKER_BUILD_SUMMARY: "false"
+        with:
+          context: .
+          file: ./deploy/harness/Dockerfile
+          build-args: TOOL=${{ inputs.tool }}
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: sfs-harness-${{ inputs.tool }}:scan
+          labels: |
+            org.opencontainers.image.revision=${{ steps.meta.outputs.revision }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.tag }}
+
+      # sfs --help, the tool's version command as the tool user, the image
+      # self-check (tool uid, runner, reaper, pinned version), an offline L1
+      # install of a fixture package through the real harness job path, and
+      # the fail-closed entrypoint (no opt-in / no key -> exit 2).
+      - name: Smoke test
+        run: deploy/harness/smoke.sh "sfs-harness-${{ inputs.tool }}:scan" "${{ inputs.tool }}"
+
+      - name: Vulnerability report
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: sfs-harness-${{ inputs.tool }}:scan
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: '0'
+        continue-on-error: true
+
+      # Same gate as the API image: fixable CRITICAL/HIGH blocks publishing.
+      - name: Vulnerability gate (fixable CRITICAL/HIGH)
+        if: inputs.publish
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: sfs-harness-${{ inputs.tool }}:scan
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+
+      # ---- publish only, and LAST: credentials, then the scanned image ----
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        if: inputs.publish
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        if: inputs.publish
+
+      - name: Configure Docker
+        if: inputs.publish
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      # One tag per image (no bare SHA tag), never overwritten: an existing
+      # tag fails the push. No floating tag: Cloud Run Jobs are pinned to a
+      # digest (Terraform) and pass it to the harness as SFS_HARNESS_IMAGE_DIGEST.
+      - name: Push image
+        if: inputs.publish
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          REV: ${{ steps.meta.outputs.revision }}
+          TOOL: ${{ inputs.tool }}
+        run: |
+          set +e
+          LISTED="$(gcloud artifacts docker tags list "$IMAGE" --format='value(tag)' 2>tags.err)"
+          STATUS=$?
+          set -e
+          if [ "$STATUS" -ne 0 ]; then
+            if grep -q "NOT_FOUND" tags.err; then
+              LISTED=""   # first push of this image
+            else
+              cat tags.err >&2
+              exit 1
+            fi
+          fi
+          if printf '%s\n' "$LISTED" | sed 's#.*/##' | grep -qxF "$TAG"; then
+            echo "${IMAGE}:${TAG} already exists; refusing to overwrite it" >&2
+            exit 1
+          fi
+          docker tag "sfs-harness-${TOOL}:scan" "${IMAGE}:${TAG}"
+          docker push "${IMAGE}:${TAG}"
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${IMAGE}:${TAG}" | cut -d@ -f2)
+          {
+            echo "### sfs-harness-${TOOL}"
+            echo ""
+            echo "- revision: \`${REV}\`"
+            echo "- tag: \`${TAG}\`"
+            echo "- digest: \`${DIGEST}\`"
+            echo "- pin in Terraform: \`${IMAGE}@${DIGEST}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

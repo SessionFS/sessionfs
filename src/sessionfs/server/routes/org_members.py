@@ -1368,7 +1368,9 @@ async def _notify_transfer_email(
     try:
         await email_service.send(to_email, subject, body_html)
     except Exception:
-        logger.exception("Owner transfer email to %s failed", to_email)
+        from sessionfs.server.email import mask_address
+
+        logger.exception("Owner transfer email to %s failed", mask_address(to_email))
 
 
 def _html_escape(s: str) -> str:

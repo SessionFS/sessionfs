@@ -1,0 +1,27 @@
+{
+  "enforceable": [
+    "allow_hooks"
+  ],
+  "enforcement": "managed",
+  "report_only": [
+    "mode",
+    "allowlist",
+    "allowed_publishers_verified_only",
+    "allow_local_mcp",
+    "allow_remote_mcp",
+    "allowed_remote_mcp_origins",
+    "allow_skill_scripts",
+    "allow_hidden_unicode",
+    "require_signature",
+    "require_dlp_clean_import",
+    "max_scan_severity",
+    "block_unmanaged_marketplaces"
+  ],
+  "unsupported": [
+    "auto_update",
+    "trust_code_updates_publishers"
+  ],
+  "warnings": [
+    "vscode.managed_hooks_only"
+  ]
+}

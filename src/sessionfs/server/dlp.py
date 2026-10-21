@@ -7,6 +7,7 @@ security.secrets scanner.
 
 from __future__ import annotations
 
+import bisect
 import dataclasses
 import functools
 import io
@@ -21,6 +22,7 @@ from sessionfs.security.secrets import (
     PHI_PATTERNS,
     SECRET_PATTERNS,
     ALLOWLIST,
+    line_starts,
     scan_dlp as scan_dlp_full,
     scan_dlp_builtin,
 )
@@ -232,7 +234,7 @@ def _redact_decoded_value(
     )
     stripped, offsets = _strip_markers(text, custom_patterns)
     for finding in known:
-        if not finding.match_text:
+        if not finding.match_text or finding.match_text not in stripped:
             continue
         for m in re.finditer(re.escape(finding.match_text), stripped):
             start, end = _to_original(offsets, m.start(), m.end())
@@ -551,7 +553,7 @@ def _malformed_spans(
     policy = {"categories": categories, "custom_patterns": custom_patterns, "allowlist": allowlist}
     spans: list[tuple[int, int, str]] = []
     for finding in known:
-        if not finding.match_text:
+        if not finding.match_text or finding.match_text not in line:
             continue
         for m in re.finditer(re.escape(finding.match_text), line):
             spans.append((m.start(), m.end(), _marker_for(finding.pattern_name, custom_patterns)))
@@ -565,7 +567,7 @@ def _malformed_spans(
         spans.append((offsets[start], offsets[end], marker))
     stripped, strip_offsets = _strip_markers(unescaped, custom_patterns)
     for finding in known:
-        if not finding.match_text:
+        if not finding.match_text or finding.match_text not in stripped:
             continue
         for m in re.finditer(re.escape(finding.match_text), stripped):
             u_start, u_end = _to_original(strip_offsets, m.start(), m.end())
@@ -778,7 +780,7 @@ def _residual_spans(text: str, findings: list[DLPFinding]) -> list[tuple[int, in
     """Spans in ``text`` where an original raw finding is still present."""
     spans: list[tuple[int, int]] = []
     for finding in findings:
-        if not finding.match_text:
+        if not finding.match_text or finding.match_text not in text:
             continue
         for m in re.finditer(re.escape(finding.match_text), text):
             spans.append((m.start(), m.end()))
@@ -993,6 +995,163 @@ def _check_repacked_size(data: bytes, member_name: str, limit: int) -> None:
         )
 
 
+def _gate_texts(obj: object, custom_patterns: list[dict] | None) -> tuple[str, str] | None:
+    """The texts the value-level path would examine in ``obj``, as
+    ``(values, pairs)``, each text followed by a line break; None when
+    ``obj`` is too deep to walk.
+
+    The value-level path changes a parsed line only if one of these finds
+    something:
+
+    * ``_redact_decoded_value`` on a string value (unless it is a whole
+      marker), a number's text or a key: a policy match in, or a known
+      secret spelling inside, the text with genuine markers removed
+      (``values``);
+    * ``_pair_finding`` on each key with a scalar value (unless the value
+      is a whole marker): a policy match in the marker-stripped
+      ``key = "value"`` text (``pairs``).
+
+    The scanner works line by line, so scanning these texts joined finds the
+    same matches as scanning each on its own (a separator only adds an empty
+    line), and a known spelling inside any value text is inside ``values``.
+    """
+    marker = _marker_re(custom_patterns)
+    values: list[str] = []
+    pairs: list[str] = []
+
+    def add(parts: list[str], text: str) -> None:
+        parts.append(_strip_markers(text, custom_patterns)[0])
+        parts.append("\n")
+
+    def walk(node: object, depth: int) -> bool:
+        if depth > MAX_JSON_DEPTH:
+            return False
+        if isinstance(node, str):
+            if not marker.fullmatch(node):
+                add(values, node)
+        elif _is_number(node):
+            add(values, _number_text(node))
+        elif isinstance(node, list):
+            for item in node:
+                if not walk(item, depth + 1):
+                    return False
+        elif isinstance(node, dict):
+            for key, value in node.items():
+                if isinstance(key, str):
+                    add(values, key)
+                if not walk(value, depth + 1):
+                    return False
+                if (
+                    isinstance(key, str)
+                    and _is_scalar(value)
+                    and not (isinstance(value, str) and marker.fullmatch(value))
+                ):
+                    value_text = value if isinstance(value, str) else _number_text(value)
+                    add(pairs, _pair_text(key, value_text)[0])
+        return True
+
+    if not walk(obj, 0):
+        return None
+    return "".join(values), "".join(pairs)
+
+
+def _minimal_texts(texts: set[str]) -> tuple[str, ...]:
+    """``texts`` without any that contain another one: wherever a dropped
+    text occurs, a kept text it contains occurs too."""
+    kept: list[str] = []
+    for text in sorted(texts, key=len):
+        if text and not any(k in text for k in kept):
+            kept.append(text)
+    return tuple(kept)
+
+
+class _Joined:
+    """Texts of several lines joined, remembering which line each came from."""
+
+    def __init__(self) -> None:
+        self.parts: list[str] = []
+        self.offsets: list[int] = []
+        self.owners: list[int] = []
+        self.size = 0
+
+    def add(self, owner: int, text: str) -> None:
+        self.owners.append(owner)
+        self.offsets.append(self.size)
+        self.parts.append(text)
+        self.size += len(text)
+
+    def owner_at(self, pos: int) -> int:
+        return self.owners[bisect.bisect_right(self.offsets, pos) - 1]
+
+
+def _unchanged_lines(
+    entries: list[tuple[int, str, object]],
+    *,
+    known_texts: tuple[str, ...],
+    residual_texts: tuple[str, ...],
+    categories: list[str],
+    custom_patterns: list[dict] | None,
+    allowlist: list[str] | None,
+) -> set[int]:
+    """Indexes of parsed JSONL lines the value-level path provably returns
+    byte-identical.
+
+    That path runs a separate DLP scan and a search for every known secret
+    spelling on every key and scalar of every line, which on a large session
+    (hundreds of thousands of values) took many minutes (GH #71). Instead the
+    texts it would examine (``_gate_texts``) are checked once for a whole
+    batch of lines. A line is reported unchanged only when none of its texts
+    has a policy match, none of its value texts contains a known spelling,
+    and no original raw finding is still in the line (``_sweep_residual``'s
+    check). Every other line, including one too deep to walk, takes the full
+    path, which also raises the same errors as before.
+    """
+    unchanged: set[int] = set()
+    values = _Joined()
+    scanned = _Joined()
+    for index, line, obj in entries:
+        if any(t in line for t in residual_texts):
+            continue
+        texts = _gate_texts(obj, custom_patterns)
+        if texts is None:
+            continue
+        values.add(index, texts[0])
+        scanned.add(index, texts[0] + texts[1])
+        unchanged.add(index)
+    if not unchanged:
+        return unchanged
+
+    joined_values = "".join(values.parts)
+    for text in known_texts:
+        at = joined_values.find(text)
+        while at != -1:
+            # A hit that straddles two lines' texts flags both (harmless).
+            unchanged.discard(values.owner_at(at))
+            unchanged.discard(values.owner_at(at + len(text) - 1))
+            at = joined_values.find(text, at + 1)
+
+    joined = "".join(scanned.parts)
+    matches = [
+        f
+        for f in scan_dlp_full(
+            joined, categories=categories, custom_patterns=custom_patterns, allowlist=allowlist
+        )
+        if f.match_text
+    ]
+    if matches:
+        starts = line_starts(joined)
+        for finding in matches:
+            unchanged.discard(scanned.owner_at(starts[finding.line_number - 1]))
+    return unchanged
+
+
+# Raw JSONL characters whose lines are checked together by _unchanged_lines.
+_GATE_BATCH_CHARS = 4 * 1024 * 1024
+
+_BLANK = object()
+_MALFORMED = object()
+
+
 def _redact_jsonl_member(
     data: bytes,
     *,
@@ -1010,74 +1169,84 @@ def _redact_jsonl_member(
     """
     known = _known_secret_spellings(findings)
     text = data.decode("utf-8", errors="replace")
+    known_texts = _minimal_texts({f.match_text for f in known})
+    # Only raw findings present somewhere in the member can survive in a line.
+    residual_texts = tuple(t for t in {f.match_text for f in findings if f.match_text} if t in text)
+    policy = {"categories": categories, "custom_patterns": custom_patterns, "allowlist": allowlist}
     lines = text.split("\n")
     out: list[str] = []
     changed = False
 
-    for line in lines:
-        if not line.strip():
-            out.append(line)
-            continue
-        try:
-            obj = _loads_for_dlp(line)
-        except json.JSONDecodeError:
-            # Not valid JSON — redact this line as text (never drop it, never
-            # make it worse), including secrets behind any escape spelling.
-            redacted = _redact_malformed_line(
-                line,
-                known=known,
-                categories=categories,
-                custom_patterns=custom_patterns,
-                allowlist=allowlist,
-            )
-            out.append(redacted)
-            changed = changed or redacted != line
-            continue
-
-        redacted_obj, line_changed = _redact_json_value(
-            obj,
-            categories=categories,
-            custom_patterns=custom_patterns,
-            allowlist=allowlist,
-            known=known,
-        )
-
+    def redact_line(line: str, obj: object) -> tuple[str, bool]:
+        """The value-level path for one parsed line: (new line, rewritten)."""
+        redacted_obj, line_changed = _redact_json_value(obj, **policy, known=known)
         current = _serialize(redacted_obj, None) if line_changed else line
         redacted_obj, current, swept = _sweep_residual(
-            redacted_obj,
-            current,
-            findings,
-            None,
-            categories=categories,
-            custom_patterns=custom_patterns,
-            allowlist=allowlist,
+            redacted_obj, current, findings, None, **policy
         )
         if not line_changed and not swept:
             # Byte-identical to the scanned original: the residual check above
             # already confirmed none of its original findings remain.
-            out.append(line)
-            continue
+            return line, False
         # Re-serialized: whitespace/escaping changed, so re-scan until clean.
         redacted_obj, current, _settled = _settle_json(
-            redacted_obj,
-            current,
-            None,
-            categories=categories,
-            custom_patterns=custom_patterns,
-            allowlist=allowlist,
-            member_name=member_name,
+            redacted_obj, current, None, **policy, member_name=member_name
         )
-
-        new_line = current
         # HARD INVARIANT: a line that was valid JSON stays valid JSON.
         try:
-            _loads_for_dlp(new_line)
+            _loads_for_dlp(current)
         except json.JSONDecodeError as exc:
             raise ValueError(
                 f"Redaction produced invalid JSONL for member {member_name}: {exc}"
             ) from exc
-        out.append(new_line)
-        changed = True
+        return current, True
+
+    start = 0
+    while start < len(lines):
+        # Parse a batch of lines. A line that can't be fully inspected keeps
+        # its error, raised when the line's turn comes (as before).
+        batch: list[tuple[str, object]] = []
+        size = 0
+        while start < len(lines) and (not batch or size < _GATE_BATCH_CHARS):
+            line = lines[start]
+            start += 1
+            size += len(line) + 1
+            if not line.strip():
+                batch.append((line, _BLANK))
+                continue
+            try:
+                batch.append((line, _loads_for_dlp(line)))
+            except json.JSONDecodeError:
+                batch.append((line, _MALFORMED))
+            except DlpUninspectableError as exc:
+                batch.append((line, exc))
+                break
+        unchanged = _unchanged_lines(
+            [
+                (i, line, obj)
+                for i, (line, obj) in enumerate(batch)
+                if obj is not _BLANK and obj is not _MALFORMED
+                and not isinstance(obj, DlpUninspectableError)
+            ],
+            known_texts=known_texts,
+            residual_texts=residual_texts,
+            **policy,
+        )
+        for i, (line, obj) in enumerate(batch):
+            if obj is _BLANK or i in unchanged:
+                out.append(line)
+            elif isinstance(obj, DlpUninspectableError):
+                raise obj
+            elif obj is _MALFORMED:
+                # Not valid JSON — redact this line as text (never drop it, never
+                # make it worse), including secrets behind any escape spelling.
+                redacted = _redact_malformed_line(line, known=known, **policy)
+                out.append(redacted)
+                changed = changed or redacted != line
+            else:
+                new_line, rewritten = redact_line(line, obj)
+                out.append(new_line)
+                changed = changed or rewritten
 
     if not changed:
         return data

@@ -6638,7 +6638,7 @@ def test_streamed_git_tree_keeps_missing_object_mapping_and_timeout(
     )
     assert "per-file limit" in str(fake.error)  # type: ignore[attr-defined]
 
-    monkeypatch.setattr(sources, "_GIT_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(sources, "_GIT_TIMEOUT_SECONDS", 10.0)  # the fake git (and its child) must start and record pids first, even under a parallel run
     hung_dir = tmp_path / "hung"
     hung_dir.mkdir()
     fake, pid_file = _run_tree_through_real_runner(
@@ -6673,7 +6673,7 @@ def test_git_timeout_kills_descendants_holding_stdout(
     from sessionfs.skills import sources
 
     grandchild_pid = tmp_path / "grandchild-pid"
-    monkeypatch.setattr(sources, "_GIT_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(sources, "_GIT_TIMEOUT_SECONDS", 10.0)  # the fake git (and its child) must start and record pids first, even under a parallel run
     started = time.monotonic()
     fake, pid_file = _run_tree_through_real_runner(
         tmp_path,
@@ -6684,7 +6684,7 @@ def test_git_timeout_kills_descendants_holding_stdout(
         "time.sleep(60)\n",
     )
     assert "timed out" in str(fake.error)  # type: ignore[attr-defined]
-    assert time.monotonic() - started < 20
+    assert time.monotonic() - started < 40
     _assert_git_reaped(pid_file)
     orphan = int(grandchild_pid.read_text())
     for _ in range(100):

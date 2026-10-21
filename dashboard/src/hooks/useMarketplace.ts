@@ -3,7 +3,9 @@ import { useAuth } from '../auth/AuthContext';
 import { useMe } from './useMe';
 import type {
   ApprovalBinding,
+  MarketplaceSearchFilters,
   ModerationAction,
+  PackageSettingsInput,
   ScanFindingKey,
   ModerationTargetKind,
   PublishPackageInput,
@@ -46,13 +48,16 @@ export const MARKETPLACE_PAGE_SIZE = 24;
  * Keyset-paginated catalog. Each page carries `next_cursor`; the page appends
  * the next page on "Load more" instead of silently truncating to the newest N.
  */
-export function useMarketplacePackages(q: string, tool: string) {
+export type MarketplaceFilterState = Omit<MarketplaceSearchFilters, 'q' | 'tool' | 'limit' | 'cursor'>;
+
+export function useMarketplacePackages(q: string, tool: string, filters: MarketplaceFilterState = {}) {
   const { auth } = useAuth();
   const identity = useIdentity();
   return useInfiniteQuery({
-    queryKey: ['marketplace', identity, q, tool],
+    queryKey: ['marketplace', identity, q, tool, filters],
     queryFn: ({ pageParam }) =>
       auth!.client.searchMarketplace({
+        ...filters,
         q: q.trim() || undefined,
         tool: tool || undefined,
         limit: MARKETPLACE_PAGE_SIZE,
@@ -62,6 +67,65 @@ export function useMarketplacePackages(q: string, tool: string) {
     getNextPageParam: (lastPage) => (lastPage.has_more && lastPage.next_cursor ? lastPage.next_cursor : undefined),
     enabled: !!auth && !!identity,
     staleTime: 30_000,
+  });
+}
+
+export function useMarketplaceCategories() {
+  const { auth } = useAuth();
+  const identity = useIdentity();
+  return useQuery({
+    queryKey: ['marketplace-categories', identity],
+    queryFn: () => auth!.client.listMarketplaceCategories(),
+    enabled: !!auth && !!identity,
+    staleTime: 10 * 60_000,
+  });
+}
+
+export function useMarketplaceReadme(packageId: string | undefined, versionId: string | undefined, enabled: boolean) {
+  const { auth } = useAuth();
+  const identity = useIdentity();
+  return useQuery({
+    queryKey: ['marketplace-readme', identity, packageId, versionId],
+    queryFn: () => auth!.client.getMarketplaceReadme(packageId!, versionId),
+    enabled: !!auth && !!identity && !!packageId && enabled,
+    staleTime: 60_000,
+  });
+}
+
+export function usePublisherAnalytics(publisherId: string | undefined, days: number) {
+  const { auth } = useAuth();
+  const identity = useIdentity();
+  return useQuery({
+    queryKey: ['publisher-analytics', identity, publisherId, days],
+    queryFn: () => auth!.client.getPublisherAnalytics(publisherId!, days),
+    enabled: !!auth && !!identity && !!publisherId,
+    staleTime: 60_000,
+    retry: false,
+  });
+}
+
+export function useUpdatePackageSettings(publisherId: string) {
+  const { auth } = useAuth();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ packageId, body }: { packageId: string; body: PackageSettingsInput }) =>
+      auth!.client.updatePackageSettings(publisherId, packageId, body),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['marketplace'] });
+      void queryClient.invalidateQueries({ queryKey: ['publisher-analytics'] });
+    },
+  });
+}
+
+export function useOrgSkillUsage(orgId: string | undefined, days: number) {
+  const { auth } = useAuth();
+  const identity = useIdentity();
+  return useQuery({
+    queryKey: ['org-skill-usage', identity, orgId, days],
+    queryFn: () => auth!.client.getOrgSkillUsage(orgId!, days),
+    enabled: !!auth && !!identity && !!orgId,
+    staleTime: 60_000,
+    retry: false,
   });
 }
 
@@ -182,6 +246,16 @@ export function useOrgSkillControl(orgId: string | null | undefined) {
     staleTime: 30_000,
   });
   return { registries, assignments };
+}
+
+/** "Poll now" for an org registry: reschedules it for the next poller run. */
+export function useRequestRegistryPoll(orgId: string | null | undefined) {
+  const { auth } = useAuth();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (registryId: string) => auth!.client.requestOrgSkillRegistryPoll(orgId!, registryId),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['skill-registries'] }),
+  });
 }
 
 export function useDeletePersonalSkillVersion() {

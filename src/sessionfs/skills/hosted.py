@@ -283,6 +283,65 @@ def hosted_origin(source: dict[str, Any] | SourceIdentity | None) -> str | None:
     return _split_locator(source)[1]
 
 
+SEARCH_FILTERS = frozenset({
+    "category", "publisher", "verified", "attested", "license", "max_severity",
+    "capability", "works_in", "updated_within", "include_deprecated", "sort",
+})
+USAGE_REPORTING_ENV = "SFS_SKILL_USAGE_REPORTING"
+
+
+_USAGE_OFF = ("0", "false", "off", "no")
+_USAGE_ON = ("1", "true", "on", "yes")
+
+
+def _usage_opted_out() -> bool:
+    raw = os.environ.get(USAGE_REPORTING_ENV, "").strip().casefold()
+    if raw in _USAGE_OFF:
+        return True
+    try:
+        from sessionfs.telemetry import telemetry_enabled
+
+        return not telemetry_enabled()
+    except Exception:  # noqa: BLE001 - an unreadable config opts out
+        return True
+
+
+def usage_reporting_enabled(*, interactive: bool = False) -> bool:
+    """Whether install counts may be sent now. Opt-outs always win:
+    SFS_SKILL_USAGE_REPORTING=0/false/off/no, SFS_NO_TELEMETRY, or
+    `telemetry.enabled = false`. Otherwise counts are sent only once the
+    install-count notice has been SHOWN (its own marker, separate from the
+    telemetry notice) or SFS_SKILL_USAGE_REPORTING=1 is set explicitly. An
+    ``interactive`` CLI command on a terminal shows the notice (once) and
+    then may send; the daemon and non-terminal runs never show it and send
+    nothing until then (fail closed)."""
+    if _usage_opted_out():
+        return False
+    if os.environ.get(USAGE_REPORTING_ENV, "").strip().casefold() in _USAGE_ON:
+        return True
+    try:
+        from sessionfs.telemetry import (
+            SKILL_USAGE_NOTICE,
+            mark_skill_usage_disclosure_shown,
+            skill_usage_disclosure_shown,
+        )
+
+        if skill_usage_disclosure_shown():
+            return True
+        if interactive and sys.stderr.isatty():
+            print(SKILL_USAGE_NOTICE, file=sys.stderr)
+            mark_skill_usage_disclosure_shown()
+            return True
+    except Exception:  # noqa: BLE001 - unsure means no counts
+        return False
+    return False
+
+
+def usage_reporting_awaiting_notice() -> bool:
+    """Not opted out, but counts are held until the notice is shown."""
+    return not _usage_opted_out() and not usage_reporting_enabled()
+
+
 # ---------------------------------------------------------------------------
 # HTTP client
 # ---------------------------------------------------------------------------
@@ -334,6 +393,13 @@ class HostedListing(list):
     truncated: bool = False
     # Stopped by the deadline or a cancel before the last page.
     interrupted: bool = False
+    # Grants the org skills policy refuses (marketplace v2 §8): withheld by
+    # the server, listed so the device can say why.
+    policy_refused: list[dict[str, Any]]
+
+    def __init__(self, *args: Any) -> None:
+        super().__init__(*args)
+        self.policy_refused = []
 
     @classmethod
     def from_body(cls, body: dict[str, Any], items: list[Any]) -> "HostedListing":
@@ -348,6 +414,9 @@ class HostedListing(list):
         count = body.get("omitted_count")
         if isinstance(count, int) and not isinstance(count, bool) and count > 0:
             self.omitted_count += count
+        refused = body.get("policy_refused")
+        if isinstance(refused, list):
+            self.policy_refused.extend(item for item in refused if isinstance(item, dict))
 
 
 def _server_omitted(listing: Any) -> tuple[bool, int]:
@@ -400,13 +469,21 @@ class HostedClient:
             yield client
 
     def _request(
-        self, path: str, params: dict[str, Any] | None = None, *, timeout: float | None = None
+        self,
+        path: str,
+        params: dict[str, Any] | None = None,
+        *,
+        timeout: float | None = None,
+        method: str = "GET",
+        json_body: Any = None,
     ) -> "httpx.Response":
         import httpx
 
         _assert_safe_api_path(path)
         try:
             with self._client(timeout) as client:
+                if method == "POST":
+                    return client.post(f"{self.api_url}{path}", params=params, json=json_body)
                 return client.get(f"{self.api_url}{path}", params=params)
         except httpx.RequestError as exc:
             raise HostedUnavailable(
@@ -445,7 +522,12 @@ class HostedClient:
         tool: str | None = None,
         limit: int = 20,
         cursor: str | None = None,
+        filters: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """One catalog page. ``filters`` are the discovery filters (marketplace
+        v2 §9): category, publisher, verified, attested, license,
+        max_severity, capability, works_in, updated_within,
+        include_deprecated, sort. None values are omitted."""
         params: dict[str, Any] = {"limit": max(1, min(limit, SEARCH_PAGE_LIMIT))}
         if query:
             params["q"] = query[:200]
@@ -453,16 +535,68 @@ class HostedClient:
             params["tool"] = tool
         if cursor:
             params["cursor"] = cursor
+        for key, value in (filters or {}).items():
+            if key not in SEARCH_FILTERS or value is None:
+                continue
+            params[key] = ("true" if value else "false") if isinstance(value, bool) else value
         body = self._json("/api/v1/marketplace/packages", params, what="Marketplace search")
         if not isinstance(body, dict) or not isinstance(body.get("items"), list):
             raise SkillError("Marketplace search returned an unexpected response")
         return body
 
-    def search(self, query: str | None, *, tool: str | None = None, limit: int = 20) -> list[dict]:
+    def search(
+        self,
+        query: str | None,
+        *,
+        tool: str | None = None,
+        limit: int = 20,
+        filters: dict[str, Any] | None = None,
+    ) -> list[dict]:
         return [
-            item for item in self.search_page(query, tool=tool, limit=limit)["items"]
+            item for item in self.search_page(query, tool=tool, limit=limit, filters=filters)["items"]
             if isinstance(item, dict)
         ]
+
+    def categories(self) -> list[dict]:
+        body = self._json("/api/v1/marketplace/categories", None, what="Marketplace categories")
+        if not isinstance(body, dict) or not isinstance(body.get("items"), list):
+            raise SkillError("Marketplace categories returned an unexpected response")
+        return [item for item in body["items"] if isinstance(item, dict)]
+
+    def report_usage(
+        self,
+        version_id: str,
+        event: str,
+        tools: list[str],
+        *,
+        source: str = "download",
+        project_id: str | None = None,
+        interactive: bool = False,
+    ) -> bool:
+        """Best-effort install-lifecycle count (marketplace v2 §9): never
+        raises and never blocks the caller for long. The server keeps daily
+        aggregates only, one count per account per version, tool and day.
+        ``interactive`` lets a terminal CLI command show the one-time notice
+        first (see usage_reporting_enabled)."""
+        import httpx
+
+        if not tools or not _VERSION_ID_RE.fullmatch(version_id):
+            return False
+        if not usage_reporting_enabled(interactive=interactive):
+            return False
+        path = f"/api/v1/marketplace/versions/{version_id}/events"
+        payload: dict[str, Any] = {"event": event, "tools": sorted(set(tools))[:10], "source": source}
+        if project_id:
+            payload["project_id"] = project_id
+        try:
+            _assert_safe_api_path(path)
+            with self._client(timeout=3.0) as client:
+                response = client.post(f"{self.api_url}{path}", json=payload)
+            return response.status_code == 202
+        except (httpx.HTTPError, SkillError, OSError):
+            return False
+        except Exception:  # noqa: BLE001 - counts are optional, never fatal
+            return False
 
     def get_package(self, package_id: str) -> dict[str, Any]:
         if not _PACKAGE_ID_RE.fullmatch(package_id):
@@ -478,6 +612,20 @@ class HostedClient:
         body = response.json()
         if not isinstance(body, dict):
             raise SkillError("Marketplace package lookup returned an unexpected response")
+        return body
+
+    def works_in(self, version_id: str) -> dict[str, Any]:
+        """Per-tool works-in evidence for one version (marketplace v2 §7.6)."""
+        if not _VERSION_ID_RE.fullmatch(version_id):
+            raise SkillError(f"Invalid hosted version id: {version_id}")
+        response = self._request(f"/api/v1/marketplace/versions/{version_id}/works-in")
+        if response.status_code == 404:
+            raise SkillError(f"Hosted version {version_id} is not available to this account")
+        if response.status_code >= 400:
+            raise self._error(response, "Works-in lookup")
+        body = response.json()
+        if not isinstance(body, dict):
+            raise SkillError("Works-in lookup returned an unexpected response")
         return body
 
     def version_metadata(self, version_id: str) -> dict[str, Any]:
@@ -619,6 +767,32 @@ class HostedClient:
             raise SkillError("Account lookup returned no user id")
         self._identity = {"kind": "user", "user_id": user_id}
         return self._identity
+
+    def device_policy(self) -> dict[str, Any] | None:
+        """Skills policies that apply to this account (marketplace v2 §8.6),
+        or None when the server does not offer them. Other failures RAISE."""
+        response = self._request("/api/v1/devices/me/policy")
+        if response.status_code == 404 and _is_route_missing(response):
+            return None
+        if response.status_code >= 400:
+            raise self._error(response, "Skills policy lookup")
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise SkillError("Skills policy lookup: the server returned invalid JSON") from exc
+        if not isinstance(body, dict) or not isinstance(body.get("items"), list):
+            raise SkillError("Skills policy lookup returned an unexpected response")
+        return body
+
+    def post_policy_report(self, report: dict[str, Any]) -> dict[str, Any]:
+        response = self._request("/api/v1/devices/me/policy-report", method="POST", json_body=report)
+        if response.status_code >= 400:
+            raise self._error(response, "Skills policy report")
+        try:
+            body = response.json()
+        except ValueError:
+            return {}
+        return body if isinstance(body, dict) else {}
 
     def assignments(
         self,
@@ -2452,6 +2626,10 @@ class PullReport:
     # (`sfs skill compile <id> --drop <tool>` removes one); never removed.
     unassigned_tools: list[dict[str, Any]] = field(default_factory=list)
     blocked_removed: list[dict[str, Any]] = field(default_factory=list)
+    # Grants the org skills policy refuses (never installed by this pull),
+    # and the compliance report sent for this device (marketplace v2 §8.4).
+    policy_refused: list[dict[str, Any]] = field(default_factory=list)
+    policy_reports: list[dict[str, Any]] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     revocations_supported: bool = True
     revocations_complete: bool = True
@@ -2477,6 +2655,8 @@ class PullReport:
             "recovery": self.recovery,
             "unassigned_tools": self.unassigned_tools,
             "blocked_removed": self.blocked_removed,
+            "policy_refused": self.policy_refused,
+            "policy_reports": self.policy_reports,
             "notes": self.notes,
             "revocations_supported": self.revocations_supported,
             "revocations_complete": self.revocations_complete,
@@ -2673,6 +2853,8 @@ def collect_pull_items(
         report.complete_sources["assignment"] = False
         report.note(f"Org assignments could not be read; nothing was changed for them: {exc}")
     _note_server_omitted(assignments, "assignment", "org assignment(s)", report)
+    for refused in getattr(assignments, "policy_refused", []):
+        _record_policy_refusal(report, "assignment", refused, refused.get("policy"))
     malformed = 0
     for row in assignments:
         if not _valid_row(row, mode_field=True):
@@ -2738,6 +2920,11 @@ def collect_pull_items(
             not device_id or row.get("target_device_id") != device_id
         ):
             continue
+        verdict = row.get("policy")
+        if isinstance(verdict, dict) and verdict.get("allowed") is False:
+            # The org's CURRENT skills policy refuses this approved request.
+            _record_policy_refusal(report, "request", row, verdict)
+            continue
         tools = _usable_tools(row, "request", report)
         if tools is None:
             continue
@@ -2762,6 +2949,30 @@ def collect_pull_items(
             "nothing pulled from install requests is removed this time"
         )
     return list(items.values())
+
+
+def _record_policy_refusal(
+    report: PullReport, origin: str, row: dict[str, Any], verdict: Any
+) -> None:
+    verdict = verdict if isinstance(verdict, dict) else {}
+    violations = [
+        str(item.get("code"))
+        for item in verdict.get("violations") or []
+        if isinstance(item, dict) and item.get("code")
+    ][:20]
+    message = str(verdict.get("message") or "Blocked by your organization's skills policy.")[:1000]
+    entry = {
+        "origin": origin,
+        "id": str(row.get("assignment_id") or row.get("id") or "")[:100],
+        "org_id": str(verdict.get("org_id") or row.get("org_id") or "")[:64],
+        "version_id": str(row.get("version_id") or "")[:100],
+        "package_id": str(row.get("package_id") or "")[:100],
+        "policy_revision": verdict.get("policy_revision"),
+        "violations": violations,
+        "message": message,
+    }
+    report.policy_refused.append(entry)
+    report.note(f"Not installed ({origin} {entry['version_id']}): {message}")
 
 
 def _note_server_omitted(listing: Any, source: str, label: str, report: PullReport) -> None:
@@ -3480,12 +3691,64 @@ def pull(
     interrupted installs) is still shown or logged by the caller."""
     report = PullReport(notify=notify, on_recovery=on_recovery)
     try:
-        return _pull(manager, client, report=report, **kwargs)
+        _pull(manager, client, report=report, **kwargs)
+        if not _halted(kwargs.get("deadline"), kwargs.get("cancel")):
+            _send_policy_report(manager, client, report, kwargs.get("device_id"))
+        return report
     except Exception as exc:
         with contextlib.suppress(Exception):
             if getattr(exc, "pull_report", None) is None:
                 exc.pull_report = report  # type: ignore[attr-defined]
         raise
+
+
+def _send_policy_report(
+    manager: "SkillManager", client: HostedClient, report: PullReport, device_id: str | None
+) -> None:
+    """Advisory compliance report (marketplace v2 §8.4). Best effort: a
+    failure is a note, never a failed pull. Names, versions and policy
+    codes only - never file contents."""
+    from sessionfs.skills import policy_reconcile
+
+    try:
+        sent = policy_reconcile.report_after_pull(manager, client, report, device_id)
+    except Exception as exc:  # noqa: BLE001 - telemetry never fails a pull
+        report.note(f"Skills policy compliance report not sent: {exc}")
+        return
+    report.policy_reports = sent
+
+
+def report_pull_usage(
+    manager: "SkillManager", client: HostedClient, report: "PullReport", *, interactive: bool = False
+) -> int:
+    """Best-effort install counts for a reconcile (marketplace v2 §9):
+    installed / updated items count as installs, up-to-date ones as an
+    active-install ping, both with source "reconcile". Never raises. The
+    daemon passes interactive=False: it sends nothing until the notice has
+    been shown by an interactive command (or counts are enabled explicitly)."""
+    sent = 0
+    if not callable(getattr(client, "report_usage", None)):
+        return 0
+    events = [
+        (item, {"installed": "install", "updated": "install", "up-to-date": "active"}.get(item.status))
+        for item in getattr(report, "items", [])
+    ]
+    events = [(item, event) for item, event in events if event is not None]
+    # The notice (if due) is shown right before the first count, never when
+    # there is nothing to count.
+    if not events or not usage_reporting_enabled(interactive=interactive):
+        return 0
+    for item, event in events:
+        tools = list(item.targets)
+        if not tools:
+            try:
+                row = manager.find_installed(item.local_package_id or item.package_id, scope=item.scope)
+                tools = [str(tool) for tool in row.get("targets") or []]
+            except Exception:  # noqa: BLE001 - counts are optional
+                tools = []
+        if client.report_usage(item.version_id, event, tools, source="reconcile"):
+            sent += 1
+    return sent
 
 
 def partial_pull_report(exc: BaseException | None) -> "PullReport | None":

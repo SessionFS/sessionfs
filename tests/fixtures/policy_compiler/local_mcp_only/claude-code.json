@@ -1,0 +1,27 @@
+{
+  "deniedMcpServers": [
+    {
+      "serverUrl": "http://*"
+    },
+    {
+      "serverUrl": "https://*"
+    }
+  ],
+  "extraKnownMarketplaces": {
+    "sessionfs-acme": {
+      "source": {
+        "source": "git",
+        "url": "https://api.sessionfs.dev/catalogs/acme"
+      }
+    }
+  },
+  "strictKnownMarketplaces": [
+    {
+      "source": "git",
+      "url": "https://api.sessionfs.dev/catalogs/acme"
+    },
+    {
+      "source": "skills-dir"
+    }
+  ]
+}

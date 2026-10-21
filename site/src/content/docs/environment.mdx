@@ -61,7 +61,7 @@ All SessionFS server environment variables use the `SFS_` prefix.
 |----------|-------------|---------|
 | `SFS_HOST` | Listen address | `0.0.0.0` |
 | `SFS_PORT` | Listen port | `8000` |
-| `SFS_LOG_LEVEL` | Log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` | `INFO` |
+| `SFS_LOG_LEVEL` | Log level for the API's own logs: `DEBUG`, `INFO`, `WARNING`, `ERROR`. Applied when the process has no other logging configuration (plain `uvicorn`); `INFO` includes one timing line per session push | `INFO` |
 | `SFS_CORS_ORIGINS` | Allowed CORS origins (comma-separated) | — |
 | `SFS_RATE_LIMIT_PER_MINUTE` | API rate limit per API key per minute. Set to `0` to disable | `120` |
 | `SFS_SMTP_VERIFY_SSL` | Verify SSL certificates for SMTP. Set to `false` for self-signed certs | `true` |
@@ -110,6 +110,14 @@ Hosted billing configuration is SessionFS Cloud infrastructure only. Self-hosted
 | `SFS_API_URL` | API URL for share links and internal references | `https://api.sessionfs.dev` |
 | `SFS_PUBLIC_API_URL` | This deployment's public API origin, e.g. `https://api.sessionfs.dev`. Default OIDC audience for marketplace trusted publishing | — |
 | `SFS_TRUSTED_PUBLISHING_AUDIENCE` | Overrides the OIDC audience for marketplace trusted publishing. Must be unique to the deployment: a generic value such as `sessionfs` refuses to start, and with neither this nor `SFS_PUBLIC_API_URL` trusted publishing is disabled | `SFS_PUBLIC_API_URL` |
+| `SFS_REGISTRY_POLLING_ENABLED` | Server-side polling of organization Git marketplace registries. `false`: the poll endpoint answers `503` and registries report `server_fetch_enabled: false` | `true` |
+| `SFS_REGISTRY_POLL_ALLOWED_PRIVATE_CIDRS` | Comma-separated private ranges the registry poller may reach (an internal GitLab). Loopback, link-local and metadata addresses are never reachable | — |
+| `SFS_REGISTRY_POLL_TIMEOUT_SECONDS` | Fetch budget of one registry poll (30-3600) | `300` |
+| `SFS_REGISTRY_POLL_RUN_BUDGET_SECONDS` | Budget of one poll run: no new registry is claimed once elapsed + fetch budget + 300 s publish slack would exceed it (120-3000). Keep your scheduler's timeout above budget + 120 s | `1200` |
+| `SFS_REGISTRY_POLL_MAX_PER_ORG` | Polling-enabled registries an organization may have (more are refused with `409 poll_registry_limit`) | `10` |
+| `SFS_REGISTRY_POLL_MAX_PER_ORG_PER_RUN` | Registries of one organization polled per run, so one organization cannot starve the others | `2` |
+| `SFS_REGISTRY_CRED_<NAME>` | A registry credential referenced as `env:SFS_REGISTRY_CRED_<NAME>`; requires `SFS_REGISTRY_CRED_<NAME>_ORG` (the one org allowed to use it) and `SFS_REGISTRY_CRED_<NAME>_HOSTS` (the hosts it may be sent to); optional `_USERNAME` | — |
+| `SFS_REGISTRY_SECRETS_DIR` | Mounted credential Secrets for `k8s:<name>` references (`token`, `org` and `hosts` required, optional `username`) | `/var/run/secrets/sessionfs/registry-credentials` |
 
 ## Defaults
 
@@ -126,3 +134,4 @@ Hosted billing configuration is SessionFS Cloud infrastructure only. Self-hosted
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `SFS_UPLOAD_TIMEOUT` | Seconds the CLI and daemon wait on a session upload or download (1–3600). Overrides `upload_timeout` under `[sync]` in `config.toml`; `sfs push --timeout` overrides both | `300` |
+| `SFS_SKILL_USAGE_REPORTING` | Client-side. `0`, `false`, `off` or `no` stops hosted-marketplace install counts from `sfs skill add/remove/pull` and the daemon's reconcile. Also off whenever telemetry is off. Sent only after the one-time notice is shown by an interactive `sfs skill` command; `1` enables them without it | on, after the notice |

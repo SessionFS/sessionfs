@@ -1,0 +1,84 @@
+{{- $polling := .Values.api.registryPolling | default dict }}
+{{- $cron := $polling.cronJob | default dict }}
+{{- if and $polling.enabled $cron.enabled }}
+{{- $secret := required "api.registryPolling.cronJob.existingSecret is required when the registry poll CronJob is enabled" $cron.existingSecret }}
+# Calls the API's registry poller (GitHub #69) on a schedule. The fetch runs
+# in the API pods (with their egress policy); this pod only sends one
+# authenticated request. Per-registry leases make overlapping runs safe.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "sessionfs.fullname" . }}-registry-poll
+  labels:
+    {{- include "sessionfs.componentLabels" (list . "registry-poll") | nindent 4 }}
+spec:
+  schedule: {{ $cron.schedule | default "*/5 * * * *" | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: {{ $cron.successfulJobsHistoryLimit | default 1 }}
+  failedJobsHistoryLimit: {{ $cron.failedJobsHistoryLimit | default 3 }}
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: {{ add ($polling.runBudgetSeconds | default 1200) 180 }}
+      template:
+        metadata:
+          labels:
+            {{- include "sessionfs.componentSelectorLabels" (list . "registry-poll") | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          {{- include "sessionfs.imagePullSecrets" . | nindent 10 }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: poll
+              image: {{ $cron.image | default "curlimages/curl:8.12.1" }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+                runAsUser: 10001
+                capabilities:
+                  drop:
+                    - ALL
+              env:
+                - name: SFS_REGISTRY_POLL_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ $secret }}
+                      key: {{ $cron.secretKey | default "registry-poll-api-key" }}
+              command: ["sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  # The key is sent as a header read from the environment;
+                  # it never appears in argv or in the job's output.
+                  printf 'header = "Authorization: Bearer %s"\n' "$SFS_REGISTRY_POLL_API_KEY" > /dev/shm/curl.cfg 2>/dev/null \
+                    || { echo "no /dev/shm for the curl config" >&2; exit 1; }
+                  curl --fail-with-body --silent --show-error \
+                    --max-time {{ add ($polling.runBudgetSeconds | default 1200) 120 }} \
+                    --config /dev/shm/curl.cfg \
+                    -H "Content-Type: application/json" \
+                    -X POST \
+                    -d '{"limit": {{ $cron.limit | default 5 }}}' \
+                    "http://{{ include "sessionfs.fullname" . }}-api:{{ .Values.api.service.port }}/api/v1/admin/skills/registries/poll"
+                  rm -f /dev/shm/curl.cfg
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 16Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi
+              volumeMounts:
+                - name: shm
+                  mountPath: /dev/shm
+          volumes:
+            - name: shm
+              emptyDir:
+                medium: Memory
+                sizeLimit: 1Mi
+{{- end }}

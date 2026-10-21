@@ -1,0 +1,17 @@
+{
+  "general": {
+    "enableAutoUpdate": false,
+    "enableAutoUpdateNotification": false
+  },
+  "privacy": {
+    "usageStatisticsEnabled": false
+  },
+  "security": {
+    "folderTrust": {
+      "enabled": false
+    }
+  },
+  "telemetry": {
+    "enabled": false
+  }
+}

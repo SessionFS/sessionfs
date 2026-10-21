@@ -42,7 +42,7 @@ describe('useMarketplace identity scoping', () => {
     mocks.useMe.mockReturnValue({ data: { user_id: 'user_A' } });
     rerender();
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
-    expect(qc.getQueryData(['marketplace', 'user_A', 'review', ''])).toEqual({
+    expect(qc.getQueryData(['marketplace', 'user_A', 'review', '', {}])).toEqual({
       pages: [{ items: [{ listing_id: 'private-of-A' }], count: 1, has_more: false, next_cursor: null }],
       pageParams: [''],
     });
@@ -52,7 +52,7 @@ describe('useMarketplace identity scoping', () => {
     searchMarketplace.mockResolvedValue({ items: [], count: 0, has_more: false, next_cursor: null });
     rerender();
     await waitFor(() => expect(result.current.data?.pages[0]?.count).toBe(0));
-    expect(qc.getQueryData(['marketplace', 'user_B', 'review', ''])).toEqual({
+    expect(qc.getQueryData(['marketplace', 'user_B', 'review', '', {}])).toEqual({
       pages: [{ items: [], count: 0, has_more: false, next_cursor: null }],
       pageParams: [''],
     });

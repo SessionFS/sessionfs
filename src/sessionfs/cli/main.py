@@ -44,6 +44,8 @@ from sessionfs.cli.cmd_persona import persona_app
 from sessionfs.cli.cmd_ticket import ticket_app
 from sessionfs.cli.cmd_agent import agent_app
 from sessionfs.cli.cmd_skill import skill_app
+from sessionfs.cli.cmd_catalog import catalog_app
+from sessionfs.cli.cmd_policy import policy_app
 from sessionfs.cli.cmd_resident import resident_app
 from sessionfs.cli.cmd_keys import (
     auth_keys_app,
@@ -80,6 +82,8 @@ app.add_typer(ticket_app, name="ticket")
 app.add_typer(agent_app, name="agent")
 app.add_typer(skill_app, name="skill")
 app.add_typer(skill_app, name="plugin")
+app.add_typer(catalog_app, name="catalog")
+app.add_typer(policy_app, name="policy")
 
 # Register the resident runner (R1: reviewer-runner skeleton)
 app.add_typer(resident_app, name="resident")

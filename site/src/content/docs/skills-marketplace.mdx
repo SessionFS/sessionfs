@@ -77,15 +77,54 @@ The client computes a deterministic plan, checks collisions and path safety, wri
 
 `GET /api/v1/marketplace/feeds/{tool}` returns a target-aware portability plan with the immutable download path, target install roots, and omitted components.
 
-For generic hosted uploads this is a **SessionFS authenticated download-and-translate feed**, not a vendor-native marketplace claim. Vendor-native installation requires a future verified source adapter that can satisfy that vendor's own source contract. The response makes this explicit with:
+This feed is a **SessionFS authenticated download-and-translate feed**, used by `sfs skill`. The response says so explicitly, and for tools with a native catalog it also links it:
 
 ```json
 {
   "projection_type": "sessionfs-portability-plan",
   "native_marketplace_install": false,
-  "delivery": "authenticated-download-and-translate"
+  "delivery": "authenticated-download-and-translate",
+  "native_catalog_url": "https://api.sessionfs.dev/api/v1/git/public/sessionfs.git"
 }
 ```
+
+## Native Tool Catalogs
+
+SessionFS also publishes approved packages as **native plugin catalogs**: read-only git repositories that each tool's own plugin command can add. Publish once, and the package installs with Claude Code's `/plugin install`, Copilot CLI's `copilot plugin install`, the Codex Plugins Directory, a Cursor team marketplace or `gemini extensions install`.
+
+```bash
+sfs catalog add --for claude-code          # prints: /plugin marketplace add <clone-url>
+sfs catalog add --for copilot --org <org>  # an org catalog (Team+)
+```
+
+| Catalog | Who | Contains |
+|---|---|---|
+| Public (`sessionfs`) | Every signed-in user | Moderated public listings from verified publishers with no open high or critical scan findings |
+| Personal (`sessionfs-user-…`) | Starter and above | Versions you consented to install |
+| Organization (`sessionfs-org-…`) | Team and above | Org-wide assignments and approved install requests |
+
+A native install skips SessionFS's own consent prompt (the tool performs it), so a catalog only ever holds versions its scope already approved, and the tool's own trust prompt still applies. A block, yank or quarantine removes the entry the next time the catalog is fetched. Tools do not uninstall plugins that leave a catalog; `sfs skill pull` and device reconcile still remove blocked packages where `sfs` runs.
+
+Each catalog repository carries `.claude-plugin/marketplace.json` (Claude Code), `.github/plugin/marketplace.json` (Copilot CLI), `.agents/plugins/marketplace.json` (Codex) and `.cursor-plugin/marketplace.json` (Cursor), one `plugins/<namespace>--<name>/` directory per package, and `SESSIONFS-CATALOG.json`, which binds every plugin to its version id, content hash and projection hash. Commits are deterministic: the same approved set always produces the same commit.
+
+Authentication: git sends your API key through the `sfs catalog credential` helper, which `sfs catalog add` configures for the SessionFS API host only, ahead of an empty entry that keeps other credential helpers (such as a keychain or `store` helper) from receiving the key. Keys never appear in URLs.
+
+One package never breaks a catalog: a package that cannot be projected safely, or that does not fit the catalog's size budget, is left out and listed with the reason in `SESSIONFS-CATALOG.json`, and if a rebuild fails the catalog keeps serving its last good commit, unless that commit still carries a version that has since been blocked, yanked, quarantined or had its grant revoked, in which case the catalog answers 503 until a rebuild succeeds.
+
+Cursor team marketplaces import from GitHub, GitLab, Bitbucket or Azure DevOps, so mirror an org catalog to a repository you own with `sfs catalog export --to <remote>`. Gemini CLI installs one extension per repository and lists public GitHub repositories, so it gets per-plugin repositories from the public catalog only. Antigravity only lists its official marketplace: clone the catalog and run `agy plugin install <clone>/plugins/<plugin>`.
+
+## Works In
+
+Every listing shows a per-tool **works in** matrix (`sfs skill works-in <id>`, `GET /api/v1/marketplace/versions/{id}/works-in`, and MCP `get_marketplace_package`):
+
+| Badge | Meaning |
+|---|---|
+| `verified` | The tool's own installer accepted the package in the SessionFS verification harness (L1), with the tool version and date |
+| `format-valid` | The generated catalog entry matches the tool's documented format (L0, checked in-process) |
+| `regressed` | It verified on an earlier tool version and fails on the newest one |
+| `expected` | Computed by SessionFS's adapters; not yet verified |
+
+The harness runs each tool's installer in an isolated, short-lived sandbox with no secrets, as a separate unprivileged user from the harness process; it never runs a skill (that would need a model key, and SessionFS holds none). Works-in checks on private (org or personal) packages are a Team feature, with a daily per-organization quota.
 
 ### 3. MCP Runtime Instructions
 
@@ -111,7 +150,19 @@ Assignments are desired state. Clients still perform local preflight and install
 
 Open **Marketplace** in the dashboard to search everything visible to your identity. Package detail shows the trust dossier, the install disclosure card and the compatibility matrix. Choose **Request for project** to create an instruction-only request. Project owners/admins decide pending requests from the project's **Marketplace** tab, which shows the disclosure for the requested tools and, when the request updates a version already approved there, the changes to approve.
 
-Organization members also see registry policy and effective assignments. Organization owners and admins also get **Updates to review**: every assigned package with a newer version, its update diff and the full disclosure of the new version, with an acknowledgement (bound to the disclosure shown) and an **Advance** button. Private packages remain hidden from users outside the owning organization; unauthorized detail and download requests return `404` rather than disclosing existence.
+Organization members also see registry policy, each registry's poll status (last and next poll, failures and the error summary) and effective assignments; owners and admins can **Poll now**. Organization owners and admins also get **Updates to review**: every assigned package with a newer version, its update diff and the full disclosure of the new version, with an acknowledgement (bound to the disclosure shown) and an **Advance** button. Private packages remain hidden from users outside the owning organization; unauthorized detail and download requests return `404` rather than disclosing existence.
+
+## Discovery and Freshness
+
+Browse by category (code review, testing, debugging, refactoring, documentation, security, frontend, backend and APIs, data, infrastructure, deployment, workflow, integrations, AI and ML, productivity) and narrow results by publisher, verified publisher, trusted-publishing provenance, declared license, worst open scan finding, capability (instruction-only, scripts, MCP servers, hooks, executable extensions, pre-approved tools), the tool a package is verified to work in, and how recently it was updated. The same filters are on the dashboard filter rail, `sfs skill search`, the API (`GET /api/v1/marketplace/packages`) and the read-only MCP `search_skill_marketplace` tool. Every filter runs on the server before a page is cut.
+
+The default ranking is fixed and documented, with no stars or reviews: packages that are not deprecated come first, then the text match (exact name, name prefix, name contains, description), then verified publishers, then how many tools the package is verified to work in, then a log-scale bucket of 30-day installs, then the newest version.
+
+- **README**: the package's `README.md` (or the first `SKILL.md` body) is shown on the listing. It is rendered without raw HTML, links are limited to `http(s)` and `mailto` and carry `rel="nofollow"`, remote images are never loaded (no tracking pixels), and images inside the package load only through the authenticated asset endpoint (PNG, JPEG, GIF and WebP checked by content; never SVG). Hidden and bidirectional characters are shown as `⟦U+XXXX⟧` and listed with their line and column.
+- **Install counts by tool**: installs over the last 30 days, per target tool. Counts under 10 show as `<10`. The server keeps daily totals only (one count per account per version, tool and day) and service-key installs are counted separately. The CLI and daemon send these counts best effort; `SFS_SKILL_USAGE_REPORTING=0` or turning telemetry off stops them.
+- **Freshness**: last updated and last verified per tool. A package is **stale** when it has had no new version for 180 days and either its works-in check regressed or (for a verified GitHub publisher) its source repository is archived. **Deprecated** is set by the publisher, with an optional successor from the same publisher, which search and installs point to. **Unmaintained** means the publisher's verification lapsed. A daily sweeper recomputes the flags.
+
+Publishers get an analytics view (dashboard **Publishers → Analytics**, `sfs skill publisher stats`): installs by tool, version and day, active installs, uninstall rate, translation failures, update adoption, works-in regressions, scan findings and open reports. Every count is floored at 10 and the organizations installs come from are never shown. Personal publisher analytics need Starter or above, organization publishers the Team plan. Organization owners and admins on Team can see what their own members use (dashboard **Marketplace → Organization usage**, `sfs skill usage --org`).
 
 ## Publishing Boundary
 
@@ -158,7 +209,26 @@ Some limits need server state, so only the server checks them: your plan, your o
 
 Secret and PHI findings block a personal publish locally. When you publish to an organization, they appear as warnings instead, because the organization's DLP allowlist may permit the flagged values. The server applies that policy, and it rejects the upload if the policy does not allow them.
 
-Registry URLs are recorded as pinned references. SessionFS does not fetch arbitrary registry URLs on the server, avoiding an SSRF or credential-forwarding path.
+Personal registry URLs are recorded as pinned references only; the server never fetches them. Organization registries can be polled by the server (next section).
+
+## Polling Git Registries
+
+An organization registry on `https://` can publish itself: SessionFS polls it and every new Git tag that matches the registry's pattern becomes a new, immutable version in the organization's library. Nobody has to republish, and no CI pipeline needs a publishing key.
+
+- **Schedule.** `poll_interval_seconds` defaults to 900 (15 minutes) for `https://` registries; the minimum is 300, and `0` keeps the registry metadata-only (nothing is fetched). `ssh://` registries are never polled. Registries created before polling existed stay metadata-only until an owner or admin turns polling on. An organization can poll at most 10 registries by default (`409 poll_registry_limit`), and each scheduler run polls at most two registries per organization so no organization starves the others.
+- **Which refs.** `tag_pattern` defaults to semver (`v?\d+\.\d+\.\d+`, matched against the whole tag name). Patterns use a restricted syntax: literals, `.`, `\d`, `\w`, character classes and the quantifiers `? * + {n,m}`; groups, alternation and backreferences are refused so a pattern can never be made slow. With `branch_only_mode` and a `branch`, the branch head is published instead; commits between two polls are not published individually.
+- **What gets published.** A repository with a `marketplace.json` (`.claude-plugin/`, `.codex-plugin/` or the root) publishes each plugin that lives in the repository; plugins that point at another repository are skipped (the server never follows URLs found inside a repository). A repository without a manifest is published as one package. Every package goes through exactly the checks of a manual organization publish: validation, the organization's DLP policy, instruction scanning, disclosure, quotas and moderation blocks. The organization owner or admin who last saved the polling settings is the publisher of record and must still hold that role; if they leave, any owner or admin re-saving the settings takes over.
+- **Immutability.** Re-polling the same commit is a no-op. A tag that is force-moved to a different commit produces a new version with its own content hash; existing versions are never changed. A refused package (for example a DLP finding) is recorded against its tag and not retried until the tag moves.
+- **Private repositories.** Set `credential_secret_ref` to a reference, never a token: `env:SFS_REGISTRY_CRED_<NAME>` or `k8s:<secret-name>`. The operator creates the credential and binds it to your organization and to the hosts it may be sent to; any problem with a reference shows one generic message (the operator's logs say why). Credentials never appear in the URL, in API responses, in poll errors or in logs.
+- **Status.** The registry listing and the dashboard show `last_poll_at`, `last_poll_status` (`ok`, `partial` when some packages were refused, `error`), a sanitized `last_poll_error_summary`, `consecutive_failures` and `next_poll_at`. Failures back off exponentially (twice the interval, then four times, up to 24 hours). Network, TLS and server errors are retried; only a refusal of the content itself is recorded against a tag. **Poll now** in the dashboard (or `POST /api/v1/orgs/{org_id}/skills/registries/{registry_id}/poll`, at most once a minute) moves the registry to the front of the next run; `GET .../poll-refs` lists what each tag produced.
+
+```bash
+curl -X PATCH "$API/api/v1/orgs/$ORG/skills/registries/$REGISTRY" \
+  -H "Authorization: Bearer $SFS_KEY" -H "Content-Type: application/json" \
+  -d '{"poll_interval_seconds": 900, "tag_pattern": "v\\d+\\.\\d+\\.\\d+", "credential_secret_ref": "k8s:acme-gitlab"}'
+```
+
+The fetch is hardened: https only, the host's addresses are checked (private, loopback, link-local and metadata addresses are refused; self-hosted operators can allow specific private ranges) and Git is pinned to them, redirects are not followed, hooks never run, nothing is checked out, and size, file-count and time limits apply. Polling never runs inside your API requests; the scheduler calls a dedicated endpoint. See [Self-Hosted](/self-hosted/#git-registry-polling) for operator setup.
 
 ## Instruction Scanning
 
@@ -221,6 +291,28 @@ The public catalog starts with `sessionfs-workflows`, an MIT-licensed package wr
 
 Find it under **Marketplace** in the dashboard. It reaches your tools the same way as any other package: request it for a project, load it through the target feed, or assign it to your organization. The source is also in the SessionFS repository under `catalog/sessionfs-workflows`, so you can also copy it into a project and run `sfs skill add ./sessionfs-workflows`.
 
+## Org Skills Policy (Enterprise)
+
+An Enterprise organization writes one skills policy and SessionFS applies it everywhere it can:
+
+- **On the server.** Install requests, approvals, assignments, assignment updates and MCP instruction loads are refused when the org's current policy forbids the version. The refusal names the org and says to ask an org owner or admin. A policy change also applies to grants made earlier: the next reconcile withholds them.
+- **In each tool's own managed settings.** The policy compiles into Claude Code and GitHub Copilot `managed-settings.json`, a VS Code device policy, the Gemini CLI system `settings.json` and the Codex `requirements.toml`. Cursor gets a checklist for its admin dashboard. For every field SessionFS shows whether the tool enforces it, whether only SessionFS checks it, or whether nothing checks it, so advisory controls are never presented as enforcement.
+
+The policy sets a mode (`open`, `allowlist`, `library_only` or `disabled`), allowed publishers and git sources (a git source matches only versions published from that repository through trusted publishing, never a repository an uploader merely declares), capability limits (hooks, scripts, local and remote MCP servers and their origins, hidden Unicode), a signature requirement and the highest scanner severity accepted. Every change is a new, immutable revision. Settings with side effects in a tool, such as stopping users' own hooks, must be acknowledged before a revision is published.
+
+Delivery starts in **advisory** mode: `sfs skill pull` and the daemon skip what the policy refuses and report each device's compliance, including whether IT deployed the compiled managed settings. A user can bypass advisory delivery on their own machine, so deploy the compiled files through your MDM for tool-level enforcement:
+
+```bash
+sfs policy show                                  # what applies to you, per tool
+sfs policy compile --tool claude-code > managed-settings.json
+sfs policy status                                # system or advisory, per tool
+sfs policy set --org org_123 --file policy.json  # owners and admins
+```
+
+If the organization later leaves Enterprise, its last policy stays enforced: owners and admins can still read it and can relax or disable it (`sfs policy disable --org ORG`), but not tighten it.
+
+Signed MDM bundles are planned. See the [CLI reference](/cli/) for the full policy format.
+
 ## Service Keys
 
 Automated clients should use the minimum required scopes:
@@ -230,6 +322,7 @@ Automated clients should use the minimum required scopes:
 - `skills:read` for assignments, requests, and approved instruction loading
 - `skills:request` to create/cancel requests
 - `skills:approve` to approve project requests
-- `skills:admin` for organization registries, packages, and assignments
+- `skills:admin` for organization registries, packages, assignments and the skills policy
+- `devices:report` to send skills-policy compliance reports (for example from CI runners)
 
 Service keys remain organization-bound. A key cannot cross its organization even if it knows another resource ID.

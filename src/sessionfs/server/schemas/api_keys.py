@@ -57,6 +57,23 @@ VALID_SCOPES = frozenset(
         "skills:request",
         "skills:approve",
         "skills:admin",
+        # Marketplace v2 §7.4: the works-in harness job's credential. Only
+        # the claim / projection / result endpoints accept it, and only when
+        # the key was minted by a platform admin.
+        "skills_verify:run",
+        # GitHub #69: the registry poller scheduler's credential (Cloud
+        # Scheduler / Helm CronJob). Platform-admin mint only; accepted only by
+        # POST /api/v1/admin/skills/registries/poll.
+        "skills_registry:poll",
+        # Scheduled platform sweeps (Cloud Run jobs / Helm CronJobs): catalog
+        # regenerate, verify sweep, freshness sweep, rescan, publisher
+        # recheck, GitHub webhook-delivery sweep. Platform-admin mint only;
+        # accepted only by those endpoints, and only while the minter is
+        # still a platform admin.
+        "platform_sweeps:run",
+        # Marketplace v2 §8.6: devices post advisory skills-policy
+        # compliance reports (CI runners included).
+        "devices:report",
         "admin:*",
     }
 )

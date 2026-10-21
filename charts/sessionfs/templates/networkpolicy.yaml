@@ -34,7 +34,29 @@ spec:
         - port: {{ .Values.api.service.port }}
           protocol: TCP
     {{- end }}
+    {{- $polling := .Values.api.registryPolling | default dict }}
+    {{- if and $polling.enabled ($polling.cronJob | default dict).enabled }}
+    # Allow from the registry poll CronJob
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "sessionfs.componentSelectorLabels" (list . "registry-poll") | nindent 14 }}
+      ports:
+        - port: {{ .Values.api.service.port }}
+          protocol: TCP
+    {{- end }}
   egress:
+    {{- if and $polling.enabled $polling.allowedPrivateCidrs }}
+    # Registry polling opt-in: internal Git hosts (https only)
+    - to:
+        {{- range $polling.allowedPrivateCidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        - port: 443
+          protocol: TCP
+    {{- end }}
     # Allow to PostgreSQL
     {{- if .Values.postgresql.enabled }}
     - to:

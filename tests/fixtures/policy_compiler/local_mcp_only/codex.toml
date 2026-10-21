@@ -1,0 +1,6 @@
+[marketplaces]
+restrict_to_allowed_sources = true
+
+[marketplaces.allowed_sources.sessionfs-acme]
+source = "git"
+url = "https://api.sessionfs.dev/catalogs/acme"

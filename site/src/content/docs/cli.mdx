@@ -1722,6 +1722,21 @@ Re-extract metadata for all cloud sessions (admin only).
 sfs admin reindex
 ```
 
+## `sfs admin registries poll`
+
+Poll organization Git marketplace registries now (platform admin, or a `skills_registry:poll` service key in `SESSIONFS_API_KEY`). The API polls up to `--limit` due registries and publishes each new matching tag through the normal org publish checks; each registry is leased while it is polled, so concurrent runs never poll one twice. Use it from a self-hosted cron, or enable the Helm CronJob instead. Exits `2` when a registry failed. See [Polling Git Registries](/skills-marketplace/#polling-git-registries).
+
+```
+sfs admin registries poll [--limit N] [--registry ID ...] [--until-idle] [--max-runs N]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--limit` | 5 | Registries polled per request (1-20) |
+| `--registry` | — | Poll this registry id now regardless of its schedule (repeatable) |
+| `--until-idle` | off | Keep requesting batches while a full batch was polled |
+| `--max-runs` | 20 | Stop after this many requests |
+
 ## `sfs admin trusted-reviewers`
 
 Register, list, or revoke an organization's trusted reviewers (org-admin only). A trusted reviewer is authorized to post review verdicts that the autonomous work queue's stop oracle will trust — typically a dedicated automated reviewer key. Tightly gated and fully audited. Available starting v0.12.1.
@@ -1796,7 +1811,10 @@ Import, inspect, and install portable Agent Skills and Agent Plugins locally. Se
 | `sfs skill doctor` | Detect drift, missing files, unsafe paths, and state mismatches; also shows the size of the removal trash |
 | `sfs skill marketplace add URL --name NAME --pin SHA` | Register one pinned local marketplace source |
 | `sfs skill marketplace list\|refresh\|remove` | Manage multiple user/project registry aliases explicitly |
-| `sfs skill search QUERY [--tool TOOL] [--limit N] [--local-only] [--json]` | Search registered local marketplaces **and** the hosted SessionFS Marketplace. Each row is labelled `local:<scope>` or `hosted` and shows the reference to install it with. Signed out or offline, the hosted part is skipped with a note. `--tool` filters hosted results by tool compatibility; `--marketplace ALIAS` and `--local-only` search local registries only |
+| `sfs skill search QUERY [--tool TOOL] [--limit N] [--local-only] [--json]` | Search registered local marketplaces **and** the hosted SessionFS Marketplace. Each row is labelled `local:<scope>` or `hosted` and shows the reference to install it with. Signed out or offline, the hosted part is skipped with a note. `--tool` filters hosted results by tool compatibility; `--marketplace ALIAS` and `--local-only` search local registries only. Hosted filters: `--category`, `--publisher`, `--verified`, `--attested`, `--license`, `--max-severity`, `--capability`, `--works-in`, `--updated-within`, `--hide-deprecated`, `--sort relevance\|recent` (see [Skills Marketplace](/skills-marketplace/)) |
+| `sfs skill categories [--json]` | List the hosted marketplace's categories |
+| `sfs skill works-in ID [--json]` | The per-tool "works in" matrix for a hosted package (`spk_...`) or version (`skv_...`): `verified` (with tool version and date), `format-valid`, `regressed` or `expected` (see [Skills Marketplace](/skills-marketplace/#works-in)) |
+| `sfs skill usage --org ORG_ID [--days N] [--json]` | Your organization's members' hosted-marketplace usage by package and tool (org owners/admins, Team plan) |
 | `sfs skill add sessionfs:NAMESPACE/NAME[@VERSION]` | Install a package from the hosted SessionFS Marketplace (requires `sfs auth login`). `sessionfs:spk_<id>` also works and is required when a namespace/name pair is ambiguous. Without `@VERSION` the package's current version is used; `--pin VERSION` is equivalent to `@VERSION` |
 | `sfs skill pull [--for TOOL] [--device-id ID] [--yes] [--allow-* ...] [--approve-widening] [--allow-hidden-unicode] [--json]` | Apply your org's skill assignments and your approved install requests to this device (see [Skills Marketplace](/skills-marketplace/)) |
 | `sfs skill validate SOURCE [--visibility personal\|org\|public] [--json]` | Validate a package directory or `.tar.gz` exactly as the server would. Prints each problem with its file and line (when known), why it fails, and how to fix it, then exits 1. On success it prints the content hash, risk flags, sizes, and the checks that only the server can make |
@@ -1810,7 +1828,32 @@ Import, inspect, and install portable Agent Skills and Agent Plugins locally. Se
 | `sfs skill publisher check PUBLISHER_ID VERIFICATION_ID` | Re-check a verification now |
 | `sfs skill publisher trust PUBLISHER_ID --repo OWNER/REPO --workflow FILE [--environment ENV] [--ref-pattern REF] [--package NAME] [--reusable-workflow OWNER/REPO/.github/workflows/FILE] [--allow-workflow-run]` | Allow a GitHub Actions workflow to publish for this publisher (see [Skills Marketplace](/skills-marketplace/)) |
 | `sfs skill publisher untrust PUBLISHER_ID TRUSTED_ID` | Remove a trusted publisher. Publish tokens already issued under it stop working |
+| `sfs skill publisher stats PUBLISHER_ID [--days 7\|30\|90] [--json]` | Publisher analytics: installs by tool, version and day, active installs, uninstall rate, translation failures, works-in regressions, scan findings and open reports. Counts under 10 show as `<10` |
+| `sfs skill publisher package PUBLISHER_ID PACKAGE_ID [--category SLUG ...] [--deprecate\|--undeprecate] [--message TEXT] [--successor PACKAGE_ID] [--readme-path PATH]` | Set a package's categories (up to 3), deprecation with a same-publisher successor, and README path |
 
 Risky capabilities require explicit flags bound to the exact package hash: `--allow-scripts` for any non-inert skill asset (the policy is an inert allowlist, so `.rb`, `.bat`, `.exe`, `Makefile`, and suffix-less files all count), `--allow-hooks` for `SKILL.md` frontmatter `hooks:` / `allowed-tools:` grants, and `--allow-executable-extensions` for a `hooks.json` or `hooks/` directory shipped inside a skill. `--yes` alone is refused for these and the error names the hook or tool grant. Local MCP activation remains reserved: SessionFS does not silently enable it.
 
 Every update, rollback and `sync --locked` transition is classified as `text` (consent carries forward after one confirmation), `code` (the changed capability's flag again) or `widening` (always stops until `--approve-widening` or an org admin approves that exact version). `sfs skill pull` and the daemon apply text updates and list the rest as `held: <name> needs approval`. Blocked packages are moved into `~/.sessionfs/skills/quarantine/`; yanked ones are flagged by `sfs skill list` and `sfs skill doctor`. See [Skills Marketplace](/skills-marketplace/) for install disclosure, verified publishers and trusted publishing.
+
+## `sfs catalog`
+
+Native plugin catalogs: read-only git repositories of approved packages that each tool's own plugin command can add. See [Skills Marketplace](/skills-marketplace/#native-tool-catalogs).
+
+| Command | Description |
+|---|---|
+| `sfs catalog list [--json]` | The catalogs you can add (public, personal, organization), with plugin counts and clone URLs |
+| `sfs catalog add --for TOOL [--org ORG \| --personal] [--run] [--no-credential-helper]` | Print the tool's own command to add a catalog (`claude-code`, `copilot`, `codex`, `cursor`, `gemini`, `antigravity`); `--run` runs it where supported. Configures git to authenticate to the SessionFS host only through `sfs catalog credential`, so your key never appears in a URL |
+| `sfs catalog doctor` | Check that git sends your SessionFS key only through the SessionFS credential helper (run it inside a repository to check that repository's config too) |
+| `sfs catalog export --to REMOTE [--org ORG \| --personal] [--branch main] [--dry-run] [--ssh-key-file PATH] [--known-hosts PATH]` | Copy a catalog to a git repository you own (for example, for a Cursor team marketplace). The destination branch is overwritten with the generated catalog commit, and nothing is pushed when it is already current. With `--ssh-key-file` only that deploy key is used, over SSH with strict host-key checking, so it can run unattended |
+
+## `sfs policy` (Enterprise)
+
+The org skills policy and what it becomes in each tool's managed settings. See [Skills Marketplace](/skills-marketplace/) for how the policy is enforced and delivered.
+
+| Command | Description |
+|---|---|
+| `sfs policy show [--org ORG] [--tool T] [--json]` | The policies that apply to you, with what each tool enforces, what only SessionFS checks, and what nothing checks |
+| `sfs policy compile --tool T [--org ORG] [--json]` | Print a tool's compiled managed settings for IT to deploy (Claude Code, GitHub Copilot, VS Code, Gemini CLI, Codex; a checklist for Cursor) |
+| `sfs policy status [--json]` | Per tool on this device: `system` when the deployed managed settings match the current revision, otherwise `advisory` |
+| `sfs policy set --org ORG --file policy.json [--acknowledge-warnings]` | Owners and admins: preview the per-tool changes and side effects, then publish a new revision |
+| `sfs policy disable --org ORG [--yes]` | Owners and admins, any tier: publish a revision that restricts nothing (after leaving Enterprise the last policy stays enforced and can only be relaxed or disabled) |

@@ -1,0 +1,10 @@
+{
+  "author": {
+    "name": "Acme"
+  },
+  "description": "Deploy with the Acme runbook.",
+  "homepage": "https://app.sessionfs.dev/marketplace/acme/deploy",
+  "license": "MIT",
+  "name": "acme--deploy",
+  "version": "1.4.0"
+}

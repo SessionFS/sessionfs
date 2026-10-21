@@ -16,6 +16,18 @@ FROM python:3.11-slim AS runtime
 RUN groupadd --system --gid 10001 sessionfs \
     && useradd --system --uid 10001 --gid sessionfs --no-create-home --shell /usr/sbin/nologin sessionfs
 
+# git for server-side polling of Git marketplace registries (GitHub #69).
+# Only the poller runs it (replaced environment, hooks off, bare repo, no
+# checkout). >= 2.44 is required (GIT_NO_LAZY_FETCH); the build fails on an
+# older distribution git rather than shipping a poller that refuses to run.
+# openssh-client: the scheduled public-catalog mirror job (`sfs catalog
+# export --ssh-key-file`) pushes to GitHub over SSH with a deploy key; git
+# needs the ssh binary for that (--no-install-recommends keeps xauth out).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates openssh-client \
+    && rm -rf /var/lib/apt/lists/* \
+    && git --version | awk '{ split($3, v, "."); if (v[1] < 2 || (v[1] == 2 && v[2] < 44)) { print "git >= 2.44 required, found " $3; exit 1 } }'
+
 # Replace this stage's site-packages with the builder's rather than merging
 # into it. COPY merges directories, so the base image's older pip/setuptools/
 # wheel dist-info would otherwise survive next to the upgraded versions (and

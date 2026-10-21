@@ -51,6 +51,37 @@ All formats are valid for sync, push, pull, and handoff operations.
    sfs storage
    ```
 
+### A push is slow or times out
+
+Every `PUT /api/v1/sessions/{id}/sync` logs one INFO line on the API server with
+where its time went (milliseconds; no session content is logged):
+
+```
+sync_push session=ses_abc12345 status=201 wait_ms=0 db_read_ms=8 read_ms=31 validate_ms=97 extract_ms=592 dlp_scan_ms=3933 dlp_redact_ms=4539 blob_upload_ms=180 blob_promote_ms=170 db_write_ms=12 bytes_in=7660919 dlp_mode=redact dlp_findings=77 bytes_stored=7660919 total_ms=9254
+```
+
+The same phases come back to the client in the response's `Server-Timing` header.
+
+| Phase | What it covers |
+|-------|----------------|
+| `wait` | Waiting for one of the user's 3 concurrent push slots |
+| `db_read` | Tier, session and ETag lookups |
+| `read` | Receiving the upload |
+| `validate` | Archive safety checks and per-file size limits |
+| `extract` | Manifest, search text and git metadata |
+| `dlp_scan` | Organization DLP scan (only when the org has DLP enabled) |
+| `dlp_redact` | Redacting and repacking (DLP `redact` mode with findings) |
+| `blob_upload` / `blob_promote` | Writing the archive to blob storage (S3/GCS/local) |
+| `db_write` | Updating the session row |
+
+A push whose `If-Match` ETag is out of date gets `409 etag_mismatch` before the
+archive is processed, so a client retrying with a stale ETag no longer waits
+for a full DLP pass first.
+
+The INFO line needs `SFS_LOG_LEVEL=INFO` (the default). If your deployment
+supplies its own Python logging configuration, make sure the `sessionfs.api`
+logger is enabled at INFO.
+
 ## Kubernetes Deployment Issues
 
 ### MCP pods crash-looping

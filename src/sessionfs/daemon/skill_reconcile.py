@@ -56,6 +56,7 @@ class SkillReconciler:
         self._thread: threading.Thread | None = None
         # Set on daemon shutdown: a running reconcile stops between steps.
         self._stop = threading.Event()
+        self._usage_notice_logged = False
 
     def stop(self, timeout: float | None = 5.0) -> None:
         """Ask a running reconcile to stop promptly and wait briefly for it."""
@@ -130,9 +131,11 @@ class SkillReconciler:
                 logger.warning("Skill reconcile: %s", message)
 
         try:
+            manager = self._manager()
+            client = self._client(api_url, api_key)
             report = hosted.daemon_reconcile(
-                self._manager(),
-                self._client(api_url, api_key),
+                manager,
+                client,
                 device_id=hosted.resolve_device_id(),
                 deadline=time.monotonic() + self._run_deadline_s,
                 cancel=self._stop.is_set,
@@ -160,6 +163,22 @@ class SkillReconciler:
             self.last_report = report
             self._next_attempt = self._clock() + RECONCILE_INTERVAL_S
         _log_report(report, already_logged=logged)
+        # Marketplace install counts (best effort, deduplicated per day).
+        # The daemon never shows the one-time notice itself, so it sends
+        # nothing until an interactive command has shown it (fail closed).
+        try:
+            if hosted.usage_reporting_awaiting_notice():
+                if not self._usage_notice_logged:
+                    self._usage_notice_logged = True
+                    logger.info(
+                        "Skill install counts are not sent yet: they start after the next "
+                        "interactive `sfs skill` command shows the install-count notice, or "
+                        "once SFS_SKILL_USAGE_REPORTING=1 is set explicitly"
+                    )
+            else:
+                hosted.report_pull_usage(manager, client, report, interactive=False)
+        except Exception:  # noqa: BLE001 - counts never affect reconcile
+            logger.debug("Skill usage reporting failed", exc_info=True)
         return report
 
 

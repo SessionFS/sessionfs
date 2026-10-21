@@ -1,0 +1,8 @@
+{
+  "name": "sfs-harness-gemini",
+  "private": true,
+  "description": "Pinned tool CLI for the works-in harness image (pinned in deploy/harness/tools.json)",
+  "dependencies": {
+    "@google/gemini-cli": "0.65.0"
+  }
+}

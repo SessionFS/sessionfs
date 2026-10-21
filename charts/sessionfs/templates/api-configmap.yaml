@@ -12,6 +12,36 @@ data:
   {{- if .Values.api.corsOrigins }}
   SFS_CORS_ORIGINS: {{ .Values.api.corsOrigins | quote }}
   {{- end }}
+  {{- with .Values.api.marketplace }}
+  {{- if .publicApiUrl }}
+  SFS_PUBLIC_API_URL: {{ .publicApiUrl | quote }}
+  {{- end }}
+  {{- if .publicCatalogMirror }}
+  SFS_PUBLIC_CATALOG_MIRROR: {{ .publicCatalogMirror | quote }}
+  {{- end }}
+  SFS_WORKS_IN_ORG_DAILY_QUOTA: {{ .worksInOrgDailyQuota | default 25 | quote }}
+  {{- if .nativeCatalogMaxFiles }}
+  SFS_NATIVE_CATALOG_MAX_FILES: {{ .nativeCatalogMaxFiles | quote }}
+  {{- end }}
+  {{- if .nativeCatalogMaxPluginBytes }}
+  SFS_NATIVE_CATALOG_MAX_PLUGIN_BYTES: {{ .nativeCatalogMaxPluginBytes | quote }}
+  {{- end }}
+  {{- if .nativeCatalogMaxBytes }}
+  SFS_NATIVE_CATALOG_MAX_BYTES: {{ .nativeCatalogMaxBytes | quote }}
+  {{- end }}
+  {{- end }}
+  {{- with .Values.api.registryPolling }}
+  # Server-side Git registry polling (GitHub #69).
+  SFS_REGISTRY_POLLING_ENABLED: {{ .enabled | quote }}
+  SFS_REGISTRY_POLL_TIMEOUT_SECONDS: {{ .timeoutSeconds | default 300 | quote }}
+  SFS_REGISTRY_POLL_RUN_BUDGET_SECONDS: {{ .runBudgetSeconds | default 1200 | quote }}
+  SFS_REGISTRY_POLL_MAX_PER_ORG: {{ .maxPerOrg | default 10 | quote }}
+  SFS_REGISTRY_POLL_MAX_PER_ORG_PER_RUN: {{ .maxPerOrgPerRun | default 2 | quote }}
+  {{- if .allowedPrivateCidrs }}
+  SFS_REGISTRY_POLL_ALLOWED_PRIVATE_CIDRS: {{ join "," .allowedPrivateCidrs | quote }}
+  {{- end }}
+  SFS_REGISTRY_SECRETS_DIR: "/var/run/secrets/sessionfs/registry-credentials"
+  {{- end }}
   {{- if .Values.api.sso.enabled }}
   # OIDC SSO (v0.13+). client secrets are env: REFERENCES resolved by the app
   # — the actual secret values belong in an existingSecret, never in values.

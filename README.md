@@ -140,7 +140,7 @@ SessionFS converts between native formats automatically — message roles, tool 
 | `sfs auth use\|profiles\|whoami` | Switch between named account profiles |
 | `sfs auth keys list\|create\|revoke` | Manage your personal API keys |
 | `sfs config show\|set\|default-org` | Manage configuration and your default organization |
-| `sfs mcp serve` | Start MCP server (80 tools) for AI tool integration |
+| `sfs mcp serve` | Start MCP server (81 tools) for AI tool integration |
 | `sfs mcp install\|uninstall --for TOOL` | Add or remove the MCP registration for any of the 10 supported tools |
 | `sfs mcp index` | Rebuild the local full-text search index |
 | `sfs init` | Interactive setup wizard — auto-detects tools, optional sync |
@@ -149,9 +149,11 @@ SessionFS converts between native formats automatically — message roles, tool 
 | `sfs org info\|create\|invite\|members\|set-role\|remove` | Manage organizations, members, and roles |
 | `sfs org auto-join list\|add\|remove` | Auto-join by verified email domain |
 | `sfs skill inspect\|add\|list\|show\|plan\|compile\|sync\|update\|diff\|remove\|rollback\|doctor` | Install portable Agent Skills / Agent Plugins across tools (`sfs plugin` is an alias) |
-| `sfs skill search\|pull\|validate\|publish` | Find, install and publish packages on the hosted SessionFS Marketplace |
+| `sfs skill search\|categories\|works-in\|usage\|pull\|validate\|publish` | Find, install and publish packages on the hosted SessionFS Marketplace; see where they work and what your org uses |
 | `sfs skill marketplace add\|list\|refresh\|remove` | Manage local marketplace sources |
-| `sfs skill publisher claim\|list\|show\|verify\|check\|trust\|untrust` | Claim and verify a publisher namespace; set up trusted publishing from GitHub Actions |
+| `sfs skill publisher claim\|list\|show\|verify\|check\|trust\|untrust\|stats\|package` | Claim and verify a publisher namespace; trusted publishing from GitHub Actions; analytics; set categories and deprecation |
+| `sfs catalog list\|add\|doctor\|export` | Add SessionFS catalogs to each tool's own plugin command; mirror a catalog to a repo you own |
+| `sfs policy show\|compile\|status\|set\|disable` | Org skills policy (Enterprise): what applies to you, per-tool managed settings, publish revisions |
 | `sfs admin reindex` | Re-extract metadata for all cloud sessions |
 | `sfs admin create-trial\|create-license\|list-licenses\|extend-trial\|revoke-license` | Manage self-hosted licenses |
 | `sfs admin service-keys list\|create\|rotate\|revoke\|scopes` | Manage scoped service API keys for an organization |
@@ -249,6 +251,8 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
+**v0.19.0 — Public Beta.** 7408 backend tests + 663 dashboard tests passing. Database migrations 001–079 (067 and 068 unused). 81 MCP tools. **Find the right skill and install it with your tool's own plugin command.** Marketplace discovery with categories, filters, safe READMEs, per-tool install counts and freshness flags; native plugin catalogs that Claude Code, Copilot CLI, Codex, Cursor and Gemini CLI add with their own commands (`sfs catalog`); a per-tool "works in" matrix from a sandboxed verification harness; an **org skills policy** for Enterprise, enforced on the server and compiled into each tool's managed settings (`sfs policy`); Git registries that publish their own tags (GitHub #69); and much faster pushes of large sessions (GitHub #71). Migrations 076–079.
+
 **v0.18.0 — Public Beta.** 6901 backend tests + 636 dashboard tests passing. Database migrations 001–075 (067 and 068 unused). 80 MCP tools. **A marketplace you can trust.** Before you install a skill, SessionFS shows exactly what it will do in each tool (files, scripts, hooks, MCP servers, network endpoints, shell commands, hidden Unicode); updates that only change text carry your consent forward, while updates that change code or ask for more access stop for re-approval, in the CLI, the daemon and an org admin's "Updates to review" queue. Every version is scanned for dangerous instructions and rescanned as rules improve, with automatic quarantine; moderators and org admins can yank or block packages, and blocks reach every device. Publishers can verify a namespace by DNS or GitHub and publish straight from GitHub Actions with trusted publishing. Also: **org-level personas** shared by every project in an org (GitHub #70), **Antigravity** session capture (desktop app, `agy` CLI, IDE), GitHub App linking that requires a verified GitHub sign-in (closing an installation-claim hijack; GitHub-verified repos reset to owner-attested), fail-closed GitHub webhooks, organization creators as owners, and more careful billing reconciliation. Migrations 065–075.
 
 **v0.17.1 — Public Beta.** 4020 backend tests + 492 dashboard tests passing. 64 database migrations (unchanged). 79 MCP tools. The daemon now backs off on sessions whose pushes keep failing (1 min, 5 min, 15 min, then hourly, pausing after a long failing streak) instead of retrying every cycle, with the state shown in `sfs daemon status` and `sfs doctor` and a new `sfs daemon retry-sync`. Local cleanup never removes changes that haven't been uploaded yet, and server error logs no longer include session content.
@@ -339,7 +343,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ### MCP and dashboard
 
-- **MCP server** (local, stdio) with 80 tools — sessions, knowledge read and write, rules, personas, tickets, agent runs and feedback, work queues, handoffs, and marketplace tools (search, inspect, diff versions, preview and load approved instruction-only skills, request installs) that never write files or enable executable content. The full list is in the [CLI Reference](docs/cli-reference.md#sfs-mcp-serve)
+- **MCP server** (local, stdio) with 81 tools — sessions, knowledge read and write, rules, personas, tickets, agent runs and feedback, work queues, handoffs, and marketplace tools (search, inspect, diff versions, preview and load approved instruction-only skills, request installs) that never write files or enable executable content. The full list is in the [CLI Reference](docs/cli-reference.md#sfs-mcp-serve)
 - **`sfs mcp install --for <tool>`** for all 10 tools (stale registration repair, malformed config handling)
 - **Web dashboard** with light/dark mode, resume-first layout, date-grouped sessions, lineage grouping, command palette (Cmd+K), mobile nav, accessibility (focus trapping, ARIA live regions), product identity
 - **`/help` page** — MCP-first guidance, 10-tool installer with live terminal + copy button, agent prompt examples, curated CLI quick-reference

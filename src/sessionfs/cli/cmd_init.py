@@ -294,13 +294,17 @@ def init_cmd() -> None:
         "[dim]SessionFS collects anonymous usage telemetry (random install id, "
         "version, OS, event name — never paths, session content, or personal "
         "data). Disable anytime: export SFS_NO_TELEMETRY=1, or "
-        "`sfs config set telemetry.enabled false`. Details: docs/telemetry.md[/dim]"
+        "`sfs config set telemetry.enabled false`. When signed in, SessionFS "
+        "Marketplace skill installs, removals and reconcile checks are also "
+        "counted per package and tool on your account "
+        "(SFS_SKILL_USAGE_REPORTING=0 stops only those). Details: docs/telemetry.md[/dim]"
     )
     console.print()
     try:
-        from sessionfs.telemetry import mark_disclosure_shown
+        from sessionfs.telemetry import mark_disclosure_shown, mark_skill_usage_disclosure_shown
 
         mark_disclosure_shown()
+        mark_skill_usage_disclosure_shown()
     except Exception:
         pass
 

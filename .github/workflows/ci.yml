@@ -23,7 +23,7 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev]"
       - name: Run tests
-        run: pytest tests/ -v --tb=short
+        run: pytest tests/ -v --tb=short -n auto --dist loadgroup
 
   lint:
     runs-on: ubuntu-latest

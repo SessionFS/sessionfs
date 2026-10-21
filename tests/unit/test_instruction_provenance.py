@@ -222,7 +222,7 @@ def test_hostile_state_with_thousands_of_duplicate_outputs_is_bounded(tmp_path):
         elapsed = time.monotonic() - started
     finally:
         instruction_provenance._safe_read = real_read
-    assert elapsed < 5
+    assert elapsed < 15  # wall clock, so leave room for a loaded machine
     status = {item["package_id"]: item["integrity_status"] for item in prov.managed_packages}
     assert status["skp_hostile"] == "unverified"
     assert len(reads) <= 2  # the shared output is hashed once, never per entry

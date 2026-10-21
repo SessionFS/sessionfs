@@ -1,0 +1,7 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "description": "Deploy with the Acme runbook.",
+  "license": "MIT",
+  "name": "acme--deploy",
+  "version": "1.4.0"
+}

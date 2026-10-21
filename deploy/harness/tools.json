@@ -1,0 +1,64 @@
+{
+  "_comment": "Works-in harness images (marketplace v2 section 7.4). One image per tool in sessionfs.skills.works_in_harness.TOOL_PLANS that has installer steps. Each included tool is installed from tools/<tool>/package-lock.json (npm ci, integrity-checked) at the exact version below. Bump the version here AND in tools/<tool>/package.json, then regenerate the lockfile with `npm install --package-lock-only --ignore-scripts` in that directory. tests/unit/test_harness_images.py keeps all of this consistent.",
+  "tools": {
+    "claude-code": {
+      "binary": "claude",
+      "npm_package": "@anthropic-ai/claude-code",
+      "version": "2.1.306",
+      "npm_scripts": true,
+      "scripts_reason": "the package's postinstall (install.cjs) links the platform binary from its optional dependency; it makes no network calls",
+      "needs_node_at_runtime": false,
+      "image": "sfs-harness-claude-code",
+      "sources": [
+        "https://code.claude.com/docs/en/setup",
+        "https://code.claude.com/docs/en/managed-settings",
+        "https://code.claude.com/docs/en/env-vars"
+      ],
+      "checked": "2026-10-21",
+      "prune": [
+        "node_modules/@anthropic-ai/claude-code-linux-x64",
+        "node_modules/@anthropic-ai/claude-code-linux-arm64",
+        "node_modules/@anthropic-ai/claude-code-linux-x64-musl",
+        "node_modules/@anthropic-ai/claude-code-linux-arm64-musl"
+      ],
+      "prune_reason": "postinstall copies the platform binary into bin/claude.exe; the platform packages (and the musl builds npm also installs on glibc) are duplicates"
+    },
+    "copilot": {
+      "binary": "copilot",
+      "npm_package": "@github/copilot",
+      "version": "1.0.101",
+      "npm_scripts": false,
+      "needs_node_at_runtime": true,
+      "image": "sfs-harness-copilot",
+      "sources": [
+        "https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli"
+      ],
+      "checked": "2026-10-21",
+      "prune": [
+        "node_modules/@github/copilot-linuxmusl-x64",
+        "node_modules/@github/copilot-linuxmusl-arm64"
+      ],
+      "prune_reason": "npm-loader.js only picks the linuxmusl package on a non-glibc system; the image is glibc (Debian)"
+    },
+    "gemini": {
+      "binary": "gemini",
+      "npm_package": "@google/gemini-cli",
+      "version": "0.65.0",
+      "npm_scripts": false,
+      "scripts_reason": "skipped: only the optional native keytar / node-pty builds run scripts, and the installer path does not need them",
+      "needs_node_at_runtime": true,
+      "image": "sfs-harness-gemini",
+      "sources": [
+        "https://geminicli.com/docs/get-started/installation/",
+        "https://geminicli.com/docs/reference/configuration/"
+      ],
+      "checked": "2026-10-21",
+      "prune": []
+    }
+  },
+  "excluded": {
+    "antigravity": "The only documented Linux install is https://antigravity.google/cli/install.sh, which always installs the latest build from the vendor's manifest (no version argument or variable) and the binary self-updates; an exact version cannot be pinned, and redistribution terms in an image are unconfirmed (checked 2026-10-21: https://antigravity.google/docs/plugins?tab=cli).",
+    "codex": "TOOL_PLANS marks it skipped: no documented non-interactive plugin install command, so an image would only ever report 'skipped'.",
+    "cursor": "TOOL_PLANS marks it skipped: team marketplaces are imported in the Cursor dashboard, there is no installer CLI."
+  }
+}

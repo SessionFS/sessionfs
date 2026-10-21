@@ -28,6 +28,27 @@ updates:
       - "dependencies"
       - "security"
 
+  # Works-in harness images: tool CLIs (one lockfile per tool) and base
+  # images. A bump must also update deploy/harness/tools.json ("version"),
+  # which tests/unit/test_harness_images.py enforces.
+  - package-ecosystem: "npm"
+    directories:
+      - "/deploy/harness/tools/*"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "harness"
+
+  - package-ecosystem: "docker"
+    directory: "/deploy/harness"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "harness"
+
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

@@ -574,9 +574,12 @@ job = json.load(sys.stdin)
 def best(text):
     files = [(job["script"], text), (job["skill"], text)]
     scan_files(files)  # warm the regex cache
-    started = time.process_time()
-    scan_files(files)
-    return time.process_time() - started
+    times = []
+    for _ in range(2):  # best of two: one noisy sample under a parallel suite flips the ratio
+        started = time.process_time()
+        scan_files(files)
+        times.append(time.process_time() - started)
+    return min(times)
 print(json.dumps([best(job["large"]), best(job["small"])]))
 """
 

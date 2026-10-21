@@ -465,6 +465,90 @@ def require_any_scope(*scopes: str):
     return require_scope(*scopes)
 
 
+# Scheduled platform sweeps (catalog regenerate, verify sweep, freshness,
+# rescan, publisher recheck, GitHub webhook-delivery sweep). The scope is
+# platform-admin mint only (routes/api_keys.py PLATFORM_ADMIN_SCOPES).
+PLATFORM_SWEEPS_SCOPE = "platform_sweeps:run"
+
+
+def require_platform_sweeper():
+    """Dependency for the platform sweep endpoints.
+
+    Admits EITHER a platform-admin (tier ``admin``) user key, exactly as
+    ``require_admin`` did, OR a service key that carries
+    ``platform_sweeps:run`` and whose owner (the user it runs as) and minter
+    (``created_by_user_id``; the rotator after a rotation) are both CURRENTLY
+    active platform admins. Demoting or deactivating either stops the key on
+    the next request. Any other service key is refused before the route runs.
+    """
+    required = {PLATFORM_SWEEPS_SCOPE}
+
+    async def _dep(
+        request: Request,
+        db: AsyncSession = Depends(get_db),
+        limiter: SlidingWindowRateLimiter = Depends(get_rate_limiter),
+    ) -> AuthContext:
+        ctx = await _authenticate_and_build_context(request, db, limiter)
+        if ctx.key_kind != "service":
+            await _sso_enforcement_check(ctx, db)
+            if ctx.user.tier != "admin":
+                raise HTTPException(status_code=403, detail="Admin access required")
+            return ctx
+        if not required.intersection(ctx.scopes):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "insufficient_scope",
+                    "required": sorted(required),
+                    "current": ctx.scopes,
+                    "message": (
+                        f"Scope required: one of {sorted(required)}. "
+                        f"Key has: {ctx.scopes}."
+                    ),
+                },
+            )
+        await assert_platform_key_minter_active(
+            ctx, db, error="platform_sweeper_denied", scope=PLATFORM_SWEEPS_SCOPE
+        )
+        return ctx
+
+    return _dep
+
+
+async def assert_platform_key_minter_active(
+    ctx: AuthContext, db: AsyncSession, *, error: str, scope: str
+) -> None:
+    """For a service key carrying a platform-only scope: the user it runs as
+    (``user_id``) and its minter (``created_by_user_id``; the rotator after a
+    rotation) must BOTH be active platform admins right now. Demoting or
+    deactivating either stops the key on its next request. No-op for user
+    keys."""
+    if ctx.key_kind != "service":
+        return
+    api_key = await db.get(ApiKey, ctx.api_key_id)
+    minter_id = api_key.created_by_user_id if api_key is not None else None
+    message = (
+        f"A {scope} key works only while the platform admin who minted it "
+        "is still an active platform admin."
+    )
+    if minter_id is None:
+        raise HTTPException(status_code=403, detail={"error": error, "message": message})
+    for user_id in {ctx.user.id, minter_id}:
+        user = ctx.user if user_id == ctx.user.id else await db.get(User, user_id)
+        if user is None or not user.is_active or user.tier != "admin":
+            raise HTTPException(status_code=403, detail={"error": error, "message": message})
+
+
+def sweep_actor_details(ctx: AuthContext) -> dict:
+    """Actor provenance for the AdminAction rows the sweeps write
+    (``admin_id`` is the key's owner; these fields say which key acted)."""
+    return {
+        "actor_type": ctx.actor_type,
+        "service_key_id": ctx.service_key_id,
+        "service_key_name": ctx.service_key_name,
+    }
+
+
 async def assert_service_key_can_access_project(
     db: AsyncSession,
     ctx: AuthContext,

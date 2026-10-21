@@ -47,7 +47,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs import __version__ as sessionfs_version
 from sessionfs.server import github_app
-from sessionfs.server.auth.dependencies import AuthContext, require_scope
+from sessionfs.server.auth.dependencies import (
+    AuthContext,
+    require_platform_sweeper,
+    require_scope,
+    sweep_actor_details,
+)
 from sessionfs.server.auth.rate_limit import SlidingWindowRateLimiter
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import (
@@ -1538,18 +1543,19 @@ async def admin_add_reserved(
 @router.post("/admin/marketplace/publishers/recheck")
 async def admin_recheck_verifications(
     body: RecheckBody | None = None,
-    auth: AuthContext = Depends(require_scope("marketplace:write")),
+    auth: AuthContext = Depends(require_platform_sweeper()),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Verification sweeper (Cloud Scheduler, daily): live DNS re-check (a
     record missing for 7 consecutive days lapses the badge) and GitHub
     installation liveness (gone or suspended revokes). Also deletes expired
-    publish tokens."""
-    _require_platform_admin(auth)
+    publish tokens. Platform-admin user key or a ``platform_sweeps:run``
+    service key."""
     body = body or RecheckBody(limit=200)
     summary = await svc.recheck_verifications(db, limit=body.limit)
     summary["expired_tokens_deleted"] = await svc.sweep_expired_tokens(db)
-    _admin_audit(db, auth, "skill_publisher_recheck", "skill_publisher", "bulk", summary)
+    _admin_audit(db, auth, "skill_publisher_recheck", "skill_publisher", "bulk",
+                 {**summary, **sweep_actor_details(auth)})
     await db.commit()
     return summary
 

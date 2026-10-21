@@ -65,7 +65,9 @@ def reindex() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _admin_request(method: str, path: str, json_body: dict | None = None) -> dict:
+def _admin_request(
+    method: str, path: str, json_body: dict | None = None, *, timeout: float = 30.0
+) -> dict:
     """Make an authenticated admin API request."""
     from sessionfs.sync.client import SyncAuthError
 
@@ -76,11 +78,11 @@ def _admin_request(method: str, path: str, json_body: dict | None = None) -> dic
             http = await client._get_client()
             url = f"{client.api_url}{path}"
             if method == "GET":
-                resp = await http.get(url, timeout=30.0)
+                resp = await http.get(url, timeout=timeout)
             elif method == "POST":
-                resp = await http.post(url, json=json_body, timeout=30.0)
+                resp = await http.post(url, json=json_body, timeout=timeout)
             elif method == "PUT":
-                resp = await http.put(url, json=json_body, timeout=30.0)
+                resp = await http.put(url, json=json_body, timeout=timeout)
             else:
                 raise ValueError(f"Unsupported method: {method}")
             if resp.status_code in (401, 403):
@@ -231,3 +233,97 @@ def revoke_license(
         raise SystemExit(1)
 
     console.print(f"[red]License revoked:[/red] {result['key']}")
+
+
+@admin_app.command("skills-freshness-sweep")
+def skills_freshness_sweep(
+    batch: int = typer.Option(500, "--batch", min=1, max=2000, help="Packages per request"),
+    max_batches: int = typer.Option(1000, "--max-batches", min=1, help="Stop after this many requests"),
+) -> None:
+    """Run the marketplace freshness sweeper to completion (platform admin).
+
+    Recomputes stale / unmaintained flags, last updated per tool and ranking
+    inputs, and prunes install-dedupe rows older than 30 days. The hosted
+    scheduler calls POST /api/v1/admin/marketplace/freshness/sweep daily;
+    this does the same from a shell or a self-hosted cron job."""
+    cursor: str | None = None
+    processed = stale = unmaintained = pruned = 0
+    for _ in range(max_batches):
+        body: dict = {"limit": batch}
+        if cursor:
+            body["cursor"] = cursor
+        try:
+            result = _admin_request("POST", "/api/v1/admin/marketplace/freshness/sweep", body)
+        except Exception as exc:
+            err_console.print(f"[red]Freshness sweep failed: {exc}[/red]")
+            raise SystemExit(1)
+        processed += int(result.get("processed", 0))
+        stale += int(result.get("stale", 0))
+        unmaintained += int(result.get("unmaintained", 0))
+        pruned += int(result.get("pruned_dedupe_rows", 0))
+        cursor = result.get("next_cursor")
+        if result.get("done") or not cursor:
+            break
+    console.print(
+        f"[green]Freshness sweep:[/green] {processed} package(s), {stale} stale, "
+        f"{unmaintained} unmaintained, {pruned} expired dedupe row(s) pruned"
+    )
+
+
+registries_app = typer.Typer(name="registries", help="Server-side polling of Git marketplace registries.")
+admin_app.add_typer(registries_app, name="registries")
+
+
+@registries_app.command("poll")
+def registries_poll(
+    limit: int = typer.Option(5, "--limit", min=1, max=20, help="Registries polled per request"),
+    registry: list[str] = typer.Option(
+        [], "--registry", help="Poll this registry id now, regardless of its schedule (repeatable)"
+    ),
+    until_idle: bool = typer.Option(
+        False, "--until-idle", help="Keep requesting batches while a full batch was polled"
+    ),
+    max_runs: int = typer.Option(20, "--max-runs", min=1, max=200, help="Stop after this many requests"),
+) -> None:
+    """Poll due Git marketplace registries now (platform admin, or a
+    skills_registry:poll service key in SESSIONFS_API_KEY).
+
+    Each registry is leased while it is polled, so running this from several
+    places (cron on two nodes, the hosted scheduler) never double-polls. New
+    matching tags are published through the normal publish pipeline. The
+    hosted scheduler calls POST /api/v1/admin/skills/registries/poll; this
+    does the same from a shell or a self-hosted cron job."""
+    body: dict = {"limit": limit}
+    if registry:
+        body["registry_ids"] = list(dict.fromkeys(registry))[:20]
+    total = errors = partial = 0
+    runs = 1 if registry or not until_idle else max_runs
+    for _ in range(runs):
+        try:
+            result = _admin_request(
+                "POST", "/api/v1/admin/skills/registries/poll", body, timeout=1800.0
+            )
+        except Exception as exc:
+            err_console.print(f"[red]Registry poll failed: {exc}[/red]")
+            raise SystemExit(1)
+        if result.get("busy"):
+            console.print("[yellow]A poll is already running on this server; try again shortly.[/yellow]")
+            break
+        for item in result.get("results", []):
+            status = str(item.get("status"))
+            refs = item.get("refs") or []
+            published = sum(len(ref.get("version_ids") or []) for ref in refs)
+            colour = {"ok": "green", "partial": "yellow", "error": "red"}.get(status, "white")
+            line = f"[{colour}]{status}[/{colour}] {item.get('registry_id')}: {len(refs)} new ref(s), {published} version(s)"
+            if item.get("summary"):
+                line += f" - {item['summary']}"
+            console.print(line)
+            errors += status == "error"
+            partial += status == "partial"
+        polled = int(result.get("polled", 0))
+        total += polled
+        if polled < limit:
+            break
+    console.print(f"[green]Registry poll:[/green] {total} registr{'y' if total == 1 else 'ies'} polled, {partial} partial, {errors} failed")
+    if errors:
+        raise SystemExit(2)

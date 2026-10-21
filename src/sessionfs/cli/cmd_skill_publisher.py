@@ -221,3 +221,137 @@ def untrust(publisher_id: str, trusted_id: str) -> None:
     """Remove a trusted publisher (tokens already minted under it stop working)."""
     _request("DELETE", f"/publishers/{_segment(publisher_id)}/trusted-publishers/{_segment(trusted_id)}")
     console.print(Text(f"Removed {trusted_id}", style="green"))
+
+
+def _clean(value: Any) -> Any:
+    """Server-supplied text stripped of terminal control, escape,
+    zero-width and bidi characters before printing (recursive)."""
+    from sessionfs.skills.discovery import terminal_safe
+
+    if isinstance(value, str):
+        return terminal_safe(value)
+    if isinstance(value, list):
+        return [_clean(item) for item in value]
+    if isinstance(value, dict):
+        return {terminal_safe(key) if isinstance(key, str) else key: _clean(item) for key, item in value.items()}
+    return value
+
+
+def _count(value: Any) -> str:
+    """A k-floored count from the analytics API ({"count", "display"})."""
+    if isinstance(value, dict):
+        return str(value.get("display", "-"))
+    return "-" if value is None else str(value)
+
+
+def _rate(value: Any) -> str:
+    return f"{value * 100:.1f}%" if isinstance(value, (int, float)) else "n/a (<10 installs)"
+
+
+@publisher_app.command("stats")
+@handle_errors
+def stats(
+    publisher_id: str,
+    days: int = typer.Option(30, "--days", help="Window in days: 7, 30 or 90"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Publisher analytics: installs by tool and version, active installs,
+    uninstall rate, translation failures, works-in regressions, scan findings
+    and open reports. Counts under 10 show as "<10"."""
+    if days not in (7, 30, 90):
+        raise typer.BadParameter("--days must be 7, 30 or 90")
+    body = _clean(_request("GET", f"/publishers/{_segment(publisher_id)}/analytics?days={days}"))
+    if json_output:
+        console.print_json(json.dumps(body, sort_keys=True))
+        return
+    totals = body.get("totals") or {}
+    console.print(Text(f"{body.get('namespace')}: last {body.get('window_days')} days", style="bold"))
+    console.print(Text(
+        f"  Installs {_count(totals.get('installs'))}   Active {_count(totals.get('active_installs'))}   "
+        f"Uninstalls {_count(totals.get('uninstalls'))} ({_rate(totals.get('uninstall_rate'))})   "
+        f"Translation failures {_count(totals.get('translation_failures'))}   "
+        f"Service-key installs {_count(totals.get('service_installs'))}"
+    ))
+    by_tool = body.get("by_tool") or []
+    if by_tool:
+        table = Table(title="By tool")
+        for column in ("Tool", "Installs", "Active", "Uninstalls", "Uninstall rate", "Translation failures"):
+            table.add_column(column)
+        for row in by_tool:
+            table.add_row(
+                Text(str(row.get("tool"))), _count(row.get("installs")), _count(row.get("active")),
+                _count(row.get("uninstalls")), _rate(row.get("uninstall_rate")),
+                _count(row.get("translation_failures")),
+            )
+        console.print(table)
+    packages = body.get("packages") or []
+    if packages:
+        table = Table(title="Packages")
+        for column in ("Package", "Version", "Installs", "Active", "Works-in regressions", "Scan", "Reports", "Status"):
+            table.add_column(column)
+        for item in packages:
+            status = [label for label in ("deprecated", "stale", "unmaintained") if item.get(label)]
+            scan = item.get("scan") or {}
+            table.add_row(
+                Text(f"{item.get('namespace')}/{item.get('name')}"),
+                Text(str(item.get("current_version") or "-")),
+                _count(item.get("installs")),
+                _count(item.get("active_installs")),
+                Text(", ".join(item.get("works_in_regressions") or []) or "-"),
+                Text(str(scan.get("max_severity") or "none")),
+                Text(str(item.get("open_reports", 0))),
+                Text(", ".join(status) or "-"),
+            )
+        console.print(table)
+
+
+@publisher_app.command("package")
+@handle_errors
+def package_settings(
+    publisher_id: str,
+    package_id: str,
+    category: list[str] = typer.Option([], "--category", help="Category slug (repeatable, up to 3; replaces the set)"),
+    clear_categories: bool = typer.Option(False, "--clear-categories", help="Remove every category"),
+    deprecate: bool = typer.Option(False, "--deprecate", help="Mark the package deprecated"),
+    undeprecate: bool = typer.Option(False, "--undeprecate", help="Clear the deprecation"),
+    message: str | None = typer.Option(None, "--message", help="Deprecation message shown to installers"),
+    successor: str | None = typer.Option(None, "--successor", help="Successor package id (same publisher)"),
+    readme_path: str | None = typer.Option(None, "--readme-path", help="README path inside the package ('' resets)"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Set a package's categories, deprecation (with a successor from the same
+    publisher) and README path."""
+    if deprecate and undeprecate:
+        raise typer.BadParameter("Pass --deprecate or --undeprecate, not both.")
+    if category and clear_categories:
+        raise typer.BadParameter("Pass --category or --clear-categories, not both.")
+    payload: dict[str, Any] = {}
+    if category or clear_categories:
+        payload["categories"] = list(category)
+    if deprecate:
+        payload["deprecated"] = True
+    if undeprecate:
+        payload["deprecated"] = False
+    if message is not None:
+        payload["deprecation_message"] = message
+    if successor is not None:
+        payload["successor_package_id"] = successor or None
+    if readme_path is not None:
+        payload["readme_path"] = readme_path
+    if not payload:
+        raise typer.BadParameter("Nothing to change.")
+    row = _clean(_request(
+        "PATCH", f"/publishers/{_segment(publisher_id)}/packages/{_segment(package_id)}", payload
+    ))
+    if json_output:
+        console.print_json(json.dumps(row, sort_keys=True))
+        return
+    console.print(Text(f"{row.get('namespace')}/{row.get('name')} ({row.get('package_id')})", style="bold"))
+    console.print(Text(f"  Categories: {', '.join(row.get('categories') or []) or '-'}"))
+    if row.get("deprecated_at"):
+        line = f"  Deprecated since {row.get('deprecated_at')}"
+        if row.get("successor_package_id"):
+            line += f"; successor {row.get('successor_package_id')}"
+        console.print(Text(line, style="yellow"))
+    if row.get("readme_path"):
+        console.print(Text(f"  README: {row.get('readme_path')}"))

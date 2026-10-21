@@ -299,11 +299,11 @@ class TestToolRegistryV0996:
     (create/claim/get/list_inbox/list_sent/revoke/decline/comment = 8).
     Total: 53."""
 
-    def test_tool_count_is_80(self):
+    def test_tool_count_is_81(self):
         from sessionfs.mcp.server import _TOOLS
-        assert len(_TOOLS) == 80, (
-            "Expected 80 MCP tools after marketplace disclosure added "
-            f"diff_marketplace_versions, got {len(_TOOLS)}"
+        assert len(_TOOLS) == 81, (
+            "Expected 81 MCP tools after the org skills policy added "
+            f"get_skill_policy, got {len(_TOOLS)}"
         )
 
     def test_new_tools_registered(self):
@@ -362,6 +362,7 @@ class TestToolRegistryV0996:
             "search_skill_marketplace",
             "get_marketplace_package",
             "diff_marketplace_versions",
+            "get_skill_policy",
             "preview_marketplace_skill",
             "load_marketplace_skill",
             "request_skill_install",
@@ -3058,6 +3059,21 @@ class TestMarketplaceMcpTools:
         assert marketplace_http[-1]["params"] == {"q": "review", "cursor": "eyJwIjoi"}
         assert "error" in await mcp_server._handle_search_skill_marketplace({"cursor": 5})
         assert "error" in await mcp_server._handle_search_skill_marketplace({"cursor": "x" * 600})
+
+        # Marketplace v2 §9 discovery filters pass through as query params.
+        await mcp_server._handle_search_skill_marketplace(
+            {"query": "lint", "category": "review", "publisher": "acme", "verified": True,
+             "attested": False, "license": "MIT", "max_severity": "low", "capability": "scripts",
+             "works_in": "codex", "updated_within": 30, "include_deprecated": False, "sort": "relevance"}
+        )
+        assert marketplace_http[-1]["params"] == {
+            "q": "lint", "category": "review", "publisher": "acme", "verified": "true",
+            "attested": "false", "license": "MIT", "max_severity": "low", "capability": "scripts",
+            "works_in": "codex", "updated_within": 30, "include_deprecated": "false", "sort": "relevance",
+        }
+        assert "error" in await mcp_server._handle_search_skill_marketplace({"verified": "yes"})
+        assert "error" in await mcp_server._handle_search_skill_marketplace({"updated_within": True})
+        assert "error" in await mcp_server._handle_search_skill_marketplace({"category": ""})
 
         await mcp_server._handle_get_marketplace_package({"package_id": _PKG})
         assert marketplace_http[-1]["url"].endswith(f"/marketplace/packages/{_PKG}")

@@ -103,6 +103,72 @@ api:
     privateKeyKey: "github-private-key"      # App private key (PEM)
     webhookSecretKey: "github-webhook-secret"  # webhook HMAC secret
   rateLimitPerMinute: 120  # Requests per minute per API key. Set to 0 to disable.
+  # Native per-tool skill catalogs (read-only git under /api/v1/git/...).
+  marketplace:
+    # Public API origin used in catalog clone URLs (SFS_PUBLIC_API_URL), e.g.
+    # https://sessionfs.example.com. Empty: the request's own origin.
+    publicApiUrl: ""
+    # Public GitHub mirror of the public catalog as owner/repo
+    # (SFS_PUBLIC_CATALOG_MIRROR), e.g. SessionFS/marketplace. Set it only when
+    # a scheduled `sfs catalog export` keeps that repository in sync: the
+    # public catalog's add commands then lead with the keyless GitHub form.
+    # Empty: commands use this deployment's own clone URL. The API refuses to
+    # start on anything but owner/repo.
+    publicCatalogMirror: ""
+    # Works-in harness runs an org may queue per 24 hours.
+    worksInOrgDailyQuota: 25
+    # Per-catalog build budget (files / bytes). Empty: 19968 files, 256 MiB.
+    # Plugins past the budget are excluded and listed in SESSIONFS-CATALOG.json.
+    nativeCatalogMaxFiles: ""
+    nativeCatalogMaxBytes: ""
+    # Largest single plugin a catalog admits. Empty: 16 MiB.
+    nativeCatalogMaxPluginBytes: ""
+  # Server-side polling of organization Git marketplace registries (GitHub
+  # #69). The API fetches each registry's https URL on its schedule when the
+  # poller endpoint is called (the CronJob below, or your own cron running
+  # `sfs admin registries poll`). Fetching never happens in user requests.
+  registryPolling:
+    # SFS_REGISTRY_POLLING_ENABLED. false: the poll endpoint answers 503 and
+    # registries report server_fetch_enabled=false.
+    enabled: true
+    # Private ranges the poller may reach (e.g. an internal GitLab), as CIDRs.
+    # Off by default: only public addresses are fetched. Loopback, link-local
+    # and cloud metadata addresses are never reachable. Also opens API pod
+    # egress to these ranges on 443 when security.networkPolicies.enabled.
+    allowedPrivateCidrs: []
+    # Fetch budget for one registry (SFS_REGISTRY_POLL_TIMEOUT_SECONDS).
+    timeoutSeconds: 300
+    # Budget of one poll run (SFS_REGISTRY_POLL_RUN_BUDGET_SECONDS). A run
+    # claims no new registry once elapsed + timeoutSeconds + 300 s publish
+    # slack would exceed it; the CronJob allows runBudgetSeconds + 120 s (curl)
+    # and + 180 s (job deadline).
+    runBudgetSeconds: 1200
+    # Polling-enabled registries an org may have (SFS_REGISTRY_POLL_MAX_PER_ORG).
+    maxPerOrg: 10
+    # Registries of one org polled per run (SFS_REGISTRY_POLL_MAX_PER_ORG_PER_RUN).
+    maxPerOrgPerRun: 2
+    # Kubernetes Secrets holding registry credentials, mounted read-only at
+    # /var/run/secrets/sessionfs/registry-credentials/<name>. Keys: `token`
+    # (PAT / deploy token), `org` (the ONE org id allowed to use it) and
+    # `hosts` (comma-separated hosts it may be sent to) are REQUIRED; a
+    # `username` is optional. An org admin then sets credential_secret_ref
+    # to k8s:<name>.
+    credentialSecrets: []
+    # Size of the /tmp emptyDir the poller clones into (the root filesystem
+    # is read-only).
+    tmpSizeLimit: 1Gi
+    cronJob:
+      enabled: false
+      schedule: "*/5 * * * *"
+      # Registries polled per run (1-20).
+      limit: 5
+      # Secret holding a skills_registry:poll service key minted by a
+      # platform admin (sfs admin service-keys create ... --scope skills_registry:poll).
+      existingSecret: ""
+      secretKey: "registry-poll-api-key"
+      image: curlimages/curl:8.12.1
+      successfulJobsHistoryLimit: 1
+      failedJobsHistoryLimit: 3
 
 ## MCP Server
 mcp:

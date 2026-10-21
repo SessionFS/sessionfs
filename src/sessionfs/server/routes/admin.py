@@ -11,7 +11,12 @@ from pydantic import BaseModel
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sessionfs.server.auth.dependencies import require_admin
+from sessionfs.server.auth.dependencies import (
+    AuthContext,
+    require_admin,
+    require_platform_sweeper,
+    sweep_actor_details,
+)
 from sessionfs.server.auth.keys import generate_api_key, hash_api_key
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import (
@@ -1390,10 +1395,14 @@ _GITHUB_WEBHOOK_TOMBSTONE_RETENTION_DAYS = 400  # replay fingerprints
 @router.post("/github-webhook-deliveries/purge")
 async def sweep_github_webhook_deliveries(
     body: dict | None = None,
-    admin: User = Depends(require_admin),
+    auth: AuthContext = Depends(require_platform_sweeper()),
     db: AsyncSession = Depends(get_db),
 ):
     """Process and purge GitHub webhook deliveries; reap dead claim attempts.
+
+    Accepts a platform-admin user key or a ``platform_sweeps:run`` service
+    key (the scheduled job). The service key may only set ``retry_limit``:
+    the retention overrides stay with an admin user key.
 
     0. Retry due deliveries (failed with backoff elapsed, or stale
        processing) from their stored payloads, up to body {"retry_limit": N}
@@ -1416,6 +1425,16 @@ async def sweep_github_webhook_deliveries(
         retry_due_deliveries,
     )
 
+    if auth.key_kind == "service" and body and (
+        "retention_days" in body or "tombstone_retention_days" in body
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "sweep_override_not_allowed",
+                "message": "Retention overrides need a platform-admin user key.",
+            },
+        )
     retry_limit = 50
     if body and isinstance(body.get("retry_limit"), int) and not isinstance(
         body.get("retry_limit"), bool
@@ -1424,7 +1443,8 @@ async def sweep_github_webhook_deliveries(
     # End the request session's transaction (opened by authentication)
     # before any GitHub work: retries and republishing use their own short
     # sessions, and pruning + audit below run in a fresh short transaction.
-    admin_id = admin.id
+    admin_id = auth.user.id
+    actor = sweep_actor_details(auth)
     await db.rollback()
     retry_stats = await retry_due_deliveries(retry_limit)
     comment_stats = await republish_dirty_comments(retry_limit)
@@ -1497,7 +1517,8 @@ async def sweep_github_webhook_deliveries(
         "purge_github_webhook_deliveries",
         "gh_webhook_delivery",  # admin_actions.target_type is VARCHAR(20)
         "bulk",
-        {**result, "retention_days": retention_days, "tombstone_retention_days": tombstone_days},
+        {**result, "retention_days": retention_days, "tombstone_retention_days": tombstone_days,
+         **actor},
     )
     await db.commit()
     return result

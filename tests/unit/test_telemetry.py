@@ -484,6 +484,8 @@ class TestRound7Fixes:
         tm.get_install_id()
         err = capsys.readouterr().err
         assert "SFS_NO_TELEMETRY" in err and "telemetry" in err.lower()
+        # Signed-in marketplace install counts are disclosed with their opt-out.
+        assert "SFS_SKILL_USAGE_REPORTING=0" in err
 
     def test_no_disclosure_when_not_a_tty(self, tmp_path, monkeypatch, capsys):
         import sessionfs.telemetry as tm

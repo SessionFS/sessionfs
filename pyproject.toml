@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sessionfs"
-version = "0.18.0"
-description = "Capture, sync, and resume AI coding sessions across 9 tools — Claude Code, Codex, Gemini, Copilot, Cursor, Amp, Cline, Roo Code, and Kilo Code."
+version = "0.19.0"
+description = "Capture, sync, and resume AI coding sessions across 10 tools — Claude Code, Codex, Gemini, Copilot, Cursor, Amp, Cline, Roo Code, Kilo Code, and Antigravity."
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
@@ -37,6 +37,7 @@ dependencies = [
     "mcp>=1.30.0,<2.0",
     "PyYAML>=6.0,<7.0",
     "anyio>=4.14.2,<5.0",  # security floor; used by the local MCP client, so it belongs in base deps
+    "certifi>=2026.10.19",  # security floor (GHSA-6q48-6c7w-9gw2: revoked emSign intermediates); CA bundle for httpx
     "tomli>=2.0; python_version < '3.11'",
 ]
 
@@ -85,6 +86,7 @@ dev = [
     "sessionfs[server]",
     "pytest>=9.0.3,<10.0",
     "pytest-asyncio>=1.0,<2.0",
+    "pytest-xdist>=3.6,<4.0",
     "httpx>=0.27,<1.0",
     "aiosqlite>=0.20,<1.0",
     "ruff>=0.15,<0.16",  # pinned to a minor: ruff 0.16 changed rule defaults and turned CI red on the v0.15.0 release (same class as the mypy pin after v0.10.12)

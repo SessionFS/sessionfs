@@ -1,0 +1,10 @@
+# Build context for deploy/harness/Dockerfile is the repository root; only
+# these paths are sent (BuildKit reads <Dockerfile>.dockerignore).
+*
+!pyproject.toml
+!README.md
+!src/sessionfs/
+!deploy/harness/
+src/**/__pycache__
+src/**/*.pyc
+deploy/harness/tools/*/node_modules

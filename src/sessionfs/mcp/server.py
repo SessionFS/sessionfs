@@ -2273,8 +2273,26 @@ _TOOLS = [
                 "limit": {"type": "integer", "minimum": 1, "maximum": 100},
                 "cursor": {
                     "type": "string",
-                    "description": "Opaque next_cursor from a previous result page",
+                    "description": "Opaque next_cursor from a previous result page (same filters and sort)",
                 },
+                "category": {"type": "string", "description": "Category slug, e.g. review, testing, security"},
+                "publisher": {"type": "string", "description": "Publisher namespace or id"},
+                "verified": {"type": "boolean", "description": "Only (true) or never (false) verified publishers"},
+                "attested": {"type": "boolean", "description": "Verified publication provenance (trusted publishing)"},
+                "license": {"type": "string", "description": "Declared license, e.g. MIT, or 'none'"},
+                "max_severity": {
+                    "type": "string",
+                    "enum": ["none", "low", "medium", "high", "critical"],
+                    "description": "Worst open instruction-scan finding allowed",
+                },
+                "capability": {
+                    "type": "string",
+                    "enum": ["instructions_only", "scripts", "mcp", "hooks", "executables", "allowed_tools"],
+                },
+                "works_in": {"type": "string", "description": "Verified to work in this tool"},
+                "updated_within": {"type": "integer", "minimum": 1, "maximum": 3650, "description": "Days"},
+                "include_deprecated": {"type": "boolean"},
+                "sort": {"type": "string", "enum": ["recent", "relevance"]},
             },
         },
     ),
@@ -2284,7 +2302,8 @@ _TOOLS = [
             "Inspect marketplace package metadata, immutable hash, risk, compatibility and "
             "the install disclosure (per tool: files written, hooks, scripts, MCP servers, "
             "pre-approved tools, network endpoints, shell commands, scanner and hidden-Unicode "
-            "findings). Display only: it never grants consent."
+            "findings) and per-tool works-in evidence (verified / format-valid / expected). "
+            "Display only: it never grants consent."
         ),
         inputSchema={
             "type": "object",
@@ -2310,6 +2329,25 @@ _TOOLS = [
                 },
             },
             "required": ["from_version_id", "to_version_id"],
+        },
+    ),
+    Tool(
+        name="get_skill_policy",
+        description=(
+            "Read the org skills policies that apply to you (mode, allowed capabilities, "
+            "scan threshold) and, per tool, which fields the tool enforces, which only "
+            "SessionFS checks, and which nothing checks. Use it to explain why an install "
+            "or load was refused by org policy. Read-only; policies are changed by org "
+            "admins in the dashboard or CLI, never over MCP."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "tool": {
+                    "type": "string",
+                    "description": "Only include this tool's enforcement summary (e.g. claude-code)",
+                },
+            },
         },
     ),
     Tool(
@@ -2590,6 +2628,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_get_marketplace_package(arguments)
         elif name == "diff_marketplace_versions":
             result = await _handle_diff_marketplace_versions(arguments)
+        elif name == "get_skill_policy":
+            result = await _handle_get_skill_policy(arguments)
         elif name == "preview_marketplace_skill":
             result = await _handle_preview_marketplace_skill(arguments)
         elif name == "load_marketplace_skill":
@@ -6096,6 +6136,26 @@ async def _handle_search_skill_marketplace(args: dict) -> dict:
         if not isinstance(cursor, str) or not cursor.strip() or len(cursor) > 512:
             return {"error": "cursor must be the opaque next_cursor string from a previous page"}
         params["cursor"] = cursor.strip()
+    # Discovery filters (marketplace v2 §9), validated server-side too.
+    for key in ("category", "publisher", "license", "max_severity", "capability", "works_in", "sort"):
+        value = args.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, str) or not value.strip() or len(value) > 100:
+            return {"error": f"{key} must be a non-empty string"}
+        params[key] = value.strip()
+    for key in ("verified", "attested", "include_deprecated"):
+        value = args.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, bool):
+            return {"error": f"{key} must be a boolean"}
+        params[key] = "true" if value else "false"
+    updated_within = args.get("updated_within")
+    if updated_within is not None:
+        if isinstance(updated_within, bool) or not isinstance(updated_within, int) or not 1 <= updated_within <= 3650:
+            return {"error": "updated_within must be an integer number of days (1-3650)"}
+        params["updated_within"] = updated_within
     conf = _marketplace_api_config()
     if isinstance(conf, dict):
         return conf
@@ -6140,6 +6200,14 @@ async def _handle_get_marketplace_package(args: dict) -> dict:
             )
             disclosure = _marketplace_response(disclosure_resp)
             result["disclosure"] = None if "error" in disclosure else disclosure
+            # Per-tool "works in" evidence (marketplace v2 §7.6). Null when
+            # unavailable (older server, or a private package below Team).
+            works_in_resp = await client.get(
+                f"{api_url}/api/v1/marketplace/versions/{quote(version_id, safe='')}/works-in",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            works_in = _marketplace_response(works_in_resp)
+            result["works_in"] = None if "error" in works_in else works_in
         if "error" not in result:
             # Package metadata and the disclosure card carry publisher-
             # controlled text (shell commands, hook values, MCP commands):
@@ -6179,6 +6247,36 @@ async def _handle_diff_marketplace_versions(args: dict) -> dict:
         # Diff text is third-party package content.
         result["untrusted"] = True
         result.setdefault("untrusted_preamble", _MCP_UNTRUSTED_PREAMBLE)
+    return result
+
+
+async def _handle_get_skill_policy(args: dict) -> dict:
+    tool = args.get("tool")
+    if tool is not None and (not isinstance(tool, str) or not re.fullmatch(r"[a-z][a-z-]{1,30}", tool)):
+        return {"error": "tool must be a tool name such as claude-code"}
+    conf = _marketplace_api_config()
+    if isinstance(conf, dict):
+        return conf
+    api_url, api_key = conf
+    import httpx
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/devices/me/policy",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    result = _marketplace_response(resp)
+    if "error" in result:
+        return result
+    for item in result.get("items") or []:
+        tools = item.get("tools") if isinstance(item, dict) else None
+        if not isinstance(tools, dict):
+            continue
+        for name, summary in list(tools.items()):
+            if tool and name != tool:
+                tools.pop(name)
+            elif isinstance(summary, dict):
+                summary.pop("artifacts", None)  # system paths and hashes: not needed here
     return result
 
 

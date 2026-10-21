@@ -1707,7 +1707,7 @@ Tools exposed (80):
 - **Agent runs and feedback:** `create_agent_run`, `complete_agent_run`, `list_agent_runs`, `record_agent_feedback`, `list_agent_feedback`, `get_agent_feedback_summary`
 - **Work queues:** `create_work_queue`, `list_work_queues`, `get_work_queue`, `set_work_queue_status`, `run_work_queue_step`, `complete_work_queue_step`
 - **Handoffs:** `create_handoff`, `get_handoff`, `list_inbox_handoffs`, `list_sent_handoffs`, `claim_handoff`, `decline_handoff`, `revoke_handoff`, `add_handoff_comment`
-- **Marketplace (never writes files or enables executable content):** `search_skill_marketplace`, `get_marketplace_package`, `diff_marketplace_versions`, `preview_marketplace_skill`, `load_marketplace_skill`, `request_skill_install`, `list_skill_install_requests`, `get_skill_install_request`, `cancel_skill_install_request`
+- **Marketplace (never writes files or enables executable content):** `search_skill_marketplace`, `get_marketplace_package`, `diff_marketplace_versions`, `get_skill_policy`, `preview_marketplace_skill`, `load_marketplace_skill`, `request_skill_install`, `list_skill_install_requests`, `get_skill_install_request`, `cancel_skill_install_request`
 
 If you are an agent or have the MCP server installed, prefer the MCP tools over the CLI equivalents listed in this reference — they are faster, run in-process, and avoid hitting API rate limits.
 
@@ -1847,6 +1847,40 @@ sfs admin revoke-license KEY [--reason TEXT]
 
 ---
 
+## `sfs admin skills-freshness-sweep`
+
+Run the marketplace freshness sweeper to completion (platform admin, or a `platform_sweeps:run` service key in `SESSIONFS_API_KEY`). It recomputes the stale and unmaintained flags, last updated per tool and the ranking inputs (30-day installs), and deletes install-dedupe rows older than 30 days. It pages through `POST /api/v1/admin/marketplace/freshness/sweep` until the server reports `done`. The hosted service calls the same endpoint daily; self-hosted deployments can run this from cron.
+
+```
+sfs admin skills-freshness-sweep [--batch N] [--max-batches N]
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--batch` | int | 500 | Packages per request (1-2000) |
+| `--max-batches` | int | 1000 | Stop after this many requests |
+
+---
+
+## `sfs admin registries poll`
+
+Poll organization Git marketplace registries now (platform admin, or a `skills_registry:poll` service key in `SESSIONFS_API_KEY`). Calls `POST /api/v1/admin/skills/registries/poll`: the API polls up to `--limit` due registries (an https registry with `poll_interval_seconds > 0` whose next poll time has passed), publishes every new tag that matches the registry's `tag_pattern` (or the head of its branch in branch mode) through the normal org publish checks, and records the outcome on the registry. Each registry is leased while it is polled, so running this from several places at once never polls a registry twice. The hosted service calls the same endpoint on a schedule; self-hosted deployments can run this from cron or enable the Helm CronJob (`api.registryPolling.cronJob`).
+
+```
+sfs admin registries poll [--limit N] [--registry ID ...] [--until-idle] [--max-runs N]
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--limit` | int | 5 | Registries polled per request (1-20) |
+| `--registry` | string | — | Poll this registry id now, regardless of its schedule (repeatable, up to 20). A registry another poller is working on is skipped |
+| `--until-idle` | flag | off | Keep requesting batches while a full batch was polled |
+| `--max-runs` | int | 20 | Stop after this many requests (with `--until-idle`) |
+
+Prints one line per registry (`ok`, `partial` when some packages were refused, `error`) and exits `2` when any registry failed. Organization owners and admins schedule a registry from the dashboard's **Poll now** button or `POST /api/v1/orgs/{org_id}/skills/registries/{registry_id}/poll`; that only moves the registry to the front of the next run.
+
+---
+
 ## `sfs admin service-keys`
 
 *v0.10.11+ — org-scoped service key management. Org admin + Team-or-above tier required.*
@@ -1923,6 +1957,12 @@ sfs admin service-keys revoke KEY_ID --org ORG_ID --reason "..."
 ### `sfs admin service-keys scopes`
 
 Print the live scope vocabulary (sourced from the server's `VALID_SCOPES` set so it always reflects the running version).
+
+Platform scopes (`skills_verify:run`, `skills_registry:poll`, `platform_sweeps:run`) can only be minted or rotated by a platform admin; anyone else gets `403 platform_admin_scope`. `platform_sweeps:run` is the credential for scheduled sweep jobs (catalog regenerate, verify sweep, freshness sweep, rescan, publisher recheck, GitHub webhook-delivery sweep) and works only while its minter is still a platform admin. It cannot set the rescan's `report_only` / `force` or the webhook sweep's retention overrides (`403 sweep_override_not_allowed`):
+
+```
+sfs admin service-keys create --org <ORG_ID> --name platform-sweeps --scope platform_sweeps:run --output-key
+```
 
 ```
 sfs admin service-keys scopes
@@ -2668,9 +2708,67 @@ Import, inspect, and install portable Agent Skills and Agent Plugins locally. Se
 | `sfs skill doctor` | Detect drift, missing files, unsafe paths, and state mismatches; also shows the size of the removal trash |
 | `sfs skill marketplace add URL --name NAME --pin SHA` | Register one pinned local marketplace source |
 | `sfs skill marketplace list\|refresh\|remove` | Manage multiple user/project registry aliases explicitly |
-| `sfs skill search QUERY [--tool TOOL] [--limit N] [--local-only] [--json]` | Search registered local marketplaces **and** the hosted SessionFS Marketplace. Each row is labelled `local:<scope>` or `hosted` and shows the reference to install it with. Signed out or offline, the hosted part is skipped with a note. `--tool` filters hosted results by tool compatibility; `--marketplace ALIAS` and `--local-only` search local registries only |
+| `sfs skill search QUERY [--tool TOOL] [--limit N] [--local-only] [--json]` | Search registered local marketplaces **and** the hosted SessionFS Marketplace. Each row is labelled `local:<scope>` or `hosted` and shows the reference to install it with. Signed out or offline, the hosted part is skipped with a note. `--tool` filters hosted results by tool compatibility; `--marketplace ALIAS` and `--local-only` search local registries only. Hosted discovery filters are listed under [Marketplace discovery](#marketplace-discovery) |
+| `sfs skill categories [--json]` | List the hosted marketplace's categories (the values `--category` accepts) |
+| `sfs skill usage --org ORG_ID [--days N] [--json]` | What your organization's members installed from the hosted marketplace, by package and tool, with stale and deprecated packages called out. Org owners and admins, Team plan |
 | `sfs skill add sessionfs:NAMESPACE/NAME[@VERSION]` | Install a package from the hosted SessionFS Marketplace (requires `sfs auth login`). `sessionfs:spk_<id>` also works and is required when a namespace/name pair is ambiguous. Without `@VERSION` the package's current version is used; `--pin VERSION` is equivalent to `@VERSION` |
 | `sfs skill pull [--for TOOL] [--device-id ID] [--yes] [--allow-* ...] [--approve-widening] [--allow-hidden-unicode] [--json]` | Apply your org's skill assignments and your approved install requests to this device (see below) |
+| `sfs skill works-in PACKAGE_OR_VERSION_ID [--json]` | Per-tool "works in" evidence for a hosted package (`spk_...`) or version (`skv_...`): `verified` (the tool's own installer accepted it in the harness, with tool version and date), `format-valid` (the generated catalog entry matches the tool's documented format), `regressed`, or `expected` (adapter-computed, not yet verified). Private packages need Team or above |
+
+### `sfs catalog` (native tool catalogs)
+
+SessionFS publishes approved packages as **native plugin catalogs**: read-only git repositories each tool's own plugin command can add. One catalog per scope: public (every signed-in user), personal (Starter+), and each organization (Team+). A catalog contains only versions its scope already approved (public: moderated listings from verified publishers with no open high or critical scan findings; org: org-wide assignments and approved install requests; personal: your consented installs), because native installs skip SessionFS consent prompts. A block, yank or quarantine removes the entry on the next fetch.
+
+| Command | Description |
+|---------|-------------|
+| `sfs catalog list [--json]` | Your catalogs with clone URLs and plugin counts |
+| `sfs catalog add --for TOOL [--org ID \| --personal] [--run [--hosted]] [--no-credential-helper]` | Print (or with `--run`, run) the tool's own add command for a catalog. TOOL is `claude-code`, `copilot`, `codex`, `cursor`, `gemini` (public catalog only) or `antigravity`. By default it also adds a git credential helper for the SessionFS API host only (`credential.https://<host>.helper` set to an empty value, which stops other helpers such as osxkeychain or `store` from being asked for or storing this host's key, followed by `!sfs catalog credential`), so git authenticates with your API key without putting it in a URL. The helper answers `get` only. Personal API keys are full-scope, so the key git receives is your profile's key. It then runs the same check as `sfs catalog doctor` and warns if another helper still applies |
+| `sfs catalog doctor` | Check that, among every credential-helper entry git would apply to a SessionFS catalog URL (the generic `credential.helper` and any `credential.<url>.helper` that git's own URL matching selects, including `*.` wildcards, host case and path prefixes), the last ones git reads are the empty reset followed only by `sfs catalog credential` (across system, global and the current repository's config). If a helper comes later, for example a generic `credential.helper` added after the SessionFS section or a repository's own `credential.helper`, it prints the exact `git config` commands that fix it and exits 1. Residual: the reset only covers config git reads before it, so a repository's own config or a `git -c credential.helper=…` on the command line can add a helper again. Run `sfs catalog doctor` inside repositories you clone catalogs from |
+| `sfs catalog export --to REMOTE [--org ID \| --personal] [--branch main] [--dry-run] [--ssh-key-file PATH] [--known-hosts PATH]` | Mirror a catalog to a git remote you own (for Cursor team marketplaces, which import from GitHub, GitLab, Bitbucket or Azure DevOps, and for the public GitHub mirror). The destination branch is overwritten with the generated commit, with `--force-with-lease` against the commit it just read, so an overlapping run fails instead of clobbering. When the branch already points at that commit nothing is pushed and it prints `Already up to date`. Without `--ssh-key-file` the push uses your own git credentials. With `--ssh-key-file` (or `SFS_CATALOG_EXPORT_SSH_KEY_FILE`) the push uses ONLY that private key, over SSH: the key is copied to a private 0600 temporary file and ssh runs with `-F /dev/null`, `IdentitiesOnly=yes`, no agent, `BatchMode=yes` and `StrictHostKeyChecking=yes` against GitHub's published host keys (shipped with SessionFS) or the file from `--known-hosts` / `SFS_CATALOG_EXPORT_KNOWN_HOSTS`. The remote must then be SSH (`git@github.com:owner/repo.git` or `ssh://...`), and your own `GIT_SSH_COMMAND`, `GIT_ASKPASS`, `GIT_CONFIG_*` and ssh agent are ignored; without it they are honoured as usual. Remotes that carry credentials (`https://token@...`, `user:password@...`), `<transport>::` remote helpers and bare remote names (`origin`) are refused without echoing them; a local path must contain a `/` (e.g. `./mirror.git`) and is resolved to an absolute path. Unattended use: it reads `SESSIONFS_API_KEY` / `SESSIONFS_API_URL`, git never prompts, git tracing variables are dropped, output never contains the API key or key file, each git step is time-limited (clone 300 s, destination read 120 s, push 300 s), and any failure exits 1 (bad options exit 2) |
+| `sfs catalog harness run --tool TOOL [--limit N] [--image-digest D] [--json]` | Works-in harness: claim queued verification jobs, run the tool's own installer against each projection in a throwaway HOME, and post the result. Refuses to run unless `SFS_WORKS_IN_HARNESS=1`; it is meant for the sandboxed harness job, never a workstation. Credentials come only from `SFS_HARNESS_API_URL` and `SFS_HARNESS_API_KEY` (a `skills_verify:run` service key minted by a platform admin), never from your profile. Run it as root: every tool command runs as the unprivileged `SFS_HARNESS_TOOL_USER`; otherwise it refuses unless `SFS_HARNESS_ALLOW_SAME_UID=1` (development only). A job whose package is no longer deliverable is skipped; one the harness cannot run is retried up to 3 times, then recorded as errored. Each tool step runs in its own process group, killed on timeout and when the step ends. With a separate tool user the harness processes exactly one job per execution (`--limit` is forced to 1). After the job every process of the tool user is killed, and the harness then verifies from root that none remains. If that cannot be proven (the sweep was killed, a process survived, or there is no `/proc` to check), the job is recorded as errored without a retry and the command exits 3 without claiming anything else |
+
+Per-tool add commands (each tool's own syntax):
+
+| Tool | Command |
+|------|---------|
+| Claude Code | `/plugin marketplace add <clone-url>` then `/plugin install <plugin>@<marketplace>` |
+| GitHub Copilot CLI | `copilot plugin marketplace add <clone-url>` then `copilot plugin install <plugin>@<marketplace>` |
+| Codex | `codex plugin marketplace add <clone-url>`, then install from the Codex Plugins Directory |
+| Cursor | `sfs catalog export --to <your repo>`, then Dashboard > Plugins & MCPs > Team Marketplaces > Add Marketplace > Import from Repo |
+| Gemini CLI | `gemini extensions install <api>/api/v1/git/public/plugins/<plugin>.git` (public catalog only) |
+| Antigravity | Clone the catalog and run `agy plugin install <clone>/plugins/<plugin>` (Antigravity only lists its official marketplace) |
+
+When the deployment sets `SFS_PUBLIC_CATALOG_MIRROR` (SessionFS Cloud: `SessionFS/marketplace`), the public catalog needs no SessionFS key: `/plugin marketplace add SessionFS/marketplace` (Claude Code), `copilot plugin marketplace add SessionFS/marketplace`, `codex plugin marketplace add SessionFS/marketplace`, and Cursor imports `https://github.com/SessionFS/marketplace`. `sfs catalog add --for TOOL` then prints the mirror form first and the SessionFS-hosted form as `add (SessionFS host)`; `--run` adds the mirror unless you pass `--hosted` (which only applies with `--run`). Gemini CLI per-plugin repositories are not mirrored and still install from SessionFS.
+
+Running your own public mirror (self-hosted): create a GitHub repository, add a deploy key with write access to it, mint a service key with only the `marketplace:read` scope, and schedule `sfs catalog export --to git@github.com:<owner>/<repo>.git --ssh-key-file <private key>` with `SESSIONFS_API_KEY` / `SESSIONFS_API_URL` set (for example every 15 minutes, with a job timeout of at least 15 minutes). After the first successful push, set `SFS_PUBLIC_CATALOG_MIRROR=<owner>/<repo>` on the API so the add commands lead with the mirror.
+
+Plugin names are `<namespace>--<name>`. The marketplace is `sessionfs` for the public catalog, `sessionfs-org-<org id>` for an org and `sessionfs-user-<hash>` for a personal catalog. `SESSIONFS-CATALOG.json` at the catalog root binds each plugin to its version id, content hash and projection hash.
+
+### Marketplace discovery
+
+Hosted search filters (all applied by the server before the page is cut):
+
+| Option | Meaning |
+|---|---|
+| `--category SLUG` | One of the curated categories (`sfs skill categories`): `review`, `testing`, `debugging`, `refactoring`, `docs`, `security`, `frontend`, `backend`, `data`, `infra`, `deployment`, `workflow`, `integrations`, `ai-ml`, `productivity` |
+| `--publisher NAMESPACE_OR_ID` | Packages of one publisher |
+| `--verified` | Only publishers with a live verification (DNS or GitHub) |
+| `--attested` | Only listings published with verified provenance (GitHub Actions trusted publishing) |
+| `--license LICENSE` | Declared license, compared case-insensitively (`MIT`, `Apache-2.0`, ...); `none` finds packages that declare none |
+| `--max-severity none\|low\|medium\|high\|critical` | Worst open instruction-scan finding allowed |
+| `--capability instructions_only\|scripts\|mcp\|hooks\|executables\|allowed_tools` | Capability class: instruction-only packages, or packages that ship that capability |
+| `--works-in TOOL` | Verified to work in that tool by the works-in check |
+| `--updated-within DAYS` | Published within the last N days |
+| `--hide-deprecated` | Leave out deprecated packages (otherwise they rank last) |
+| `--sort relevance\|recent` | `relevance` (default): not deprecated, then text match (exact name, name prefix, name contains, description), verified publisher, works-in coverage, a log-scale 30-day install bucket, current version, newest. `recent`: newest first |
+
+Hosted rows show 30-day installs (counts under 10 show as `<10`) and a status column (`verified`, `deprecated`, `stale`, `unmaintained`); a deprecated package names its successor. `--json` adds a `discovery` object to each hosted result.
+
+`sfs skill show ID` adds a `marketplace` block for packages installed from the hosted marketplace: categories, freshness (stale, unmaintained, last updated and last verified per tool), deprecation and successor, installs, and whether a newer version is current. `sfs skill add` warns when the package is deprecated.
+
+**Freshness flags.** *Stale*: no new version in 180 days **and** either the works-in check regressed on a tool, or the source repository is archived (verified GitHub publishers only). *Deprecated*: set by the publisher, optionally with a successor package from the same publisher. *Unmaintained*: the publisher's verification lapsed. Flags are recomputed daily by the freshness sweeper.
+
+**Install counts.** `sfs skill add` (installs and translation failures), `sfs skill remove` (uninstalls), and `sfs skill pull` and the daemon's reconcile (installs and active-install pings) report a best-effort count to `POST /api/v1/marketplace/versions/{id}/events`. A count never blocks or fails a command. The server keeps only daily aggregates: one count per account per version, tool, event and day, with a pseudonymous 30-day dedupe window. Service-key installs are counted separately. Nothing is sent until the one-time install-count notice has been shown: the first interactive `sfs skill` command on a terminal that would send a count prints it first. The daemon and non-terminal runs never show it and send nothing until then, unless `SFS_SKILL_USAGE_REPORTING=1` is set. Set `SFS_SKILL_USAGE_REPORTING=0` (or turn telemetry off) to stop sending them; the opt-outs always win.
 
 ### Install disclosure
 
@@ -2747,6 +2845,8 @@ A publisher owns a globally unique marketplace namespace. Verification proves wh
 | `sfs skill publisher check PUBLISHER_ID VERIFICATION_ID` | Re-check a verification now |
 | `sfs skill publisher trust PUBLISHER_ID --repo OWNER/REPO --workflow FILE [--environment ENV] [--ref-pattern REF] [--package NAME] [--reusable-workflow OWNER/REPO/.github/workflows/FILE] [--allow-workflow-run]` | Allow a GitHub Actions workflow to publish for this publisher (see below) |
 | `sfs skill publisher untrust PUBLISHER_ID TRUSTED_ID` | Remove a trusted publisher. Publish tokens already issued under it stop working |
+| `sfs skill publisher stats PUBLISHER_ID [--days 7\|30\|90] [--json]` | Publisher analytics (`GET /api/v1/publishers/{id}/analytics`): installs by tool, version and day, active installs, uninstall rate, translation failures, update adoption, works-in regressions, scan findings and open reports. Counts under 10 show as `<10`; when any underlying count in the window is under 10, the other counts are rounded down to a multiple of 10 (`40+`), and rates need at least 10 on both sides; the organizations installs come from are never shown. Personal publishers need Starter or above, org publishers the Team plan |
+| `sfs skill publisher package PUBLISHER_ID PACKAGE_ID [--category SLUG ...] [--clear-categories] [--deprecate\|--undeprecate] [--message TEXT] [--successor PACKAGE_ID] [--readme-path PATH] [--json]` | Set a package's categories (up to 3, replaces the set), deprecation (the successor must be a package of the same publisher) and README path inside the package (`PATCH /api/v1/publishers/{id}/packages/{package_id}`) |
 
 SessionFS re-checks verifications daily. A DNS record missing for seven consecutive days drops the badge (status `lapsed`) until the record is back. Uninstalling or suspending the GitHub App revokes a GitHub verification immediately.
 
@@ -2846,6 +2946,57 @@ When cloud sync is enabled, the daemon runs the same reconcile every 15 minutes,
 - It never prompts, never installs optional items, never uninstalls anything (it only quarantines blocked packages and logs packages that are no longer assigned), never grants an elevated capability (those items are logged as skipped), and has no project context.
 - It runs in its own background thread, one run at a time, with a 10-minute time limit, so it never holds up session capture. Unfinished work is picked up on the next run.
 - It changes skill files through the same locks and journal as `sfs skill` commands, so it never overlaps a command you are running.
+
+## `sfs policy` (org skills policy, Enterprise)
+
+An Enterprise org writes **one** skills policy: a mode (`open`, `allowlist`, `library_only`, `disabled`), an allowlist of verified publishers and git sources, capability limits (hooks, scripts, local and remote MCP servers and their origins, hidden Unicode), a signature requirement and the highest instruction-scan severity it accepts. Every change is a new, immutable revision.
+
+SessionFS enforces the policy on the server when someone requests, approves or loads a package and when an admin assigns or advances one. A refusal names the org and says to ask an org owner or admin. It also compiles the policy into each tool's own managed settings, and says per field what the tool enforces, what only SessionFS checks, and what nothing checks:
+
+| Tool | Output | Enforced by the tool |
+|---|---|---|
+| Claude Code | `managed-settings.json` (`/Library/Application Support/ClaudeCode/`, `/etc/claude-code/`, `C:\Program Files\ClaudeCode\`) | Marketplace allowlist (`strictKnownMarketplaces`), hooks (`allowManagedHooksOnly`), MCP limits that can be expressed (`allowedMcpServers` / `deniedMcpServers`) |
+| GitHub Copilot | `managed-settings.json` (`/Library/Application Support/GitHubCopilot/`, `/etc/github-copilot/`, `%ProgramFiles%\GitHubCopilot\`) | Marketplace allowlist and MCP limits |
+| VS Code | Device policy (`/etc/vscode/policy.json`; same names via ADMX or a macOS profile) | Hooks (`ChatAllowManagedHooksOnly`), plugins off when disabled (`ChatPluginsEnabled`) |
+| Gemini CLI | System `settings.json` (`/etc/gemini-cli/`, `/Library/Application Support/GeminiCli/`, `C:\ProgramData\gemini-cli\`) | Git extensions blocked (`security.blockGitExtensions`) |
+| Codex | `requirements.toml` (`/etc/codex/`, `%ProgramData%\OpenAI\Codex\`) | Hooks, marketplace sources, plugins off when disabled, all MCP servers off when both MCP kinds are forbidden |
+| Cursor | A checklist for the team admin dashboard | Nothing (set by an admin in Cursor) |
+| Amp, Cline, Roo Code, Kilo Code | None | Nothing; SessionFS checks its own installs and reports |
+| Antigravity | None | Not supported yet |
+
+Settings with side effects (for example `allowManagedHooksOnly` also stops users' own hooks, an empty MCP allowlist blocks every MCP server including SessionFS's, and an allowlist of remote origins with local MCP forbidden blocks every local stdio server, SessionFS's `sfs mcp serve` included) are listed as warnings, and publishing a revision requires acknowledging them.
+
+**Delivery is advisory first.** `sfs skill pull` and the daemon skip grants the current policy refuses (the server withholds them, and the refusal is printed with the reason), then send a compliance report for the device: per tool, whether IT deployed the compiled managed settings (`system`) or only SessionFS's own refusals apply (`advisory`), plus SessionFS-managed installs the policy now refuses. Reports contain names, versions and policy codes, never file contents. The server keeps each device's latest report per org plus one report per day for 90 days, and at most 20 reporting devices per account (a 21st is refused until a device has been silent for 90 days). A user can bypass advisory delivery on their own machine; deploy the compiled files through MDM for tool-level enforcement. `sfs` never writes system paths. Signed MDM bundles and `sfs policy apply --system` are planned.
+
+| Command | What it does |
+|---|---|
+| `sfs policy show [--org ORG] [--tool T] [--json]` | The policies that apply to you (or one org's), with the enforceable / SessionFS-only / unchecked fields per tool |
+| `sfs policy compile --tool T [--org ORG] [--json] > file` | Print a tool's compiled managed settings (the deploy paths go to stderr). Fails for tools without a managed file |
+| `sfs policy status [--json]` | Per tool on this device: `system` (the deployed file matches the current revision), `system` with `managed_settings_outdated`, or `advisory` |
+| `sfs policy set --org ORG --file policy.json [--acknowledge-warnings]` | Owner / admin: preview the per-tool changes and warnings, then publish a new revision (`If-Match` on the revision the preview was computed against, so a concurrent change is refused rather than overwritten) |
+| `sfs policy disable --org ORG [--yes]` | Owner / admin, any tier: publish a revision that restricts nothing |
+
+Policy file:
+
+```json
+{"skills": {
+  "mode": "allowlist",
+  "allowlist": [{"publisher": "pub_acme", "require_attestation": true},
+                {"source": "github.com/acme/skills", "sha": "any"}],
+  "allowed_publishers_verified_only": true,
+  "allow_hooks": false, "allow_local_mcp": false, "allow_remote_mcp": true,
+  "allowed_remote_mcp_origins": ["https://mcp.acme.com"],
+  "allow_skill_scripts": false, "allow_hidden_unicode": false,
+  "require_signature": false, "require_dlp_clean_import": true,
+  "max_scan_severity": "medium",
+  "block_unmanaged_marketplaces": true,
+  "tools": {"cursor": {"enforcement": "report_only"}}
+}}
+```
+
+Fields you leave out take the restrictive defaults shown above (`mode` defaults to `open`). In `allowlist` mode the org's own library packages are also allowed. A `source` entry matches only **verified** provenance: a version published through trusted publishing (GitHub Actions OIDC) from that repository, with `sha` compared to the commit of the verified publishing run. Sources must be `github.com/<owner>/<repo>`; when the policy is saved SessionFS looks the repository up on GitHub (install the SessionFS GitHub App for private repositories) and stores its numeric `repository_id`, which is what matches, so a repository that is renamed keeps matching and a new repository that takes over the old name does not. A source that cannot be looked up is refused; you can also give `repository_id` yourself. The `source_locator` / `source_commit` a publisher declares on upload are never trusted, so an upload that only claims an allowlisted repository is refused. `max_scan_severity` uses the scanner's scale (`none`, `low`, `medium`, `high`, `critical`). `auto_update` and `trust_code_updates_publishers` are stored but not enforced yet. Per-tool `enforcement` is `managed` (default), `report_only` or `off`.
+
+Writing a policy needs Enterprise. If the org later drops below Enterprise, its last revision **stays enforced**; owners and admins can still read it and may only relax it (for example switch `mode` to `open` or lift a limit) or disable it, and a tightening revision is refused with `upgrade_required` naming the fields. API: `GET/PUT /api/v1/orgs/{org_id}/skills/policy`, `POST .../skills/policy/preview`, `POST .../skills/policy/disable`, `GET .../skills/policy/revisions`, `GET .../skills/policy/compiled?tool=`, `GET /api/v1/orgs/{org_id}/skills/compliance` (paged: `limit`, `cursor`; `summary` counts every device), `GET /api/v1/devices/me/policy`, `POST /api/v1/devices/me/policy-report` (`devices:report` scope). The read-only MCP tool `get_skill_policy` lets an agent explain a refusal.
 
 ## Billing and Tier Enforcement
 

@@ -1,0 +1,6 @@
+{
+  "ChatAllowManagedHooksOnly": true,
+  "ChatExtraMarketplaces": {
+    "sessionfs-acme": "https://api.sessionfs.dev/catalogs/acme"
+  }
+}

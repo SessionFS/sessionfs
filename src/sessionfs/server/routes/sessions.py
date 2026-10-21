@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import io
 import json
@@ -12,6 +13,7 @@ import re
 import secrets
 import tarfile
 import threading
+import time
 import uuid
 from collections import OrderedDict, defaultdict
 from datetime import datetime, timedelta, timezone
@@ -22,6 +24,7 @@ from pydantic import BaseModel as _BaseModel
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from sessionfs.server.auth.dependencies import get_current_user, require_verified_user
 from sessionfs.server.db.engine import get_db
@@ -47,6 +50,7 @@ from sessionfs.server.schemas.sessions import (
 )
 from sessionfs.server.sanitize import sanitize_meta, strip_nul
 from sessionfs.server.storage.base import BlobStore
+from sessionfs.server.timing import PhaseTimer
 
 logger = logging.getLogger("sessionfs.api")
 
@@ -1391,21 +1395,336 @@ async def restore_session(
     )
 
 
+def _raise_on_etag_mismatch(request: Request, current_etag: str | None, message: str) -> None:
+    """409 when the push's If-Match names a different version than the
+    server's (no If-Match: unconditional push)."""
+    if_match = request.headers.get("If-Match", "").strip('"')
+    if if_match and if_match != current_etag:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "etag_mismatch",
+                "message": message,
+                "current_etag": current_etag,
+            },
+        )
+
+
+@dataclasses.dataclass
+class _PreparedPush:
+    """What the CPU-heavy part of a sync push hands back to the handler."""
+
+    data: bytes
+    new_etag: str
+    meta: dict
+    messages_text: str
+    git_remote_normalized: str
+    git_branch: str
+    git_commit: str
+    dlp_scan_results: dict | None
+
+
+def _prepare_sync_archive(
+    data: bytes,
+    *,
+    session_id: str,
+    effective_tier,
+    dlp_policy: dict | None,
+    timer: PhaseTimer,
+) -> _PreparedPush:
+    """Validate, DLP-check and extract a pushed archive (no DB, no I/O).
+
+    Pure CPU work, so sync_push runs it in a worker thread: a large session
+    no longer stalls the event loop (health checks, other requests) while
+    it is processed. Raises HTTPException exactly as the handler did.
+    """
+    with timer.phase("validate"):
+        # M7: Tar archive validation
+        try:
+            _validate_tar_gz(data)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        # Reject oversized sessions early with a structured 413 — keeps DLP
+        # and downstream code from blowing up on multi-hundred-MB transcripts.
+        _check_member_sizes(data, limit=_member_size_limit_for_tier(effective_tier))
+
+    new_etag = hashlib.sha256(data).hexdigest()
+
+    with timer.phase("extract"):
+        # Extract metadata from the archive's manifest.json
+        meta = _extract_manifest_metadata(data)
+        messages_text = _extract_messages_text(data)
+
+        # Strip NUL bytes from archive-derived values before they are bound
+        # to PostgreSQL text columns (asyncpg rejects \x00 → daemon retries
+        # forever). The blob itself is never modified; only the derived
+        # metadata is sanitized so the push is ACCEPTED. `messages_text` may
+        # be re-extracted after DLP redaction below, so it is sanitized once
+        # at the final binding point (after git extraction).
+        nul_count = 0
+        meta, n = sanitize_meta(meta)
+        nul_count += n
+
+    # DLP scan (after extraction, before blob storage)
+    dlp_scan_results = None
+    if dlp_policy:
+        from sessionfs.server.dlp import (
+            DlpUninspectableError,
+            custom_marker_labels,
+            dedupe_findings,
+            decoded_json_text,
+            mask_redaction_markers,
+            redact_and_repack,
+        )
+
+        from sessionfs.security.secrets import scan_dlp
+
+        with timer.phase("dlp_scan"):
+            import io as _io
+            import tarfile as _tarfile
+            scan_text_parts: list[str] = []
+            uninspectable: list[str] = []
+            try:
+                with _tarfile.open(fileobj=_io.BytesIO(data), mode="r:gz") as _tar:
+                    for _member in _tar.getmembers():
+                        if not _member.name.endswith((".json", ".jsonl")):
+                            continue
+                        _f = _tar.extractfile(_member)
+                        if not _f:
+                            continue
+                        _raw = _f.read().decode("utf-8", errors="replace")
+                        scan_text_parts.append(_raw)
+                        # Also scan the decoded keys/strings: inside
+                        # serialized JSON, quoted secrets are hidden
+                        # behind escaped quotes the patterns can't see.
+                        try:
+                            scan_text_parts.append(decoded_json_text(_raw))
+                        except DlpUninspectableError:
+                            uninspectable.append(_member.name)
+            except Exception as scan_exc:
+                # Fail closed: an error part-way through the archive must
+                # not leave the remaining members unscanned.
+                logger.warning(
+                    "DLP could not read archive for session %s: %s", session_id, scan_exc
+                )
+                uninspectable.append("archive")
+            if uninspectable:
+                # Fail closed: content DLP cannot fully read must not be
+                # stored as if it were clean. Permanent 400, not a retry.
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "dlp_uninspectable",
+                        "message": (
+                            "Session content could not be fully scanned by "
+                            "the organization's DLP policy (for example, it "
+                            "is nested too deeply or contains values that "
+                            "can't be parsed)."
+                        ),
+                        "files": uninspectable,
+                    },
+                )
+            # Genuine redaction markers from an earlier redact are not new
+            # findings (password = "[REDACTED:…]" would otherwise re-match).
+            full_scan_text = mask_redaction_markers(
+                "\n".join(scan_text_parts), dlp_policy.get("custom_patterns")
+            )
+
+            findings = dedupe_findings(
+                scan_dlp(
+                    full_scan_text,
+                    categories=dlp_policy.get("categories", ["secrets"]),
+                    custom_patterns=dlp_policy.get("custom_patterns"),
+                    allowlist=dlp_policy.get("allowlist"),
+                )
+            )
+        mode = dlp_policy.get("mode", "warn")
+        timer.facts["dlp_findings"] = len(findings)
+        dlp_scan_results = {
+            "scanned_at": datetime.now(timezone.utc).isoformat(),
+            "findings_count": len(findings),
+            "mode": mode,
+            "finding_types": list({f.pattern_name for f in findings}),
+            "action_taken": mode if findings else "clean",
+            "categories_scanned": dlp_policy.get("categories", ["secrets"]),
+            # Custom pattern names redaction may write as marker
+            # labels, kept with the session so the share gate still
+            # recognises them after the policy or membership changes.
+            "marker_labels": custom_marker_labels(dlp_policy.get("custom_patterns")),
+        }
+        if findings:
+            if mode == "block":
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "error": "dlp_blocked",
+                        "message": f"DLP policy blocked sync: {len(findings)} finding(s)",
+                        "findings": [
+                            {
+                                "pattern": f.pattern_name,
+                                "category": f.category,
+                                "severity": f.severity,
+                                "line": f.line_number,
+                            }
+                            for f in findings
+                        ],
+                    },
+                )
+            elif mode == "redact":
+                # Pass the tier-resolved member cap so DLP rejects at
+                # the same threshold as `_check_member_sizes`. Before
+                # v0.9.9.8, redact_and_repack had a hardcoded 50 MB
+                # cap that silently nullified SFS_MAX_SYNC_MEMBER_BYTES_PAID
+                # overrides above 50 MB for orgs with DLP=REDACT.
+                from sessionfs.server.dlp import DlpMemberTooLargeError
+
+                with timer.phase("dlp_redact"):
+                    try:
+                        data = redact_and_repack(
+                            data,
+                            findings,
+                            member_limit_bytes=_member_size_limit_for_tier(
+                                effective_tier
+                            ),
+                            categories=dlp_policy.get("categories", ["secrets"]),
+                            custom_patterns=dlp_policy.get("custom_patterns"),
+                            allowlist=dlp_policy.get("allowlist"),
+                        )
+                    except DlpMemberTooLargeError as exc:
+                        # Same 413 envelope as `_check_member_sizes` so
+                        # the CLI surfaces identical guidance regardless
+                        # of which guard fired.
+                        raise HTTPException(
+                            status_code=413,
+                            detail={
+                                "error": "session_too_large",
+                                "message": (
+                                    f"Session file '{exc.member_name}' is "
+                                    f"{exc.member_size // (1024 * 1024)}MB which "
+                                    f"exceeds the {exc.limit_bytes // (1024 * 1024)}MB "
+                                    "per-file limit for your tier."
+                                ),
+                                "file": exc.member_name,
+                                "size_bytes": exc.member_size,
+                                "limit_bytes": exc.limit_bytes,
+                                "suggestion": (
+                                    "Try /compact in your AI tool to start a "
+                                    "fresh session, or contact support for a "
+                                    "larger limit."
+                                ),
+                            },
+                        ) from exc
+                    except ValueError as exc:
+                        # Malformed archive or a redaction invariant
+                        # violation (valid JSON in, valid JSON out). A
+                        # permanent 4xx, not a transient 500 the daemon
+                        # would retry forever.
+                        raise HTTPException(status_code=400, detail=str(exc)) from exc
+                with timer.phase("extract"):
+                    messages_text = _extract_messages_text(data)
+                    # Title, tags and other manifest fields were read
+                    # before redaction; re-read them from the redacted
+                    # archive so a secret in a tag or title never reaches
+                    # the database or the session list.
+                    meta = _extract_manifest_metadata(data)
+                    meta, n = sanitize_meta(meta)
+                    nul_count += n
+
+    with timer.phase("extract"):
+        # Extract git metadata for PR matching
+        workspace_data = _extract_workspace_from_archive(data)
+        git_remote_normalized = ""
+        git_branch = ""
+        git_commit = ""
+        if workspace_data:
+            from sessionfs.git_remote import normalize_git_remote
+            git_remote_normalized = normalize_git_remote(workspace_data.get("git_remote", ""))
+            git_branch = workspace_data.get("git_branch", "")
+            git_commit = workspace_data.get("git_commit", "")
+        git_remote_normalized, n = strip_nul(git_remote_normalized)
+        nul_count += n
+        git_branch, n = strip_nul(git_branch)
+        nul_count += n
+        git_commit, n = strip_nul(git_commit)
+        nul_count += n
+        messages_text, n = strip_nul(messages_text)
+        nul_count += n
+
+        if nul_count:
+            logger.warning(
+                "Stripped %d NUL byte(s) from archive-derived metadata for session %s",
+                nul_count,
+                session_id,
+            )
+
+    return _PreparedPush(
+        data=data,
+        new_etag=new_etag,
+        meta=meta,
+        messages_text=messages_text,
+        git_remote_normalized=git_remote_normalized,
+        git_branch=git_branch,
+        git_commit=git_commit,
+        dlp_scan_results=dlp_scan_results,
+    )
+
+
 @router.put("/{session_id}/sync", status_code=200)
 async def sync_push(
     session_id: str,
     file: UploadFile,
     background_tasks: BackgroundTasks,
+    http_response: Response,
     user: User = Depends(require_verified_user),
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
     request: Request = None,
 ):
-    """Push session data with ETag-based conflict detection."""
+    """Push session data with ETag-based conflict detection.
+
+    Every push logs one INFO line with its phase breakdown and returns the
+    same phases in a ``Server-Timing`` header (GH #71), so a slow push says
+    where its time went.
+    """
+    timer = PhaseTimer()
+    status = 500
+    try:
+        result = await _sync_push(
+            session_id, file, background_tasks, user, ctx, db, request, timer
+        )
+        if isinstance(result, Response):
+            status = result.status_code
+            result.headers["Server-Timing"] = timer.server_timing()
+        else:
+            status = 200
+            http_response.headers["Server-Timing"] = timer.server_timing()
+        return result
+    except HTTPException as exc:
+        status = exc.status_code
+        exc.headers = {**(exc.headers or {}), "Server-Timing": timer.server_timing()}
+        raise
+    finally:
+        logger.info(
+            "sync_push session=%s status=%d %s", session_id, status, timer.log_fields()
+        )
+
+
+async def _sync_push(
+    session_id: str,
+    file: UploadFile,
+    background_tasks: BackgroundTasks,
+    user: User,
+    ctx: UserContext,
+    db: AsyncSession,
+    request: Request,
+    timer: PhaseTimer,
+):
     # Per-user concurrency limit
     semaphore = _user_sync_semaphores[user.id]
     try:
-        await asyncio.wait_for(semaphore.acquire(), timeout=30)
+        with timer.phase("wait"):
+            await asyncio.wait_for(semaphore.acquire(), timeout=30)
     except asyncio.TimeoutError:
         raise HTTPException(
             429,
@@ -1438,7 +1757,8 @@ async def sync_push(
         # Tier-based sync limit — resolve effective tier so org members
         # inherit their org's tier instead of being limited by user.tier.
         from sessionfs.server.tier_gate import get_effective_tier
-        effective_tier = await get_effective_tier(user, db)
+        with timer.phase("db_read"):
+            effective_tier = await get_effective_tier(user, db)
         sync_limit = _sync_limit_for_tier(effective_tier)
         limit_str = _sync_limit_human(sync_limit)
 
@@ -1457,7 +1777,9 @@ async def sync_push(
             )
 
         # M3: Upload size limit
-        data = await _read_upload(file, max_bytes=sync_limit)
+        with timer.phase("read"):
+            data = await _read_upload(file, max_bytes=sync_limit)
+        timer.facts["bytes_in"] = len(data)
 
         # Enforce sync byte limit on actual data
         if len(data) > sync_limit:
@@ -1473,6 +1795,7 @@ async def sync_push(
             )
 
         # Check if session exists
+        db_started = time.perf_counter()
         result = await db.execute(
             select(Session).where(
                 Session.id == session_id,
@@ -1502,238 +1825,49 @@ async def sync_push(
                         status_code=410,
                         detail="Session is deleted. Send X-SessionFS-Undelete: true to restore.",
                     )
+        else:
+            # Fail a stale push before the expensive part (GH #71: a retried
+            # push spent minutes in DLP only to end in this 409). The check
+            # is repeated under the row lock before anything is written.
+            _raise_on_etag_mismatch(request, existing.etag, "ETag mismatch — session has been updated")
 
-        # Capture DLP policy info while we still have DB context
-        is_org_user = ctx.is_org_user
-        org = ctx.org
+        # Capture the DLP policy while we still have DB context.
+        dlp_policy = None
+        if ctx.is_org_user and ctx.org:
+            from sessionfs.server.dlp import get_org_dlp_policy
+
+            dlp_policy = get_org_dlp_policy(ctx.org)
+            if not (dlp_policy and dlp_policy.get("enabled")):
+                dlp_policy = None
 
         # Flush client version tracking updates before releasing connection
         await db.commit()
 
         # ── Release DB connection back to pool before CPU/IO-heavy work ──
         await db.close()
+        timer.add("db_read", time.perf_counter() - db_started)
+        if dlp_policy:
+            timer.facts["dlp_mode"] = str(dlp_policy.get("mode", "warn"))
 
-        # ── Phase 2: CPU work + blob upload (no DB connection held) ──
-
-        # M7: Tar archive validation
-        try:
-            _validate_tar_gz(data)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-
-        # Reject oversized sessions early with a structured 413 — keeps DLP
-        # and downstream code from blowing up on multi-hundred-MB transcripts.
-        # `effective_tier` was resolved earlier in this function for the
-        # archive-total cap; reuse it for the per-member cap.
-        _check_member_sizes(data, limit=_member_size_limit_for_tier(effective_tier))
-
-        new_etag = hashlib.sha256(data).hexdigest()
+        # ── Phase 2: CPU work (worker thread) + blob upload (no DB connection held) ──
+        prepared = await run_in_threadpool(
+            _prepare_sync_archive,
+            data,
+            session_id=session_id,
+            effective_tier=effective_tier,
+            dlp_policy=dlp_policy,
+            timer=timer,
+        )
+        data = prepared.data
+        new_etag = prepared.new_etag
+        meta = prepared.meta
+        messages_text = prepared.messages_text
+        git_remote_normalized = prepared.git_remote_normalized
+        git_branch = prepared.git_branch
+        git_commit = prepared.git_commit
+        dlp_scan_results = prepared.dlp_scan_results
         key = _blob_key(user_id, session_id)
         now = datetime.now(timezone.utc)
-
-        # Extract metadata from the archive's manifest.json
-        meta = _extract_manifest_metadata(data)
-        messages_text = _extract_messages_text(data)
-
-        # Strip NUL bytes from archive-derived values before they are bound
-        # to PostgreSQL text columns (asyncpg rejects \x00 → daemon retries
-        # forever). The blob itself is never modified; only the derived
-        # metadata is sanitized so the push is ACCEPTED. `messages_text` may
-        # be re-extracted after DLP redaction below, so it is sanitized once
-        # at the final binding point (after git extraction).
-        nul_count = 0
-        meta, n = sanitize_meta(meta)
-        nul_count += n
-
-        # DLP scan (after extraction, before blob storage)
-        dlp_scan_results = None
-        if is_org_user and org:
-            from sessionfs.server.dlp import (
-                DlpUninspectableError,
-                custom_marker_labels,
-                dedupe_findings,
-                decoded_json_text,
-                get_org_dlp_policy,
-                mask_redaction_markers,
-                redact_and_repack,
-            )
-
-            dlp_policy = get_org_dlp_policy(org)
-            if dlp_policy and dlp_policy.get("enabled"):
-                from sessionfs.security.secrets import scan_dlp
-
-                import io as _io
-                import tarfile as _tarfile
-                scan_text_parts: list[str] = []
-                uninspectable: list[str] = []
-                try:
-                    with _tarfile.open(fileobj=_io.BytesIO(data), mode="r:gz") as _tar:
-                        for _member in _tar.getmembers():
-                            if not _member.name.endswith((".json", ".jsonl")):
-                                continue
-                            _f = _tar.extractfile(_member)
-                            if not _f:
-                                continue
-                            _raw = _f.read().decode("utf-8", errors="replace")
-                            scan_text_parts.append(_raw)
-                            # Also scan the decoded keys/strings: inside
-                            # serialized JSON, quoted secrets are hidden
-                            # behind escaped quotes the patterns can't see.
-                            try:
-                                scan_text_parts.append(decoded_json_text(_raw))
-                            except DlpUninspectableError:
-                                uninspectable.append(_member.name)
-                except Exception as scan_exc:
-                    # Fail closed: an error part-way through the archive must
-                    # not leave the remaining members unscanned.
-                    logger.warning(
-                        "DLP could not read archive for session %s: %s", session_id, scan_exc
-                    )
-                    uninspectable.append("archive")
-                if uninspectable:
-                    # Fail closed: content DLP cannot fully read must not be
-                    # stored as if it were clean. Permanent 400, not a retry.
-                    raise HTTPException(
-                        status_code=400,
-                        detail={
-                            "error": "dlp_uninspectable",
-                            "message": (
-                                "Session content could not be fully scanned by "
-                                "the organization's DLP policy (for example, it "
-                                "is nested too deeply or contains values that "
-                                "can't be parsed)."
-                            ),
-                            "files": uninspectable,
-                        },
-                    )
-                # Genuine redaction markers from an earlier redact are not new
-                # findings (password = "[REDACTED:…]" would otherwise re-match).
-                full_scan_text = mask_redaction_markers(
-                    "\n".join(scan_text_parts), dlp_policy.get("custom_patterns")
-                )
-
-                findings = dedupe_findings(
-                    scan_dlp(
-                        full_scan_text,
-                        categories=dlp_policy.get("categories", ["secrets"]),
-                        custom_patterns=dlp_policy.get("custom_patterns"),
-                        allowlist=dlp_policy.get("allowlist"),
-                    )
-                )
-                mode = dlp_policy.get("mode", "warn")
-                dlp_scan_results = {
-                    "scanned_at": datetime.now(timezone.utc).isoformat(),
-                    "findings_count": len(findings),
-                    "mode": mode,
-                    "finding_types": list({f.pattern_name for f in findings}),
-                    "action_taken": mode if findings else "clean",
-                    "categories_scanned": dlp_policy.get("categories", ["secrets"]),
-                    # Custom pattern names redaction may write as marker
-                    # labels, kept with the session so the share gate still
-                    # recognises them after the policy or membership changes.
-                    "marker_labels": custom_marker_labels(dlp_policy.get("custom_patterns")),
-                }
-                if findings:
-                    if mode == "block":
-                        raise HTTPException(
-                            status_code=403,
-                            detail={
-                                "error": "dlp_blocked",
-                                "message": f"DLP policy blocked sync: {len(findings)} finding(s)",
-                                "findings": [
-                                    {
-                                        "pattern": f.pattern_name,
-                                        "category": f.category,
-                                        "severity": f.severity,
-                                        "line": f.line_number,
-                                    }
-                                    for f in findings
-                                ],
-                            },
-                        )
-                    elif mode == "redact":
-                        # Pass the tier-resolved member cap so DLP rejects at
-                        # the same threshold as `_check_member_sizes`. Before
-                        # v0.9.9.8, redact_and_repack had a hardcoded 50 MB
-                        # cap that silently nullified SFS_MAX_SYNC_MEMBER_BYTES_PAID
-                        # overrides above 50 MB for orgs with DLP=REDACT.
-                        from sessionfs.server.dlp import DlpMemberTooLargeError
-
-                        try:
-                            data = redact_and_repack(
-                                data,
-                                findings,
-                                member_limit_bytes=_member_size_limit_for_tier(
-                                    effective_tier
-                                ),
-                                categories=dlp_policy.get("categories", ["secrets"]),
-                                custom_patterns=dlp_policy.get("custom_patterns"),
-                                allowlist=dlp_policy.get("allowlist"),
-                            )
-                        except DlpMemberTooLargeError as exc:
-                            # Same 413 envelope as `_check_member_sizes` so
-                            # the CLI surfaces identical guidance regardless
-                            # of which guard fired.
-                            raise HTTPException(
-                                status_code=413,
-                                detail={
-                                    "error": "session_too_large",
-                                    "message": (
-                                        f"Session file '{exc.member_name}' is "
-                                        f"{exc.member_size // (1024 * 1024)}MB which "
-                                        f"exceeds the {exc.limit_bytes // (1024 * 1024)}MB "
-                                        "per-file limit for your tier."
-                                    ),
-                                    "file": exc.member_name,
-                                    "size_bytes": exc.member_size,
-                                    "limit_bytes": exc.limit_bytes,
-                                    "suggestion": (
-                                        "Try /compact in your AI tool to start a "
-                                        "fresh session, or contact support for a "
-                                        "larger limit."
-                                    ),
-                                },
-                            ) from exc
-                        except ValueError as exc:
-                            # Malformed archive or a redaction invariant
-                            # violation (valid JSON in, valid JSON out). A
-                            # permanent 4xx, not a transient 500 the daemon
-                            # would retry forever.
-                            raise HTTPException(status_code=400, detail=str(exc)) from exc
-                        messages_text = _extract_messages_text(data)
-                        # Title, tags and other manifest fields were read
-                        # before redaction; re-read them from the redacted
-                        # archive so a secret in a tag or title never reaches
-                        # the database or the session list.
-                        meta = _extract_manifest_metadata(data)
-                        meta, n = sanitize_meta(meta)
-                        nul_count += n
-
-        # Extract git metadata for PR matching
-        workspace_data = _extract_workspace_from_archive(data)
-        git_remote_normalized = ""
-        git_branch = ""
-        git_commit = ""
-        if workspace_data:
-            from sessionfs.git_remote import normalize_git_remote
-            git_remote_normalized = normalize_git_remote(workspace_data.get("git_remote", ""))
-            git_branch = workspace_data.get("git_branch", "")
-            git_commit = workspace_data.get("git_commit", "")
-        git_remote_normalized, n = strip_nul(git_remote_normalized)
-        nul_count += n
-        git_branch, n = strip_nul(git_branch)
-        nul_count += n
-        git_commit, n = strip_nul(git_commit)
-        nul_count += n
-        messages_text, n = strip_nul(messages_text)
-        nul_count += n
-
-        if nul_count:
-            logger.warning(
-                "Stripped %d NUL byte(s) from archive-derived metadata for session %s",
-                nul_count,
-                session_id,
-            )
 
         # v0.10.0 Phase 5 Round 4 (KB entry 289): project_id resolution
         # MUST run inside the Phase 3 write transaction, not here in
@@ -1749,7 +1883,9 @@ async def sync_push(
         # committed atomically with the DB write in Phase 3.
         import uuid as _uuid
         temp_blob_key = f"sessions/_tmp/{_uuid.uuid4().hex}/{session_id}.tar.gz"
-        await blob_store.put(temp_blob_key, data)
+        timer.facts["bytes_stored"] = len(data)
+        with timer.phase("blob_upload"):
+            await blob_store.put(temp_blob_key, data)
 
         # ── Phase 3: Final DB writes using a fresh session ──
         from sessionfs.server.db.engine import _session_factory as _sf
@@ -1773,12 +1909,12 @@ async def sync_push(
                 pass
 
         async def _promote_blob():
-            """Copy temp blob to final key. Does NOT delete temp — caller
-            must call _cleanup_temp_blob() after second commit succeeds."""
-            temp_data = await blob_store.get(temp_blob_key)
-            if not temp_data:
-                raise HTTPException(500, "Blob upload lost during sync — please retry")
-            await blob_store.put(key, temp_data)
+            """Write the final key. Does NOT delete temp — caller must call
+            _cleanup_temp_blob() after second commit succeeds. Written from
+            the bytes already in memory (identical to the temp blob) rather
+            than downloading the temp blob back."""
+            with timer.phase("blob_promote"):
+                await blob_store.put(key, data)
 
         async def _do_phase3_writes(db2: AsyncSession) -> Response | SyncPushResponse:
           _row_committed = False
@@ -1890,16 +2026,7 @@ async def sync_push(
                 # A stale local copy could otherwise overwrite the server
                 # session content without the user realising the server
                 # state diverged before the soft-delete.
-                if_match = request.headers.get("If-Match", "").strip('"')
-                if if_match and if_match != sess.etag:
-                    raise HTTPException(
-                        status_code=409,
-                        detail={
-                            "code": "etag_mismatch",
-                            "message": "ETag mismatch — session was modified before deletion",
-                            "current_etag": sess.etag,
-                        },
-                    )
+                _raise_on_etag_mismatch(request, sess.etag, "ETag mismatch — session was modified before deletion")
 
                 # Expire old handoffs and revoke share links
                 await db2.execute(
@@ -1931,16 +2058,7 @@ async def sync_push(
                     raise HTTPException(status_code=404, detail="Session not found")
 
                 # Re-check ETag against fresh data
-                if_match = request.headers.get("If-Match", "").strip('"')
-                if if_match and if_match != sess.etag:
-                    raise HTTPException(
-                        status_code=409,
-                        detail={
-                            "code": "etag_mismatch",
-                            "message": "ETag mismatch — session has been updated",
-                            "current_etag": sess.etag,
-                        },
-                    )
+                _raise_on_etag_mismatch(request, sess.etag, "ETag mismatch — session has been updated")
 
             # Update metadata with temp blob key first, commit under lock,
             # then promote blob after commit succeeds.
@@ -2022,7 +2140,17 @@ async def sync_push(
                 await _cleanup_temp_blob()
             raise
 
-        return await _phase3_writes()
+        db_write_started = time.perf_counter()
+        promote_before = timer.phases.get("blob_promote", 0.0)
+        try:
+            return await _phase3_writes()
+        finally:
+            # db_write excludes the blob promotion timed inside it.
+            timer.add(
+                "db_write",
+                time.perf_counter() - db_write_started
+                - (timer.phases.get("blob_promote", 0.0) - promote_before),
+            )
     finally:
         semaphore.release()
 

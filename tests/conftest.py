@@ -84,6 +84,9 @@ def _isolated_credentials(tmp_path_factory: pytest.TempPathFactory, monkeypatch:
     monkeypatch.delenv("SESSIONFS_PROFILE", raising=False)
     monkeypatch.setenv("SESSIONFS_API_URL", UNROUTABLE_API_URL)
     monkeypatch.setenv("SESSIONFS_API_KEY", DUMMY_API_KEY)
+    # Marketplace install counts are off unless a test turns them on, so
+    # request-counting tests never see the extra best-effort POSTs.
+    monkeypatch.setenv("SFS_SKILL_USAGE_REPORTING", "0")
     yield
 
 
@@ -117,3 +120,22 @@ def tmp_claude_home(tmp_path: Path) -> Path:
         shutil.copytree(subagent_dir, dest)
 
     return claude_home
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Group tests for parallel runs (`pytest -n auto --dist loadgroup`).
+
+    Each file stays on one worker, as with `--dist loadfile`. Every file that
+    uses the shared SFS_TEST_PG_URL database joins a single "postgres" group,
+    because they create, drop and migrate the same schema.
+    """
+    pg_files: dict[str, bool] = {}
+    for item in items:
+        path = str(item.path)
+        if path not in pg_files:
+            try:
+                pg_files[path] = "SFS_TEST_PG_URL" in Path(path).read_text(encoding="utf-8")
+            except OSError:
+                pg_files[path] = False
+        group = "postgres" if pg_files[path] else path
+        item.add_marker(pytest.mark.xdist_group(group))

@@ -55,6 +55,7 @@ from sessionfs.server.routes.marketplace import (
 )
 from sessionfs.server.routes.marketplace_scanning import _scan_viewable_version
 from sessionfs.server.services import skill_disclosure
+from sessionfs.server.services import skill_policy
 from sessionfs.skills import disclosure
 from sessionfs.skills.models import SUPPORTED_TOOLS
 
@@ -538,6 +539,7 @@ async def advance_assignment(
         tools=json.loads(current.target_tools or "[]"),
         scope="user",
     )
+    await skill_policy.enforce_for_org(db, org.id, target, manifest=target_manifest)
     # A legacy or stale assignment binding is an unknown baseline (widening).
     update = await skill_disclosure.classify_grant_update(
         db, store, old, target,

@@ -33,7 +33,7 @@ sfs mcp install --for claude-code --skip-instructions
 
 ## Tools
 
-The MCP server exposes 80 tools in eleven categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Agent Feedback (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, and Skills Marketplace.
+The MCP server exposes 81 tools in eleven categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Agent Feedback (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, and Skills Marketplace.
 
 ### Session Tools
 
@@ -672,9 +672,10 @@ Marketplace tools separate discovery from authority. Search and preview return m
 
 | Tool | Purpose |
 |------|---------|
-| `search_skill_marketplace` | Search public, personal, and authorized organization listings; optionally filter by target tool |
+| `search_skill_marketplace` | Search public, personal, and authorized organization listings; optionally filter by target tool, category, publisher, verified publisher, trusted-publishing provenance, license, max scan severity, capability, works-in tool, updated within N days and deprecation, sorted by `relevance` or `recent` |
 | `get_marketplace_package` | Inspect immutable hash, provenance, license, verification, risk, compatibility, and the install disclosure (files per tool, hooks, scripts, MCP servers, network endpoints, shell commands, hidden characters). Display only |
 | `diff_marketplace_versions` | Compare two versions of one package: files, capability changes, and the update class (text, code, or widening). Read-only |
+| `get_skill_policy` | The org skills policies that apply to you and, per tool, what the tool enforces, what only SessionFS checks, and what nothing checks. Use it to explain a refusal. Read-only (Enterprise) |
 | `preview_marketplace_skill` | Read a bounded, untrusted instruction preview without granting consent |
 | `load_marketplace_skill` | Load approved instruction-only context for one project/tool/device boundary |
 | `request_skill_install` | Request an exact hash for project, user, or device scope |

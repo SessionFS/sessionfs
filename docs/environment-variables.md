@@ -63,7 +63,7 @@ All SessionFS server environment variables use the `SFS_` prefix.
 |----------|-------------|---------|
 | `SFS_HOST` | Listen address | `0.0.0.0` |
 | `SFS_PORT` | Listen port | `8000` |
-| `SFS_LOG_LEVEL` | Log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` | `INFO` |
+| `SFS_LOG_LEVEL` | Log level for the API's own logs: `DEBUG`, `INFO`, `WARNING`, `ERROR`. Applied when the process has no other logging configuration (plain `uvicorn`); `INFO` includes one timing line per session push | `INFO` |
 | `SFS_CORS_ORIGINS` | Allowed CORS origins (comma-separated) | — |
 | `SFS_RATE_LIMIT_PER_MINUTE` | API rate limit per API key per minute. Set to `0` to disable | `120` |
 | `SFS_KNOWLEDGE_RATE_LIMIT_PER_HOUR` | Per-user, per-hour cap on `add_knowledge` / `POST /entries/add`. Overrides the tier-based defaults (`free=20`, `starter=50`, `pro=100`, `team=100`, `enterprise=200`, `admin=500`) when set. Bucket key is `user_id`, not `session_id`, so MCP `manual` callers don't share buckets across users | — |
@@ -106,7 +106,23 @@ Linking an installation goes through GitHub OAuth. SessionFS accepts the link on
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `SFS_GITLAB_WEBHOOK_SECRET` | Global GitLab webhook token for MR events. Optional: per-user webhook secrets from Settings also work. A delivery matching neither is refused with 401 | — |
-| `SFS_PUBLIC_API_URL` | This deployment's public API origin, e.g. `https://api.sessionfs.dev`. Used as the default OIDC audience for marketplace trusted publishing | — |
+| `SFS_PUBLIC_API_URL` | This deployment's public API origin, e.g. `https://api.sessionfs.dev`. Used as the default OIDC audience for marketplace trusted publishing, and as the base of native catalog clone URLs (`/api/v1/git/...`; the request's own origin when unset) | — |
+| `SFS_PUBLIC_CATALOG_MIRROR` | Public GitHub mirror of the public native catalog, as `owner/repo` (e.g. `SessionFS/marketplace`). When set, the public catalog's add commands (`GET /api/v1/marketplace/catalogs`, `sfs catalog add`, the dashboard) lead with the keyless GitHub form for Claude Code, Copilot CLI, Codex and Cursor, keep the SessionFS-hosted URL as `add_hosted`, and the public catalog's README names the mirror. Gemini CLI keeps installing from this deployment. Set it only when a scheduled `sfs catalog export` keeps that repository in sync. Anything but `owner/repo` refuses startup | — |
+| `SFS_WORKS_IN_ORG_DAILY_QUOTA` | Works-in harness runs an organization may request per 24 hours (`POST /api/v1/orgs/{org_id}/skills/verify`). Platform sweeps of the org's listings do not count | `25` |
+| `SFS_NATIVE_CATALOG_MAX_FILES` | File budget of one native catalog build (at most 19968, the repository cap less room for root files). Plugins are admitted in namespace, name, version-id order; one that does not fit is excluded and listed with its reason in `SESSIONFS-CATALOG.json` | `19968` |
+| `SFS_NATIVE_CATALOG_MAX_PLUGIN_BYTES` | Largest single plugin a native catalog admits (at most 64 MiB, and never more than the catalog byte budget), so one package cannot crowd the others out. Larger packages are excluded as `plugin_too_large`; excluded packages are not charged to the budget | `16777216` |
+| `SFS_NATIVE_CATALOG_MAX_BYTES` | Byte budget of one native catalog build (plugin files, generated manifests included). Bounds the memory a rebuild needs; packages past it are not even fetched, and are excluded and listed like the file budget | `268435456` |
+| `SFS_REGISTRY_POLLING_ENABLED` | Server-side polling of organization Git marketplace registries (GitHub #69). `false` makes `POST /api/v1/admin/skills/registries/poll` answer `503` and every registry report `server_fetch_enabled: false`. Polling only runs when that endpoint is called (scheduler, `sfs admin registries poll`, the Helm CronJob) | `true` |
+| `SFS_REGISTRY_POLL_ALLOWED_PRIVATE_CIDRS` | Comma-separated private ranges the registry poller may connect to, e.g. `10.20.0.0/16` for an internal GitLab. Unset: only globally routable addresses. Loopback, link-local and cloud metadata addresses are never reachable; a malformed value (or one naming loopback/link-local) disables the opt-in entirely | — |
+| `SFS_REGISTRY_POLL_TIMEOUT_SECONDS` | Fetch budget of one registry poll (30-3600). Each git command also has its own 60 s timeout | `300` |
+| `SFS_REGISTRY_POLL_RUN_BUDGET_SECONDS` | Budget of one poll run (120-3000). A run claims no new registry once elapsed + fetch budget + 300 s publish slack would exceed it, so with the defaults it starts registries during its first 600 s and finishes by about 1200 s. Scheduler / CronJob timeouts must exceed budget + 120 s (the Helm CronJob uses + 120 s for curl and + 180 s for the job) | `1200` |
+| `SFS_REGISTRY_POLL_MAX_PER_ORG` | Polling-enabled registries an organization may have; more are refused with `409 poll_registry_limit` | `10` |
+| `SFS_REGISTRY_POLL_MAX_PER_ORG_PER_RUN` | Registries of one organization polled per run (due registries are taken round-robin across organizations) | `2` |
+| `SFS_REGISTRY_CRED_<NAME>` | A registry credential (PAT or deploy token) an org references as `credential_secret_ref: env:SFS_REGISTRY_CRED_<NAME>`. Only names with this prefix can be referenced, so no other server variable can ever be sent to a registry | — |
+| `SFS_REGISTRY_CRED_<NAME>_ORG` | **Required** with the credential: the one organization id allowed to use it. A credential without it, or referenced by another org, is refused | — |
+| `SFS_REGISTRY_CRED_<NAME>_HOSTS` | **Required**: comma-separated hosts the credential may be sent to. A credential without a host binding is never used | — |
+| `SFS_REGISTRY_CRED_<NAME>_USERNAME` | Optional HTTP Basic username (GitLab deploy tokens need theirs) | `x-access-token` |
+| `SFS_REGISTRY_SECRETS_DIR` | Directory of mounted credential Secrets for `k8s:<name>` references: `<dir>/<name>/token`, `org` and `hosts` (both required), optional `username` | `/var/run/secrets/sessionfs/registry-credentials` |
 | `SFS_TRUSTED_PUBLISHING_AUDIENCE` | Overrides the OIDC audience GitHub Actions workflows must request for marketplace trusted publishing. Must be unique to the deployment: outside development a generic value such as `sessionfs` refuses to start, and with neither this nor `SFS_PUBLIC_API_URL` trusted publishing is disabled | `SFS_PUBLIC_API_URL` |
 | `SFS_ENVIRONMENT` | `development`/`test` relaxes the trusted-publishing audience checks (a development-only audience is used). Unset: development when the database is SQLite. Read once at startup together with the audience | — |
 
@@ -115,6 +131,16 @@ Linking an installation goes through GitHub OAuth. SessionFS accepts the link on
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `SFS_UPLOAD_TIMEOUT` | Seconds the CLI and daemon wait on a session upload or download (1–3600). Overrides `upload_timeout` under `[sync]` in `config.toml`; `sfs push --timeout` overrides both. Invalid values are ignored with a warning. | `300` |
+| `SFS_WORKS_IN_HARNESS` | Must be `1` for `sfs catalog harness run` to start. The harness runs real tool installers against untrusted packages; set it only inside the sandboxed harness job | — |
+| `SFS_HARNESS_API_URL` | API origin the harness talks to. The harness never reads the SessionFS profile | — |
+| `SFS_HARNESS_API_KEY` | The harness credential: a service key with only the `skills_verify:run` scope, minted by a platform admin. Removed from the process environment before any tool runs | — |
+| `SFS_HARNESS_TOOL_USER` | Unprivileged user tool commands run as. The harness must run as root (it drops to this user for every tool command, with a HOME and tmp owned by it); the harness image must create the user | `sfs-tool` |
+| `SFS_HARNESS_ALLOW_SAME_UID` | `1` lets the harness run tool commands as its own uid when not root. Local development only: a hostile installer could then read the harness's memory | — |
+| `SFS_HARNESS_IMAGE_DIGEST` | Default for `sfs catalog harness run --image-digest`: the harness container image digest recorded with each works-in result | — |
+| `SFS_CATALOG_EXPORT_SSH_KEY_FILE` | Default for `sfs catalog export --ssh-key-file`: a private SSH deploy key used for the push only (copied to a private 0600 temporary file; no ssh-agent, no other keys, strict host-key checking). Needs an SSH destination remote | — |
+| `SFS_CATALOG_EXPORT_KNOWN_HOSTS` | Default for `sfs catalog export --known-hosts`: the known_hosts file the push trusts. Unset: GitHub's published host keys, shipped with SessionFS | bundled GitHub keys |
+| `SESSIONFS_DEVICE_ID` | This device's id for device-targeted skill assignments and for skills-policy compliance reports (`sfs skill pull`, the daemon). When unset, compliance reports use a random id generated once and kept in `~/.sessionfs/skills/policy_device_id`. | unset |
+| `SFS_SKILL_USAGE_REPORTING` | **Client-side.** Set to `0`, `false`, `off` or `no` to stop `sfs skill add/remove/pull` and the daemon's skill reconcile from reporting hosted-marketplace install counts (installs, uninstalls, translation failures, active-install pings). Counts are also off whenever telemetry is off (`SFS_NO_TELEMETRY` or `[telemetry] enabled = false`). The server keeps daily aggregates only. Counts are sent only after the one-time install-count notice has been shown by an interactive `sfs skill` command; `1`, `true`, `on` or `yes` enables them without it (for example on CI or for the daemon). | on, after the notice |
 
 ## Session Capture
 

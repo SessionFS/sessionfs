@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, Float, Index, Integer, SmallInteger, String, Text, ForeignKey, UniqueConstraint, func, text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, Date, DateTime, Float, Index, Integer, SmallInteger, String, Text, ForeignKey, UniqueConstraint, func, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -3109,6 +3109,16 @@ class SkillPackage(Base):
     publisher_id: Mapped[str | None] = mapped_column(
         String(64), ForeignKey("skill_publishers.id", ondelete="SET NULL"), nullable=True
     )
+    # Discovery (migration 076, marketplace v2 §9): publisher-set deprecation
+    # with an optional successor package (same publisher), and an optional
+    # README path inside the package (default: README.md at the root, else
+    # the first SKILL.md body).
+    deprecated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deprecation_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    successor_package_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("skill_packages.id", ondelete="SET NULL"), nullable=True
+    )
+    readme_path: Mapped[str | None] = mapped_column(String(300), nullable=True)
     created_by_user_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -3180,6 +3190,17 @@ class SkillPackageVersion(Base):
     capability_digest: Mapped[str | None] = mapped_column(String(80), nullable=True)
     manifest_version: Mapped[int] = mapped_column(
         SmallInteger, nullable=False, default=0, server_default="0"
+    )
+    # Search facets (migration 076, §9.2), derived from the JSON columns
+    # above on every ORM flush (see _sync_version_facets) so the catalog
+    # filters run in SQL: normalized declared license, worst OPEN scan
+    # severity rank, and ",scripts,mcp,"-style capability classes.
+    license_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    scan_severity_rank: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, default=0, server_default="0"
+    )
+    capability_flags: Mapped[str] = mapped_column(
+        String(200), nullable=False, default="", server_default=""
     )
 
 
@@ -3294,6 +3315,12 @@ class SkillMarketplaceListing(Base):
     # re-published via a different path keeps its own (e.g. trusted-publishing)
     # provenance for responses and moderation comparisons.
     signature_metadata: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Search facet (migration 076): this listing's publication provenance is
+    # verified (trusted publishing over OIDC, or a verified attestation).
+    # Derived from signature_metadata on every ORM flush.
+    provenance_attested: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
 
 
 class SkillConsentReceipt(Base):
@@ -3374,6 +3401,17 @@ class SkillMarketplaceRegistry(Base):
             "owner_type = 'project'",
             name="ck_skill_registry_owner_scope",
         ),
+        # Server-side polling (migration 079, GitHub #69).
+        CheckConstraint(
+            "poll_interval_seconds = 0 OR poll_interval_seconds >= 300",
+            name="ck_skill_registry_poll_interval",
+        ),
+        CheckConstraint(
+            "last_poll_status IS NULL OR last_poll_status IN ('ok', 'partial', 'error')",
+            name="ck_skill_registry_poll_status",
+        ),
+        Index("idx_skill_registry_next_poll", "next_poll_at"),
+        Index("idx_skill_registry_poll_actor", "poll_actor_user_id"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -3396,6 +3434,74 @@ class SkillMarketplaceRegistry(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+    # --- Server-side polling (migration 079). 0 = metadata-only (no fetch). ---
+    poll_interval_seconds: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    # Restricted, linear-time tag syntax (services/registry_polling.py); NULL
+    # = the semver default.
+    tag_pattern: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    branch_only_mode: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    branch: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # A REFERENCE (env:NAME / k8s:NAME), never a credential.
+    credential_secret_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    publish_namespace: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # The org owner/admin the poller publishes as (the last admin to change
+    # the polling settings); re-checked as owner/admin on every publish.
+    poll_actor_user_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL", name="fk_skill_registry_poll_actor"),
+        nullable=True,
+    )
+    last_poll_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_poll_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    last_poll_error_summary: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    consecutive_failures: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    next_poll_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    poll_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    poll_lease_owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    poll_lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class SkillRegistryPollRef(Base):
+    """One processed (ref, commit) of a polled registry (migration 079).
+
+    The idempotency record: a ref already seen at the same commit is never
+    fetched again, whatever the outcome was (a refused tag stays refused
+    until the tag moves). A force-moved tag is a NEW row (new commit)."""
+
+    __tablename__ = "skill_registry_poll_refs"
+    __table_args__ = (
+        UniqueConstraint("registry_id", "ref_name", "commit_sha", name="uq_skill_registry_poll_ref"),
+        Index("idx_skill_registry_poll_ref_created", "registry_id", "created_at"),
+        CheckConstraint(
+            "outcome IN ('published', 'partial', 'rejected', 'skipped')",
+            name="ck_skill_registry_poll_ref_outcome",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    registry_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("skill_marketplace_registries.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    ref_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    commit_sha: Mapped[str] = mapped_column(String(40), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(20), nullable=False)
+    # JSON list of version ids published (or reused) from this ref.
+    version_ids: Mapped[str] = mapped_column(Text, nullable=False, default="[]", server_default="[]")
+    # Sanitized, bounded per-package results ({name, outcome, code}).
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
 
@@ -4690,3 +4796,486 @@ class SkillGithubInstallationState(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
     )
+
+
+class SkillFeedCatalog(Base):
+    """One generated native catalog repository per scope (migration 077,
+    marketplace v2 §7.5). ``scope_key`` is 'public', 'org:<id>' or
+    'user:<id>' so the public catalog (scope_id NULL) is unique too.
+
+    The repository files live in blob storage under ``blob_prefix``; the row
+    records the CURRENT commit and the digest of the approved input set it
+    was built from, so a fetch can tell in one cheap query whether the
+    catalog is stale (a block / yank / new approval changes the digest)."""
+
+    __tablename__ = "skill_feed_catalogs"
+    __table_args__ = (
+        UniqueConstraint("scope_key", name="uq_skill_feed_catalogs_scope_key"),
+        CheckConstraint(
+            "scope_type IN ('public', 'org', 'user')", name="ck_skill_feed_catalog_scope_type"
+        ),
+        CheckConstraint(
+            "(scope_type = 'public' AND scope_id IS NULL) OR "
+            "(scope_type != 'public' AND scope_id IS NOT NULL)",
+            name="ck_skill_feed_catalog_scope_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    scope_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    scope_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    current_commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    input_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    plugin_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    blob_prefix: Mapped[str] = mapped_column(String(500), nullable=False)
+    # Optional customer-owned mirror (D4b); exports are pushed by the client.
+    export_remote: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+
+class SkillFeedEntry(Base):
+    """One (catalog, version, tool) entry of a catalog's current commit."""
+
+    __tablename__ = "skill_feed_entries"
+    __table_args__ = (Index("idx_skill_feed_entries_version", "version_id"),)
+
+    catalog_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("skill_feed_catalogs.id", ondelete="CASCADE"), primary_key=True
+    )
+    version_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("skill_package_versions.id", ondelete="CASCADE"), primary_key=True
+    )
+    tool: Mapped[str] = mapped_column(String(50), primary_key=True)
+    plugin_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    projection_hash: Mapped[str] = mapped_column(String(71), nullable=False)
+    plugin_path: Mapped[str] = mapped_column(String(300), nullable=False)
+
+
+class SkillToolVerification(Base):
+    """Evidence that a version works in a tool (§7.4). L0 = the projection
+    validates against the tool's documented format (in-process, at catalog
+    generation); L1 = the tool's own installer accepted it; L2 = the tool
+    listed its components. L1/L2 come only from the sandboxed harness."""
+
+    __tablename__ = "skill_tool_verifications"
+    __table_args__ = (
+        Index("idx_skill_tool_verifications_lookup", "version_id", "tool", "run_at"),
+        CheckConstraint("level IN ('L0', 'L1', 'L2')", name="ck_skill_tool_verification_level"),
+        CheckConstraint(
+            "status IN ('pass', 'fail', 'regressed', 'skipped')",
+            name="ck_skill_tool_verification_status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    version_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("skill_package_versions.id", ondelete="CASCADE"), nullable=False
+    )
+    tool: Mapped[str] = mapped_column(String(50), nullable=False)
+    tool_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    level: Mapped[str] = mapped_column(String(2), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    # Bounded JSON object (installer exit code, listed components, digests).
+    evidence: Mapped[str] = mapped_column(Text, nullable=False, server_default="{}")
+    projection_hash: Mapped[str | None] = mapped_column(String(71), nullable=True)
+    harness_image_digest: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    run_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+
+class SkillVerificationJob(Base):
+    """Queued harness work (L1/L2). The harness is a sandboxed job outside
+    the API request path; it claims jobs and posts results back."""
+
+    __tablename__ = "skill_verification_jobs"
+    __table_args__ = (
+        Index(
+            "uq_skill_verification_jobs_open",
+            "version_id",
+            "tool",
+            "level",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'claimed')"),
+            sqlite_where=text("status IN ('queued', 'claimed')"),
+        ),
+        Index("idx_skill_verification_jobs_status", "status", "tool", "created_at"),
+        Index("idx_skill_verification_jobs_org", "owner_org_id", "created_at"),
+        CheckConstraint("level IN ('L1', 'L2')", name="ck_skill_verification_job_level"),
+        CheckConstraint(
+            "status IN ('queued', 'claimed', 'done')", name="ck_skill_verification_job_status"
+        ),
+        CheckConstraint(
+            "outcome IS NULL OR outcome IN ('pass', 'fail', 'regressed', 'skipped', 'errored')",
+            name="ck_skill_verification_job_outcome",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    version_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("skill_package_versions.id", ondelete="CASCADE"), nullable=False
+    )
+    tool: Mapped[str] = mapped_column(String(50), nullable=False)
+    level: Mapped[str] = mapped_column(String(2), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="queued")
+    trigger: Mapped[str] = mapped_column(String(30), nullable=False, server_default="manual")
+    # The org whose per-org verification quota this job counts against
+    # (NULL for public packages).
+    owner_org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    requested_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    claim_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # How a done job ended: a verdict (pass/fail/regressed/skipped) or
+    # 'errored' (the harness could not run it within the attempt cap). A job
+    # whose package became undeliverable ends 'skipped' with no evidence row.
+    outcome: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    outcome_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+
+class OrgSkillPolicy(Base):
+    """One immutable revision of an org's skills policy (migration 078,
+    marketplace v2 §8.5). A PUT creates a new revision; rows are never
+    updated in place."""
+
+    __tablename__ = "org_skill_policies"
+    __table_args__ = (
+        UniqueConstraint("org_id", "revision", name="uq_org_skill_policy_revision"),
+        CheckConstraint("revision >= 1", name="ck_org_skill_policy_revision"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    org_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    policy_json: Mapped[str] = mapped_column(Text, nullable=False)
+    policy_hash: Mapped[str] = mapped_column(String(71), nullable=False)
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+
+class OrgPolicyCompilation(Base):
+    """Compiled per-tool output of a policy revision (migration 078)."""
+
+    __tablename__ = "org_policy_compilations"
+    __table_args__ = (
+        UniqueConstraint("policy_id", "tool", "compiler_version", name="uq_org_policy_compilation"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    policy_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("org_skill_policies.id", ondelete="CASCADE"), nullable=False
+    )
+    tool: Mapped[str] = mapped_column(String(50), nullable=False)
+    compiler_version: Mapped[str] = mapped_column(String(20), nullable=False)
+    artifact_hash: Mapped[str] = mapped_column(String(71), nullable=False)
+    enforceable: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    report_only: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    unsupported: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+
+class SkillDevice(Base):
+    """A user's device as seen by the advisory policy reconcile path
+    (migration 078). device_key is the client-reported device id."""
+
+    __tablename__ = "skill_devices"
+    __table_args__ = (UniqueConstraint("user_id", "device_key", name="uq_skill_device_user_key"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    device_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(200), nullable=False, server_default="")
+    platform: Mapped[str] = mapped_column(String(30), nullable=False, server_default="")
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+
+class DevicePolicyReport(Base):
+    """A device's LATEST compliance report for one org's policy (migration
+    078): one row per (device, org), replaced on every report. History is
+    kept in DevicePolicyReportHistory. Advisory telemetry: never an
+    access-control input."""
+
+    __tablename__ = "device_policy_reports"
+    __table_args__ = (
+        UniqueConstraint("device_id", "org_id", name="uq_device_policy_report_device_org"),
+        Index("idx_device_policy_reports_org_time", "org_id", "reported_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    device_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("skill_devices.id", ondelete="CASCADE"), nullable=False
+    )
+    org_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    policy_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("org_skill_policies.id", ondelete="CASCADE"), nullable=True
+    )
+    policy_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reported_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+    report_json: Mapped[str] = mapped_column(Text, nullable=False, server_default="{}")
+    compliant: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+
+
+class DevicePolicyReportHistory(Base):
+    """At most one compliance report per (device, org, UTC day): the last
+    report of that day (migration 078). Retained 90 days."""
+
+    __tablename__ = "device_policy_report_history"
+    __table_args__ = (
+        UniqueConstraint(
+            "device_id", "org_id", "report_day", name="uq_device_policy_report_history_day"
+        ),
+        Index("idx_device_policy_report_history_time", "reported_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    device_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("skill_devices.id", ondelete="CASCADE"), nullable=False
+    )
+    org_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    policy_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # UTC calendar day of the report, "YYYY-MM-DD".
+    report_day: Mapped[str] = mapped_column(String(10), nullable=False)
+    reported_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+    report_json: Mapped[str] = mapped_column(Text, nullable=False, server_default="{}")
+    compliant: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+
+
+# ---------------------------------------------------------------------------
+# Marketplace discovery and freshness (migration 076, marketplace v2 §9)
+# ---------------------------------------------------------------------------
+
+
+class SkillCategory(Base):
+    """The fixed, curated category taxonomy (seeded by migration 076 from
+    skills/discovery.py CATEGORIES)."""
+
+    __tablename__ = "skill_categories"
+
+    slug: Mapped[str] = mapped_column(String(40), primary_key=True)
+    display_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+
+
+class SkillPackageCategory(Base):
+    """Up to three categories per package (publisher-set; moderators can
+    change them)."""
+
+    __tablename__ = "skill_package_categories"
+    __table_args__ = (Index("idx_skill_package_categories_slug", "category_slug", "package_id"),)
+
+    package_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("skill_packages.id", ondelete="CASCADE"), primary_key=True
+    )
+    category_slug: Mapped[str] = mapped_column(
+        String(40), ForeignKey("skill_categories.slug", ondelete="CASCADE"), primary_key=True
+    )
+
+
+class SkillInstallDaily(Base):
+    """Daily install-event aggregates. No per-user data: one row per
+    (version, tool, source, event, actor type, org, day). ``org_id`` is the
+    consuming org ('' for none) so an org admin can see their own members'
+    usage; it is never exposed to a publisher. ``version_id`` carries no
+    foreign key so a deleted version's counts still roll up to its package."""
+
+    __tablename__ = "skill_install_daily"
+    __table_args__ = (
+        Index("idx_skill_install_daily_package_day", "package_id", "day"),
+        Index("idx_skill_install_daily_org_day", "org_id", "day"),
+        Index("idx_skill_install_daily_day", "day"),
+        CheckConstraint(
+            "event IN ('install', 'uninstall', 'active', 'translation_failure')",
+            name="ck_skill_install_daily_event",
+        ),
+        CheckConstraint(
+            "source IN ('download', 'reconcile', 'native')", name="ck_skill_install_daily_source"
+        ),
+        CheckConstraint("actor_type IN ('user', 'service')", name="ck_skill_install_daily_actor"),
+    )
+
+    version_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tool: Mapped[str] = mapped_column(String(50), primary_key=True)
+    source: Mapped[str] = mapped_column(String(20), primary_key=True)
+    event: Mapped[str] = mapped_column(String(20), primary_key=True)
+    actor_type: Mapped[str] = mapped_column(String(20), primary_key=True)
+    org_id: Mapped[str] = mapped_column(String(64), primary_key=True, default="", server_default="")
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    package_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("skill_packages.id", ondelete="CASCADE"), nullable=False
+    )
+    count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+
+
+class SkillInstallDedupe(Base):
+    """One row per pseudonymous principal per (version, tool, event, day):
+    an event counts at most once a day per principal. Pruned after 30 days
+    by the freshness sweeper. ``principal_hash`` is a SHA-256 of the actor
+    identity (never stored in clear)."""
+
+    __tablename__ = "skill_install_dedupe"
+    __table_args__ = (
+        Index("idx_skill_install_dedupe_package_day", "package_id", "day"),
+        Index("idx_skill_install_dedupe_day", "day"),
+    )
+
+    principal_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    version_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tool: Mapped[str] = mapped_column(String(50), primary_key=True)
+    event: Mapped[str] = mapped_column(String(20), primary_key=True)
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    package_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("skill_packages.id", ondelete="CASCADE"), nullable=False
+    )
+    actor_type: Mapped[str] = mapped_column(String(20), nullable=False, default="user", server_default="user")
+
+
+class SkillPackageFreshness(Base):
+    """Package-level freshness and ranking inputs, recomputed by the daily
+    sweeper (POST /api/v1/admin/marketplace/freshness/sweep)."""
+
+    __tablename__ = "skill_package_freshness"
+    __table_args__ = (Index("idx_skill_package_freshness_stale", "stale"),)
+
+    package_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("skill_packages.id", ondelete="CASCADE"), primary_key=True
+    )
+    last_version_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    works_in_regressed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    source_archived: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    stale: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    unmaintained: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    installs_30d: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    service_installs_30d: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    popularity_rank: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, default=0, server_default="0"
+    )
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+
+class SkillPackageToolFreshness(Base):
+    """Per (package, tool): when the package last shipped a version for the
+    tool, and when it was last verified to work there. Verification results
+    come from the works-in harness (POST /api/v1/admin/marketplace/
+    works-in-results); 'regressed' = a version that passed, then failed."""
+
+    __tablename__ = "skill_package_tool_freshness"
+    __table_args__ = (
+        Index("idx_skill_package_tool_freshness_tool", "tool", "verify_status"),
+        CheckConstraint(
+            "verify_status IN ('unknown', 'passing', 'failing', 'regressed')",
+            name="ck_skill_package_tool_freshness_status",
+        ),
+    )
+
+    package_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("skill_packages.id", ondelete="CASCADE"), primary_key=True
+    )
+    tool: Mapped[str] = mapped_column(String(50), primary_key=True)
+    last_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_verified_version_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # The version verify_status describes. A status only counts while this is
+    # the package's CURRENT version; a new release reads as "not verified".
+    last_checked_version_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    verify_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="unknown", server_default="unknown"
+    )
+    verify_detail: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    stale: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+
+def _changed(target, attribute: str, inserting: bool) -> bool:
+    """On insert every facet is derived; on update only when its source
+    column changed in this flush (never loads an unloaded attribute)."""
+    if inserting:
+        return True
+    from sqlalchemy import inspect as sa_inspect
+
+    return bool(sa_inspect(target).attrs[attribute].history.has_changes())
+
+
+def _sync_version_facets(target: SkillPackageVersion, inserting: bool) -> None:
+    from sessionfs.skills import discovery
+
+    if _changed(target, "license_metadata", inserting):
+        target.license_key = discovery.license_key(target.license_metadata)
+    if _changed(target, "scan_summary", inserting):
+        target.scan_severity_rank = discovery.scan_severity_rank(target.scan_summary)
+    if _changed(target, "risk_summary", inserting):
+        target.capability_flags = discovery.capability_flags(target.risk_summary)
+
+
+def _sync_listing_facets(target: SkillMarketplaceListing, inserting: bool) -> None:
+    from sessionfs.skills import discovery
+
+    if _changed(target, "signature_metadata", inserting):
+        target.provenance_attested = discovery.provenance_attested(target.signature_metadata)
+
+
+def _register_facet_listeners() -> None:
+    from sqlalchemy import event
+
+    for name, inserting in (("before_insert", True), ("before_update", False)):
+        event.listen(
+            SkillPackageVersion, name,
+            lambda _m, _c, target, _i=inserting: _sync_version_facets(target, _i),
+        )
+        event.listen(
+            SkillMarketplaceListing, name,
+            lambda _m, _c, target, _i=inserting: _sync_listing_facets(target, _i),
+        )
+
+
+_register_facet_listeners()

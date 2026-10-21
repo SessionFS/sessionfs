@@ -1085,6 +1085,9 @@ class Daemon:
                     "Telemetry: anonymous usage events (random install id, "
                     "version, OS, event name — never paths or session content). "
                     "Disable: SFS_NO_TELEMETRY=1 or [telemetry] enabled=false. "
+                    "When signed in, skill reconcile also reports SessionFS "
+                    "Marketplace install checks per package and tool on your "
+                    "account (SFS_SKILL_USAGE_REPORTING=0 stops only those). "
                     "See docs/telemetry.md"
                 )
         except Exception:

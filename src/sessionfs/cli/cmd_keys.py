@@ -381,7 +381,7 @@ def service_keys_rotate(
 
 @service_keys_app.command("scopes")
 def service_keys_scopes() -> None:
-    """Print the 14-scope vocabulary."""
+    """Print the scope vocabulary."""
     valid = sorted(_valid_scopes())
     for s in valid:
         console.print(s)

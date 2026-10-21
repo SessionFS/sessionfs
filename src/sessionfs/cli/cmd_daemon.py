@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import typer
+from rich.markup import escape
 from rich.table import Table
 
 from sessionfs.cli.common import console, get_store_dir
@@ -65,17 +66,32 @@ def start(
     # the notice must print HERE, before the process spawns. First run only
     # (suppressed once an install_id exists — the user has already been told).
     try:
-        from sessionfs.telemetry import disclosure_shown, mark_disclosure_shown
+        from sessionfs.telemetry import (
+            SKILL_USAGE_NOTICE,
+            disclosure_shown,
+            mark_disclosure_shown,
+            mark_skill_usage_disclosure_shown,
+            skill_usage_disclosure_shown,
+        )
 
+        if disclosure_shown() and not skill_usage_disclosure_shown() and console.is_terminal:
+            # Users who saw the telemetry notice before install counts
+            # existed are told once before the daemon may send any.
+            console.print(f"[dim]{escape(SKILL_USAGE_NOTICE)}[/dim]")
+            mark_skill_usage_disclosure_shown()
         if not disclosure_shown():
             console.print(
                 "[dim]SessionFS collects anonymous usage telemetry (random "
                 "install id, version, OS, event name — never paths, session "
                 "content, or personal data). Disable: export SFS_NO_TELEMETRY=1 "
-                "or `sfs config set telemetry.enabled false`. "
+                "or `sfs config set telemetry.enabled false`. When signed in, "
+                "the daemon's skill reconcile also reports SessionFS Marketplace "
+                "install checks per package and tool on your account "
+                "(SFS_SKILL_USAGE_REPORTING=0 stops only those). "
                 "Details: docs/telemetry.md[/dim]"
             )
             mark_disclosure_shown()
+            mark_skill_usage_disclosure_shown()
     except Exception:
         pass
 

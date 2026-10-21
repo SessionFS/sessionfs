@@ -31,6 +31,8 @@ const ShareView = React.lazy(() => import('./share/ShareView'));
 const MarketplacePage = React.lazy(() => import('./marketplace/MarketplacePage'));
 const ModerationPage = React.lazy(() => import('./marketplace/ModerationPage'));
 const PublishersPage = React.lazy(() => import('./marketplace/PublishersPage'));
+const PublisherAnalyticsPage = React.lazy(() => import('./marketplace/PublisherAnalyticsPage'));
+const OrgUsagePage = React.lazy(() => import('./marketplace/OrgUsagePage'));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -85,6 +87,8 @@ export default function App() {
               <Route path="/marketplace" element={<MarketplacePage />} />
               <Route path="/marketplace/moderation" element={<ModerationPage />} />
               <Route path="/marketplace/publishers" element={<PublishersPage />} />
+              <Route path="/marketplace/publishers/:publisherId/analytics" element={<PublisherAnalyticsPage />} />
+              <Route path="/marketplace/usage" element={<OrgUsagePage />} />
               <Route path="/handoffs" element={<HandoffList />} />
               <Route path="/handoffs/:id" element={<HandoffDetail />} />
               <Route path="/transfers" element={<TransferInbox />} />

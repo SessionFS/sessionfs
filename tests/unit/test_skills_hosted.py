@@ -27,6 +27,7 @@ from sessionfs.skills.hosted import HostedClient, HostedState, parse_hosted_ref
 from sessionfs.skills.manager import SkillManager
 from sessionfs.skills.models import SkillError
 from sessionfs.skills.package import AGENT_PLUGIN_SCHEMA
+from tests.utils.ansi import strip_ansi
 
 runner = CliRunner()
 
@@ -477,10 +478,62 @@ def test_search_lists_hosted_results_labelled(tmp_path: Path, monkeypatch, marke
             "name": "review-loop",
             "description": "review-loop fixture",
             "install": "sessionfs:acme/review-loop@1.0.0",
+            "discovery": {
+                "name": "review-loop",
+                "categories": [],
+                "installs_30d": "-",
+                "status": [],
+                "last_updated_at": None,
+                "works_in": [],
+                "successor": None,
+            },
         }
     ]
     table = runner.invoke(skill_app, ["search", "review"], env={"COLUMNS": "200"})
     assert "hosted" in table.output and "sessionfs:acme/review-loop" in table.output
+
+
+def test_search_passes_discovery_filters_and_shows_status(tmp_path: Path, monkeypatch, market: FakeMarketplace):
+    item = market.publish("review-loop", "1.0.0")
+    item.update({
+        "categories": ["review"],
+        "installs": {"total": {"count": 12, "display": "12"}, "by_tool": {}},
+        "freshness": {"stale": True, "unmaintained": False,
+                      "tools": {"codex": {"verify_status": "passing"}}},
+        "deprecation": {"message": "old", "successor": {"namespace": "acme", "name": "review-loop-2"}},
+        "publisher": {"verified": True},
+    })
+    seen: list[dict] = []
+    original = market.handler
+
+    def _capture(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/marketplace/packages":
+            seen.append(dict(request.url.params))
+        return original(request)
+
+    market.handler = _capture  # type: ignore[method-assign]
+    _cli_env(tmp_path, monkeypatch, market.client())
+    result = runner.invoke(
+        skill_app,
+        ["search", "review", "--category", "review", "--verified", "--license", "MIT", "--max-severity", "low",
+         "--capability", "instructions_only", "--works-in", "codex", "--updated-within", "30",
+         "--hide-deprecated", "--publisher", "acme", "--json"],
+    )
+    assert result.exit_code == 0, result.output
+    assert seen[-1] == {
+        "q": "review", "limit": "20", "category": "review", "publisher": "acme", "verified": "true",
+        "license": "MIT", "max_severity": "low", "capability": "instructions_only", "works_in": "codex",
+        "updated_within": "30", "include_deprecated": "false", "sort": "relevance",
+    }
+    discovery = json.loads(result.output)["results"][0]["discovery"]
+    assert discovery["status"] == ["verified", "deprecated", "stale"]
+    assert discovery["installs_30d"] == "12" and discovery["works_in"] == ["codex"]
+    assert discovery["successor"] == "sessionfs:acme/review-loop-2"
+    table = runner.invoke(skill_app, ["search", "review"], env={"COLUMNS": "250"})
+    plain = strip_ansi(table.output)
+    assert "deprecated" in plain and "use sessionfs:acme/review-loop-2 instead" in plain
+    bad = runner.invoke(skill_app, ["search", "review", "--category", "warez"])
+    assert bad.exit_code != 0
 
 
 def test_search_signed_out_or_offline_skips_hosted_with_note(tmp_path: Path, monkeypatch):
@@ -513,6 +566,181 @@ def test_cli_add_hosted_end_to_end(tmp_path: Path, monkeypatch, market: FakeMark
     result = runner.invoke(skill_app, ["add", "sessionfs:acme/review-loop", "--yes"], env={"COLUMNS": "200"})
     assert result.exit_code != 0
     assert "signed-in account" in result.output
+
+
+def _capture_events(market: FakeMarketplace) -> list[tuple[str, dict]]:
+    events: list[tuple[str, dict]] = []
+    original = market.handler
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        match = re.fullmatch(r"/api/v1/marketplace/versions/(skv_\w+)/events", request.url.path)
+        if match and request.method == "POST":
+            events.append((match.group(1), json.loads(request.content)))
+            return httpx.Response(202, json={"counted": 1})
+        return original(request)
+
+    market.handler = _handler  # type: ignore[method-assign]
+    return events
+
+
+def test_cli_reports_install_and_uninstall_counts(tmp_path: Path, monkeypatch, market: FakeMarketplace):
+    import sessionfs.telemetry as telemetry
+
+    item = market.publish("review-loop", "1.0.0")
+    item["deprecation"] = {"message": "moved\x1b[2J‮", "successor": {"namespace": "acme", "name": "review-loop-2"}}
+    events = _capture_events(market)
+    _cli_env(tmp_path, monkeypatch, market.client())
+    monkeypatch.setenv("SFS_SKILL_USAGE_REPORTING", "1")
+    monkeypatch.setattr(telemetry, "telemetry_enabled", lambda: True)
+    added = runner.invoke(skill_app, ["add", "sessionfs:acme/review-loop", "--for", "codex", "--yes"],
+                          env={"COLUMNS": "250"})
+    assert added.exit_code == 0, added.output
+    assert events == [(item["version_id"], {"event": "install", "tools": ["codex"], "source": "download"})]
+    assert "deprecated by its publisher: moved[2J (successor" in strip_ansi(added.output)
+    assert "\x1b[2J" not in added.output and "‮" not in added.output
+    removed = runner.invoke(skill_app, ["remove", "review-loop"])
+    assert removed.exit_code == 0, removed.output
+    assert events[-1] == (item["version_id"], {"event": "uninstall", "tools": ["codex"], "source": "download"})
+
+
+def test_translation_failures_report_only_failing_tools_and_never_on_interrupt(
+    tmp_path: Path, monkeypatch, market: FakeMarketplace
+):
+    import sessionfs.telemetry as telemetry
+
+    item = market.publish("review-loop", "1.0.0")
+    events = _capture_events(market)
+    _cli_env(tmp_path, monkeypatch, market.client())
+    monkeypatch.setenv("SFS_SKILL_USAGE_REPORTING", "1")
+    monkeypatch.setattr(telemetry, "telemetry_enabled", lambda: True)
+    original_plan = SkillManager.plan
+
+    def failing_plan(self, package, *, targets=(), **kwargs):
+        if "cursor" in list(targets):
+            raise SkillError("cursor cannot represent this package")
+        return original_plan(self, package, targets=targets, **kwargs)
+
+    monkeypatch.setattr(SkillManager, "plan", failing_plan)
+    failed = runner.invoke(skill_app, ["add", "sessionfs:acme/review-loop", "--for", "codex", "--for", "cursor", "--yes"])
+    assert failed.exit_code != 0
+    assert events == [(item["version_id"], {"event": "translation_failure", "tools": ["cursor"], "source": "download"})]
+
+    def interrupted(self, package, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(SkillManager, "plan", interrupted)
+    runner.invoke(skill_app, ["add", "sessionfs:acme/review-loop", "--for", "codex", "--yes"])
+    assert len(events) == 1
+
+
+def test_usage_reporting_opt_outs(monkeypatch, market: FakeMarketplace):
+    import sessionfs.telemetry as telemetry
+
+    item = market.publish("review-loop", "1.0.0")
+    events = _capture_events(market)
+    client = market.client()
+    monkeypatch.setattr(telemetry, "telemetry_enabled", lambda: True)
+    monkeypatch.setenv("SFS_SKILL_USAGE_REPORTING", "off")
+    assert client.report_usage(item["version_id"], "install", ["codex"]) is False
+    monkeypatch.setenv("SFS_SKILL_USAGE_REPORTING", "1")
+    monkeypatch.setattr(telemetry, "telemetry_enabled", lambda: False)
+    assert client.report_usage(item["version_id"], "install", ["codex"]) is False
+    assert events == []
+    monkeypatch.setattr(telemetry, "telemetry_enabled", lambda: True)
+    assert client.report_usage(item["version_id"], "install", ["codex"]) is True
+    assert client.report_usage("not-a-version", "install", ["codex"]) is False
+
+    def _boom(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("offline", request=request)
+
+    offline = HostedClient("https://sfs.test", "k", transport=httpx.MockTransport(_boom))
+    assert offline.report_usage(item["version_id"], "install", ["codex"]) is False
+
+
+@pytest.fixture
+def notice_env(tmp_path: Path, monkeypatch):
+    """No explicit SFS_SKILL_USAGE_REPORTING, telemetry on, markers in tmp,
+    and an upgrading user: the telemetry notice was seen, the install-count
+    notice was not."""
+    import sessionfs.telemetry as telemetry
+
+    monkeypatch.delenv("SFS_SKILL_USAGE_REPORTING", raising=False)
+    monkeypatch.setattr(telemetry, "telemetry_enabled", lambda: True)
+    monkeypatch.setattr(telemetry, "_MARKERS_DIR", tmp_path / "markers")
+    telemetry.mark_disclosure_shown()
+    assert not telemetry.skill_usage_disclosure_shown()
+    return telemetry
+
+
+def test_upgrading_user_sees_the_count_notice_once_then_counts_are_sent(
+    notice_env, monkeypatch, capsys, market: FakeMarketplace
+):
+    item = market.publish("review-loop", "1.0.0")
+    events = _capture_events(market)
+    client = market.client()
+    # Non-terminal or non-interactive: nothing is sent and nothing is shown.
+    monkeypatch.setattr("sys.stderr.isatty", lambda: False, raising=False)
+    assert client.report_usage(item["version_id"], "install", ["codex"], interactive=True) is False
+    monkeypatch.setattr("sys.stderr.isatty", lambda: True, raising=False)
+    assert client.report_usage(item["version_id"], "install", ["codex"]) is False
+    assert events == [] and "SFS_SKILL_USAGE_REPORTING=0" not in capsys.readouterr().err
+    # An interactive command on a terminal: notice first, then the count.
+    assert client.report_usage(item["version_id"], "install", ["codex"], interactive=True) is True
+    assert client.report_usage(item["version_id"], "active", ["codex"], interactive=True) is True
+    err = capsys.readouterr().err
+    assert err.count("SFS_SKILL_USAGE_REPORTING=0") == 1
+    assert notice_env.skill_usage_disclosure_shown()
+    assert [event for _, event in [(v, e["event"]) for v, e in events]] == ["install", "active"]
+    # Once shown, non-interactive callers (the daemon) may send too.
+    assert client.report_usage(item["version_id"], "uninstall", ["codex"]) is True
+
+
+def test_count_opt_outs_win_over_the_notice_and_explicit_enable_skips_it(
+    notice_env, monkeypatch, market: FakeMarketplace
+):
+    item = market.publish("review-loop", "1.0.0")
+    events = _capture_events(market)
+    client = market.client()
+    monkeypatch.setattr("sys.stderr.isatty", lambda: True, raising=False)
+    notice_env.mark_skill_usage_disclosure_shown()
+    monkeypatch.setenv("SFS_SKILL_USAGE_REPORTING", "0")
+    assert client.report_usage(item["version_id"], "install", ["codex"], interactive=True) is False
+    monkeypatch.setenv("SFS_SKILL_USAGE_REPORTING", "1")
+    monkeypatch.setattr(notice_env, "telemetry_enabled", lambda: False)
+    assert client.report_usage(item["version_id"], "install", ["codex"], interactive=True) is False
+    assert events == []
+    # Explicit enable (telemetry on) sends without the marker, non-interactively.
+    monkeypatch.setattr(notice_env, "telemetry_enabled", lambda: True)
+    (notice_env._MARKERS_DIR / "skill-usage-disclosure-shown").unlink()
+    monkeypatch.setattr("sys.stderr.isatty", lambda: False, raising=False)
+    assert client.report_usage(item["version_id"], "install", ["codex"]) is True
+
+
+def test_daemon_sends_no_counts_until_the_notice_was_shown(
+    tmp_path: Path, notice_env, monkeypatch, market: FakeMarketplace, caplog
+):
+    import logging
+
+    required = market.publish("review-loop", "1.0.0")
+    market.assign(required)
+    events = _capture_events(market)
+    manager, _, _ = _manager(tmp_path, market)
+    monkeypatch.setattr("sys.stderr.isatty", lambda: True, raising=False)  # a daemon started from a terminal
+    now = [1000.0]
+    reconciler = SkillReconciler(
+        clock=lambda: now[0], manager_factory=lambda: manager, client_factory=lambda url, key: market.client(),
+    )
+    with caplog.at_level(logging.INFO, logger="sfsd.skills"):
+        report = reconciler.maybe_run(enabled=True, api_url="u", api_key="k", background=False)
+    assert report.items[0].status == "installed"
+    assert events == []
+    assert not notice_env.skill_usage_disclosure_shown()  # the daemon never shows it
+    assert any("start after the next interactive" in record.getMessage() for record in caplog.records)
+    # After an interactive command showed the notice, the daemon's pings flow.
+    notice_env.mark_skill_usage_disclosure_shown()
+    now[0] += 10_000
+    reconciler.maybe_run(enabled=True, api_url="u", api_key="k", background=False)
+    assert [event["event"] for _, event in events] == ["active"]
 
 
 # ---------------------------------------------------------------------------
@@ -2984,7 +3212,8 @@ def test_doctor_reports_the_trash_size(tmp_path: Path, monkeypatch, market: Fake
                     "--yes"]).exit_code == 0
     assert runner.invoke(skill_app, ["remove", "review-loop", "--scope", "user"]).exit_code == 0
     result = runner.invoke(skill_app, ["doctor"])
-    assert "Trash: " in result.output and "kept 7 days" in result.output
+    output = " ".join(result.output.split())  # long temp paths wrap the line
+    assert "Trash: " in output and "kept 7 days" in output
 
 
 # ---------------------------------------------------------------------------
@@ -5721,7 +5950,7 @@ def test_pull_and_daemon_report_a_pending_recovery_with_the_flag_that_settles_it
     # The daemon logs it like the other notify-only items.
     from sessionfs.daemon.skill_reconcile import _log_report
 
-    with caplog.at_level(logging.WARNING, logger="sessionfs.daemon.skill_reconcile"):
+    with caplog.at_level(logging.WARNING, logger="sfsd.skills"):
         _log_report(report)
     assert any("run `sfs skill pull --allow-scripts`" in r.getMessage() for r in caplog.records)
     # Pulling with the named flag settles it (and the entry is gone).

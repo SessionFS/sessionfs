@@ -79,6 +79,55 @@ enabled = false
 Set `enabled = true` (or remove the block) to re-enable. Missing key defaults
 to enabled.
 
+## Marketplace install counts (signed-in only)
+
+Separate from the anonymous telemetry above: when you are signed in
+(`sfs auth login`, or a service key), the CLI and the daemon count installs
+of packages from the **hosted SessionFS Marketplace**, so publishers and org
+admins see real usage (marketplace v2 §9).
+
+**What is sent.** `POST /api/v1/marketplace/versions/{version_id}/events`
+with your API key, carrying only:
+
+| Field | Values |
+|---|---|
+| `event` | `install` (`sfs skill add`, or `sfs skill pull` / the daemon installing or updating an assigned package), `uninstall` (`sfs skill remove`), `active` (`sfs skill pull` or the daemon's skill reconcile finding the package still installed, at most once a day), `translation_failure` (a package that cannot be translated for a tool) |
+| `tools` | The target tools (`claude-code`, `codex`, ...) |
+| `source` | `download` (CLI) or `reconcile` (pull / daemon) |
+| `project_id` | Optional; only used to attribute the count to the project's organization |
+
+No file paths, session content or package files are sent; only packages from
+the hosted marketplace are counted (local and git sources never are).
+
+**Linkage to your account and organization.** The request is authenticated,
+so the server knows who sent it, but it does not keep that: it stores a
+SHA-256 of your account (or service key) id for a 30-day de-duplication
+window (one count per account per version, tool, event and day), then deletes
+it, and keeps only daily totals per version, tool, event, source and actor
+type (user or service key). Each total also records the consuming
+organization: an org-private package counts toward its own organization, a
+personal package toward none, and a public package toward the organization
+of the project you named (or your default / only organization). Only that
+organization's owners and admins see their organization's totals (`sfs skill
+usage --org`). Publishers see aggregates only, with every count under 10
+shown as `<10`, and never which organizations installs came from.
+
+**Shown before anything is sent.** Install counts have their own one-time notice (marker `~/.sessionfs/telemetry-markers/skill-usage-disclosure-shown`, separate from the telemetry notice, so people who saw the telemetry notice before install counts existed are still told). The first interactive `sfs skill` command on a terminal that would send a count prints the notice first; the first-run telemetry notice and `sfs init` / `sfs daemon start` also show it. Until it has been shown, nothing is sent, including from the daemon and non-terminal runs, unless you set `SFS_SKILL_USAGE_REPORTING=1` explicitly. The opt-outs below always win.
+
+**The daemon.** While signed in, the daemon's periodic skill reconcile sends
+`install` / `active` counts for assigned packages, at most one `active` per
+package and tool per day.
+
+**Opting out.**
+
+- `SFS_SKILL_USAGE_REPORTING=0` (or `false`, `off`, `no`) stops only these
+  counts.
+- Either telemetry opt-out below (`SFS_NO_TELEMETRY`, or
+  `[telemetry] enabled = false`) also stops them.
+
+Counting is best effort: a failed or disabled count never affects the
+command.
+
 ## Data retention
 
 Telemetry events are stored server-side in the `telemetry_events` table. We

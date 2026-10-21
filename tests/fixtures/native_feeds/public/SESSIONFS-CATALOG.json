@@ -1,0 +1,38 @@
+{
+  "budget": {
+    "max_bytes": 268435456,
+    "max_files": 19968,
+    "max_plugin_bytes": 16777216,
+    "order": "namespace, name, version_id"
+  },
+  "excluded": [],
+  "generator_version": "2026.10.20.3",
+  "marketplace": "sessionfs",
+  "plugins": [
+    {
+      "content_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "omitted_components": [
+        "hooks_require_consent"
+      ],
+      "package_id": "spk_111111111111111111111111",
+      "path": "plugins/acme--deploy",
+      "plugin": "acme--deploy",
+      "projection_hash": "sha256:d4d9efbcfea301256022f8b00d4419f7726d577fb47110b5e4597cc3cc26aa81",
+      "version": "1.4.0",
+      "version_id": "skv_111111111111111111111111"
+    },
+    {
+      "content_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "omitted_components": [],
+      "package_id": "spk_222222222222222222222222",
+      "path": "plugins/pub--review-helper",
+      "plugin": "pub--review-helper",
+      "projection_hash": "sha256:6375aab48af32526042c9565a17a7023d4e13cbbbf40891c33167d3a95beaefd",
+      "version": "1.2.3",
+      "version_id": "skv_222222222222222222222222"
+    }
+  ],
+  "schema_version": 1,
+  "scope": "public",
+  "vendor_docs_checked": "2026-10-20"
+}

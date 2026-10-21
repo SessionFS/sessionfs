@@ -50,6 +50,20 @@ def _literal(value: Any, style: str = "") -> Text:
     return Text(str(value if value is not None else ""), style=style)
 
 
+def _clean(value: Any) -> Any:
+    """Server-supplied marketplace text, recursively stripped of terminal
+    control, escape, zero-width and bidi characters before printing."""
+    from sessionfs.skills.discovery import terminal_safe
+
+    if isinstance(value, str):
+        return terminal_safe(value)
+    if isinstance(value, list):
+        return [_clean(item) for item in value]
+    if isinstance(value, dict):
+        return {terminal_safe(key) if isinstance(key, str) else key: _clean(item) for key, item in value.items()}
+    return value
+
+
 def _print_plans(plans: list[EmitPlan]) -> None:
     table = Table(title="Skill install plan")
     table.add_column("Tool", style="cyan")
@@ -300,7 +314,17 @@ def add_skill(
         if allow_dlp_findings:
             console.print(_literal("  allowed by --allow-dlp-findings (disclosed in state as dlp/allowed-by-user)", "yellow"))
     # `add` is the ONLY caller where an omitted `--for` means "all tools".
-    plans = _call(lambda: manager.plan(package, targets=selected, scope=scope, default_all=True))
+    try:
+        plans = manager.plan(package, targets=selected, scope=scope, default_all=True)
+    except SkillError as exc:
+        # A hosted package that cannot be translated counts as a translation
+        # failure, for exactly the tools whose own plan fails (best effort).
+        # Only a planning error counts: never Ctrl+C or an exit.
+        _report_hosted_usage(
+            package, "translation_failure",
+            _failed_tools(manager, package, selected or list(SUPPORTED_TOOLS), scope),
+        )
+        raise typer.BadParameter(str(exc)) from exc
     # Disclosure BEFORE any consent decision: what lands where, what can run,
     # where it connects, scanner and hidden-character findings.
     manifest = _call(lambda: manager.capability_manifest(package))
@@ -363,6 +387,86 @@ def add_skill(
             f" ({package.package_id}) at {package.content_hash}",
         )
     )
+    _report_hosted_usage(package, "install", [plan.tool for plan in plans])
+    deprecation = _hosted_deprecation(package)
+    if deprecation:
+        console.print(_literal(deprecation, "yellow"))
+
+
+def _hosted_ids(source: Any) -> tuple[str, str] | None:
+    """(hosted package id, version id) of a hosted source, else None."""
+    from sessionfs.skills import hosted
+
+    package_id = hosted.hosted_package_id(source)
+    if package_id is None:
+        return None
+    commit = source.get("commit") if isinstance(source, dict) else getattr(source, "commit", None)
+    return (package_id, str(commit)) if commit else None
+
+
+def _report_hosted_usage(package: Any, event: str, tools: list[str], *, source: str = "download") -> None:
+    """Best-effort marketplace install count for a hosted package (never
+    fails the command; see SFS_SKILL_USAGE_REPORTING)."""
+    from sessionfs.skills import hosted
+
+    try:
+        ids = _hosted_ids(getattr(package, "source", None))
+        if ids is None or not tools:
+            return
+        client = hosted.client_from_auth()
+        if client is not None:
+            # Interactive: on a terminal the one-time install-count notice
+            # is shown right before the first count.
+            client.report_usage(ids[1], event, tools, source=source, interactive=True)
+    except Exception:  # noqa: BLE001 - counting must never break an install
+        return
+
+
+def _failed_tools(manager: Any, package: Any, tools: list[str], scope: str) -> list[str]:
+    """The tools whose individual plan fails with a SkillError."""
+    if _hosted_ids(getattr(package, "source", None)) is None:
+        return []
+    failed = []
+    for tool in tools:
+        try:
+            manager.plan(package, targets=[tool], scope=scope)
+        except SkillError:
+            failed.append(tool)
+        except Exception:  # noqa: BLE001 - unknown failures are not translation failures
+            continue
+    return failed
+
+
+def _report_row_usage(row: dict[str, Any], event: str) -> None:
+    """Best-effort count for an installed row (e.g. an uninstall)."""
+    from types import SimpleNamespace
+
+    targets = [str(tool) for tool in row.get("targets") or []]
+    _report_hosted_usage(SimpleNamespace(source=row.get("source")), event, targets)
+
+
+def _hosted_deprecation(package: Any) -> str | None:
+    """A warning line when the installed hosted package is deprecated."""
+    from sessionfs.skills import hosted
+
+    try:
+        ids = _hosted_ids(getattr(package, "source", None))
+        client = hosted.client_from_auth() if ids else None
+        if ids is None or client is None:
+            return None
+        item = client.get_package(ids[0])
+    except Exception:  # noqa: BLE001 - informational only
+        return None
+    deprecation = item.get("deprecation") if isinstance(item, dict) else None
+    if not isinstance(deprecation, dict):
+        return None
+    line = f"Warning: {package.name} is deprecated by its publisher"
+    if deprecation.get("message"):
+        line += f": {deprecation['message']}"
+    successor = deprecation.get("successor")
+    if isinstance(successor, dict) and successor.get("namespace") and successor.get("name"):
+        line += f" (successor: sessionfs:{successor['namespace']}/{successor['name']})"
+    return _clean(line)
 
 
 @skill_app.command("list")
@@ -404,9 +508,38 @@ def show_skill(
     identifier: str = typer.Argument(..., help="Package name or package_id"),
     scope: str | None = typer.Option(None, "--scope", help="project or user"),
 ) -> None:
-    """Show local package state, provenance, plans, and omissions."""
+    """Show local package state, provenance, plans, and omissions. For a
+    hosted package, also its marketplace freshness (stale, unmaintained,
+    deprecated, last updated and last verified per tool) when signed in."""
     row = _call(lambda: SkillManager().find_installed(identifier, scope=scope))
-    _print_json(row)
+    marketplace = _marketplace_freshness(row)
+    _print_json({**row, "marketplace": marketplace} if marketplace is not None else row)
+
+
+def _marketplace_freshness(row: dict[str, Any]) -> dict[str, Any] | None:
+    from sessionfs.skills import hosted
+
+    ids = _hosted_ids(row.get("source"))
+    if ids is None:
+        return None
+    client = hosted.client_from_auth()
+    if client is None:
+        return {"available": False, "reason": "not signed in"}
+    try:
+        item = client.get_package(ids[0])
+    except SkillError as exc:
+        return {"available": False, "reason": str(exc)}
+    return _clean({
+        "available": True,
+        "package_id": ids[0],
+        "installed_version_id": ids[1],
+        "current_version_id": item.get("version_id"),
+        "update_available": bool(item.get("version_id")) and item.get("version_id") != ids[1],
+        "categories": item.get("categories") or [],
+        "freshness": item.get("freshness"),
+        "deprecation": item.get("deprecation"),
+        "installs": item.get("installs"),
+    })
 
 
 @skill_app.command("plan")
@@ -606,6 +739,7 @@ def remove_skill(
             hosted.finish_opt_out(manager, scope, keys, removed=False)
             raise
         hosted.finish_opt_out(manager, scope, keys, removed=True)
+    _report_row_usage(row, "uninstall")
     console.print(f"[green]Removed {len(result['removed'])} managed file(s).[/green]")
     for path in result["dirty"]:
         console.print(_literal(f"Preserved modified file: {path}", "yellow"))
@@ -797,6 +931,60 @@ def diff_skill(
         )
     )
     _print_diff(diff)
+
+
+_BADGE_STYLES = {
+    "verified": "green",
+    "format-valid": "cyan",
+    "regressed": "red",
+    "failed": "red",
+    "format-invalid": "red",
+    "not-applicable": "dim",
+    "unverified": "dim",
+}
+
+
+@skill_app.command("works-in")
+@handle_errors
+def works_in(
+    identifier: str = typer.Argument(..., help="Hosted package id (spk_...) or version id (skv_...)"),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON"),
+) -> None:
+    """Show which tools a hosted package is verified to work in.
+
+    "verified" comes only from the works-in harness (the tool's own
+    installer accepted it); "format-valid" means the generated catalog entry
+    matches the tool's documented format; "expected" is adapter-computed."""
+    from sessionfs.skills import hosted
+
+    client = _call(lambda: hosted.require_client(hosted.client_from_auth()))
+    version_id = identifier
+    if identifier.startswith("spk_"):
+        version_id = str(_call(lambda: client.get_package(identifier)).get("version_id", ""))
+    body = _call(lambda: client.works_in(version_id))
+    if json_output:
+        _print_json(body)
+        return
+    table = Table(title=f"Works in ({version_id})")
+    for column in ("Tool", "Badge", "Level", "Tool version", "Checked", "Detail"):
+        table.add_column(column)
+    for tool, entry in sorted(body.get("tools", {}).items()):
+        levels = entry.get("levels") or {}
+        best = next((levels[level] | {"level": level} for level in ("L2", "L1", "L0") if level in levels), None)
+        badge = str(entry.get("badge", "unverified"))
+        table.add_row(
+            _literal(tool),
+            Text(badge, style=_BADGE_STYLES.get(badge, "")),
+            Text(best["level"] if best else "-"),
+            _literal(best.get("tool_version", "-") if best else "-"),
+            Text(str(best.get("run_at", "-"))[:10] if best else "-"),
+            _literal(str(best.get("reason", ""))[:80] if best else ""),
+        )
+    for tool, entry in sorted(body.get("expected_only", {}).items()):
+        omitted = ", ".join(entry.get("omitted_components") or []) or "-"
+        table.add_row(_literal(tool), Text("expected", style="dim"), Text("-"), Text("-"), Text("-"),
+                      _literal(f"not yet verified; omitted: {omitted}"))
+    console.print(table)
 
 
 @skill_app.command("rollback")
@@ -1001,13 +1189,55 @@ def search_marketplaces(
     local_only: bool = typer.Option(
         False, "--local-only", help="Skip the hosted SessionFS Marketplace"
     ),
+    category: str | None = typer.Option(None, "--category", help="Hosted: category slug (see `sfs skill categories`)"),
+    publisher: str | None = typer.Option(None, "--publisher", help="Hosted: publisher namespace or id"),
+    verified: bool = typer.Option(False, "--verified", help="Hosted: verified publishers only"),
+    attested: bool = typer.Option(False, "--attested", help="Hosted: verified publication provenance only"),
+    license_filter: str | None = typer.Option(None, "--license", help="Hosted: declared license (e.g. MIT), or 'none'"),
+    max_severity: str | None = typer.Option(
+        None, "--max-severity", help="Hosted: worst open scan finding allowed (none, low, medium, high, critical)"
+    ),
+    capability: str | None = typer.Option(
+        None, "--capability",
+        help="Hosted: instructions_only, scripts, mcp, hooks, executables or allowed_tools",
+    ),
+    works_in: str | None = typer.Option(None, "--works-in", help="Hosted: verified to work in this tool"),
+    updated_within: int | None = typer.Option(
+        None, "--updated-within", min=1, max=3650, help="Hosted: published within N days"
+    ),
+    hide_deprecated: bool = typer.Option(False, "--hide-deprecated", help="Hosted: leave out deprecated packages"),
+    sort: str = typer.Option("relevance", "--sort", help="Hosted: relevance or recent"),
     json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON"),
 ) -> None:
     """Search registered marketplaces and the hosted SessionFS Marketplace."""
-    from sessionfs.skills import hosted
+    from sessionfs.skills import discovery, hosted
 
     if tool is not None:
         _validate_targets([tool])
+    if works_in is not None:
+        _validate_targets([works_in])
+    if category is not None and category not in discovery.CATEGORY_SLUGS:
+        raise typer.BadParameter(f"--category must be one of: {', '.join(sorted(discovery.CATEGORY_SLUGS))}")
+    if capability is not None and capability not in discovery.CAPABILITY_FILTERS:
+        raise typer.BadParameter(f"--capability must be one of: {', '.join(discovery.CAPABILITY_FILTERS)}")
+    if max_severity is not None and max_severity not in discovery.SEVERITY_RANK:
+        raise typer.BadParameter(f"--max-severity must be one of: {', '.join(discovery.SEVERITY_RANK)}")
+    if sort not in ("relevance", "recent"):
+        raise typer.BadParameter("--sort must be relevance or recent")
+    filters: dict[str, Any] = {
+        "category": category,
+        "publisher": publisher,
+        "verified": True if verified else None,
+        "attested": True if attested else None,
+        "license": license_filter,
+        "max_severity": max_severity,
+        "capability": capability,
+        "works_in": works_in,
+        "updated_within": updated_within,
+        "include_deprecated": False if hide_deprecated else None,
+        "sort": sort,
+    }
+    hosted_details: list[dict[str, Any]] = []
     needle = query.casefold()
     rows: list[tuple[str, str, str, str, str]] = []
     total_packages = 0
@@ -1032,7 +1262,7 @@ def search_marketplaces(
             hosted_note = "Hosted SessionFS Marketplace skipped: not signed in (sfs auth login)."
         else:
             try:
-                for item in client.search(query, tool=tool, limit=limit):
+                for item in client.search(query, tool=tool, limit=limit, filters=filters):
                     ref = f"sessionfs:{item.get('namespace')}/{item.get('name')}"
                     if item.get("version"):
                         ref += f"@{item.get('version')}"
@@ -1045,14 +1275,17 @@ def search_marketplaces(
                             ref,
                         )
                     )
+                    hosted_details.append(_discovery_summary(item))
             except SkillError as exc:
                 hosted_note = f"Hosted SessionFS Marketplace skipped: {exc}"
     if json_output:
+        details = iter(hosted_details)
         _print_json(
             {
                 "results": [
                     {"source": source, "marketplace": alias, "name": name,
-                     "description": description, "install": ref}
+                     "description": description, "install": ref,
+                     **({"discovery": next(details)} if source == "hosted" else {})}
                     for source, alias, name, description, ref in rows
                 ],
                 "notes": [hosted_note] if hosted_note else [],
@@ -1078,11 +1311,115 @@ def search_marketplaces(
     show_ref = any(row[0] == "hosted" for row in rows)
     if show_ref:
         table.add_column("Install with", overflow="fold")
+        table.add_column("Installs (30d)", justify="right")
+        table.add_column("Status")
+    details = iter(hosted_details)
     for source, alias, name, description, ref in rows:
         cells = [source, _literal(alias), _literal(name), _literal(description)]
         if show_ref:
             cells.append(_literal(ref))
+            if source == "hosted":
+                detail = next(details)
+                cells.append(_literal(detail["installs_30d"]))
+                cells.append(_literal(", ".join(detail["status"]) or "-"))
+            else:
+                cells.extend([Text("-"), Text("-")])
         table.add_row(*cells)
+    console.print(table)
+    for detail in hosted_details:
+        if detail.get("successor"):
+            console.print(
+                _literal(f"{detail['name']} is deprecated; use {detail['successor']} instead", "yellow")
+            )
+
+
+def _discovery_summary(item: dict[str, Any]) -> dict[str, Any]:
+    """Discovery fields of a hosted search result (marketplace v2 §9)."""
+    def _obj(value: Any) -> dict[str, Any]:
+        return value if isinstance(value, dict) else {}
+
+    freshness = _obj(item.get("freshness"))
+    total = _obj(_obj(item.get("installs")).get("total"))
+    deprecation = _obj(item.get("deprecation"))
+    publisher = _obj(item.get("publisher"))
+    status = []
+    if publisher.get("verified"):
+        status.append("verified")
+    if deprecation:
+        status.append("deprecated")
+    if freshness.get("stale"):
+        status.append("stale")
+    if freshness.get("unmaintained"):
+        status.append("unmaintained")
+    successor = deprecation.get("successor") if deprecation else None
+    return _clean({
+        "name": str(item.get("name", "")),
+        "categories": list(item.get("categories") or []),
+        "installs_30d": str(total.get("display", "-")),
+        "status": status,
+        "last_updated_at": freshness.get("last_updated_at"),
+        "works_in": sorted(
+            tool for tool, row in (freshness.get("tools") or {}).items()
+            if isinstance(row, dict) and row.get("verify_status") == "passing"
+        ),
+        "successor": (
+            f"sessionfs:{successor.get('namespace')}/{successor.get('name')}"
+            if isinstance(successor, dict) else None
+        ),
+    })
+
+
+@skill_app.command("categories")
+@handle_errors
+def list_categories(json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON")) -> None:
+    """List the hosted marketplace's categories (for `sfs skill search --category`)."""
+    from sessionfs.skills import hosted
+
+    client = _call(lambda: hosted.require_client(hosted.client_from_auth()))
+    items = _call(client.categories)
+    if json_output:
+        _print_json({"items": items})
+        return
+    table = Table(title="Marketplace categories")
+    table.add_column("Slug", style="cyan")
+    table.add_column("Name")
+    for item in items:
+        table.add_row(_literal(item.get("slug")), _literal(item.get("display_name")))
+    console.print(table)
+
+
+@skill_app.command("usage")
+@handle_errors
+def org_usage(
+    org: str = typer.Option(..., "--org", help="Organization id (owners and admins, Team plan)"),
+    days: int = typer.Option(30, "--days", min=1, max=90),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON"),
+) -> None:
+    """What your organization's members actually use, by package and tool."""
+    from sessionfs.cli.cmd_skill_publisher import _request, _segment
+
+    body = _clean(_request("GET", f"/orgs/{_segment(org)}/skills/usage?days={days}"))
+    if json_output:
+        _print_json(body)
+        return
+    items = body.get("items") or []
+    if not items:
+        console.print(f"[dim]No marketplace usage recorded in the last {days} days.[/dim]")
+        return
+    table = Table(title=f"Skill usage, last {days} days")
+    for column in ("Package", "Installs", "Active", "Uninstalls", "Translation failures", "Tools", "Status"):
+        table.add_column(column)
+    for item in items:
+        status = [label for label in ("deprecated", "stale", "unmaintained") if item.get(label)]
+        table.add_row(
+            _literal(f"{item.get('namespace')}/{item.get('name')}"),
+            str(item.get("installs", 0)),
+            str(item.get("active", 0)),
+            str(item.get("uninstalls", 0)),
+            str(item.get("translation_failures", 0)),
+            _literal(", ".join(row.get("tool", "") for row in item.get("by_tool") or [])),
+            _literal(", ".join(status) or "-"),
+        )
     console.print(table)
 
 
@@ -1463,6 +1800,10 @@ def pull_skills(
             ),
         )
     )
+    try:
+        hosted.report_pull_usage(manager, client, report, interactive=True)
+    except Exception:  # noqa: BLE001 - counts never affect the pull
+        pass
     if json_output:
         _print_json(report.as_dict())
     else:
@@ -1512,5 +1853,16 @@ def pull_skills(
         _print_unassigned(report.unassigned)
         _print_unassigned_tools(report.unassigned_tools)
         _print_revocation_warnings(manager, None)
+        if report.policy_refused:
+            console.print(
+                _literal(
+                    f"{len(report.policy_refused)} item(s) withheld by your organization's skills "
+                    "policy (see the notes above)",
+                    "yellow",
+                )
+            )
+        for sent in report.policy_reports:
+            state = "compliant" if sent.get("compliant") else "not compliant"
+            console.print(_literal(f"Skills policy ({sent.get('org_id')}): {state}, reported", "dim"))
     if any(item.status == "failed" for item in report.items):
         raise typer.Exit(1)

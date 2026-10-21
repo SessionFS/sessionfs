@@ -32,7 +32,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sessionfs.server.auth.dependencies import AuthContext, require_admin, require_scope
+from sessionfs.server.auth.dependencies import (
+    AuthContext,
+    require_admin,
+    require_platform_sweeper,
+    require_scope,
+    sweep_actor_details,
+)
 from sessionfs.server.auth.rate_limit import SlidingWindowRateLimiter
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import (
@@ -167,10 +173,11 @@ class RescanRequest(BaseModel):
 async def rescan_skill_versions(
     request: Request,
     body: RescanRequest | None = None,
-    admin: User = Depends(require_admin),
+    auth: AuthContext = Depends(require_platform_sweeper()),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Rescan live versions that are due under the current ruleset.
+    Platform-admin user key or a ``platform_sweeps:run`` service key.
 
     Safe to call repeatedly (Cloud Scheduler): a scanned version is not due
     again until the ruleset changes or a week passes. Pass back
@@ -178,6 +185,17 @@ async def rescan_skill_versions(
     that could not be scanned are listed in ``skipped``; ``done`` is only
     true for a batch that scanned everything it covered."""
     body = body or RescanRequest()
+    if auth.key_kind == "service" and (body.report_only or body.force):
+        # A forced report-only pass would stamp every version as scanned
+        # without quarantining, so the enforcing sweep would skip criticals
+        # for a week. Rollout and forced passes stay with an admin user key.
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "sweep_override_not_allowed",
+                "message": "report_only and force need a platform-admin user key.",
+            },
+        )
     result = await rescan_batch(
         db,
         _blob_store(request),
@@ -190,7 +208,7 @@ async def rescan_skill_versions(
     db.add(
         AdminAction(
             id=str(uuid.uuid4()),
-            admin_id=admin.id,
+            admin_id=auth.user.id,
             action="skill_rescan",
             target_type="skill_version",  # admin_actions.target_type is VARCHAR(20)
             target_id="bulk",
@@ -203,6 +221,7 @@ async def rescan_skill_versions(
                     "skipped": result["skipped"],
                     "force": body.force,
                     "report_only": body.report_only,
+                    **sweep_actor_details(auth),
                 },
                 sort_keys=True,
             ),

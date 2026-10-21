@@ -6,12 +6,14 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import ipaddress
 import html
 import json
 import logging
 import os
 import re
 import secrets
+import uuid
 import contextlib
 import functools
 from collections.abc import AsyncIterator, Callable, Coroutine
@@ -23,7 +25,7 @@ from urllib.parse import urlparse, urlsplit, urlunsplit
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import and_, case, delete, exists, false, func, or_, select, text, update
+from sqlalchemy import and_, case, delete, exists, false, func, literal, or_, select, text, tuple_, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,6 +34,7 @@ from sessionfs.server.auth.dependencies import (
     AuthContext,
     _authenticate_and_build_context,
     _sso_enforcement_check,
+    assert_platform_key_minter_active,
     assert_service_key_can_access_project,
     get_rate_limiter,
     require_scope,
@@ -40,6 +43,7 @@ from sessionfs.server.auth.project_access import user_can_access_project
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.dlp import get_org_dlp_policy
 from sessionfs.server.db.models import (
+    AdminAction,
     Organization,
     OrgAuditEvent,
     OrgMember,
@@ -52,6 +56,7 @@ from sessionfs.server.db.models import (
     SkillInstallRequest,
     SkillMarketplaceListing,
     SkillMarketplaceRegistry,
+    SkillRegistryPollRef,
     SkillPackage,
     SkillPackageVersion,
     SkillPublisher,
@@ -62,6 +67,10 @@ from sessionfs.server.db.models import (
 from sessionfs.server.routes.knowledge import _get_project_for_auth
 from sessionfs.server.services import publishers as publishers_service
 from sessionfs.server.services import skill_disclosure
+from sessionfs.server.services import skill_policy
+from sessionfs.skills.policy import refusal_message
+from sessionfs.server.services import skill_discovery
+from sessionfs.server.services import registry_poller, registry_polling
 from sessionfs.server.services.entitlements import lock_active_entitlement, resolve_entitlement
 from sessionfs.server.services.skill_scanning import ensure_ruleset, stage_publish_scan
 from sessionfs.server.services.skill_packages import (
@@ -75,6 +84,7 @@ from sessionfs.server.storage.base import BlobStore
 from sessionfs.server.tier_gate import get_effective_tier
 from sessionfs.server.tiers import Tier, get_features_for_tier, get_storage_limit
 from sessionfs.skills.adapters import PROJECT_SKILL_ROOTS, USER_SKILL_ROOTS
+from sessionfs.skills import discovery as discovery_rules
 from sessionfs.skills.disclosure import build_disclosure
 from sessionfs.skills.models import SUPPORTED_TOOLS, validate_device_id
 from sessionfs.skills.publish_validation import COLLECTION_RE, NAMESPACE_RE
@@ -417,7 +427,36 @@ UNTRUSTED_INSTRUCTION_PREAMBLE = (
 )
 
 
-class RegistryCreate(BaseModel):
+class _PollSettingsValidators(BaseModel):
+    """Field validation shared by registry create and update (polling)."""
+
+    @field_validator("poll_interval_seconds", check_fields=False)
+    @classmethod
+    def _v_poll_interval(cls, value: int | None) -> int | None:
+        return _check_poll_interval(value)
+
+    @field_validator("tag_pattern", check_fields=False)
+    @classmethod
+    def _v_tag_pattern(cls, value: str | None) -> str | None:
+        return _check_tag_pattern(value)
+
+    @field_validator("branch", check_fields=False)
+    @classmethod
+    def _v_branch(cls, value: str | None) -> str | None:
+        return _check_branch(value)
+
+    @field_validator("credential_secret_ref", check_fields=False)
+    @classmethod
+    def _v_credential(cls, value: str | None) -> str | None:
+        return _check_credential_ref(value)
+
+    @field_validator("publish_namespace", check_fields=False)
+    @classmethod
+    def _v_namespace(cls, value: str | None) -> str | None:
+        return _check_publish_namespace(value)
+
+
+class RegistryCreate(_PollSettingsValidators):
     alias: str
     source_url: str
     refresh_commit: str | None = None
@@ -444,6 +483,16 @@ class RegistryCreate(BaseModel):
             raise ValueError("source_url must not embed credentials")
         if parsed.query or parsed.fragment:
             raise ValueError("source_url must not contain query or fragment data")
+        # The shared locator rules: a plain LDH host or IP literal only (no
+        # percent-encoding, backslash or unicode anywhere in the authority),
+        # so the host the poller checks and pins is the host libcurl uses.
+        from sessionfs.skills.models import SkillError
+        from sessionfs.skills.sources import normalize_git_url
+
+        try:
+            normalize_git_url(value)
+        except SkillError as exc:
+            raise ValueError(f"source_url is not a safe Git URL: {exc}") from None
         return value
 
     @field_validator("refresh_commit")
@@ -452,6 +501,79 @@ class RegistryCreate(BaseModel):
         if value is not None and not _SHA_RE.fullmatch(value):
             raise ValueError("refresh_commit must be a full lowercase 40-character SHA")
         return value
+
+    # Server-side polling (GitHub #69). Organization registries only; an org
+    # registry on https defaults to polling every 900 s, ssh to metadata-only.
+    poll_interval_seconds: int | None = None
+    tag_pattern: str | None = None
+    branch_only_mode: bool = False
+    branch: str | None = None
+    credential_secret_ref: str | None = None
+    publish_namespace: str | None = None
+
+
+
+def _check_poll_interval(value: int | None) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("poll_interval_seconds must be an integer")
+    if value != 0 and not (
+        registry_polling.MIN_POLL_INTERVAL_SECONDS <= value <= registry_polling.MAX_POLL_INTERVAL_SECONDS
+    ):
+        raise ValueError(
+            f"poll_interval_seconds must be 0 (metadata-only) or between "
+            f"{registry_polling.MIN_POLL_INTERVAL_SECONDS} and {registry_polling.MAX_POLL_INTERVAL_SECONDS}"
+        )
+    return value
+
+
+def _check_tag_pattern(value: str | None) -> str | None:
+    if value is None or value == "":
+        return None if value is None else ""
+    registry_polling.compile_tag_pattern(value)
+    return value
+
+
+def _check_branch(value: str | None) -> str | None:
+    if value is None or value == "":
+        return None if value is None else ""
+    return registry_polling.validate_branch(value)
+
+
+def _check_credential_ref(value: str | None) -> str | None:
+    if value is None or value == "":
+        return None if value is None else ""
+    return registry_polling.validate_credential_ref(value)
+
+
+def _check_publish_namespace(value: str | None) -> str | None:
+    if value is None or value == "":
+        return None if value is None else ""
+    value = value.strip().lower()
+    if not NAMESPACE_RE.fullmatch(value):
+        raise ValueError("publish_namespace must be a portable lowercase identifier")
+    return value
+
+
+class RegistryUpdate(_PollSettingsValidators):
+    """PATCH an org registry. Omitted fields are unchanged; an empty string
+    clears tag_pattern (back to the semver default), branch,
+    credential_secret_ref and publish_namespace."""
+
+    policy_state: Literal["approved", "review", "blocked"] | None = None
+    poll_interval_seconds: int | None = None
+    tag_pattern: str | None = None
+    branch_only_mode: bool | None = None
+    branch: str | None = None
+    credential_secret_ref: str | None = None
+    publish_namespace: str | None = None
+
+
+
+class RegistryPollRun(BaseModel):
+    limit: int = Field(registry_poller.DEFAULT_BATCH, ge=1, le=registry_poller.MAX_BATCH)
+    registry_ids: list[str] | None = Field(None, max_length=registry_poller.MAX_BATCH)
 
 
 class InstallRequestCreate(BaseModel):
@@ -1352,24 +1474,82 @@ def _package_response(listing, package, version, *, include_instructions: bool =
     return result
 
 
-@router.get("/marketplace/packages")
-async def search_marketplace(
-    q: str | None = Query(None, max_length=200),
-    tool: str | None = Query(None),
-    limit: int = Query(20, ge=1, le=100),
-    cursor: str | None = Query(None, max_length=512),
-    auth: AuthContext = Depends(require_scope("marketplace:read")),
-    db: AsyncSession = Depends(get_db),
-) -> dict:
-    """Keyset-paginated catalog: newest first, ordered by (published_at, id).
+def _encode_rank_cursor(keys: list[int], published_at: datetime, listing_id: str) -> str:
+    raw = json.dumps(
+        {"s": "relevance", "k": keys, "p": published_at.isoformat(), "id": listing_id},
+        separators=(",", ":"),
+    )
+    return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii").rstrip("=")
 
-    `next_cursor` is opaque; pass it back as `cursor` for the next page. The
-    tool filter is applied in SQL through skill_version_tools BEFORE the page
-    is cut, so a filtered page is never short or empty by accident.
-    """
+
+def _decode_rank_cursor(raw: str | None, width: int) -> tuple[list[int], datetime, str] | None:
+    if raw is None or not raw.strip():
+        return None
+    if len(raw) > 512:
+        raise HTTPException(422, "Invalid cursor")
+    try:
+        padded = raw.strip() + "=" * (-len(raw.strip()) % 4)
+        value = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+        if value.get("s") != "relevance":
+            raise ValueError("not a relevance cursor")
+        keys = [int(item) for item in value["k"]]
+        published_at = datetime.fromisoformat(str(value["p"]))
+        listing_id = str(value["id"])
+    except (ValueError, KeyError, TypeError, AttributeError, UnicodeDecodeError) as exc:
+        raise HTTPException(422, "Invalid cursor") from exc
+    if len(keys) != width or not listing_id or len(listing_id) > 64:
+        raise HTTPException(422, "Invalid cursor")
+    return keys, published_at, listing_id
+
+
+async def _visible_package_ids_for(db: AsyncSession, auth: AuthContext, org_ids: list[str]):
+    async def _visible(package_ids: list[str]) -> list[str]:
+        if not package_ids:
+            return []
+        rows = (
+            await db.execute(
+                select(SkillPackage.id)
+                .join(SkillMarketplaceListing, SkillMarketplaceListing.package_id == SkillPackage.id)
+                .join(SkillPackageVersion, SkillPackageVersion.id == SkillMarketplaceListing.version_id)
+                .where(
+                    SkillPackage.id.in_(package_ids),
+                    *_deliverable_predicates(),
+                    _visibility_predicate(auth, org_ids),
+                )
+                .distinct()
+            )
+        ).scalars().all()
+        return list(rows)
+
+    return _visible
+
+
+async def attach_discovery(db: AsyncSession, auth: AuthContext, items: list[dict], org_ids: list[str] | None = None) -> None:
+    """Categories, deprecation (+ visible successor), freshness and public,
+    k-floored install counts (marketplace v2 §9)."""
+    if org_ids is None:
+        org_ids = await _org_ids(db, auth)
+    await skill_discovery.attach_discovery(
+        db, items, visible_package_ids=await _visible_package_ids_for(db, auth, org_ids)
+    )
+
+
+async def _search(
+    db: AsyncSession,
+    auth: AuthContext,
+    *,
+    q: str | None,
+    tool: str | None,
+    limit: int,
+    cursor: str | None,
+    filters: skill_discovery.SearchFilters | None = None,
+    sort: str = "recent",
+    discovery_fields: bool = True,
+) -> dict:
     if tool is not None and tool not in SUPPORTED_TOOLS:
         raise HTTPException(422, "Unsupported tool")
-    after = _decode_cursor(cursor)
+    filters = filters or skill_discovery.SearchFilters()
+    query = q.strip().casefold() if q and q.strip() else None
     org_ids = await _org_ids(db, auth)
     statement = (
         select(SkillMarketplaceListing, SkillPackage, SkillPackageVersion)
@@ -1377,11 +1557,9 @@ async def search_marketplace(
         .join(SkillPackageVersion, SkillPackageVersion.id == SkillMarketplaceListing.version_id)
         .where(*_deliverable_predicates(), _visibility_predicate(auth, org_ids))
     )
-    if q and q.strip():
+    if query:
         statement = statement.where(
-            func.lower(SkillMarketplaceListing.search_text).contains(
-                q.strip().casefold(), autoescape=True
-            )
+            func.lower(SkillMarketplaceListing.search_text).contains(query, autoescape=True)
         )
     if tool:
         statement = statement.where(
@@ -1392,14 +1570,98 @@ async def search_marketplace(
                 )
             )
         )
-    statement = _after_cursor(statement, after).order_by(*_listing_order()).limit(limit + 1)
-    rows = (await db.execute(statement)).all()
-    has_more = len(rows) > limit
-    rows = rows[:limit]
-    items = [_package_response(*row) for row in rows]
+    statement = skill_discovery.apply_filters(statement, filters)
+    if sort == "relevance":
+        # Deterministic ranking (§9.2): the rank keys, then newest, then id,
+        # all descending, so the keyset is one row-value comparison.
+        rank = skill_discovery.rank_columns(query)
+        after_rank = _decode_rank_cursor(cursor, len(rank))
+        statement = statement.add_columns(*[column.label(f"rank_{index}") for index, column in enumerate(rank)])
+        if after_rank is not None:
+            keys, published_at, listing_id = after_rank
+            statement = statement.where(
+                tuple_(*rank, SkillMarketplaceListing.published_at, SkillMarketplaceListing.id)
+                < tuple_(*[literal(key) for key in keys], literal(published_at), literal(listing_id))
+            )
+        statement = statement.order_by(
+            *[column.desc() for column in rank],
+            SkillMarketplaceListing.published_at.desc(),
+            SkillMarketplaceListing.id.desc(),
+        ).limit(limit + 1)
+        rows = (await db.execute(statement)).all()
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        items = [_package_response(row[0], row[1], row[2]) for row in rows]
+        next_cursor = (
+            _encode_rank_cursor([int(value) for value in rows[-1][3:]], rows[-1][0].published_at, rows[-1][0].id)
+            if has_more and rows
+            else None
+        )
+    else:
+        after = _decode_cursor(cursor)
+        statement = _after_cursor(statement, after).order_by(*_listing_order()).limit(limit + 1)
+        rows = (await db.execute(statement)).all()
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        items = [_package_response(*row) for row in rows]
+        next_cursor = _encode_cursor(rows[-1][0].published_at, rows[-1][0].id) if has_more and rows else None
     await attach_publishers(db, items)
-    next_cursor = _encode_cursor(rows[-1][0].published_at, rows[-1][0].id) if has_more and rows else None
-    return {"items": items, "count": len(items), "has_more": has_more, "next_cursor": next_cursor}
+    if discovery_fields:
+        await attach_discovery(db, auth, items, org_ids)
+    return {"items": items, "count": len(items), "has_more": has_more, "next_cursor": next_cursor, "sort": sort}
+
+
+@router.get("/marketplace/packages")
+async def search_marketplace(
+    q: str | None = Query(None, max_length=200),
+    tool: str | None = Query(None),
+    limit: int = Query(20, ge=1, le=100),
+    cursor: str | None = Query(None, max_length=512),
+    category: str | None = Query(None, max_length=40),
+    publisher: str | None = Query(None, max_length=64, description="Publisher id or namespace"),
+    verified: bool | None = Query(None, description="Only (or never) verified publishers"),
+    attested: bool | None = Query(None, description="Verified publication provenance (trusted publishing)"),
+    license: str | None = Query(None, max_length=100, description="Declared license, or 'none'"),
+    max_severity: Literal["none", "low", "medium", "high", "critical"] | None = Query(None),
+    capability: str | None = Query(None, max_length=40),
+    works_in: str | None = Query(None, description="Verified to work in this tool"),
+    updated_within: int | None = Query(None, ge=1, le=3650, description="Days"),
+    include_deprecated: bool = Query(True),
+    sort: Literal["recent", "relevance"] = Query("recent"),
+    auth: AuthContext = Depends(require_scope("marketplace:read")),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Keyset-paginated catalog.
+
+    ``sort=recent`` (default): newest first, ordered by (published_at, id).
+    ``sort=relevance``: the documented deterministic ranking (not
+    deprecated, text relevance, verified publisher, works-in coverage,
+    popularity bucket, current version, then newest). `next_cursor` is
+    opaque; pass it back as `cursor` with the same filters and sort. Every
+    filter (tool, category, publisher, verified, attested, license, max scan
+    severity, capability class, works-in, updated within N days) is applied
+    in SQL BEFORE the page is cut, so a filtered page is never short or
+    empty by accident.
+    """
+    if category is not None and category not in discovery_rules.CATEGORY_SLUGS:
+        raise HTTPException(422, "Unknown category")
+    if capability is not None and capability not in discovery_rules.CAPABILITY_FILTERS:
+        raise HTTPException(422, "Unknown capability class")
+    if works_in is not None and works_in not in SUPPORTED_TOOLS:
+        raise HTTPException(422, "Unsupported tool")
+    filters = skill_discovery.SearchFilters(
+        category=category,
+        publisher=publisher.strip() if publisher and publisher.strip() else None,
+        verified=verified,
+        attested=attested,
+        license=license.strip() if license and license.strip() else None,
+        max_severity=max_severity,
+        capability=capability,
+        works_in=works_in,
+        updated_within=updated_within,
+        include_deprecated=include_deprecated,
+    )
+    return await _search(db, auth, q=q, tool=tool, limit=limit, cursor=cursor, filters=filters, sort=sort)
 
 
 @router.get("/marketplace/packages/{package_id}")
@@ -1410,6 +1672,7 @@ async def get_marketplace_package(
 ) -> dict:
     item = _package_response(*(await _visible_row(db, auth, package_id=package_id)))
     await attach_publishers(db, [item])
+    await attach_discovery(db, auth, [item])
     return item
 
 
@@ -1493,6 +1756,7 @@ async def download_marketplace_version(
 @router.get("/marketplace/feeds/{tool}")
 async def marketplace_feed(
     tool: str,
+    request: Request,
     limit: int = Query(100, ge=1, le=100),
     cursor: str | None = Query(None, max_length=512),
     auth: AuthContext = Depends(require_scope("marketplace:read")),
@@ -1500,7 +1764,9 @@ async def marketplace_feed(
 ) -> dict:
     if tool not in SUPPORTED_TOOLS:
         raise HTTPException(404, "Unsupported tool")
-    result = await search_marketplace(None, tool, limit, cursor, auth, db)
+    result = await _search(
+        db, auth, q=None, tool=tool, limit=limit, cursor=cursor, discovery_fields=False
+    )
     root = PROJECT_SKILL_ROOTS[tool]
     packages = []
     for item in result["items"]:
@@ -1529,11 +1795,25 @@ async def marketplace_feed(
         "projection_type": "sessionfs-portability-plan",
         "native_marketplace_install": False,
         "delivery": "authenticated-download-and-translate",
+        # The tool-native catalog (marketplace v2 §7.6): a read-only git
+        # repository the tool's own plugin installer consumes, holding only
+        # approved versions. Null for tools without a catalog protocol.
+        "native_catalog_url": _native_catalog_url(request, tool),
         "packages": packages,
         "count": len(packages),
         "has_more": result["has_more"],
         "next_cursor": result["next_cursor"],
     }
+
+
+def _native_catalog_url(request: Request, tool: str) -> str | None:
+    from sessionfs.skills.native_feeds import NATIVE_TOOLS
+
+    if tool not in NATIVE_TOOLS:
+        return None
+    config = getattr(request.app.state, "config", None)
+    base = str(getattr(config, "public_api_url", "") or "").strip().rstrip("/")
+    return (base or str(request.base_url).rstrip("/")) + "/api/v1/git/public/sessionfs.git"
 
 
 def _package_blocked() -> HTTPException:
@@ -1624,14 +1904,14 @@ def _package_rejected(exc: HostedSkillPackageError) -> HTTPException:
 
 async def _publish_package(
     *,
-    request: Request,
+    request: Request | None,
     db: AsyncSession,
     auth: AuthContext,
     owner_type: str,
     owner_id: str,
     org: Organization | None,
     role: str,
-    upload: UploadFile,
+    upload: UploadFile | None,
     namespace: str,
     collection: str,
     visibility: str,
@@ -1644,6 +1924,8 @@ async def _publish_package(
     allow_confusable_name: bool = False,
     publish_token_id: str | None = None,
     reauthorize: Callable[[AsyncSession], Coroutine[Any, Any, None]] | None = None,
+    data: bytes | None = None,
+    store: BlobStore | None = None,
 ) -> dict:
     """Shared publish path. Org publishes honor the org's DLP policy. Personal
     publishes are metered against the owner's storage quota and version cap;
@@ -1653,7 +1935,17 @@ async def _publish_package(
     The version identity (content_hash) is derived from the validated,
     normalized tree, so the "version already exists" reuse check can only run
     after validation; the request-size gate and the bounded off-loop
-    validation are what keep that work from starving the event loop."""
+    validation are what keep that work from starving the event loop.
+
+    The server-side registry poller (services/registry_poller.py) calls this
+    same path with the package bytes in ``data`` and the blob store in
+    ``store`` instead of an ``upload`` and a ``request``: every validation,
+    DLP, scanning, disclosure, moderation, quota and fence step is shared."""
+    if store is None:
+        if request is None:
+            raise RuntimeError("_publish_package needs a request or a blob store")
+        store = _blob_store(request)
+    blob_store = store
     # Raw input first: strip() would silently drop control characters.
     publishers_service.reject_forbidden_code_points(namespace, field="namespace")
     namespace = namespace.strip().lower()
@@ -1672,11 +1964,15 @@ async def _publish_package(
         or any(ord(char) < 32 or ord(char) == 127 for char in source_subdir)
     ):
         raise HTTPException(422, "source_subdir must be a safe relative path")
-    data = await upload.read(MAX_UPLOAD_BYTES + 1)
+    if data is None:
+        if upload is None:
+            raise RuntimeError("_publish_package needs an upload or package bytes")
+        data = await upload.read(MAX_UPLOAD_BYTES + 1)
     if len(data) > MAX_UPLOAD_BYTES:
         raise _publish_body_too_large()
     if source_locator is None:
-        filename = (upload.filename or "package.tar.gz").replace("\\", "/").rsplit("/", 1)[-1]
+        upload_name = upload.filename if upload is not None else None
+        filename = (upload_name or "package.tar.gz").replace("\\", "/").rsplit("/", 1)[-1]
         locator = f"upload:{filename[:240]}"
     else:
         locator = source_locator.strip()
@@ -1770,9 +2066,9 @@ async def _publish_package(
             f"{hosted.content_hash[7:]}-{version_id[4:]}.tar.gz"
         )
         try:
-            await _blob_store(request).put(prewritten_key, hosted.canonical_archive)
+            await blob_store.put(prewritten_key, hosted.canonical_archive)
         except BaseException:
-            await _discard_publish_blob(db, _blob_store(request), prewritten_key)
+            await _discard_publish_blob(db, blob_store, prewritten_key)
             raise
     blob_referenced = False
     try:
@@ -2144,12 +2440,12 @@ async def _publish_package(
         # publish's blob unless a committed version references its key.
         await db.rollback()
         if prewritten_key is not None:
-            await _discard_publish_blob(db, _blob_store(request), prewritten_key)
+            await _discard_publish_blob(db, blob_store, prewritten_key)
         raise
     if prewritten_key is not None and not blob_referenced:
         # The publish reused an existing version (dedup, or a concurrent
         # identical upload won): this publish's blob is not referenced.
-        await _discard_publish_blob(db, _blob_store(request), prewritten_key)
+        await _discard_publish_blob(db, blob_store, prewritten_key)
     await db.refresh(listing)
     result = _package_response(listing, package, version)
     await attach_publishers(db, [result])
@@ -2935,6 +3231,11 @@ async def delete_org_version(
 
 
 def _registry_response(row: SkillMarketplaceRegistry) -> dict:
+    interval = int(row.poll_interval_seconds or 0)
+
+    def _iso(value: datetime | None) -> str | None:
+        return value.isoformat() if value is not None else None
+
     return {
         "id": row.id,
         "owner_type": row.owner_type,
@@ -2946,7 +3247,132 @@ def _registry_response(row: SkillMarketplaceRegistry) -> dict:
         "org_id": row.org_id,
         "created_at": row.created_at.isoformat(),
         "updated_at": (row.updated_at or row.created_at).isoformat(),
-        "server_fetch_enabled": False,
+        # True when this server will fetch the registry on its poll schedule
+        # (an org registry with an interval, polling enabled server-wide).
+        "server_fetch_enabled": bool(
+            row.owner_type == "org" and interval > 0 and registry_polling.polling_enabled()
+        ),
+        "poll_interval_seconds": interval,
+        "tag_pattern": row.tag_pattern or registry_polling.DEFAULT_TAG_PATTERN,
+        "branch_only_mode": bool(row.branch_only_mode),
+        "branch": row.branch,
+        # A reference (env:/k8s:), never a credential.
+        "credential_secret_ref": row.credential_secret_ref,
+        "publish_namespace": row.publish_namespace or ("org" if row.owner_type == "org" else None),
+        "last_poll_at": _iso(row.last_poll_at),
+        "last_poll_status": row.last_poll_status,
+        "last_poll_error_summary": row.last_poll_error_summary,
+        "consecutive_failures": int(row.consecutive_failures or 0),
+        "next_poll_at": _iso(row.next_poll_at) if interval > 0 else None,
+        "poll_requested_at": _iso(row.poll_requested_at),
+        "backoff": bool(interval > 0 and (row.consecutive_failures or 0) > 0),
+    }
+
+
+_POLL_FIELDS = (
+    "poll_interval_seconds",
+    "tag_pattern",
+    "branch_only_mode",
+    "branch",
+    "credential_secret_ref",
+    "publish_namespace",
+)
+POLL_NOW_MIN_INTERVAL = timedelta(seconds=60)
+
+
+def _poll_settings_error(message: str) -> HTTPException:
+    return HTTPException(422, detail={"code": "invalid_poll_settings", "message": message})
+
+
+def _apply_poll_settings(
+    row: SkillMarketplaceRegistry,
+    changes: dict[str, Any],
+    *,
+    actor_id: str,
+    reassign_actor: bool = False,
+) -> bool:
+    """Apply validated polling settings to an ORG registry and re-check the
+    combination. Returns True when anything changed (the poll actor becomes
+    the caller, the backoff resets and a poll is scheduled now). With
+    ``reassign_actor`` the caller becomes the poll actor even when no value
+    changed: an admin re-saving the settings recovers a registry whose
+    previous actor left or was demoted."""
+    changed = False
+    for key, value in changes.items():
+        stored = None if value == "" else value
+        if getattr(row, key) != stored:
+            setattr(row, key, stored)
+            changed = True
+    interval = int(row.poll_interval_seconds or 0)
+    if row.branch_only_mode and not row.branch:
+        raise _poll_settings_error("branch_only_mode requires a branch")
+    if interval > 0:
+        try:
+            _normalized, host, _port = registry_polling.check_poll_url(row.source_url)
+        except registry_polling.FetchBlocked as exc:
+            raise _poll_settings_error(str(exc)) from None
+        try:
+            literal = ipaddress.ip_address(host)
+        except ValueError:
+            literal = None
+        if literal is not None and not registry_polling.address_allowed(
+            str(literal), registry_polling.allowed_private_networks()
+        ):
+            raise _poll_settings_error("registry host is not a reachable public address")
+    if changed:
+        row.poll_actor_user_id = actor_id
+        row.consecutive_failures = 0
+        row.next_poll_at = datetime.now(timezone.utc) if interval > 0 else None
+    elif reassign_actor and row.poll_actor_user_id != actor_id:
+        row.poll_actor_user_id = actor_id
+        if interval > 0:
+            row.next_poll_at = datetime.now(timezone.utc)
+    return changed
+
+
+async def _enforce_org_poll_cap(db: AsyncSession, org_id: str, row: SkillMarketplaceRegistry) -> None:
+    """At most SFS_REGISTRY_POLL_MAX_PER_ORG polling-enabled registries per
+    org, counted under the org row lock so two concurrent saves cannot both
+    take the last slot."""
+    if int(row.poll_interval_seconds or 0) <= 0:
+        return
+    await _lock_org_row(db, org_id)
+    cap = registry_polling.max_polling_registries_per_org()
+    others = (
+        await db.execute(
+            select(func.count())
+            .select_from(SkillMarketplaceRegistry)
+            .where(
+                SkillMarketplaceRegistry.owner_type == "org",
+                SkillMarketplaceRegistry.owner_id == org_id,
+                SkillMarketplaceRegistry.poll_interval_seconds > 0,
+                SkillMarketplaceRegistry.id != row.id,
+            )
+        )
+    ).scalar_one()
+    if others >= cap:
+        raise HTTPException(
+            409,
+            detail={
+                "code": "poll_registry_limit",
+                "message": (
+                    f"This organization already polls {others} registries (the limit is {cap}). "
+                    "Set poll_interval_seconds to 0 on one of them, or keep this registry metadata-only."
+                ),
+                "limit": cap,
+            },
+        )
+
+
+def _poll_audit_view(row: SkillMarketplaceRegistry) -> dict:
+    return {
+        "poll_interval_seconds": int(row.poll_interval_seconds or 0),
+        "tag_pattern": row.tag_pattern,
+        "branch_only_mode": bool(row.branch_only_mode),
+        "branch": row.branch,
+        # The reference itself is not a secret, but audit only that one is set.
+        "credential_secret_ref_set": bool(row.credential_secret_ref),
+        "publish_namespace": row.publish_namespace,
     }
 
 
@@ -2978,6 +3404,10 @@ async def create_personal_registry(
 ) -> dict:
     if auth.key_kind != "user":
         raise HTTPException(403, "Service keys cannot create personal registries")
+    if (body.poll_interval_seconds or 0) > 0 or any(
+        getattr(body, key) not in (None, "", False) for key in _POLL_FIELDS if key != "poll_interval_seconds"
+    ):
+        raise _poll_settings_error("Server-side polling is available for organization registries only.")
     row = SkillMarketplaceRegistry(
         id=f"smr_{secrets.token_hex(12)}",
         owner_type="user",
@@ -2987,6 +3417,7 @@ async def create_personal_registry(
         refresh_commit=body.refresh_commit,
         policy_state=body.policy_state,
         created_by_user_id=auth.user.id,
+        poll_interval_seconds=0,
     )
     db.add(row)
     await db.commit()
@@ -3032,7 +3463,24 @@ async def create_org_registry(
         refresh_commit=body.refresh_commit,
         policy_state=body.policy_state,
         created_by_user_id=auth.user.id,
+        poll_interval_seconds=0,
+        branch_only_mode=False,
+        consecutive_failures=0,
     )
+    interval = body.poll_interval_seconds
+    if interval is None:
+        # https registries poll every 15 minutes by default; ssh registries
+        # are never fetched by the server, so they stay metadata-only.
+        interval = (
+            registry_polling.DEFAULT_POLL_INTERVAL_SECONDS
+            if urlparse(body.source_url).scheme == "https"
+            else 0
+        )
+    changes = {key: getattr(body, key) for key in _POLL_FIELDS if key != "poll_interval_seconds"}
+    changes["poll_interval_seconds"] = interval
+    _apply_poll_settings(row, changes, actor_id=auth.user.id)
+    row.poll_actor_user_id = auth.user.id
+    await _enforce_org_poll_cap(db, org.id, row)
     db.add(row)
     _audit(
         db,
@@ -3042,11 +3490,224 @@ async def create_org_registry(
         event_type="skill_registry_created",
         target_type="skill_registry",
         target_id=row.id,
-        after={"alias": row.alias, "policy_state": row.policy_state},
+        after={"alias": row.alias, "policy_state": row.policy_state, **_poll_audit_view(row)},
+    )
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            409, detail={"code": "registry_alias_exists", "message": "A registry with this alias already exists."}
+        ) from None
+    await db.refresh(row)
+    return _registry_response(row)
+
+
+async def _org_registry(db: AsyncSession, org_id: str, registry_id: str, *, lock: bool = False) -> SkillMarketplaceRegistry:
+    statement = select(SkillMarketplaceRegistry).where(
+        SkillMarketplaceRegistry.id == registry_id,
+        SkillMarketplaceRegistry.owner_type == "org",
+        SkillMarketplaceRegistry.owner_id == org_id,
+    )
+    if lock:
+        statement = statement.with_for_update()
+    row = (await db.execute(statement)).scalar_one_or_none()
+    if row is None:
+        # Another org's registry is indistinguishable from a missing one.
+        raise HTTPException(404, "Registry not found")
+    return row
+
+
+@router.patch("/orgs/{org_id}/skills/registries/{registry_id}")
+async def update_org_registry(
+    org_id: str,
+    registry_id: str,
+    body: RegistryUpdate,
+    auth: AuthContext = Depends(require_scope("skills:admin")),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Owner/admin: change the registry's policy state and polling settings.
+    Any polling change makes the caller the poll actor (the identity the
+    poller publishes as), resets the backoff and schedules a poll now."""
+    org, role = await _org_access(db, auth, org_id, admin=True)
+    await _check_org_feature(db, org, "team_skill_library")
+    row = await _org_registry(db, org.id, registry_id, lock=True)
+    before = {"policy_state": row.policy_state, **_poll_audit_view(row)}
+    fields = body.model_fields_set
+    if "policy_state" in fields and body.policy_state is not None:
+        row.policy_state = body.policy_state
+    changes = {key: getattr(body, key) for key in _POLL_FIELDS if key in fields}
+    if "poll_interval_seconds" in changes and changes["poll_interval_seconds"] is None:
+        raise _poll_settings_error("poll_interval_seconds must be 0 or a number of seconds")
+    if "branch_only_mode" in changes and changes["branch_only_mode"] is None:
+        raise _poll_settings_error("branch_only_mode must be true or false")
+    actor_before = row.poll_actor_user_id
+    _apply_poll_settings(row, changes, actor_id=auth.user.id, reassign_actor=bool(changes))
+    if "poll_interval_seconds" in changes:
+        await _enforce_org_poll_cap(db, org.id, row)
+    after = {"policy_state": row.policy_state, **_poll_audit_view(row)}
+    if row.poll_actor_user_id != actor_before:
+        after["poll_actor_reassigned"] = True
+    if after != before:
+        _audit(
+            db,
+            org=org,
+            auth=auth,
+            role=role,
+            event_type="skill_registry_updated",
+            target_type="skill_registry",
+            target_id=row.id,
+            after={"before": before, "after": after},
+        )
+    await db.commit()
+    await db.refresh(row)
+    return _registry_response(row)
+
+
+@router.post("/orgs/{org_id}/skills/registries/{registry_id}/poll", status_code=202)
+async def request_org_registry_poll(
+    org_id: str,
+    registry_id: str,
+    auth: AuthContext = Depends(require_scope("skills:admin")),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """"Poll now": schedule the registry for the NEXT poller run (the fetch
+    itself never runs in this request). At most once a minute per registry."""
+    org, role = await _org_access(db, auth, org_id, admin=True)
+    await _check_org_feature(db, org, "team_skill_library")
+    row = await _org_registry(db, org.id, registry_id, lock=True)
+    if int(row.poll_interval_seconds or 0) <= 0:
+        raise HTTPException(
+            409,
+            detail={
+                "code": "polling_disabled",
+                "message": "Polling is off for this registry (poll_interval_seconds is 0).",
+            },
+        )
+    now = datetime.now(timezone.utc)
+    requested = row.poll_requested_at
+    if requested is not None and requested.tzinfo is None:
+        requested = requested.replace(tzinfo=timezone.utc)
+    if requested is not None and now - requested < POLL_NOW_MIN_INTERVAL:
+        retry = max(1, int((POLL_NOW_MIN_INTERVAL - (now - requested)).total_seconds()))
+        raise HTTPException(
+            429,
+            detail={"code": "poll_rate_limited", "message": "A poll was requested less than a minute ago.",
+                    "retry_after": retry},
+            headers={"Retry-After": str(retry)},
+        )
+    row.poll_requested_at = now
+    row.next_poll_at = now
+    _audit(
+        db,
+        org=org,
+        auth=auth,
+        role=role,
+        event_type="skill_registry_poll_requested",
+        target_type="skill_registry",
+        target_id=row.id,
+        after={},
     )
     await db.commit()
     await db.refresh(row)
     return _registry_response(row)
+
+
+@router.get("/orgs/{org_id}/skills/registries/{registry_id}/poll-refs")
+async def list_org_registry_poll_refs(
+    org_id: str,
+    registry_id: str,
+    limit: int = Query(50, ge=1, le=200),
+    auth: AuthContext = Depends(require_scope("skills:read")),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """The poller's per-ref history for a registry, newest first."""
+    org, _ = await _org_access(db, auth, org_id)
+    await _check_org_feature(db, org, "team_skill_library")
+    await _org_registry(db, org.id, registry_id)
+    rows = (
+        await db.execute(
+            select(SkillRegistryPollRef)
+            .where(SkillRegistryPollRef.registry_id == registry_id)
+            .order_by(SkillRegistryPollRef.created_at.desc(), SkillRegistryPollRef.id.desc())
+            .limit(limit)
+        )
+    ).scalars().all()
+    return {
+        "items": [
+            {
+                "ref": row.ref_name,
+                "commit": row.commit_sha,
+                "outcome": row.outcome,
+                "version_ids": _json(row.version_ids, []),
+                "packages": _json(row.detail or "[]", []),
+                "created_at": row.created_at.isoformat(),
+            }
+            for row in rows
+        ]
+    }
+
+
+REGISTRY_POLL_SCOPE = "skills_registry:poll"
+
+
+async def _require_registry_poller(auth: AuthContext, db: AsyncSession) -> None:
+    """The scheduler: a ``skills_registry:poll`` service key minted by a
+    platform admin, or a platform-admin user key (manual / self-hosted cron).
+    Polls span every org's registries, so an org admin's key is refused."""
+    if auth.user.tier != "admin":
+        raise HTTPException(403, "Admin access required")
+    if auth.key_kind == "service" and REGISTRY_POLL_SCOPE not in auth.scopes:
+        raise HTTPException(403, "Admin access required")
+    # The run-as user and the minter (or last rotator) must both still be
+    # active platform admins.
+    await assert_platform_key_minter_active(
+        auth, db, error="platform_key_minter_not_admin", scope=REGISTRY_POLL_SCOPE
+    )
+
+
+@router.post("/admin/skills/registries/poll")
+async def admin_poll_registries(
+    request: Request,
+    body: RegistryPollRun | None = None,
+    auth: AuthContext = Depends(require_scope(REGISTRY_POLL_SCOPE)),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Poll due registries (bounded batch, leased per registry so concurrent
+    schedulers never double-poll). With ``registry_ids`` those registries are
+    polled now regardless of their schedule. Called by Cloud Scheduler
+    (hosted) or ``sfs admin registries poll`` / the Helm CronJob."""
+    await _require_registry_poller(auth, db)
+    if not registry_polling.polling_enabled():
+        raise HTTPException(
+            503,
+            detail={"code": "registry_polling_disabled",
+                    "message": "Registry polling is disabled on this server (SFS_REGISTRY_POLLING_ENABLED)."},
+        )
+    body = body or RegistryPollRun(limit=registry_poller.DEFAULT_BATCH, registry_ids=None)
+    result = await registry_poller.run_poll(
+        db, store=_blob_store(request), limit=body.limit, registry_ids=body.registry_ids
+    )
+    db.add(
+        AdminAction(
+            id=str(uuid.uuid4()),
+            admin_id=auth.user.id,
+            action="skill_registry_poll",
+            target_type="skill_registry",
+            target_id="bulk",
+            details=json.dumps(
+                {
+                    "polled": result["polled"],
+                    "busy": result["busy"],
+                    "registries": [item["registry_id"] for item in result["results"]][:50],
+                    "service_key_id": auth.service_key_id,
+                },
+                sort_keys=True,
+            ),
+        )
+    )
+    await db.commit()
+    return result
 
 
 def _request_response(row: SkillInstallRequest, risk: dict | None = None) -> dict:
@@ -3146,6 +3807,7 @@ async def _project_admin(
 async def create_install_request(
     project_id: str,
     body: InstallRequestCreate,
+    request: Request,
     auth: AuthContext = Depends(require_scope("skills:request")),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -3203,6 +3865,9 @@ async def create_install_request(
                 "message": "The requested package hash is not the immutable version hash.",
             },
         )
+    # Org skills policy (marketplace v2 §8, Enterprise): refused before any
+    # request exists, with the reason and whom to ask.
+    await skill_policy.enforce_for_org(db, project.org_id, version, store=_blob_store(request))
     if target_user_id != auth.user.id:
         await _project_admin(db, auth, project)
         if not await user_can_access_project(db, target_user_id, project):
@@ -3365,8 +4030,19 @@ async def list_install_requests(
     readable = [row for row in rows if _request_record_ok(row)]
     omitted = len(rows) - len(readable)
     risks = await _version_risks(db, [row.version_id for row in readable])
+    items = [_request_response(row, risks.get(row.version_id)) for row in readable]
+    if project.org_id is not None:
+        # Org skills policy verdict on each request (marketplace v2 §8):
+        # devices refuse to install a request the CURRENT policy refuses.
+        verdicts = await skill_policy.verdicts(
+            db, [(project.org_id, row.version_id) for row in readable]
+        )
+        for item in items:
+            found = verdicts.get((project.org_id, item["version_id"]))
+            if found is not None:
+                item["policy"] = _policy_verdict(*found)
     return {
-        "items": [_request_response(row, risks.get(row.version_id)) for row in readable],
+        "items": items,
         "can_approve": can_approve,
         "incomplete": omitted > 0,
         "omitted_count": omitted,
@@ -3474,6 +4150,9 @@ async def approve_install_request(
     )
     store = _blob_store(request)
     manifest = await skill_disclosure.require_manifest(db, store, version)
+    # The policy at approval time decides (it may have changed since the
+    # request was made).
+    await skill_policy.enforce_for_org(db, project.org_id, version, manifest=manifest)
     previous = await skill_disclosure.previous_request_version(db, row, version.package_id)
     carried: dict[str, list[SkillConsentReceipt]] = {}
     if previous is not None:
@@ -4213,6 +4892,9 @@ async def load_marketplace_instructions(
         await db.commit()
     if not granted:
         raise approval_required()
+    # A grant made before the org's current skills policy (or under an
+    # earlier revision) stops loading once the policy refuses the version.
+    await skill_policy.enforce_for_org(db, project.org_id, version)
     # Every successful approved load is audited: actor, project, tool, package + hash.
     if project.org_id is not None:
         org = await db.get(Organization, project.org_id)
@@ -4258,6 +4940,16 @@ async def load_marketplace_instructions(
         }
     )
     return result
+
+
+def _policy_verdict(effective: Any, verdict: Any) -> dict:
+    """Wire form of a skills-policy verdict (allowed, violations, message)."""
+    return {
+        **verdict.as_dict(),
+        "org_id": effective.org.id,
+        "policy_revision": effective.row.revision,
+        "message": refusal_message(effective.org.name, verdict) if not verdict.allowed else "",
+    }
 
 
 def _assignment_response(row: OrgSkillAssignment) -> dict:
@@ -4428,6 +5120,7 @@ async def create_org_assignment(
         tools=list(body.target_tools),
         scope="user",  # assignments install device-wide (user scope)
     )
+    await skill_policy.enforce_for_org(db, org.id, version, manifest=assignment_manifest)
     assignment = OrgSkillAssignment(
         id=f"osa_{secrets.token_hex(12)}",
         org_id=org.id,
@@ -4642,8 +5335,31 @@ async def list_effective_assignments(
         # A page may hold fewer items than `limit` after this filter; keep
         # following next_cursor while has_more is true.
         readable = [row for row in readable if _grants_tool(row.target_tools, tool)]
+    # Org skills policy on the reconcile path (marketplace v2 §8): an
+    # assignment the assigning org's CURRENT policy refuses is not delivered;
+    # it is listed under policy_refused so the device can say why.
+    verdicts = await skill_policy.verdicts(db, [(row.org_id, row.version_id) for row in readable])
+    refused = []
+    delivered = []
+    for row in readable:
+        found = verdicts.get((row.org_id, row.version_id))
+        if found is not None and not found[1].allowed:
+            refused.append(
+                {
+                    "assignment_id": row.id,
+                    "org_id": row.org_id,
+                    "version_id": row.version_id,
+                    "content_hash": row.content_hash,
+                    "package_id": row.package_id,
+                    "mode": row.mode,
+                    "policy": _policy_verdict(*found),
+                }
+            )
+        else:
+            delivered.append(row)
     return {
-        "items": [_assignment_response(row) for row in readable],
+        "items": [_assignment_response(row) for row in delivered],
+        "policy_refused": refused,
         "incomplete": omitted > 0,
         "omitted_count": omitted,
         "has_more": has_more,

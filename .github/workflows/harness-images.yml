@@ -1,0 +1,232 @@
+name: Works-in Harness Images
+
+# One image per tool for the marketplace works-in harness (deploy/harness/).
+# Each tool is built, smoked, scanned and (when publishing) pushed in ONE
+# job (harness-image-build.yml), so image bytes never leave the runner
+# except to the private Artifact Registry repository.
+#
+# - Pull requests / pushes to main touching the harness: VERIFY only (no
+#   id-token, nothing pushed). If every changed path is under
+#   deploy/harness/tools/<tool>/, just those tools; any other change
+#   (shared build files, harness code, workflows) -> every tool.
+# - Successful Release: every tool from the release commit
+#   (workflow_run.head_sha, which must be what the v* tag points at),
+#   pushed with the release version.
+# - Weekly schedule: every tool from main, tagged weekly-<date>-<sha>
+#   (design §7.4 weekly rebuild).
+# - Manual dispatch: every tool from the given ref, resolved to a SHA. It
+#   is PUBLISHED only if that SHA is what a v* tag points at (release tag)
+#   or is on main (manual-<date>-<sha>); anything else (a PR head, a
+#   branch) is built and verified but never gets a credential.
+#
+# The publish job can mint the deployer OIDC token for its whole duration,
+# so the ref restriction above is the real control: only commits that are
+# released or on main ever run in a job holding id-token: write.
+#
+# The images bundle proprietary tool CLIs (e.g. Claude Code is "All rights
+# reserved"): never GHCR, never an Actions artifact or layer cache.
+
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to build from (tag or branch)"
+        required: false
+        default: "main"
+      push:
+        description: "Push the images to Artifact Registry"
+        type: boolean
+        required: false
+        default: true
+  pull_request:
+    paths:
+      - "deploy/harness/**"
+      - "src/sessionfs/skills/works_in_harness.py"
+      - "src/sessionfs/skills/native_feeds.py"
+      - ".github/workflows/harness-images.yml"
+      - ".github/workflows/harness-image-build.yml"
+  push:
+    branches: [main]
+    paths:
+      - "deploy/harness/**"
+      - "src/sessionfs/skills/works_in_harness.py"
+      - "src/sessionfs/skills/native_feeds.py"
+      - ".github/workflows/harness-images.yml"
+      - ".github/workflows/harness-image-build.yml"
+
+# No job gets an OIDC token by default; only the publish job asks for one.
+permissions:
+  contents: read
+
+concurrency:
+  group: harness-images-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+    outputs:
+      tools: ${{ steps.plan.outputs.tools }}
+      publish: ${{ steps.plan.outputs.publish }}
+      sha: ${{ steps.plan.outputs.sha }}
+      tag_kind: ${{ steps.plan.outputs.tag_kind }}
+      version: ${{ steps.plan.outputs.version }}
+    steps:
+      # Full history + tags + origin/main, to resolve and vet the commit.
+      # Release builds check out the commit the Release run used (head_sha),
+      # never the moving tag name.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.event.inputs.ref || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select tools, commit and tag kind
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          PUSH_INPUT: ${{ github.event.inputs.push }}
+          RUN_REF: ${{ github.event.workflow_run.head_branch }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          INPUT_REF: ${{ github.event.inputs.ref }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          WORKFLOW_FROM: ${{ github.ref }}
+        run: |
+          all_tools() {
+            python3 -c 'import json; print(json.dumps(sorted(json.load(open("deploy/harness/tools.json"))["tools"])))'
+          }
+          # Every changed path under deploy/harness/tools/<included tool>/ ->
+          # those tools; ANY other changed path (or none) -> every tool.
+          SELECTOR="$(cat <<'EOF'
+          import json, sys
+          tools = sorted(json.load(open("deploy/harness/tools.json"))["tools"])
+          changed = [p.decode() for p in sys.stdin.buffer.read().split(b"\0") if p]
+          picked = set()
+          for path in changed:
+              parts = path.split("/")
+              if len(parts) >= 5 and parts[:3] == ["deploy", "harness", "tools"] and parts[3] in tools:
+                  picked.add(parts[3])
+              else:
+                  picked = set(tools)
+                  break
+          print(json.dumps(sorted(picked or tools)))
+          EOF
+          )"
+          SHA="$(git rev-parse HEAD)"
+          PUBLISH=false
+          KIND=verify
+          VERSION=""
+          tag_sha() { git rev-parse -q --verify "refs/tags/$1^{commit}" 2>/dev/null || true; }
+          case "$EVENT" in
+            pull_request|push)
+              BASE="$PR_BASE"
+              [ "$EVENT" = "push" ] && BASE="$PUSH_BEFORE"
+              if [ -z "$BASE" ] || ! git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
+                TOOLS="$(all_tools)"   # new branch or unknown base: build everything
+              else
+                TOOLS="$(git diff -z --name-only "$BASE" "$SHA" | python3 -c "$SELECTOR")"
+              fi
+              ;;
+            workflow_run)
+              TOOLS="$(all_tools)"
+              if [ "$SHA" != "$RUN_SHA" ] || [[ "$RUN_REF" != v[0-9]* ]] || [ "$(tag_sha "$RUN_REF")" != "$SHA" ]; then
+                echo "release run $RUN_REF @ $RUN_SHA is not a v* tag pointing at the checked-out commit $SHA" >&2
+                exit 1
+              fi
+              PUBLISH=true
+              KIND=release
+              VERSION="${RUN_REF#v}"
+              ;;
+            schedule)
+              TOOLS="$(all_tools)"
+              PUBLISH=true
+              KIND=weekly
+              ;;
+            workflow_dispatch)
+              TOOLS="$(all_tools)"
+              [ "$PUSH_INPUT" = "true" ] && PUBLISH=true
+              # The workflow definition itself (and its reusable build workflow)
+              # comes from the branch the run was started from: only main's
+              # reviewed definition may publish.
+              if [ "$PUBLISH" = true ] && [ "$WORKFLOW_FROM" != "refs/heads/main" ]; then
+                echo "::warning::manual runs publish only when started from main (started from $WORKFLOW_FROM): building without publishing"
+                PUBLISH=false
+              fi
+              if [[ "$INPUT_REF" == v[0-9]* ]] && [ "$(tag_sha "$INPUT_REF")" = "$SHA" ]; then
+                KIND=release
+                VERSION="${INPUT_REF#v}"
+              else
+                KIND=manual
+              fi
+              ;;
+            *)
+              echo "unexpected event: $EVENT" >&2
+              exit 1
+              ;;
+          esac
+          # Only a released commit (v* tag) or a commit on main may ever run in
+          # the job that can mint the deployer OIDC token.
+          if [ "$PUBLISH" = true ] && [ "$KIND" != release ]; then
+            if ! git merge-base --is-ancestor "$SHA" origin/main; then
+              echo "::warning::$SHA is neither a v* release tag nor on main: building without publishing"
+              PUBLISH=false
+            fi
+          fi
+          if [ "$PUBLISH" != true ]; then
+            KIND=verify
+            VERSION=""
+          fi
+          {
+            echo "tools=${TOOLS}"
+            echo "publish=${PUBLISH}"
+            echo "sha=${SHA}"
+            echo "tag_kind=${KIND}"
+            echo "version=${VERSION}"
+          } >> "$GITHUB_OUTPUT"
+
+  # ---- Verify: build + smoke + scan, no cloud credentials, nothing pushed ----
+  verify:
+    name: Verify
+    needs: plan
+    if: needs.plan.outputs.publish != 'true'
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        tool: ${{ fromJSON(needs.plan.outputs.tools) }}
+    uses: ./.github/workflows/harness-image-build.yml
+    with:
+      tool: ${{ matrix.tool }}
+      sha: ${{ needs.plan.outputs.sha }}
+      publish: false
+      tag_kind: verify
+
+  # ---- Publish: the same job, plus the gate, then credentials and push LAST ----
+  publish:
+    name: Publish
+    needs: plan
+    if: needs.plan.outputs.publish == 'true' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        tool: ${{ fromJSON(needs.plan.outputs.tools) }}
+    uses: ./.github/workflows/harness-image-build.yml
+    with:
+      tool: ${{ matrix.tool }}
+      sha: ${{ needs.plan.outputs.sha }}
+      publish: true
+      tag_kind: ${{ needs.plan.outputs.tag_kind }}
+      version: ${{ needs.plan.outputs.version }}

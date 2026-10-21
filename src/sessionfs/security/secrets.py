@@ -11,7 +11,10 @@ name and a masked context snippet.
 
 from __future__ import annotations
 
+import bisect
+import itertools
 import re
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -351,6 +354,256 @@ def _build_context(text: str, match: re.Match[str], width: int = 25) -> str:
     return snippet[:m_start] + masked + snippet[m_end:]
 
 
+# ---------------------------------------------------------------------------
+# Scan planning (performance only: never changes what a scan finds)
+# ---------------------------------------------------------------------------
+#
+# Trying every pattern at every position of every line made large DLP scans
+# slow (GH #71): most built-in patterns start with a case-insensitive
+# alternation or a ``\b``, which the regex engine can't skip ahead for. Two
+# exact shortcuts:
+#
+# 1. NEEDLES: a pattern can only match a line containing one of its needles
+#    (a literal every match includes), so other lines skip that pattern.
+# 2. ANCHORS: every match starts at a fixed offset from an occurrence of one
+#    of the pattern's anchors (its leading literal alternatives), so the
+#    pattern is tried at those positions only, in order and resuming after
+#    each match exactly as finditer does.
+#
+# The unchanged pattern still decides every match, so findings, their order
+# and their line numbers are identical to a full scan.
+#
+# Folded literals are lowercase and looked up in the lowercased text (for
+# IGNORECASE patterns). Under IGNORECASE a few non-ASCII characters also
+# match ASCII letters (``_CASE_TRAPS``: dotted capital I, dotless i, long s,
+# Kelvin sign) and U+0130 grows when lowercased, so a text containing any of
+# them gets no folded shortcuts. tests/unit/test_dlp_scan_speed.py checks
+# these facts against the regex engine and compares results with a full
+# scan.
+
+
+@dataclass(frozen=True)
+class _Rule:
+    needles: tuple[str, ...]
+    needles_folded: bool = False
+    # (literal, offset of the match start from the literal); None = no anchors
+    anchors: tuple[tuple[str, int], ...] | None = None
+    anchors_folded: bool = False
+
+
+def _starts_with(*words: str) -> tuple[tuple[str, int], ...]:
+    return tuple((word, 0) for word in words)
+
+
+_SCAN_RULES: dict[str, _Rule] = {
+    # -- secrets --
+    "sessionfs_api_key": _Rule(("sk_sfs_",)),
+    "aws_access_key_id": _Rule(("AKIA",)),
+    "aws_secret_access_key": _Rule(("secret_access_key", "AWS_SECRET")),
+    "gcp_service_account": _Rule(('"service_account"',)),
+    "azure_storage_key": _Rule(("AccountKey", "azure_storage_key")),
+    "openai_api_key": _Rule(("sk-",)),
+    "anthropic_api_key": _Rule(("sk-ant-",)),
+    "github_token": _Rule(("ghp_", "gho_", "ghu_", "ghs_", "ghr_")),
+    "github_fine_grained": _Rule(("github_pat_",)),
+    "stripe_secret_key": _Rule(("_live_", "_test_")),
+    "slack_token": _Rule(("xox",)),
+    "slack_webhook": _Rule(("https://hooks.slack.com/services/T",)),
+    "sendgrid_api_key": _Rule(("SG.",)),
+    "twilio_api_key": _Rule(("SK",)),
+    "private_key_pem": _Rule(("-----BEGIN ",)),
+    # IGNORECASE; "://" has no cased characters.
+    "database_url": _Rule(
+        ("://",),
+        anchors=_starts_with("postgres", "mysql", "mongodb", "redis", "amqp"),
+        anchors_folded=True,
+    ),
+    "generic_password_assignment": _Rule(
+        ("password", "passwd", "pwd", "secret", "token", "api_key", "apikey"),
+        needles_folded=True,
+        anchors=_starts_with(
+            "password", "passwd", "pwd", "secret", "token", "api_key", "apikey",
+            "auth_token", "access_token",
+        ),
+        anchors_folded=True,
+    ),
+    "bearer_token": _Rule(
+        ("bearer",),
+        needles_folded=True,
+        anchors=_starts_with("authorization", "bearer"),
+        anchors_folded=True,
+    ),
+    "base64_high_entropy": _Rule(
+        ("key", "secret", "token", "password", "credential"),
+        needles_folded=True,
+        anchors=_starts_with("key", "secret", "token", "password", "credential"),
+        anchors_folded=True,
+    ),
+    "jwt_token": _Rule(("eyJ",)),
+    # -- PHI --
+    # \d{3}-\d{2}-\d{4}: the first "-" is always 3 characters into a match.
+    "ssn": _Rule(("-",), anchors=(("-", -3),)),
+    "mrn": _Rule(("MRN", "mrn"), anchors=_starts_with("MRN", "mrn")),
+    "dob": _Rule(("DOB", "dob", "date"), anchors=_starts_with("DOB", "dob", "date")),
+    "npi_dea_license": _Rule(
+        ("DEA", "NPI", "license"), anchors=_starts_with("DEA", "NPI", "license")
+    ),
+    "health_plan_id": _Rule(
+        ("health", "member"),
+        needles_folded=True,
+        anchors=_starts_with("health", "member"),
+        anchors_folded=True,
+    ),
+    "patient_name": _Rule(
+        ("patient", "pt"),
+        needles_folded=True,
+        anchors=_starts_with("patient", "pt"),
+        anchors_folded=True,
+    ),
+    "patient_phone": _Rule(
+        ("patient", "emergency"), anchors=_starts_with("patient", "emergency")
+    ),
+    "fax_number": _Rule(("fax",), anchors=_starts_with("fax")),
+    "vin": _Rule(("VIN",), anchors=_starts_with("VIN")),
+    "device_id": _Rule(("device", "serial"), anchors=_starts_with("device", "serial")),
+    "biometric_id": _Rule(
+        ("biometric", "fingerprint", "retina"),
+        anchors=_starts_with("biometric", "fingerprint", "retina"),
+    ),
+    "phi_url": _Rule(("http",), anchors=_starts_with("http")),
+    "medical_email": _Rule(
+        ("patient", "medical"), anchors=_starts_with("patient", "medical")
+    ),
+    "medical_age_90_plus": _Rule(("age",), anchors=_starts_with("age")),
+}
+
+_CASE_TRAPS = ("\u0130", "\u0131", "\u017f", "\u212a")
+
+
+def line_starts(text: str) -> list[int]:
+    """Offset in ``text`` where each line of ``text.splitlines()`` starts."""
+    starts = list(itertools.accumulate(map(len, text.splitlines(True)), initial=0))
+    starts.pop()
+    return starts
+
+
+def _needle_lines(haystack: str, needles: tuple[str, ...], starts: list[int]) -> set[int]:
+    """Indexes (0-based, splitlines order) of lines containing a needle.
+
+    Needles contain no line-break characters, so an occurrence never spans
+    two lines.
+    """
+    found: set[int] = set()
+    n_starts = len(starts)
+    for needle in needles:
+        pos = haystack.find(needle)
+        while pos != -1:
+            line = bisect.bisect_right(starts, pos) - 1
+            found.add(line)
+            # One hit selects the line; continue on the next one.
+            nxt = starts[line + 1] if line + 1 < n_starts else len(haystack)
+            pos = haystack.find(needle, max(nxt, pos + 1))
+    return found
+
+
+def _anchor_positions(
+    haystack: str, anchors: tuple[tuple[str, int], ...], starts: list[int]
+) -> dict[int, list[int]]:
+    """Per line index, the in-line positions where a match could start.
+
+    Anchors contain no line-break characters, so an occurrence (and a match
+    starting at its offset) stays within one line.
+    """
+    found: dict[int, list[int]] = {}
+    for literal, offset in anchors:
+        at = haystack.find(literal)
+        while at != -1:
+            line = bisect.bisect_right(starts, at) - 1
+            rel = at - starts[line] + offset
+            if rel >= 0:
+                found.setdefault(line, []).append(rel)
+            at = haystack.find(literal, at + 1)
+    return found
+
+
+# (name, pattern, candidate lines or None for every line, per-line anchor
+# positions or None to try every position)
+_PlanEntry = tuple[str, re.Pattern[str], "set[int] | None", "dict[int, list[int]] | None"]
+
+
+class _ScanPlan:
+    """Which patterns to try on which lines (and where) for one text."""
+
+    def __init__(self, text: str, lines: list[str]) -> None:
+        self._text = text
+        self._lines = lines
+        self._starts = line_starts(text)
+        self._usable = len(self._starts) == len(lines)
+        self._lowered: str | None = None
+        if self._usable and not any(trap in text for trap in _CASE_TRAPS):
+            lowered = text.lower()
+            if len(lowered) == len(text):
+                self._lowered = lowered
+        # Union of candidate lines of every planned pattern; None = all lines.
+        self.line_ids: set[int] | None = set()
+
+    def _haystack(self, folded: bool) -> str | None:
+        return self._lowered if folded else self._text
+
+    def plan(self, patterns: Iterable[tuple[str, re.Pattern[str]]]) -> list[_PlanEntry]:
+        """Entries for the patterns that can match somewhere, in order."""
+        entries: list[_PlanEntry] = []
+        for name, pattern in patterns:
+            rule = _SCAN_RULES.get(name) if self._usable else None
+            candidates: set[int] | None = None
+            positions: dict[int, list[int]] | None = None
+            if rule is not None:
+                anchor_text = self._haystack(rule.anchors_folded)
+                needle_text = self._haystack(rule.needles_folded)
+                if rule.anchors is not None and anchor_text is not None:
+                    positions = _anchor_positions(anchor_text, rule.anchors, self._starts)
+                    candidates = set(positions)
+                elif needle_text is not None:
+                    candidates = _needle_lines(needle_text, rule.needles, self._starts)
+                if candidates is not None and not candidates:
+                    continue
+            if candidates is None:
+                self.line_ids = None
+            elif self.line_ids is not None:
+                self.line_ids |= candidates
+            entries.append((name, pattern, candidates, positions))
+        return entries
+
+    def order(self, every_line: bool) -> Iterable[int]:
+        """Line indexes to visit, ascending."""
+        if every_line or self.line_ids is None:
+            return range(len(self._lines))
+        return sorted(self.line_ids)
+
+    def matches(self, index: int, entry: _PlanEntry) -> Iterator[re.Match[str]]:
+        """Exactly ``pattern.finditer(line)`` for line ``index`` (0-based)."""
+        _name, pattern, _candidates, positions = entry
+        line = self._lines[index]
+        if positions is None:
+            yield from pattern.finditer(line)
+            return
+        resume = 0
+        for at in sorted(set(positions.get(index, ()))):
+            if at < resume:
+                continue
+            match = pattern.match(line, at)
+            if match is not None:
+                yield match
+                # Anchored matches are never empty, so finditer resumes at
+                # the match end.
+                resume = match.end()
+
+
+def _phi_items() -> Iterator[tuple[str, re.Pattern[str]]]:
+    for name, (pattern, _severity) in PHI_PATTERNS.items():
+        yield name, pattern
+
+
 def scan_dlp(
     text: str,
     categories: list[str] | None = None,
@@ -390,38 +643,52 @@ def scan_dlp(
                 cp["severity"],
             ))
 
-    for line_idx, line in enumerate(lines, start=1):
+    plan = _ScanPlan(text, lines)
+    secret_entries = plan.plan(SECRET_PATTERNS.items()) if "secrets" in categories else []
+    phi_entries = plan.plan(_phi_items()) if "phi" in categories else []
+
+    # Custom patterns see every line.
+    for line_idx0 in plan.order(every_line=bool(compiled_custom)):
+        line = lines[line_idx0]
+        line_idx = line_idx0 + 1
         # --- Secret patterns ---
-        if "secrets" in categories:
-            for pattern_name, pattern in SECRET_PATTERNS.items():
-                for match in pattern.finditer(line):
-                    matched_text = match.group(0)
-                    if _is_dlp_allowlisted(matched_text, allowlist):
-                        continue
-                    findings.append(DLPFinding(
-                        pattern_name=pattern_name,
-                        category="secret",
-                        severity=SEVERITY_MAP.get(pattern_name, "medium"),
-                        line_number=line_idx,
-                        match_text=matched_text,
-                        context=_build_context(line, match),
-                    ))
+        for entry in secret_entries:
+            candidates = entry[2]
+            if candidates is not None and line_idx0 not in candidates:
+                continue
+            pattern_name = entry[0]
+            for match in plan.matches(line_idx0, entry):
+                matched_text = match.group(0)
+                if _is_dlp_allowlisted(matched_text, allowlist):
+                    continue
+                findings.append(DLPFinding(
+                    pattern_name=pattern_name,
+                    category="secret",
+                    severity=SEVERITY_MAP.get(pattern_name, "medium"),
+                    line_number=line_idx,
+                    match_text=matched_text,
+                    context=_build_context(line, match),
+                ))
 
         # --- PHI patterns ---
-        if "phi" in categories:
-            for pattern_name, (pattern, severity) in PHI_PATTERNS.items():
-                for match in pattern.finditer(line):
-                    matched_text = match.group(0)
-                    if _is_dlp_allowlisted(matched_text, allowlist):
-                        continue
-                    findings.append(DLPFinding(
-                        pattern_name=pattern_name,
-                        category="phi",
-                        severity=severity,
-                        line_number=line_idx,
-                        match_text=matched_text,
-                        context=_build_context(line, match),
-                    ))
+        for entry in phi_entries:
+            candidates = entry[2]
+            if candidates is not None and line_idx0 not in candidates:
+                continue
+            pattern_name = entry[0]
+            severity = PHI_PATTERNS[pattern_name][1]
+            for match in plan.matches(line_idx0, entry):
+                matched_text = match.group(0)
+                if _is_dlp_allowlisted(matched_text, allowlist):
+                    continue
+                findings.append(DLPFinding(
+                    pattern_name=pattern_name,
+                    category="phi",
+                    severity=severity,
+                    line_number=line_idx,
+                    match_text=matched_text,
+                    context=_build_context(line, match),
+                ))
 
         # --- Custom patterns ---
         for cp_name, cp_regex, cp_category, cp_severity in compiled_custom:
@@ -459,37 +726,50 @@ def scan_dlp_builtin(
     findings: list[DLPFinding] = []
     lines = text.splitlines()
 
-    for line_idx, line in enumerate(lines, start=1):
-        if "secrets" in categories:
-            for pattern_name, pattern in SECRET_PATTERNS.items():
-                for match in pattern.finditer(line):
-                    matched_text = match.group(0)
-                    if _is_allowlisted(matched_text):
-                        continue
-                    start = max(0, match.start() - 25)
-                    end = min(len(line), match.end() + 25)
-                    findings.append(DLPFinding(
-                        pattern_name=pattern_name,
-                        category="secret",
-                        severity=SEVERITY_MAP.get(pattern_name, "medium"),
-                        line_number=line_idx,
-                        match_text=matched_text,
-                        context=line[start:end],
-                    ))
+    plan = _ScanPlan(text, lines)
+    secret_entries = plan.plan(SECRET_PATTERNS.items()) if "secrets" in categories else []
+    phi_entries = plan.plan(_phi_items()) if "phi" in categories else []
 
-        if "phi" in categories:
-            for pattern_name, (pattern, severity) in PHI_PATTERNS.items():
-                for match in pattern.finditer(line):
-                    matched_text = match.group(0)
-                    start = max(0, match.start() - 25)
-                    end = min(len(line), match.end() + 25)
-                    findings.append(DLPFinding(
-                        pattern_name=pattern_name,
-                        category="phi",
-                        severity=severity,
-                        line_number=line_idx,
-                        match_text=matched_text,
-                        context=line[start:end],
-                    ))
+    for line_idx0 in plan.order(every_line=False):
+        line = lines[line_idx0]
+        line_idx = line_idx0 + 1
+        for entry in secret_entries:
+            candidates = entry[2]
+            if candidates is not None and line_idx0 not in candidates:
+                continue
+            pattern_name = entry[0]
+            for match in plan.matches(line_idx0, entry):
+                matched_text = match.group(0)
+                if _is_allowlisted(matched_text):
+                    continue
+                start = max(0, match.start() - 25)
+                end = min(len(line), match.end() + 25)
+                findings.append(DLPFinding(
+                    pattern_name=pattern_name,
+                    category="secret",
+                    severity=SEVERITY_MAP.get(pattern_name, "medium"),
+                    line_number=line_idx,
+                    match_text=matched_text,
+                    context=line[start:end],
+                ))
+
+        for entry in phi_entries:
+            candidates = entry[2]
+            if candidates is not None and line_idx0 not in candidates:
+                continue
+            pattern_name = entry[0]
+            severity = PHI_PATTERNS[pattern_name][1]
+            for match in plan.matches(line_idx0, entry):
+                matched_text = match.group(0)
+                start = max(0, match.start() - 25)
+                end = min(len(line), match.end() + 25)
+                findings.append(DLPFinding(
+                    pattern_name=pattern_name,
+                    category="phi",
+                    severity=severity,
+                    line_number=line_idx,
+                    match_text=matched_text,
+                    context=line[start:end],
+                ))
 
     return findings

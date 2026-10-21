@@ -1,0 +1,28 @@
+{
+  "enforceable": [
+    "allow_hooks",
+    "allow_local_mcp",
+    "allow_remote_mcp",
+    "allowed_remote_mcp_origins",
+    "block_unmanaged_marketplaces"
+  ],
+  "enforcement": "managed",
+  "report_only": [
+    "mode",
+    "allowlist",
+    "allowed_publishers_verified_only",
+    "allow_skill_scripts",
+    "allow_hidden_unicode",
+    "require_signature",
+    "require_dlp_clean_import",
+    "max_scan_severity"
+  ],
+  "unsupported": [
+    "auto_update",
+    "trust_code_updates_publishers"
+  ],
+  "warnings": [
+    "codex.managed_hooks_only",
+    "codex.mcp_lockdown"
+  ]
+}

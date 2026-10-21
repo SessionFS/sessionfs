@@ -308,6 +308,12 @@ function PublisherCard({ publisher }: { publisher: PublisherDetail }) {
           <p className="text-sm text-text-secondary">{publisher.display_name}</p>
         </div>
         <div className="flex flex-wrap gap-1">
+          <Link
+            to={`/marketplace/publishers/${encodeURIComponent(publisher.id)}/analytics`}
+            className="rounded-lg border border-border px-2 py-0.5 text-xs text-text-secondary hover:border-border-strong hover:text-text-primary"
+          >
+            Analytics
+          </Link>
           {publisher.verified ? publisher.badges.map((badge) => <Badge key={badge} label={badge} variant="success" />) : <Badge label="not verified" />}
           {publisher.status !== 'active' && <Badge label={publisher.status} variant="danger" />}
           <Badge label={publisher.public_publishing ? 'public publishing on' : 'public publishing off'} variant={publisher.public_publishing ? 'info' : 'default'} tint />

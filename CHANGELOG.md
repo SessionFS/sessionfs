@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.0] - 2026-10-21
+
+**Find the right skill, install it with your tool's own plugin command, and see where it really works. Plus an org-wide skills policy for Enterprise, Git registries that publish themselves, and much faster pushes of large sessions.** Adds 1 MCP tool (80 → 81) and server migrations 076–079.
+
+### Added
+- **Marketplace discovery.** Browse by category and filter by publisher, verified publisher, trusted-publishing provenance, license, worst open scan finding, capability (instruction-only, scripts, MCP servers, hooks, executable extensions, pre-approved tools), the tools a package is verified to work in, and how recently it was updated. The filters are the same on the dashboard, `sfs skill search`, `sfs skill categories`, the API and the MCP `search_skill_marketplace` tool. Ranking is fixed and documented (no stars or reviews). Listings show the package README, rendered safely: no raw HTML, no remote images, and images inside the package are checked by content.
+- **Install counts and freshness.** Listings show 30-day installs per tool (counts under 10 show as `<10`), last updated and last verified per tool, and **stale**, **deprecated** (with an optional successor) and **unmaintained** flags. Publishers get an analytics view (dashboard **Publishers → Analytics**, `sfs skill publisher stats`), and Team organization admins can see what their own members use (`sfs skill usage --org`). Install counts are sent only after a one-time notice, only while signed in, and stop with `SFS_SKILL_USAGE_REPORTING=0` or either telemetry opt-out (see `docs/telemetry.md`).
+- **Native tool catalogs.** Approved packages are published as read-only git catalogs that each tool's own plugin command can add: Claude Code `/plugin`, Copilot CLI, the Codex Plugins Directory, Cursor team marketplaces and Gemini CLI extensions. `sfs catalog list|add|doctor` sets them up, with your key sent only through the `sfs catalog credential` helper and never in a URL. There is a public catalog for every signed-in user, a personal catalog (Starter and above) and an organization catalog (Team and above). Blocks, yanks and quarantines remove entries on the next fetch. `sfs catalog export --to <remote>` mirrors a catalog to a repository you own, and can run unattended with `--ssh-key-file`.
+- **"Works in" matrix.** Every listing shows, per tool, whether the tool's own installer accepted the package (`verified`, with tool version and date), whether the generated entry matches the tool's documented format (`format-valid`), whether it `regressed` on the newest tool version, or only what SessionFS `expected`. `sfs skill works-in <id>` and MCP `get_marketplace_package` show it too. Verification runs in an isolated sandbox that never runs a skill; checks on private packages are a Team feature.
+- **Org skills policy (Enterprise).** One policy, applied on the server (install requests, approvals, assignments and MCP loads are refused when the policy forbids a version) and compiled into each tool's own managed settings: Claude Code and Copilot `managed-settings.json`, a VS Code device policy, Gemini CLI system settings, Codex `requirements.toml`, and a Cursor dashboard checklist. Every field says whether the tool enforces it or only SessionFS checks it. New `sfs policy show|compile|status|set|disable`, the MCP tool `get_skill_policy`, and a `devices:report` scope for compliance reports. Delivery starts in advisory mode; deploy the compiled files through MDM for tool-level enforcement. An organization that leaves Enterprise keeps its last policy enforced, and owners and admins can relax or disable it but not tighten it.
+- **Git registries publish themselves (GitHub #69).** An organization registry on `https://` can be polled by the server: every new tag matching the registry's pattern becomes a new, immutable version, through exactly the checks of a manual publish (validation, DLP, scanning, disclosure, quotas, blocks). The dashboard shows each registry's poll status with a **Poll now** button. Private repositories use a credential reference (`env:` or `k8s:`), never a token. The fetch refuses private and metadata addresses, follows no redirects, runs no hooks and checks nothing out.
+- **`platform_sweeps:run` service-key scope** so scheduled jobs can run the platform sweeps without a personal admin key. The key stops working if its owner or the admin who created it loses platform admin; report-only and forced rescans still need an admin's own key.
+
+### Changed
+- **Pushing large sessions is much faster (GitHub #71).** The server's secret scan skips lines and positions a pattern cannot match and redacts large sessions in one pass instead of value by value, and the work no longer blocks other requests. A push whose `If-Match` is already out of date is refused before any scanning. Pushes report how long each phase took in a `Server-Timing` header and the server log, and `SFS_LOG_LEVEL` now takes effect.
+- **The MCP server has 81 tools** (`get_skill_policy` added).
+- The Helm chart's API image now includes git and an SSH client (registry polling and catalog export), with new `api.marketplace.publicCatalogMirror` and `api.registryPolling` values.
+
+### Security
+- Email delivery logs no longer include full recipient addresses or, for the logging-only provider, message subjects.
+- Marketplace text shown in the terminal has control characters stripped.
+- A native catalog whose rebuild fails stops serving (503) rather than keep shipping a version that was since blocked, yanked or quarantined.
+- Skills-policy source pins must be full 40-character commit SHAs and match exactly.
+- `certifi` 2026.10.19 or later is required, dropping revoked certificate intermediates.
+
+### Upgrade notes
+- **Self-hosted servers: run migrations 076–079** (discovery, native catalogs, org skills policy, registry polling). All are additive.
+- **Registry polling is off for existing registries** until an owner or admin turns it on. Polling needs a scheduler calling the dedicated poll endpoint with a `skills_registry:poll` key (see Self-Hosted).
+
 ## [0.18.0] - 2026-10-20
 
 **A marketplace you can trust: see exactly what a skill can do before you install it, get asked again when an update wants more access, and have dangerous packages scanned, quarantined or taken down on every device. Plus verified publishers with trusted publishing from GitHub Actions, org-level personas, Antigravity session capture, and safer GitHub and billing integrations.** Adds 1 MCP tool (79 → 80) and server migrations 065–075 (067 and 068 are not used).

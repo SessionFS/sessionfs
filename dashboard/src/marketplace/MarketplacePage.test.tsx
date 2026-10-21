@@ -10,6 +10,8 @@ const { hooks } = vi.hoisted(() => ({
   hooks: {
     useMarketplacePackages: vi.fn(),
     useMarketplacePreview: vi.fn(),
+    useMarketplaceCategories: vi.fn(),
+    useMarketplaceReadme: vi.fn(),
     useCreateSkillInstallRequest: vi.fn(),
     useDeletePersonalSkillVersion: vi.fn(),
     useEffectiveSkillAssignments: vi.fn(),
@@ -20,6 +22,7 @@ const { hooks } = vi.hoisted(() => ({
     useMyOrgs: vi.fn(),
     usePublishSkillPackage: vi.fn(),
     useReportMarketplacePackage: vi.fn(),
+    useRequestRegistryPoll: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
     addToast: vi.fn(),
     useMarketplaceDisclosure: vi.fn((_versionId?: string, _tools?: string[]) => ({ data: undefined as unknown, isLoading: false, error: null })),
   },
@@ -33,6 +36,8 @@ vi.mock('../hooks/useMarketplace', () => ({
   MARKETPLACE_TOOLS: ['claude-code', 'codex', 'gemini'],
   useMarketplacePackages: hooks.useMarketplacePackages,
   useMarketplacePreview: hooks.useMarketplacePreview,
+  useMarketplaceCategories: hooks.useMarketplaceCategories,
+  useMarketplaceReadme: hooks.useMarketplaceReadme,
   useCreateSkillInstallRequest: hooks.useCreateSkillInstallRequest,
   useDeletePersonalSkillVersion: hooks.useDeletePersonalSkillVersion,
   useEffectiveSkillAssignments: hooks.useEffectiveSkillAssignments,
@@ -40,6 +45,7 @@ vi.mock('../hooks/useMarketplace', () => ({
   useRevocationIndex: hooks.useRevocationIndex,
   usePublishSkillPackage: hooks.usePublishSkillPackage,
   useReportMarketplacePackage: hooks.useReportMarketplacePackage,
+  useRequestRegistryPoll: hooks.useRequestRegistryPoll,
 }));
 vi.mock('../transfers/useTransfers', () => ({ useMyOrgs: hooks.useMyOrgs }));
 vi.mock('../hooks/useMe', () => ({ useMe: hooks.useMe }));
@@ -47,6 +53,10 @@ vi.mock('../hooks/useMarketplaceDisclosure', () => ({
   useMarketplaceDisclosure: (versionId?: string, tools?: string[]) => hooks.useMarketplaceDisclosure(versionId, tools),
 }));
 vi.mock('../hooks/useProjects', () => ({ useProjects: hooks.useProjects }));
+vi.mock('../hooks/useNativeCatalogs', () => ({
+  useNativeCatalogs: () => ({ data: undefined, isLoading: false, error: null }),
+  useWorksIn: () => ({ data: undefined, isLoading: false, error: null }),
+}));
 vi.mock('./HeldUpdates', () => ({
   HeldUpdateQueues: ({ orgs }: { orgs: { org_id: string }[] }) => (
     <div data-testid="held-queues">{orgs.map((org) => org.org_id).join(',')}</div>
@@ -108,6 +118,10 @@ beforeEach(() => {
     isLoading: false,
     error: null,
   });
+  hooks.useMarketplaceCategories.mockReturnValue({ data: { items: [
+    { slug: 'review', display_name: 'Code review' }, { slug: 'testing', display_name: 'Testing' },
+  ] } });
+  hooks.useMarketplaceReadme.mockReturnValue({ data: undefined, isLoading: false, error: null });
   hooks.useCreateSkillInstallRequest.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
   hooks.useDeletePersonalSkillVersion.mockReturnValue({ mutateAsync: vi.fn().mockResolvedValue(undefined), isPending: false });
   hooks.useEffectiveSkillAssignments.mockReturnValue({ data: { items: [] }, isLoading: false });
@@ -371,7 +385,7 @@ describe('Report dialog', () => {
     const user = await openReport();
     await user.click(screen.getByRole('combobox', { name: /Reason/ }));
     await user.click(screen.getByRole('option', { name: /Spam/ }));
-    await user.click(screen.getByRole('checkbox'));
+    await user.click(screen.getByRole('checkbox', { name: /Only version/ }));
     await user.click(screen.getByRole('button', { name: 'Submit report' }));
     expect(mutateAsync).toHaveBeenCalledWith({ packageId: 'spk_1', reason: 'spam', details: undefined });
   });
@@ -411,5 +425,72 @@ describe('Report dialog', () => {
     await user.click(screen.getByRole('button', { name: 'Submit report' }));
     expect(screen.getByText('Too many reports right now.')).toBeInTheDocument();
     expect(screen.getByText(/20 a day/)).toBeInTheDocument();
+  });
+});
+
+describe('MarketplacePage discovery (marketplace v2 §9)', () => {
+  const discovered = {
+    ...packageRow,
+    categories: ['review'],
+    installs: { window_days: 30, total: { count: null, display: '<10' }, by_tool: { codex: { count: null, display: '<10' } } },
+    freshness: {
+      stale: true, unmaintained: false, deprecated: true, last_updated_at: '2026-01-01T00:00:00Z',
+      computed_at: '2026-10-20T00:00:00Z',
+      tools: { codex: { last_updated_at: '2026-01-01T00:00:00Z', last_verified_at: '2026-02-01T00:00:00Z', verify_status: 'regressed', stale: true } },
+    },
+    deprecation: {
+      deprecated_at: '2026-10-01T00:00:00Z', message: 'Use review-helper-2',
+      successor: { package_id: 'spk_2', namespace: 'sessionfs', name: 'review-helper-2', display_name: 'Review Helper 2' },
+    },
+  };
+
+  it('passes category and filter rail choices to the search hook', async () => {
+    const user = userEvent.setup();
+    render(<MarketplacePage />);
+    expect(hooks.useMarketplacePackages).toHaveBeenLastCalledWith('', '', { sort: 'relevance' });
+    await user.click(screen.getByRole('button', { name: 'Code review' }));
+    expect(hooks.useMarketplacePackages).toHaveBeenLastCalledWith('', '', { sort: 'relevance', category: 'review' });
+    await user.click(screen.getByLabelText('Verified publishers'));
+    await user.click(screen.getByLabelText('Hide deprecated'));
+    expect(hooks.useMarketplacePackages).toHaveBeenLastCalledWith('', '', {
+      sort: 'relevance', category: 'review', verified: true, include_deprecated: false,
+    });
+    await user.click(screen.getByRole('button', { name: 'All' }));
+    expect(hooks.useMarketplacePackages.mock.lastCall?.[2].category).toBeUndefined();
+  });
+
+  it('badges stale and deprecated packages and shows floored installs', () => {
+    hooks.useMarketplacePackages.mockReturnValue(pages([discovered]));
+    render(<MarketplacePage />);
+    expect(screen.getByText('deprecated')).toBeInTheDocument();
+    expect(screen.getByText('stale')).toBeInTheDocument();
+    expect(screen.getByText('<10 installs')).toBeInTheDocument();
+  });
+
+  it('shows deprecation, per-tool freshness and a README tab in the dossier', async () => {
+    const user = userEvent.setup();
+    hooks.useMarketplacePackages.mockReturnValue(pages([discovered]));
+    hooks.useMarketplaceReadme.mockReturnValue({
+      data: {
+        version_id: 'skv_1', package_id: 'spk_1', source: 'readme', path: 'README.md',
+        content: '# Hello\n\n[bad](javascript:alert(1)) and [good](https://example.com)\n\n<script>alert(1)</script>',
+        hidden_unicode: [], truncated: false, untrusted: true, image_path_prefix: '',
+      },
+      isLoading: false,
+      error: null,
+    });
+    render(<MarketplacePage />);
+    await user.click(screen.getByRole('button', { name: 'Inspect Review Helper' }));
+    expect(screen.getByText('Deprecated by its publisher.')).toBeInTheDocument();
+    expect(screen.getByText('sessionfs/review-helper-2')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Installs and freshness by tool' })).toBeInTheDocument();
+    expect(screen.getByText(/regressed · stale/)).toBeInTheDocument();
+    await user.click(screen.getByRole('tab', { name: 'README' }));
+    expect(hooks.useMarketplaceReadme).toHaveBeenLastCalledWith('spk_1', 'skv_1', true);
+    const readme = screen.getByTestId('safe-readme');
+    expect(readme.querySelector('script')).toBeNull();
+    expect(readme.querySelectorAll('a')).toHaveLength(1);
+    expect(screen.getByRole('link', { name: 'good' })).toHaveAttribute('rel', 'noopener noreferrer nofollow');
+    expect(screen.getByText('bad').tagName).toBe('SPAN');
   });
 });

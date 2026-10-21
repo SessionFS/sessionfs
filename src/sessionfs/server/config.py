@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -60,6 +61,11 @@ class ServerConfig(BaseSettings):
     public_api_url: str = ""
     # Overrides the trusted-publishing OIDC audience (must be deployment-unique).
     trusted_publishing_audience: str = ""
+    # Public GitHub mirror of the public native catalog, as owner/repo (e.g.
+    # SessionFS/marketplace). Set: the public catalog's add commands lead with
+    # the keyless GitHub form. A scheduled `sfs catalog export` keeps it in
+    # sync. Anything but owner/repo refuses startup.
+    public_catalog_mirror: str = ""
 
     # Stripe billing
     stripe_secret_key: str = ""
@@ -67,3 +73,10 @@ class ServerConfig(BaseSettings):
     stripe_price_starter: str = ""
     stripe_price_pro: str = ""
     stripe_price_team: str = ""
+
+    @field_validator("public_catalog_mirror")
+    @classmethod
+    def _check_public_catalog_mirror(cls, value: str) -> str:
+        from sessionfs.skills.catalog_mirror import parse_mirror
+
+        return parse_mirror(value) or ""

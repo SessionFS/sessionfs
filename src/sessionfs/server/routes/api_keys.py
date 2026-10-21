@@ -99,6 +99,26 @@ async def _require_org_admin(
     return ctx.org
 
 
+# Scopes whose routes act across every org (the works-in harness, the
+# registry poller, the scheduled platform sweeps): only a platform admin may
+# mint or rotate a key that carries them.
+PLATFORM_ADMIN_SCOPES = frozenset(
+    {"skills_verify:run", "skills_registry:poll", "platform_sweeps:run"}
+)
+
+
+def _check_platform_scopes(scopes: list[str], user: User) -> None:
+    if PLATFORM_ADMIN_SCOPES.intersection(scopes) and user.tier != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "platform_admin_scope",
+                "message": "Only a platform admin can mint or rotate a key with "
+                f"{sorted(PLATFORM_ADMIN_SCOPES.intersection(scopes))}.",
+            },
+        )
+
+
 @service_key_router.post(
     "/{org_id}/service-keys",
     status_code=201,
@@ -117,6 +137,7 @@ async def create_service_key(
     list/get responses only include the key_prefix (Codex R1 MEDIUM 3).
     """
     await _require_org_admin(org_id, ctx, db)
+    _check_platform_scopes(body.scopes, user)
 
     raw_key = generate_api_key()
     key_hash = hash_api_key(raw_key)
@@ -259,6 +280,8 @@ async def rotate_service_key(
                 "message": "Cannot rotate a revoked key — create a new one",
             },
         )
+
+    _check_platform_scopes(json.loads(old.scopes) if old.scopes else [], user)
 
     now = datetime.now(timezone.utc)
     # Compute new expiry preserving the same total lifetime if the old
