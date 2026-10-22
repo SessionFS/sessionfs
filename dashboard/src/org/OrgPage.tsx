@@ -6,7 +6,7 @@ import { getAvatarColor } from '../utils/avatar';
 import { Dropdown, Button } from '../components/ui';
 import OrgSettingsTab from './OrgSettingsTab';
 import SsoTab from './SsoTab';
-import OrgPersonasSection from './OrgPersonasSection';
+import OrgPersonasSection, { type OrgPersonaMember } from './OrgPersonasSection';
 import ActivateLicensePanel from './ActivateLicensePanel';
 import OwnerTransferDialog from './OwnerTransferDialog';
 
@@ -428,11 +428,16 @@ export default function OrgPage() {
         </div>
       )}
 
-      {/* GH #70 — org-level personas (admins and owners manage them). */}
-      {org?.id && isAdmin && (
-        <div className="bg-bg-elevated border border-border rounded-xl p-5 mt-6">
-          <OrgPersonasSection orgId={org.id} />
-        </div>
+      {/* GH #70 — org-level personas (admins and owners manage them).
+          GitHub #81 — members see and edit the personas that represent them. */}
+      {org?.id && (isAdmin || myUserId) && (
+        <OrgPersonasSection
+          orgId={org.id}
+          isAdmin={isAdmin}
+          myUserId={myUserId}
+          members={members.map((m: OrgPersonaMember) => ({ user_id: m.user_id, email: m.email }))}
+          className="bg-bg-elevated border border-border rounded-xl p-5 mt-6"
+        />
       )}
 
       {isOwner && orgId && (

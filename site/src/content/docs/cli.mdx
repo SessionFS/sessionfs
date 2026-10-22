@@ -1757,7 +1757,8 @@ Manage portable AI personas per project. Each persona has an ASCII name (`^[A-Za
 |---------|-------------|
 | `sfs persona list [--no-org \| --org ORG_ID]` | List personas usable in the current project (project + org, with a Scope column), or one org's personas |
 | `sfs persona show <name> [--raw] [--org ORG_ID]` | Show a persona's full content (`--raw` skips markdown render) |
-| `sfs persona create <name> [--content TEXT \| --file PATH] [--org ORG_ID]` | Create a persona inline, from a file, or via `$EDITOR`; `--org` creates an org-level persona |
+| `sfs persona create <name> [--content TEXT \| --file PATH] [--org ORG_ID] [--represents EMAIL]` | Create a persona inline, from a file, or via `$EDITOR`; `--org` creates an org-level persona, and `--represents` names the org member who may edit it |
+| `sfs persona represent <name> --org ORG_ID (--user EMAIL \| --clear)` | Set or clear the org member an org persona represents (org admins). That member can edit its role, content and specializations |
 | `sfs persona edit <name> [--org ORG_ID]` | Open the persona content in `$EDITOR` |
 | `sfs persona delete <name> [--force] [--org ORG_ID]` | Delete a persona; refuses 409 if non-terminal tickets reference it (use `--force` to override) |
 | `sfs persona pull [<name> \| --all] [--no-org]` | Write personas to `.agents/*.md`; `--all` includes the org's personas unless `--no-org` |

@@ -3,8 +3,10 @@
  *
  * An org persona is usable from every project in the organization; a
  * project persona with the same name overrides it inside that project.
- * Rendered for org admins and owners only (the server enforces the same
- * rule: writes need admin standing, owners count).
+ * Admins and owners manage every org persona and choose which member each
+ * one represents. GitHub #81 — any other member sees only the personas that
+ * represent them and may edit their role, content and specializations (the
+ * server enforces the same split).
  */
 
 import { useState } from 'react';
@@ -17,19 +19,36 @@ import {
 } from '../hooks/usePersonas';
 import RelativeDate from '../components/RelativeDate';
 import { ApiError, type Persona } from '../api/client';
-import { Button, Table } from '../components/ui';
+import { Button, Select, Table } from '../components/ui';
 import { DeleteConfirmModal, PersonaEditModal, type EditState } from '../projects/PersonasTab';
+
+export interface OrgPersonaMember {
+  user_id: string;
+  email: string;
+}
 
 interface OrgPersonasSectionProps {
   orgId: string;
+  /** Defaults to true: the section used to render for admins only. */
+  isAdmin?: boolean;
+  myUserId?: string;
+  members?: OrgPersonaMember[];
+  /** Wrapper classes; the section renders nothing for a member with no persona. */
+  className?: string;
 }
 
 function errorMessage(exc: unknown): string {
   return exc instanceof ApiError ? `${exc.status}: ${exc.message}` : String(exc);
 }
 
-export default function OrgPersonasSection({ orgId }: OrgPersonasSectionProps) {
-  const { data, isLoading, error } = useOrgPersonas(orgId);
+export default function OrgPersonasSection({
+  orgId,
+  isAdmin = true,
+  myUserId,
+  members = [],
+  className,
+}: OrgPersonasSectionProps) {
+  const { data: allPersonas, isLoading, error } = useOrgPersonas(orgId);
   const create = useCreateOrgPersona(orgId);
   const update = useUpdateOrgPersona(orgId);
   const remove = useDeleteOrgPersona(orgId);
@@ -38,21 +57,51 @@ export default function OrgPersonasSection({ orgId }: OrgPersonasSectionProps) {
   const [edit, setEdit] = useState<EditState | null>(null);
   const [deleting, setDeleting] = useState<Persona | null>(null);
 
+  const data = isAdmin
+    ? allPersonas
+    : allPersonas?.filter((p) => !!myUserId && p.represented_user_id === myUserId);
+  // A member who represents no persona has nothing to see here.
+  if (!isAdmin && (!data || data.length === 0)) return null;
+
+  const memberOptions = [
+    { value: '', label: 'Nobody' },
+    ...members.map((m) => ({ value: m.user_id, label: m.email })),
+  ];
+  const memberEmail = (userId: string | null | undefined) =>
+    userId ? (members.find((m) => m.user_id === userId)?.email ?? userId) : null;
+
+  async function setRepresented(p: Persona, userId: string) {
+    try {
+      await update.mutateAsync({ name: p.name, body: { represented_user: userId || null } });
+      addToast(
+        'success',
+        userId
+          ? `"${p.name}" now represents ${memberEmail(userId)}`
+          : `"${p.name}" no longer represents anyone`,
+      );
+    } catch (exc) {
+      addToast('error', errorMessage(exc));
+    }
+  }
+
   return (
-    <section aria-labelledby="org-personas-heading" className="space-y-3">
+    <section aria-labelledby="org-personas-heading" className={`space-y-3 ${className ?? ''}`}>
       <div className="flex items-center justify-between">
         <div>
           <h2 id="org-personas-heading" className="text-lg font-semibold">
-            Org personas
+            {isAdmin ? 'Org personas' : 'Your org persona'}
           </h2>
           <p className="text-sm text-text-tertiary">
-            Shared by every project in this organization. A project persona with the same
-            name overrides the org one in that project.
+            {isAdmin
+              ? 'Shared by every project in this organization. A project persona with the same name overrides the org one in that project. The member a persona represents can edit it.'
+              : 'This org persona represents you. You can edit its role, content and specializations.'}
           </p>
         </div>
-        <Button variant="primary" size="sm" onClick={() => setEdit({ mode: 'create' })}>
-          New org persona
-        </Button>
+        {isAdmin && (
+          <Button variant="primary" size="sm" onClick={() => setEdit({ mode: 'create' })}>
+            New org persona
+          </Button>
+        )}
       </div>
 
       {isLoading && <p>Loading org personas…</p>}
@@ -73,6 +122,28 @@ export default function OrgPersonasSection({ orgId }: OrgPersonasSectionProps) {
               render: (p) => <span className="font-mono text-text-primary">{p.name}</span>,
             },
             { key: 'role', header: 'Role', render: (p) => <>{p.role}</> },
+            ...(isAdmin
+              ? [
+                  {
+                    key: 'represents',
+                    header: 'Represents',
+                    render: (p: Persona) => (
+                      <Select
+                        value={p.represented_user_id ?? ''}
+                        onValueChange={(v) => void setRepresented(p, v)}
+                        options={
+                          p.represented_user_id &&
+                          !members.some((m) => m.user_id === p.represented_user_id)
+                            ? [...memberOptions, { value: p.represented_user_id, label: p.represented_user_id }]
+                            : memberOptions
+                        }
+                        aria-label={`Member represented by ${p.name}`}
+                        className="min-w-[12rem]"
+                      />
+                    ),
+                  },
+                ]
+              : []),
             {
               key: 'updated',
               header: 'Updated',
@@ -91,9 +162,11 @@ export default function OrgPersonasSection({ orgId }: OrgPersonasSectionProps) {
                   <Button variant="secondary" size="sm" onClick={() => setEdit({ mode: 'edit', persona: p })}>
                     Edit
                   </Button>
-                  <Button variant="danger" size="sm" onClick={() => setDeleting(p)}>
-                    Delete
-                  </Button>
+                  {isAdmin && (
+                    <Button variant="danger" size="sm" onClick={() => setDeleting(p)}>
+                      Delete
+                    </Button>
+                  )}
                 </div>
               ),
             },

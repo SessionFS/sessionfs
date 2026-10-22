@@ -1770,6 +1770,11 @@ class AgentPersona(Base):
             "OR (project_id IS NULL AND org_id IS NOT NULL)",
             name="ck_agent_personas_scope",
         ),
+        CheckConstraint(
+            "represented_user_id IS NULL OR org_id IS NOT NULL",
+            name="ck_agent_personas_represented_user_org",
+        ),
+        Index("idx_persona_represented_user", "represented_user_id"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -1799,6 +1804,14 @@ class AgentPersona(Base):
     )
     version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     created_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    # GitHub #81 (migration 080) — org personas only: the org member this
+    # persona represents. They may update its role, content and
+    # specializations without admin standing while they stay a member.
+    represented_user_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL", name="fk_agent_personas_represented_user"),
+        nullable=True,
+    )
     # v0.10.19 Phase 3.6 — service-key provenance for persona writes.
     # Nullable for pre-migration rows; persona create/update/delete routes
     # populate this from AuthContext for both user keys and service keys.

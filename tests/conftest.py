@@ -127,20 +127,46 @@ def tmp_claude_home(tmp_path: Path) -> Path:
     return claude_home
 
 
+def _uses_shared_pg(path: object) -> bool:
+    try:
+        return "SFS_TEST_PG_URL" in Path(str(path)).read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _pg_schema_isolation(request: pytest.FixtureRequest):
+    """Reset the shared PostgreSQL database around every file that uses it.
+
+    Each such file starts from an empty `public` schema and leaves one behind,
+    so no file inherits another's tables or `alembic_version` stamp.
+    """
+    if not os.environ.get("SFS_TEST_PG_URL") or not _uses_shared_pg(request.path):
+        yield
+        return
+    from tests.pg_helpers import reset_pg_schema
+
+    reset_pg_schema()
+    yield
+    reset_pg_schema()
+
+
+@pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Group tests for parallel runs (`pytest -n auto --dist loadgroup`).
 
     Each file stays on one worker, as with `--dist loadfile`. Every file that
     uses the shared SFS_TEST_PG_URL database joins a single "postgres" group,
     because they create, drop and migrate the same schema.
+
+    `tryfirst`: xdist's worker turns the `xdist_group` marker into the node id
+    suffix in its own modifyitems hook, which otherwise runs before this one
+    and sees no marker, leaving every test free to land on any worker.
     """
     pg_files: dict[str, bool] = {}
     for item in items:
         path = str(item.path)
         if path not in pg_files:
-            try:
-                pg_files[path] = "SFS_TEST_PG_URL" in Path(path).read_text(encoding="utf-8")
-            except OSError:
-                pg_files[path] = False
+            pg_files[path] = _uses_shared_pg(path)
         group = "postgres" if pg_files[path] else path
         item.add_marker(pytest.mark.xdist_group(group))

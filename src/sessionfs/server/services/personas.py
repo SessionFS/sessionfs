@@ -34,6 +34,8 @@ project's CURRENT org only when the caller is a current member of it
 
 from __future__ import annotations
 
+import json
+import uuid
 from dataclasses import dataclass
 
 from sqlalchemy import and_, case, func, or_, select
@@ -43,7 +45,9 @@ from sessionfs.server.db.models import (
     AgentPersona,
     AgentRun,
     Handoff,
+    OrgAuditEvent,
     OrgMember,
+    Organization,
     Project,
     ProjectRepo,
     Session,
@@ -52,6 +56,51 @@ from sessionfs.server.db.models import (
 
 SCOPE_PROJECT = "project"
 SCOPE_ORG = "org"
+
+
+async def clear_represented_user(
+    db: AsyncSession,
+    *,
+    user_id: str,
+    actor_user_id: str,
+    actor_email: str,
+    actor_role: str,
+    reason: str,
+    org_id: str | None = None,
+) -> int:
+    """GitHub #81 — stop org personas representing ``user_id`` (in ``org_id``
+    only, or in every org), with one ``persona_represented_user_changed``
+    audit row per persona. Called when a member leaves an org or the user
+    is deactivated, so rejoining later does not restore edit rights.
+    Does not commit. Returns how many personas changed."""
+    stmt = (
+        select(AgentPersona, Organization.name)
+        .join(Organization, Organization.id == AgentPersona.org_id)
+        .where(AgentPersona.represented_user_id == user_id)
+    )
+    if org_id is not None:
+        stmt = stmt.where(AgentPersona.org_id == org_id)
+    rows = (await db.execute(stmt)).all()
+    for persona, org_name in rows:
+        persona.represented_user_id = None
+        db.add(
+            OrgAuditEvent(
+                id=f"oae_{uuid.uuid4().hex[:24]}",
+                org_id=persona.org_id,
+                org_name_snapshot=org_name or "",
+                event_type="persona_represented_user_changed",
+                actor_user_id=actor_user_id,
+                actor_email_snapshot=actor_email,
+                actor_role_at_time=actor_role,
+                target_type="persona",
+                target_id=persona.id,
+                before=json.dumps({"name": persona.name, "represented_user_id": user_id}),
+                after=json.dumps(
+                    {"name": persona.name, "represented_user_id": None, "reason": reason}
+                ),
+            )
+        )
+    return len(rows)
 
 
 def persona_scope(persona: AgentPersona) -> str:

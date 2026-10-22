@@ -36,6 +36,7 @@ from sessionfs.server.db.models import (
 from sessionfs.server.services.auto_join import maybe_auto_join
 from sessionfs.server.roles import OrgRole
 from sessionfs.server.services.entitlements import apply_entitlement, lock_billing_owner
+from sessionfs.server.services.personas import clear_represented_user
 from sessionfs.server.services.publishers import advisory_xact_lock
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
@@ -533,6 +534,15 @@ async def delete_user(
     # Remove org memberships to free seats
     await db.execute(
         delete(OrgMember).where(OrgMember.user_id == user_id)
+    )
+    # GitHub #81 — and with them any org persona they represented.
+    await clear_represented_user(
+        db,
+        user_id=user_id,
+        actor_user_id=admin.id,
+        actor_email=admin.email,
+        actor_role="platform_admin",
+        reason="user_deactivated",
     )
 
     # Expire pending handoffs sent to this user. Mirror the inbox lookup

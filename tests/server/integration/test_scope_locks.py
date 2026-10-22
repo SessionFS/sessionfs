@@ -16,6 +16,16 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from sessionfs.server.services.scope_locks import advisory_key, lock_scopes
+from tests.pg_helpers import upgrade_pg_to_head
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _pg_migrated_to_head():
+    """The PostgreSQL tests below need the schema at head, and the shared
+    database starts every file empty (tests/conftest.py)."""
+    if os.environ.get("SFS_TEST_PG_URL"):
+        upgrade_pg_to_head()
+    yield
 
 
 def test_advisory_key_is_stable_and_scoped():

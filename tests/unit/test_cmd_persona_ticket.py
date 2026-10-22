@@ -245,6 +245,80 @@ def test_persona_create_and_delete_with_org(monkeypatch):
     assert calls[-1] == ("DELETE", "/api/v1/orgs/org_1/personas/release?force=true", None)
 
 
+# ── GitHub #81 — the member an org persona represents ──
+
+_ROSTER = {"members": [{"user_id": "u_2", "email": "kelvin@example.com"}]}
+
+
+def test_persona_create_represents_needs_org_and_is_sent(monkeypatch):
+    calls = _record_api(monkeypatch, lambda m, p: (201, {"name": "kelvin", "scope": "org"}, {}))
+    result = runner.invoke(
+        persona_app, ["create", "kelvin", "--role", "P", "--content", "# K", "--represents", "u_2"],
+    )
+    assert result.exit_code == 2
+    assert calls == []
+    result = runner.invoke(
+        persona_app,
+        ["create", "kelvin", "--role", "P", "--content", "# K", "--org", "org_1",
+         "--represents", "kelvin@example.com"],
+    )
+    assert result.exit_code == 0, result.output
+    assert calls[-1][2]["represented_user"] == "kelvin@example.com"
+
+
+def test_persona_represent_sets_and_clears(monkeypatch):
+    def _resp(method, path):
+        if path.endswith("/members"):
+            return (200, _ROSTER, {})
+        return (200, {"name": "kelvin", "represented_user_id": "u_2"}, {})
+
+    calls = _record_api(monkeypatch, _resp)
+    result = runner.invoke(
+        persona_app, ["represent", "kelvin", "--org", "org_1", "--user", "kelvin@example.com"],
+    )
+    assert result.exit_code == 0, result.output
+    assert calls[0] == (
+        "PUT", "/api/v1/orgs/org_1/personas/kelvin", {"represented_user": "kelvin@example.com"},
+    )
+    assert "kelvin@example.com" in result.output
+
+    result = runner.invoke(persona_app, ["represent", "kelvin", "--org", "org_1", "--clear"])
+    assert result.exit_code == 0, result.output
+    assert calls[-1] == ("PUT", "/api/v1/orgs/org_1/personas/kelvin", {"represented_user": None})
+
+    for args in (["--user", "u_2", "--clear"], []):
+        result = runner.invoke(persona_app, ["represent", "kelvin", "--org", "org_1", *args])
+        assert result.exit_code == 2, args
+
+
+def test_persona_represent_shows_server_refusal(monkeypatch):
+    _record_api(monkeypatch, lambda m, p: (422, {"error": {
+        "code": "represented_user_not_member",
+        "message": "represented_user must be a current member of this org.",
+    }}, {}))
+    result = runner.invoke(
+        persona_app, ["represent", "kelvin", "--org", "org_1", "--user", "x@example.com"],
+    )
+    assert result.exit_code == 1
+    assert "current member" in result.output
+
+
+def test_persona_show_prints_represented_member(monkeypatch):
+    def _resp(method, path):
+        if path.endswith("/members"):
+            return (200, _ROSTER, {})
+        return (200, {
+            "name": "kelvin", "role": "P", "content": "", "scope": "org",
+            "org_id": "org_1", "represented_user_id": "u_2",
+        }, {})
+
+    _record_api(monkeypatch, _resp)
+    result = runner.invoke(persona_app, ["show", "kelvin", "--org", "org_1"])
+    assert result.exit_code == 0, result.output
+    assert "Represents:" in result.output
+    assert "kelvin@example.com" in result.output
+
+
 def test_persona_edit_refuses_org_persona_without_org_flag(monkeypatch):
     _record_api(monkeypatch, lambda m, p: (200, {
         "name": "gcp-infra", "role": "TF", "content": "x", "scope": "org", "org_id": "org_1",

@@ -6,6 +6,7 @@ Commands:
 - sfs persona create <name>        — create from --content or --file or $EDITOR
 - sfs persona edit <name>          — open content in $EDITOR and update
 - sfs persona delete <name>        — soft-delete (sets is_active=false)
+- sfs persona represent <name>     — set/clear the member an org persona represents
 
 Personas are portable AI roles (atlas/prism/scribe/...). Tier-gated to
 Pro+ (`agent_personas` feature flag).
@@ -15,6 +16,10 @@ edit/delete personas of an organization instead of the current project.
 They are usable from every project in the org; a project persona with the
 same name overrides the org one. `sfs persona list` and `sfs persona pull`
 include the project's org personas by default (`--no-org` to exclude).
+
+GitHub #81: an org persona may represent one org member (`--represents`
+on create, or `sfs persona represent`; org admins only). That member can
+then `sfs persona edit <name> --org <org_id>` without being an org admin.
 """
 
 from __future__ import annotations
@@ -67,7 +72,8 @@ def _resolve_project() -> tuple[str, str, str]:
 
 _ORG_OPTION_HELP = (
     "Target the org-level personas of this organization id instead of the "
-    "current project (writes need org admin or owner)."
+    "current project (writes need org admin or owner; the member a persona "
+    "represents may edit it)."
 )
 
 
@@ -109,6 +115,28 @@ def _print_not_found(name: str, body: object) -> None:
                 )
         return
     err_console.print(f"[red]Persona '{name}' not found.[/red]")
+
+
+def _member_label(api_url: str, api_key: str, org_id: object, user_id: str) -> str:
+    """The member's email from the org roster when the caller can read it,
+    else the bare user id."""
+    if not isinstance(org_id, str) or not org_id:
+        return user_id
+    try:
+        status, body, _ = asyncio.run(
+            _api_request(
+                "GET", f"/api/v1/orgs/{quote(org_id, safe='')}/members", api_url, api_key
+            )
+        )
+    except Exception:
+        return user_id
+    if status == 200 and isinstance(body, dict):
+        for member in body.get("members") or []:
+            if isinstance(member, dict) and member.get("user_id") == user_id:
+                email = member.get("email")
+                if isinstance(email, str) and email:
+                    return f"{email} ({user_id})"
+    return user_id
 
 
 def _edit_in_editor(initial: str = "") -> str:
@@ -186,6 +214,10 @@ def show_persona(
     specs = body.get("specializations") or []
     if specs:
         console.print(f"[dim]Specializations:[/dim] {', '.join(specs)}")
+    represented = body.get("represented_user_id")
+    if represented:
+        label = _member_label(api_url, api_key, body.get("org_id"), represented)
+        console.print(f"[dim]Represents:[/dim] {label}")
     console.print()
     content = body.get("content") or ""
     if raw:
@@ -379,10 +411,18 @@ def create_persona(
         [], "--spec", help="Specialization tag (repeatable)"
     ),
     org: str | None = typer.Option(None, "--org", help=_ORG_OPTION_HELP),
+    represents: str | None = typer.Option(
+        None, "--represents",
+        help="With --org: email or user id of the org member this persona "
+             "represents (they may then edit it).",
+    ),
 ) -> None:
     """Create a new persona. Opens $EDITOR if --content/--file are absent."""
     if content_file and content:
         err_console.print("[red]Pass --file OR --content, not both.[/red]")
+        raise typer.Exit(2)
+    if represents is not None and not org:
+        err_console.print("[red]--represents applies to org personas; pass --org.[/red]")
         raise typer.Exit(2)
 
     if content_file:
@@ -402,6 +442,8 @@ def create_persona(
         "content": body_text,
         "specializations": list(specialization),
     }
+    if represents is not None:
+        payload["represented_user"] = represents
     status, body, _ = asyncio.run(
         _api_request("POST", collection, api_url, api_key, json_data=payload)
     )
@@ -436,8 +478,8 @@ def edit_persona(
         err_console.print(
             f"[red]'{name}' is an org-level persona.[/red] Edit it with "
             f"[bold]sfs persona edit {name} --org {body.get('org_id')}[/bold] "
-            "(org admins), or create a project persona with the same name "
-            "to override it here."
+            "(org admins, or the member it represents), or create a project "
+            "persona with the same name to override it here."
         )
         raise typer.Exit(1)
 
@@ -457,6 +499,44 @@ def edit_persona(
         err_console.print(f"[red]API error ({status}): {body}[/red]")
         raise typer.Exit(1)
     console.print(f"[green]Updated persona '{name}'.[/green]")
+
+
+@persona_app.command("represent")
+@handle_errors
+def represent_persona(
+    name: str = typer.Argument(..., help="Org persona name"),
+    org: str = typer.Option(..., "--org", help="Organization id that owns the persona"),
+    user: str | None = typer.Option(
+        None, "--user", help="Email or user id of the org member it represents"
+    ),
+    clear: bool = typer.Option(False, "--clear", help="Stop representing anyone"),
+) -> None:
+    """Set or clear the org member an org persona represents (org admins).
+
+    That member may then update the persona's role, content and
+    specializations without being an org admin."""
+    if (user is None) == (not clear):
+        err_console.print("[red]Pass exactly one of --user or --clear.[/red]")
+        raise typer.Exit(2)
+    api_url, api_key, collection = _persona_collection(org)
+    status, body, _ = asyncio.run(
+        _api_request(
+            "PUT", f"{collection}/{name}", api_url, api_key,
+            json_data={"represented_user": None if clear else user},
+        )
+    )
+    if status == 404:
+        _print_not_found(name, body)
+        raise typer.Exit(1)
+    if status >= 400 or not isinstance(body, dict):
+        detail = _server_detail(body) or str(body)
+        err_console.print(f"[red]API error ({status}): {detail}[/red]")
+        raise typer.Exit(1)
+    if clear:
+        console.print(f"[green]'{name}' no longer represents a member.[/green]")
+    else:
+        label = _member_label(api_url, api_key, org, body.get("represented_user_id") or "")
+        console.print(f"[green]'{name}' now represents {label}.[/green]")
 
 
 @persona_app.command("delete")

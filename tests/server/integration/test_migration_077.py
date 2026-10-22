@@ -17,6 +17,7 @@ from alembic import command
 from alembic.config import Config
 
 from sessionfs.server.db.models import Base
+from tests.pg_helpers import reset_pg_schema
 
 MIGRATION_077_TABLES = {
     "skill_feed_catalogs",
@@ -142,6 +143,7 @@ def test_downgrade_removes_only_077_tables(pre_077_db: Path) -> None:
 )
 def test_full_chain_on_postgres() -> None:
     """001..head, down to 076 and back, on REAL PostgreSQL."""
+    reset_pg_schema()  # the chain runs from an empty database
     config = Config()
     config.set_main_option("script_location", _MIGRATIONS)
     config.set_main_option("sqlalchemy.url", os.environ["SFS_TEST_PG_URL"])

@@ -18,6 +18,7 @@ from alembic import command
 from alembic.config import Config
 
 from sessionfs.server.db.models import Base
+from tests.pg_helpers import reset_pg_schema
 
 MIGRATION_069_TABLES = {"skill_scan_rulesets", "skill_version_scans", "skill_scan_findings"}
 MIGRATION_069_VERSION_COLUMNS = ("scan_summary", "quarantined_at", "quarantine_reason")
@@ -227,6 +228,7 @@ def test_downgrade_restores_066_shape(pre_069_db: Path) -> None:
 )
 def test_full_chain_on_postgres() -> None:
     """001..head, down to 066 and back, on REAL PostgreSQL."""
+    reset_pg_schema()  # the chain runs from an empty database
     config = Config()
     config.set_main_option("script_location", _MIGRATIONS)
     config.set_main_option("sqlalchemy.url", os.environ["SFS_TEST_PG_URL"])

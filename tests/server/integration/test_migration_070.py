@@ -16,6 +16,7 @@ from alembic import command
 from alembic.config import Config
 
 from sessionfs.server.db.models import Base
+from tests.pg_helpers import reset_pg_schema
 
 COLUMNS = {
     "skill_package_versions": ("capability_manifest", "capability_digest", "manifest_version", "publication_seq"),
@@ -141,6 +142,7 @@ def test_upgrade_adds_columns_with_safe_defaults_and_downgrade_removes_them(tmp_
 @pytest.mark.skipif(not os.environ.get("SFS_TEST_PG_URL"), reason="SFS_TEST_PG_URL not set")
 def test_postgres_round_trip() -> None:
     """001..head, down to 069 and back, on REAL PostgreSQL."""
+    reset_pg_schema()  # the chain runs from an empty database
     config = _cfg(os.environ["SFS_TEST_PG_URL"])
     command.upgrade(config, "head")
     command.downgrade(config, "069")

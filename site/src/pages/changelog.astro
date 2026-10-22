@@ -17,14 +17,34 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.19.0 -->
+      <!-- v0.20.0 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.20.0</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">October 22, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Org Personas That Represent a Member &middot; Project Tools Accept a Folder</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Org personas that represent a member (GitHub #81).</strong> An org owner or admin can link an org persona to the member it stands for. That member can then update the persona&rsquo;s role, content and specializations without org admin rights; turning the persona on or off, changing or removing the link, creating and deleting stay with admins. Set the link on the dashboard (<strong>Organization &rarr; Personas &rarr; Represents</strong>), with <span class="font-mono text-accent text-sm">sfs persona create --org ORG --represents EMAIL</span> or <span class="font-mono text-accent text-sm">sfs persona represent NAME --org ORG --user EMAIL|--clear</span>, or through the MCP <span class="font-mono text-accent text-sm">create_persona</span> / <span class="font-mono text-accent text-sm">update_persona</span> tools (<span class="font-mono text-accent text-sm">represented_user</span>). Members see their own persona under <strong>Your org persona</strong>. Linking a project persona is refused.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Project MCP tools accept a folder as <span class="font-mono text-accent text-sm">git_remote</span>.</strong> A value starting with <span class="font-mono text-accent text-sm">/</span>, <span class="font-mono text-accent text-sm">~</span>, <span class="font-mono text-accent text-sm">./</span> or <span class="font-mono text-accent text-sm">../</span> is resolved through that repository&rsquo;s <span class="font-mono text-accent text-sm">origin</span> remote (git worktrees included) instead of returning &ldquo;No project found&rdquo;. A folder that isn&rsquo;t a git repository with an <span class="font-mono text-accent text-sm">origin</span> gets a clear error instead of acting on another project; leaving <span class="font-mono text-accent text-sm">git_remote</span> out still uses the current workspace. The &ldquo;No project found&rdquo; message now says <span class="font-mono text-accent text-sm">git_remote</span> takes a remote URL such as <span class="font-mono text-accent text-sm">github.com/org/repo</span>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Security:</strong> removing a member from an organization, or deactivating a user, clears any persona link to them, with an entry in the organization&rsquo;s audit log. A member who rejoins does not get edit rights back until an admin links them again.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Upgrading a self-hosted server:</strong> run migration 080 (adds a nullable <span class="font-mono text-accent text-sm">agent_personas.represented_user_id</span>; on PostgreSQL also a foreign key that clears the link when the user is deleted, and a check that only org personas can have one). Existing personas represent nobody.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Migrations 001&ndash;080 (080 new; 067 and 068 unused). 7444 backend tests + 667 dashboard UI tests passing. 81 MCP tools (unchanged).</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.19.0 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
             <span class="text-brand font-semibold">v0.19.0</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">October 21, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Marketplace Discovery &middot; Native Tool Catalogs &middot; &ldquo;Works In&rdquo; Matrix &middot; Org Skills Policy</h2>
         <ul class="space-y-2 text-base text-muted">

@@ -65,6 +65,7 @@ from sessionfs.server.db.models import (
     User,
 )
 from sessionfs.server.services.auto_join import org_has_oidc_sso
+from sessionfs.server.services.personas import clear_represented_user
 
 logger = logging.getLogger("sessionfs.api")
 router = APIRouter(prefix="/api/v1/orgs", tags=["org-members"])
@@ -1185,6 +1186,18 @@ async def perform_member_removal(
 
     pending_cancelled += await cancel_outgoing_pending_from_org(
         db, target_user_id, org_id, now
+    )
+
+    # GitHub #81 — the removed member no longer represents this org's
+    # personas, so rejoining later does not restore their edit rights.
+    await clear_represented_user(
+        db,
+        user_id=target_user_id,
+        org_id=org_id,
+        actor_user_id=removing_admin.id,
+        actor_email=removing_admin.email,
+        actor_role=remover_role,
+        reason="member_removed",
     )
 
     # 4. Delete the membership row last.

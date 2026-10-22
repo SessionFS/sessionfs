@@ -541,6 +541,8 @@ export interface Persona {
   is_active: boolean;
   version: number;
   created_by: string;
+  /** GitHub #81 — org personas: the member who may edit it. Absent on older servers. */
+  represented_user_id?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -550,12 +552,16 @@ export interface PersonaCreate {
   role: string;
   content?: string;
   specializations?: string[];
+  /** Org personas only: member user id or email. */
+  represented_user?: string | null;
 }
 
 export interface PersonaUpdate {
   role?: string;
   content?: string;
   specializations?: string[];
+  /** Org personas, org admins only: user id or email; null clears. */
+  represented_user?: string | null;
 }
 
 // ------------------------------------------------------------------

@@ -24,6 +24,12 @@ admin standing (owners count). Project routes resolve names project
 first, then org (services/personas.resolve_persona), and the project
 list returns both scopes with a `scope` field.
 
+GitHub #81 — an org persona may name the org member it represents
+(`represented_user_id`, set by org admins via `represented_user`). That
+member may update the persona's role, content and specializations
+without admin standing; activation, deletion and the link itself stay
+admin-only.
+
 Tier-gated via the `agent_personas` feature flag (Pro+ tier). Org
 routes gate on the org's own plan.
 Project-scoped access: caller must be the project owner OR have at
@@ -70,6 +76,7 @@ from sessionfs.server.db.models import (
     Project,
     ProjectRepo,
     Ticket,
+    User,
 )
 from sessionfs.server.roles import has_minimum_role
 from sessionfs.server.routes.knowledge import _get_project_for_auth
@@ -104,6 +111,9 @@ class PersonaCreate(BaseModel):
     role: str
     content: str = ""
     specializations: list[str] = []
+    # GitHub #81 — org personas only: the member this persona represents,
+    # as a user id or an email address.
+    represented_user: str | None = None
 
     @field_validator("name")
     @classmethod
@@ -136,6 +146,10 @@ class PersonaUpdate(BaseModel):
     content: str | None = None
     specializations: list[str] | None = None
     is_active: bool | None = None
+    # GitHub #81 — org personas only, org admins only: a user id or email
+    # sets the represented member; an explicit null clears it. Omitted
+    # leaves it unchanged.
+    represented_user: str | None = None
 
     @field_validator("role")
     @classmethod
@@ -164,6 +178,8 @@ class PersonaResponse(BaseModel):
     is_active: bool
     version: int
     created_by: str
+    # GitHub #81 — org personas: the member who may edit this persona.
+    represented_user_id: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -187,6 +203,7 @@ def _to_response(p: AgentPersona) -> PersonaResponse:
         is_active=p.is_active,
         version=p.version,
         created_by=p.created_by,
+        represented_user_id=p.represented_user_id,
         created_at=p.created_at,
         updated_at=p.updated_at,
     )
@@ -278,6 +295,8 @@ async def create_persona(
     survives a delete). Caller can PUT to reactivate the existing row
     instead of recreating."""
     user = auth.user
+    if body.represented_user is not None:
+        raise HTTPException(422, _PROJECT_REPRESENTED_USER)
     project = await _get_project_for_auth(project_id, db, auth)
     await assert_service_key_can_access_project(db, auth, project)
     await check_project_feature(ctx, "agent_personas", project, db)
@@ -386,6 +405,8 @@ async def update_persona(
     (project_id, name) regardless of is_active so the caller can use
     this to reactivate a soft-deleted persona by setting
     `is_active=true`."""
+    if "represented_user" in body.model_fields_set:
+        raise HTTPException(422, _PROJECT_REPRESENTED_USER)
     project = await _get_project_for_auth(project_id, db, auth)
     await assert_service_key_can_access_project(db, auth, project)
     await check_project_feature(ctx, "agent_personas", project, db)
@@ -427,6 +448,12 @@ async def _project_miss_detail(
                 "create a project persona with the same name to override it."
             )
     return "Persona not found"
+
+
+_PROJECT_REPRESENTED_USER = (
+    "represented_user applies to org personas only; project personas are "
+    "editable by everyone with access to the project."
+)
 
 
 def _apply_update(
@@ -585,6 +612,9 @@ async def _assert_project_persona_not_needed(
 # Authorization:
 #   * user keys: reads need membership of THIS org (any role); writes need
 #     org admin standing via has_minimum_role(role, "admin") — owners count.
+#     Exception (GitHub #81): a member may update the role, content and
+#     specializations of an org persona whose represented_user_id is
+#     their own user id (see _authorize_org_persona_update).
 #     Membership is checked against {org_id} itself, never the caller's
 #     primary org, so multi-org admins can manage each of their orgs.
 #   * service keys: personas:read / personas:write scope (require_scope) and
@@ -606,8 +636,12 @@ async def _authorize_org_personas(
     org_id: str,
     *,
     write: bool,
+    allow_member: bool = False,
 ) -> tuple[Organization, str | None]:
-    """Return (org, caller_role). caller_role is None for service keys."""
+    """Return (org, caller_role). caller_role is None for service keys.
+
+    With ``allow_member`` a write by a non-admin member is let through;
+    the caller must then apply the represented-user rule itself."""
     org = await db.get(Organization, org_id)
     role: str | None = None
     if auth.key_kind == "service":
@@ -635,16 +669,8 @@ async def _authorize_org_personas(
         ).scalars().first()
         if org is None or membership is None:
             raise HTTPException(404, _ORG_NOT_FOUND)
-        if write and not has_minimum_role(membership, "admin"):
-            raise HTTPException(
-                status_code=403,
-                detail={
-                    "error": "insufficient_role",
-                    "current_role": membership,
-                    "required_role": "admin",
-                    "message": "Managing org-level personas requires the admin role.",
-                },
-            )
+        if write and not allow_member and not has_minimum_role(membership, "admin"):
+            raise HTTPException(status_code=403, detail=_insufficient_role(membership))
         role = membership
 
     plan = await resolve_org_plan_tier(org_id, db)
@@ -665,12 +691,97 @@ async def _authorize_org_personas(
     return org, role
 
 
+def _insufficient_role(current_role: str) -> dict:
+    return {
+        "error": "insufficient_role",
+        "current_role": current_role,
+        "required_role": "admin",
+        "message": (
+            "Managing org-level personas requires the admin role, except "
+            "that the member a persona represents may update its role, "
+            "content and specializations."
+        ),
+    }
+
+
+def _is_org_admin(auth: AuthContext, role: str | None) -> bool:
+    """Service keys passed _authorize_org_personas with write scope."""
+    return auth.key_kind == "service" or (
+        role is not None and has_minimum_role(role, "admin")
+    )
+
+
+def _authorize_org_persona_update(
+    auth: AuthContext, role: str | None, persona: AgentPersona | None, body: PersonaUpdate
+) -> None:
+    """GitHub #81 — a non-admin member may update only the persona that
+    represents them, and only its role, content and specializations."""
+    if _is_org_admin(auth, role):
+        return
+    role = role or "member"
+    if (
+        persona is None
+        or not persona.is_active
+        or persona.represented_user_id != auth.user.id
+    ):
+        raise HTTPException(status_code=403, detail=_insufficient_role(role))
+    admin_only = [
+        field for field in ("is_active", "represented_user")
+        if field in body.model_fields_set
+    ]
+    if admin_only:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "insufficient_role",
+                "current_role": role,
+                "required_role": "admin",
+                "fields": admin_only,
+                "message": (
+                    "Only org admins can activate, deactivate or change who an "
+                    "org persona represents."
+                ),
+            },
+        )
+
+
+async def _resolve_represented_user(
+    db: AsyncSession, org_id: str, value: str
+) -> str:
+    """Map a user id or email to the id of a current member of ``org_id``.
+    Every miss is the same 422, whether or not the user exists elsewhere."""
+    value = value.strip()
+    if "@" in value:
+        stmt = (
+            select(OrgMember.user_id)
+            .join(User, User.id == OrgMember.user_id)
+            .where(OrgMember.org_id == org_id, func.lower(User.email) == value.lower())
+        )
+    else:
+        stmt = select(OrgMember.user_id).where(
+            OrgMember.org_id == org_id, OrgMember.user_id == value
+        )
+    # Two members whose emails differ only in case: refuse rather than pick.
+    matches = (await db.execute(stmt.limit(2))).scalars().all() if value else []
+    user_id = matches[0] if len(matches) == 1 else None
+    if user_id is None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "represented_user_not_member",
+                "message": "represented_user must be a current member of this org.",
+            },
+        )
+    return user_id
+
+
 def _persona_snapshot(p: AgentPersona) -> dict:
     return {
         "name": p.name,
         "role": p.role,
         "is_active": bool(p.is_active) if p.is_active is not None else True,
         "version": p.version if p.version is not None else 1,
+        "represented_user_id": p.represented_user_id,
     }
 
 
@@ -761,6 +872,11 @@ async def create_org_persona(
                 + "). Persona names are case-insensitive-unique per org."
             ),
         )
+    represented_user_id = (
+        await _resolve_represented_user(db, org_id, body.represented_user)
+        if body.represented_user is not None
+        else None
+    )
     persona = AgentPersona(
         id=f"per_{uuid.uuid4().hex[:16]}",
         project_id=None,
@@ -770,6 +886,7 @@ async def create_org_persona(
         content=body.content,
         specializations=json.dumps(body.specializations),
         created_by=auth.user.id,
+        represented_user_id=represented_user_id,
         actor_type=auth.actor_type,
         service_key_id=auth.service_key_id,
         service_key_name=auth.service_key_name,
@@ -812,22 +929,59 @@ async def update_org_persona(
 ) -> PersonaResponse:
     """Update an org persona (active or soft-deleted — `is_active=true`
     reactivates). `is_active=false` runs the same stranding guard and audit
-    as DELETE."""
-    await _authorize_org_personas(db, auth, org_id, write=True)
+    as DELETE. Org admins may set or clear `represented_user`; the member a
+    persona represents may update its role, content and specializations
+    (GitHub #81)."""
+    _, pre_role = await _authorize_org_personas(
+        db, auth, org_id, write=True, allow_member=True
+    )
+    # Refuse a non-admin before taking the org lock, so members cannot
+    # contend for it with edits they are not allowed to make.
+    pre_persona = await find_org_persona(db, org_id, name)
+    _authorize_org_persona_update(auth, pre_role, pre_persona, body)
+    if pre_persona is not None:
+        # Detach it: otherwise the under-lock lookup returns this same
+        # identity-map object with its pre-lock attributes, and every check
+        # and write below would run on stale values.
+        db.expunge(pre_persona)
     await lock_scopes(db, org_ids=[org_id])
-    # Re-read standing under the org lock (role changes take it too).
-    org, role = await _authorize_org_personas(db, auth, org_id, write=True)
+    # Re-read standing under the org lock (role changes and member removal
+    # take it too).
+    org, role = await _authorize_org_personas(
+        db, auth, org_id, write=True, allow_member=True
+    )
     persona = await find_org_persona(db, org_id, name)
+    _authorize_org_persona_update(auth, role, persona, body)
     if persona is None:
         raise HTTPException(404, "Persona not found")
+    represented_user_id = persona.represented_user_id
+    if "represented_user" in body.model_fields_set:
+        represented_user_id = (
+            await _resolve_represented_user(db, org_id, body.represented_user)
+            if body.represented_user is not None
+            else None
+        )
     deactivating = body.is_active is False and bool(persona.is_active)
     if deactivating and not force:
         await _assert_org_persona_not_needed(db, org_id, persona.name)
     before = _persona_snapshot(persona)
-    if _apply_update(persona, body, auth):
+    content_changed = _apply_update(persona, body, auth)
+    link_changed = represented_user_id != persona.represented_user_id
+    if link_changed:
+        # Not a content change: no version bump, but audited.
+        persona.represented_user_id = represented_user_id
+        persona.actor_type = auth.actor_type
+        persona.service_key_id = auth.service_key_id
+        persona.service_key_name = auth.service_key_name
+    if content_changed or link_changed:
+        if deactivating:
+            event_type = "persona_deleted"
+        elif content_changed:
+            event_type = "persona_updated"
+        else:
+            event_type = "persona_represented_user_changed"
         _org_audit(
-            db, org=org, auth=auth, actor_role=role,
-            event_type="persona_deleted" if deactivating else "persona_updated",
+            db, org=org, auth=auth, actor_role=role, event_type=event_type,
             persona=persona, before=before, after=_persona_snapshot(persona),
         )
     await db.commit()

@@ -2390,6 +2390,26 @@ How names resolve inside a project: the project's own persona wins, then the org
 - Service keys use the same `personas:read` / `personas:write` scopes and only reach their own org. A service key limited to specific projects can read org personas but not write them.
 - Tier: the org's own plan must include personas (Team and Enterprise do).
 
+#### A persona that represents a person
+
+An org persona can name the org member it represents (GitHub #81), for example a `kelvin` persona for Kelvin. That member can then update the persona's role, content and specializations with `sfs persona edit <name> --org <org_id>`, without being an org admin. Only org admins (and the org's service keys with `personas:write` that aren't limited to specific projects) can create or delete org personas, deactivate or reactivate them, or change who a persona represents. The member can't edit a deactivated persona.
+
+```bash
+sfs persona create kelvin --role "Platform engineer" --file ./kelvin.md --org org_abc123 --represents kelvin@example.com
+sfs persona represent kelvin --org org_abc123 --user kelvin@example.com   # set or change
+sfs persona represent kelvin --org org_abc123 --clear                     # stop representing anyone
+```
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `--org` | string | Organization id that owns the persona (required) |
+| `--user` | string | Email or user id of a current member of that org |
+| `--clear` | flag | Remove the link. Pass exactly one of `--user` or `--clear` |
+
+- `sfs persona show <name> --org <org_id>` prints **Represents:** with the member's email.
+- The member must belong to the org. Removing them from the org, or deactivating their account, clears the link (recorded in the org's audit log), so rejoining later does not give them edit rights back.
+- Project personas can't represent anyone; any user with access to the project can already edit them.
+
 ---
 
 ## `sfs ticket` (v0.10.1)

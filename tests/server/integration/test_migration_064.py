@@ -25,6 +25,7 @@ from alembic import command
 from alembic.config import Config
 
 from sessionfs.server.db.models import Base
+from tests.pg_helpers import reset_pg_schema
 
 # Tables migration 064 creates; everything else is pre-064 state.
 MIGRATION_064_TABLES = {"agent_feedback"}
@@ -127,6 +128,7 @@ def test_pre_064_schema_is_the_real_schema_not_a_stub(pre_feedback_db: Path) -> 
 )
 def test_full_chain_on_postgres() -> None:
     """001..head then downgrade to 063 and back, on REAL PostgreSQL."""
+    reset_pg_schema()  # the chain runs from an empty database
     config = Config()
     config.set_main_option("script_location", _MIGRATIONS)
     config.set_main_option("sqlalchemy.url", os.environ["SFS_TEST_PG_URL"])

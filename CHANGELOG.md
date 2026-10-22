@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.0] - 2026-10-22
+
+**An org persona can stand for a person, who can then keep it up to date without being an org admin. Plus project tools that accept the folder your agent is working in.** Server migration 080. No new MCP tools (81).
+
+### Added
+- **Org personas that represent a member (GitHub #81).** An org owner or admin can link an org persona to the member it stands for. That member can then update the persona's role, content and specializations without org admin rights; turning the persona on or off, changing or removing the link, creating and deleting stay with admins. Set the link on the dashboard (**Organization → Personas → Represents**), with `sfs persona create --org ORG --represents EMAIL` or `sfs persona represent NAME --org ORG --user EMAIL|--clear`, or through the MCP `create_persona` / `update_persona` tools (`represented_user`). Members see their own persona under **Your org persona**. Linking a project persona is refused.
+
+### Changed
+- **Project MCP tools accept a folder as `git_remote`.** Agents often pass the directory they work in. A value starting with `/`, `~`, `./` or `../` is now resolved through that repository's `origin` remote (git worktrees included), instead of being looked up as a remote and returning "No project found". A folder that isn't a git repository with an `origin` gets a clear error instead of acting on another project; leaving `git_remote` out still uses the current workspace. The "No project found" message now says `git_remote` takes a remote URL such as `github.com/org/repo`.
+
+### Security
+- Removing a member from an organization, or deactivating a user, clears any persona link to them, with an entry in the organization's audit log. A member who rejoins does not get edit rights back until an admin links them again.
+
+### Upgrade notes
+- **Self-hosted servers: run migration 080** (adds a nullable `agent_personas.represented_user_id`; on PostgreSQL also a foreign key that clears the link when the user is deleted, and a check that only org personas can have one). Existing personas represent nobody.
+
 ## [0.19.0] - 2026-10-21
 
 **Find the right skill, install it with your tool's own plugin command, and see where it really works. Plus an org-wide skills policy for Enterprise, Git registries that publish themselves, and much faster pushes of large sessions.** Adds 1 MCP tool (80 → 81) and server migrations 076–079.

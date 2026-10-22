@@ -83,7 +83,7 @@ The MCP server exposes 36 tools across five categories (sessions, knowledge read
 |------|-------------|
 | `list_personas` | List active agent personas for the project, including its org's personas (`include_org`, default true; each row has `scope`) |
 | `get_persona` | Full content + role + specializations for one persona |
-| `create_persona` | Create a new persona (ASCII name 1-50 chars, role, content, specializations); `org_id` creates an org-level persona |
+| `create_persona` | Create a new persona (ASCII name 1-50 chars, role, content, specializations); `org_id` creates an org-level persona; `represented_user` (with `org_id`) names the member it represents |
 | `assume_persona` | Declare you are working as a persona without a ticket — writes a persona-only provenance bundle |
 | `forget_persona` | Clear the local persona bundle written by `assume_persona` |
 

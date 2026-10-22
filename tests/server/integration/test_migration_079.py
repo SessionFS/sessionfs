@@ -17,6 +17,7 @@ from alembic import command
 from alembic.config import Config
 
 from sessionfs.server.db.models import Base
+from tests.pg_helpers import reset_pg_schema
 
 _MIGRATIONS = str(
     Path(__file__).resolve().parents[3] / "src" / "sessionfs" / "server" / "db" / "migrations"
@@ -149,6 +150,7 @@ def _pg(url: str, work) -> object:
 @pytest.mark.skipif(not os.environ.get("SFS_TEST_PG_URL"), reason="SFS_TEST_PG_URL not set")
 def test_upgrade_on_postgres() -> None:
     """Against the full real prior chain (001-078) on PostgreSQL."""
+    reset_pg_schema()  # the chain runs from an empty database
     url = os.environ["SFS_TEST_PG_URL"]
     config = _cfg(url)
     command.upgrade(config, "078")

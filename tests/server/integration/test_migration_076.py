@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from sessionfs.server.db.models import Base
 from sessionfs.skills.discovery import CATEGORIES
+from tests.pg_helpers import reset_pg_schema
 
 _MIGRATIONS = str(
     Path(__file__).resolve().parents[3] / "src" / "sessionfs" / "server" / "db" / "migrations"
@@ -181,6 +182,7 @@ def test_downgrade_and_reupgrade(pre_076_db: Path) -> None:
     reason="set SFS_TEST_PG_URL to a scratch PostgreSQL database to run the full chain",
 )
 def test_full_chain_on_postgres() -> None:
+    reset_pg_schema()  # the chain runs from an empty database
     url = os.environ["SFS_TEST_PG_URL"]
     config = _cfg(url)
     command.upgrade(config, "head")

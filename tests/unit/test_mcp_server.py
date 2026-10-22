@@ -1453,11 +1453,47 @@ class TestNewToolDispatch:
         await mcp_server._handle_get_persona({"name": "atlas", "org_id": "org_1"})
         assert captured["url"] == "https://api.test/api/v1/orgs/org_1/personas/atlas"
 
+    @pytest.mark.asyncio
+    async def test_persona_represented_user_is_sent_for_org_personas(
+        self, fake_org_config, fake_httpx, captured
+    ):
+        # GitHub #81
+        await mcp_server._handle_create_persona({
+            "name": "kelvin", "role": "Platform", "org_id": "org_1",
+            "represented_user": " kelvin@example.com ",
+        })
+        assert captured["json"]["represented_user"] == "kelvin@example.com"
+        captured.clear()
+        await mcp_server._handle_update_persona({
+            "name": "kelvin", "org_id": "org_1", "represented_user": "u_2",
+        })
+        assert captured["json"] == {"represented_user": "u_2"}
+        captured.clear()
+        # An empty string clears the link (null on the wire).
+        await mcp_server._handle_update_persona({
+            "name": "kelvin", "org_id": "org_1", "represented_user": "",
+        })
+        assert captured["json"] == {"represented_user": None}
+
+    @pytest.mark.asyncio
+    async def test_persona_represented_user_needs_org_id(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        for handler, args in (
+            (mcp_server._handle_create_persona, {"name": "a", "role": "r", "represented_user": "u"}),
+            (mcp_server._handle_update_persona, {"name": "a", "represented_user": "u"}),
+        ):
+            result = await handler(args)
+            assert "org_id" in result["error"]
+        assert "method" not in captured
+
     def test_persona_tool_schemas_expose_org_args(self):
         tools = {t.name: t for t in mcp_server._TOOLS}
         for name in ("create_persona", "update_persona", "delete_persona", "list_personas", "get_persona"):
             assert "org_id" in tools[name].inputSchema["properties"], name
         assert "include_org" in tools["list_personas"].inputSchema["properties"]
+        for name in ("create_persona", "update_persona"):
+            assert "represented_user" in tools[name].inputSchema["properties"], name
 
     # ── tk_835a876529de4551 — update_ticket MCP dispatch ──
 
@@ -3278,8 +3314,12 @@ class TestProjectResolverRemoteValidation:
         async def explode(*args, **kwargs):
             raise AssertionError("must not be called")
 
+        async def no_workspace():
+            return ""
+
         monkeypatch.setattr(httpx.AsyncClient, "get", explode)
         monkeypatch.setattr(httpx.AsyncClient, "post", explode)
+        monkeypatch.setattr(mcp_server, "_resolve_workspace_git_remote", no_workspace)
         for bad in (
             "../admin/users",
             "..%2fadmin%2fusers",
@@ -3289,8 +3329,14 @@ class TestProjectResolverRemoteValidation:
         ):
             with pytest.raises(Exception, match="Could not parse git remote URL"):
                 mcp_server._strict_repository_identifier(bad)
-            with pytest.raises(Exception, match="Could not parse git remote URL"):
-                await mcp_server._resolve_project_id(bad)
+            if bad.startswith("../"):
+                # Path-shaped: never used as a lookup key; an unresolvable
+                # path is refused locally.
+                with pytest.raises(Exception, match="is a path but not a git repository"):
+                    await mcp_server._resolve_project_id(bad)
+            else:
+                with pytest.raises(Exception, match="Could not parse git remote URL"):
+                    await mcp_server._resolve_project_id(bad)
 
     @pytest.mark.asyncio
     async def test_marketplace_tools_refuse_traversal_remote(self, monkeypatch):
@@ -3312,7 +3358,11 @@ class TestProjectResolverRemoteValidation:
                 calls.append(url)
                 raise AssertionError("must not be called")
 
+        async def no_workspace():
+            return ""
+
         monkeypatch.setattr(httpx, "AsyncClient", _Client)
+        monkeypatch.setattr(mcp_server, "_resolve_workspace_git_remote", no_workspace)
         for handler, args in (
             (mcp_server._handle_list_skill_install_requests, {"git_remote": "../admin/users"}),
             (mcp_server._handle_load_marketplace_skill, {"version_id": _VER, "tool": "codex", "git_remote": "../admin/users"}),
@@ -3321,9 +3371,11 @@ class TestProjectResolverRemoteValidation:
             (mcp_server._handle_cancel_skill_install_request, {"request_id": _REQ, "git_remote": "../admin/users"}),
         ):
             result = await handler(args)
-            assert "error" in result and "git remote" in result["error"]
-        with pytest.raises(Exception, match="Could not parse git remote"):
+            assert "error" in result and "is a path but not a git repository" in result["error"]
+        with pytest.raises(Exception, match="is a path but not a git repository"):
             await mcp_server._resolve_project_id("../admin/users")
+        with pytest.raises(Exception, match="Could not parse git remote"):
+            await mcp_server._resolve_project_id("acme/../admin/users")
         assert calls == []
 
     @pytest.mark.asyncio
@@ -3622,3 +3674,210 @@ def test_remote_validator_fuzz_matches_the_server_exactly():
         assert unquote(key) == stored, f"{remote!r}: key {key!r} != stored {stored!r}"
         accepted += 1
     assert accepted > 2000 and rejected > 100
+
+
+class TestGitRemotePathArgument:
+    """tk_a68849d2ade844b5: agents pass the repo (or worktree) directory as
+    `git_remote`. A path resolves through the repo's `origin`; a path that is
+    not a repo with an origin is an error (never a silent workspace fallback,
+    which could send a write to the wrong project)."""
+
+    ORIGIN = "https://github.com/Acme/Widgets.git"
+    WORKSPACE = "https://github.com/acme/workspace.git"
+
+    @staticmethod
+    def _git(*args: str) -> None:
+        import subprocess
+
+        subprocess.run(["git", *args], check=True, capture_output=True, text=True)
+
+    @pytest.fixture
+    def repo(self, tmp_path: Path) -> Path:
+        repo = tmp_path / "Repo" / "Widgets"
+        repo.mkdir(parents=True)
+        self._git("init", "-q", str(repo))
+        self._git("-C", str(repo), "config", "user.name", "t")
+        self._git("-C", str(repo), "config", "user.email", "t@example.com")
+        self._git("-C", str(repo), "remote", "add", "origin", self.ORIGIN)
+        self._git(
+            "-C", str(repo), "-c", "commit.gpgsign=false",
+            "commit", "-q", "--allow-empty", "-m", "init",
+        )
+        return repo
+
+    @pytest.fixture
+    def lookups(self, monkeypatch) -> list[str]:
+        """Record project lookups; workspace detection returns WORKSPACE."""
+        import httpx
+
+        calls: list[str] = []
+
+        class _Resp:
+            status_code = 200
+
+            def json(self):
+                return {"id": "prj_1"}
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url, **kwargs):
+                calls.append(url)
+                return _Resp()
+
+        class _Cfg:
+            class sync:
+                api_key = "k"
+                api_url = "https://api.test"
+
+        async def workspace():
+            return self.WORKSPACE
+
+        monkeypatch.setattr(httpx, "AsyncClient", _Client)
+        monkeypatch.setattr(mcp_server, "load_config", lambda: _Cfg)
+        # Some handlers import load_config inside the function body.
+        monkeypatch.setattr("sessionfs.daemon.config.load_config", lambda: _Cfg)
+        monkeypatch.setattr(mcp_server, "_resolve_workspace_git_remote", workspace)
+        return calls
+
+    @pytest.mark.asyncio
+    async def test_repo_path_resolves_origin(self, repo, lookups):
+        await mcp_server._resolve_project_id(str(repo))
+        assert lookups == ["https://api.test/api/v1/projects/acme/widgets"]
+
+    @pytest.mark.asyncio
+    async def test_worktree_path_resolves_origin(self, repo, tmp_path, lookups):
+        worktree = tmp_path / "Worktrees" / "Feature"
+        self._git("-C", str(repo), "worktree", "add", "-q", "-b", "feature", str(worktree))
+        await mcp_server._resolve_project_id(str(worktree))
+        assert lookups == ["https://api.test/api/v1/projects/acme/widgets"]
+
+    @pytest.mark.asyncio
+    async def test_tilde_path_resolves_origin(self, repo, tmp_path, monkeypatch, lookups):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        await mcp_server._resolve_project_id("~/Repo/Widgets")
+        assert lookups == ["https://api.test/api/v1/projects/acme/widgets"]
+
+    @pytest.mark.asyncio
+    async def test_non_repo_path_is_an_error(self, tmp_path, lookups):
+        plain = tmp_path / "Plain"
+        plain.mkdir()
+        with pytest.raises(Exception, match="is a path but not a git repository"):
+            await mcp_server._resolve_project_id(str(plain))
+        assert lookups == []
+
+    @pytest.mark.asyncio
+    async def test_repo_without_origin_is_an_error(self, tmp_path, lookups):
+        no_origin = tmp_path / "NoOrigin"
+        self._git("init", "-q", str(no_origin))
+        with pytest.raises(Exception, match="is a path but not a git repository"):
+            await mcp_server._resolve_project_id(str(no_origin))
+        assert lookups == []
+
+    @pytest.mark.asyncio
+    async def test_nonexistent_path_is_an_error(self, tmp_path, lookups):
+        missing = str(tmp_path / "Missing" / "Repo")
+        with pytest.raises(Exception, match="omit git_remote to use the current workspace") as exc:
+            await mcp_server._resolve_project_id(missing)
+        assert missing in str(exc.value)
+        assert lookups == []
+
+    @pytest.mark.asyncio
+    async def test_directory_named_like_remote_is_still_a_remote(self, tmp_path, monkeypatch, lookups):
+        """Only explicit path forms are paths: `acme/repo` matching a local
+        directory is looked up as a remote."""
+        (tmp_path / "acme" / "repo").mkdir(parents=True)
+        monkeypatch.chdir(tmp_path)
+        await mcp_server._resolve_project_id("acme/repo")
+        assert lookups == ["https://api.test/api/v1/projects/acme/repo"]
+
+    @pytest.mark.asyncio
+    async def test_remote_url_unchanged(self, lookups):
+        await mcp_server._resolve_project_id("github.com/Acme/Repo")
+        await mcp_server._resolve_project_id("git@github.com:Acme/Repo.git")
+        assert lookups == [
+            "https://api.test/api/v1/projects/github.com/acme/repo",
+            "https://api.test/api/v1/projects/acme/repo",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_inline_resolvers_share_path_handling(self, repo, lookups):
+        """Tools that look the project up without `_resolve_project_id`
+        resolve a path the same way."""
+        await mcp_server._handle_get_project_context({"git_remote": str(repo)})
+        await mcp_server._handle_search_knowledge(
+            {"query": "widgets", "git_remote": str(repo)}
+        )
+        assert lookups[0] == "https://api.test/api/v1/projects/acme/widgets"
+        assert lookups[1] == "https://api.test/api/v1/projects/acme/widgets"
+
+    @pytest.mark.asyncio
+    async def test_inline_resolvers_report_unresolvable_path(self, tmp_path, lookups):
+        missing = str(tmp_path / "Missing")
+        for result in (
+            await mcp_server._handle_get_project_context({"git_remote": missing}),
+            await mcp_server._handle_search_knowledge({"query": "widgets", "git_remote": missing}),
+        ):
+            assert "is a path but not a git repository" in result
+        assert lookups == []
+
+    @pytest.mark.asyncio
+    async def test_fetch_kb_entries_raw_resolves_repo_path(self, repo, tmp_path, lookups):
+        await mcp_server._fetch_kb_entries_raw({"query": "widgets", "git_remote": str(repo)})
+        assert lookups[0] == "https://api.test/api/v1/projects/acme/widgets"
+        lookups.clear()
+        entries = await mcp_server._fetch_kb_entries_raw(
+            {"query": "widgets", "git_remote": str(tmp_path / "Missing")}
+        )
+        assert entries == []
+        assert lookups == []
+
+    @pytest.mark.asyncio
+    async def test_no_project_error_explains_git_remote(self, monkeypatch):
+        import httpx
+
+        class _Resp:
+            status_code = 404
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url, **kwargs):
+                return _Resp()
+
+        class _Cfg:
+            class sync:
+                api_key = "k"
+                api_url = "https://api.test"
+
+        monkeypatch.setattr(httpx, "AsyncClient", _Client)
+        monkeypatch.setattr(mcp_server, "load_config", lambda: _Cfg)
+        with pytest.raises(Exception, match="remote URL like github.com/org/repo") as exc:
+            await mcp_server._resolve_project_id("github.com/acme/none")
+        assert "omitted to use the current workspace" in str(exc.value)
+
+    def test_git_remote_descriptions_are_shared(self):
+        described = [
+            tool.name
+            for tool in mcp_server._TOOLS
+            if "git_remote" in tool.inputSchema.get("properties", {})
+        ]
+        assert described
+        for tool in mcp_server._TOOLS:
+            prop = tool.inputSchema.get("properties", {}).get("git_remote")
+            if prop is not None:
+                assert prop.get("description") == mcp_server._GIT_REMOTE_DESCRIPTION, tool.name

@@ -18,6 +18,7 @@ from alembic import command
 from alembic.config import Config
 
 from sessionfs.server.db.models import Base
+from tests.pg_helpers import reset_pg_schema
 
 NEW_TABLES = {"github_claim_attempts", "github_webhook_deliveries"}
 NEW_PR_COMMENT_COLUMNS = (
@@ -309,6 +310,7 @@ def test_upgrade_downgrade_upgrade(pre_073_db: Path) -> None:
 )
 def test_full_chain_on_postgres() -> None:
     """001..head, down to 069 and back, on REAL PostgreSQL."""
+    reset_pg_schema()  # the chain runs from an empty database
     config = Config()
     config.set_main_option("script_location", _MIGRATIONS)
     config.set_main_option("sqlalchemy.url", os.environ["SFS_TEST_PG_URL"])

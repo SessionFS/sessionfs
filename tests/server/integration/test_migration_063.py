@@ -24,6 +24,7 @@ from alembic import command
 from alembic.config import Config
 
 from sessionfs.server.db.models import Base
+from tests.pg_helpers import reset_pg_schema
 
 # Tables migration 063 creates; everything else is pre-063 state.
 MIGRATION_063_TABLES = {
@@ -163,6 +164,7 @@ def test_full_chain_on_postgres() -> None:
     the true prior schema. Point SFS_TEST_PG_URL at an EMPTY scratch database;
     the chain is run from base.
     """
+    reset_pg_schema()  # the chain runs from an empty database
     config = Config()
     config.set_main_option("script_location", _MIGRATIONS)
     # env.py resolves the URL from SFS_TEST_PG_URL via SFS_DATABASE_URL and

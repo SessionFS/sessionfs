@@ -35,6 +35,8 @@ sfs mcp install --for claude-code --skip-instructions
 
 The MCP server exposes 81 tools in eleven categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Agent Feedback (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, and Skills Marketplace.
 
+**The `git_remote` parameter.** Project-scoped tools take an optional `git_remote` that picks the project. Pass a remote URL such as `github.com/org/repo`, or a local folder: a value starting with `/`, `~`, `./` or `../` (or `.` / `..`) is resolved through that repository's `origin` remote, git worktrees included. A folder that isn't a git repository with an `origin` returns an error rather than acting on another project. Omit `git_remote` to use the current workspace.
+
 ### Session Tools
 
 #### `search_sessions`
@@ -304,11 +306,12 @@ Define a new persona for the project, or for an organization when `org_id` is pa
 | `content` | string | no | Markdown body |
 | `specializations` | string[] | no | Domain keywords |
 | `org_id` | string | no | Create an org-level persona in this org (org admin or owner) |
+| `represented_user` | string | no | With `org_id`: email or user id of the org member this persona represents. That member may then edit it |
 | `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
 
 #### `update_persona`
 
-Update a persona's role, content, or specializations. Without `org_id` only the project's own personas are matched; pass `org_id` to edit an org-level persona (org admin or owner).
+Update a persona's role, content, or specializations. Without `org_id` only the project's own personas are matched; pass `org_id` to edit an org-level persona (org admin or owner). The member an org persona represents may also edit its role, content and specializations.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -317,6 +320,7 @@ Update a persona's role, content, or specializations. Without `org_id` only the 
 | `content` | string | no | New markdown body |
 | `specializations` | string[] | no | Replacement list |
 | `org_id` | string | no | Target an org-level persona |
+| `represented_user` | string | no | With `org_id`, org admins (or org service keys) only: email or user id of the member the persona represents; an empty string clears it |
 | `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
 
 #### `delete_persona`

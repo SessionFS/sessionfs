@@ -36,6 +36,16 @@ from sessionfs.store.local import LocalStore
 
 from sessionfs.mcp.path_safety import _path_segment, _strict_repository_identifier
 
+# Shared `git_remote` parameter description for every project-scoped tool.
+_GIT_REMOTE_DESCRIPTION = (
+    "Git remote URL like github.com/org/repo, or a local repo path. "
+    "Omit to use the current workspace."
+)
+_NO_PROJECT_HINT = (
+    "git_remote takes a remote URL like github.com/org/repo, "
+    "or can be omitted to use the current workspace."
+)
+
 logger = logging.getLogger("sessionfs.mcp")
 
 app = Server("sessionfs")
@@ -183,7 +193,7 @@ _TOOLS = [
             "properties": {
                 "git_remote": {
                     "type": "string",
-                    "description": "Git remote URL (auto-detected from CWD if empty)",
+                    "description": _GIT_REMOTE_DESCRIPTION,
                 },
             },
         },
@@ -249,7 +259,7 @@ _TOOLS = [
                     "type": "boolean",
                     "description": "Include stale and superseded entries (default: false)",
                 },
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
                 "audit_session_id": {
                     "type": "string",
                     "description": "Optional current session id to append this retrieval to its audit log",
@@ -283,7 +293,7 @@ _TOOLS = [
                     "type": "string",
                     "description": "Question about the project",
                 },
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["question"],
         },
@@ -389,7 +399,7 @@ _TOOLS = [
                         "keys regardless of this value."
                     ),
                 },
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["content", "entry_type"],
         },
@@ -430,7 +440,7 @@ _TOOLS = [
                     "type": "string",
                     "description": "Optional ticket attribution (must be owned by the writing user). Defaults to active-ticket bundle when bundle.project_id matches.",
                 },
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["slug", "content"],
         },
@@ -447,7 +457,7 @@ _TOOLS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
         },
     ),
@@ -460,7 +470,7 @@ _TOOLS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
         },
     ),
@@ -478,7 +488,7 @@ _TOOLS = [
                     "type": "string",
                     "description": "Tool slug: claude-code, codex, cursor, copilot, gemini",
                 },
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
                 "audit_session_id": {
                     "type": "string",
                     "description": "Optional current session id to append this retrieval to its audit log",
@@ -503,7 +513,7 @@ _TOOLS = [
                     "type": "integer",
                     "description": "Knowledge entry ID",
                 },
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["id"],
         },
@@ -566,7 +576,7 @@ _TOOLS = [
                     "type": "integer",
                     "description": "Page size (default 50, max 200)",
                 },
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
         },
     ),
@@ -586,7 +596,7 @@ _TOOLS = [
                     "type": "string",
                     "description": "Page slug (e.g. 'architecture', 'concept/auth-flow')",
                 },
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
                 "audit_session_id": {
                     "type": "string",
                     "description": "Optional current session id to append this retrieval to its audit log",
@@ -621,7 +631,7 @@ _TOOLS = [
                     "type": "integer",
                     "description": "Optional keyset pagination cursor — pass the `next_cursor` value returned by the previous response (or the `id` of the last revision in that page)",
                 },
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["slug"],
         },
@@ -659,7 +669,7 @@ _TOOLS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
         },
     ),
@@ -682,7 +692,7 @@ _TOOLS = [
                     "type": "string",
                     "description": "Section slug (e.g. 'architecture', 'team_workflow')",
                 },
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
                 "audit_session_id": {
                     "type": "string",
                     "description": "Optional current session id to append this retrieval to its audit log",
@@ -796,7 +806,7 @@ _TOOLS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
         },
     ),
@@ -828,7 +838,7 @@ _TOOLS = [
                     "type": "string",
                     "description": "List only this org's own personas (org members) instead of the project's.",
                 },
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
         },
     ),
@@ -851,7 +861,7 @@ _TOOLS = [
                     "type": "string",
                     "description": "Load this org's persona directly (org members) instead of resolving from the project.",
                 },
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
                 "audit_session_id": {
                     "type": "string",
                     "description": "Optional current session id to append this retrieval to its audit log",
@@ -889,7 +899,7 @@ _TOOLS = [
                     "enum": ["issue", "task"],
                     "description": "Filter by kind. Omit to return both.",
                 },
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
         },
     ),
@@ -906,7 +916,7 @@ _TOOLS = [
             "type": "object",
             "properties": {
                 "ticket_id": {"type": "string", "description": "Ticket id (e.g. 'tk_...')"},
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["ticket_id"],
         },
@@ -951,7 +961,7 @@ _TOOLS = [
                     "type": "integer",
                     "description": "Max comments to return (1-500, default 200).",
                 },
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["ticket_id"],
         },
@@ -981,7 +991,7 @@ _TOOLS = [
             "type": "object",
             "properties": {
                 "ticket_id": {"type": "string", "description": "Ticket id"},
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["ticket_id"],
         },
@@ -1013,7 +1023,7 @@ _TOOLS = [
                 "ticket_id": {"type": "string", "description": "Ticket id"},
                 "force": {"type": "boolean", "description": "Recover a blocked ticket", "default": False},
                 "tool": {"type": "string", "description": "Target tool for token budget (claude-code/codex/gemini/copilot/cursor/...)", "default": "generic"},
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["ticket_id"],
         },
@@ -1073,7 +1083,7 @@ _TOOLS = [
                     "type": "string",
                     "description": "Optional parent Issue (only valid when kind='task'). Parent must be kind='issue' in this same project.",
                 },
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["title"],
         },
@@ -1103,7 +1113,7 @@ _TOOLS = [
                 "changed_files": {"type": "array", "items": {"type": "string"}, "default": []},
                 "knowledge_entry_ids": {"type": "array", "items": {"type": "string"}, "default": []},
                 "lease_epoch": {"type": "integer", "description": "Optional stale-writer fence from start_ticket"},
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["ticket_id", "notes"],
         },
@@ -1128,7 +1138,7 @@ _TOOLS = [
                 "author_persona": {"type": "string"},
                 "session_id": {"type": "string"},
                 "lease_epoch": {"type": "integer", "description": "Optional stale-writer fence from start_ticket"},
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["ticket_id", "content"],
         },
@@ -1146,7 +1156,10 @@ _TOOLS = [
             "Pass `org_id` to create an ORG-level persona instead, usable "
             "from every project in that org (requires org admin or owner; "
             "names are case-insensitive-unique per org). A project persona "
-            "with the same name overrides the org one inside its project.\n\n"
+            "with the same name overrides the org one inside its project. "
+            "With `org_id`, `represented_user` (an org member's email or "
+            "user id) names the person the persona represents; that member "
+            "may then update its role, content and specializations.\n\n"
             "IMPORTANT: Always use this MCP tool instead of running "
             "`sfs persona create` or any other sfs CLI command."
         ),
@@ -1161,7 +1174,14 @@ _TOOLS = [
                     "type": "string",
                     "description": "Target an org-level persona in this org instead of the project (org admins/owners).",
                 },
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "represented_user": {
+                    "type": "string",
+                    "description": (
+                        "With org_id: email or user id of the org member this "
+                        "persona represents (they may then edit it)."
+                    ),
+                },
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["name", "role"],
         },
@@ -1183,7 +1203,11 @@ _TOOLS = [
             "Authorization: same as create_persona (project owner / org "
             "admin / case-insensitive name match).\n\n"
             "Org-level personas are edited by passing `org_id` (org "
-            "admins/owners); without it only project personas are matched.\n\n"
+            "admins/owners, or the member the persona represents — they may "
+            "change role, content and specializations only); without it "
+            "only project personas are matched. Org admins may pass "
+            "`represented_user` (email or user id) to set who the persona "
+            "represents, or an empty string to clear it.\n\n"
             "IMPORTANT: Always use this MCP tool instead of running "
             "`sfs persona edit` or any other sfs CLI command."
         ),
@@ -1200,9 +1224,19 @@ _TOOLS = [
                 },
                 "org_id": {
                     "type": "string",
-                    "description": "Target an org-level persona in this org instead of the project (org admins/owners).",
+                    "description": (
+                        "Target an org-level persona in this org instead of the "
+                        "project (org admins/owners, or the member it represents)."
+                    ),
                 },
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "represented_user": {
+                    "type": "string",
+                    "description": (
+                        "With org_id, org admins only: email or user id of the "
+                        "member this persona represents; empty string clears it."
+                    ),
+                },
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["name"],
         },
@@ -1252,7 +1286,7 @@ _TOOLS = [
                     "type": "string",
                     "description": "Target an org-level persona in this org instead of the project (org admins/owners).",
                 },
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["name"],
         },
@@ -1272,7 +1306,7 @@ _TOOLS = [
             "properties": {
                 "ticket_id": {"type": "string"},
                 "persona_name": {"type": "string", "description": "Persona to assign"},
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["ticket_id", "persona_name"],
         },
@@ -1294,7 +1328,7 @@ _TOOLS = [
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "Persona name to assume"},
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["name"],
         },
@@ -1316,7 +1350,7 @@ _TOOLS = [
             "properties": {
                 "ticket_id": {"type": "string"},
                 "lease_epoch": {"type": "integer", "description": "Optional stale-writer fence from start_ticket"},
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["ticket_id"],
         },
@@ -1337,7 +1371,7 @@ _TOOLS = [
             "properties": {
                 "ticket_id": {"type": "string"},
                 "reason": {"type": "string", "description": "Optional rationale — recorded as a comment on the ticket"},
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["ticket_id"],
         },
@@ -1403,7 +1437,7 @@ _TOOLS = [
                     "type": "integer",
                     "description": "Optional fence — read from get_ticket; 409 if stale. Not a mutation by itself.",
                 },
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["ticket_id"],
         },
@@ -1465,7 +1499,7 @@ _TOOLS = [
                 },
                 "triggered_by_persona": {"type": "string"},
                 "start_now": {"type": "boolean", "default": False},
-                "git_remote": {"type": "string"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["persona_name"],
         },
@@ -1506,7 +1540,7 @@ _TOOLS = [
                     "default": [],
                 },
                 "session_id": {"type": "string"},
-                "git_remote": {"type": "string"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["run_id"],
         },
@@ -1531,7 +1565,7 @@ _TOOLS = [
                 "trigger_source": {"type": "string"},
                 "ticket_id": {"type": "string"},
                 "limit": {"type": "integer", "default": 50},
-                "git_remote": {"type": "string"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
         },
     ),
@@ -1574,7 +1608,7 @@ _TOOLS = [
                 "agent_run_id": {"type": "string"},
                 "ticket_id": {"type": "string"},
                 "comment_id": {"type": "string"},
-                "git_remote": {"type": "string"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["feedback_type", "verdict"],
         },
@@ -1610,7 +1644,7 @@ _TOOLS = [
                 "since": {"type": "string"},
                 "since_id": {"type": "string"},
                 "limit": {"type": "integer", "default": 100},
-                "git_remote": {"type": "string"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
         },
     ),
@@ -1628,7 +1662,7 @@ _TOOLS = [
             "properties": {
                 "persona": {"type": "string"},
                 "since": {"type": "string"},
-                "git_remote": {"type": "string"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
         },
     ),
@@ -1673,7 +1707,7 @@ _TOOLS = [
                     "type": "boolean",
                     "description": "Set true to reverse a dismissal. Default: false (= dismiss).",
                 },
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["id"],
         },
@@ -1712,7 +1746,7 @@ _TOOLS = [
                     "minimum": 0.0,
                     "maximum": 1.0,
                 },
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["id", "confidence"],
         },
@@ -1747,7 +1781,7 @@ _TOOLS = [
                     "type": "integer",
                     "description": "Knowledge entry ID",
                 },
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["id"],
         },
@@ -1813,7 +1847,7 @@ _TOOLS = [
                     "description": "Default true: compute decision without writing. Pass false to actually promote.",
                     "default": True,
                 },
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": [],
         },
@@ -1836,7 +1870,7 @@ _TOOLS = [
             "type": "object",
             "properties": {
                 "ticket_id": {"type": "string"},
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["ticket_id"],
         },
@@ -2096,7 +2130,7 @@ _TOOLS = [
                 "max_attempts_per_item": {"type": "integer", "description": "Emitted-directive attempts before failing an item (default 3)"},
                 "created_by_session_id": {"type": "string", "description": "Provenance — session id (optional)"},
                 "created_by_persona": {"type": "string", "description": "Provenance — persona name (optional)"},
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["name", "mode"],
         },
@@ -2115,7 +2149,7 @@ _TOOLS = [
             "properties": {
                 "work_queue_id": {"type": "string", "description": "Work queue id (wq_...)"},
                 "include_items": {"type": "boolean", "description": "Include per-item summary (default true)"},
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["work_queue_id"],
         },
@@ -2133,7 +2167,7 @@ _TOOLS = [
             "type": "object",
             "properties": {
                 "status": {"type": "string", "description": "Filter by queue status"},
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
         },
     ),
@@ -2163,7 +2197,7 @@ _TOOLS = [
                     "description": "Target status",
                 },
                 "lease_epoch": {"type": "integer", "description": "Optional fence — current queue lease_epoch"},
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["work_queue_id", "status"],
         },
@@ -2201,7 +2235,7 @@ _TOOLS = [
                 "wake_source": {"type": "string", "description": "loop|cron|ci|manual|event (default manual)"},
                 "wake_ref": {"type": "string", "description": "CI run URL / cron id / loop tag (optional)"},
                 "max_tickets": {"type": "integer", "description": "Cap items this wake (1-5; <= queue's max_tickets_per_run)"},
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["work_queue_id"],
         },
@@ -2254,7 +2288,7 @@ _TOOLS = [
                 "ticket_lease_epoch": {"type": "integer", "description": "Ticket lease epoch from the directive (fencing)"},
                 "failed": {"type": "boolean", "description": "true if no progress was made (triggers backoff)"},
                 "summary": {"type": "string", "description": "Short human summary of the outcome (optional)"},
-                "git_remote": {"type": "string", "description": "Git remote URL (auto-detected if empty)"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["work_queue_id", "item_id", "directive_id", "ticket_id", "outcome"],
         },
@@ -2375,7 +2409,7 @@ _TOOLS = [
                 "version_id": {"type": "string"},
                 "tool": {"type": "string"},
                 "device_id": {"type": "string"},
-                "git_remote": {"type": "string"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["version_id", "tool"],
         },
@@ -2396,7 +2430,7 @@ _TOOLS = [
                 "requested_capabilities": {"type": "array", "items": {"type": "string"}},
                 "target_device_id": {"type": "string"},
                 "session_id": {"type": "string"},
-                "git_remote": {"type": "string"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["version_id", "content_hash"],
         },
@@ -2408,7 +2442,7 @@ _TOOLS = [
             "type": "object",
             "properties": {
                 "request_id": {"type": "string"},
-                "git_remote": {"type": "string"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["request_id"],
         },
@@ -2420,7 +2454,7 @@ _TOOLS = [
             "type": "object",
             "properties": {
                 "status": {"type": "string"},
-                "git_remote": {"type": "string"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
         },
     ),
@@ -2431,7 +2465,7 @@ _TOOLS = [
             "type": "object",
             "properties": {
                 "request_id": {"type": "string"},
-                "git_remote": {"type": "string"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["request_id"],
         },
@@ -2847,6 +2881,70 @@ def _handle_find_related(args: dict) -> dict[str, Any]:
     }
 
 
+def _looks_like_filesystem_path(value: str) -> bool:
+    """True when a `git_remote` argument is explicitly path-shaped.
+
+    Agents often pass the repo (or worktree) directory they are working in.
+    Only explicit path forms count: a bare `org/repo` that happens to match a
+    local directory is still treated as a remote.
+    """
+    return value.startswith(("/", "~", "./", "../")) or value in (".", "..")
+
+
+def _git_remote_for_path(path_value: str) -> str:
+    """Return the `origin` URL of the repo at `path_value`, or "" if none.
+
+    The path is used as given (never lowercased) so case-sensitive volumes
+    resolve correctly; worktrees report their main repo's origin.
+    """
+    import os
+    import subprocess
+
+    path = os.path.expanduser(path_value)
+    if not os.path.isdir(path):
+        return ""
+    try:
+        result = subprocess.run(
+            ["git", "-C", path, "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+class GitRemotePathError(ValueError):
+    """A path-shaped `git_remote` that is not a git repo with an `origin`."""
+
+
+async def _resolve_git_remote_arg(git_remote: Any) -> str:
+    """Resolve a tool's `git_remote` argument to a remote URL.
+
+    A filesystem path is resolved through its repo's `origin`; a path that
+    does not resolve raises GitRemotePathError rather than falling back, so a
+    write meant for one repo never lands in the workspace repo. Only an empty
+    value uses workspace detection. Remote URLs are returned unchanged.
+    """
+    if not isinstance(git_remote, str):
+        git_remote = ""
+    candidate = git_remote.strip()
+    if candidate and _looks_like_filesystem_path(candidate):
+        resolved = _git_remote_for_path(candidate)
+        if not resolved:
+            raise GitRemotePathError(
+                f"git_remote '{candidate}' is a path but not a git repository "
+                "with an origin remote. Pass a remote URL like "
+                "github.com/org/repo, or omit git_remote to use the current "
+                "workspace."
+            )
+        return resolved
+    if not git_remote:
+        git_remote = await _resolve_workspace_git_remote()
+    return git_remote
+
+
 async def _resolve_workspace_git_remote() -> str:
     """Try to detect the git remote from the MCP client's workspace roots."""
     import subprocess
@@ -2894,9 +2992,10 @@ async def _resolve_workspace_git_remote() -> str:
 
 async def _handle_get_project_context(args: dict) -> str:
     """Get shared project context from the cloud API."""
-    git_remote = args.get("git_remote", "")
-    if not git_remote:
-        git_remote = await _resolve_workspace_git_remote()
+    try:
+        git_remote = await _resolve_git_remote_arg(args.get("git_remote", ""))
+    except GitRemotePathError as exc:
+        return str(exc)
 
     if not git_remote:
         return "No git repository detected. Pass git_remote explicitly or ensure the MCP server can access workspace roots."
@@ -2924,7 +3023,7 @@ async def _handle_get_project_context(args: dict) -> str:
             )
         if resp.status_code == 404:
             return (
-                f"No project context found for {normalized}. "
+                f"No project context found for {normalized}. {_NO_PROJECT_HINT} "
                 f"Create one with: sfs project init && sfs project edit"
             )
         if resp.status_code >= 400:
@@ -3096,8 +3195,10 @@ async def _handle_search_knowledge(args: dict) -> str:
             "sequential scan in production — narrow your search."
         )
 
-    if not git_remote:
-        git_remote = await _resolve_workspace_git_remote()
+    try:
+        git_remote = await _resolve_git_remote_arg(git_remote)
+    except GitRemotePathError as exc:
+        return str(exc)
 
     if not git_remote:
         return "No git repository detected. Pass git_remote explicitly or ensure workspace roots are available."
@@ -3122,7 +3223,7 @@ async def _handle_search_knowledge(args: dict) -> str:
                 headers={"Authorization": f"Bearer {config.sync.api_key}"},
             )
         if resp.status_code == 404:
-            return f"No project found for {normalized}."
+            return f"No project found for {normalized}. {_NO_PROJECT_HINT}"
         if resp.status_code >= 400:
             return f"Error fetching project: {resp.status_code}"
 
@@ -3211,8 +3312,10 @@ async def _resolve_project_id(git_remote: str = "") -> tuple[str, str, str]:
 
     Raises Exception with a user-friendly message on failure.
     """
-    if not git_remote:
-        git_remote = await _resolve_workspace_git_remote()
+    try:
+        git_remote = await _resolve_git_remote_arg(git_remote)
+    except GitRemotePathError as exc:
+        raise Exception(str(exc)) from exc
 
     if not git_remote:
         raise Exception("No git repository detected. Pass git_remote explicitly or ensure workspace roots are available.")
@@ -3234,7 +3337,7 @@ async def _resolve_project_id(git_remote: str = "") -> tuple[str, str, str]:
         )
     if resp.status_code == 404:
         raise Exception(
-            f"No project found for {normalized}. "
+            f"No project found for {normalized}. {_NO_PROJECT_HINT} "
             f"Create one with: sfs project init, or if this repo is part of "
             f"a multi-repo project, link it with: sfs project link-repo"
         )
@@ -3605,8 +3708,10 @@ async def _fetch_kb_entries_raw(args: dict) -> list[dict]:
     if isinstance(query, str) and len(query.strip()) < 3:
         return []
 
-    if not git_remote:
-        git_remote = await _resolve_workspace_git_remote()
+    try:
+        git_remote = await _resolve_git_remote_arg(git_remote)
+    except GitRemotePathError:
+        return []
     if not git_remote:
         return []
 
@@ -4879,6 +4984,11 @@ async def _handle_create_persona(args: dict) -> dict:
         "content": args.get("content") or "",
         "specializations": list(args.get("specializations") or []),
     }
+    represented = args.get("represented_user")
+    if isinstance(represented, str) and represented.strip():
+        if not org_id:
+            return {"error": "represented_user applies to org personas only (pass org_id)"}
+        body["represented_user"] = represented.strip()
 
     import httpx
     async with httpx.AsyncClient(timeout=15) as client:
@@ -4931,12 +5041,18 @@ async def _handle_update_persona(args: dict) -> dict:
     specs = args.get("specializations")
     if isinstance(specs, list):
         body["specializations"] = list(specs)
+    represented = args.get("represented_user")
+    if isinstance(represented, str):
+        if not org_id:
+            return {"error": "represented_user applies to org personas only (pass org_id)"}
+        # An empty string clears the link (JSON null on the wire).
+        body["represented_user"] = represented.strip() or None
 
     if not body:
         return {
             "error": (
-                "At least one of role, content, or specializations is "
-                "required for update_persona"
+                "At least one of role, content, specializations, or "
+                "represented_user is required for update_persona"
             )
         }
 

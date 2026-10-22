@@ -19,6 +19,9 @@ from alembic import command
 from alembic.config import Config
 
 from sessionfs.server.db.models import Base
+from tests.pg_helpers import reset_pg_schema
+
+from .test_migration_080 import strip_080
 
 _MIGRATIONS = str(
     Path(__file__).resolve().parents[3] / "src" / "sessionfs" / "server" / "db" / "migrations"
@@ -68,6 +71,8 @@ def pre_072_db(tmp_path: Path) -> Path:
     path = tmp_path / "m072.db"
     engine = sa.create_engine(f"sqlite:///{path}")
     Base.metadata.create_all(engine)
+    with engine.begin() as conn:
+        strip_080(conn)
     engine.dispose()
     command.stamp(_cfg(path), "072")
     command.downgrade(_cfg(path), "071")
@@ -336,6 +341,7 @@ def test_upgrade_backfills_legacy_remote_and_follows_tombstones(
 )
 def test_full_chain_on_postgres() -> None:
     """001..head then downgrade to 069 and back, on REAL PostgreSQL."""
+    reset_pg_schema()  # the chain runs from an empty database
     config = Config()
     config.set_main_option("script_location", _MIGRATIONS)
     config.set_main_option("sqlalchemy.url", os.environ["SFS_TEST_PG_URL"])
